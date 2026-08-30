@@ -420,15 +420,18 @@ impl Element for GlassContainer {
             view.setContentView(Some(content.as_ref()));
             view
         });
-        let content = view
-            .contentView()
-            .expect("the content view is set when the container view is created");
-        let fill = NSRect::new(
-            NSPoint::ZERO,
-            NSSize::new(viewport.size.width.to_f64(), viewport.size.height.to_f64()),
-        );
-        if !rects_equal(content.frame(), fill) {
-            content.setFrame(fill);
+        // Nullable, and re-read from a pooled view whose `setContentView:` ran only on creation.
+        // Members already handle finding no container by painting as standalone panels, so
+        // degrade to that rather than panicking inside a consumer's paint.
+        let content = view.contentView();
+        if let Some(content) = &content {
+            let fill = NSRect::new(
+                NSPoint::ZERO,
+                NSSize::new(viewport.size.width.to_f64(), viewport.size.height.to_f64()),
+            );
+            if !rects_equal(content.frame(), fill) {
+                content.setFrame(fill);
+            }
         }
         if let Some(spacing) = self.spacing {
             let spacing = spacing.to_f64();
@@ -442,10 +445,12 @@ impl Element for GlassContainer {
         let depth = OPEN.with(|open| {
             let mut open = open.borrow_mut();
             let depth = open.len();
-            open.push(OpenContainer {
-                content,
-                layer: self.layer,
-            });
+            if let Some(content) = content {
+                open.push(OpenContainer {
+                    content,
+                    layer: self.layer,
+                });
+            }
             depth
         });
         for child in &mut self.children {
