@@ -656,7 +656,8 @@ impl NativeSidebar {
     /// Height of the screen whose bottom-left is Cocoa's global origin — the constant that flips
     /// a Cocoa frame into the top-left-origin space `CGEventPost` uses.
     pub fn screen_height(&self) -> f64 {
-        let mtm = MainThreadMarker::new().expect("main thread");
+        let mtm = MainThreadMarker::new()
+            .expect("a NativeSidebar is !Send, so it is only reachable on gpui's main thread");
         NSScreen::screens(mtm)
             .firstObject()
             .map(|screen| screen.frame().size.height)

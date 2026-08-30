@@ -1,1 +1,7 @@
 style_edition = "2024"
+max_width = 100
+tab_spaces = 4
+fn_params_layout = "Tall"
+use_try_shorthand = true
+reorder_imports = true
+reorder_modules = true

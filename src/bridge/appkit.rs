@@ -66,12 +66,13 @@ impl Container {
 /// Its superview is the `NSWindow`'s content view, which is where [`crate::Layer::Below`] views
 /// are inserted.
 pub fn gpui_view(window: &Window) -> Retained<NSView> {
-    let handle = HasWindowHandle::window_handle(window).expect("gpui window has no native handle");
+    let handle = HasWindowHandle::window_handle(window)
+        .expect("gpui's macOS window always exposes an AppKit window handle");
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         unreachable!("macOS-only crate saw a non-AppKit window handle");
     };
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
-        .expect("gpui ns_view was null")
+        .expect("gpui's AppKit handle always carries the live NSView it renders into")
 }
 
 pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {

@@ -78,7 +78,7 @@ impl Appearance {
 
     pub fn ns_appearance(self) -> Retained<NSAppearance> {
         NSAppearance::appearanceNamed(self.ns_name())
-            .expect("NSAppearance::appearanceNamed(aqua|darkAqua) returned nil")
+            .expect("the two base appearances always resolve")
     }
 
     /// Collapse any appearance onto one of the two worlds.
