@@ -48,6 +48,28 @@ anchors() {
   return $fail
 }
 
+# The mirror of an anchor, and it exists because the opposite failure happened. An anchor stops a
+# measured fact being deleted. A retired claim stops a fixed limitation outliving its fix: the
+# caret-key gap stayed documented on a public constructor after it was fixed, and no presence
+# check could ever have caught that, because the fault was a sentence that should have gone.
+# Add a line here whenever a fix retires a documented limitation.
+retired() {
+  local where=$1 fail=0
+  gone() {
+    if grep -rqiE "$2" "$where"; then
+      printf 'STALE %s  (/%s/)\n' "$1" "$2"
+      fail=1
+    else
+      printf 'gone  %s\n' "$1"
+    fi
+  }
+
+  gone 'cmd chords never reach a hosted field' "do not reach a hosted field|Cmd-A/C/V do not"
+  gone 'caret keys are the window.s own gap'   "separate open gap|anything this crate configures"
+  gone 'editing needs an upstream gpui change' "needs a change in gpui|[Ff]ixing it needs"
+  return $fail
+}
+
 if [[ ${1:-} == --self-test ]]; then
   strip=$(mktemp -d)
   trap 'rm -rf "$strip"' EXIT
@@ -61,7 +83,28 @@ if [[ ${1:-} == --self-test ]]; then
     exit 1
   fi
   echo "all anchors falsifiable"
+
+  # A retired claim is falsified the other way round: plant every stale sentence and require each
+  # one to be caught. A `gone` that cannot go STALE is not protecting anything.
+  plant="$strip/planted"
+  mkdir -p "$plant"
+  cat > "$plant/stale.rs" <<'STALE'
+// Cmd-A/C/V do not reach a hosted field.
+// Arrow keys are a separate open gap, the window rather than anything this crate configures.
+// Fixing it needs a change in gpui.
+STALE
+  echo "self-test: every retired claim must go STALE against a planted copy"
+  if retired "$plant" | grep -q '^gone'; then
+    echo
+    retired "$plant" | grep '^gone' | sed 's/^gone /BAD  /'
+    echo "FAIL: the above cannot detect the claim they retire"
+    exit 1
+  fi
+  echo "all retired claims falsifiable"
   exit 0
 fi
 
 anchors src
+status=$?
+retired src examples || status=1
+exit $status
