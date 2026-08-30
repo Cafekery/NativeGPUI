@@ -506,7 +506,8 @@ define_class!(
             let wanted = ident.to_string();
             let handler = self.ivars().items.borrow().iter().find_map(|item| match item {
                 ToolbarItem::Symbol { id, on_click, .. } if *id == wanted => on_click.clone(),
-                _ => None,
+                ToolbarItem::Symbol { .. } => None,
+                ToolbarItem::FlexibleSpace | ToolbarItem::Space => None,
             });
             let Some(handler) = handler else {
                 return;
