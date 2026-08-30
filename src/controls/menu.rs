@@ -92,12 +92,10 @@ fn nsstring_is(text: &NSString, want: &str) -> bool {
     unsafe { CStr::from_ptr(ptr) }.to_bytes() == want.as_bytes()
 }
 
-/// Bring `menu` in line with `entries`, touching only what differs.
-///
-/// A diff rather than a rebuild because `removeAllItems` closes an open menu, so a component
-/// that rebuilt every frame would break exactly while the user was using it. The symbol name
-/// that produced an item's image is parked in its `representedObject`, there being no way to ask
-/// an `NSImage` which SF Symbol it came from.
+/// Brings `menu` in line with `entries`, touching only what differs: `removeAllItems` closes an
+/// open menu, so a rebuild would break the menu exactly while the user was in it. An item's
+/// symbol name is parked in its `representedObject`, there being no way to ask an `NSImage`
+/// which SF Symbol it came from.
 fn sync_menu(
     mtm: MainThreadMarker,
     menu: &NSMenu,
@@ -489,7 +487,6 @@ impl Element for NativeContextMenu {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        // The child's own layout node, so the bounds this element paints with are the child's.
         (self.child.request_layout(window, cx), ())
     }
 

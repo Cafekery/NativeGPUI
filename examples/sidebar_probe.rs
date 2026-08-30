@@ -104,9 +104,8 @@ fn post(kind: u32, at: CGPoint) {
 }
 
 /// One click at a global top-left-origin point, pointer restored before returning.
-///
-/// `CGWarpMouseCursorPosition` moves the cursor but posts no event of its own, so the move has
-/// to be posted separately or nothing hovers.
+/// `CGWarpMouseCursorPosition` moves the cursor but posts no event of its own, so the move has to
+/// be posted separately or nothing hovers.
 fn click_at(global: CGPoint) {
     let was = pointer_now();
     unsafe { CGWarpMouseCursorPosition(global) };
@@ -125,9 +124,8 @@ fn click_at(global: CGPoint) {
 }
 
 /// Height of the screen whose bottom-left is Cocoa's global origin.
-///
-/// Not `CGDisplayPixelsHigh`: that reports the display mode's *pixel* height, which on a scaled
-/// Retina display is not the point height, and the flip comes out wrong by hundreds of points.
+/// Not `CGDisplayPixelsHigh`: that is the display mode's *pixel* height, which on a scaled Retina
+/// display is not the point height, and the flip comes out wrong by hundreds of points.
 fn screen_height() -> f64 {
     unsafe { NG_SCREEN_HEIGHT }
 }
@@ -141,10 +139,9 @@ const EDGE_DY: f64 = 16.;
 const EDGE_BORDER: [f64; 5] = [1., 2., 3., 5., 12.];
 /// The mid-animation target's logical rect and aimed point.
 ///
-/// Fixed in GPUI-logical space and deliberately not derived from the gutter: a target placed
-/// relative to `metrics.left` would move while the pane animates, racing the thing being
-/// measured. At a fixed logical x it is stationary in the aligned arm and moves only in the
-/// broken one.
+/// Fixed in GPUI-logical space and deliberately not derived from the gutter: a target relative to
+/// `metrics.left` would move while the pane animates, racing what is being measured. At a fixed
+/// logical x it is stationary in the aligned arm and moves only in the broken one.
 const EDGE_ANIM: (f32, f32, f32, f32) = (690., 292., 22., 22.);
 const EDGE_ANIM_AIM: (f64, f64) = (700., 303.);
 
@@ -152,8 +149,8 @@ const EDGE_ANIM_AIM: (f64, f64) = (700., 303.);
 /// origin plus GPUI's frame origin, flipped.
 ///
 /// Aiming at `draw_origin + logical` is what makes the sweep falsifiable. Aiming at the logical
-/// point directly — what `NG_CLICK` does — posts at the same global place in both arms, so both
-/// report zero error and the control fabricates a pass.
+/// point directly — what `NG_CLICK` does — posts at the same global place in both arms, so the
+/// control fabricates a pass.
 fn draw_origin(sidebar: &NativeSidebar) -> (f64, f64) {
     let pane = sidebar.pane_rect();
     let gpui = sidebar.gpui_frame();
@@ -165,9 +162,8 @@ fn draw_origin(sidebar: &NativeSidebar) -> (f64, f64) {
 }
 
 /// A click posted from a worker thread, so the main thread keeps running AppKit's animation.
-///
-/// [`click_at`] sleeps on the calling thread, which on the main thread stalls the very collapse
-/// the click is aimed into. `CGEventPost` is thread-safe.
+/// [`click_at`] sleeps on the calling thread, which on the main thread would stall the very
+/// collapse the click is aimed into. `CGEventPost` is thread-safe.
 fn click_async(global: CGPoint, delay_ms: u64) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -211,10 +207,10 @@ impl EdgeTarget {
 
 /// Targets across the pane, in GPUI-logical points, built from the gutter the sidebar reports.
 ///
-/// Both edges get a *profile* rather than spot checks: a single null cannot say what swallowed
-/// the click, but the offset at which clicks start arriving can, and every landing offset is a
-/// known-positive proving the stimulus does reach the window at that x. Each offset gets its own
-/// y row, since a divider band and a window resize border are both vertical strips.
+/// Both edges get a *profile* rather than spot checks: a single null cannot say what swallowed the
+/// click, but the offset at which clicks start arriving can, and every landing offset is a
+/// known-positive proving the stimulus reaches the window at that x. Each offset gets its own y
+/// row, since a divider band and a window resize border are both vertical strips.
 fn edge_targets(sidebar: &NativeSidebar) -> Vec<EdgeTarget> {
     let left = f64::from(f32::from(sidebar.metrics().left));
     let w = sidebar.content_view_size().width;
@@ -655,6 +651,15 @@ fn edge_arm() -> &'static str {
     }
 }
 
+fn print_targets(targets: &[EdgeTarget]) {
+    for t in targets {
+        println!(
+            "  target {:<8} logical rect ({:.1},{:.1},{:.1}x{:.1}) aim ({:.2},{:.2})",
+            t.label, t.rect.0, t.rect.1, t.rect.2, t.rect.3, t.aim.0, t.aim.1
+        );
+    }
+}
+
 /// The sweep's state machine. One step per GPUI frame.
 fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: &mut App) {
     if edge.wait > 0 {
@@ -668,12 +673,7 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             cx.activate(true);
             edge.state = "expanded";
             edge.targets = edge_targets(sidebar);
-            for t in &edge.targets {
-                println!(
-                    "  target {:<8} logical rect ({:.1},{:.1},{:.1}x{:.1}) aim ({:.2},{:.2})",
-                    t.label, t.rect.0, t.rect.1, t.rect.2, t.rect.3, t.aim.0, t.aim.1
-                );
-            }
+            print_targets(&edge.targets);
             // Captures and synthetic input cannot share a run: a `screencapture` loop silently
             // stops synthetic clicks being delivered, so a capture pass posts nothing at all.
             if env_flag("NG_EDGE_HOLD") {
@@ -733,12 +733,7 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
                 edge_readout("after collapse", sidebar);
                 edge.state = "collapsed";
                 edge.targets = edge_targets(sidebar);
-                for t in &edge.targets {
-                    println!(
-                        "  target {:<8} logical rect ({:.1},{:.1},{:.1}x{:.1}) aim ({:.2},{:.2})",
-                        t.label, t.rect.0, t.rect.1, t.rect.2, t.rect.3, t.aim.0, t.aim.1
-                    );
-                }
+                print_targets(&edge.targets);
                 edge.phase = 8;
                 edge.wait = 10;
             }
@@ -775,14 +770,10 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
                 edge.phase = 12;
             }
         }
-        // Left-strip probe: is the window's far-left band clickable by anything at all? Aimed
-        // into the sidebar strip at row 1's centre with the sidebar expanded, so the divider is
-        // 248pt away; the detector is AppKit's own selection.
-        //
-        // It cannot isolate a window frame border, and `EDGE-ROW1` is printed so nobody reads it
-        // that way: rows start 8pt inside the window, so every smaller offset lands on the
-        // sidebar item's own background whether or not a frame border also claims it. All this
-        // establishes is that the band is dead to both hit paths.
+        // Left-strip probe: is the window's far-left band clickable by anything at all? Aimed into
+        // the sidebar strip at row 1's centre with the sidebar expanded, so the divider is 248pt
+        // away; the detector is AppKit's own selection. It cannot isolate a window frame border —
+        // rows start 8pt inside the window, so smaller offsets land on the item's own background.
         12 => {
             if edge.border_i >= EDGE_BORDER.len() {
                 edge.phase = 13;
@@ -965,8 +956,7 @@ impl Demo {
         let diff = sidebar.update(&items(self.extra, self.renamed, self.reordered));
         let frame = sidebar.window_frame();
         unsafe { NG_SCREEN_HEIGHT = sidebar.screen_height() };
-        // For the capture script: `screencapture -l` needs the CGWindowID, and both numbers come
-        // from inside the process, so they cannot describe some other window.
+        // For the capture script: `screencapture -l` needs the CGWindowID, read from in-process.
         println!(
             "WINDOW id={} frame=({:.0},{:.0},{:.0},{:.0}) scale={:.1}",
             sidebar.window_number(),
@@ -1060,9 +1050,9 @@ impl Demo {
 /// A borderless flat-colour window glued behind the main window, 80pt larger on every side.
 ///
 /// The sidebar's material is `behindWindow`, so it blurs what the WindowServer has behind the
-/// window — which a window-scoped capture does not contain. Putting something known back there
-/// and swinging it is the only way to measure that the blur is live. The swing has to be
-/// full-field: AppKit samples the backdrop at one-eighth scale, far wider than any one band.
+/// window, which a window-scoped capture does not contain. Putting a known colour back there and
+/// swinging it black/white is the only way to measure that the blur is live, and the swing has to
+/// be full-field: AppKit samples the backdrop at one-eighth scale, far wider than any one band.
 fn install_backdrop(sidebar: &NativeSidebar, white: bool) -> Retained<NSWindow> {
     let mtm = MainThreadMarker::new().expect("main thread");
     let f = sidebar.window_frame();
@@ -1191,32 +1181,13 @@ impl Render for Demo {
             }
         }
         if !env_flag("NG_NOPROBES") {
-            host_probe(
-                window,
-                cx,
-                1,
-                Layer::Above,
-                (
-                    left + PROBE_ABOVE.0,
-                    top + PROBE_ABOVE.1,
-                    PROBE_ABOVE.2,
-                    PROBE_ABOVE.3,
-                ),
-                (1.0, 0.42, 0.0),
-            );
-            host_probe(
-                window,
-                cx,
-                2,
-                Layer::Below,
-                (
-                    left + PROBE_BELOW.0,
-                    top + PROBE_BELOW.1,
-                    PROBE_BELOW.2,
-                    PROBE_BELOW.3,
-                ),
-                (0.0, 0.85, 0.35),
-            );
+            for (key, layer, rect, color) in [
+                (1, Layer::Above, PROBE_ABOVE, (1.0, 0.42, 0.0)),
+                (2, Layer::Below, PROBE_BELOW, (0.0, 0.85, 0.35)),
+            ] {
+                let placed = (left + rect.0, top + rect.1, rect.2, rect.3);
+                host_probe(window, cx, key, layer, placed, color);
+            }
         }
         let selected = self.selected.clone().unwrap_or_else(|| "—".into());
         let clicks = self.clicks.clone();
@@ -1255,9 +1226,8 @@ impl Render for Demo {
 
         // 1pt hairlines every COMB pt of logical x, measuring offset AND stretch: an offset view
         // shifts them all equally, a drawable disagreeing with the logical size changes spacing.
-        //
-        // 47, not 50: the sidebar is 248pt, so a 50pt comb puts the correct prediction and the
-        // broken one 2pt apart and both "fit". A period that does not divide the inset separates
+        // 47 and not 50: the sidebar is 248pt, so a 50pt comb puts the correct prediction and the
+        // broken one 2pt apart and both "fit"; a period that does not divide the inset separates
         // them by 13pt or more.
         let mut comb = div().absolute().left(px(0.)).top(px(0.)).size_full();
         for k in 1..22 {
@@ -1285,24 +1255,17 @@ impl Render for Demo {
         );
         // Paired white-over-black occlusion gate, self-locating so a display capture can be
         // searched for it. A single-colour foreign window can pass at most one half.
-        root = root.child(
-            div()
-                .absolute()
-                .left(px(left + 320.))
-                .top(px(top + 330.))
-                .w(px(160.))
-                .h(px(40.))
-                .bg(rgb(0xffffff)),
-        );
-        root = root.child(
-            div()
-                .absolute()
-                .left(px(left + 320.))
-                .top(px(top + 370.))
-                .w(px(160.))
-                .h(px(40.))
-                .bg(rgb(0x000000)),
-        );
+        for (dy, color) in [(330., 0xffffff), (370., 0x000000)] {
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(px(left + 320.))
+                    .top(px(top + dy))
+                    .w(px(160.))
+                    .h(px(40.))
+                    .bg(rgb(color)),
+            );
+        }
 
         // Selection round-trip: painted by GPUI from `self.selected`, so tracking the clicked row
         // proves the AppKit -> deferred dispatch -> GPUI state -> re-render path.
@@ -1375,8 +1338,8 @@ impl Render for Demo {
             );
         }
         // The sweep's hit targets, painted last so they sit on top. Each carries its own
-        // `on_mouse_down`, which gpui fires only for an event inside that element's painted
-        // bounds — so "landed on target" is gpui's hit test answering, not arithmetic here.
+        // `on_mouse_down`, which gpui fires only inside that element's painted bounds, so "landed
+        // on target" is gpui's hit test answering rather than arithmetic here.
         if let Some(targets) = self.edge.as_ref().map(|e| e.targets.clone()) {
             for (k, t) in targets.iter().enumerate() {
                 let (tx, ty, tw, th) = t.rect;
@@ -1567,10 +1530,10 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         }
     }
 
-    // Three separate things silently eat a synthetic click: `acceptsFirstMouse:` is NO by
-    // default, a non-key window gets nothing, and a warp posts no event of its own. So each
-    // click re-activates first and then waits for the app's own mouse-down count to rise. One
-    // still unreceived while the window is verifiably key is a real swallow, reported as such.
+    // Three separate things silently eat a synthetic click: `acceptsFirstMouse:` is NO by default,
+    // a non-key window gets nothing, and a warp posts no event of its own. So each click
+    // re-activates first, then waits for the mouse-down count to rise; one still unreceived while
+    // the window is verifiably key is a real swallow.
     if demo.click_index < demo.click_points.len() {
         if demo.click_wait > 0 {
             demo.click_wait -= 1;

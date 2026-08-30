@@ -1,21 +1,17 @@
 //! The transient surfaces: popovers, sheets and the system share picker.
 //!
-//! Each lives in its own `NSWindow` above the GPUI window and is drawn entirely by macOS. That
-//! is also the limit on what can be inside one, see [`present_popover`].
+//! Each lives in its own `NSWindow` above the GPUI window and is drawn entirely by macOS, which
+//! is also the limit on what can go inside one — see [`present_popover`].
 //!
-//! # Anchoring
+//! A popover or a share picker points at a GPUI element whose geometry is only known during
+//! `paint`, so wrap it in [`native_anchor`] with a [`SurfaceAnchor`] you own and read the bounds
+//! back from the event handler. Conversion goes through [`crate::native_rect`] and
+//! [`crate::chrome_host`], whose coordinate space *is* GPUI's — do not hand-roll
+//! `content_height - y - height`.
 //!
-//! A popover or a share picker points at a GPUI element, whose geometry is only known during
-//! `paint`. Wrap it in [`native_anchor`] with a [`SurfaceAnchor`] you own; the element records
-//! its painted bounds, and [`present_popover`] / [`present_share_picker`] read them later from an
-//! event handler. Conversion goes through [`crate::native_rect`] and [`crate::chrome_host`],
-//! whose coordinate space *is* GPUI's — do not hand-roll `content_height - y - height`.
-//!
-//! # Already in GPUI — do not wrap these again
-//!
-//! [`gpui::Window::prompt`] is a real `NSAlert` sheet. [`gpui::App::prompt_for_paths`] and
-//! [`gpui::App::prompt_for_new_path`] are `NSOpenPanel` / `NSSavePanel`, presented with
-//! `beginWithCompletionHandler:` — independent modal windows, not sheets attached to your window.
+//! Already native in GPUI, do not wrap again: [`gpui::Window::prompt`] is a real `NSAlert` sheet,
+//! and [`gpui::App::prompt_for_paths`] / [`gpui::App::prompt_for_new_path`] are `NSOpenPanel` /
+//! `NSSavePanel` presented as independent modal windows, not sheets attached to your window.
 
 use std::cell::{Cell, RefCell};
 use std::panic::Location;
@@ -43,9 +39,8 @@ use objc2_foundation::{
 use crate::bridge::appkit::gpui_view;
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
-/// The painted bounds of a GPUI element, kept for a surface to point at.
-///
-/// Cheap to clone; every clone sees the same bounds.
+/// The painted bounds of a GPUI element, kept for a surface to point at. Cheap to clone; every
+/// clone sees the same bounds.
 #[derive(Clone, Default)]
 pub struct SurfaceAnchor(Rc<Cell<Option<Bounds<Pixels>>>>);
 
@@ -54,7 +49,7 @@ impl SurfaceAnchor {
         Self::default()
     }
 
-    /// `None` until the anchoring element has painted, and for one scrolled out of the tree.
+    /// `None` until the anchoring element has painted.
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
         self.0.get()
     }
@@ -162,9 +157,8 @@ pub struct ActionIvars {
 }
 
 define_class!(
-    /// The action sink for controls a *surface* owns. A button inside a popover or a sheet has no
+    /// The action sink for controls a *surface* owns: a button inside a popover or a sheet has no
     /// GPUI element, so it cannot go through [`crate::NativeHost`]'s element-keyed target.
-    ///
     /// `setTarget:` is weak, so the surface retains this for as long as its controls exist.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -183,8 +177,8 @@ define_class!(
             else {
                 return;
             };
-            // Deferred: an AppKit action can fire while GPUI already holds its `App` borrow, and
-            // a synchronous update then fails and drops the event permanently.
+            // Deferred: an action can fire while gpui holds its `App` borrow, which would drop a
+            // synchronous update.
             ivars
                 .cx
                 .spawn(async move |cx| {
@@ -205,13 +199,11 @@ impl SurfaceActions {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Fire `handler` when `control` acts; read whatever you need off the control inside it.
-    ///
-    /// That is safe here but not for a *pooled* element, whose control GPUI's `paint` can write
-    /// between the action firing and the deferred handler running — those must use
-    /// [`crate::NativeHost::on_event`], which reads synchronously inside the action.
-    ///
+    /// Fire `handler` when `control` acts, reading whatever you need off the control inside it.
     /// Uses the control's `tag`, so do not set your own.
+    ///
+    /// A *pooled* element must use [`crate::NativeHost::on_event`] instead: GPUI's `paint` can
+    /// write its control between the action firing and this deferred handler running.
     pub fn on_action(
         &self,
         control: &NSControl,
@@ -289,9 +281,7 @@ struct DelegateIvars {
 
 thread_local! {
     /// `setDelegate:` is weak and `popoverDidClose:` arrives *after* the close animation, so a
-    /// delegate owned only by the caller's [`NativePopover`] is already gone by the time AppKit
-    /// looks for it and the notification is dropped in silence. This holds the extra reference
-    /// across exactly that window.
+    /// delegate owned only by the caller's [`NativePopover`] is gone before AppKit looks for it.
     static CLOSING: RefCell<Vec<Retained<PopoverDelegate>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -324,12 +314,10 @@ define_class!(
 
 /// Show a popover pointing at `anchor`, or `None` if `anchor` has never painted.
 ///
-/// `build` receives the surface's [`SurfaceActions`] so the controls you put in the popover can
-/// drive GPUI state; the view you return becomes the popover's content, sized to `spec.size`.
-///
-/// That content is AppKit, not GPUI, and it is a hard limit: AppKit puts the view in a new
-/// `_NSPopoverWindow`, and gpui renders a window's whole scene into the one Metal view
-/// `MacWindow` created. [`SurfaceActions`] is how popover content talks back to GPUI.
+/// `build` receives the surface's [`SurfaceActions`] so its controls can drive GPUI state, and the
+/// view it returns becomes the content, sized to `spec.size`. That content must be AppKit: it goes
+/// in a new `_NSPopoverWindow`, and gpui renders a window's whole scene into the one Metal view
+/// `MacWindow` created.
 pub fn present_popover(
     window: &mut Window,
     cx: &mut App,
@@ -367,11 +355,9 @@ pub fn present_popover(
 }
 
 impl NativePopover {
-    /// Run `on_close` when the popover closes, however it closed.
-    ///
-    /// Worth wiring even with [`PopoverBehavior::ApplicationDefined`]: AppKit also closes a
-    /// popover when its positioning view leaves the window, and this is the only way your `open`
-    /// flag hears about it.
+    /// Run `on_close` when the popover closes, however it closed. Worth wiring even with
+    /// [`PopoverBehavior::ApplicationDefined`]: AppKit also closes a popover when its positioning
+    /// view leaves the window.
     pub fn on_close(
         mut self,
         window: &mut Window,
@@ -412,10 +398,8 @@ impl NativePopover {
     }
 }
 
-/// The `NSModalResponse` a sheet ended with.
-///
-/// `OK` and `CANCEL` are AppKit's own values; any other is whatever you passed to
-/// [`NativeSheet::dismiss`], so a sheet with three buttons needs no extra plumbing.
+/// The `NSModalResponse` a sheet ended with. `OK` and `CANCEL` are AppKit's own values; any other
+/// is whatever you passed to [`NativeSheet::dismiss`], so a three-button sheet needs no plumbing.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct SheetResponse(pub isize);
 
@@ -431,10 +415,8 @@ pub struct NativeSheet {
     _actions: Retained<SurfaceActions>,
 }
 
-/// Present `build`'s window as a sheet on the GPUI window, and call `on_end` when it ends.
-///
-/// `on_end` is deferred onto GPUI the same way every other callback here is: AppKit's completion
-/// handler fires while GPUI may already hold its `App` borrow.
+/// Present `build`'s window as a sheet on the GPUI window, and call `on_end`, deferred onto GPUI,
+/// when it ends: AppKit's completion handler fires while GPUI may hold its `App` borrow.
 pub fn present_sheet(
     window: &mut Window,
     cx: &mut App,
@@ -484,10 +466,8 @@ impl NativeSheet {
     }
 }
 
-/// Something to hand to the share picker.
-///
-/// A URL string AppKit refuses to parse is dropped — [`share_service_count`] will show you that,
-/// because an empty item list offers no services.
+/// Something to hand to the share picker. A URL string AppKit refuses to parse is dropped, and an
+/// empty item list offers no services — which is what [`share_service_count`] shows you.
 #[derive(Clone, Debug)]
 pub enum ShareItem {
     Url(String),
@@ -508,12 +488,11 @@ fn share_array(items: &[ShareItem]) -> Retained<NSArray> {
     NSArray::from_slice(&refs)
 }
 
-/// How many share services macOS currently offers for `items`.
+/// How many share services macOS currently offers for `items`. Check before showing a picker: an
+/// empty item list produces zero services, and a picker that opened empty still looks fine.
 ///
-/// Check this before showing a picker: an empty item list produces zero services, and a picker
-/// that opened empty still looks fine in a screenshot. The call is deprecated in favour of
-/// `standardShareMenuItem`, which never says how many services are behind it, so there is no
-/// non-deprecated way to ask ahead of time.
+/// Deprecated in favour of `standardShareMenuItem`, which never says how many services are behind
+/// it, so there is no non-deprecated way to ask ahead of time.
 #[allow(deprecated)]
 pub fn share_service_count(items: &[ShareItem]) -> usize {
     unsafe { NSSharingService::sharingServicesForItems(&share_array(items)) }.len()
@@ -523,10 +502,9 @@ pub fn share_service_count(items: &[ShareItem]) -> usize {
 #[derive(Copy, Clone, Debug)]
 pub struct SharePicker {
     pub edge: SurfaceEdge,
-    /// How long to wait before forcing the picker shut. **Keep this set:** a picker nobody
-    /// dismisses stays up forever, and on any macOS where
-    /// `showRelativeToRect:ofView:preferredEdge:` runs a nested tracking loop it takes the whole
-    /// app with it. `None` exists only so that hazard can be demonstrated deliberately.
+    /// How long before the picker is forced shut. **Keep this set:** a picker nobody dismisses
+    /// stays up forever, and where `showRelativeToRect:ofView:preferredEdge:` runs a nested
+    /// tracking loop it takes the whole app with it.
     pub watchdog: Option<Duration>,
 }
 
@@ -561,10 +539,9 @@ pub struct PickerIvars {
     cx: AsyncWindowContext,
 }
 
-/// Holds picker, delegate and watchdog together while the picker is up. Both `setDelegate:` and
-/// AppKit's own reference to the picker are too weak: with nothing else holding them the delegate
-/// is deallocated moments after the picker appears, `didChooseSharingService:` never arrives, and
-/// the watchdog is never disarmed.
+/// Holds picker, delegate and watchdog together while the picker is up: `setDelegate:` and
+/// AppKit's own reference are both too weak, and without this the delegate dies moments after the
+/// picker appears, so `didChooseSharingService:` never arrives and the watchdog never disarms.
 struct LivePicker {
     _picker: Retained<NSSharingServicePicker>,
     delegate: Retained<PickerDelegate>,
@@ -585,9 +562,8 @@ define_class!(
     unsafe impl NSObjectProtocol for PickerDelegate {}
 
     unsafe impl NSSharingServicePickerDelegate for PickerDelegate {
-        // Returns the proposal unchanged: this delegate exists to *count* what macOS is about to
-        // show. `Retained` is not an encodable return type for a defined method outside the
-        // `new`/`init`/`copy` families, so the array goes back autoreleased.
+        // Returns the proposal unchanged; this delegate exists to *count* it. `Retained` is not an
+        // encodable return type outside the `new`/`init`/`copy` families, so it autoreleases.
         #[unsafe(method(sharingServicePicker:sharingServicesForItems:proposedSharingServices:))]
         fn services_for_items(
             &self,
@@ -603,8 +579,7 @@ define_class!(
             Retained::autorelease_return(proposed.retain())
         }
 
-        // Fires with a nil service when the picker is dismissed without a choice, which is what
-        // the watchdog produces. This is the only trustworthy "it is gone".
+        // A nil service means dismissed without a choice, which is what the watchdog produces.
         #[unsafe(method(sharingServicePicker:didChooseSharingService:))]
         fn did_choose(&self, _: &NSSharingServicePicker, service: Option<&NSSharingService>) {
             self.emit(SharePickerEvent::Closed {
@@ -640,13 +615,12 @@ impl PickerDelegate {
 
 /// Open the system share picker on `anchor`, sharing `items`.
 ///
-/// Presentation is **deferred by one main-loop turn on purpose:** on macOS releases where the
-/// picker runs a nested tracking loop, showing it from inside a GPUI event handler would run that
-/// loop while GPUI holds its `App` borrow, and any GPUI work reached from it then panics.
+/// Presentation is **deferred by one main-loop turn on purpose:** where the picker runs a nested
+/// tracking loop, showing it from a GPUI event handler would run that loop while GPUI holds its
+/// `App` borrow, and any GPUI work reached from it then panics.
 ///
-/// **The picker will not open for a background app:** the delegate still reports `Opening` and
-/// the call still returns, but no window is created. A [`SharePickerEvent::Closed`] that never
-/// arrives is what a failed presentation looks like.
+/// **It will not open for a background app:** `Opening` still arrives and the call still returns,
+/// but no window is created — a [`SharePickerEvent::Closed`] that never comes is the symptom.
 pub fn present_share_picker(
     window: &mut Window,
     cx: &mut App,
@@ -680,9 +654,8 @@ pub fn present_share_picker(
             };
             picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-            // Armed *before* showing and disarmed by the delegate, not here: if the picker
-            // blocks, this thread reaches no further statement of ours until it is gone, and if
-            // it does not, disarming after the call would cancel the watchdog mid-flight.
+            // Armed before showing and disarmed by the delegate: if the picker blocks, this thread
+            // reaches no further statement of ours until it is gone.
             let watchdog = spec.watchdog.map(|after| arm_dismissal(&picker, after));
             OPEN_PICKERS.with_borrow_mut(|open| {
                 open.push(LivePicker {
@@ -705,14 +678,13 @@ pub fn present_share_picker(
         .detach();
 }
 
-/// Schedule the thing that gets rid of a picker nobody is going to dismiss.
+/// Schedule the thing that gets rid of a picker nobody is going to dismiss. `close` delivers
+/// `didChooseSharingService:` with a nil service, so there is no synthesised Escape and no
+/// guessing which window is the picker's.
 ///
-/// `-[NSSharingServicePicker close]` delivers `didChooseSharingService:` with a nil service, so
-/// the watchdog needs no synthesised Escape and no guessing which window belongs to the picker.
-///
-/// The mode is load-bearing: `NSRunLoopCommonModes` includes `NSEventTrackingRunLoopMode`, and a
-/// timer scheduled the ordinary way runs in the default mode only — where the picker *does*
-/// block, it would never fire during the very loop it exists to break.
+/// `NSRunLoopCommonModes` is load-bearing: it includes `NSEventTrackingRunLoopMode`, and a timer
+/// scheduled the ordinary way runs in the default mode only — where the picker blocks, it would
+/// never fire during the loop it exists to break.
 fn arm_dismissal(picker: &NSSharingServicePicker, after: Duration) -> Retained<NSTimer> {
     let picker = picker.retain();
     let block = RcBlock::new(move |_: NonNull<NSTimer>| picker.close());

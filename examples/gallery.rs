@@ -1,16 +1,12 @@
 //! Every component in one window, plus native controls inside a GPUI scroll container.
 //!
-//! This is the integration arm the per-component examples cannot cover: one [`NativeHost`] pool,
-//! one commit pass, mixed native classes, and a scrolling list where views are pooled and clipped.
-//! The scroll list is the interesting half — GPUI paints only visible rows, so only visible rows
-//! place a view, and the pool count is the observable that proves it.
+//! The integration arm the per-component examples cannot cover: one [`NativeHost`] pool, one
+//! commit pass, mixed native classes, and a scrolling list where views are pooled and clipped.
+//! GPUI paints only visible rows, so only visible rows place a view — the pool count in the
+//! header is the observable that proves it.
 //!
-//! `NG_ROWS` sets the list length (default 400). The header line reports the live pool count.
-//!
-//! `NG_SKEW=<points-per-frame>` replaces the whole window with the scroll-skew measurement rig at
-//! the bottom of this file, which scrolls in-process at a velocity you set. It found that a hosted
-//! view runs exactly two frames ahead of the GPUI row it belongs to at every velocity; the comment
-//! block above [`SKEW_ROW_H`] has the numbers and why it is built the way it is.
+//! `NG_ROWS` sets the list length (default 400). `NG_SKEW=<points-per-frame>` replaces the whole
+//! window with the scroll-skew rig at the bottom of this file.
 
 use std::panic::Location;
 use std::time::Instant;
@@ -56,13 +52,9 @@ struct Gallery {
     skew_offset: f32,
     skew_frames: u64,
     skew_announced: bool,
-    /// Frame-to-frame intervals in milliseconds, so a mitigation that buys a smaller skew by
-    /// dropping frames cannot be reported as a win.
+    /// Frame intervals in ms, so a smaller skew bought by dropping frames cannot read as a win.
     skew_last: Option<Instant>,
     skew_intervals: Vec<f64>,
-    /// Key state, sampled every frame. Logged at first paint and on every transition, not only
-    /// periodically: a single periodic `false` cannot tell "never acquired" from "acquired then
-    /// lost", and those are different mechanisms.
     skew_key: Option<bool>,
     skew_key_frames: u64,
 }
@@ -170,13 +162,10 @@ impl Gallery {
             ]))
     }
 
-    /// The pooling arm.
-    ///
     /// `uniform_list` is load-bearing, not a style choice: it paints only the visible range, so
-    /// only visible rows place a hosted view and the pool stays in the tens however long the list
-    /// is. A plain `div().overflow_y_scroll()` with the same children paints every row — measured
-    /// at 811 pooled views for 400 rows, which is past the comfortable budget for switches and far
-    /// past it for sliders.
+    /// the pool stays in the tens however long the list is. A `div().overflow_y_scroll()` with the
+    /// same children paints every row — 811 pooled views for 400 rows, past the comfortable budget
+    /// for switches and far past it for sliders.
     fn scroll_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = system_color(SystemColor::Label);
         let separator = system_color(SystemColor::Separator);
@@ -227,10 +216,9 @@ impl Gallery {
 }
 
 impl Render for Gallery {
-    // The skew rig and the gallery are different trees, so `render` hands back an `AnyElement`.
     #[allow(refining_impl_trait)]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        // Keep the frame loop hot so the commit pass is exercised continuously, not just on input.
+        // Unconditional so the commit pass is exercised every frame, not only on input.
         window.request_animation_frame();
 
         if self.skew.is_some() {
@@ -249,7 +237,6 @@ impl Render for Gallery {
                 .size_full()
                 .flex()
                 .flex_col()
-                // Native window-background material, below GPUI's Metal layer.
                 .child(
                     material("bg", Material::WindowBackground)
                         .absolute()
@@ -270,7 +257,6 @@ impl Render for Gallery {
                         .flex()
                         .overflow_hidden()
                         .child(self.controls(cx))
-                        // Glass panel over the GPUI-drawn divider and list edge.
                         .child(
                             div()
                                 .w(px(24.))
@@ -292,14 +278,12 @@ fn main() {
     let rows: usize = std::env::var("NG_ROWS")
         .ok()
         .and_then(|value| value.parse().ok())
-        // The skew rig scrolls one direction forever; enough rows that a multi-minute run at
-        // 12 pt/frame never reaches the end, where the offset would clamp and motion would stop.
+        // The rig scrolls one way forever; enough rows that a long run never clamps and stops.
         .unwrap_or(if skew.is_some() { 40_000 } else { 400 });
 
-    // `NG_ORIGIN=x,y` places the window somewhere other than the default. The skew rig needs its
-    // window actually scanned out — a window on a Space some other app owns fullscreen is not, and
-    // a window capture of one reads a re-composite rather than the presented frame, which is
-    // precisely the quantity being measured.
+    // `NG_ORIGIN=x,y` places the window somewhere other than the default. The rig needs its window
+    // actually scanned out: a capture of a window some other app's fullscreen Space occludes reads
+    // a re-composite rather than the presented frame, which is precisely the quantity measured.
     let origin = std::env::var("NG_ORIGIN").ok().and_then(|value| {
         let (x, y) = value.split_once(',')?;
         Some(point(
@@ -350,129 +334,54 @@ fn main() {
     });
 }
 
-// =================================================================================================
-// Scroll-skew measurement rig  (NG_SKEW=<points-per-frame>)
-// =================================================================================================
+// Scroll-skew rig — `NG_SKEW=<points-per-frame>`
 //
-// The question: during continuous scrolling, does a hosted AppKit view drift vertically from the
-// GPUI-painted row it belongs to?
+// Does a hosted AppKit view drift vertically from the GPUI row it belongs to while scrolling? A
+// settled screenshot cannot show a during-motion artefact, so the scroll is driven *in process* —
+// the list offset advances a fixed number of points per rendered frame — and never by synthetic
+// input: every capture taken while the app runs is mid-motion, captures cannot race an input
+// driver, and the velocity is a number this file sets rather than one recovered from the pixels.
+// Skew in pixels is uninterpretable: with velocity `v` and measured offset `d` the lead is `d / v`
+// *frames*, and sweeping `v` separates the hypotheses — a presentation-order skew holds the frame
+// count constant while the pixel offset scales with `v`, a layout offset does the reverse.
 //
-// Two things make that hard to measure honestly, and both are why this rig looks the way it does.
+// Each marked row carries four features at a known vertical relationship, all locatable from one
+// frame, left to right: a GPUI-painted magenta band (the reference), a hosted marker at the same
+// top (the arm under test), a hosted marker at `+6.00 pt` (the known-positive fixture), and a real
+// `NSSwitch` (corroboration with a control a user would touch). The fixture is what disqualifies
+// the instrument — same class, same [`NativeHost::place`] call, differing only by an offset known
+// in advance — so if the edge finder cannot read `+6.00 pt` off it, its null for the arm under test
+// means nothing. Nothing else in the window paints, so features are found by scanning for
+// non-background columns; each column found must then be *validated* against the x this file placed
+// it at, because scanning alone re-indexes silently. With the load arm present, occluding only the
+// reference column still leaves four runs, and taking the leftmost four reports the fixture's own
+// `+6.00 pt` — plausible rather than obviously garbage — where the truth was `-24.00`.
 //
-// * A settled screenshot cannot show a during-motion artefact. So the scroll is driven **in
-//   process** — the list offset advances a fixed number of logical points per rendered frame under
-//   `request_animation_frame` — and never by synthetic input. Any capture taken while the app runs
-//   is therefore mid-motion, captures cannot race an input driver, and the velocity is a number
-//   this file *sets* rather than one that has to be recovered from the pixels afterwards.
-// * Skew in pixels is uninterpretable. With velocity `v` points/frame and a measured vertical
-//   offset `d` points between a row's GPUI-painted band and its hosted view, the lead is `d / v`
-//   **frames**. Running several velocities separates the two hypotheses: a presentation-order skew
-//   holds the *frame* count constant while the pixel offset scales with `v`; a constant layout
-//   offset holds the *pixel* offset constant while the frame count scales with `1/v`.
+// What it found: a hosted view runs exactly two frames ahead of its row at every velocity, the
+// offset always an exact integer multiple of `v` and never a fraction, so this is presentation
+// order and not a layout offset. Rest reads exactly `0.000 pt`, and the switch stays locked to the
+// marker, so a toggle leads its own row by the same two frames.
 //
-// Each marked row carries four features at a known vertical relationship, all locatable from
-// pixels in the same frame, left to right:
-//
-//   1. a GPUI-painted magenta band          — the reference, drawn by GPUI's own renderer
-//   2. a hosted marker view, same top       — the arm under test
-//   3. a hosted marker view, `+6.00 pt`     — the known-positive fixture
-//   4. a real `NSSwitch`, switched on       — corroboration with a control a user would touch
-//
-// Feature 3 is the check that disqualifies the instrument: it is the same class, placed through
-// the same `NativeHost::place` call, differing only by a layout offset that is known in advance.
-// If the edge finder cannot read `+6.00 pt` off it, then the null it reports for feature 2 means
-// nothing. Nothing else in the window paints, so every feature is found by scanning for
-// non-background columns rather than by indexing a fixed offset into the frame — and each column
-// found is then *validated* against the x this file placed it at before it is measured. Scanning
-// alone is not enough: with the load arm's extra columns present, occluding only the GPUI reference
-// column still leaves four runs, and taking the leftmost four silently re-indexes onto
-// native/positive/switch/load. That reports `+6.00 pt` — the known-positive fixture's own value, so
-// it reads as plausible rather than as garbage — where the truth was `-24.00`. Validating positions
-// keeps occlusion, a shifted window and a wrong-content capture all failing loudly.
-//
-// One more disqualifier, because the quantity here is the gap between an AppKit layer and a Metal
-// surface and the capture path sits directly across it. `screencapture -l` is a *window* capture,
-// and a window capture that re-composited the layer tree from current `CALayer` state would report
-// a lead this rig had no business seeing. So both methods are run against the same motion,
-// alternating so capture order cannot masquerade as a method difference: window capture against
-// `-R` region capture, which reads what was actually scanned out. They agree exactly — mode
-// `-24.0 pt` from both at v = 12, `-48.0 pt` from both at v = 24 — and the region arm is the
-// slightly cleaner of the two, which is the opposite of what a re-compositing artefact predicts.
-//
-// # What it measured
-//
-// A hosted view runs **exactly two frames ahead** of the GPUI row it belongs to, at every scroll
-// velocity. Measured across 232 window captures carrying 756 paired row measurements, sub-pixel
-// edges read from `screencapture -x -o -l`:
-//
-//     v (pt/frame)      0      4       8      12      24
-//     offset (pt)   +0.000 -8.000 -16.000 -24.000 -48.000
-//     lead (frames)    n/a  +2.000  +2.000  +2.000  +2.000
-//
-// Every single capture read an exact integer multiple of `v` — never a fraction — so this is
-// presentation order, not a layout offset. The velocity-0 control reads `+0.000` pt and the
-// known-positive fixture reads `+6.000` pt in every arm at every velocity, so the residual is
-// zero rather than merely small: there is nothing to subtract. The real `NSSwitch` is locked to
-// the marker — `switch - marker` carries no `v`-quantised component in any arm — so a toggle
-// leads its own row by the same two frames.
-//
-// It is not GPUI's layout that is late, it is GPUI's *presented* frame: the `CATransaction`
-// carrying `setFrame` lands two presented frames before the Metal surface drawn from the same
-// layout. Holding hosted geometry back N frames subtracts exactly N — depths 0 to 3 at
-// v = 12 pt/frame, depths 0 and 2 confirmed again at v = 24, 55 to 79 samples per cell:
-//
-//     frames held back    0      1      2      3
-//     lead (frames)   +2.00  +1.00   0.00  -1.00
-//
-// So holding geometry back one frame *halves* the lead rather than cancelling it, and two frames
-// is what would cancel the mode. The crate does neither, deliberately. Those same captures show
-// each capture reading either `k` or `k-1` frames depending where in the refresh interval it
-// samples, so the skew is a steady 2 at depth 0 but straddles 0 and one-frame-*behind* at depth 2;
-// and every hosted view's geometry would be two frames stale for every geometry change that is not
-// a constant-velocity scroll — a control appearing, a resize, a jump to a new position. A constant
-// lead during a fling, snapping to exactly 0 the instant scrolling stops, is the better failure.
-//
-// # Why two, and what shortening it costs
-//
-// The two is a **drawable-queue depth**, not a race. GPUI presents asynchronously on the
-// display-link path a scrolling frame takes, so the Metal surface reaching the screen is up to
+// It is not GPUI's layout that is late but its *presented* frame, and the two is a drawable-queue
+// depth rather than a race: the Metal surface reaching the screen is up to
 // `CAMetalLayer.maximumDrawableCount - 1` frames behind the `CATransaction` that carried the same
-// layout's `setFrame`. Setting that property is a one-line, public-API mitigation, and it moves the
-// lead exactly as the queue theory predicts — measured from one binary with `NG_DRAWABLES`, per
-// capture gated on `-l` and `-R` agreeing:
+// layout's `setFrame`. Setting that to 2 halves the lead exactly as the queue theory predicts.
+// 1 is unreachable — Core Animation's floor is 2, and asking for 1 makes `nextDrawable`
+// unsatisfiable and panics GPUI out of its own entity map before the first frame — so one frame of
+// lead is irreducible from here. The crate leaves the property at the default anyway, because two
+// buffers roughly doubles the share of frames over 1.5x the median interval under load: the median
+// stays the display period, the whole cost is in the tail, which is what less slack to absorb a
+// hiccup predicts. Holding hosted geometry back N frames also subtracts exactly N, and is likewise
+// not done: it would leave geometry two frames stale for every change that is *not* a
+// constant-velocity scroll — a control appearing, a resize, a jump.
 //
-//     maximumDrawableCount        3 (CA default)      2
-//     lead (frames)                    2.000       1.000
-//     offset at v = 12 (pt)             -24         -12
-//     offset at v = 24 (pt)             -48         -24
-//
-// It holds with a switch and a slider hosted on every visible row, and rest stays exactly
-// `0.000 pt`. `maximumDrawableCount = 1` is unreachable: Core Animation's floor is 2, and asking
-// for 1 makes `nextDrawable` unsatisfiable and panics GPUI out of its own entity map before the
-// first frame. **One frame of lead is therefore irreducible from here.**
-//
-// The crate does not set it, because under load it costs frame pacing. Interleaved A/B, two reps,
-// same load, alternating so run order cannot masquerade as the effect:
-//
-//     drawables   p95        p99      frames over 1.5x median
-//     2           13.5-15.8  19.5-21.6      5.4-7.8 %
-//     3           10.7-11.5  16.0-18.5      2.3-3.5 %
-//
-// The median interval is the display period in every arm; the cost is entirely in the tail, which
-// is what fewer buffers in flight would predict — less slack to absorb a hiccup. Halving a 12-24 pt
-// scroll-time artefact that is invisible at normal speeds is not worth roughly doubling the
-// long-frame rate, so this is left at Core Animation's default and recorded here instead.
-//
-// One trap worth keeping, because it silently produced a clean-looking wrong answer first: a
-// **window capture of an occluded window reads a re-composite from current `CALayer` state**, which
-// collapses the very gap this rig measures. `-l` is true about content and false about timing. With
-// another app owning the display's Space the same arm read an unstable 0 or 1 frame; moved to a
-// display it was actually scanned out on, `-l` and `-R` agreed to the point. Requiring those two to
-// agree per capture is the gate, and it costs one extra capture.
+// One trap, because it produced a clean-looking wrong answer first: a window capture of an
+// *occluded* window reads a re-composite from current `CALayer` state, which collapses the very gap
+// being measured. `-l` is true about content and false about timing. The gate is requiring `-l` and
+// `-R` to agree per capture, which they do to the point on a display the window is scanned out on.
 
-/// Row pitch. Only every `SKEW_STRIDE`-th row is marked, so marked rows are `44 * 4 = 176 pt`
-/// apart — far more than any plausible skew, which is what keeps pairing a band with its own
-/// hosted view unambiguous instead of aliasing onto the neighbouring row.
+/// Row pitch. Only every `SKEW_STRIDE`-th row is marked, so marked rows sit 176 pt apart — far
+/// more than any plausible skew, so a band can never pair with the neighbouring row's view.
 const SKEW_ROW_H: f32 = 44.;
 const SKEW_STRIDE: usize = 4;
 
@@ -480,16 +389,14 @@ const SKEW_STRIDE: usize = 4;
 const MARK_TOP: f32 = 14.;
 const MARK_W: f32 = 56.;
 const MARK_H: f32 = 8.;
-/// The known-positive fixture's deliberate offset. Must be big enough to be unmistakable and
-/// small enough that it cannot be confused with a neighbouring row.
+/// The fixture's deliberate offset: unmistakable, yet too small to read as a neighbouring row.
 const POSITIVE_SHIFT: f32 = 6.;
 
 const COL_GPUI: f32 = 40.;
 const COL_NATIVE: f32 = 140.;
 const COL_POSITIVE: f32 = 240.;
 const COL_SWITCH: f32 = 340.;
-/// Where the `NG_SKEW_LOAD` controls go: far enough right of the switch column that they form
-/// their own column runs and never merge with a measured one.
+/// `NG_SKEW_LOAD` controls, far enough right of the switch column to form their own column runs.
 const COL_LOAD: f32 = 500.;
 
 /// Deliberately not black: the sub-pixel edge finder projects each pixel onto the
@@ -506,9 +413,8 @@ define_class!(
     ///
     /// Every real control has a bezel, a corner radius or a highlight rim, so its "own edge" is a
     /// judgement call. This has one hard horizontal edge whose only softness is the anti-aliasing
-    /// of its own sub-pixel frame origin — which is exactly the quantity being measured. It is
-    /// placed through the shipped [`NativeHost::place`] path, so it moves when and how a real
-    /// control moves.
+    /// of its own sub-pixel frame origin, which is the quantity being measured. It is placed
+    /// through the shipped [`NativeHost::place`] path, so it moves when a real control moves.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSkewMarker"]
@@ -531,20 +437,18 @@ define_class!(
 
 impl Marker {
     fn new(mtm: MainThreadMarker, rgb: (f64, f64, f64)) -> Retained<Self> {
-        // sRGB, not device RGB: `colorWithRed:` would be a different colour on a P3 display.
+        // sRGB, not device RGB: `colorWithRed:` is a different colour on a P3 display.
         let color = NSColor::colorWithSRGBRed_green_blue_alpha(rgb.0, rgb.1, rgb.2, 1.);
         let this = Self::alloc(mtm).set_ivars(MarkerIvars { color });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         // Its own layer, so a frame change moves a composited layer instead of scheduling a
-        // redraw — which is what an `NSSwitch` does, and keeps redraw scheduling out of the
-        // measurement.
+        // redraw — which is what `NSSwitch` does, keeping redraw scheduling out of the measurement.
         this.setWantsLayer(true);
         this
     }
 }
 
-/// The pool key for a marker. Hand-made rather than derived from element identity, so it needs no
-/// `ElementId` and cannot collide with a component's hashed key.
+/// Pool key for a marker: hand-made, so it cannot collide with a component's hashed key.
 fn skew_key(index: usize, slot: u64) -> u64 {
     0x5CE0_0000_0000_0000u64 | (index as u64) << 4 | slot
 }
@@ -620,13 +524,9 @@ impl IntoElement for NativeMarker {
 }
 
 fn ns_window(window: &Window) -> Retained<NSWindow> {
-    let handle = HasWindowHandle::window_handle(window).expect("gpui window has no native handle");
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        unreachable!("macOS-only example saw a non-AppKit window handle");
-    };
-    let view = unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
-        .expect("gpui ns_view was null");
-    view.window().expect("gpui's view is always in a window")
+    gpui_ns_view(window)
+        .window()
+        .expect("gpui's view is always in a window")
 }
 
 fn gpui_ns_view(window: &Window) -> Retained<NSView> {
@@ -638,9 +538,8 @@ fn gpui_ns_view(window: &Window) -> Retained<NSView> {
         .expect("gpui ns_view was null")
 }
 
-/// The `CAMetalLayer` GPUI presents its drawables through, identified by asking which layer
-/// answers `maximumDrawableCount` rather than by assuming where it sits. Only the view's own
-/// root layer is tested, which is where every measurement has found it.
+/// The `CAMetalLayer` GPUI presents through, identified by asking which layer answers
+/// `maximumDrawableCount` rather than by assuming where it sits.
 fn metal_layer_quiet(view: &NSView) -> Option<Retained<CALayer>> {
     let layer = view.layer()?;
     let responds: bool =
@@ -649,8 +548,7 @@ fn metal_layer_quiet(view: &NSView) -> Option<Retained<CALayer>> {
 }
 
 impl Gallery {
-    /// One frame of the skew rig: advance the scroll offset by exactly the configured velocity,
-    /// then render the marked list.
+    /// One frame of the rig: advance the offset by exactly the configured velocity, then render.
     fn skew_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         use std::io::Write;
 
@@ -660,10 +558,9 @@ impl Gallery {
             self.skew_announced = true;
             let ns = ns_window(window);
             let frame = ns.frame();
-            // `screencapture -R` takes a rect in CoreGraphics space: origin top-left of the
-            // primary display, y down. `NSWindow.frame` is AppKit space: origin bottom-left of
-            // the primary display, y up. Printing the converted rect from inside the app keeps
-            // the region a fact the app states rather than one the harness guesses.
+            // `screencapture -R` takes a CoreGraphics rect (top-left origin, y down) and
+            // `NSWindow.frame` is AppKit space (bottom-left, y up); converting here keeps the
+            // region a fact the app states rather than one the harness guesses.
             let primary = NSScreen::screens(MainThreadMarker::new().expect("main thread"))
                 .firstObject()
                 .expect("there is always a display");
@@ -683,13 +580,6 @@ impl Gallery {
             );
             std::io::stdout().flush().ok();
 
-            // `NG_DRAWABLES` overrides the crate's own `METAL_DRAWABLE_COUNT` so both arms run from
-            // one binary. It is applied on the SECOND announce pass, not here: this block runs
-            // before `native_root` has laid out, so the host has not installed yet and anything
-            // written now would be overwritten by the crate — and a readback taken here reports the
-            // Core Animation default rather than what the window actually runs with. The live value
-            // rides on every tick line instead, which also proves the setting held for the whole
-            // run rather than only at startup.
             println!(
                 "NG-SKEW-DRAWABLES-PENDING requested={:?}",
                 std::env::var("NG_DRAWABLES").ok()
@@ -697,9 +587,8 @@ impl Gallery {
             std::io::stdout().flush().ok();
         }
 
-        // The offset the frame about to be laid out will use, then advance for the next one. Written
-        // straight into the handle `uniform_list` reads, so the velocity is exact rather than the
-        // result of a momentum curve.
+        // Written straight into the handle `uniform_list` reads, so velocity is exact rather than
+        // the result of a momentum curve.
         self.scroll
             .0
             .borrow()
@@ -722,9 +611,10 @@ impl Gallery {
         }
         self.skew_last = Some(now);
 
-        // Applied here rather than in the announce block: by frame 2 `native_root` has installed the
-        // host, so the crate's own `METAL_DRAWABLE_COUNT` is in place and this overrides it. Read
-        // back every tick so the log proves what the window actually ran with.
+        // `NG_DRAWABLES` overrides the crate's own `METAL_DRAWABLE_COUNT` so both arms run from one
+        // binary. Not applied in the announce block: `native_root` has not laid out there, so the
+        // crate would install over it afterwards. Read back every tick to prove what the window ran
+        // with for the whole run rather than only at startup.
         let mut drawables = 0usize;
         if let Some(layer) = metal_layer_quiet(&gpui_ns_view(window)) {
             if self.skew_frames == 2 {
@@ -738,10 +628,8 @@ impl Gallery {
             drawables = unsafe { msg_send![&*layer, maximumDrawableCount] };
         }
 
-        // Every frame, not only at the periodic tick. A lone periodic `false` cannot separate
-        // "never acquired key" from "acquired it and lost it", and those point at different
-        // mechanisms — so first paint and every transition are both printed, and the running count
-        // of keyed frames makes persistence readable rather than inferred.
+        // Every frame, not only at the periodic tick: a lone periodic `false` cannot separate
+        // "never acquired key" from "acquired it and lost it", and those are different mechanisms.
         let key = ns_window(window).isKeyWindow();
         if key {
             self.skew_key_frames += 1;
@@ -759,9 +647,8 @@ impl Gallery {
         }
 
         if self.skew_frames % 120 == 0 {
-            // The long-frame thresholds are multiples of the *observed* median interval rather
-            // than an assumed 8.333 ms, so the count means the same thing on any refresh rate and
-            // cannot be gamed by a display that is not running at 120 Hz.
+            // Thresholds are multiples of the *observed* median rather than an assumed 8.333 ms, so
+            // the count means the same thing on any refresh rate.
             let mut sorted = self.skew_intervals.clone();
             sorted.sort_by(f64::total_cmp);
             let at = |q: f64| -> f64 {
@@ -773,11 +660,9 @@ impl Gallery {
             let median = at(0.5);
             let long = sorted.iter().filter(|ms| **ms > median * 1.5).count();
             let very_long = sorted.iter().filter(|ms| **ms > median * 2.5).count();
-            // Key state rides on the same line as the measurement that could depend on it: an
-            // `NSSwitch` in the ON state renders accent-filled while its window is key and
-            // desaturates when it is not, which moves where a luminance edge finder locks onto its
-            // capsule. `keyed` is the running count of keyed frames, so a reader can tell a run
-            // that held key throughout from one that never had it.
+            // Key state rides on the same line as the measurement that depends on it: an `NSSwitch`
+            // in the ON state renders accent-filled while its window is key and desaturates when it
+            // is not, which moves where a luminance edge finder locks onto its capsule.
             println!(
                 "NG-SKEW-TICK frames={} t={:.3} offset={:.2} pooled={} dq={drawables} key={key} keyed={} \
                  intervals={} p50={:.3}ms p95={:.3}ms p99={:.3}ms max={:.3}ms \
@@ -797,11 +682,9 @@ impl Gallery {
         }
 
         let count = self.rows.len();
-        // The load arm. `NG_SKEW_LOAD=1` gives *every* visible row a real switch and slider, which
-        // is the per-frame cost of the gallery's own list, so the throughput numbers are measured
-        // under load rather than on an almost-empty window. They sit right of every measurement
-        // column and are never measured: at one per row their 44 pt pitch is smaller than the
-        // worst-case skew, so pairing against them would alias onto the neighbouring row.
+        // `NG_SKEW_LOAD=1` gives every visible row a real switch and slider, so throughput is
+        // measured under the gallery's own per-frame cost. Never measured themselves: at one per
+        // row their 44 pt pitch is smaller than the worst-case skew, so pairing would alias.
         let load = std::env::var_os("NG_SKEW_LOAD").is_some_and(|value| value != "0");
         let levels: Vec<f64> = self.rows.iter().map(|row| row.level).collect();
         let list = uniform_list("skew", count, move |range, _, _| {

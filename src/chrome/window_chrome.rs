@@ -1,9 +1,7 @@
-//! The window itself: its corners, its toolbar, its flags, its cursor, and the coordinate recipe
-//! every transient native surface anchors through.
-//!
-//! [`native_rect`] → [`native_window_rect`] → [`native_screen_rect`]. The y-flip happens once,
-//! inside `convertRect:toView:nil`; a hand-rolled `contentHeight - y - h` breaks the moment a
-//! toolbar changes the content height.
+//! The window itself: its corners, toolbar, flags, cursor, and the coordinate recipe every
+//! transient native surface anchors through: [`native_rect`] → [`native_window_rect`] →
+//! [`native_screen_rect`]. The y-flip happens once, inside `convertRect:toView:nil`; a
+//! hand-rolled `contentHeight - y - h` breaks the moment a toolbar changes the content height.
 
 use std::cell::{Cell, RefCell};
 use std::panic::Location;
@@ -39,7 +37,7 @@ use crate::tokens;
 /// The identity function: [`chrome_host`] is flipped, so GPUI's logical top-left points *are*
 /// AppKit points there, and fractional bounds pass through unrounded — only `initWithFrame:`
 /// rounds. This is the rect for `showRelativeToRect:ofView:preferredEdge:`, where a flipped
-/// positioning view makes `NSRectEdge(1)` (MinY) render **above** the rect.
+/// positioning view makes MinY render above it.
 pub fn native_rect(bounds: Bounds<Pixels>) -> NSRect {
     to_rect(bounds)
 }
@@ -62,12 +60,10 @@ pub fn native_screen_rect(host: &NSView, bounds: Bounds<Pixels>) -> NSRect {
     window.convertRectToScreen(native_window_rect(host, bounds))
 }
 
-/// The flipped view that owns this window's chrome: the positioning view for transient surfaces,
-/// and the owner of every [`cursor_region`].
-///
-/// Installed lazily, once per window, as the **bottom** subview of GPUI's Metal view and
-/// autoresized to fill it, so a real hosted control always wins hit-testing. GPUI's own Metal view
-/// is not flipped, so it is not a substitute here.
+/// The flipped view that owns this window's chrome: the positioning view for transient surfaces
+/// and the owner of every [`cursor_region`]. Installed lazily as the **bottom** subview of GPUI's
+/// Metal view and autoresized to fill it, so a real hosted control always wins hit-testing;
+/// GPUI's own Metal view is not flipped, so it is no substitute.
 pub fn chrome_host(window: &Window) -> Retained<NSView> {
     Retained::into_super(chrome(window))
 }
@@ -84,12 +80,11 @@ struct Corner {
     supported: bool,
     system: f64,
     /// `_setCornerRadius: 0` means "system default", not square, and reads back as that default
-    /// (16 on a bare window) rather than 0 — so intent is tracked here, never diffed against a
+    /// (16 on a bare window) rather than 0, so intent is tracked here, never diffed against a
     /// readback.
     written: Option<f64>,
 }
 
-/// Every window-level property we touch, as it was before we touched it.
 struct Baseline {
     has_shadow: bool,
     is_opaque: bool,
@@ -114,8 +109,7 @@ struct ChromeIvars {
 }
 
 define_class!(
-    /// Flipped, event-transparent, claims only what it was asked to claim. One instance per GPUI
-    /// window, holding that window's whole chrome state.
+    /// Flipped, event-transparent, one instance per GPUI window holding its whole chrome state.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGChrome"]
@@ -128,9 +122,8 @@ define_class!(
             true
         }
 
-        /// `hitTest:` arrives in the **superview's** space, so the point has to come back through
-        /// `convertPoint:fromView:` before it can be compared with a claim. Returning `self` is
-        /// what makes AppKit consult this view's cursor rects at all.
+        /// `hitTest:` arrives in the **superview's** space, so the point comes back through
+        /// `convertPoint:fromView:` first. Returning `self` makes AppKit consult its cursor rects.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
@@ -152,8 +145,7 @@ define_class!(
             }
         }
 
-        /// One cursor rect per claim, so AppKit switches between adjacent regions correctly —
-        /// which a single `cursorUpdate:` cannot.
+        /// One rect per claim: `cursorUpdate:` alone cannot switch between adjacent regions.
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
             for claim in self.ivars().claims.borrow().iter() {
@@ -202,8 +194,7 @@ impl ChromeHost {
             .copied()
     }
 
-    /// `InVisibleRect` so AppKit keeps the area in step with resizes and there is no geometry to
-    /// maintain. Installed on the first claim, never removed.
+    /// `InVisibleRect` follows resizes. Installed on the first claim, never removed.
     fn ensure_tracking(&self) {
         let mut slot = self.ivars().tracking.borrow_mut();
         if slot.is_some() {
@@ -308,19 +299,16 @@ fn ns_window_of(window: &Window) -> Retained<NSWindow> {
         .expect("GPUI's view is in its window")
 }
 
-/// Whether this macOS has the private setter [`set_corner_radius`] drives.
-///
-/// Gated rather than sent blind because an ungated `msg_send!` to a missing selector raises
-/// `NSInvalidArgumentException`; when false, [`set_corner_radius`] is a no-op.
+/// Whether this macOS has the private setter [`set_corner_radius`] drives; when false, that call
+/// is a no-op. Gated rather than sent blind: an `msg_send!` to a missing selector raises
+/// `NSInvalidArgumentException`.
 pub fn supports_corner_radius(window: &Window) -> bool {
     chrome(window).ivars().corner.get().supported
 }
 
-/// What the OS would round this window's corners to right now, if nobody overrode it.
-///
-/// Not a constant even for one window: it is half the current [`titlebar_band`], so it changes
-/// when the window grows or loses a toolbar. Re-read while the window is following the system;
-/// after [`set_corner_radius`] writes, this reports the last value seen.
+/// What the OS would round this window's corners to right now, if nobody overrode it. Not a
+/// constant even for one window — it is half the current [`titlebar_band`] — and after
+/// [`set_corner_radius`] writes, this reports the last value seen.
 pub fn system_corner_radius(window: &Window) -> Pixels {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
@@ -344,18 +332,16 @@ pub fn corner_radius(window: &Window) -> Option<Pixels> {
 }
 
 /// Round this window's real corners, so the WindowServer regenerates the drop shadow to match.
-///
 /// Not `layer.cornerRadius`: that leaves the window's own shape square, so the shadow stays square
 /// and `masksToBounds` clips content away.
 ///
-/// `None` follows the OS by sending `_setCornerRadius: 0`, which AppKit reads as *reset to
-/// default*, not as square — so `Some(px(0.))` is folded into `None` and this API cannot make a
-/// square corner. Idempotent against the value last written, never against a readback, so it is
-/// safe to call every frame from `render`.
+/// `None` follows the OS by sending `_setCornerRadius: 0`, which AppKit reads as the
+/// system default rather than square, so `Some(px(0.))` folds into `None` and this cannot make a
+/// square corner. Idempotent against the last value written, never a readback: safe every frame.
 ///
-/// On a transparent window — what [`crate::window_options`] ships — the shadow derives from
-/// content alpha rather than the window frame, so an unpainted band or glass hole reaching a
-/// corner gives a rounded window and a square shadow.
+/// On a transparent window, what [`crate::window_options`] ships, the shadow derives from
+/// content alpha rather than the window frame: an unpainted band or glass hole reaching a corner
+/// gives a rounded window and a square shadow.
 pub fn set_corner_radius(window: &Window, radius: Option<Pixels>) {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
@@ -386,10 +372,9 @@ pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
     Some(px(radius as f32))
 }
 
-/// The two toolbar styles that keep a window looking like a document window.
-///
-/// Both *give* GPUI content rather than taking any: AppKit grows the window frame by the whole new
-/// titlebar height, and GPUI's view autoresizes into the extra space.
+/// The two toolbar styles that keep a window looking like a document window. Both *give* GPUI
+/// content rather than taking any: AppKit grows the window frame by the whole new titlebar height,
+/// and GPUI's view autoresizes into the extra space.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ToolbarStyle {
     Unified,
@@ -407,8 +392,7 @@ impl From<ToolbarStyle> for NSWindowToolbarStyle {
 
 type ToolbarHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// One toolbar item. Symbol items are drawn by AppKit, so they render as genuine macOS 26
-/// liquid-glass affordances.
+/// One toolbar item. Symbol items are drawn by AppKit, so they get genuine liquid-glass treatment.
 #[derive(Clone)]
 pub enum ToolbarItem {
     Symbol {
@@ -498,8 +482,7 @@ define_class!(
     }
 
     impl ToolbarDelegate {
-        /// Deferred into GPUI: an AppKit action can fire while GPUI already holds its `App`
-        /// borrow, and a synchronous update would fail and drop the click permanently.
+        /// Deferred: this can fire while GPUI holds its `App` borrow, which would drop the click.
         #[unsafe(method(ngToolbarAction:))]
         fn action(&self, sender: *mut AnyObject) {
             let ident: Retained<NSString> = unsafe { msg_send![sender, itemIdentifier] };
@@ -522,6 +505,12 @@ define_class!(
     }
 );
 
+fn identifier_array(ids: &[String]) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+    let owned: Vec<Retained<NSString>> = ids.iter().map(|id| NSString::from_str(id)).collect();
+    let refs: Vec<&NSString> = owned.iter().map(|s| &**s).collect();
+    NSArray::from_slice(&refs)
+}
+
 impl ToolbarDelegate {
     fn new(mtm: MainThreadMarker, cx: AsyncWindowContext) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ToolbarIvars {
@@ -532,15 +521,9 @@ impl ToolbarDelegate {
     }
 
     fn identifiers(&self) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-        let owned: Vec<Retained<NSString>> = self
-            .ivars()
-            .items
-            .borrow()
-            .iter()
-            .map(|item| NSString::from_str(&item.identifier()))
-            .collect();
-        let refs: Vec<&NSString> = owned.iter().map(|s| &**s).collect();
-        NSArray::from_slice(&refs)
+        let items = self.ivars().items.borrow();
+        let ids: Vec<String> = items.iter().map(ToolbarItem::identifier).collect();
+        identifier_array(&ids)
     }
 
     /// `None` for a standard spacer: those are AppKit's own items and it builds them itself.
@@ -589,10 +572,10 @@ impl ToolbarDelegate {
 /// Give the window a real macOS toolbar, or take it away. `None` restores the original window
 /// geometry exactly, traffic-light insets included.
 ///
-/// **Mutually exclusive with `TitlebarOptions::traffic_light_position`.** GPUI's
-/// `move_traffic_light()` runs only when that is `Some`, and then hard-sets all three button
-/// frames on open, activation and fullscreen transitions, overwriting the insets AppKit applied
-/// for the toolbar. Nothing warns; the buttons just sit wrong after the next activation.
+/// **Mutually exclusive with `TitlebarOptions::traffic_light_position`.** With that set, GPUI's
+/// `move_traffic_light()` hard-sets all three button frames on open, activation and fullscreen,
+/// overwriting the insets AppKit applied for the toolbar. Nothing warns, the buttons just sit
+/// wrong.
 pub fn set_toolbar(
     window: &mut Window,
     cx: &mut App,
@@ -647,12 +630,7 @@ pub fn set_toolbar(
         return;
     }
 
-    let owned: Vec<Retained<NSString>> = identifiers
-        .iter()
-        .map(|id| NSString::from_str(id))
-        .collect();
-    let refs: Vec<&NSString> = owned.iter().map(|s| &**s).collect();
-    toolbar.setItemIdentifiers(&NSArray::from_slice(&refs));
+    toolbar.setItemIdentifiers(&identifier_array(&identifiers));
 
     ns_window.setToolbarStyle(style.into());
     ns_window.setToolbar(Some(&toolbar));
@@ -660,12 +638,12 @@ pub fn set_toolbar(
     *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
 }
 
-/// How much of the window's height the titlebar and toolbar currently occupy, in points — the
-/// amount to inset GPUI content by so nothing sits under the band.
+/// How much of the window's height the titlebar and toolbar occupy, in points — the amount to
+/// inset GPUI content by so nothing sits under the band.
 ///
-/// The band must come from `contentLayoutRect`. Under `FullSizeContentView`, which is what
-/// [`crate::window_options`]'s `appears_transparent` becomes, the content rect *is* the frame, so
-/// the obvious `frame.height - contentRectForFrameRect(frame).height` reads a constant 0.
+/// Must come from `contentLayoutRect`: under `FullSizeContentView`, which is what
+/// [`crate::window_options`] ships, the content rect *is* the frame, so the obvious
+/// `frame.height - contentRectForFrameRect(frame).height` reads a constant 0.
 pub fn titlebar_band(window: &Window) -> Pixels {
     let ns_window = ns_window_of(window);
     let frame = ns_window.frame();
@@ -718,13 +696,12 @@ pub fn window_level(level: WindowLevel) -> isize {
     unsafe { CGWindowLevelForKey(key) as isize }
 }
 
-/// Every window-level flag this crate touches, in one struct so a caller can read the window's
-/// current state, change one field, and write it back without losing the others.
+/// Every window-level flag this crate touches, in one struct: read it, change one field, write it
+/// back without losing the others. Build a level with [`window_level`].
 ///
 /// Clearing `titled` or setting `full_size_content` shrinks the frame and moves or removes the
 /// traffic lights. `collection` and `level` are the real AppKit types on purpose: modelling their
-/// bits as named bools would silently drop the ones this crate did not think of. Build a level
-/// with [`window_level`].
+/// bits as named bools would silently drop the ones this crate did not think of.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WindowFlags {
     pub has_shadow: bool,
@@ -755,7 +732,7 @@ pub fn window_flags(window: &Window) -> WindowFlags {
         full_size_content: style.contains(NSWindowStyleMask::FullSizeContentView),
         level: ns_window.level(),
         collection: ns_window.collectionBehavior(),
-        appearance: ns_window.appearance().and_then(appearance_of),
+        appearance: ns_window.appearance().map(appearance_of),
     }
 }
 
@@ -822,11 +799,11 @@ fn ns_appearance(appearance: tokens::Appearance) -> Retained<NSAppearance> {
     NSAppearance::appearanceNamed(name).expect("the two base appearances always resolve")
 }
 
-fn appearance_of(appearance: Retained<NSAppearance>) -> Option<tokens::Appearance> {
+fn appearance_of(appearance: Retained<NSAppearance>) -> tokens::Appearance {
     if appearance.name().to_string().contains("Dark") {
-        Some(tokens::Appearance::Dark)
+        tokens::Appearance::Dark
     } else {
-        Some(tokens::Appearance::Light)
+        tokens::Appearance::Light
     }
 }
 
@@ -889,12 +866,11 @@ impl Cursor {
 
 /// Give a GPUI element a real system cursor over its own bounds, wrapping `child` transparently.
 ///
-/// Drives two mechanisms on purpose. An AppKit cursor rect alone loses the race: gpui's
-/// `Window::reset_cursor_style` runs at the end of every drawn frame and sets `Arrow` when no
-/// GPUI element asked for anything, so the region requests the same cursor from GPUI too.
-///
-/// The claim is clipped to the current content mask, so a region inside a scroll container stops
-/// at the container's edge, and it is released when the element stops painting.
+/// Drives two mechanisms on purpose: an AppKit cursor rect alone loses the race, because gpui's
+/// `Window::reset_cursor_style` runs at the end of every drawn frame and sets `Arrow` when no GPUI
+/// element asked for anything. The claim is clipped to the current content mask, so a region
+/// inside a scroll container stops at the container's edge, and it is released when the element
+/// stops painting.
 pub fn cursor_region(
     id: impl Into<ElementId>,
     cursor: Cursor,
@@ -1002,14 +978,12 @@ impl IntoElement for CursorRegion {
     }
 }
 
-/// The selector [`set_corner_radius`] gates on, for a caller that wants to report support without
-/// a `Window` in hand.
+/// The selector [`set_corner_radius`] gates on, for a caller with no `Window` in hand.
 pub fn corner_radius_selector() -> Sel {
     sel!(_setCornerRadius:)
 }
 
-/// The current `NSCursor`'s class name, hot spot and image size, for verifying that a
-/// [`cursor_region`] took effect.
+/// The current `NSCursor`'s class, hot spot and image size, for verifying a [`cursor_region`].
 pub fn current_cursor_description() -> String {
     let cursor = NSCursor::currentCursor();
     let hot = cursor.hotSpot();

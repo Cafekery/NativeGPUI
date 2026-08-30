@@ -1,11 +1,10 @@
 //! `NSVisualEffectView` — the vibrancy materials macOS draws its own chrome with.
 //!
 //! Materials default to [`Layer::Below`], a sibling *underneath* GPUI's Metal view, so GPUI text
-//! and icons composite on top of them. That needs a non-opaque window: see
-//! [`crate::window_options`].
+//! composites on top of them. That needs a non-opaque window: see [`crate::window_options`].
 //!
-//! [`Material`] is the supported surface. [`RawMaterial`] is the whole catalogue, and its
-//! undocumented entries plus the private knob need the `private-api` feature.
+//! [`Material`] is the supported surface; [`RawMaterial`] is the whole catalogue, whose
+//! undocumented entries and the private knob need the `private-api` feature.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,16 +29,15 @@ use super::private_api;
 use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{Layer, NativeHost, element_key};
 
-/// Which macOS surface this is. Semantic rather than a transcription of AppKit's twenty-value
-/// list: the deprecated appearance-based values are gone, and the rest are named for the role a
-/// caller is filling. Reach for [`RawMaterial`] only when none of these is the thing you mean.
+/// Which macOS surface this is, named for the role rather than transcribing AppKit's list.
+/// Reach for [`RawMaterial`] only when none of these is the thing you mean.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Material {
-    /// The whole window's background. `UnderWindowBackground`, deliberately not AppKit's
-    /// same-named `WindowBackground`, which is documented for opaque windows and is opaque.
+    /// The whole window's background. Maps to `UnderWindowBackground`; AppKit's same-named
+    /// `WindowBackground` is opaque.
     WindowBackground,
     /// A source-list or navigation sidebar. macOS 26 draws it identically to
-    /// [`Material::WindowBackground`]; the two stay apart because they are different promises.
+    /// [`Material::WindowBackground`].
     Sidebar,
     /// The window's titlebar band, for an app drawing its own title area.
     Titlebar,
@@ -56,8 +54,7 @@ pub enum Material {
     /// its accent tint on; without it a focused row renders grey.
     Selection,
     /// An elevated content surface: a settings card, a grouped box. Opaque, as are `Sheet` and
-    /// `UnderPageBackground` — a card is meant to be solid. If you wanted blur, you wanted
-    /// [`Material::Popover`].
+    /// `UnderPageBackground`; if you wanted blur you wanted [`Material::Popover`].
     Card,
 }
 
@@ -78,11 +75,8 @@ impl From<Material> for RawMaterial {
 }
 
 /// Every material `NSVisualEffectView` draws, deprecated ones included, for a browser or for the
-/// cases [`Material`]'s nine roles do not cover.
-///
-/// Sweeping every raw value AppKit accepts finds thirteen render classes among the documented
-/// materials and nine more that are undocumented. The undocumented nine are gated: they render
-/// today and they are exactly what an OS update is free to change.
+/// cases [`Material`]'s nine roles do not cover. The undocumented entries are gated behind
+/// `private-api`: they render today and an OS update is free to change them.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum RawMaterial {
     AppearanceBased,
@@ -267,12 +261,9 @@ pub enum Blending {
     #[default]
     BehindWindow,
     /// What is drawn behind this view *inside* the window — on [`Layer::Above`], GPUI's own
-    /// rendered content.
-    ///
-    /// Roughly 3x the per-view cost of [`Blending::BehindWindow`], and it is billed in the
-    /// WindowServer, so a CPU-only measurement will call it free. On [`Layer::Below`] there is
-    /// nothing in the window beneath it and AppKit falls back to the window's backdrop, so it is
-    /// a no-op there.
+    /// rendered content. Costs several times [`Blending::BehindWindow`] and is billed in the
+    /// WindowServer, so a CPU-only measurement will call it free. A no-op on [`Layer::Below`]:
+    /// nothing in the window is beneath it, so AppKit falls back to the window's backdrop.
     WithinWindow,
 }
 
@@ -285,18 +276,17 @@ impl Blending {
     }
 }
 
-/// A real macOS vibrancy surface: [`Styled`] and [`ParentElement`] like `div()`, since a
-/// material is a surface rather than a control and has no size of its own.
+/// A real macOS vibrancy surface: [`Styled`] and [`ParentElement`] like `div()`, with no size of
+/// its own.
 ///
 /// ```ignore
 /// material("sidebar", Material::Sidebar).w(px(180.)).h_full().p_3().child("Library")
 /// material("tip", RawMaterial::ToolTip).w(px(120.)).h(px(28.))
 /// ```
 ///
-/// Children are ordinary GPUI content painted into the Metal view, which on the default
-/// [`Layer::Below`] puts them crisply *over* the material. `.child(..)` and
-/// [`NativeMaterial::layer`]`(Layer::Above)` do not combine: an above-layer material covers
-/// every GPUI pixel in its rect, children and siblings alike.
+/// Children are GPUI content painted into the Metal view, so the default [`Layer::Below`] puts
+/// them crisply *over* the material. They do not combine with
+/// [`NativeMaterial::layer`]`(Layer::Above)`, which covers every GPUI pixel in its rect.
 pub fn material(id: impl Into<ElementId>, material: impl Into<RawMaterial>) -> NativeMaterial {
     NativeMaterial {
         id: id.into(),
@@ -333,8 +323,7 @@ impl NativeMaterial {
         self
     }
 
-    /// AppKit's "the thing on this surface is first responder" look. Which materials change
-    /// under it is Apple's choice; it is what turns the accent tint on for
+    /// AppKit's "first responder is on this surface" look; turns the accent tint on for
     /// [`Material::Selection`].
     pub fn emphasized(mut self, emphasized: bool) -> Self {
         self.emphasized = emphasized;
@@ -355,19 +344,16 @@ impl NativeMaterial {
         self
     }
 
-    /// Let the material flatten when the window stops being key, AppKit's default.
-    ///
-    /// Off here: a non-key `NSVisualEffectView` collapses to a flat fill, and a sidebar that
-    /// goes grey the moment you click another window looks broken. Turn it on for something
-    /// whose whole job is to signal focus.
+    /// Let the material flatten when the window stops being key, AppKit's default. Off here: a
+    /// non-key `NSVisualEffectView` collapses to a flat fill, so a sidebar would go grey the
+    /// moment you click another window. Turn it on for something whose job is to signal focus.
     pub fn dims_when_inactive(mut self, dims: bool) -> Self {
         self.dims_when_inactive = dims;
         self
     }
 
     /// Flatten the material to an opaque dark fill, backdrop and vibrancy gone. The one private
-    /// `NSVisualEffectView` knob that measurably draws; a macOS without it leaves the material
-    /// alone.
+    /// `NSVisualEffectView` knob that draws; a macOS without it leaves the material alone.
     #[cfg(feature = "private-api")]
     pub fn artificial_chameleon(mut self, forced: bool) -> Self {
         self.artificial_chameleon = forced;
@@ -406,8 +392,7 @@ impl Element for NativeMaterial {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        // `fittingSize` is 0x0 for a material, so the caller's style governs both axes. Asked
-        // anyway, per axis, so a future macOS that does have an opinion becomes the default here.
+        // `fittingSize` is 0x0 today; asked per axis so a future macOS with an opinion wins.
         let fitting = fitting_size("NSVisualEffectView", |mtm| {
             NSVisualEffectView::new(mtm).fittingSize()
         });
@@ -500,9 +485,8 @@ impl IntoElement for NativeMaterial {
     }
 }
 
-/// The applied radius is read back off the view's own mask rather than cached beside it, which
-/// is only safe because `maskImage` round-trips faithfully — a property AppKit normalises would
-/// never match its own read-back and would be rewritten every frame.
+/// Reads the applied radius back off the view's own mask, safe only because `maskImage`
+/// round-trips faithfully; a property AppKit normalises would be rewritten every frame.
 fn apply_corner_radius(view: &NSVisualEffectView, radius: f64) {
     let applied = view
         .maskImage()
@@ -517,12 +501,11 @@ fn apply_corner_radius(view: &NSVisualEffectView, radius: f64) {
     }
 }
 
-/// A nine-part resizable rounded-rect mask, the smallest one that can express `radius`.
+/// A nine-part resizable rounded-rect mask, the smallest that can express `radius`.
 ///
-/// `imageWithSize:flipped:drawingHandler:` rather than `lockFocus`, because the handler is re-run
-/// at whatever scale AppKit needs, so the arc is drawn at the display's backing scale instead of
-/// once at 1x and scaled into a stair-step. Cap insets pin the four corners, leaving only the
-/// middle point to stretch, which keeps a 14pt radius 14pt at any size instead of an ellipse.
+/// `drawingHandler:` rather than `lockFocus` because the handler is re-run at whatever scale
+/// AppKit needs, so the arc rasterises at backing scale instead of stair-stepping from 1x. Cap
+/// insets pin the corners so only the middle point stretches, keeping the radius constant.
 fn corner_mask(radius: f64) -> Retained<NSImage> {
     thread_local! {
         static CACHE: RefCell<HashMap<u64, Retained<NSImage>>> = RefCell::new(HashMap::new());
@@ -535,8 +518,7 @@ fn corner_mask(radius: f64) -> Retained<NSImage> {
         let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
             let path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, radius, radius);
-            // Only the alpha channel is read, so the fill colour is arbitrary; what matters is
-            // that the context starts clear, which is what leaves the corners transparent.
+            // Only alpha is read; the clear start is what leaves the corners transparent.
             NSColor::blackColor().setFill();
             path.fill();
             Bool::YES

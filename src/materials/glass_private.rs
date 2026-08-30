@@ -1,9 +1,9 @@
 //! The undocumented `NSGlassEffectView` surface, behind the `private-api` feature.
 //!
 //! Every selector here is resolved at runtime, so a macOS that drops one degrades to the public
-//! behaviour rather than raising. Only knobs measured to move pixels are exposed:
-//! `_adaptiveAppearance`, `_groupIdentifier`, `_useReducedShadowRadius` and `clipsToBounds`
-//! change nothing at any value, and `_vibrantBlendingStyleForSubtree` no longer exists.
+//! behaviour rather than raising. Only knobs measured to move pixels are exposed;
+//! `_adaptiveAppearance`, `_groupIdentifier`, `_useReducedShadowRadius` and `clipsToBounds` draw
+//! nothing at any value.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,16 +17,15 @@ use objc2_foundation::NSString;
 use super::glass::glass_style;
 use super::private_api::{read_isize, read_string, send_isize, send_string};
 
-/// The raw `_variant` the public `style` resolves to, which is how walking back off an explicit
-/// variant is detected: `style` reports Regular for every override, so it cannot tell you.
+/// The raw `_variant` the public `style` resolves to, which is how an override is detected.
 const STYLE_REGULAR: isize = 1;
 const STYLE_CLEAR: isize = 2;
 
-/// The internal recipe the glass draws, one entry per render class that draws distinctly. Named
+/// The internal recipe the glass draws, one entry per render class that draws distinctly, named
 /// by the lowest raw value in its class; raw 1 draws as [`GlassVariant::Automatic`].
 ///
 /// Two are near-invisible over content in the same window: [`GlassVariant::Keyboard`] draws
-/// nothing at all, and [`GlassVariant::Sidebar`] draws only within about 24pt of the panel edge.
+/// nothing, [`GlassVariant::Sidebar`] only within about 24pt of the panel edge.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GlassVariant {
     Automatic,
@@ -240,10 +239,9 @@ impl Private {
             if clear { STYLE_CLEAR } else { STYLE_REGULAR },
             GlassVariant::raw,
         );
-        // `style` and `_variant` are one piece of state and the last write wins, so the variant
-        // is written only when the caller overrode it — writing it unconditionally leaves the
-        // public `clear` dead. The style write is unconditional inside the guard because `style`
-        // reads back as Regular under every override and so cannot report that one is in place.
+        // `style` and `_variant` are one piece of state, last write wins, so the variant is
+        // written only when overridden — unconditionally would leave the public `clear` dead.
+        // `style` reads back as Regular under every override, so it cannot report one is set.
         if read_isize(view, sel!(_variant)) != Some(wanted) {
             view.setStyle(glass_style(clear));
             if let Some(variant) = self.variant {
@@ -256,15 +254,14 @@ impl Private {
             send_string(view, sel!(set_subvariant:), name.as_deref());
         }
 
-        // AppKit switches over `_interactionState` exhaustively: outside 0...2 it traps
-        // uncatchably and takes the process with it, so the clamp backs up the closed enum.
+        // Backs up the closed enum: outside 0...2 `_interactionState` traps uncatchably.
         set_state(
             view,
             sel!(_interactionState),
             sel!(set_interactionState:),
             self.interaction.raw().clamp(0, 2),
         );
-        // Each of these three draws at exactly one measured value and at no other.
+        // Each of these three draws at exactly one value and at no other.
         set_state(
             view,
             sel!(_subduedState),
@@ -293,8 +290,7 @@ impl Private {
     }
 }
 
-/// Push a value only when the view is not already at it: the diff runs every frame, and a
-/// redundant write rebuilds the recipe.
+/// Push a value only when the view is not already at it: a redundant write rebuilds the recipe.
 fn set_state(view: &NSGlassEffectView, getter: Sel, setter: Sel, value: isize) {
     if read_isize(view, getter) != Some(value) {
         send_isize(view, setter, value);

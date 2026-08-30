@@ -12,6 +12,7 @@ use objc2_app_kit::{
     NSControlSize, NSLevelIndicator, NSLevelIndicatorStyle, NSProgressIndicator,
     NSProgressIndicatorStyle,
 };
+use objc2_foundation::NSSize;
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
@@ -110,11 +111,9 @@ impl Element for NativeProgress {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
+        let thickness = bar_thickness(self.control_size);
         let mut style = Style::default();
-        style.size = size(
-            self.width,
-            px(bar_thickness(self.control_size) as f32).into(),
-        );
+        style.size = size(self.width, px(thickness as f32).into());
         (window.request_layout(style, [], cx), ())
     }
 
@@ -208,7 +207,7 @@ impl NativeSpinner {
     }
 }
 
-fn spinner_size(control_size: ControlSize) -> objc2_foundation::NSSize {
+fn spinner_size(control_size: ControlSize) -> NSSize {
     let appkit = NSControlSize::from(control_size);
     fitting_size_keyed("NSProgressIndicator.spinning", appkit.0 as u64, |mtm| {
         let spinner = NSProgressIndicator::new(mtm);
@@ -371,7 +370,7 @@ impl NativeLevel {
     }
 }
 
-fn level_size(style: LevelStyle, min: f64, max: f64) -> objc2_foundation::NSSize {
+fn level_size(style: LevelStyle, min: f64, max: f64) -> NSSize {
     let appkit = style.appkit();
     let mut hash = DefaultHasher::new();
     (appkit.0, min.to_bits(), max.to_bits()).hash(&mut hash);
@@ -468,8 +467,7 @@ impl Element for NativeLevel {
         }
         if level.isEditable() != self.editable {
             level.setEditable(self.editable);
-            // Without continuous, the action only fires on mouse-up and a drag across the stars
-            // does not track.
+            // Without continuous, the action fires only on mouse-up and a drag never tracks.
             level.setContinuous(self.editable);
         }
         if level.isEnabled() != self.enabled {

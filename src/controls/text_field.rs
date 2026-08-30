@@ -294,9 +294,8 @@ impl IntoElement for NativeTextField {
 
 define_class!(
     /// One delegate for every hosted field in the process: `NSTextField` sends its target/action
-    /// on Return only, so per-keystroke change has to come from `controlTextDidChange:`. It
-    /// carries no per-field state — the notification names the control, and [`wire`] already put
-    /// the tag, target and action on it.
+    /// on Return only, so per-keystroke change has to come from `controlTextDidChange:`. The
+    /// notification names the control, so no per-field state is needed.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGFieldDelegate"]

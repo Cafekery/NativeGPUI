@@ -4,13 +4,13 @@
 //! [`NativeHost::key_loop`], so nothing here needs a screenshot or the keyboard. Exits non-zero
 //! naming the first phase whose order is wrong.
 //!
-//! Not a unit test, and it cannot be one: libtest runs every test body on a spawned thread, so
-//! `MainThreadMarker::new()` is `None` there and no `NSView` can honestly be built — and the
-//! observable is AppKit's own array, which a model of it could not have caught.
+//! It cannot be a unit test: libtest runs every test body on a spawned thread, where
+//! `MainThreadMarker::new()` is `None` and no `NSView` can honestly be built — and the observable
+//! is AppKit's own array, which a model of it could not have caught.
 //!
 //! The phases that matter are the ones where paint order is byte-identical between frames and a
-//! view is replaced anyway — a pool key whose view type changed. `place` is called directly with
-//! fixed keys rather than through a component, so the printed arrays read as paint order.
+//! view is replaced anyway. `place` is called directly with fixed keys rather than through a
+//! component, so the printed arrays read as paint order.
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -31,8 +31,8 @@ const MIDDLE: u64 = 102;
 const LAST: u64 = 103;
 
 /// What the middle key's view is this frame. Its pool key and its position in paint order are
-/// identical either way, so changing it is exactly `place_in`'s stale branch: the slot is dropped
-/// and rebuilt under an unchanged key, at an unchanged place in paint order.
+/// identical either way, so changing it is exactly `place_in`'s stale branch: dropped and rebuilt
+/// under an unchanged key, at an unchanged place in paint order.
 #[derive(Copy, Clone, PartialEq)]
 enum Middle {
     Plain,
@@ -95,8 +95,8 @@ fn plain(mtm: MainThreadMarker) -> Retained<NSView> {
 
 impl Render for Probe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The previous phase's `commit` has already run, and this frame has not placed anything
-        // yet, so this is that phase's settled answer.
+        // The previous phase's `commit` has run and this frame has placed nothing yet, so this is
+        // that phase's settled answer.
         if self.phase > 0 {
             let host = NativeHost::get(window, cx);
             self.readings.push(Reading {
@@ -139,7 +139,6 @@ impl Render for Probe {
     }
 }
 
-/// 0 until a phase's order comes back wrong.
 static FAILED: AtomicU8 = AtomicU8::new(0);
 
 fn keys(list: &[u64]) -> String {
@@ -191,10 +190,10 @@ fn main() -> ExitCode {
                         origin: point(px(0.), px(0.)),
                         size: size(px(64.), px(48.)),
                     })),
-                    // Measured: gpui starts its display link only once the window's occlusion
-                    // state reports visible, so `show: false` never renders a single frame. Hence
-                    // a 64x48 corner window and `focus: false`: the smallest thing that gets
-                    // frames, and one that takes the keyboard away from nothing.
+                    // gpui starts its display link only once the window's occlusion state reports
+                    // visible, so `show: false` never renders a frame. Hence a 64x48 corner window
+                    // and `focus: false`: the smallest thing that gets frames, taking the keyboard
+                    // away from nothing.
                     focus: false,
                     ..window_options()
                 },
@@ -225,8 +224,7 @@ fn main() -> ExitCode {
                     break;
                 }
             }
-            // `Application::run` returning exits the process 0 regardless, so the verdict has to
-            // leave from here.
+            // `Application::run` returning exits 0 regardless, so the verdict has to leave here.
             std::process::exit(FAILED.load(Ordering::Relaxed) as i32);
         })
         .detach();

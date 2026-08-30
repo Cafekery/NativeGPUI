@@ -26,9 +26,8 @@ use crate::bridge::host::{Layer, NativeHost, element_key};
 use crate::system::color::to_nscolor;
 
 // No `hitTest:` override, and the obvious one cannot work: `NSGlassEffectView` builds private
-// subviews, so `super`'s `hitTest:` returns one of *those* and the "null if the hit is me" shape
-// [`Container`] uses never fires. None is needed — AppKit walks an unhandled mouse event up the
-// responder chain to GPUI, and hosted controls above the glass are hit-tested before it.
+// subviews, so `super`'s `hitTest:` returns one of *those* and [`Container`]'s "null if the hit
+// is me" shape never fires. Unneeded anyway: AppKit walks unhandled mouse events up to GPUI.
 
 /// [`to_nscolor`] memoized: the tint diff runs every frame, and tints come from a palette.
 fn tint_color(color: Hsla) -> Retained<NSColor> {
@@ -50,10 +49,9 @@ fn tint_color(color: Hsla) -> Retained<NSColor> {
 
 /// The `NSGlassEffectContainerView`s whose GPUI children are painting right now, innermost last.
 ///
-/// GPUI paints a window's tree depth-first on the main thread in one synchronous pass, so a
-/// stack pushed by a container's `paint` and truncated after it is exactly scoped to that
-/// subtree — which is how a [`Glass`] finds its container without the two elements knowing
-/// about each other.
+/// GPUI paints depth-first on the main thread in one synchronous pass, so a stack pushed by a
+/// container's `paint` and truncated after it is exactly scoped to that subtree — which is how
+/// a [`Glass`] finds its container without either element knowing about the other.
 struct OpenContainer {
     content: Retained<NSView>,
     layer: Layer,
@@ -63,18 +61,17 @@ thread_local! {
     static OPEN: RefCell<Vec<OpenContainer>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A panel of macOS 26 liquid glass, frosting the GPUI content painted beneath it.
-///
-/// It fills the box you give it (`div().w(px(220.)).h(px(120.)).child(glass("card"))`) and draws
-/// nothing itself — every pixel is AppKit's.
+/// A panel of macOS 26 liquid glass, frosting the GPUI content painted beneath it. It fills the
+/// box you give it (`div().w(px(220.)).h(px(120.)).child(glass("card"))`) and draws nothing
+/// itself — every pixel is AppKit's.
 ///
 /// Glass samples whatever is beneath it, so over an unpainted region of an opaque window it has
-/// nothing to sample and collapses to a flat fill that still looks like a deliberate frosted
-/// card. A flat GPUI background is enough; genuinely nothing is not.
+/// nothing to sample and collapses to a flat fill. A flat GPUI background is enough; genuinely
+/// nothing is not.
 ///
-/// Anything GPUI paints in this rect is frosted, text included — paint order cannot save you.
-/// For a crisp GPUI label *on* glass, use [`Glass::frosting_desktop`]. Mouse events pass
-/// through to GPUI and to any hosted control the host orders above the panel.
+/// Everything GPUI paints in this rect is frosted, text included; for a crisp GPUI label *on*
+/// glass use [`Glass::frosting_desktop`]. Mouse events pass through to GPUI and to any hosted
+/// control ordered above the panel.
 pub fn glass(id: impl Into<ElementId>) -> Glass {
     Glass {
         id: id.into(),
@@ -105,11 +102,9 @@ impl Glass {
     }
 
     /// Frost the desktop behind the window instead, putting the panel *under* GPUI's Metal view
-    /// so GPUI paints crisply on top of it.
-    ///
-    /// Needs a non-opaque window ([`crate::window_options`]) and a rect your scene leaves
-    /// transparent: GPUI composites over the panel, so an opaque `bg()` anywhere in the rect
-    /// hides the glass entirely. A panel here can never receive input.
+    /// so GPUI paints crisply on top of it. Needs a non-opaque window
+    /// ([`crate::window_options`]) and a rect your scene leaves transparent — an opaque `bg()`
+    /// anywhere in it hides the glass. A panel here can never receive input.
     pub fn frosting_desktop(mut self) -> Self {
         self.layer = Layer::Below;
         self
@@ -120,11 +115,9 @@ impl Glass {
         self
     }
 
-    /// Tint the glass and its resolved backdrop toward a colour.
-    ///
-    /// The alpha is the strength: at 1.0 the glass arrives at the colour and there is no frost
-    /// left in it, so start around 0.3. macOS drops the chroma entirely while the window is not
-    /// key, leaving only the luminance shift, and there is no property to pin that.
+    /// Tint the glass and its resolved backdrop toward a colour. Alpha is the strength: at 1.0
+    /// no frost is left, so start around 0.3. macOS drops the chroma entirely while the window
+    /// is not key, leaving only the luminance shift, and no property pins that.
     pub fn tint(mut self, color: impl Into<Hsla>) -> Self {
         self.tint = Some(color.into());
         self
@@ -146,8 +139,8 @@ impl Glass {
         self
     }
 
-    /// Refine the variant. Inert unless [`GlassVariant::accepts`] it, in which case nothing is
-    /// sent — ask before offering it as a control.
+    /// Refine the variant. Nothing is sent unless [`GlassVariant::accepts`] the pairing, so ask
+    /// before offering it as a control.
     pub fn subvariant(mut self, subvariant: GlassSubvariant) -> Self {
         self.private.subvariant = subvariant;
         self
@@ -239,8 +232,7 @@ impl Element for Glass {
         let mask = window.content_mask().bounds;
         let host = NativeHost::get(window, cx);
 
-        // A member takes its container's ordering: on the other side of GPUI's content from its
-        // container it could not be batched with it anyway.
+        // A member takes its container's ordering; across GPUI's content it could not batch.
         let container = OPEN.with(|open| {
             open.borrow()
                 .last()
@@ -249,9 +241,8 @@ impl Element for Glass {
         let layer = container.as_ref().map_or(self.layer, |&(_, layer)| layer);
         let parent = container.as_ref().map(|(content, _)| &**content);
 
-        // Parentage is set at creation and never changed: `commit` re-adds every slot to its
-        // layer container on any frame where placement order moved, so a later reparent is
-        // silently undone and the batching is lost while everything still looks correct.
+        // Parentage is set at creation only: `commit` re-adds every slot to its layer container
+        // whenever placement order moves, so a later reparent is silently undone.
         let view = host.place_in(key, layer, parent, bounds, mask, |mtm, _| {
             NSGlassEffectView::new(mtm)
         });
@@ -289,14 +280,13 @@ impl IntoElement for Glass {
 /// Batches the [`glass`] panels in its subtree into one glass render pass. Wrap any screen with
 /// more than a handful of them.
 ///
-/// Panels find their container automatically. Being inside the container's `contentView` is
-/// what does the batching — a container view merely present in the hierarchy buys nothing — and
-/// a member inherits the container's ordering. Nothing else about a panel changes.
+/// Panels find their container automatically and inherit its ordering. Being inside the
+/// container's `contentView` is what does the batching — a container view merely present in the
+/// hierarchy buys nothing.
 ///
-/// The container draws nothing, so its hosted view spans the whole window rather than the
-/// element's bounds, which keeps a member's frame meaning the same thing inside it as outside.
-/// For layout it behaves as `div().size_full().flex()`; put an ordinary `div` inside it for gaps
-/// and direction.
+/// The container draws nothing and spans the whole window, so a member's frame means the same
+/// thing inside it as outside. For layout it behaves as `div().size_full().flex()`; put an
+/// ordinary `div` inside for gaps and direction.
 pub fn glass_container(id: impl Into<ElementId>) -> GlassContainer {
     GlassContainer {
         id: id.into(),
@@ -414,15 +404,13 @@ impl Element for GlassContainer {
 
         let view = host.place(key, self.layer, viewport, viewport, |mtm, _| {
             let view = NSGlassEffectContainerView::new(mtm);
-            // `Container` is flipped, so a member clip's frame is GPUI's coordinate space
-            // verbatim — the same thing it means in the host's own layer container.
+            // Flipped, so a member's frame is GPUI's coordinate space verbatim.
             let content = Container::new(mtm, NSRect::ZERO, false);
             view.setContentView(Some(content.as_ref()));
             view
         });
         // Nullable, and re-read from a pooled view whose `setContentView:` ran only on creation.
-        // Members already handle finding no container by painting as standalone panels, so
-        // degrade to that rather than panicking inside a consumer's paint.
+        // Members already degrade to standalone panels, so never panic in a consumer's paint.
         let content = view.contentView();
         if let Some(content) = &content {
             let fill = NSRect::new(
@@ -440,8 +428,7 @@ impl Element for GlassContainer {
             }
         }
 
-        // Truncate rather than pop: a child that pushed and failed to pop cannot leak into a
-        // sibling subtree.
+        // Truncate rather than pop: a child that failed to pop cannot leak into a sibling.
         let depth = OPEN.with(|open| {
             let mut open = open.borrow_mut();
             let depth = open.len();

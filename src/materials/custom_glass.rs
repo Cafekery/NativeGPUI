@@ -3,13 +3,11 @@
 //!
 //! A `CABackdropLayer` samples what is behind it, a signed-distance-field layer renders the
 //! shape, and the `glassBackground` filter reads that field to refract, blur and shade the
-//! sample. [`GlassRecipe`] is that filter's whole live input set: [`glass`](super::glass) is two
-//! points in this space, this is the space.
+//! sample. [`GlassRecipe`] is that filter's whole live input set.
 //!
-//! None of it is public API, so every class and selector is resolved at runtime and a missing one
-//! degrades to a stock `NSGlassEffectView` — a component that renders nothing is worse than one
-//! that renders Apple's approximation of what was asked for. Setting `NATIVE_GPUI_NO_PRIVATE_GLASS`
-//! forces that fallback without a rebuild, for shipping a build that must not touch private API.
+//! None of it is public API, so every class is resolved at runtime and a missing one degrades to
+//! a stock `NSGlassEffectView`. `NATIVE_GPUI_NO_PRIVATE_GLASS` forces that fallback without a
+//! rebuild.
 
 use std::cell::Cell;
 use std::ffi::CStr;
@@ -33,10 +31,8 @@ use crate::bridge::host::{Layer, NativeHost, element_key};
 use crate::system::color::to_nscolor;
 
 /// Inputs the `glassBackground` filter declares and `NSGlassEffectView` writes that this crate
-/// does not expose, because sweeping each one min to max against [`GlassRecipe::regular`] with
-/// every gate in the filter open moved nothing on macOS 26.5, over two unrelated backdrops: the
-/// first five produce byte-identical output, the last three move a single least-significant bit.
-/// Kept so a later OS can be re-checked against the list.
+/// does not expose, because sweeping each one min to max against [`GlassRecipe::regular`] moved
+/// nothing on macOS 26.5. Kept so a later OS can be re-checked against the list.
 pub const INERT_INPUTS: [&str; 8] = [
     "inputBlurOpacity3",
     "inputBlurOpacity4",
@@ -49,18 +45,15 @@ pub const INERT_INPUTS: [&str; 8] = [
 ];
 
 /// Every input of the private glass filter that moves a pixel, plus the three geometry values
-/// that shape the field it reads.
-///
-/// Build one from a preset and override what you want:
+/// that shape the field it reads. Build from a preset and override:
 ///
 /// ```ignore
 /// GlassRecipe { blur_radius: 24., face_saturation: 2.5, ..GlassRecipe::clear() }
 /// ```
 ///
-/// Nothing clamps. The filter renders whatever it is handed, so a value far outside what the
+/// Nothing clamps: the filter renders whatever it is handed, so a value far outside what the
 /// system ships is garbage rather than an error, and the presets are the calibrated end of the
-/// range. A `None` fill means that matrix takes no fill colour, which is not the same as a clear
-/// one.
+/// range. A `None` fill means that matrix takes no fill colour, which is not a clear one.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct GlassRecipe {
     pub corner_radius: f32,
@@ -138,13 +131,10 @@ impl Default for GlassRecipe {
 }
 
 impl GlassRecipe {
-    /// What a stock `NSGlassEffectView` writes into its own filter in a dark appearance, read back
-    /// off the live object.
-    ///
-    /// It must be read off a **key** window. A stock view writes a structurally different recipe
-    /// when its window is not key — bleed, refraction, shadow and tone all switched off, not
-    /// merely reduced — so a readback from an inactive window is a different object, not a dimmer
-    /// one.
+    /// What a stock `NSGlassEffectView` writes into its own filter in a dark appearance, read
+    /// back off the live object — and it must be read off a **key** window: a non-key stock view
+    /// writes a structurally different recipe, with bleed, refraction, shadow and tone switched
+    /// off rather than reduced.
     pub fn regular() -> Self {
         Self {
             corner_radius: 0.,
@@ -201,8 +191,8 @@ impl GlassRecipe {
     }
 
     /// [`GlassRecipe::regular`] as the same view writes it in a light appearance. A stock view
-    /// swaps these the moment its effective appearance changes; a recipe is a fixed design and
-    /// does not, so pick the one your window is.
+    /// swaps these when its effective appearance changes; a recipe is a fixed design, so pick the
+    /// one your window is.
     pub fn regular_light() -> Self {
         Self {
             face_white: 1.03,
@@ -252,8 +242,8 @@ impl GlassRecipe {
         }
     }
 
-    /// A soft droplet: no blur, refraction five times [`GlassRecipe::regular`]'s over a hundred
-    /// points of edge, and a shadow of its own. The far end of the space from the stock styles.
+    /// A soft droplet: no blur, deep refraction over a hundred points of edge, its own shadow.
+    /// The far end of the space from the stock styles.
     pub fn blob() -> Self {
         Self {
             corner_radius: 300.,
@@ -296,13 +286,10 @@ pub fn custom_glass_available() -> bool {
         && private_class(c"CAFilter").is_some()
 }
 
-/// A panel of liquid glass built from [`GlassRecipe`] rather than from one of the two styles
-/// `NSGlassEffectView` offers.
-///
-/// It fills the box you give it and draws nothing itself. Everything true of
-/// [`glass`](super::glass) is true here: it samples what is beneath it, so over a region nothing
-/// paints it collapses to a flat fill, and on [`Layer::Above`] it frosts GPUI's own content, text
-/// included.
+/// A panel of liquid glass built from [`GlassRecipe`] rather than one of the two styles
+/// `NSGlassEffectView` offers. It fills the box you give it and draws nothing itself, and
+/// everything true of [`glass`](super::glass) is true here: it samples what is beneath it, and on
+/// [`Layer::Above`] it frosts GPUI's own content, text included.
 pub fn custom_glass(id: impl Into<ElementId>) -> CustomGlass {
     CustomGlass {
         id: id.into(),
@@ -427,8 +414,8 @@ struct GlassIvars {
     size: Cell<NSSize>,
 }
 
-// The pool sets a hosted view's geometry with `setFrame:`, which AppKit does not implement in
-// terms of `setFrameSize:`, so the layers are fitted from `paint` rather than from an override.
+// The pool sets geometry with `setFrame:`, which AppKit does not implement in terms of
+// `setFrameSize:`, so the layers are fitted from `paint` rather than from an override.
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
@@ -539,8 +526,7 @@ impl Body {
                 element,
             };
         }
-        // Public API, so it is resolved outside the private-API gate: the kill switch is meant
-        // to reach this path, not to disable it too.
+        // Public API, so outside the gate: the kill switch must reach this path, not disable it.
         match AnyClass::get(c"NSGlassEffectView") {
             Some(_) => Self::Stock(NSGlassEffectView::new(mtm)),
             None => Self::Absent,

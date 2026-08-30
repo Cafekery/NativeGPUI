@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, Style, Window, px, size,
+    Length, Pixels, Style, Window, px, relative, size,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -36,19 +36,15 @@ fn measured(
 
 /// A control with no intrinsic extent on an axis reports 0 for it, and that axis is GPUI's.
 fn from_fitting(fitting: NSSize) -> Style {
+    let axis = |reported: f64| -> Length {
+        if reported > 0. {
+            px(reported as f32).into()
+        } else {
+            relative(1.).into()
+        }
+    };
     let mut style = Style::default();
-    style.size = size(
-        if fitting.width > 0. {
-            px(fitting.width as f32).into()
-        } else {
-            gpui::relative(1.).into()
-        },
-        if fitting.height > 0. {
-            px(fitting.height as f32).into()
-        } else {
-            gpui::relative(1.).into()
-        },
-    );
+    style.size = size(axis(fitting.width), axis(fitting.height));
     style
 }
 
@@ -440,19 +436,16 @@ impl ButtonBezel {
 /// Asked of `NSWindow.defaultButtonCell`, not of `keyEquivalent()`: a button just set to `"\r"`
 /// reads that property back as the empty string, so a diff against it would rewrite it forever.
 fn is_default_button(button: &NSButton) -> bool {
-    let Some(cell) = button.cell() else {
-        return false;
-    };
-    let Some(default) = button
+    let default = button
         .window()
-        .and_then(|window| window.defaultButtonCell())
-    else {
-        return false;
-    };
-    std::ptr::eq(
-        Retained::as_ptr(&default).cast::<AnyObject>(),
-        Retained::as_ptr(&cell).cast::<AnyObject>(),
-    )
+        .and_then(|window| window.defaultButtonCell());
+    match (button.cell(), default) {
+        (Some(cell), Some(default)) => std::ptr::eq(
+            Retained::as_ptr(&cell).cast::<AnyObject>(),
+            Retained::as_ptr(&default).cast::<AnyObject>(),
+        ),
+        _ => false,
+    }
 }
 
 pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> NativeButton {
@@ -675,7 +668,7 @@ impl NativeSegmented {
         self
     }
 
-    /// The index to write, or `-1` for "nothing selected".
+    /// `-1` is AppKit's "nothing selected"; 0 would select the first segment.
     fn wanted_selection(&self) -> isize {
         if self.selected < self.segments.len() {
             self.selected as isize

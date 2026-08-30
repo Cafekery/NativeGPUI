@@ -25,6 +25,21 @@ use crate::bridge::host::{
 };
 use crate::system::color::{from_nscolor, to_nscolor};
 
+/// A reader's `None` means the control had nothing to report, so the handler is not called.
+fn forward_some<T: 'static>(
+    user: Option<Rc<dyn Fn(&T, &mut Window, &mut App)>>,
+) -> Option<NativeDispatch> {
+    user.map(|user| {
+        Rc::new(
+            move |value: Box<dyn Any>, window: &mut Window, cx: &mut App| {
+                if let Ok(Some(value)) = value.downcast::<Option<T>>().map(|value| *value) {
+                    user(&value, window, cx);
+                }
+            },
+        ) as NativeDispatch
+    })
+}
+
 /// A real macOS stepper. `value` is the number you own; wire [`NativeStepper::on_change`]. To pair
 /// one with a text field, render both from a single `f64` rather than wiring them to each other.
 pub fn native_stepper(id: impl Into<ElementId>, value: f64) -> NativeStepper {
@@ -316,9 +331,8 @@ impl Element for NativeColorWell {
         if well.supportsAlpha() != self.supports_alpha {
             well.setSupportsAlpha(self.supports_alpha);
         }
-        // Diffed against the value we last pushed, never the live well: only the app changing
-        // `color` is a reason to write, and diffing the live view would push a stale colour back
-        // into a picker the user is still dragging in.
+        // Diffed against the value last pushed, never the live well: only the app changing `color`
+        // is a reason to write, and a stale write would land in a picker the user is dragging in.
         let target = self.color;
         window.with_element_state::<Hsla, _>(
             id.expect("native components always return an ElementId"),
@@ -339,18 +353,7 @@ impl Element for NativeColorWell {
             let color: Retained<NSColor> = unsafe { msg_send![sender, color] };
             Box::new(from_nscolor(&color)) as Box<dyn Any>
         });
-        let dispatch = self.on_change.take().map(|user| {
-            Rc::new(
-                move |value: Box<dyn Any>, window: &mut Window, cx: &mut App| {
-                    if let Ok(color) = value.downcast::<Option<Hsla>>() {
-                        if let Some(color) = *color {
-                            user(&color, window, cx);
-                        }
-                    }
-                },
-            ) as NativeDispatch
-        });
-        host.on_event(key, read, dispatch);
+        host.on_event(key, read, forward_some(self.on_change.take()));
     }
 }
 
@@ -550,22 +553,12 @@ impl Element for NativeDatePicker {
             picker.setEnabled(self.enabled);
         }
 
-        // Not `ValueKind::Number`: the generic `NSControl` value accessors are meaningless on a
-        // date picker, so the reader asks `dateValue` directly.
+        // Not `ValueKind::Number`: `NSControl`'s value accessors mean nothing on a date picker.
         let read: NativeRead = Rc::new(|sender: &AnyObject| {
             let date: Retained<NSDate> = unsafe { msg_send![sender, dateValue] };
-            Box::new(date.timeIntervalSince1970()) as Box<dyn Any>
+            Box::new(Some(date.timeIntervalSince1970())) as Box<dyn Any>
         });
-        let dispatch = self.on_change.take().map(|user| {
-            Rc::new(
-                move |value: Box<dyn Any>, window: &mut Window, cx: &mut App| {
-                    if let Ok(seconds) = value.downcast::<f64>() {
-                        user(&seconds, window, cx);
-                    }
-                },
-            ) as NativeDispatch
-        });
-        host.on_event(key, read, dispatch);
+        host.on_event(key, read, forward_some(self.on_change.take()));
     }
 }
 
@@ -727,18 +720,7 @@ impl Element for NativePathControl {
                 .map(|path| path.to_string());
             Box::new(path) as Box<dyn Any>
         });
-        let dispatch = self.on_click.take().map(|user| {
-            Rc::new(
-                move |value: Box<dyn Any>, window: &mut Window, cx: &mut App| {
-                    if let Ok(path) = value.downcast::<Option<String>>() {
-                        if let Some(path) = *path {
-                            user(&path, window, cx);
-                        }
-                    }
-                },
-            ) as NativeDispatch
-        });
-        host.on_event(key, read, dispatch);
+        host.on_event(key, read, forward_some(self.on_click.take()));
     }
 }
 

@@ -1,10 +1,10 @@
 //! Runtime-gated sends for the undocumented AppKit selectors, behind the `private-api` feature.
 //!
-//! A send resolves its selector and checks the type the runtime declares for it, so a macOS that
-//! drops or retypes one leaves the object at its public behaviour. Both halves are load-bearing:
-//! a missing selector raises `NSInvalidArgumentException`, and an integer sent to a setter that
-//! takes an object segfaults with nothing to catch. Selectors are passed in rather than spelled
-//! here because `msg_send!` needs a literal and gating needs the same value twice.
+//! Each send resolves its selector and checks the type the runtime declares for it, so a macOS
+//! that drops or retypes one leaves the object at its public behaviour. Both halves are
+//! load-bearing: a missing selector raises `NSInvalidArgumentException`, and an integer sent to
+//! a setter that takes an object segfaults with nothing to catch. Selectors are parameters
+//! rather than spelled here because `msg_send!` needs a literal and gating needs the same one.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,10 +22,8 @@ enum Shape {
     ReturnsObject,
 }
 
-/// Whether `selector` exists on `object`'s class with the expected shape.
-///
-/// Memoized: the answer cannot change while the process runs, and `method_copyArgumentType`
-/// allocates on every call — these gates run once per hosted view per frame.
+/// Whether `selector` exists on `object`'s class with the expected shape. Memoized: the answer
+/// cannot change while the process runs, and `method_copyArgumentType` allocates on every call.
 fn gate<T: Message>(object: &T, selector: Sel, shape: Shape) -> bool {
     thread_local! {
         static CACHE: RefCell<HashMap<(usize, Sel, Shape), bool>> = RefCell::new(HashMap::new());

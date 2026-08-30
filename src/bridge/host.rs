@@ -1,9 +1,9 @@
 //! The per-window pool of AppKit views, and the bridge that gets their events into GPUI.
 //!
-//! One [`NativeHost`] exists per GPUI window. It owns two container views — one above GPUI's
-//! Metal view, one below it — and a pool of hosted views keyed by GPUI element identity.
-//! Components call [`NativeHost::place`] during `paint`; [`crate::native_root`] calls
-//! [`NativeHost::commit`] once the whole tree has painted.
+//! One [`NativeHost`] per GPUI window owns two container views — one above GPUI's Metal view, one
+//! below — and a pool of hosted views keyed by GPUI element identity. Components call
+//! [`NativeHost::place`] during `paint`; [`crate::native_root`] calls [`NativeHost::commit`] once
+//! the whole tree has painted.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -25,9 +25,8 @@ use crate::bridge::appkit::{Container, adopt_key_path, gpui_view, rects_equal, t
 
 /// A stable pool key for an element, derived from GPUI's own element identity.
 ///
-/// GPUI already guarantees `GlobalElementId` is unique per element and stable across frames, so
-/// hosted views follow their element through reorders and scrolling without the caller inventing
-/// an id scheme.
+/// `GlobalElementId` is unique per element and stable across frames, so a hosted view follows its
+/// element through reorders and scrolling with no id scheme of our own.
 pub fn element_key(id: Option<&GlobalElementId>) -> u64 {
     let mut hasher = DefaultHasher::new();
     id.expect("native components always return an ElementId")
@@ -47,9 +46,8 @@ pub enum Layer {
     Below,
 }
 
-/// The system control sizes, shared by every hosted control that has a `controlSize`.
-///
-/// Ask for a size rather than a point value: `Small` is whatever macOS currently thinks small is.
+/// The system control sizes, shared by every hosted control that has a `controlSize`. `Small` is
+/// whatever macOS currently thinks small is, which is the point of naming a size and not a value.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum ControlSize {
     Mini,
@@ -88,14 +86,14 @@ pub enum NativeValue {
 /// These are AppKit's generic `NSControl` accessors, and a control is free to mean something else
 /// by them:
 ///
-/// * `integerValue` is `trunc(doubleValue)` on value controls, so on a 0..1 slider it is **0 for
-///   everything the user can reach** except exactly 1.0 — and 0 is also the usual initial value,
-///   so a round-trip test reads 0 → 0 and looks like a control that simply did not move.
+/// * `integerValue` is `trunc(doubleValue)` on a value control, so on a 0..1 slider it is **0 for
+///   everything the user can reach** except exactly 1.0 — and 0 is the usual initial value too, so
+///   a round trip reads 0 → 0 and looks like a control that never moved.
 /// * `integerValue` on `NSPopUpButton` is the cell's state: a constant 1 for every pop-up and 0
 ///   for every pull-down, whichever row is picked. `NSSegmentedControl` is the same shape.
 ///
-/// So [`ValueKind`] is for a control's own scalar value. Anything that is a **selection, an index,
-/// a position, or a non-scalar** must go through [`NativeHost::on_event`] with the real accessor.
+/// So this is for a control's own scalar value; a **selection, index, position or non-scalar** must
+/// go through [`NativeHost::on_event`] with the real accessor.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ValueKind {
     /// Nothing; the action is the event. `NSButton` clicks.
@@ -117,10 +115,9 @@ pub type NativeHandler = Rc<dyn Fn(NativeValue, &mut Window, &mut App)>;
 
 /// Reads a control's value **while the AppKit action is still on the stack**.
 ///
-/// Some AppKit values only exist for the duration of the action call — `NSPathControl`'s
-/// `clickedPathItem` is nil by the time a deferred handler runs, and a menu's clicked item is the
-/// same shape of problem. Handlers must stay deferred (see `Target`), so the read and the
-/// handling are separate stages: read now, hand over later.
+/// Some AppKit values live only for the duration of the action call — `NSPathControl`'s
+/// `clickedPathItem` is nil by the time a deferred handler runs, a menu's clicked item likewise.
+/// Handlers must stay deferred (see `Target`), so read and handling are separate stages.
 pub type NativeRead = Rc<dyn Fn(&AnyObject) -> Box<dyn Any>>;
 
 /// Receives whatever a [`NativeRead`] produced, on a later turn when GPUI is not borrowed.
@@ -184,8 +181,8 @@ pub struct TargetIvars {
 define_class!(
     /// The single target/action sink for every control in one window.
     ///
-    /// `setTarget:` is a *weak* reference, so this object must outlive every control that points
-    /// at it — [`HostState`] retains it for the window's lifetime.
+    /// `setTarget:` is a *weak* reference, so this must outlive every control pointing at it —
+    /// [`HostState`] retains it for the window's lifetime.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGTarget"]
@@ -201,14 +198,12 @@ define_class!(
                 return;
             };
 
-            // Read NOW, while the action is on the stack: transient AppKit values do not survive
-            // to the deferred handler.
+            // Read now: transient AppKit values do not survive to the deferred handler.
             let value = read(unsafe { &*sender });
 
-            // Hand over LATER, deferred rather than synchronous. An AppKit action can fire while
-            // GPUI already holds its `App` borrow — any programmatic `performClick` reached from a
-            // listener does this — and a synchronous update then fails and drops the event
-            // permanently.
+            // Deferred, never synchronous. An AppKit action can fire while GPUI already
+            // holds its `App` borrow — any programmatic `performClick` reached from a listener
+            // does — and a synchronous update then fails and drops the event permanently.
             ivars
                 .cx
                 .spawn(async move |cx| {
@@ -247,16 +242,15 @@ define_class!(
     /// The one member of the key view loop that is not a hosted control: the boundary Tab leaves
     /// AppKit through.
     ///
-    /// It exists because GPUI's own view declines the job. Loop membership is `canBecomeKeyView`,
-    /// and GPUI's view never overrides `acceptsFirstResponder`, so `NSView`'s default false makes
-    /// it permanently invisible to Tab — measured false on the very view `makeFirstResponder:`
-    /// then focuses successfully, because `makeFirstResponder:` does not consult
-    /// `acceptsFirstResponder` at all. Pointing `nextKeyView` straight at GPUI's view therefore
-    /// writes a link every walk steps over, and the loop quietly closes into a ring of hosted
-    /// views the keyboard can never leave.
+    /// GPUI's own view declines the job. Loop membership is `canBecomeKeyView`, and GPUI's view
+    /// never overrides `acceptsFirstResponder`, so `NSView`'s default false makes it permanently
+    /// invisible to Tab — false even on the view `makeFirstResponder:` then focuses successfully,
+    /// because `makeFirstResponder:` does not consult `acceptsFirstResponder` at all. So pointing
+    /// `nextKeyView` at GPUI's view writes a link every walk steps over, closing the loop into a
+    /// ring of hosted views the keyboard can never leave.
     ///
-    /// Zero-sized rather than hidden, because hiding a view disqualifies it from the loop, while
-    /// an empty frame contains no point and so takes no mouse.
+    /// Zero-sized rather than hidden: hiding disqualifies a view from the loop, while an empty
+    /// frame contains no point and so takes no mouse.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGKeyViewTerminus"]
@@ -271,9 +265,9 @@ define_class!(
 
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> bool {
-            // Deferred by one turn, not done here: `makeFirstResponder:` assigns the window's
-            // first responder *after* `becomeFirstResponder` returns, so a nested call is
-            // overwritten by the call that made it and focus lands on this view instead.
+            // Deferred one turn: `makeFirstResponder:` assigns the window's first responder *after*
+            // `becomeFirstResponder` returns, so a nested call is overwritten by the call that made
+            // it and focus lands here instead.
             unsafe {
                 let _: () = msg_send![
                     self,
@@ -313,17 +307,15 @@ impl Terminus {
 }
 
 struct Slot {
-    /// Clip wrapper: frame is the visible part of the element, `clipsToBounds` on. Gives correct
-    /// partial clipping at a scroll container's edges, and clips hit-testing with it.
+    /// Clip wrapper: frame is the visible part of the element, `clipsToBounds` on, so partial
+    /// clipping at a scroll container's edge clips hit-testing with it.
     clip: Retained<Container>,
     view: Retained<NSView>,
     /// `Retained<V>` for the component's concrete class, so reuse is type-checked.
     typed: Box<dyn Any>,
     layer: Layer,
-    /// Where the clip wrapper is parented, when a component has adopted it out of the layer
-    /// container — a glass panel inside an `NSGlassEffectContainerView`, for instance. `None` means
-    /// the layer container. Stored so `commit`'s reorder pass preserves the adoption instead of
-    /// pulling the view back out.
+    /// Set when a component adopted the clip out of the layer container — a glass panel inside an
+    /// `NSGlassEffectContainerView`. Stored so `commit`'s reorder pass preserves that adoption.
     parent: Option<Retained<NSView>>,
     clip_frame: NSRect,
     view_frame: NSRect,
@@ -335,8 +327,7 @@ struct HostState {
     mtm: MainThreadMarker,
     above: Retained<Container>,
     below: Retained<Container>,
-    /// Both ends of the key view loop: the hosted views chain into it, and it chains back into the
-    /// first of them, so Tab and shift-Tab both leave the hosted run through GPUI.
+    /// Both ends of the key view loop; `commit` closes the ring through it.
     terminus: Retained<Terminus>,
     target: Retained<Target>,
     dispatch: Rc<Dispatch>,
@@ -380,8 +371,7 @@ impl NativeHost {
         let parent = gpui_view(window);
         let frame = parent.bounds();
 
-        // Hosting a control inside GPUI's view is not enough for the keyboard to reach it: this is
-        // what puts GPUI's own view back into AppKit's key-handling path for the hosted subtree.
+        // Hosting a control is not enough for the keyboard to reach it; see `adopt_key_path`.
         adopt_key_path(&parent);
 
         let above = Container::new(mtm, frame, false);
@@ -400,14 +390,11 @@ impl NativeHost {
         let terminus = Terminus::new(mtm, parent.clone());
         above.addSubview(&terminus);
 
-        // Pinned off, because with it on the window will rederive the whole loop on any hierarchy
-        // change and overwrite what `commit` wrote — and the derivation is over AppKit's own view
-        // tree, not over the views placed here. Measured with it on: a hosted field's next key view
-        // came back as an `_NSCoreHostingView` *inside that same field*, and its previous key view
-        // as the field's own clip container, which cannot become a key view. It still tabs between
-        // two stacked fields, so it looks like it works; what it cannot do is end the loop, since
-        // GPUI's view is not eligible (see [`Terminus`]) and the walk therefore wraps back into the
-        // hosted views forever.
+        // Pinned off: with it on the window will rederive the whole loop on any hierarchy change,
+        // overwriting what `commit` wrote, and it derives over AppKit's own view tree — a hosted
+        // field's next key view comes back as an `_NSCoreHostingView` inside that same field. It
+        // still tabs between two stacked fields, so it looks like it works; what it cannot do is
+        // end the loop, since GPUI's view is not eligible (see [`Terminus`]) and the walk wraps.
         if let Some(ns_window) = parent.window() {
             ns_window.setAutorecalculatesKeyViewLoop(false);
         }
@@ -429,9 +416,8 @@ impl NativeHost {
 
     /// How many AppKit views the pool currently holds.
     ///
-    /// This is the observable that proves pooling works: GPUI only paints what is visible, so a
-    /// scrolling list of 400 rows with a control each keeps this in the tens, not the hundreds. It
-    /// is also the cheapest way to catch a component that leaks a view per frame.
+    /// The observable that proves pooling works — a 400-row list with a control each keeps this in
+    /// the tens — and the cheapest way to catch a component that leaks a view per frame.
     pub fn len(&self) -> usize {
         self.0.borrow().slots.len()
     }
@@ -443,10 +429,9 @@ impl NativeHost {
 
     /// The pool keys of the views `layer`'s container is stacking, back to front.
     ///
-    /// This is the observable that proves z-order, and it has to come from AppKit: the pool's own
-    /// `order` records what *should* be on screen, and the whole class of bug here is the two
-    /// disagreeing. Views a component adopted into a parent of its own are not in the layer
-    /// container and so are not listed.
+    /// The observable that proves z-order, and it has to come from AppKit: the pool's own `order`
+    /// records what *should* be on screen and the whole class of bug here is the two disagreeing.
+    /// Views a component adopted into a parent of its own are not in the layer container.
     pub fn stacking(&self, layer: Layer) -> Vec<u64> {
         let state = self.0.borrow();
         let container: &NSView = match layer {
@@ -467,9 +452,9 @@ impl NativeHost {
 
     /// The pool keys in the order the key view loop actually visits them, walked from the terminus.
     ///
-    /// The companion to [`NativeHost::stacking`] for the other cache of paint order, and read the
-    /// same way: from AppKit's `nextKeyView` links rather than from what the pool believes it
-    /// wrote. A view whose link was never rewritten drops out of the Tab run silently.
+    /// [`NativeHost::stacking`]'s companion for the other cache of paint order, read the same way:
+    /// from AppKit's `nextKeyView` links, not from what the pool believes it wrote. A view whose
+    /// link was never rewritten drops out of the Tab run silently.
     pub fn key_loop(&self) -> Vec<u64> {
         let state = self.0.borrow();
         let start: &NSView = &state.terminus;
@@ -493,19 +478,18 @@ impl NativeHost {
 
     /// Reserve `key`'s hosted view for this frame and return it, creating it on first sight.
     ///
-    /// `bounds` is the element's layout, `mask` the GPUI content mask it must be clipped to;
-    /// both are logical points from the top-left of the window's content view, which is exactly
-    /// the coordinate space the containers use. Geometry is written only when it changed — that
-    /// diff is the single biggest performance lever in this crate.
+    /// `bounds` is the element's layout and `mask` the GPUI content mask it is clipped to, both in
+    /// logical points from the top-left of the content view — the containers' own space. Geometry
+    /// is written only when it changed, the single biggest performance lever in this crate.
     ///
-    /// The diff compares against the rect this host last *set*, never against `view.frame()`.
-    /// One objc call per view per frame cheaper, and immune by construction to a control that
-    /// normalises what you hand it — `NSSlider` rounds its frame origin in `initWithFrame:`, so a
-    /// read-back diff disagrees with its own intent once per slider before settling. Components
-    /// must follow the same rule for any property AppKit normalises or owns, and there the
-    /// consequence is not cosmetic: `NSButton.keyEquivalent` set to `"\r"` reads back as the empty
-    /// string forever, so a read-back diff rewrites it every frame. Compare against your own last
-    /// intent, or ask the object that owns the fact.
+    /// That diff compares against the rect this host last *set*, never against `view.frame()`: one
+    /// objc call per view per frame cheaper, and immune to a control that normalises what you hand
+    /// it. `NSSlider` rounds its frame origin in `initWithFrame:`, so a read-back diff disagrees
+    /// with its own intent once per slider before settling. Components owe the same rule to any
+    /// property AppKit normalises or owns, where the cost is worse than cosmetic:
+    /// `NSButton.keyEquivalent` set to `"\r"` reads back as the empty string forever, so a
+    /// read-back diff rewrites it every frame. Compare against your own last intent, or ask the
+    /// object that owns the fact.
     pub fn place<V: Message + AsRef<NSView> + 'static>(
         &self,
         key: u64,
@@ -519,10 +503,10 @@ impl NativeHost {
 
     /// [`NativeHost::place`], but parented somewhere other than the layer container.
     ///
-    /// For a component that nests hosted views inside another AppKit view — glass panels inside an
-    /// `NSGlassEffectContainerView`'s `contentView`, which is what takes 400 panels from 18 fps to
-    /// 120 — pass that view as `parent`. Stating it here rather than re-parenting after the fact is
-    /// what keeps `commit`'s reorder pass from undoing it.
+    /// For a component nesting hosted views inside another AppKit view — glass panels inside an
+    /// `NSGlassEffectContainerView`'s `contentView` — pass that view as `parent`. Stating it here
+    /// rather than re-parenting afterwards is what keeps `commit`'s reorder pass from undoing it,
+    /// and what lets the container batch — 400 glass panels go from 18 fps to 120.
     pub fn place_in<V: Message + AsRef<NSView> + 'static>(
         &self,
         key: u64,
@@ -544,8 +528,8 @@ impl NativeHost {
         );
         let hidden = visible.size.width <= px(0.) || visible.size.height <= px(0.);
 
-        // One lookup answers two questions: whether this key's view has to be rebuilt, and whether
-        // a view is about to be created — which is what both of `commit`'s caches key off.
+        // One lookup, two questions: whether this key's view must be rebuilt, and whether a view is
+        // about to be created — which is what both of `commit`'s caches key off.
         let creating = match state.slots.get(&key) {
             None => true,
             Some(slot) => {
@@ -625,24 +609,24 @@ impl NativeHost {
 
     /// Register (or clear) a handler with a custom fire-time reader.
     ///
-    /// Use this whenever the value is not one of [`ValueKind`]'s five, or is only valid while the
-    /// AppKit action is on the stack — a clicked path item, a clicked menu item, an `NSColor`, an
-    /// `NSDate`, a selection index. `read` runs synchronously inside the action; the handler still
-    /// runs deferred, because GPUI may hold its `App` borrow at fire time.
+    /// Use this when the value is not one of [`ValueKind`]'s five, or is only valid while the
+    /// AppKit action is on the stack — a clicked path item or menu item, an `NSColor`, an `NSDate`,
+    /// a selection index. `read` runs synchronously inside the action; the handler still runs
+    /// deferred, because GPUI may hold its `App` borrow at fire time.
     ///
-    /// Reading in the handler instead is not a safe alternative: a repaint can land between the
-    /// action and the handler, and `paint` will have pushed the app's stale value back into the
-    /// control, so the handler reads the value it just clobbered.
+    /// Reading in the handler instead is not safe: a repaint can land between action and handler,
+    /// and `paint` will have pushed the app's stale value back into the control, so the handler
+    /// reads the value it just clobbered.
     pub fn on_event(&self, key: u64, read: NativeRead, handler: Option<NativeDispatch>) {
         self.on_event_channel(key, key, read, handler);
     }
 
     /// [`NativeHost::on_event`] for a control with more than one event channel.
     ///
-    /// A text field needs two: per-keystroke change from its delegate, and submit from its action.
-    /// Register the extra channel under a distinct `tag` (which the control must report from
-    /// `-tag` when it fires that channel) but the same `owner` — the pool key — so the entry is
-    /// retired with the view instead of leaking when the control goes away.
+    /// A text field needs two: per-keystroke change from its delegate, submit from its action.
+    /// Register the extra channel under a distinct `tag` (which the control must report from `-tag`
+    /// when it fires that channel) but the same `owner` — the pool key — so the entry is retired
+    /// with the view instead of leaking when the control goes away.
     pub fn on_event_channel(
         &self,
         owner: u64,
@@ -684,14 +668,12 @@ impl NativeHost {
         }
 
         // Both passes below cache paint order, so both go stale on the same two events and share
-        // one predicate. The order diff is the obvious event. The other is `place_in`'s stale
-        // branch, where a component swapping a key's layer, type or parent gets a brand new view
-        // under the same pool key at the same place in paint order, so `order` comes out
-        // byte-identical while the view changed. Adding a subview appends it, so a rebuilt clip
-        // lands topmost in its container rather than at its paint position, and the key view link
-        // that pointed at the view it replaced now points at a view no longer in the tree.
-        // Measured with the order diff alone: 101, 102, 103 placed, then 102's type swapped,
-        // stacked 101 103 102 and left a key loop that stopped dead at 101.
+        // one predicate. The order diff is the obvious one. The other is `place_in`'s rebuild
+        // branch: a component swapping a key's layer, type or parent gets a brand new view under
+        // the same pool key at the same place in paint order, so `order` comes out byte-identical
+        // while the view changed. Adding a subview appends it rather than restacking it, so a
+        // rebuilt clip lands topmost in its container instead of at its paint position, and the
+        // key view link that pointed at the view it replaced now points at one that is gone.
         let restack = std::mem::take(&mut state.recreated) || state.order != state.last_order;
 
         if restack {
@@ -714,19 +696,14 @@ impl NativeHost {
             }
         }
 
-        // Tab order is GPUI's element order, because that is what a reader perceives as
-        // first-to-last, and it survives the pool reordering views between frames where a
-        // geometric derivation cannot — see the note on `setAutorecalculatesKeyViewLoop` above for
-        // what AppKit builds when asked to work it out itself.
+        // Tab order is GPUI's element order: it survives the pool reordering views between frames
+        // where a geometric derivation cannot — see `setAutorecalculatesKeyViewLoop` above for what
+        // AppKit builds when asked to work it out itself.
         //
-        // The ring runs terminus -> first hosted -> ... -> last hosted -> terminus, which puts
-        // [`Terminus`] on both sides of the hosted run at once: Tab off the last view reaches it
-        // going forward, shift-Tab off the first reaches it going back, and either way the
-        // keyboard is handed to GPUI. Closing the ring among the hosted views instead would trap
-        // it in whatever subset of the window happens to be AppKit.
-        //
-        // Only the visible views are in it, because only visible elements are placed — a hosted
-        // control scrolled out of a `uniform_list` has no view for Tab to reach.
+        // The ring runs terminus -> first hosted -> ... -> last hosted -> terminus, putting
+        // [`Terminus`] on both sides of the hosted run: Tab off the last view reaches it going
+        // forward, shift-Tab off the first going back, and either way the keyboard goes to GPUI.
+        // Closing the ring among the hosted views would trap the keyboard inside them.
         if restack {
             let start: &NSView = &state.terminus;
             let mut previous = start;
@@ -820,8 +797,7 @@ mod tests {
 
     #[test]
     fn fractional_bounds_survive_intersection() {
-        // GPUI lays out on a half-point grid and hosted frames are stored faithfully, so the
-        // clip must not round.
+        // GPUI lays out on a half-point grid, so the clip must not round.
         let clipped = clamped_intersection(bounds(10.5, 0., 20.25, 8.), bounds(0., 0., 100., 100.));
         assert_eq!(clipped, bounds(10.5, 0., 20.25, 8.));
     }
