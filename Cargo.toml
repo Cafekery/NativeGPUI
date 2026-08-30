@@ -1,0 +1,43 @@
+[package]
+name = "native-gpui"
+version = "0.1.0"
+edition = "2021"
+description = "Real AppKit controls, materials and macOS 26 liquid glass hosted inside a GPUI window"
+license = "MIT"
+publish = false
+
+[lib]
+name = "native_gpui"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Undocumented material values and private AppKit selectors. Off by default: the semantic
+# `Material` set and the public glass API are the supported surface.
+private-api = []
+
+[dependencies]
+gpui = "0.2.2"
+image = "0.25"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+
+[[example]]
+name = "custom_glass"
+path = "examples/custom_glass.rs"
+required-features = ["private-api"]
+
+[[example]]
+name = "glass_variants"
+path = "examples/glass_variants.rs"
+required-features = ["private-api"]
+
+[profile.release]
+lto = "thin"
