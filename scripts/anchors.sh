@@ -44,6 +44,7 @@ anchors() {
   check 'gpui.s key-equivalent walk skips hosted views'    "never descends"
   check 'gpui.s keyDown: does not forward up the chain'    "dies one link short"
   check 'only the ancestor chain differs for a switch'     "identical either way"
+  check 'a rebuilt clip is appended, not restacked'        "lands topmost in its container"
   return $fail
 }
 

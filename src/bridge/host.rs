@@ -341,14 +341,13 @@ struct HostState {
     target: Retained<Target>,
     dispatch: Rc<Dispatch>,
     slots: HashMap<u64, Slot>,
-    /// Placement order this frame, and last frame's, so subview z-order is only rewritten when
-    /// the order actually changed.
+    /// Placement order this frame, and last frame's, so both of `commit`'s caches of paint order
+    /// are rewritten only when it changed.
     order: Vec<u64>,
     last_order: Vec<u64>,
-    /// Set when a slot was created, which is the one way the key view loop can be wrong while
-    /// `order` is unchanged: a component that swaps a key's layer, type or parent gets a brand new
-    /// view under the same pool key and the same position in paint order.
-    chain_dirty: bool,
+    /// Set when a slot was created, which is the one way those caches can be wrong while `order`
+    /// is unchanged — see `commit`.
+    recreated: bool,
     generation: u64,
 }
 
@@ -423,7 +422,7 @@ impl NativeHost {
             slots: HashMap::new(),
             order: Vec::new(),
             last_order: Vec::new(),
-            chain_dirty: false,
+            recreated: false,
             generation: 1,
         })))
     }
@@ -440,6 +439,56 @@ impl NativeHost {
     /// Whether the pool is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The pool keys of the views `layer`'s container is stacking, back to front.
+    ///
+    /// This is the observable that proves z-order, and it has to come from AppKit: the pool's own
+    /// `order` records what *should* be on screen, and the whole class of bug here is the two
+    /// disagreeing. Views a component adopted into a parent of its own are not in the layer
+    /// container and so are not listed.
+    pub fn stacking(&self, layer: Layer) -> Vec<u64> {
+        let state = self.0.borrow();
+        let container: &NSView = match layer {
+            Layer::Above => &state.above,
+            Layer::Below => &state.below,
+        };
+        let subviews = container.subviews();
+        (0..subviews.count())
+            .filter_map(|index| {
+                let subview = Retained::as_ptr(&subviews.objectAtIndex(index));
+                state.slots.iter().find_map(|(key, slot)| {
+                    let clip = Retained::as_ptr(&slot.clip).cast::<NSView>();
+                    (clip == subview).then_some(*key)
+                })
+            })
+            .collect()
+    }
+
+    /// The pool keys in the order the key view loop actually visits them, walked from the terminus.
+    ///
+    /// The companion to [`NativeHost::stacking`] for the other cache of paint order, and read the
+    /// same way: from AppKit's `nextKeyView` links rather than from what the pool believes it
+    /// wrote. A view whose link was never rewritten drops out of the Tab run silently.
+    pub fn key_loop(&self) -> Vec<u64> {
+        let state = self.0.borrow();
+        let start: &NSView = &state.terminus;
+        let mut keys = Vec::new();
+        let mut view = unsafe { start.nextKeyView() };
+        while let Some(current) = view {
+            if std::ptr::eq(&*current, start) || keys.len() > state.slots.len() {
+                break;
+            }
+            let found = state.slots.iter().find_map(|(key, slot)| {
+                (Retained::as_ptr(&slot.view) == Retained::as_ptr(&current)).then_some(*key)
+            });
+            match found {
+                Some(key) => keys.push(key),
+                None => break,
+            }
+            view = unsafe { current.nextKeyView() };
+        }
+        keys
     }
 
     /// Reserve `key`'s hosted view for this frame and return it, creating it on first sight.
@@ -496,7 +545,7 @@ impl NativeHost {
         let hidden = visible.size.width <= px(0.) || visible.size.height <= px(0.);
 
         // One lookup answers two questions: whether this key's view has to be rebuilt, and whether
-        // a view is about to be created — which is what the key view loop keys off.
+        // a view is about to be created — which is what both of `commit`'s caches key off.
         let creating = match state.slots.get(&key) {
             None => true,
             Some(slot) => {
@@ -509,7 +558,7 @@ impl NativeHost {
             if let Some(slot) = state.slots.remove(&key) {
                 slot.clip.removeFromSuperview();
             }
-            state.chain_dirty = true;
+            state.recreated = true;
         }
 
         let slot = state.slots.entry(key).or_insert_with(|| {
@@ -634,10 +683,18 @@ impl NativeHost {
                 .retain(|_, entry| !retired.contains(&entry.owner));
         }
 
-        let reordered = state.order != state.last_order;
-        let chain_dirty = std::mem::take(&mut state.chain_dirty);
+        // Both passes below cache paint order, so both go stale on the same two events and share
+        // one predicate. The order diff is the obvious event. The other is `place_in`'s stale
+        // branch, where a component swapping a key's layer, type or parent gets a brand new view
+        // under the same pool key at the same place in paint order, so `order` comes out
+        // byte-identical while the view changed. Adding a subview appends it, so a rebuilt clip
+        // lands topmost in its container rather than at its paint position, and the key view link
+        // that pointed at the view it replaced now points at a view no longer in the tree.
+        // Measured with the order diff alone: 101, 102, 103 placed, then 102's type swapped,
+        // stacked 101 103 102 and left a key loop that stopped dead at 101.
+        let restack = std::mem::take(&mut state.recreated) || state.order != state.last_order;
 
-        if reordered {
+        if restack {
             for key in &state.order {
                 let Some(slot) = state.slots.get(key) else {
                     continue;
@@ -670,10 +727,7 @@ impl NativeHost {
         //
         // Only the visible views are in it, because only visible elements are placed — a hosted
         // control scrolled out of a `uniform_list` has no view for Tab to reach.
-        //
-        // `chain_dirty` is separate from the order diff above and both are needed: the order diff
-        // misses a view replaced in place, and `chain_dirty` alone misses a pure reorder.
-        if chain_dirty || reordered {
+        if restack {
             let start: &NSView = &state.terminus;
             let mut previous = start;
             for key in &state.order {

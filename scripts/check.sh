@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Everything that must hold before the tree is called clean. Compiles nothing that runs, so it is
-# safe to run while someone else is driving the display.
+# Everything that must hold before the tree is called clean. The one thing it runs, `z_order`,
+# opens a 64x48 unfocused corner window for a fraction of a second and reads its verdict out of
+# AppKit, so it takes no keyboard focus and captures no pixels: still safe to run while someone
+# else is driving the display.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -35,6 +37,9 @@ formatting() {
 }
 step 'formatting'                   formatting
 step 'unit tests'                   cargo test --release --lib
+# Reads container subview order and the key view loop out of AppKit after a slot is rebuilt under
+# an unchanged pool key, which is the one stale case a paint-order diff cannot see by itself.
+step 'z-order holds paint order'    cargo run --release --example z_order
 
 # Warnings do not fail a cargo build, so the zero-warning state would otherwise rot silently.
 # Scoped to this crate's own files: a lint added by a future toolchain shows up as a named file
