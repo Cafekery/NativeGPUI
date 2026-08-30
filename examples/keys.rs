@@ -1096,6 +1096,18 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let state = suite.probe_bare_field(cx, "kp:arrow-left", "gpui").await;
     suite.note("probe.bare_field_gpui_view", state);
 
+    // Home and End in a window this suite fully controls, so the caret rows below have something
+    // to be measured against. Measured: a plain `NSWindow`'s field editor answers Home with
+    // `scrollToBeginningOfDocument:` and End with `scrollToEndOfDocument:`, neither of which moves
+    // the insertion point in a single-line editor — the caret stays where it was armed.
+    for (name, tool) in [
+        ("probe.bare_field_plain_home", "kp:home"),
+        ("probe.bare_field_plain_end", "kp:end"),
+    ] {
+        let state = suite.probe_bare_field(cx, tool, "plain").await;
+        suite.note(name, state);
+    }
+
     for (name, tool) in [
         ("probe.hosted_space", "kp:space"),
         ("probe.hosted_esc", "kp:esc"),
@@ -1122,6 +1134,26 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
             suite.controls.window.autorecalculatesKeyViewLoop(),
             describe(alpha_next.as_deref()),
             describe(beta_next.as_deref()),
+        ),
+    );
+
+    // Membership in a key view loop is `canBecomeKeyView`, not `acceptsFirstResponder` and not
+    // `makeFirstResponder:` — which is why a view can be focused programmatically and still be
+    // invisible to Tab. Without this note a chain that skips a link reads as a chain that was
+    // never written.
+    let alpha_prev = unsafe { suite.controls.alpha.previousKeyView() };
+    suite.note(
+        "probe.can_become_key_view",
+        format!(
+            "gpui={} alpha={} switch={} slider={} alpha.prev={} prev_keyable={}",
+            suite.controls.gpui.canBecomeKeyView(),
+            suite.controls.alpha.canBecomeKeyView(),
+            suite.controls.toggle.canBecomeKeyView(),
+            suite.controls.slider.canBecomeKeyView(),
+            describe(alpha_prev.as_deref()),
+            alpha_prev
+                .as_deref()
+                .is_some_and(|view| view.canBecomeKeyView()),
         ),
     );
 
@@ -1195,14 +1227,31 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
             "kd:cmd kp:arrow-right ku:cmd",
             "(6,0)",
         ),
-        ("caret.home", "abcdef", 3, "home", "kp:home", "(0,0)"),
-        ("caret.end", "abcdef", 3, "end", "kp:end", "(6,0)"),
     ] {
         suite.arm(cx, text, caret).await;
         let pre = suite.caret_state();
         let sent = suite.press(cx, key, tool).await;
         let post = suite.caret_state();
         suite.expect(name, &pre, &post, &format!("{text:?}|{sel}"), &sent);
+    }
+
+    // Home and End are asserted as no-ops on the caret, because that is what a field editor does
+    // with them: it answers Home with `scrollToBeginningOfDocument:` and End with
+    // `scrollToEndOfDocument:` — observed on the editor's own `doCommandBySelector:` — and neither
+    // touches the insertion point. Measured against an unhosted control, not assumed: the
+    // `probe.bare_field_plain_*` rows deliver the same two keys to a bare `NSTextField` in a plain
+    // `NSWindow` and the caret stays put there too. Matching an unhosted field is this crate's
+    // contract, so what these rows catch is the failure that was real — the key arriving as an
+    // inserted U+0001 or U+0004.
+    for (name, key, tool) in [
+        ("caret.home", "home", "kp:home"),
+        ("caret.end", "end", "kp:end"),
+    ] {
+        suite.arm(cx, "abcdef", 3).await;
+        let pre = suite.caret_state();
+        let sent = suite.press(cx, key, tool).await;
+        let post = suite.caret_state();
+        suite.expect_stable(name, &pre, &post, &sent);
     }
 
     // Text and selection again: a Delete that clears the whole field means the setup left
@@ -1377,6 +1426,29 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = suite.responder();
     suite.expect_change("focus.tab_leaves_last_field", &pre, &post, &sent);
 
+    // The mirror of the row above, and the only one that pins down what the ends of the loop are
+    // for. `expect_change` would pass on any neighbour; this names GPUI's view, so a chain closed
+    // into a ring among the hosted views — which would make Tab unable to ever leave them — fails
+    // here instead of looking correct.
+    suite.arm(cx, "abcdef", 0).await;
+    suite
+        .controls
+        .window
+        .makeFirstResponder(Some(&suite.controls.alpha));
+    sleep(cx, POLL).await;
+    let pre = suite.responder();
+    let sent = suite
+        .press(cx, "shift-tab", "kd:shift kp:tab ku:shift")
+        .await;
+    let post = suite.responder();
+    suite.expect(
+        "focus.shift_tab_leaves_first_field",
+        &pre,
+        &post,
+        "gpui",
+        &sent,
+    );
+
     suite.arm(cx, "abcdef", 6).await;
     let (_, _, clicks_before, _) = suite.model(cx).await;
     let pre = format!("resp={}|gpui_clicks={}", suite.responder(), clicks_before);
@@ -1414,12 +1486,25 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.note("control.switch_makeFirstResponder", took.to_string());
     suite.expect("control.switch_takes_focus", &pre, &post, "switch", &no_key);
 
+    // `want` is derived from the state read *before* the keystroke. Derived from the state after it
+    // — the same live read `post` comes from — it is `!post`, which no behaviour can ever equal, so
+    // the row reports FAIL whether the switch toggled or not. This one had that shape and stayed
+    // red across two opposite behaviours: `pre[false] post[false] want[true]` while the keystroke
+    // was being dropped, then `pre[false] post[true] want[false]` once it was not. Inverting every
+    // expectation under `KEYS_SABOTAGE=want` cannot catch it either, because `!post·sabotaged`
+    // never equals `post` for the same reason.
     let on = |suite: &Suite| suite.controls.toggle.state() == NSControlStateValueOn;
-    let pre = on(&suite).to_string();
+    let before = on(&suite);
+    let pre = before.to_string();
     let sent = suite.press(cx, "space", "kp:space").await;
     let post = on(&suite).to_string();
-    let want = (!on(&suite)).to_string();
-    suite.expect("control.space_toggles_switch", &pre, &post, &want, &sent);
+    suite.expect(
+        "control.space_toggles_switch",
+        &pre,
+        &post,
+        &(!before).to_string(),
+        &sent,
+    );
 
     suite.controls.window.makeFirstResponder(None);
     sleep(cx, POLL).await;
@@ -1473,7 +1558,12 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         &sent,
     );
 
-    // Escape asks the cell to abort editing, which reverts to the last committed value.
+    // Escape reaches the field editor's `cancelOperation:` and leaves the edit in place. It does
+    // *not* revert: measured with a bare `NSTextField` in a plain `NSWindow`, typing a character
+    // and then pressing Escape kept the typed character, so reverting is something a field's owner
+    // implements rather than something AppKit does. The row asserts the measured contract — a
+    // hosted field answers Escape the way an unhosted one does — and the regression it catches is
+    // Escape arriving as an inserted U+001B.
     suite.arm(cx, "abcdef", 6).await;
     let pre = suite.alpha_text();
     let sent = suite.send(cx, "Z", "keystroke \"Z\"").await;
@@ -1481,13 +1571,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.expect("control.escape_setup_typed", &pre, &typed, "abcdefZ", &sent);
     let sent = suite.press(cx, "escape", "kp:esc").await;
     let post = suite.alpha_text();
-    suite.expect(
-        "control.escape_reverts_field",
-        &typed,
-        &post,
-        "abcdef",
-        &sent,
-    );
+    suite.expect_stable("control.escape_leaves_field_alone", &typed, &post, &sent);
 
     // -- negative control -----------------------------------------------------------------------
     suite.arm(cx, "abcdef", 3).await;

@@ -37,6 +37,13 @@ anchors() {
   check 'glass hitTest: override cannot work'        "never fires"
   check 'maskImage round-trips, so read-back diff ok' "round.?trips"
   check 'style cannot report an explicit variant'     "reads back as regular|cannot report"
+  check 'makeFirstResponder ignores acceptsFirstResponder' "does not consult"
+  check 'first responder is assigned after becomeFirst'    "overwritten by the call"
+  check 'autorecalculate overwrites an explicit key loop'  "rederive the whole loop"
+  check 'function keys reach a hosted field as insertions' "legacy ASCII spelling"
+  check 'gpui.s key-equivalent walk skips hosted views'    "never descends"
+  check 'gpui.s keyDown: does not forward up the chain'    "dies one link short"
+  check 'only the ancestor chain differs for a switch'     "identical either way"
   return $fail
 }
 

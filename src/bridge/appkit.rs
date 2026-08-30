@@ -2,11 +2,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::ptr;
 
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
-use objc2::{MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, Sel};
+use objc2::{ClassType, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -96,6 +98,117 @@ pub fn focus_gpui(window: &Window) {
     if let Some(ns_window) = view.window() {
         ns_window.makeFirstResponder(Some(&**view));
     }
+}
+
+/// The runtime subclass [`adopt_key_path`] installs. Built with `ClassBuilder` rather than
+/// `define_class!` because GPUI's view class is itself built at runtime, so there is no
+/// compile-time superclass to name.
+const KEY_PATH_CLASS: &CStr = c"NGKeyPathView";
+
+/// Stop GPUI's view from swallowing keys that belong to a hosted AppKit control.
+///
+/// GPUI's `NSView` overrides `performKeyEquivalent:` and `keyDown:`, and a window that hosts real
+/// controls needs both to behave like a plain `NSView`'s whenever GPUI is not the first responder:
+///
+/// * AppKit walks `performKeyEquivalent:` over the view tree **before** the first responder is sent
+///   `keyDown:`. GPUI answers it for every keystroke it has no character for — which is every true
+///   function key — by handing the event to its own `inputContext`. That resolves against the
+///   *active* input context, which is the hosted field editor's, so the editor is sent `insertText:`
+///   with the legacy ASCII spelling of the function key and the walk reports handled. Measured: ←
+///   into a hosted field inserted U+001C and advanced the caret, and the editor's `keyDown:` never
+///   ran at all, so `moveLeft:` never happened. Forward-delete inserted U+007F, Home U+0001, End
+///   U+0004. GPUI's override also never calls `super`, so the walk never descends into hosted views
+///   and a hosted default button never sees its Return.
+/// * "Space activates the focused control" and "an arrow adjusts it" are `NSWindow`'s `keyDown:`
+///   fallback, reached only when the focused control declines the key and the responder chain
+///   carries it up to the window. GPUI's `keyDown:` is a dead end, so the event dies one link short
+///   of the responder that would have acted on it. Measured: the same `NSSwitch` instance toggles
+///   on Space while parented in the window's content view and does nothing inside GPUI's view, with
+///   every property of the switch — down to `acceptsFirstResponder`, `canBecomeKeyView` and its
+///   rect in the window — identical either way.
+///
+/// Installed per window on GPUI's own view instance, so GPUI's class is untouched and a window
+/// without hosted controls keeps GPUI's behaviour exactly. Idempotent.
+pub fn adopt_key_path(view: &NSView) {
+    let current = view.class();
+    if current.name() == KEY_PATH_CLASS {
+        return;
+    }
+    let subclass = match AnyClass::get(KEY_PATH_CLASS) {
+        Some(existing) => existing,
+        None => {
+            let mut builder = ClassBuilder::new(KEY_PATH_CLASS, current)
+                .expect("no other class in this process is named NGKeyPathView");
+            unsafe {
+                builder.add_method(
+                    sel!(performKeyEquivalent:),
+                    key_equivalent as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool,
+                );
+                builder.add_method(
+                    sel!(keyDown:),
+                    key_down as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+                );
+            }
+            builder.register()
+        }
+    };
+    // Adds no instance variables, so GPUI's own ivar still resolves at the same offset.
+    unsafe { AnyObject::set_class(&*(view as *const NSView).cast::<AnyObject>(), subclass) };
+}
+
+/// GPUI's own implementation of `selector`, reached through the subclass's superclass because
+/// `msg_send![super(..)]` needs a superclass known at compile time.
+fn gpui_imp(selector: Sel) -> Imp {
+    AnyClass::get(KEY_PATH_CLASS)
+        .and_then(AnyClass::superclass)
+        .and_then(|base| base.instance_method(selector))
+        .expect("NGKeyPathView is only ever registered as a subclass of GPUI's view class")
+        .implementation()
+}
+
+/// What a view that overrode none of this would do: descend into the subviews for a key
+/// equivalent, and pass a key down to the next responder.
+fn plain_imp(selector: Sel) -> Imp {
+    NSView::class()
+        .instance_method(selector)
+        .expect("NSView inherits both performKeyEquivalent: and keyDown: from NSResponder")
+        .implementation()
+}
+
+fn owns_keyboard(view: *mut AnyObject) -> bool {
+    let window: *mut AnyObject = unsafe { msg_send![view, window] };
+    if window.is_null() {
+        return true;
+    }
+    let responder: *mut AnyObject = unsafe { msg_send![window, firstResponder] };
+    ptr::eq(responder, view)
+}
+
+extern "C" fn key_equivalent(view: *mut AnyObject, _: Sel, event: *mut AnyObject) -> Bool {
+    let selector = sel!(performKeyEquivalent:);
+    let walk: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool =
+        unsafe { std::mem::transmute(plain_imp(selector)) };
+    if walk(view, selector, event).as_bool() {
+        return Bool::YES;
+    }
+    if !owns_keyboard(view) {
+        return Bool::NO;
+    }
+    let gpui: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool =
+        unsafe { std::mem::transmute(gpui_imp(selector)) };
+    gpui(view, selector, event)
+}
+
+extern "C" fn key_down(view: *mut AnyObject, _: Sel, event: *mut AnyObject) {
+    let selector = sel!(keyDown:);
+    let imp = if owns_keyboard(view) {
+        gpui_imp(selector)
+    } else {
+        plain_imp(selector)
+    };
+    let call: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) =
+        unsafe { std::mem::transmute(imp) };
+    call(view, selector, event);
 }
 
 pub fn rects_equal(a: NSRect, b: NSRect) -> bool {

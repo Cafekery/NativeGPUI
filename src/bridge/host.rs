@@ -21,7 +21,7 @@ use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{NSControl, NSControlSize, NSView, NSWindowOrderingMode};
 use objc2_foundation::{MainThreadMarker, NSObject, NSRect, NSString};
 
-use crate::bridge::appkit::{Container, gpui_view, rects_equal, to_rect};
+use crate::bridge::appkit::{Container, adopt_key_path, gpui_view, rects_equal, to_rect};
 
 /// A stable pool key for an element, derived from GPUI's own element identity.
 ///
@@ -239,6 +239,79 @@ pub fn wire(control: &NSControl, target: &Target, key: u64) {
     }
 }
 
+struct TerminusIvars {
+    gpui: Retained<NSView>,
+}
+
+define_class!(
+    /// The one member of the key view loop that is not a hosted control: the boundary Tab leaves
+    /// AppKit through.
+    ///
+    /// It exists because GPUI's own view declines the job. Loop membership is `canBecomeKeyView`,
+    /// and GPUI's view never overrides `acceptsFirstResponder`, so `NSView`'s default false makes
+    /// it permanently invisible to Tab — measured false on the very view `makeFirstResponder:`
+    /// then focuses successfully, because `makeFirstResponder:` does not consult
+    /// `acceptsFirstResponder` at all. Pointing `nextKeyView` straight at GPUI's view therefore
+    /// writes a link every walk steps over, and the loop quietly closes into a ring of hosted
+    /// views the keyboard can never leave.
+    ///
+    /// Zero-sized rather than hidden, because hiding a view disqualifies it from the loop, while
+    /// an empty frame contains no point and so takes no mouse.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGKeyViewTerminus"]
+    #[ivars = TerminusIvars]
+    struct Terminus;
+
+    impl Terminus {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            // Deferred by one turn, not done here: `makeFirstResponder:` assigns the window's
+            // first responder *after* `becomeFirstResponder` returns, so a nested call is
+            // overwritten by the call that made it and focus lands on this view instead.
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: sel!(ngHandOff),
+                    withObject: std::ptr::null::<AnyObject>(),
+                    afterDelay: 0.0,
+                ];
+            }
+            true
+        }
+
+        #[unsafe(method(ngHandOff))]
+        fn hand_off(&self) {
+            let Some(window) = self.window() else {
+                return;
+            };
+            // A click can land inside the deferred turn. Handing over then would steal the focus
+            // the user just chose.
+            let holding = window.firstResponder().is_some_and(|responder| {
+                std::ptr::eq(
+                    &*responder as *const _ as *const (),
+                    self as *const _ as *const (),
+                )
+            });
+            if holding {
+                window.makeFirstResponder(Some(&self.ivars().gpui));
+            }
+        }
+    }
+);
+
+impl Terminus {
+    fn new(mtm: MainThreadMarker, gpui: Retained<NSView>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TerminusIvars { gpui });
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
 struct Slot {
     /// Clip wrapper: frame is the visible part of the element, `clipsToBounds` on. Gives correct
     /// partial clipping at a scroll container's edges, and clips hit-testing with it.
@@ -262,6 +335,9 @@ struct HostState {
     mtm: MainThreadMarker,
     above: Retained<Container>,
     below: Retained<Container>,
+    /// Both ends of the key view loop: the hosted views chain into it, and it chains back into the
+    /// first of them, so Tab and shift-Tab both leave the hosted run through GPUI.
+    terminus: Retained<Terminus>,
     target: Retained<Target>,
     dispatch: Rc<Dispatch>,
     slots: HashMap<u64, Slot>,
@@ -269,6 +345,10 @@ struct HostState {
     /// the order actually changed.
     order: Vec<u64>,
     last_order: Vec<u64>,
+    /// Set when a slot was created, which is the one way the key view loop can be wrong while
+    /// `order` is unchanged: a component that swaps a key's layer, type or parent gets a brand new
+    /// view under the same pool key and the same position in paint order.
+    chain_dirty: bool,
     generation: u64,
 }
 
@@ -301,6 +381,10 @@ impl NativeHost {
         let parent = gpui_view(window);
         let frame = parent.bounds();
 
+        // Hosting a control inside GPUI's view is not enough for the keyboard to reach it: this is
+        // what puts GPUI's own view back into AppKit's key-handling path for the hosted subtree.
+        adopt_key_path(&parent);
+
         let above = Container::new(mtm, frame, false);
         above.autoresize();
         parent.addSubview(&above);
@@ -314,15 +398,32 @@ impl NativeHost {
         let dispatch = Rc::new(Dispatch::default());
         let target = Target::new(mtm, dispatch.clone(), window.to_async(cx));
 
+        let terminus = Terminus::new(mtm, parent.clone());
+        above.addSubview(&terminus);
+
+        // Pinned off, because with it on the window will rederive the whole loop on any hierarchy
+        // change and overwrite what `commit` wrote — and the derivation is over AppKit's own view
+        // tree, not over the views placed here. Measured with it on: a hosted field's next key view
+        // came back as an `_NSCoreHostingView` *inside that same field*, and its previous key view
+        // as the field's own clip container, which cannot become a key view. It still tabs between
+        // two stacked fields, so it looks like it works; what it cannot do is end the loop, since
+        // GPUI's view is not eligible (see [`Terminus`]) and the walk therefore wraps back into the
+        // hosted views forever.
+        if let Some(ns_window) = parent.window() {
+            ns_window.setAutorecalculatesKeyViewLoop(false);
+        }
+
         Self(Rc::new(RefCell::new(HostState {
             mtm,
             above,
             below,
+            terminus,
             target,
             dispatch,
             slots: HashMap::new(),
             order: Vec::new(),
             last_order: Vec::new(),
+            chain_dirty: false,
             generation: 1,
         })))
     }
@@ -394,15 +495,21 @@ impl NativeHost {
         );
         let hidden = visible.size.width <= px(0.) || visible.size.height <= px(0.);
 
-        let stale = state.slots.get(&key).is_some_and(|slot| {
-            slot.layer != layer
-                || !slot.typed.is::<Retained<V>>()
-                || slot.parent.as_deref() != parent
-        });
-        if stale {
+        // One lookup answers two questions: whether this key's view has to be rebuilt, and whether
+        // a view is about to be created — which is what the key view loop keys off.
+        let creating = match state.slots.get(&key) {
+            None => true,
+            Some(slot) => {
+                slot.layer != layer
+                    || !slot.typed.is::<Retained<V>>()
+                    || slot.parent.as_deref() != parent
+            }
+        };
+        if creating {
             if let Some(slot) = state.slots.remove(&key) {
                 slot.clip.removeFromSuperview();
             }
+            state.chain_dirty = true;
         }
 
         let slot = state.slots.entry(key).or_insert_with(|| {
@@ -504,7 +611,8 @@ impl NativeHost {
         );
     }
 
-    /// Retire views that were not placed this frame, and fix z-order if placement order changed.
+    /// Retire views that were not placed this frame, fix z-order if placement order changed, and
+    /// rechain the key view loop if the hosted views did.
     pub fn commit(&self) {
         let state = &mut *self.0.borrow_mut();
         let generation = state.generation;
@@ -526,7 +634,10 @@ impl NativeHost {
                 .retain(|_, entry| !retired.contains(&entry.owner));
         }
 
-        if state.order != state.last_order {
+        let reordered = state.order != state.last_order;
+        let chain_dirty = std::mem::take(&mut state.chain_dirty);
+
+        if reordered {
             for key in &state.order {
                 let Some(slot) = state.slots.get(key) else {
                     continue;
@@ -544,6 +655,42 @@ impl NativeHost {
                     None,
                 );
             }
+        }
+
+        // Tab order is GPUI's element order, because that is what a reader perceives as
+        // first-to-last, and it survives the pool reordering views between frames where a
+        // geometric derivation cannot — see the note on `setAutorecalculatesKeyViewLoop` above for
+        // what AppKit builds when asked to work it out itself.
+        //
+        // The ring runs terminus -> first hosted -> ... -> last hosted -> terminus, which puts
+        // [`Terminus`] on both sides of the hosted run at once: Tab off the last view reaches it
+        // going forward, shift-Tab off the first reaches it going back, and either way the
+        // keyboard is handed to GPUI. Closing the ring among the hosted views instead would trap
+        // it in whatever subset of the window happens to be AppKit.
+        //
+        // Only the visible views are in it, because only visible elements are placed — a hosted
+        // control scrolled out of a `uniform_list` has no view for Tab to reach.
+        //
+        // `chain_dirty` is separate from the order diff above and both are needed: the order diff
+        // misses a view replaced in place, and `chain_dirty` alone misses a pure reorder.
+        if chain_dirty || reordered {
+            let start: &NSView = &state.terminus;
+            let mut previous = start;
+            for key in &state.order {
+                let Some(slot) = state.slots.get(key) else {
+                    continue;
+                };
+                unsafe { previous.setNextKeyView(Some(&slot.view)) };
+                previous = &slot.view;
+            }
+            // Nothing hosted leaves `previous` at the terminus, and a view linked to itself is a
+            // loop AppKit walks forever.
+            let close = if std::ptr::eq(previous, start) {
+                None
+            } else {
+                Some(start)
+            };
+            unsafe { previous.setNextKeyView(close) };
         }
 
         std::mem::swap(&mut state.order, &mut state.last_order);
