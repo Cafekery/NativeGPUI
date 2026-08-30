@@ -22,7 +22,7 @@ use gpui::{
     uniform_list,
 };
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSBezierPath, NSColor, NSScreen, NSView, NSWindow};
 use objc2_foundation::{MainThreadMarker, NSRect};
 use objc2_quartz_core::CALayer;
@@ -638,36 +638,9 @@ fn gpui_ns_view(window: &Window) -> Retained<NSView> {
         .expect("gpui ns_view was null")
 }
 
-/// The `CAMetalLayer` GPUI presents its drawables through, found by asking the layer tree which
-/// layer answers to `maximumDrawableCount` rather than by assuming where it sits.
-///
-/// Printing every layer's class on the way down is deliberate: if a future GPUI moves the Metal
-/// layer, the log says so instead of the arm silently becoming a no-op on the view's root layer.
-fn metal_layer(view: &NSView) -> Option<Retained<CALayer>> {
-    fn walk(layer: &CALayer, depth: usize, found: &mut Option<Retained<CALayer>>) {
-        let responds: bool =
-            unsafe { msg_send![layer, respondsToSelector: sel!(maximumDrawableCount)] };
-        println!(
-            "NG-SKEW-LAYER depth={depth} class={} metal={responds}",
-            (**layer).class().name().to_string_lossy(),
-        );
-        if responds && found.is_none() {
-            *found = Some(layer.retain());
-        }
-        if let Some(subs) = unsafe { layer.sublayers() } {
-            for sub in subs.iter() {
-                walk(&sub, depth + 1, found);
-            }
-        }
-    }
-
-    let root = view.layer()?;
-    let mut found = None;
-    walk(&root, 0, &mut found);
-    found
-}
-
-/// [`metal_layer`] without the per-layer log line, for the per-frame path.
+/// The `CAMetalLayer` GPUI presents its drawables through, identified by asking which layer
+/// answers `maximumDrawableCount` rather than by assuming where it sits. Only the view's own
+/// root layer is tested, which is where every measurement has found it.
 fn metal_layer_quiet(view: &NSView) -> Option<Retained<CALayer>> {
     let layer = view.layer()?;
     let responds: bool =
