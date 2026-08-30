@@ -6,7 +6,8 @@ use gpui::{
     prelude::*, px, rgb, size,
 };
 use native_gpui::{
-    native_root, native_search_field, native_secure_field, native_text_field, window_options,
+    install_menus, native_root, native_search_field, native_secure_field, native_text_field,
+    window_options,
 };
 
 struct Demo {
@@ -90,6 +91,7 @@ impl Render for Demo {
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        install_menus(cx);
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

@@ -9,10 +9,11 @@ use native_gpui::sidebar::{
 };
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
-    CheckState, Material, glass, material, native_button, native_checkbox, native_color_well,
-    native_date_picker, native_level, native_popup, native_progress, native_radio, native_root,
-    native_search_field, native_secure_field, native_segmented, native_slider, native_spinner,
-    native_stepper, native_switch, native_text_field, tokens, window_options,
+    CheckState, Material, glass, install_menus, material, native_button, native_checkbox,
+    native_color_well, native_date_picker, native_level, native_popup, native_progress,
+    native_radio, native_root, native_search_field, native_secure_field, native_segmented,
+    native_slider, native_spinner, native_stepper, native_switch, native_text_field, tokens,
+    window_options,
 };
 
 struct Page {
@@ -811,6 +812,7 @@ impl Render for Demo {
 fn main() {
     Application::new().run(|cx: &mut App| {
         tokens::init(cx);
+        install_menus(cx);
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

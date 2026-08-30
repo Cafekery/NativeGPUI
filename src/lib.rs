@@ -12,6 +12,10 @@
 //! pass. Components ([`native_switch`], [`glass`], [`material`], …) are ordinary GPUI elements
 //! that reserve layout space and place a pooled AppKit view into that space.
 //!
+//! [`install_menus`] adds the Edit menu, which is where macOS keeps ⌘X/⌘C/⌘V/⌘A/⌘Z. A GPUI app
+//! has no menu bar until something asks for one, and a hosted text field answers none of those
+//! chords until it does.
+//!
 //! # Two layers
 //!
 //! * [`Layer::Above`] — a subview of GPUI's Metal view. Renders on top of GPUI content, takes
@@ -62,6 +66,7 @@ pub use bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeHost, NativeRead, NativeValue,
     ValueKind, wire,
 };
+pub use bridge::menus::{edit_menu, install_menus};
 pub use bridge::root::{NativeRoot, native_root, window_options};
 pub use chrome::window_chrome::*;
 pub use chrome::{sidebar, window_chrome};

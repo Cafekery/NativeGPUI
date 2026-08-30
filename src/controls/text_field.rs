@@ -29,10 +29,15 @@ const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// `text` is the value you own; wire [`NativeTextField::on_change`] to keep it.
 ///
-/// Known limitation: ⌘A/⌘C/⌘V/⌘X/⌘Z do not reach a hosted field. GPUI's `NSView` is an ancestor
-/// of every hosted view, so it sees `performKeyEquivalent:` first and consumes the equivalent
-/// even when it is not the first responder. Plain typing and IME are unaffected. Fixing it needs
-/// a change in gpui.
+/// ⌘A/⌘C/⌘V/⌘X/⌘Z reach a hosted field only after [`crate::install_menus`]. macOS takes those key
+/// equivalents from the main menu and a GPUI app installs none, so the chord is offered to the
+/// view hierarchy, declined, offered to an absent menu bar, and dropped. GPUI's own view does see
+/// `performKeyEquivalent:` first, but it declines every chord its keymap does not bind.
+///
+/// Arrow keys, Home, End and forward-delete are a separate open gap: in a GPUI window a focused
+/// field editor inserts a control character instead of moving the caret — ← arrives as U+001C, →
+/// as U+001D, forward-delete as U+007F. A bare `NSTextField` in that window is affected too, so it
+/// is the window rather than anything this crate configures. Backspace, Return and ⌘←/⌘→ work.
 pub fn native_text_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Plain, text)
 }
