@@ -41,16 +41,15 @@ step 'unit tests'                   cargo test --release --lib
 # an unchanged pool key, which is the one stale case a paint-order diff cannot see by itself.
 step 'z-order holds paint order'    cargo run --release --example z_order
 
-# This crate's public docs carry measured platform facts, and a stale one on a public constructor
-# already shipped once. rustdoc's warnings are the only mechanical check on them: a link to a
-# private item renders as dead plain text rather than failing anything.
+# These docs carry measured platform facts, and a stale one on a public constructor already
+# shipped. `-D warnings` rather than a grep for known lint names: an allowlist silently passes
+# every lint it does not name, and gains nothing when a toolchain adds one.
 own_docs() {
-  local out
   touch src/lib.rs
-  out=$(cargo doc --no-deps 2>&1 | grep -E '^(warning|error).*(private item|unresolved link|invalid html|broken intra)' || true)
-  [[ -z $out ]] && return 0
-  printf '%s\n' "$out"
-  return 1
+  # Filtering is display-only; the verdict comes from cargo's status via PIPESTATUS.
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps 2>&1 |
+    grep -vE '^\s*(Documenting|Finished|Generated|Compiling|Checking)|future version of Rust|future-incompat'
+  return "${PIPESTATUS[0]}"
 }
 step 'docs resolve'                 own_docs
 
