@@ -10,9 +10,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 anchors() {
-  local where=$1 fail=0
+  local -a where=("$@")
+  local fail=0
   check() {
-    if grep -rqiE "$2" "$where"; then
+    if grep -rqiE "$2" "${where[@]}"; then
       printf 'ok    %s\n' "$1"
     else
       printf 'LOST  %s  (/%s/)\n' "$1" "$2"
@@ -54,9 +55,10 @@ anchors() {
 # check could ever have caught that, because the fault was a sentence that should have gone.
 # Add a line here whenever a fix retires a documented limitation.
 retired() {
-  local where=$1 fail=0
+  local -a where=("$@")
+  local fail=0
   gone() {
-    if grep -rqiE "$2" "$where"; then
+    if grep -rqiE "$2" "${where[@]}"; then
       printf 'STALE %s  (/%s/)\n' "$1" "$2"
       fail=1
     else
@@ -86,18 +88,23 @@ if [[ ${1:-} == --self-test ]]; then
 
   # A retired claim is falsified the other way round: plant every stale sentence and require each
   # one to be caught. A `gone` that cannot go STALE is not protecting anything.
-  plant="$strip/planted"
-  mkdir -p "$plant"
+  #
+  # The planted copy goes in the SECOND directory, behind an empty first one, because the bug this
+  # arm exists to catch was not a bad pattern: `retired src examples` read only $1, so every claim
+  # was unenforced in examples/ while all three still reported gone. Passing one directory would
+  # exercise the patterns and never the argument handling.
+  empty="$strip/empty" plant="$strip/planted"
+  mkdir -p "$empty" "$plant"
   cat > "$plant/stale.rs" <<'STALE'
 // Cmd-A/C/V do not reach a hosted field.
 // Arrow keys are a separate open gap, the window rather than anything this crate configures.
 // Fixing it needs a change in gpui.
 STALE
-  echo "self-test: every retired claim must go STALE against a planted copy"
-  if retired "$plant" | grep -q '^gone'; then
+  echo "self-test: every retired claim must go STALE when planted behind another directory"
+  if retired "$empty" "$plant" | grep -q '^gone'; then
     echo
-    retired "$plant" | grep '^gone' | sed 's/^gone /BAD  /'
-    echo "FAIL: the above cannot detect the claim they retire"
+    retired "$empty" "$plant" | grep '^gone' | sed 's/^gone /BAD  /'
+    echo "FAIL: the above cannot detect the claim they retire, or skip a later directory"
     exit 1
   fi
   echo "all retired claims falsifiable"
