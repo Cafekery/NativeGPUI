@@ -430,9 +430,12 @@ impl Demo {
                 ("on_change / on_submit", "keystroke / Return".into()),
                 (
                     "free",
-                    "IME, spell check, emoji, services, focus ring".into(),
+                    "IME, spell check, emoji, Writing Tools, AutoFill, focus ring".into(),
                 ),
-                ("limitation", "Cmd-A/C/V do not reach a hosted field".into()),
+                (
+                    "editing keys",
+                    "⌘A/C/V/X/Z, arrows, Tab — via install_menus".into(),
+                ),
             ]),
         ])
     }
