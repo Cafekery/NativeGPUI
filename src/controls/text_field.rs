@@ -34,10 +34,13 @@ const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 /// view hierarchy, declined, offered to an absent menu bar, and dropped. GPUI's own view does see
 /// `performKeyEquivalent:` first, but it declines every chord its keymap does not bind.
 ///
-/// Arrow keys, Home, End and forward-delete are a separate open gap: in a GPUI window a focused
-/// field editor inserts a control character instead of moving the caret — ← arrives as U+001C, →
-/// as U+001D, forward-delete as U+007F. A bare `NSTextField` in that window is affected too, so it
-/// is the window rather than anything this crate configures. Backspace, Return and ⌘←/⌘→ work.
+/// Arrows and forward-delete need no opt-in: the host adopts the window's key path when it places
+/// a view. Without that, GPUI answers every characterless key through its input context, which
+/// resolves to the focused field editor and hands it `insertText:` with the legacy ASCII spelling
+/// — ← as U+001C, → as U+001D, forward-delete as U+007F — so `moveLeft:` never ran.
+///
+/// Home and End do not move the caret, here or in an unhosted field: the editor answers them with
+/// `scrollToBeginningOfDocument:`/`scrollToEndOfDocument:`, which leave the insertion point alone.
 pub fn native_text_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Plain, text)
 }
