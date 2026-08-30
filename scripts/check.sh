@@ -40,11 +40,13 @@ step 'unit tests'                   cargo test --release --lib
 # Scoped to this crate's own files: a lint added by a future toolchain shows up as a named file
 # and line rather than as a blanket build failure across every dependency.
 #
-# Proven able to fail by injecting `use std::io::Write;` into src/: one hit naming the file and
-# line, zero after removing it. Cargo replays diagnostics for cached units, so a warm build does
-# not silently pass, and --message-format=short emits paths relative to the crate root.
+# Cargo does NOT reliably replay diagnostics for units it did not rebuild. This step therefore
+# passed while `examples/gallery.rs` carried a live dead-code warning, and an earlier version of
+# this comment asserted the opposite. Touching this crate's own sources forces its units to be
+# re-checked, and touches nothing a dependency owns.
 own_warnings() {
   local out status
+  find src examples -name '*.rs' -exec touch {} + || return 1
   out=$(cargo build --release --examples --features private-api --message-format=short 2>&1)
   status=$?
   # A broken build emits no warnings from our files, so this must not pass vacuously.
