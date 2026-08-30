@@ -119,7 +119,7 @@ pub type NativeHandler = Rc<dyn Fn(NativeValue, &mut Window, &mut App)>;
 ///
 /// Some AppKit values only exist for the duration of the action call — `NSPathControl`'s
 /// `clickedPathItem` is nil by the time a deferred handler runs, and a menu's clicked item is the
-/// same shape of problem. Handlers must stay deferred (see [`Target`]), so the read and the
+/// same shape of problem. Handlers must stay deferred (see `Target`), so the read and the
 /// handling are separate stages: read now, hand over later.
 pub type NativeRead = Rc<dyn Fn(&AnyObject) -> Box<dyn Any>>;
 

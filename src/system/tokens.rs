@@ -321,7 +321,7 @@ fn refusal_fallback(appearance: Appearance) -> Hsla {
 }
 
 /// Which colours refuse sRGB conversion under `appearance` — none, as of macOS 26. Assert it is
-/// empty at startup to turn [`refusal_fallback`]'s substitution into a tripwire.
+/// empty at startup to turn `refusal_fallback`'s substitution into a tripwire.
 pub fn refused(appearance: Appearance) -> Vec<SystemColor> {
     SystemColor::ALL
         .iter()

@@ -424,7 +424,7 @@ fn show_menu(anchor: &Container, location: NSPoint, entries: &[MenuEntry]) -> Op
 
 /// Attach a real `NSMenu` to a GPUI-drawn region, shown on right-click or control-click.
 ///
-/// Nothing persistent is pooled but a [`Container`] anchor sized to the element, which exists
+/// Nothing persistent is pooled but a `Container` anchor sized to the element, which exists
 /// only to carry a coordinate space: the host writes its frame from GPUI's own logical, y-down,
 /// window-relative numbers, so the location AppKit is handed is a plain subtraction with no
 /// `convertPoint:` and no flip.
