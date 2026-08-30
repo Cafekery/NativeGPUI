@@ -22,7 +22,18 @@ step 'build (default features)'     cargo build --release --examples
 step 'build (private-api)'          cargo build --release --examples --features private-api
 step 'anchors can fail'             ./scripts/anchors.sh --self-test
 step 'anchors present'              ./scripts/anchors.sh
-step 'formatting'                   cargo fmt --all --check
+# `cargo fmt --check` exits 0 even when rustfmt REJECTS an option, printing only a warning to
+# stderr. Verified: appending a nightly-only `imports_granularity` gave exit 0 with 19 warning
+# lines. So a config typo, or an option that silently needs nightly, would rot undetected.
+formatting() {
+  local err status
+  # Captures stderr only, so $? is still rustfmt's own verdict on the diff.
+  err=$(cargo fmt --all --check 2>&1 >/dev/null)
+  status=$?
+  [[ -n $err ]] && { printf '%s\n' "$err"; return 1; }
+  return "$status"
+}
+step 'formatting'                   formatting
 step 'unit tests'                   cargo test --release --lib
 
 # Warnings do not fail a cargo build, so the zero-warning state would otherwise rot silently.
