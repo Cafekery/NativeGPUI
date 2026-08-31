@@ -4,7 +4,7 @@
 //! [`crate::NativeHost::place`] the view, then push only the properties that changed.
 
 mod button;
-mod menu;
+pub(crate) mod menu;
 mod progress;
 mod slider;
 mod small;
@@ -16,7 +16,8 @@ pub use button::{
     TrackingMode, native_button, native_checkbox, native_radio, native_segmented,
 };
 pub use menu::{
-    MenuEntry, MenuOrigin, NativeContextMenu, NativePopup, native_context_menu, native_popup,
+    MenuEntry, MenuOrigin, MenuView, NativeContextMenu, NativePopup, native_context_menu,
+    native_popup,
 };
 pub use progress::{
     LevelStyle, NativeLevel, NativeProgress, NativeSpinner, native_level, native_progress,

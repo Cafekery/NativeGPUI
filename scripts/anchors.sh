@@ -47,8 +47,18 @@ maskImage round-trips, so read-back diff ok ;; round.?trips ;; materials/materia
 interaction state traps outside its range ;; traps|aborts the process ;; materials/glass_private.rs
 style cannot report an explicit variant ;; reads back as regular|cannot report ;; materials/glass_private.rs
 RenderImage wants straight alpha ;; divide out alpha ;; system/tokens.rs
+an extension needs the declared type, not the direct lookup ;; declared match wins ;; system/tokens.rs
+drawInRect: selects a representation by output size ;; destination pixels ;; system/tokens.rs
+a file icon does not vary with appearance ;; fixed artwork ;; system/tokens.rs
 custom glass fidelity was measured once, keyed ;; noise floor ;; materials/custom_glass.rs
 a literal value fights its own write-back ;; wipes the control ;; lib.rs
+a nested NSMenu does not inherit autoenablesItems ;; does not inherit ;; controls/menu.rs
+setSubmenu: owns the host row.s action ;; dismiss the menu on a click|instead of opening the submenu ;; controls/menu.rs
+a zero-framed item view is an invisible row ;; contributes zero height|completely invisible ;; controls/menu.rs
+a menu item.s key mask already defaults to Command ;; own default is ;; controls/menu.rs
+a view with no intrinsic width gets none ;; no width at all ;; chrome/window_chrome.rs
+a momentary group holds no selection ;; reports -1 forever ;; chrome/window_chrome.rs
+a search field must be wired before assignment ;; configured before assigned ;; chrome/window_chrome.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.

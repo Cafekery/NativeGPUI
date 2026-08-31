@@ -11,18 +11,22 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, AsyncWindowContext, Bounds, CursorStyle, Element, ElementId, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Point, Window, px,
+    Point, Size, Window, px,
 };
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
+    NSMenuToolbarItem, NSSearchField, NSSearchToolbarItem, NSSharingServicePickerDelegate,
+    NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
+    NSSplitViewController, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
+    NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
-    NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowLevel,
-    NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSTrackingSeparatorToolbarItem, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
+    NSWindowLevel, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -30,6 +34,7 @@ use objc2_foundation::{
 
 use crate::bridge::appkit::{gpui_view, to_rect};
 use crate::bridge::host::element_key;
+use crate::controls::menu::{MenuEntry, sync_menu};
 use crate::tokens;
 
 /// A GPUI element's `bounds` as an `NSRect` in the chrome host's coordinate space.
@@ -396,8 +401,85 @@ impl From<ToolbarStyle> for NSWindowToolbarStyle {
 }
 
 type ToolbarHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+/// A handler for a control that reports which of its parts the user picked.
+type ToolbarIndexHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// A handler for a control that reports text.
+type ToolbarTextHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+/// Builds a [`ToolbarItem::View`]'s view, once, the first time the toolbar asks for that item.
+type ToolbarViewBuilder = Rc<dyn Fn(MainThreadMarker) -> Retained<NSView>>;
 
-/// One toolbar item. Symbol items are drawn by AppKit, so they get genuine liquid-glass treatment.
+/// One glyph of a [`ToolbarItem::group`] capsule.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolbarSegment {
+    pub symbol: String,
+    pub label: String,
+}
+
+impl ToolbarSegment {
+    pub fn new(symbol: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            symbol: symbol.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// How a [`ToolbarItem::Group`] tracks clicks.
+///
+/// AppKit honours this only on a group built by one of its own convenience constructors, which is
+/// the only kind this crate builds — a group assembled from `subitems` has no control to select in.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum ToolbarSelection {
+    /// Exactly one glyph stays lit. The view-mode picker.
+    #[default]
+    SelectOne,
+    /// Any number lit at once. [`ToolbarItem::on_select`] reports one index and cannot describe
+    /// that, so read the group back if you need the whole set.
+    SelectAny,
+    /// Nothing stays lit; each click is a press.
+    Momentary,
+}
+
+impl From<ToolbarSelection> for NSToolbarItemGroupSelectionMode {
+    fn from(selection: ToolbarSelection) -> Self {
+        match selection {
+            ToolbarSelection::SelectOne => NSToolbarItemGroupSelectionMode::SelectOne,
+            ToolbarSelection::SelectAny => NSToolbarItemGroupSelectionMode::SelectAny,
+            ToolbarSelection::Momentary => NSToolbarItemGroupSelectionMode::Momentary,
+        }
+    }
+}
+
+/// What a [`ToolbarItem::Group`] does when the toolbar runs out of room.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum ToolbarGroupWidth {
+    /// Stay a capsule while there is room, then collapse into a menu. What Finder does.
+    #[default]
+    Automatic,
+    /// Always a capsule, even when it means the toolbar scrolls items out.
+    Expanded,
+    /// Always a single button that opens a menu.
+    Collapsed,
+}
+
+impl From<ToolbarGroupWidth> for NSToolbarItemGroupControlRepresentation {
+    fn from(width: ToolbarGroupWidth) -> Self {
+        match width {
+            ToolbarGroupWidth::Automatic => NSToolbarItemGroupControlRepresentation::Automatic,
+            ToolbarGroupWidth::Expanded => NSToolbarItemGroupControlRepresentation::Expanded,
+            ToolbarGroupWidth::Collapsed => NSToolbarItemGroupControlRepresentation::Collapsed,
+        }
+    }
+}
+
+/// One toolbar item, which AppKit draws — so every one of these gets the current system treatment,
+/// liquid glass included, without this crate describing what that looks like.
+///
+/// Every variant but [`ToolbarItem::View`] is a real `NSToolbarItem` subclass rather than a control
+/// this crate hosts in a plain item, because the behaviour is in the subclass and is not
+/// reachable from a view. [`ToolbarItem::Search`] is the clearest case: `NSSearchToolbarItem`
+/// declares `view` as `NS_UNAVAILABLE` and owns its field, so the collapse-to-a-glyph and the
+/// expand-and-shove-the-other-items-aside are unavailable to any caller supplying a view.
 #[derive(Clone)]
 pub enum ToolbarItem {
     Symbol {
@@ -405,6 +487,73 @@ pub enum ToolbarItem {
         symbol: String,
         label: String,
         on_click: Option<ToolbarHandler>,
+    },
+    /// Several glyphs in one capsule, selected as a set: `NSToolbarItemGroup`.
+    Group {
+        id: String,
+        label: String,
+        segments: Vec<ToolbarSegment>,
+        selection: ToolbarSelection,
+        selected: usize,
+        width: ToolbarGroupWidth,
+        on_select: Option<ToolbarIndexHandler>,
+    },
+    /// The search field that collapses to a glyph: `NSSearchToolbarItem`.
+    Search {
+        id: String,
+        label: String,
+        placeholder: String,
+        /// What the field widens to when it takes focus.
+        width: Pixels,
+        on_change: Option<ToolbarTextHandler>,
+    },
+    /// A glyph with a chevron that drops a real menu: `NSMenuToolbarItem`.
+    ///
+    /// A row carrying a submenu or a custom view reports nothing through
+    /// [`ToolbarItem::on_select`]: `setSubmenu:` installs AppKit's own action on that row, and
+    /// replacing it would turn opening the submenu into dismissing the menu.
+    Menu {
+        id: String,
+        symbol: String,
+        label: String,
+        entries: Vec<MenuEntry>,
+        on_select: Option<ToolbarIndexHandler>,
+    },
+    /// The system share sheet: `NSSharingServicePickerToolbarItem`. The glyph, the picker and the
+    /// service list are all macOS's.
+    Share {
+        id: String,
+        label: String,
+        /// Offered to the picker as text. Empty offers nothing, and the picker says so.
+        items: Vec<String>,
+    },
+    /// A divider that stays lined up with a split view divider as the user drags it:
+    /// `NSTrackingSeparatorToolbarItem`. Needs [`crate::sidebar::NativeSidebar`] installed — the split
+    /// view it tracks is the window's content view controller, which is what a sidebar installs.
+    Separator {
+        id: String,
+        /// Which divider, counting from the leading edge. A one-sidebar window has divider 0.
+        divider: usize,
+    },
+    /// Any other AppKit view, built once and retained by the toolbar.
+    ///
+    /// The escape hatch, not the main road: the builder runs when AppKit asks for the item, which
+    /// is not a paint pass, so the view cannot come from [`crate::NativeHost`]'s pool and none of
+    /// the crate's own elements can be used here. What the caller gives up is the whole pooled
+    /// path — GPUI-driven geometry, the per-frame property diff, and `on_change` plumbing — so the
+    /// view has to own its own state and wire its own target/action.
+    View {
+        id: String,
+        label: String,
+        /// Pinned with real layout constraints, per dimension, and only where the value is
+        /// positive: `NSToolbarItem`'s `minSize`/`maxSize` have been deprecated since macOS 12 in
+        /// favour of the view measuring itself, and the header's own advice is to let it, so a
+        /// control with an intrinsic size wants `Size::default()` here. A view *without* one gets
+        /// no width at all — measured 0 wide for a bare `NSView`, whose
+        /// `intrinsicContentSize` is `NSViewNoIntrinsicMetric` in both axes — and an item whose
+        /// view is 0 wide is invisible while still occupying its place in the item order.
+        size: Size<Pixels>,
+        build: ToolbarViewBuilder,
     },
     FlexibleSpace,
     Space,
@@ -424,6 +573,83 @@ impl ToolbarItem {
         }
     }
 
+    /// `selected` is the index you own; wire [`ToolbarItem::on_select`] to keep it.
+    pub fn group(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        segments: impl IntoIterator<Item = ToolbarSegment>,
+        selected: usize,
+    ) -> Self {
+        ToolbarItem::Group {
+            id: id.into(),
+            label: label.into(),
+            segments: segments.into_iter().collect(),
+            selection: ToolbarSelection::default(),
+            selected,
+            width: ToolbarGroupWidth::default(),
+            on_select: None,
+        }
+    }
+
+    pub fn search(id: impl Into<String>, label: impl Into<String>) -> Self {
+        ToolbarItem::Search {
+            id: id.into(),
+            label: label.into(),
+            placeholder: String::new(),
+            width: px(220.),
+            on_change: None,
+        }
+    }
+
+    pub fn menu(
+        id: impl Into<String>,
+        symbol: impl Into<String>,
+        label: impl Into<String>,
+        entries: impl IntoIterator<Item = MenuEntry>,
+    ) -> Self {
+        ToolbarItem::Menu {
+            id: id.into(),
+            symbol: symbol.into(),
+            label: label.into(),
+            entries: entries.into_iter().collect(),
+            on_select: None,
+        }
+    }
+
+    pub fn share(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        items: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        ToolbarItem::Share {
+            id: id.into(),
+            label: label.into(),
+            items: items.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    pub fn separator(id: impl Into<String>, divider: usize) -> Self {
+        ToolbarItem::Separator {
+            id: id.into(),
+            divider,
+        }
+    }
+
+    /// `build` runs once per identifier, on the main thread, outside any paint pass.
+    pub fn view(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        size: Size<Pixels>,
+        build: impl Fn(MainThreadMarker) -> Retained<NSView> + 'static,
+    ) -> Self {
+        ToolbarItem::View {
+            id: id.into(),
+            label: label.into(),
+            size,
+            build: Rc::new(build),
+        }
+    }
+
     pub fn flexible_space() -> Self {
         ToolbarItem::FlexibleSpace
     }
@@ -439,9 +665,68 @@ impl ToolbarItem {
         self
     }
 
+    /// The picked index, for a [`ToolbarItem::Group`] or a [`ToolbarItem::Menu`]. A menu's index
+    /// counts separators, so it indexes the `entries` slice directly.
+    pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
+        let handler: ToolbarIndexHandler = Rc::new(handler);
+        match &mut self {
+            ToolbarItem::Group { on_select, .. } | ToolbarItem::Menu { on_select, .. } => {
+                *on_select = Some(handler)
+            }
+            _ => {}
+        }
+        self
+    }
+
+    /// Every keystroke in a [`ToolbarItem::Search`] field, and the cancel button's clear.
+    pub fn on_change(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
+        if let ToolbarItem::Search { on_change, .. } = &mut self {
+            *on_change = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    pub fn placeholder(mut self, text: impl Into<String>) -> Self {
+        if let ToolbarItem::Search { placeholder, .. } = &mut self {
+            *placeholder = text.into();
+        }
+        self
+    }
+
+    /// What a [`ToolbarItem::Search`] field widens to on focus.
+    pub fn width(mut self, width: Pixels) -> Self {
+        if let ToolbarItem::Search { width: slot, .. } = &mut self {
+            *slot = width;
+        }
+        self
+    }
+
+    pub fn selection(mut self, selection: ToolbarSelection) -> Self {
+        if let ToolbarItem::Group {
+            selection: slot, ..
+        } = &mut self
+        {
+            *slot = selection;
+        }
+        self
+    }
+
+    pub fn group_width(mut self, width: ToolbarGroupWidth) -> Self {
+        if let ToolbarItem::Group { width: slot, .. } = &mut self {
+            *slot = width;
+        }
+        self
+    }
+
     fn identifier(&self) -> String {
         match self {
-            ToolbarItem::Symbol { id, .. } => id.clone(),
+            ToolbarItem::Symbol { id, .. }
+            | ToolbarItem::Group { id, .. }
+            | ToolbarItem::Search { id, .. }
+            | ToolbarItem::Menu { id, .. }
+            | ToolbarItem::Share { id, .. }
+            | ToolbarItem::Separator { id, .. }
+            | ToolbarItem::View { id, .. } => id.clone(),
             ToolbarItem::FlexibleSpace => unsafe {
                 NSToolbarFlexibleSpaceItemIdentifier.to_string()
             },
@@ -452,6 +737,16 @@ impl ToolbarItem {
 
 struct ToolbarIvars {
     items: RefCell<Vec<ToolbarItem>>,
+    /// Every item this delegate has handed AppKit, by identifier.
+    ///
+    /// `NSToolbar` retains its items, but the sender of an action is a subitem, a search field or
+    /// a menu row rather than the item itself, so the way back to the caller's handler is to
+    /// recognise the sender against what was built. Also the retain for a
+    /// [`ToolbarItem::View`]'s view, which nothing else owns.
+    built: RefCell<Vec<(String, Retained<NSToolbarItem>)>>,
+    /// Weak on purpose: the window retains its toolbar, which retains this delegate. A strong
+    /// reference back would keep the window alive forever.
+    window: Weak<NSWindow>,
     cx: AsyncWindowContext,
 }
 
@@ -486,16 +781,47 @@ define_class!(
         }
     }
 
+    unsafe impl NSSharingServicePickerDelegate for ToolbarDelegate {}
+
+    unsafe impl NSSharingServicePickerToolbarItemDelegate for ToolbarDelegate {
+        #[unsafe(method_id(itemsForSharingServicePickerToolbarItem:))]
+        fn share_items(&self, item: &NSSharingServicePickerToolbarItem) -> Retained<NSArray> {
+            let wanted = item.itemIdentifier().to_string();
+            let texts = self
+                .ivars()
+                .items
+                .borrow()
+                .iter()
+                .find_map(|spec| match spec {
+                    ToolbarItem::Share { id, items, .. } if *id == wanted => Some(items.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let owned: Vec<Retained<NSString>> =
+                texts.iter().map(|text| NSString::from_str(text)).collect();
+            let refs: Vec<&AnyObject> = owned.iter().map(|text| text.as_ref()).collect();
+            NSArray::from_slice(&refs)
+        }
+    }
+
     impl ToolbarDelegate {
         /// Deferred: this can fire while GPUI holds its `App` borrow, which would drop the click.
+        ///
+        /// Sender is the item itself for a [`ToolbarItem::Symbol`], and for a
+        /// [`ToolbarItem::Group`] it is one of the subitems AppKit synthesised — which inherits
+        /// the group's action and carries an identifier of its own — so the group is found by
+        /// asking each built group whether it owns the sender.
         #[unsafe(method(ngToolbarAction:))]
         fn action(&self, sender: *mut AnyObject) {
             let ident: Retained<NSString> = unsafe { msg_send![sender, itemIdentifier] };
             let wanted = ident.to_string();
+            if let Some((id, index)) = self.group_selection(&wanted) {
+                self.dispatch_index(&id, index);
+                return;
+            }
             let handler = self.ivars().items.borrow().iter().find_map(|item| match item {
                 ToolbarItem::Symbol { id, on_click, .. } if *id == wanted => on_click.clone(),
-                ToolbarItem::Symbol { .. } => None,
-                ToolbarItem::FlexibleSpace | ToolbarItem::Space => None,
+                _ => None,
             });
             let Some(handler) = handler else {
                 return;
@@ -507,6 +833,60 @@ define_class!(
                 })
                 .detach();
         }
+
+        /// Sender is the `NSSearchField` the item owns, so the text is read here and the item is
+        /// recognised by which built search item owns that field.
+        #[unsafe(method(ngToolbarSearch:))]
+        fn search(&self, sender: *mut AnyObject) {
+            let text: Retained<NSString> = unsafe { msg_send![sender, stringValue] };
+            let text = text.to_string();
+            let found = self.ivars().built.borrow().iter().find_map(|(id, item)| {
+                let field = item
+                    .downcast_ref::<NSSearchToolbarItem>()?
+                    .searchField();
+                ptr::eq(Retained::as_ptr(&field).cast::<AnyObject>(), sender.cast_const())
+                    .then(|| id.clone())
+            });
+            let Some(id) = found else {
+                return;
+            };
+            let handler = self.ivars().items.borrow().iter().find_map(|item| match item {
+                ToolbarItem::Search {
+                    id: found,
+                    on_change,
+                    ..
+                } if *found == id => on_change.clone(),
+                _ => None,
+            });
+            let Some(handler) = handler else {
+                return;
+            };
+            self.ivars()
+                .cx
+                .spawn(async move |cx| {
+                    let _ = cx.update(|window, app| handler(&text, window, app));
+                })
+                .detach();
+        }
+
+        /// Sender is the `NSMenuItem`, whose tag is its row index — set by [`sync_menu`], which
+        /// counts separators, so it indexes the caller's `entries` slice.
+        #[unsafe(method(ngToolbarMenu:))]
+        fn menu_action(&self, sender: *mut AnyObject) {
+            let index: isize = unsafe { msg_send![sender, tag] };
+            let menu: Option<Retained<NSMenu>> = unsafe { msg_send![sender, menu] };
+            let Some(menu) = menu else {
+                return;
+            };
+            let found = self.ivars().built.borrow().iter().find_map(|(id, item)| {
+                let owned = item.downcast_ref::<NSMenuToolbarItem>()?.menu();
+                ptr::eq(Retained::as_ptr(&owned), Retained::as_ptr(&menu)).then(|| id.clone())
+            });
+            match (found, usize::try_from(index)) {
+                (Some(id), Ok(index)) => self.dispatch_index(&id, index),
+                _ => {}
+            }
+        }
     }
 );
 
@@ -517,9 +897,11 @@ fn identifier_array(ids: &[String]) -> Retained<NSArray<NSToolbarItemIdentifier>
 }
 
 impl ToolbarDelegate {
-    fn new(mtm: MainThreadMarker, cx: AsyncWindowContext) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, window: &NSWindow, cx: AsyncWindowContext) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ToolbarIvars {
             items: RefCell::new(Vec::new()),
+            built: RefCell::new(Vec::new()),
+            window: Weak::new(window),
             cx,
         });
         unsafe { msg_send![super(this), init] }
@@ -531,7 +913,67 @@ impl ToolbarDelegate {
         identifier_array(&ids)
     }
 
+    /// The group that owns `sender_id` and the segment the click landed on, read here rather than
+    /// in the deferred handler: the user can click another segment before the handler runs.
+    ///
+    /// The sender's position among the subitems, not `selectedIndex`: a
+    /// [`ToolbarSelection::Momentary`] group holds no selection and reports -1 forever, so an
+    /// index taken from the selection would drop every momentary click. `selectedIndex` is only
+    /// consulted when the sender *is* the group, which is what AppKit sends when it has collapsed
+    /// the capsule into a menu and there is no subitem to have been clicked.
+    fn group_selection(&self, sender_id: &str) -> Option<(String, usize)> {
+        self.ivars().built.borrow().iter().find_map(|(id, item)| {
+            let group = item.downcast_ref::<NSToolbarItemGroup>()?;
+            let clicked = group
+                .subitems()
+                .iter()
+                .position(|sub| sub.itemIdentifier().to_string() == sender_id);
+            match clicked {
+                Some(index) => Some((id.clone(), index)),
+                None if *id == sender_id => {
+                    Some((id.clone(), usize::try_from(group.selectedIndex()).ok()?))
+                }
+                None => None,
+            }
+        })
+    }
+
+    fn dispatch_index(&self, id: &str, index: usize) {
+        let handler = self
+            .ivars()
+            .items
+            .borrow()
+            .iter()
+            .find_map(|item| match item {
+                ToolbarItem::Group {
+                    id: found,
+                    on_select,
+                    ..
+                }
+                | ToolbarItem::Menu {
+                    id: found,
+                    on_select,
+                    ..
+                } if found == id => on_select.clone(),
+                _ => None,
+            });
+        let Some(handler) = handler else {
+            return;
+        };
+        self.ivars()
+            .cx
+            .spawn(async move |cx| {
+                let _ = cx.update(|window, app| handler(index, window, app));
+            })
+            .detach();
+    }
+
     /// `None` for a standard spacer: those are AppKit's own items and it builds them itself.
+    ///
+    /// Rebuilt from scratch per identifier rather than diffed in place, unlike a pooled control:
+    /// AppKit asks once per identifier per toolbar and keeps the item, so there is no per-frame
+    /// path here to make cheap. What a re-`set_toolbar` with a changed item list costs is one
+    /// construction of the items whose identifiers are new.
     fn build_item(&self, ident: &NSString) -> Option<Retained<NSToolbarItem>> {
         let mtm = MainThreadMarker::new()?;
         let wanted = ident.to_string();
@@ -542,36 +984,282 @@ impl ToolbarDelegate {
             .iter()
             .find(|item| item.identifier() == wanted)
             .cloned()?;
-        let ToolbarItem::Symbol {
-            symbol,
-            label,
-            on_click,
-            ..
-        } = spec
-        else {
-            return None;
+
+        let item: Retained<NSToolbarItem> = match spec {
+            ToolbarItem::Symbol {
+                symbol,
+                label,
+                on_click,
+                ..
+            } => {
+                let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
+                item.setLabel(&NSString::from_str(&label));
+                item.setToolTip(Some(&NSString::from_str(&label)));
+                item.setBordered(true);
+                if let Some(image) = symbol_image(&symbol, &label) {
+                    item.setImage(Some(&image));
+                }
+                if on_click.is_some() {
+                    unsafe {
+                        item.setTarget(Some(self.as_ref()));
+                        item.setAction(Some(sel!(ngToolbarAction:)));
+                    }
+                }
+                item
+            }
+            ToolbarItem::Group {
+                label,
+                segments,
+                selection,
+                selected,
+                width,
+                ..
+            } => {
+                // The images constructor and not `subitems`: `selectionMode` and the capsule only
+                // exist on a group AppKit built its own control for.
+                let images: Vec<Retained<NSImage>> = segments
+                    .iter()
+                    .map(|segment| {
+                        symbol_image(&segment.symbol, &segment.label).unwrap_or_else(NSImage::new)
+                    })
+                    .collect();
+                let image_refs: Vec<&NSImage> = images.iter().map(|image| &**image).collect();
+                let labels: Vec<Retained<NSString>> = segments
+                    .iter()
+                    .map(|segment| NSString::from_str(&segment.label))
+                    .collect();
+                let label_refs: Vec<&NSString> = labels.iter().map(|text| &**text).collect();
+                let group = unsafe {
+                    NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
+                        ident,
+                        &NSArray::from_slice(&image_refs),
+                        selection.into(),
+                        Some(&NSArray::from_slice(&label_refs)),
+                        Some(self.as_ref()),
+                        Some(sel!(ngToolbarAction:)),
+                        mtm,
+                    )
+                };
+                group.setControlRepresentation(width.into());
+                if selection != ToolbarSelection::Momentary && selected < segments.len() {
+                    group.setSelectedIndex(selected as isize);
+                }
+                group.setLabel(&NSString::from_str(&label));
+                Retained::into_super(group)
+            }
+            ToolbarItem::Search {
+                label,
+                placeholder,
+                width,
+                ..
+            } => {
+                let item = NSSearchToolbarItem::initWithItemIdentifier(
+                    NSSearchToolbarItem::alloc(mtm),
+                    ident,
+                );
+                item.setLabel(&NSString::from_str(&label));
+                // "The field should be configured before assigned": the item takes over the
+                // field's layout on assignment, so target, action and placeholder go on first.
+                let field = NSSearchField::new(mtm);
+                if !placeholder.is_empty() {
+                    field.setPlaceholderString(Some(&NSString::from_str(&placeholder)));
+                }
+                // Per keystroke rather than on Return only, which is what a filter field wants and
+                // is not the default.
+                unsafe {
+                    field.setSendsSearchStringImmediately(true);
+                    field.setSendsWholeSearchString(false);
+                    field.setTarget(Some(self.as_ref()));
+                    field.setAction(Some(sel!(ngToolbarSearch:)));
+                }
+                item.setSearchField(&field);
+                item.setPreferredWidthForSearchField(f32::from(width) as f64);
+                Retained::into_super(item)
+            }
+            ToolbarItem::Menu {
+                symbol,
+                label,
+                entries,
+                ..
+            } => {
+                let item =
+                    NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), ident);
+                item.setLabel(&NSString::from_str(&label));
+                item.setToolTip(Some(&NSString::from_str(&label)));
+                item.setBordered(true);
+                if let Some(image) = symbol_image(&symbol, &label) {
+                    item.setImage(Some(&image));
+                }
+                item.setShowsIndicator(true);
+                // No action on the item on purpose: with one, AppKit splits the control so the
+                // glyph fires and only the chevron opens the menu. Finder's sort item opens on
+                // either half.
+                let menu = NSMenu::new(mtm);
+                sync_menu(
+                    mtm,
+                    &menu,
+                    &entries,
+                    Some((self.as_ref(), sel!(ngToolbarMenu:))),
+                );
+                item.setMenu(&menu);
+                Retained::into_super(item)
+            }
+            ToolbarItem::Share { label, .. } => {
+                let item = NSSharingServicePickerToolbarItem::initWithItemIdentifier(
+                    NSSharingServicePickerToolbarItem::alloc(mtm),
+                    ident,
+                );
+                item.setLabel(&NSString::from_str(&label));
+                item.setToolTip(Some(&NSString::from_str(&label)));
+                item.setDelegate(Some(ProtocolObject::from_ref(self)));
+                Retained::into_super(item)
+            }
+            ToolbarItem::Separator { divider, .. } => {
+                let split = self.split_view()?;
+                let item = NSTrackingSeparatorToolbarItem::trackingSeparatorToolbarItemWithIdentifier_splitView_dividerIndex(
+                    ident,
+                    &split,
+                    divider as isize,
+                );
+                Retained::into_super(item)
+            }
+            ToolbarItem::View {
+                label, size, build, ..
+            } => {
+                let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
+                item.setLabel(&NSString::from_str(&label));
+                let view = build(mtm);
+                // Constraints, not `minSize`/`maxSize`: those have been deprecated since macOS 12.
+                // A zero here means "measure yourself", which is what the header recommends and
+                // what a control with an intrinsic size wants.
+                let mut pinned: Vec<Retained<NSLayoutConstraint>> = Vec::new();
+                if size.width > px(0.) {
+                    pinned.push(
+                        view.widthAnchor()
+                            .constraintEqualToConstant(f32::from(size.width) as f64),
+                    );
+                }
+                if size.height > px(0.) {
+                    pinned.push(
+                        view.heightAnchor()
+                            .constraintEqualToConstant(f32::from(size.height) as f64),
+                    );
+                }
+                if !pinned.is_empty() {
+                    view.setTranslatesAutoresizingMaskIntoConstraints(false);
+                    let refs: Vec<&NSLayoutConstraint> = pinned.iter().map(|pin| &**pin).collect();
+                    NSLayoutConstraint::activateConstraints(&NSArray::from_slice(&refs));
+                }
+                item.setView(Some(&view));
+                item
+            }
+            ToolbarItem::FlexibleSpace | ToolbarItem::Space => return None,
         };
 
-        let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
-        item.setLabel(&NSString::from_str(&label));
-        item.setToolTip(Some(&NSString::from_str(&label)));
-        item.setBordered(true);
-        if tokens::sf_symbol(&symbol, tokens::system_font_size(), FontWeight::NORMAL).is_some() {
-            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str(&symbol),
-                Some(&NSString::from_str(&label)),
-            ) {
-                item.setImage(Some(&image));
-            }
-        }
-        if on_click.is_some() {
-            unsafe {
-                item.setTarget(Some(self.as_ref()));
-                item.setAction(Some(sel!(ngToolbarAction:)));
-            }
+        let mut built = self.ivars().built.borrow_mut();
+        match built.iter_mut().find(|(id, _)| *id == wanted) {
+            Some(slot) => slot.1 = item.clone(),
+            None => built.push((wanted, item.clone())),
         }
         Some(item)
     }
+
+    /// Push the caller's current state onto the items AppKit has already built.
+    ///
+    /// [`ToolbarDelegate::build_item`] runs once per identifier and the toolbar keeps what it
+    /// returned, so without this a re-`set_toolbar` carrying a new selection or new menu rows
+    /// changes nothing on screen. Selection is diffed against the live value on purpose — the user
+    /// is the other writer, and a blind write would fight a click.
+    ///
+    /// A [`ToolbarItem::Search`] field's *text* is deliberately not pushed: the item owns the
+    /// field and its editing session, and writing the string back per call would fight the user
+    /// mid-word. Read it from `on_change`.
+    fn refresh(&self) {
+        let items = self.ivars().items.borrow();
+        let built = self.ivars().built.borrow();
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        for spec in items.iter() {
+            let id = spec.identifier();
+            let Some((_, item)) = built.iter().find(|(found, _)| *found == id) else {
+                continue;
+            };
+            match spec {
+                ToolbarItem::Group {
+                    segments,
+                    selection,
+                    selected,
+                    width,
+                    ..
+                } => {
+                    let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() else {
+                        continue;
+                    };
+                    let representation = (*width).into();
+                    if group.controlRepresentation() != representation {
+                        group.setControlRepresentation(representation);
+                    }
+                    if *selection == ToolbarSelection::SelectOne && *selected < segments.len() {
+                        let wanted = *selected as isize;
+                        if group.selectedIndex() != wanted {
+                            group.setSelectedIndex(wanted);
+                        }
+                    }
+                }
+                ToolbarItem::Search {
+                    placeholder, width, ..
+                } => {
+                    let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() else {
+                        continue;
+                    };
+                    let wanted = f32::from(*width) as f64;
+                    if search.preferredWidthForSearchField() != wanted {
+                        search.setPreferredWidthForSearchField(wanted);
+                    }
+                    let field = search.searchField();
+                    let current = field.placeholderString().map(|text| text.to_string());
+                    if current.as_deref().unwrap_or("") != placeholder {
+                        field.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+                    }
+                }
+                ToolbarItem::Menu { entries, .. } => {
+                    let Some(menu_item) = item.downcast_ref::<NSMenuToolbarItem>() else {
+                        continue;
+                    };
+                    sync_menu(
+                        mtm,
+                        &menu_item.menu(),
+                        entries,
+                        Some((self.as_ref(), sel!(ngToolbarMenu:))),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The window's split view, which is what [`crate::sidebar::NativeSidebar`] installs as the content
+    /// view controller. `None` when there is no sidebar, so a [`ToolbarItem::Separator`] with
+    /// nothing to track is dropped rather than tracking a divider that does not exist.
+    fn split_view(&self) -> Option<Retained<NSSplitView>> {
+        let window = self.ivars().window.load()?;
+        let controller = window
+            .contentViewController()?
+            .downcast::<NSSplitViewController>()
+            .ok()?;
+        Some(controller.splitView())
+    }
+}
+
+/// An unknown name resolves to no image rather than a placeholder, so a typo degrades to a blank
+/// item that looks deliberate. Gated on [`tokens::sf_symbol`] so the name is checked once.
+fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
+    tokens::sf_symbol(symbol, tokens::system_font_size(), FontWeight::NORMAL)?;
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        Some(&NSString::from_str(label)),
+    )
 }
 
 /// Give the window a real macOS toolbar, or take it away. `None` restores the original window
@@ -602,7 +1290,7 @@ pub fn set_toolbar(
 
     let delegate = {
         let mut slot = host.ivars().toolbar_delegate.borrow_mut();
-        slot.get_or_insert_with(|| ToolbarDelegate::new(mtm, window.to_async(cx)))
+        slot.get_or_insert_with(|| ToolbarDelegate::new(mtm, &ns_window, window.to_async(cx)))
             .clone()
     };
     // Handlers are replaced every call: they close over the caller's current state.
@@ -622,6 +1310,7 @@ pub fn set_toolbar(
         })
         .clone()
     };
+    delegate.refresh();
 
     let unchanged = host
         .ivars()
@@ -641,6 +1330,99 @@ pub fn set_toolbar(
     ns_window.setToolbar(Some(&toolbar));
     toolbar.setVisible(true);
     *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
+}
+
+/// What the toolbar actually built, one line per item: identifier, the AppKit class AppKit ended
+/// up with, whether it is currently visible rather than clipped, and whatever that class can be
+/// asked for.
+///
+/// The instrument for a [`ToolbarItem`], and it has to read back from `NSToolbar` rather than from
+/// the item list: whether a `Group` stayed a capsule or collapsed into a menu, and whether the
+/// search field is wide or a glyph, are decisions AppKit makes from the width available.
+///
+/// A plain item and a group report no frame — the control belongs to AppKit and `view` is nil on
+/// both, including on a group built by the convenience constructor that the header says has one.
+pub fn toolbar_description(window: &Window) -> String {
+    let ns_window = ns_window_of(window);
+    let Some(toolbar) = ns_window.toolbar() else {
+        return String::from("no toolbar");
+    };
+    let visible: Vec<String> = toolbar
+        .visibleItems()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.itemIdentifier().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut lines = Vec::new();
+    for item in toolbar.items().iter() {
+        let id = item.itemIdentifier().to_string();
+        let class = item.class().name().to_string_lossy().into_owned();
+        let shown = if visible.iter().any(|found| *found == id) {
+            "visible"
+        } else {
+            "clipped"
+        };
+        let detail = if let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() {
+            format!(
+                " segments={} selected={} representation={:?}",
+                group.subitems().count(),
+                group.selectedIndex(),
+                group.controlRepresentation().0,
+            )
+        } else if let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() {
+            let frame = search.searchField().frame().size;
+            format!(
+                " field={:.0}x{:.0} preferred={:.0}",
+                frame.width,
+                frame.height,
+                search.preferredWidthForSearchField(),
+            )
+        } else if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
+            format!(" rows={}", menu.menu().numberOfItems())
+        } else {
+            item.view()
+                .map(|view| {
+                    let size = view.frame().size;
+                    format!(" view={:.0}x{:.0}", size.width, size.height)
+                })
+                .unwrap_or_default()
+        };
+        lines.push(format!("{id} {class} {shown}{detail}"));
+    }
+    lines.join("\n")
+}
+
+/// Expand a [`ToolbarItem::Search`] to its preferred width and put the keyboard in it, or collapse
+/// it back to the magnifier. What clicking the glyph does, for a caller wiring ⌘F.
+///
+/// The expansion is `NSSearchToolbarItem`'s own, and it is a real width change rather than a
+/// styling one: with `width` at 240pt the field goes 37x36 collapsed — a magnifier in a circle —
+/// to 246x36 expanded. Whether the items beside it survive that is the toolbar's call, not this
+/// one's: measured with ten items, an 820pt window keeps every item `visible`, while a 560pt
+/// window already clips two collapsed and five expanded. `false` returns it to the glyph, and so
+/// does a window resize.
+pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
+    let ns_window = ns_window_of(window);
+    let Some(toolbar) = ns_window.toolbar() else {
+        return;
+    };
+    for item in toolbar.items().iter() {
+        if item.itemIdentifier().to_string() != id {
+            continue;
+        }
+        let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() else {
+            return;
+        };
+        if active {
+            search.beginSearchInteraction();
+        } else {
+            search.endSearchInteraction();
+        }
+        return;
+    }
 }
 
 /// How much of the window's height the titlebar and toolbar occupy, in points — the amount to

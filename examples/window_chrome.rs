@@ -1,6 +1,6 @@
 //! Window-level chrome, live: the corner radius driven by GPUI controls, a real unified toolbar
-//! with two SF Symbol items, a GPUI region wearing the system pointing hand, and the titlebar band
-//! and traffic-light inset read from the system every frame and painted by GPUI.
+//! carrying one of every [`ToolbarItem`] kind, a GPUI region wearing the system pointing hand, and
+//! the titlebar band and traffic-light inset read from the system every frame and painted by GPUI.
 //!
 //! The arms with no on-screen control are driven by appending to a command file:
 //!
@@ -13,6 +13,8 @@
 //! echo move <x> <y>    >> /tmp/wchrome/cmd   # global top-left, over the cyan region
 //! echo cursor          >> /tmp/wchrome/cmd
 //! echo probe           >> /tmp/wchrome/cmd
+//! echo items           >> /tmp/wchrome/cmd   # what the toolbar actually built
+//! echo mode 2          >> /tmp/wchrome/cmd   # push a new selection at the view-mode group
 //! ```
 //!
 //! Everything it prints is prefixed `WC `. `move` and `click` warp the real pointer; `pointer`
@@ -26,31 +28,32 @@
 //! coordinate-recipe targets the `overlay` arm lands a child window on, `claimed` is the cyan
 //! cursor region, and the blue control beside it is never claimed, so it must keep reacting.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write;
 use std::ptr::NonNull;
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, Render, Window, WindowBounds, div, point,
+    App, Application, Bounds, Context, MouseButton, Render, Size, Window, WindowBounds, div, point,
     prelude::*, px, rgb, size,
 };
+use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_item};
 use native_gpui::window_chrome::{
-    Cursor, ToolbarItem, ToolbarStyle, WindowLevel, chrome_host, corner_radius,
-    corner_radius_readback, current_cursor_description, cursor_region, native_rect,
+    Cursor, ToolbarItem, ToolbarSegment, ToolbarSelection, ToolbarStyle, WindowLevel, chrome_host,
+    corner_radius, corner_radius_readback, current_cursor_description, cursor_region, native_rect,
     native_screen_rect, native_window_rect, restore_window_flags, set_corner_radius, set_toolbar,
-    set_window_flags, supports_corner_radius, system_corner_radius, titlebar_band,
-    traffic_light_inset, window_flags, window_level,
+    set_toolbar_search_active, set_window_flags, supports_corner_radius, system_corner_radius,
+    titlebar_band, toolbar_description, traffic_light_inset, window_flags, window_level,
 };
-use native_gpui::{native_root, tokens, window_options};
+use native_gpui::{MenuEntry, native_root, tokens, window_options};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSWindow, NSWindowCollectionBehavior,
-    NSWindowOrderingMode, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSColor, NSProgressIndicator, NSSegmentedControl, NSView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowOrderingMode, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSTimer,
+    MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
 };
 
 const DIR: &str = "/tmp/wchrome";
@@ -124,6 +127,9 @@ thread_local! {
     /// Scratch state only. Everything the *crate* owns is read back from the crate, never mirrored
     /// here, so a readout cannot drift from the thing it reports.
     static DRIVER: RefCell<Driver> = RefCell::new(Driver::default());
+    /// The view-mode index the `ng.view` group reports and reads back — the caller's state, which
+    /// is what a toolbar group's selection has to follow.
+    static MODE: Cell<usize> = const { Cell::new(1) };
 }
 
 #[derive(Default)]
@@ -134,6 +140,8 @@ struct Driver {
     /// `CGWarpMouseCursorPosition` takes.
     pointer_home: Option<NSPoint>,
     warped: bool,
+    /// Held only so the sidebar the `sidebar` arm installs outlives the command.
+    sidebar: Option<NativeSidebar>,
 }
 
 /// Put the operator's pointer back, but only if this process moved it — otherwise `quit` would
@@ -297,6 +305,48 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
             set_toolbar(window, cx, style, &toolbar_items());
             geometry(window, &format!("after-toolbar-{arg}"));
         }
+        "items" => {
+            for line in toolbar_description(window).lines() {
+                wlog!("ITEM {line}");
+            }
+        }
+        "mode" => {
+            if let Ok(index) = arg.parse::<usize>() {
+                MODE.with(|slot| slot.set(index));
+                set_toolbar(window, cx, Some(ToolbarStyle::Unified), &toolbar_items());
+                wlog!("MODE set {index}");
+            }
+        }
+        "search" => {
+            set_toolbar_search_active(window, "ng.search", arg != "off");
+            wlog!("SEARCH active={}", arg != "off");
+        }
+        "resize" => {
+            if let Ok(width) = arg.parse::<f64>() {
+                let ns_window = chrome_host(window).window();
+                if let Some(ns_window) = ns_window {
+                    let mut frame = ns_window.frame();
+                    frame.size.width = width;
+                    ns_window.setFrame_display(frame, true);
+                    wlog!("RESIZE width={width}");
+                }
+            }
+        }
+        // The one item that needs a split view to track. Installs a sidebar first, so the
+        // `Separator` arm is exercised rather than silently dropped.
+        "sidebar" => {
+            let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
+            sidebar.update(&[
+                sidebar_item("here", "Here").symbol("folder"),
+                sidebar_item("there", "There").symbol("clock"),
+            ]);
+            sidebar.set_selected(Some("here"));
+            DRIVER.with(|h| h.borrow_mut().sidebar = Some(sidebar));
+            let mut items = toolbar_items();
+            items.insert(1, ToolbarItem::separator("ng.divider", 0));
+            set_toolbar(window, cx, Some(ToolbarStyle::Unified), &items);
+            wlog!("SIDEBAR installed");
+        }
         "overlay" => overlay(
             window,
             match arg {
@@ -427,13 +477,75 @@ fn pump() {
     });
 }
 
+/// Every [`ToolbarItem`] kind in one band, in Finder's order: a glyph, the view-mode capsule, a
+/// menu with a chevron, the system share picker, a plain glyph, an unpinned view item, and the
+/// search field that collapses to a magnifier.
 fn toolbar_items() -> Vec<ToolbarItem> {
+    let mode = MODE.with(|slot| slot.get());
     vec![
         ToolbarItem::symbol("ng.sidebar", "sidebar.left", "Sidebar")
             .on_click(|_, _| log("TOOLBAR clicked ng.sidebar")),
         ToolbarItem::flexible_space(),
-        ToolbarItem::symbol("ng.share", "square.and.arrow.up", "Share")
-            .on_click(|_, _| log("TOOLBAR clicked ng.share")),
+        ToolbarItem::group(
+            "ng.view",
+            "View",
+            [
+                ToolbarSegment::new("square.grid.2x2", "Icons"),
+                ToolbarSegment::new("list.bullet", "List"),
+                ToolbarSegment::new("rectangle.split.3x1", "Columns"),
+                ToolbarSegment::new("squares.below.rectangle", "Gallery"),
+            ],
+            mode,
+        )
+        .on_select(|index, _, _| {
+            MODE.with(|slot| slot.set(index));
+            wlog!("TOOLBAR group ng.view -> {index}");
+        }),
+        ToolbarItem::menu(
+            "ng.sort",
+            "square.grid.3x3",
+            "Group",
+            [
+                MenuEntry::item("Name").symbol("textformat"),
+                MenuEntry::item("Kind").symbol("doc"),
+                MenuEntry::separator(),
+                MenuEntry::item("Date Modified").symbol("calendar"),
+            ],
+        )
+        .on_select(|index, _, _| wlog!("TOOLBAR menu ng.sort -> {index}")),
+        // Momentary keeps no selection, so its index cannot come from `selectedIndex` — this arm
+        // is what proves it does not.
+        ToolbarItem::group(
+            "ng.nav",
+            "Navigate",
+            [
+                ToolbarSegment::new("chevron.left", "Back"),
+                ToolbarSegment::new("chevron.right", "Forward"),
+            ],
+            0,
+        )
+        .selection(ToolbarSelection::Momentary)
+        .on_select(|index, _, _| wlog!("TOOLBAR group ng.nav -> {index}")),
+        ToolbarItem::share("ng.share", "Share", ["A shared string from the toolbar"]),
+        ToolbarItem::symbol("ng.tag", "tag", "Tags").on_click(|_, _| log("TOOLBAR clicked ng.tag")),
+        // Three arms of the same question, printed side by side by `items`: a control with an
+        // intrinsic size in both axes needs no size, a bare `NSView` has one in neither and is
+        // measured at 0x0, and a pinned size is honoured exactly.
+        ToolbarItem::view("ng.seg", "Segmented", Size::default(), |mtm| {
+            let control = NSSegmentedControl::new(mtm);
+            control.setSegmentCount(2);
+            control.setLabel_forSegment(&NSString::from_str("A"), 0);
+            control.setLabel_forSegment(&NSString::from_str("B"), 1);
+            Retained::into_super(Retained::into_super(control))
+        }),
+        ToolbarItem::view("ng.bare", "Bare", Size::default(), NSView::new),
+        ToolbarItem::view("ng.pinned", "Pinned", size(px(90.), px(22.)), |mtm| {
+            Retained::into_super(NSProgressIndicator::new(mtm))
+        }),
+        ToolbarItem::search("ng.search", "Search")
+            .placeholder("Search")
+            .width(px(240.))
+            .on_change(|text, _, _| wlog!("TOOLBAR search ng.search -> {text:?}")),
     ]
 }
 
