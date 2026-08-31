@@ -1,10 +1,13 @@
 //! A Finder front end. Real macOS chrome, entirely fictional files.
 //!
-//! Nothing here reads the filesystem: the tree in `DIRS` is invented and the sidebar's Locations
-//! are props. Dates and sizes are still formatted by `NSDateFormatter` and `NSByteCountFormatter`,
-//! so the columns read in the user's own locale and unit conventions rather than in a format
-//! written down here — a list that says "14 Aug 2026 at 09:41" on one Mac and "Aug 14, 2026 at
-//! 9:41 AM" on another is the difference between a recreation and a mock-up.
+//! Nothing here reads the filesystem: the tree in `DIRS` is invented, the sidebar's Locations are
+//! props, and a row's icon comes from a *type* lookup — the system's own artwork for `.pdf`, for a
+//! folder, for an application bundle — never from a file on disk. Dates and sizes are formatted by
+//! `NSDateFormatter` and `NSByteCountFormatter`, so the columns read in the user's own locale,
+//! timezone and unit conventions rather than in a format written down here. Relative date
+//! formatting is what supplies Finder's `Today` and `Yesterday` tiers, and the switch happens on
+//! the calendar day rather than after some number of hours: a file touched eight hours ago reads
+//! `Yesterday` as soon as midnight has passed.
 //!
 //! What is native: the sidebar (`NSSplitViewItem.sidebar`, `NSOutlineView` rows), the unified
 //! toolbar and its items, the back/forward and view-mode segmented controls, the search field and
@@ -13,10 +16,12 @@
 //!
 //! `NG_QUIT=<frames>` exits after N frames, so a smoke run ends on its own.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
 
+use block2::StackBlock;
 use gpui::{
     AnyElement, App, Application, Bounds, ClickEvent, ClipboardItem, FocusHandle, FontWeight, Hsla,
     KeyBinding, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, UniformListScrollHandle,
@@ -26,16 +31,17 @@ use native_gpui::sidebar::{
     NativeSidebar, SidebarItem, SidebarMetrics, SidebarOptions, sidebar_group, sidebar_item,
 };
 use native_gpui::tokens::{
-    self, SymbolColor, SystemColor, SystemTheme, sf_symbol_colored, system_color,
+    self, FileType, SymbolColor, SystemColor, SystemTheme, file_icon, sf_symbol_colored,
+    system_color,
 };
 use native_gpui::{
     MenuEntry, ToolbarItem, ToolbarStyle, TrackingMode, chrome_host, install_menus, native_popup,
     native_root, native_search_field, native_segmented, native_slider, set_toolbar, window_options,
 };
-use objc2_app_kit::NSWindowTitleVisibility;
+use objc2_app_kit::{NSColor, NSWindowTitleVisibility};
 use objc2_foundation::{
-    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSDate, NSDateFormatter,
-    NSDateFormatterStyle, NSTimeZone,
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCalendar, NSCalendarUnit, NSDate,
+    NSDateComponents, NSDateFormatter, NSDateFormatterStyle,
 };
 
 use self::Face as F;
@@ -44,7 +50,8 @@ use self::Face as F;
 // The invented filesystem
 // ---------------------------------------------------------------------------------------------
 
-/// What a row is, which decides its glyph, its Kind column and its icon tint.
+/// What a row is, which decides its icon, its Kind column and — where no real artwork exists for
+/// the type — the tint of the symbol standing in for it.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Face {
     Folder,
@@ -60,6 +67,7 @@ enum Face {
     Movie,
     Audio,
     Archive,
+    Disk,
     Program,
     Web,
 }
@@ -80,6 +88,7 @@ impl Face {
             F::Movie => "film.fill",
             F::Audio => "waveform",
             F::Archive => "shippingbox.fill",
+            F::Disk => "externaldrive.fill",
             F::Program => "app.fill",
             F::Web => "safari.fill",
         }
@@ -91,17 +100,31 @@ impl Face {
             F::Volume => "Volume",
             F::Device => "Computer",
             F::Pdf => "PDF Document",
-            F::Text => "Plain Text Document",
+            F::Text => "Plain Text",
             F::Code => "Source Text",
             F::Sheet => "Numbers Spreadsheet",
             F::Pages => "Pages Document",
             F::Slides => "Keynote Presentation",
-            F::Image => "PNG Image",
+            F::Image => "PNG image",
             F::Movie => "QuickTime Movie",
             F::Audio => "Audio File",
-            F::Archive => "ZIP Archive",
+            F::Archive => "ZIP archive",
+            F::Disk => "Disk Image",
             F::Program => "Application",
             F::Web => "Web Internet Location",
+        }
+    }
+
+    /// The type whose own artwork the system draws for this row, or `None` to fall back to
+    /// [`Face::symbol`]. Keyed on the face and not only on the extension because Finder hides the
+    /// `.app` of a bundle and a folder has no extension at all, yet both have real icons; the
+    /// faces that answer `None` are props with no file type behind them.
+    fn artwork(self, extension: Option<&'static str>) -> Option<FileType<'static>> {
+        match self {
+            F::Folder => Some(FileType::Folder),
+            F::Program => Some(FileType::Extension("app")),
+            F::Volume | F::Device => None,
+            _ => extension.map(FileType::Extension),
         }
     }
 
@@ -121,6 +144,7 @@ impl Face {
             F::Movie => SystemColor::SystemPurple,
             F::Audio => SystemColor::SystemPink,
             F::Archive => SystemColor::SystemBrown,
+            F::Disk => SystemColor::SystemGray,
             F::Program => SystemColor::SystemBlue,
             F::Web => SystemColor::SystemCyan,
         };
@@ -128,9 +152,20 @@ impl Face {
     }
 }
 
-/// `name`, face, modified as `yyyymmddhhmm`, size in bytes, the directory this row opens (`""`
-/// when it opens nothing). Folder sizes are ignored: Finder shows `--`.
+/// `name`, face, modified as `yyyymmddhhmm` or an [`ago`] offset, size in bytes, the directory this
+/// row opens (`""` when it opens nothing). Folder sizes are ignored: Finder shows `--`.
 type Src = (&'static str, Face, u64, u64, &'static str);
+
+/// Above every `yyyymmddhhmm` literal, which is twelve digits, so a relative stamp cannot collide
+/// with a real one.
+const RELATIVE: u64 = 1_000_000_000_000;
+
+/// A stamp meaning `days` calendar days before launch at `hour:minute`. A frozen literal can never
+/// be today, so without this the list would never show the `Today` and `Yesterday` tiers that are
+/// two thirds of what Finder's date column does.
+const fn ago(days: u64, hour: u64, minute: u64) -> u64 {
+    RELATIVE + days * 10_000 + hour * 100 + minute
+}
 
 /// `id`, display name, parent id (`""` at the root), breadcrumbs, contents.
 type Dir = (
@@ -151,17 +186,23 @@ const DIRS: &[Dir] = &[
         &["Macintosh HD", "Users", "avery", "Documents"],
         &[
             ("Invoices", F::Folder, 202607281412, 0, "invoices"),
-            ("Projects", F::Folder, 202608301037, 0, "projects"),
+            ("Projects", F::Folder, ago(0, 4, 34), 0, "projects"),
             ("Tax 2025", F::Folder, 202601190904, 0, "tax"),
             ("Annual Report.pdf", F::Pdf, 202608141731, 8_412_770, ""),
-            ("Budget 2026.numbers", F::Sheet, 202608070912, 1_204_881, ""),
-            ("Cabin Lease.pages", F::Pages, 202605221459, 462_112, ""),
-            ("Kickoff Deck.key", F::Slides, 202607041122, 24_880_401, ""),
-            ("Meeting Notes.txt", F::Text, 202608291642, 11_402, ""),
+            ("Cabin Lease.pdf", F::Pdf, 202605221459, 462_112, ""),
+            (
+                "Field Recording.mov",
+                F::Movie,
+                ago(1, 7, 47),
+                148_220_410,
+                "",
+            ),
+            ("Kickoff Notes.md", F::Text, ago(1, 22, 11), 11_402, ""),
             ("Onboarding.pdf", F::Pdf, 202604111005, 2_118_004, ""),
             ("Passport Scan.png", F::Image, 202602280811, 3_940_112, ""),
-            ("Reading List.txt", F::Text, 202608120744, 4_118, ""),
-            ("Recipes.pages", F::Pages, 202603160931, 812_004, ""),
+            ("Reading List.md", F::Text, 202608262114, 4_118, ""),
+            ("Receipts.zip", F::Archive, 202608241819, 41_004_882, ""),
+            ("Ventura.dmg", F::Disk, 202603160931, 812_004_118, ""),
         ],
     ),
     (
@@ -673,26 +714,51 @@ const SIDEBAR: &[Group] = &[
 // System formatting
 // ---------------------------------------------------------------------------------------------
 
-/// Days since 1970-01-01 from a proleptic Gregorian date. Needed because the invented dates are
-/// written as readable `yyyymmddhhmm` literals and `NSDate` wants seconds.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-fn epoch_seconds(stamp: u64) -> f64 {
+/// `(year, month, day, hour, minute)` for a stamp, an [`ago`] offset resolved against `today`.
+///
+/// A relative day is left deliberately out of range — `day - 1` on the 1st of a month comes out
+/// zero, and three days before the 2nd of January comes out negative. `NSCalendar` normalises both
+/// into the previous month or year, which is why this does no carrying of its own.
+fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64, i64, i64) {
+    if stamp >= RELATIVE {
+        let offset = (stamp - RELATIVE) as i64;
+        let (year, month, day) = today;
+        return (
+            year,
+            month,
+            day - offset / 10_000,
+            offset / 100 % 100,
+            offset % 100,
+        );
+    }
     let stamp = stamp as i64;
-    let (year, month, day) = (
+    (
         stamp / 100_000_000,
         stamp / 1_000_000 % 100,
         stamp / 10_000 % 100,
-    );
-    let (hour, minute) = (stamp / 100 % 100, stamp % 100);
-    (days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60) as f64
+        stamp / 100 % 100,
+        stamp % 100,
+    )
+}
+
+/// The date a stamp names, in the user's own calendar and timezone.
+///
+/// Built from components rather than from an epoch offset: the relative stamps have to land on a
+/// calendar day, and a day is not 86,400 seconds long twice a year.
+fn stamp_date(
+    calendar: &NSCalendar,
+    today: (i64, i64, i64),
+    stamp: u64,
+) -> Option<objc2::rc::Retained<NSDate>> {
+    let (year, month, day, hour, minute) = stamp_parts(stamp, today);
+    let parts = NSDateComponents::new();
+    parts.setYear(year as isize);
+    parts.setMonth(month as isize);
+    parts.setDay(day as isize);
+    parts.setHour(hour as isize);
+    parts.setMinute(minute as isize);
+    parts.setSecond(0);
+    calendar.dateFromComponents(&parts)
 }
 
 fn byte_string(bytes: u64) -> String {
@@ -716,6 +782,9 @@ struct Row {
     bytes: u64,
     face: Face,
     opens: Option<&'static str>,
+    /// Resolved once at build time: a lookup plus raster is cached, but deciding *which* type to
+    /// ask for from a name and a face is this file's own work and does not need repeating per frame.
+    artwork: Option<FileType<'static>>,
 }
 
 struct Folder {
@@ -741,15 +810,16 @@ enum Column {
     Kind,
 }
 
-/// Width and trailing inset per fixed column. Named rather than repeated, because the header and
-/// the rows are laid out in different functions and a literal in only one of them is exactly how
-/// the two stop lining up.
-const COL_MODIFIED: (f32, f32) = (172., 10.);
-const COL_SIZE: (f32, f32) = (84., 16.);
-const COL_KIND: (f32, f32) = (152., 10.);
+/// Column widths as Finder *draws* them, which are not the widths it stores — Name is stored 178
+/// and drawn 197. Named rather than repeated, because the header and the rows are laid out in
+/// different functions and a literal in only one of them is exactly how the two stop lining up.
+/// Name takes whatever is left, so the pane can be any width and the rest still land together.
+const COL_MODIFIED: f32 = 181.;
+const COL_SIZE: f32 = 75.;
+const COL_KIND: f32 = 121.;
 
-const COLUMNS: &[(Column, &str, (f32, f32))] = &[
-    (Column::Name, "Name", (0., 10.)),
+const COLUMNS: &[(Column, &str, f32)] = &[
+    (Column::Name, "Name", 0.),
     (Column::Modified, "Date Modified", COL_MODIFIED),
     (Column::Size, "Size", COL_SIZE),
     (Column::Kind, "Kind", COL_KIND),
@@ -768,12 +838,55 @@ const LIST_CONTEXT: &str = "FinderList";
 actions!(finder_demo, [SelectAll, CopyNames]);
 
 const TOOLBAR_H: f32 = 40.;
-const HEADER_H: f32 = 23.;
-/// Finder's own list row, measured off a real window: 21pt with a 16pt icon.
-const ROW_H: f32 = 21.;
+/// Finder's column header band. Its own bottom hairline is the only line in the chrome above the
+/// list: there is none under the toolbar, which shares one continuous background with the header.
+const HEADER_H: f32 = 28.;
+const ICON_SIZE: f32 = 32.;
+/// Finder's list row at the view options the target window uses — large icons, text size 14. The
+/// same rule holds at 16pt icons and 21pt rows, so the row follows the icon rather than the other
+/// way round.
+const ROW_H: f32 = ICON_SIZE + 4.;
+/// Measured from the list pane's leading edge, not from the Name column: the icon sits 26 in, the
+/// label a 6pt gap after it, and the disclosure triangle's 15pt hit area ends where the icon
+/// begins. The label offset moves with the icon size; nothing else here does.
+const ICON_X: f32 = 26.;
+const LABEL_X: f32 = ICON_X + ICON_SIZE + 6.;
+const TWIST_W: f32 = 15.;
+/// The columns region is inset this far from both pane edges. Both the selection *and* the
+/// alternating row band span exactly it, as one rounded shape — neither runs the full pane width.
+const PANE_INSET: f32 = 10.;
+/// Read off a real window with the area→radius conversion calibrated against AppKit's own
+/// `NSBezierPath(roundedRect:)`: the uncalibrated number is about 1pt low, because the formula
+/// assumes an ideal quarter-disc where a rendered corner spreads its coverage over the arc.
+const ROW_PILL_RADIUS: f32 = 8.;
+/// The header's label inset does not follow the icon size the way a row's does: at 16pt icons the
+/// two coincide at 46, and at 32pt they do not.
+const HEADER_LABEL_X: f32 = 46.;
+/// A header separator is 1pt wide and 24 of the band's 28pt — inset from the top, flush to the
+/// bottom, where it runs into the hairline.
+const SEP_TOP: f32 = 4.;
+/// Text inset inside a fixed column. Size measures it from the trailing edge instead, which is how
+/// three different strings there come out sharing one right edge.
+const CELL_PAD: f32 = 6.;
+/// The sort indicator's inset from the sorted column's trailing edge.
+const SORT_INSET: f32 = 7.5;
+/// The list's font size is Finder's per-folder `text size` view option and not a system metric: a
+/// fresh folder defaults to 13, and the window this is matched against is set to 14.
+const ROW_FONT: f32 = 14.;
+/// Finder's table starts this far below the header hairline, so the first row's band does not touch
+/// the line.
+const LIST_TOP_GAP: f32 = 5.;
 const BAR_H: f32 = 26.;
-const PREVIEW_W: f32 = 248.;
+/// The right pane including the 1pt divider on its leading edge, which is what leaves Finder 594pt
+/// of list in a 1026pt window. Get it wrong and every column lands somewhere else.
+const PREVIEW_W: f32 = 240.;
+/// Chosen for where it leaves the *list*, not for its own width: the sidebar reports an 8pt gutter
+/// between its trailing edge and the pane, and Finder's list starts at 192. Measured off a capture
+/// — at 192 the pane began at 200 and every column sat 8pt right of Finder's.
+const SIDEBAR_W: f32 = 184.;
 const INDENT: f32 = 15.;
+/// The browser (column) view keeps the compact row it always had: only the list view was measured.
+const BROWSER_ROW_H: f32 = 21.;
 
 /// Icon-view tile: how much wider than the icon the cell is, and the gap between cells. The pitch
 /// is the sum, and leaving the gap out of it is how the last column ends up clipped.
@@ -791,22 +904,36 @@ const TAGS: &[(&str, SystemColor)] = &[
 ];
 
 fn build_store() -> HashMap<&'static str, Folder> {
-    // Medium date + short time is the pair Finder uses, and the locale's own joiner supplies the
-    // "at" — the whole reason to ask Foundation instead of writing a format string.
+    // Short date + short time with relative formatting on, which is the combination that produces
+    // Finder's own three tiers — `Today, 4:34 AM`, `Yesterday, 7:47 AM`, `8/26/26, 9:14 PM` —
+    // including the narrow no-break space before the meridiem, which a hand-written format string
+    // gets wrong by about 2pt a row. Medium date style would join with " at " instead of ", ".
     let formatter = NSDateFormatter::new();
-    formatter.setDateStyle(NSDateFormatterStyle::MediumStyle);
+    formatter.setDateStyle(NSDateFormatterStyle::ShortStyle);
     formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
-    // GMT, so an invented stamp renders as the literal that was typed. Local time would shift
-    // every column by the host's offset and put the Screenshots folder's dates an hour off the
-    // times in its own filenames.
-    formatter.setTimeZone(Some(&NSTimeZone::timeZoneForSecondsFromGMT(0)));
+    formatter.setDoesRelativeDateFormatting(true);
+
+    // The user's own calendar and timezone, not GMT: `Today` has to mean their today, and the
+    // switch is a calendar-day boundary rather than a count of hours — a file touched eight hours
+    // ago reads `Yesterday` once midnight has passed.
+    let calendar = NSCalendar::currentCalendar();
+    let now = NSDate::date();
+    let fields = NSCalendarUnit::Year | NSCalendarUnit::Month | NSCalendarUnit::Day;
+    let parts = calendar.components_fromDate(fields, &now);
+    let today = (
+        parts.year() as i64,
+        parts.month() as i64,
+        parts.day() as i64,
+    );
 
     let row = |src: &Src| {
         let (name, face, stamp, bytes, opens) = *src;
-        let date = NSDate::dateWithTimeIntervalSince1970(epoch_seconds(stamp));
+        let modified = stamp_date(&calendar, today, stamp)
+            .map(|date| formatter.stringFromDate(&date).to_string())
+            .unwrap_or_default();
         Row {
             name: name.into(),
-            modified: formatter.stringFromDate(&date).to_string().into(),
+            modified: modified.into(),
             stamp,
             size: if face == F::Folder || face == F::Volume || face == F::Device {
                 "--".into()
@@ -816,6 +943,7 @@ fn build_store() -> HashMap<&'static str, Folder> {
             bytes,
             face,
             opens: (!opens.is_empty()).then_some(opens),
+            artwork: face.artwork(name.rsplit_once('.').map(|(_, tail)| tail)),
         }
     };
 
@@ -897,7 +1025,9 @@ impl FinderDemo {
             cursor: None,
             anchor: None,
             tags: HashMap::new(),
-            preview: false,
+            // On, as Finder's own window is: the right pane is why the list is 594pt wide in a
+            // 1026pt window, and the column geometry only lands where Finder puts it at that width.
+            preview: true,
             icon_size: 64.,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
@@ -947,7 +1077,7 @@ impl FinderDemo {
             window,
             cx,
             SidebarOptions {
-                thickness: px(190.),
+                thickness: px(SIDEBAR_W),
                 min_thickness: px(150.),
                 max_thickness: px(320.),
                 ..SidebarOptions::default()
@@ -1329,7 +1459,8 @@ impl Palette {
             secondary: system_color(SystemColor::SecondaryLabel),
             tertiary: system_color(SystemColor::TertiaryLabel),
             surface: system_color(SystemColor::ControlBackground),
-            stripe: system_color(SystemColor::QuinarySystemFill),
+            stripe: alternating_row()
+                .unwrap_or_else(|| system_color(SystemColor::ControlBackground)),
             separator: system_color(SystemColor::Separator),
             selection: if focused {
                 system_color(SystemColor::SelectedContentBackground)
@@ -1343,6 +1474,49 @@ impl Palette {
             },
             focused,
         }
+    }
+}
+
+/// `alternatingContentBackgroundColors[1]`, the even row's fill, which this crate's palette does
+/// not name.
+///
+/// Resolved inside an explicit drawing appearance rather than in whatever one happens to be
+/// ambient: the dark value is white at 0.047 alpha over the table background while the light one is
+/// an opaque (244,245,245), so an ambient read matches one appearance and silently contradicts the
+/// other. Falls back to the plain surface, which shows up as banding simply gone rather than as
+/// banding in the wrong colour.
+fn alternating_row() -> Option<Hsla> {
+    let slot: RefCell<Option<Hsla>> = RefCell::new(None);
+    let block = StackBlock::new(|| {
+        let colors = NSColor::alternatingContentBackgroundColors();
+        *slot.borrow_mut() = colors.iter().nth(1).and_then(|color| tokens::srgb(&color));
+    });
+    tokens::current_appearance()
+        .ns_appearance()
+        .performAsCurrentDrawingAppearance(&block);
+    slot.into_inner()
+}
+
+/// A list row's icon: the system's own artwork for the row's type, falling back to the face's SF
+/// symbol for the props that have no file type behind them.
+///
+/// 32pt at a 2x backing scale lands on the 64px representation the artwork actually ships, so the
+/// icon is crisp rather than resampled — asking for a size off that ladder is what makes one look
+/// soft. The size is the same for every row on purpose: the cache is keyed by it, and varying it
+/// per row would turn a hit into a 42µs raster.
+fn artwork(row: &Row, size: f32) -> AnyElement {
+    let symbol = row
+        .artwork
+        .and_then(|kind| file_icon(kind, px(size)))
+        .map(|symbol| symbol.img().into_any_element());
+    match symbol {
+        Some(image) => div()
+            .w(px(size))
+            .h(px(size))
+            .flex_none()
+            .child(image)
+            .into_any_element(),
+        None => glyph(row.face, size),
     }
 }
 
@@ -1440,27 +1614,37 @@ impl FinderDemo {
             .into_any_element()
     }
 
+    /// The column header. 28pt, one hairline along its own bottom edge and none under the toolbar,
+    /// and a 1pt separator standing at each interior column boundary — never at the leading edge of
+    /// Name or the trailing edge of Kind.
+    ///
+    /// The sorted column's label is both bolder and brighter than the rest: 11pt semibold in
+    /// `labelColor` against 11pt regular in `secondaryLabelColor`.
     fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut row = div()
             .h(px(HEADER_H))
             .flex_none()
             .flex()
-            .items_center()
-            .px(px(12.))
+            .relative()
+            .font_family(tokens::system_font_family())
             .text_size(tokens::small_system_font_size())
             .text_color(palette.secondary)
-            .border_b_1()
-            .border_color(palette.separator);
+            // Finder needs no fill here: its toolbar band is already the table's colour, so the
+            // header, the rows and the chrome above them read as one surface. This window's
+            // backdrop is a material that measures 67 in dark against Finder's 29, so without
+            // this the header would be the one part of the list that is visibly not the list.
+            .bg(palette.surface);
 
-        for (column, title, (width, pad)) in COLUMNS {
+        let last = COLUMNS.len() - 1;
+        for (index, (column, title, width)) in COLUMNS.iter().enumerate() {
             let active = *column == self.sort;
             let column = *column;
             let mut cell = div()
                 .id(SharedString::from(format!("header-{title}")))
+                .h_full()
                 .flex()
                 .items_center()
-                .gap(px(3.))
-                .pr(px(*pad))
+                .relative()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1477,24 +1661,73 @@ impl FinderDemo {
             } else {
                 cell.flex_1().min_w(px(120.))
             };
+            // A leading spacer rather than padding: the separator and the sort indicator are
+            // positioned from this cell's own edges, and padding would move what those edges mean.
+            let inset = if index == 0 { HEADER_LABEL_X } else { CELL_PAD };
+            cell = cell.child(div().w(px(inset)).flex_none());
             // Finder left-aligns the Size *header* while right-aligning its values, so this one
-            // deliberately does not mirror the row.
-            cell = cell.child(*title);
+            // deliberately does not mirror the row. The label is not centred in the band either:
+            // measured 1pt above centre, which a bottom margin buys without moving the cell's own
+            // edges — the separator and the sort indicator are positioned from those.
+            let label = div().mb(px(2.));
+            cell = cell.child(if active {
+                label
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.label)
+                    .child(*title)
+            } else {
+                label.child(*title)
+            });
             if active {
                 let arrow = if self.ascending {
                     "chevron.up"
                 } else {
                     "chevron.down"
                 };
-                if let Some(glyph) = small_glyph(arrow, 7., SystemColor::SecondaryLabel) {
-                    cell = cell.child(glyph);
+                if let Some(glyph) = small_glyph(arrow, 9., SystemColor::SecondaryLabel) {
+                    cell = cell.child(
+                        div()
+                            .absolute()
+                            .right(px(SORT_INSET))
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .child(glyph),
+                    );
                 }
+            }
+            if index < last {
+                cell = cell.child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .bottom_0()
+                        .w(px(1.))
+                        .h(px(HEADER_H - SEP_TOP))
+                        .bg(palette.separator),
+                );
             }
             row = row.child(cell);
         }
-        row.into_any_element()
+        row.child(div().w(px(PANE_INSET)).flex_none())
+            // The hairline is drawn rather than bordered so the band keeps its full 28pt: a bottom
+            // border would take the pt back out of the content box and shorten every separator.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(palette.separator),
+            )
+            .into_any_element()
     }
 
+    /// One row is 36pt with a 32pt icon 26pt in from the pane's leading edge, the label 6pt after
+    /// the icon, and the disclosure triangle's 15pt hit area in the gap before it. Every offset is
+    /// measured from the pane rather than from the Name column, which begins 10pt further in.
     fn list_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let lines = self.lines(true);
         let this = cx.entity().downgrade();
@@ -1503,13 +1736,16 @@ impl FinderDemo {
         let expanded = self.expanded.clone();
         let label = palette.label;
         let secondary = palette.secondary;
-        let tertiary = palette.tertiary;
         let stripe = palette.stripe;
         let selection = palette.selection;
         let focused = palette.focused;
         let selection_text = palette.selection_text;
+        // Finder's date column is the same face, size and weight as the rest of the row with
+        // tabular figures, so a column of times does not shift as its digits change. Resolved once
+        // per frame: the feature list behind it allocates.
+        let dates = tokens::system_font_tabular(FontWeight::NORMAL);
 
-        uniform_list("ng.finder.list", lines.len(), move |range, _, _| {
+        let list = uniform_list("ng.finder.list", lines.len(), move |range, _, _| {
             range
                 .map(|index| {
                     let line = lines[index].clone();
@@ -1522,6 +1758,7 @@ impl FinderDemo {
                     };
                     let this = this.clone();
                     let open = expanded.contains(&line.key);
+                    let indent = line.depth as f32 * INDENT;
 
                     // `w_full` is load-bearing: a `uniform_list` item is laid out with its own
                     // width free, so without it the row shrinks to its contents and the flexible
@@ -1530,37 +1767,49 @@ impl FinderDemo {
                         .id(("ng.finder.row", index))
                         .w_full()
                         .h(px(ROW_H))
+                        .relative()
                         .flex()
                         .items_center()
-                        .px(px(12.))
+                        .font_family(tokens::system_font_family())
+                        .text_size(px(ROW_FONT))
                         .text_color(text);
-                    if is_selected {
-                        row = row.bg(selection);
+                    // The banding and the selection are one shape: a pill inset from both pane
+                    // edges, the full row height. Finder's alternating band is *not* a full-bleed
+                    // rectangle — measured off a real window it stops 10pt short of each edge and
+                    // carries the same rounded corners, so a selected row needs no band beneath it.
+                    let fill = if is_selected {
+                        Some(selection)
                     } else if index % 2 == 1 {
-                        row = row.bg(stripe);
+                        Some(stripe)
+                    } else {
+                        None
+                    };
+                    if let Some(fill) = fill {
+                        row = row.child(
+                            div()
+                                .absolute()
+                                .left(px(PANE_INSET))
+                                .right(px(PANE_INSET))
+                                .top_0()
+                                .bottom_0()
+                                .rounded(px(ROW_PILL_RADIUS))
+                                .bg(fill),
+                        );
                     }
-
-                    let mut name = div()
-                        .flex_1()
-                        .min_w(px(120.))
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .pl(px(line.depth as f32 * INDENT));
 
                     let twist = {
                         let this = this.clone();
                         let key = line.key.clone();
                         let mut slot = div()
                             .id(("ng.finder.twist", index))
-                            .w(px(13.))
-                            .h(px(13.))
+                            .w(px(TWIST_W))
+                            .h_full()
                             .flex_none()
                             .flex()
                             .items_center()
                             .justify_center();
+                        // Folders only. A bundle is a directory too, and Finder still gives it no
+                        // triangle, so this follows what the row opens rather than what it is.
                         if line.row.opens.is_some() {
                             let arrow = if open {
                                 "chevron.down"
@@ -1572,7 +1821,7 @@ impl FinderDemo {
                             } else {
                                 SystemColor::SecondaryLabel
                             };
-                            if let Some(glyph) = small_glyph(arrow, 8., color) {
+                            if let Some(glyph) = small_glyph(arrow, 9., color) {
                                 slot = slot.child(glyph);
                             }
                             slot = slot.on_click(move |_: &ClickEvent, _, cx| {
@@ -1586,24 +1835,47 @@ impl FinderDemo {
                         slot
                     };
 
-                    name = name.child(twist).child(glyph(line.row.face, 16.)).child(
-                        div()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(line.row.name.clone()),
-                    );
+                    // The gutter ends where the icon begins, so the triangle sitting at its
+                    // trailing edge lands at ICON_X - TWIST_W without that number being written
+                    // down twice.
+                    let mut name = div()
+                        .flex_1()
+                        .min_w(px(120.))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(
+                            div()
+                                .w(px(ICON_X + indent))
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .child(twist),
+                        )
+                        .child(artwork(&line.row, ICON_SIZE))
+                        .child(
+                            div()
+                                .ml(px(LABEL_X - ICON_X - ICON_SIZE))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(line.row.name.clone()),
+                        );
                     if let Some(tag) = tags.get(&line.key) {
-                        name = name.child(tag_dot(*tag));
+                        name = name.child(div().ml(px(6.)).child(tag_dot(*tag)));
                     }
 
                     let clicked = line.clone();
                     row.child(name)
                         .child(
                             div()
-                                .w(px(COL_MODIFIED.0))
+                                .w(px(COL_MODIFIED))
                                 .flex_none()
-                                .pr(px(COL_MODIFIED.1))
-                                .text_size(tokens::small_system_font_size())
+                                .pl(px(CELL_PAD))
+                                .font(dates.clone())
                                 .text_color(detail)
                                 .whitespace_nowrap()
                                 .overflow_hidden()
@@ -1611,31 +1883,27 @@ impl FinderDemo {
                         )
                         .child(
                             div()
-                                .w(px(COL_SIZE.0))
+                                .w(px(COL_SIZE))
                                 .flex_none()
-                                .pr(px(COL_SIZE.1))
+                                .pr(px(CELL_PAD))
                                 .flex()
                                 .justify_end()
-                                .text_size(tokens::small_system_font_size())
+                                .font(dates.clone())
                                 .text_color(detail)
                                 .child(line.row.size.clone()),
                         )
                         .child(
                             div()
-                                .w(px(COL_KIND.0))
+                                .w(px(COL_KIND))
                                 .flex_none()
-                                .pr(px(COL_KIND.1))
-                                .text_size(tokens::small_system_font_size())
-                                .text_color(if is_selected && focused {
-                                    selection_text
-                                } else {
-                                    tertiary
-                                })
+                                .pl(px(CELL_PAD))
+                                .text_color(detail)
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(line.row.face.kind()),
                         )
+                        .child(div().w(px(PANE_INSET)).flex_none())
                         .on_click(move |event: &ClickEvent, window, cx| {
                             let (extend, toggle, twice) = match event {
                                 ClickEvent::Mouse(mouse) => (
@@ -1659,8 +1927,17 @@ impl FinderDemo {
                 .collect::<Vec<_>>()
         })
         .flex_1()
-        .track_scroll(self.scroll.clone())
-        .into_any_element()
+        .track_scroll(self.scroll.clone());
+
+        // Finder's table starts 5pt below the header hairline rather than flush against it, so the
+        // first row's band does not touch the line.
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .pt(px(LIST_TOP_GAP))
+            .child(list)
+            .into_any_element()
     }
 
     fn icon_body(
@@ -1784,7 +2061,7 @@ impl FinderDemo {
                 let clicked = line.clone();
                 let mut row = div()
                     .id((id, index))
-                    .h(px(ROW_H))
+                    .h(px(BROWSER_ROW_H))
                     .flex()
                     .items_center()
                     .gap(px(5.))
@@ -2185,8 +2462,13 @@ impl Render for FinderDemo {
                                 .flex_1()
                                 .flex()
                                 .overflow_hidden()
-                                .border_t_1()
-                                .border_color(palette.separator)
+                                // No line under the toolbar when the column header is there: the
+                                // header carries the only hairline, and the toolbar and header
+                                // share one continuous background. The other views have no header,
+                                // so the body needs the line drawn for them.
+                                .when(headers.is_none(), |row| {
+                                    row.border_t_1().border_color(palette.separator)
+                                })
                                 .child(
                                     div()
                                         .flex_1()
@@ -2241,7 +2523,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(160.), px(120.)),
-                    size: size(px(1180.), px(760.)),
+                    size: size(px(1026.), px(772.)),
                 })),
                 ..window_options()
             },
