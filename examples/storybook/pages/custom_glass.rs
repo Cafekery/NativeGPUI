@@ -499,7 +499,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         ("recipe(GlassRecipe)", matched.into()),
         (
             "corner_radius(Pixels)",
-            "shadowed here by recipe.corner_radius".into(),
+            "unused here; overrides recipe.corner_radius in either order".into(),
         ),
         ("frosting_gpui()", "both specimens".into()),
         ("custom_glass_available()", available.to_string()),
