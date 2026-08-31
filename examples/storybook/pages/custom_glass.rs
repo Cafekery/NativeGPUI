@@ -79,6 +79,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         "Fidelity against a stock NSGlassEffectView",
         vec![
             caption(
+                "Recorded once against a key stock view, not re-measured when this page loads. \
+                 Re-check it before trusting it after any change to build_filter.",
+            ),
+            caption(
                 "Mean per-channel difference 2.49/255, against a 0.0000 noise floor between two \
                  captures of the stock view itself.",
             ),
