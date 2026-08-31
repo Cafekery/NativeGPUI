@@ -61,6 +61,24 @@ a view with no intrinsic width gets none ;; no width at all ;; src/chrome/window
 a momentary group holds no selection ;; reports -1 forever ;; src/chrome/window_chrome.rs
 a search field must be wired before assignment ;; configured before assigned ;; src/chrome/window_chrome.rs
 Finder's alternating band is an inset pill, not full-bleed ;; stops 10pt short of each edge ;; examples/finder_demo/list.rs
+Finder draws column widths it does not store ;; stored 178 and drawn 197 ;; examples/finder_demo/header.rs
+the header label inset does not track the icon size ;; coincide at 46 ;; examples/finder_demo/header.rs
+list offsets are measured from the pane edge ;; sits 26 in ;; examples/finder_demo/list.rs
+the pill radius needed calibrating against AppKit ;; ideal quarter.disc ;; examples/finder_demo/list.rs
+the list font size is a folder view option, not a metric ;; defaults to 13 ;; examples/finder_demo/list.rs
+a toolbar item is its image plus 24pt ;; building the item at 20 and reading back 44 ;; examples/finder_demo/toolbar.rs
+without navigational the run lands after the title ;; 471 against Finder.s 196 ;; examples/finder_demo/toolbar.rs
+NSMenuToolbarItem shows an indicator by default ;; it cost 13pt ;; examples/finder_demo/toolbar.rs
+the search item width drives the reflow, not the field ;; 205pt instead of 203 ;; examples/finder_demo/toolbar.rs
+the private airdrop symbol has no usable public stand-in ;; scores 0.75 ;; examples/finder_demo/toolbar.rs
+the sidebar width is chosen for where it leaves the list ;; pane began at 200 ;; examples/finder_demo/sidebar.rs
+the preview pane width includes its divider ;; 594pt of list ;; examples/finder_demo/preview.rs
+the even row fill differs by appearance, not just in value ;; 0.047 alpha ;; examples/finder_demo/palette.rs
+icon size must land on a shipped representation ;; 64px representation ;; examples/finder_demo/ui.rs
+relative date formatting supplies the narrow no-break space ;; 2pt a row ;; examples/finder_demo/data.rs
+NSCalendar normalises an out-of-range day component ;; no carrying of its own ;; examples/finder_demo/data.rs
+the browser row height was never measured ;; only the list view was measured ;; examples/finder_demo/column.rs
+the icon tile pitch includes the gap ;; last column ends up clipped ;; examples/finder_demo/icon.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
