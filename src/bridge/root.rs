@@ -107,12 +107,10 @@ impl IntoElement for NativeRoot {
 /// renders flat dark grey. It costs nothing when no material is placed: opaque GPUI drawing is
 /// bit-identical either way.
 ///
-/// It has one consequence that stays invisible until someone notices the shadow. On a
-/// **transparent** window macOS derives the drop shadow from **content alpha**, not from the window
-/// frame. Paint opaquely out to the window edge near each corner and the shadow follows the rounded
-/// corner exactly, matching an opaque window's. Leave an unpainted band reaching a corner — a glass
-/// hole that runs to the edge, a sidebar whose last row is not filled — and the shadow follows the
-/// painted content instead: a rounded window with a square shadow.
+/// One consequence is the opposite of what it looks like: the drop shadow does **not** come from
+/// what you paint. An unpainted band reaching a corner — a glass hole running to the edge, a
+/// sidebar whose last row is not filled — leaves the shadow byte-identical. The silhouette tracks
+/// the window frame and its corner radius; see [`crate::set_corner_radius`] for the three arms.
 ///
 /// `appears_transparent` becomes `NSFullSizeContentViewWindowMask`, which lets GPUI draw under the
 /// titlebar and so means **GPUI's content view covers the traffic lights and any toolbar**: a

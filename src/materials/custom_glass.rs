@@ -277,8 +277,13 @@ fn grey(level: f32, alpha: f32) -> Hsla {
     }
 }
 
-/// Whether the private layer stack resolved. False means [`custom_glass`] renders a stock
-/// `NSGlassEffectView` and honours nothing but [`GlassRecipe::corner_radius`].
+/// Whether the whole private recipe path resolved: the three layer classes **and** `CAFilter`.
+///
+/// False does not mean nothing works. `Body::new` gates only on the three layer classes, so if
+/// `CAFilter` alone were missing this reports false while the layer path still runs and still
+/// honours `corner_radius`, `ovalization`, `margin_width` and `backdrop_scale` — only the filter
+/// inputs are lost. It is a stock `NSGlassEffectView` honouring nothing but `corner_radius` only
+/// when a layer class is missing too.
 pub fn custom_glass_available() -> bool {
     private_class(c"CABackdropLayer").is_some()
         && private_class(c"CASDFLayer").is_some()
@@ -546,6 +551,16 @@ impl Body {
     }
 }
 
+/// How close this gets, measured once on macOS 26.5 against a **keyed** stock `NSGlassEffectView`
+/// and not re-measured since: mean per-channel difference 2.49/255, against a 0.0000 noise floor
+/// taken between two captures of the stock view itself. Every filter input this writes is
+/// byte-identical to the stock view's own; the residual is two passes it does not build, a
+/// `vibrantColorMatrix` layer and the specular rim. Re-check it after changing this function —
+/// nothing in the test suite will notice if it stops being true.
+///
+/// Keyed matters: a stock view writes a structurally different recipe when its window is not key,
+/// so the same comparison against an unfocused window read 16.0 rather than 2.49.
+///
 /// `CAFilter` bakes its inputs when the transaction commits and silently ignores writes after
 /// that, so a changed recipe ships a whole new filter rather than mutating the live one.
 fn build_filter(recipe: &GlassRecipe) -> Option<Retained<AnyObject>> {

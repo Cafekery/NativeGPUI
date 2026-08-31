@@ -1,7 +1,8 @@
-//! Public liquid glass: the container that batches many panels, then one panel with its knobs.
+//! Public liquid glass: one panel with its knobs, its properties, then the container that batches
+//! many panels.
 //!
 //! Every specimen sits on something busy. Glass frosting GPUI's own Metal content is the thing
-//! worth seeing, and a flat fill cannot show whether a panel is sampling or has collapsed.
+//! worth seeing, and a flat fill leaves it nothing to bend.
 
 use crate::Demo;
 use crate::ui::*;
@@ -62,53 +63,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
 
     stack(vec![
         note(
-            "Every pixel is AppKit's. Glass samples whatever GPUI painted beneath it, so over the \
-             pane's flat background it would have nothing to bend — each specimen here sits on a \
-             checkerboard or on stripes.",
-        ),
-        section(
-            "glass_container",
-            vec![
-                band(count, spacing),
-                knob(
-                    "spacing",
-                    format!("{spacing:.0} px"),
-                    native_slider("spacing", spacing)
-                        .range(0., 40.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.glass.spacing = *value;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-                knob(
-                    "panels",
-                    count.to_string(),
-                    native_segmented("count", selected)
-                        .segments(COUNTS.map(|count| count.to_string()))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.glass.panels = *value;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-                caption(
-                    "Members find the container themselves and are placed inside its contentView, \
-                     which is what does the batching — a container merely present in the hierarchy \
-                     buys nothing. 400 panels go from 18 fps to 120.",
-                ),
-                caption(format!(
-                    "spacing is how close two members must be before macOS merges them into one \
-                     blob of glass. These sit {GAP:.0}pt apart, so anything past that fuses them; \
-                     0, the default, batches without merging."
-                )),
-                note(
-                    "The container is placed at the whole window, not at this band, and it claims \
-                     every mouse point inside it — a hosted control painted before it never sees a \
-                     click. That is why the batch leads this page: every knob below it stays live, \
-                     and events the container does not handle still reach GPUI.",
-                ),
-            ],
+            "Every pixel is AppKit's. Glass samples whatever GPUI painted beneath it, and the \
+             pane's flat background is enough to sample — it just leaves nothing to bend. So each \
+             specimen here sits on a checkerboard or on stripes instead. Genuinely unpainted is \
+             the case that collapses the panel to a flat fill.",
         ),
         section(
             "live panel",
@@ -327,6 +285,49 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      The second specimen is present and invisible: it needs a rect the scene \
                      leaves transparent, and this pane paints an opaque background over every \
                      pixel.",
+                ),
+            ],
+        ),
+        section(
+            "glass_container",
+            vec![
+                band(count, spacing),
+                knob(
+                    "spacing",
+                    format!("{spacing:.0} px"),
+                    native_slider("spacing", spacing)
+                        .range(0., 40.)
+                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
+                            d.glass.spacing = *value;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                knob(
+                    "panels",
+                    count.to_string(),
+                    native_segmented("count", selected)
+                        .segments(COUNTS.map(|count| count.to_string()))
+                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
+                            d.glass.panels = *value;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                caption(
+                    "Members find the container themselves and are placed inside its contentView, \
+                     which is what does the batching — a container merely present in the hierarchy \
+                     buys nothing. 400 panels go from 18 fps to 120.",
+                ),
+                caption(format!(
+                    "spacing is how close two members must be before macOS merges them into one \
+                     blob of glass. These sit {GAP:.0}pt apart, so anything past that fuses them; \
+                     0, the default, batches without merging."
+                )),
+                caption(
+                    "The container view spans the whole window rather than this band, and that \
+                     costs nothing: a point over a member hits the glass, and every other point \
+                     in its span falls through to GPUI and to the controls under it.",
                 ),
             ],
         ),

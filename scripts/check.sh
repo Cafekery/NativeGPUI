@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Everything that must hold before the tree is called clean. The one thing it runs, `z_order`,
-# opens a 64x48 unfocused corner window for a fraction of a second and reads its verdict out of
+# Everything that must hold before the tree is called clean. The two things it runs, `z_order` and
+# `glass_hit`, each open a small unfocused corner window for a fraction of a second and read out of
 # AppKit, so it takes no keyboard focus and captures no pixels: still safe to run while someone
 # else is driving the display.
 set -uo pipefail
@@ -40,6 +40,9 @@ step 'unit tests'                   cargo test --release --lib
 # Reads container subview order and the key view loop out of AppKit after a slot is rebuilt under
 # an unchanged pool key, which is the one stale case a paint-order diff cannot see by itself.
 step 'z-order holds paint order'    cargo run --release --example z_order
+# A viewport-sized glass container used to answer `hitTest:` itself, making every hosted control
+# painted before it unclickable. Reads the verdict out of AppKit in-process, so no display.
+step 'glass container declines'     cargo run --release --example glass_hit
 
 # These docs carry measured platform facts, and a stale one on a public constructor already
 # shipped. `-D warnings` rather than a grep for known lint names: an allowlist silently passes

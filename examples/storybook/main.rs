@@ -248,9 +248,8 @@ impl Demo {
             })
             .collect();
 
-        sidebar.update(&items);
-        sidebar.set_selected(Some(&self.selected));
-
+        // Before `update`: any selection AppKit decides while building the rows is dropped if no
+        // handler is listening yet, and nothing resyncs it, so the highlight and `selected` diverge.
         let entity = cx.entity().downgrade();
         sidebar.on_select(move |id, _, cx| {
             let Some(id) = id.clone() else { return };
@@ -261,6 +260,9 @@ impl Demo {
                 })
                 .ok();
         });
+
+        sidebar.update(&items);
+        sidebar.set_selected(Some(&self.selected));
 
         self.sidebar = Some(sidebar);
     }

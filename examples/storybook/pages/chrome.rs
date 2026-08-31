@@ -1,8 +1,8 @@
 //! Window chrome configures the window itself, so none of it can be shown inside the storybook's
 //! content pane: the knobs here drive a second window opened through [`crate::popout`].
 //!
-//! Chrome is written from the knob handlers, never from [`Popout::render`]: `set_toolbar` grows the
-//! window frame, and a resize raised from inside a draw would re-enter that draw.
+//! Chrome is written from the knob handlers, never from [`Popout::render`]: installing a toolbar
+//! reconfigures the window, which is not something to do to a window part-way through drawing it.
 
 use crate::Demo;
 use crate::ui::*;
@@ -422,7 +422,9 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 caption(
                     "0 sends _setCornerRadius: 0, which AppKit reads as \"system default\" rather \
                      than square, and reads back as that default — so intent is tracked, never \
-                     diffed against a readback. The second window prints both.",
+                     diffed against a readback. The second window prints both. Watch \
+                     system_corner_radius while you switch the toolbar too: it is half the current \
+                     band, so it reads 16 bare and 26 under a unified toolbar.",
                 ),
                 knob(
                     "toolbar",
@@ -497,7 +499,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ],
         ),
         section(
-            "the shadow comes from content alpha",
+            "an unpainted titlebar band",
             vec![
                 knob(
                     "paint the band",
@@ -511,11 +513,16 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                         .into_any_element(),
                 ),
                 note(
-                    "The second window is transparent, so macOS derives its drop shadow from what \
-                     GPUI painted rather than from the window frame. Turn this off with a corner \
-                     radius set: the corners stay rounded and the shadow goes square, because the \
-                     unpainted band reaches both top corners. It is the same shape as insetting \
-                     content by titlebar_band and forgetting to fill behind it.",
+                    "Turn this off to inset content by titlebar_band and paint nothing behind it — \
+                     the usual mistake. The window is transparent, so with no toolbar the band \
+                     really does go empty: the whole top 32pt reads alpha 0 across the full width, \
+                     traffic lights aside. Install a toolbar first and it does not, because the \
+                     toolbar's own backing fills all but the top 8pt — which makes a toolbar the \
+                     wrong arm to test this in. The drop shadow does not care either way. It stays \
+                     byte-identical, corner arc included: the silhouette follows the frame and its \
+                     radius, not the painted content, whether _setCornerRadius: was given a value, \
+                     given 0, or never called at all. Turning has shadow off is what moves it, and \
+                     so does changing the radius.",
                 ),
             ],
         ),
@@ -584,7 +591,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "ToolbarItem::symbol / flexible_space / space",
-                "two symbols wired to this page".into(),
+                "two wired; the third has no on_click, so AppKit greys it out".into(),
             ),
             ("titlebar_band(&Window)", fmt_pixels(titlebar_band(window))),
             (

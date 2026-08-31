@@ -37,15 +37,17 @@ gpui.s keyDown: does not forward up the chain ;; dies one link short ;; bridge/a
 only the ancestor chain differs for a switch ;; identical either way ;; bridge/appkit.rs
 gpui sizes from the window contentView ;; (pane.?cancelling|negative) origin ;; chrome/sidebar.rs
 corner radius 0 means system default ;; system default ;; chrome/window_chrome.rs
-transparent window shadow from content alpha ;; content alpha ;; chrome/window_chrome.rs
 MinY renders above the anchor ;; renders above|above it ;; surfaces.rs
 glass needs something beneath it ;; beneath it|nothing to sample ;; materials/glass.rs
 glass hitTest: override cannot work ;; never fires ;; materials/glass.rs
+glass container claims every point in its bounds ;; for every point inside its bounds ;; materials/glass.rs
+container decline rests on a private subview ;; full.?bounds subview declines ;; materials/glass.rs
 non-key material flattens ;; flat fill ;; materials/material.rs
 maskImage round-trips, so read-back diff ok ;; round.?trips ;; materials/material.rs
 interaction state traps outside its range ;; traps|aborts the process ;; materials/glass_private.rs
 style cannot report an explicit variant ;; reads back as regular|cannot report ;; materials/glass_private.rs
 RenderImage wants straight alpha ;; divide out alpha ;; system/tokens.rs
+custom glass fidelity was measured once, keyed ;; noise floor ;; materials/custom_glass.rs
 a literal value fights its own write-back ;; wipes the control ;; lib.rs
 TABLE
 
@@ -88,6 +90,7 @@ retired() {
   gone 'cmd chords never reach a hosted field' "do not reach a hosted field|Cmd-A/C/V do not" "${where[@]}"
   gone 'caret keys are the window.s own gap'   "separate open gap|anything this crate configures" "${where[@]}"
   gone 'editing needs an upstream gpui change' "needs a change in gpui|[Ff]ixing it needs" "${where[@]}"
+  gone 'the shadow follows content alpha'    "derives the drop shadow from|square shadow" "${where[@]}"
   return $fail
 }
 
@@ -123,6 +126,8 @@ if [[ ${1:-} == --self-test ]]; then
 // Cmd-A/C/V do not reach a hosted field.
 // Arrow keys are a separate open gap, the window rather than anything this crate configures.
 // Fixing it needs a change in gpui.
+// On a transparent window macOS derives the drop shadow from content alpha, so an unpainted band
+// reaching a corner gives a rounded window and a square shadow.
 STALE
   echo "self-test: each retired claim must go STALE when planted behind another directory"
   planted_out=$(retired "$work/empty" "$work/planted")

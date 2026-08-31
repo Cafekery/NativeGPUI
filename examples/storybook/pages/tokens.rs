@@ -260,9 +260,9 @@ fn color_section(differing: usize) -> AnyElement {
                          defined for a pattern colour, which is why try_resolve has to keep \
                          returning an Option — the value printed beside it is whatever this OS \
                          actually answered, not one this page assumed. Reading redComponent off \
-                         one instead of going through colorUsingColorSpace yields a \
-                         plausible-looking black, and a black swatch up there would have looked \
-                         entirely correct.",
+                         one instead of going through colorUsingColorSpace either throws or \
+                         yields a plausible-looking black, and a black swatch up there would have \
+                         looked entirely correct.",
                     ),
                 ]),
             ),
@@ -421,9 +421,10 @@ fn font_section(cx: &App) -> AnyElement {
                 stack(vec![
                     mono(control_sizes),
                     caption(
-                        "Three distinct values for five sizes: AppKit answers 13pt for Regular, \
-                         Large and ExtraLarge alike. Hardcoding 15 or 17 puts a GPUI label out of \
-                         step with the control beside it.",
+                        "Five sizes, but AppKit does not answer with five distinct values — the \
+                         crate documents 13pt for Regular, Large and ExtraLarge alike, and the \
+                         row above is what this machine answered. Hardcoding 15 or 17 puts a GPUI \
+                         label out of step with the control beside it.",
                     ),
                 ]),
             ),
@@ -438,9 +439,12 @@ fn font_section(cx: &App) -> AnyElement {
                     stack(advances),
                     caption(
                         "GPUI reaches the right face but does not apply SF's optical-size (opsz) \
-                         axis, which CoreText applies whenever you ask NSFont for a size: narrow \
-                         below about 16pt, exact around 16pt, wider above. Menlo agrees at every \
-                         size, which is what makes the system-font column a gap and not noise.",
+                         axis, which CoreText applies whenever you ask NSFont for a size. The \
+                         crate documents GPUI about 2.6% narrow at 13pt, exact around 16pt and \
+                         wider above — the row above is what this machine answered, so compare \
+                         the two rather than trusting either alone. Menlo is the control, not \
+                         decoration: if it disagrees too then the two instruments are \
+                         incomparable and the system column is noise rather than a gap.",
                     ),
                 ]),
             ),

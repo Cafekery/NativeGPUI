@@ -377,6 +377,10 @@ pub struct SidebarProbe {
     pub indentation_per_level: f64,
     pub divider_thickness: f64,
     pub rows: isize,
+    /// `NSVisualEffectMaterial` of the window-spanning backdrop, or -1 without one. Every
+    /// material renders near-black over a dark desktop, so this readback — not a pixel mean — is
+    /// what tells a caller the backdrop changed.
+    pub backdrop_material: isize,
     pub toolbar_items: usize,
     pub scroll_draws_background: bool,
     pub outline_is_first_responder: bool,
@@ -777,6 +781,7 @@ impl NativeSidebar {
             indentation_per_level: outline.indentationPerLevel(),
             divider_thickness: views.split.splitView().dividerThickness(),
             rows: outline.numberOfRows(),
+            backdrop_material: views.backdrop.as_ref().map_or(-1, |v| v.material().0),
             // The window, not our retained toolbar: the shell keeps one built even while it is
             // detached, so only the window knows whether one is attached.
             toolbar_items: outline
@@ -1050,11 +1055,10 @@ define_class!(
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
 
-            if let Some(icon) = unsafe { self.imageView() } {
-                // An empty image view still reserves its box, which would indent a symbol-less
-                // row's label past its neighbours'.
-                icon.setHidden(icon.image().is_none());
-            }
+            // The image view is deliberately never hidden. An SF Symbol the running macOS does
+            // not know leaves `image` nil, and hiding the view then collapses AppKit's reserved
+            // icon box and pulls that one row's label left of every sibling's. Nil draws nothing
+            // on its own, so the row loses its glyph and keeps its alignment.
 
             let Some(badge) = self.ivars().badge.borrow().clone().filter(|b| !b.isHidden()) else {
                 return;

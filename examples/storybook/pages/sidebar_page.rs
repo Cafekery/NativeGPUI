@@ -6,20 +6,22 @@
 //! `set_thickness`, `set_thickness_limits`, `set_toolbar`, `set_collapsed`, `set_expand_groups`
 //! and `set_backdrop` all reach into the installed shell. [`PaneAlign`] is the exception — it
 //! decides how GPUI's view is framed at install — so changing it reopens the window.
+//!
+//! The popped-out window never writes back into [`Demo`]. It is opened from inside a `Demo`
+//! listener, gpui draws it before that listener returns, and a cross-entity update from its
+//! `render` aborts the process with gpui's double-lease panic. This page reads the window instead.
 
 use crate::ui::*;
 use crate::{Demo, popout};
-use gpui::{
-    AnyElement, Context, Render, SharedString, WeakEntity, Window, WindowHandle, div, prelude::*,
-    px,
-};
+use gpui::{AnyElement, Context, Render, SharedString, Window, WindowHandle, div, prelude::*, px};
 use native_gpui::sidebar::{
     NativeSidebar, PaneAlign, SidebarItem, SidebarOptions, SidebarProbe, SidebarRowSize,
     sidebar_group, sidebar_item,
 };
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
-    Material, native_popup, native_root, native_segmented, native_slider, native_switch,
+    Material, TrackingMode, native_popup, native_root, native_segmented, native_slider,
+    native_switch,
 };
 
 const ROW_SIZES: &[(&str, SidebarRowSize)] = &[
@@ -58,9 +60,6 @@ pub struct State {
     pub row_size: usize,
     pub backdrop: usize,
     pub align: usize,
-    /// Pushed up by the popped-out window whenever AppKit's answers change.
-    pub probe: Option<SidebarProbe>,
-    pub selected: Option<SharedString>,
 }
 
 impl Default for State {
@@ -77,8 +76,6 @@ impl Default for State {
             row_size: 0,
             backdrop: 0,
             align: 0,
-            probe: None,
-            selected: None,
         }
     }
 }
@@ -122,8 +119,11 @@ fn items() -> Vec<SidebarItem> {
         ]),
         sidebar_group("tags", "Tags").children([
             sidebar_item("red", "Red").symbol("circle.fill"),
-            sidebar_item("blue", "Blue").symbol("circle.fill"),
-            // No symbol: proves a plain row's label lines up with its lettered neighbours.
+            // A name no macOS knows: the glyph is absent and the label must still line up, which
+            // is why the cell never hides its image view.
+            sidebar_item("unknown", "Unknown symbol").symbol("not.a.real.sf.symbol"),
+            // No symbol at all, so the cell has no image view to indent from and AppKit puts the
+            // label at the cell's leading edge — visibly left of its lettered siblings.
             sidebar_item("untagged", "Untagged"),
         ]),
     ]
@@ -134,7 +134,6 @@ pub struct SidebarWindow {
     sidebar: Option<NativeSidebar>,
     options: SidebarOptions,
     selected: SharedString,
-    owner: WeakEntity<Demo>,
 }
 
 impl SidebarWindow {
@@ -156,19 +155,41 @@ impl SidebarWindow {
         self.sidebar = Some(sidebar);
     }
 
-    /// Apply everything that can be changed without reinstalling.
-    pub fn apply(&mut self, options: SidebarOptions) {
+    /// Apply everything that can change without reinstalling. `collapsed` goes last: moving the
+    /// divider expands the pane, so a thickness write would otherwise undo it.
+    fn apply(&mut self, options: SidebarOptions) {
         let Some(sidebar) = &self.sidebar else { return };
         sidebar.set_row_size(options.row_size);
         sidebar.set_thickness_limits(options.min_thickness, options.max_thickness);
         sidebar.set_thickness(options.thickness);
         sidebar.set_toolbar(options.toolbar);
         sidebar.set_expand_groups(options.expand_groups);
-        sidebar.set_collapsed(options.collapsed);
         if let Some(material) = options.backdrop {
             sidebar.set_backdrop(material);
         }
+        sidebar.set_collapsed(options.collapsed);
         self.options = options;
+    }
+
+    fn probe(&self) -> Option<SidebarProbe> {
+        self.sidebar.as_ref().map(|s| s.probe())
+    }
+
+    /// The first row carrying an icon, so the reported label and icon offsets are an item row's
+    /// rather than a group header's zeroes.
+    fn sample_row(&self) -> Option<(f64, f64, f64, f64)> {
+        let sidebar = self.sidebar.as_ref()?;
+        (0..sidebar.probe().rows)
+            .filter_map(|row| sidebar.row_layout(row))
+            .find(|l| l.icon.size.width > 0.)
+            .map(|l| {
+                (
+                    l.row.size.height,
+                    l.cell.origin.x,
+                    l.icon.size.height,
+                    l.title.origin.x,
+                )
+            })
     }
 }
 
@@ -183,28 +204,8 @@ impl Render for SidebarWindow {
             .as_ref()
             .map(|s| s.metrics())
             .unwrap_or_default();
-        let probe = self.sidebar.as_ref().map(|s| s.probe());
-        let layout = self
-            .sidebar
-            .as_ref()
-            .and_then(|s| (1..s.probe().rows).find_map(|row| s.row_layout(row)));
-
-        // Only on change: this runs every frame, and an unconditional update of the storybook
-        // entity would notify it into a render loop that never settles.
-        if let Some(probe) = probe {
-            let selected = self.selected.clone();
-            self.owner
-                .update(cx, |d: &mut Demo, cx| {
-                    if d.sidebar_page.probe != Some(probe)
-                        || d.sidebar_page.selected.as_ref() != Some(&selected)
-                    {
-                        d.sidebar_page.probe = Some(probe);
-                        d.sidebar_page.selected = Some(selected);
-                        cx.notify();
-                    }
-                })
-                .ok();
-        }
+        let probe = self.probe();
+        let sample = self.sample_row();
 
         let line = |text: String| {
             div()
@@ -241,15 +242,9 @@ impl Render for SidebarWindow {
                             p.indentation_per_level
                         ))
                     }))
-                    .children(layout.map(|l| {
+                    .children(sample.map(|(row, cell, icon, title)| {
                         line(format!(
-                            "row h {:.1} · cell x {:.1} · icon {:.1}x{:.1} @ {:.1} · label x {:.1}",
-                            l.row.size.height,
-                            l.cell.origin.x,
-                            l.icon.size.width,
-                            l.icon.size.height,
-                            l.icon.origin.x,
-                            l.title.origin.x
+                            "row h {row:.1} · cell x {cell:.1} · icon {icon:.1}pt · label x {title:.1}"
                         ))
                     }))
                     .child(line(format!(
@@ -259,6 +254,12 @@ impl Render for SidebarWindow {
                         metrics.thickness.to_f64(),
                         if metrics.collapsed { " · collapsed" } else { "" }
                     )))
+                    .children(probe.map(|p| {
+                        line(format!(
+                            "backdrop NSVisualEffectMaterial {} · toolbar items {} · rows {}",
+                            p.backdrop_material, p.toolbar_items, p.rows
+                        ))
+                    }))
                     .child(line(
                         "Every row, its font, its icon box and the selection pill are AppKit's."
                             .into(),
@@ -269,23 +270,27 @@ impl Render for SidebarWindow {
 }
 
 /// Open the second window, or bring the existing one forward.
-fn open(d: &mut Demo, cx: &mut Context<Demo>) {
-    if let Some(handle) = d.sidebar_page.window {
-        if handle
-            .update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-        {
-            return;
+///
+/// Deferred: `open_window` draws the new window before returning, and this runs inside a `Demo`
+/// listener that still holds `Demo`'s lease.
+fn open(window: &mut Window, cx: &mut Context<Demo>) {
+    cx.defer_in(window, |d: &mut Demo, _, cx| {
+        if let Some(handle) = d.sidebar_page.window {
+            if handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+            {
+                return;
+            }
+            d.sidebar_page.window = None;
         }
-        d.sidebar_page.window = None;
-    }
-    let options = d.sidebar_page.options();
-    let owner = cx.entity().downgrade();
-    d.sidebar_page.window = popout(cx, (240., 200.), (760., 560.), move |_, _| SidebarWindow {
-        sidebar: None,
-        options,
-        selected: "recents".into(),
-        owner,
+        let options = d.sidebar_page.options();
+        d.sidebar_page.window = popout(cx, (240., 200.), (760., 560.), move |_, _| SidebarWindow {
+            sidebar: None,
+            options,
+            selected: "recents".into(),
+        });
+        cx.notify();
     });
 }
 
@@ -307,29 +312,47 @@ fn push(d: &mut Demo, cx: &mut Context<Demo>) {
 }
 
 /// `PaneAlign` is read once, during install, so the only way to change it is a fresh window.
-fn reopen(d: &mut Demo, cx: &mut Context<Demo>) {
-    if let Some(handle) = d.sidebar_page.window {
+fn reopen(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
+    if let Some(handle) = d.sidebar_page.window.take() {
         handle
             .update(cx, |_, window, _| window.remove_window())
             .ok();
-        d.sidebar_page.window = None;
-        d.sidebar_page.probe = None;
     }
-    open(d, cx);
+    open(window, cx);
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let s = &d.sidebar_page;
-    let open_label = if s.window.is_some() {
+    let (thickness, min, max) = (
+        d.sidebar_page.thickness,
+        d.sidebar_page.min,
+        d.sidebar_page.max,
+    );
+    let (toolbar, collapsed, expand_groups) = (
+        d.sidebar_page.toolbar,
+        d.sidebar_page.collapsed,
+        d.sidebar_page.expand_groups,
+    );
+    let (row_size, backdrop, align) = (
+        d.sidebar_page.row_size,
+        d.sidebar_page.backdrop,
+        d.sidebar_page.align,
+    );
+
+    // Read the popped-out window rather than having it write here — see the module note.
+    let live = d.sidebar_page.window.and_then(|handle| {
+        handle
+            .read(cx)
+            .ok()
+            .map(|w| (w.probe(), w.sample_row(), w.selected.clone()))
+    });
+    let open_label = if live.is_some() {
         "Bring the sidebar window forward"
     } else {
         "Open a window with a real sidebar"
     };
-    let (thickness, min, max) = (s.thickness, s.min, s.max);
-    let (toolbar, collapsed, expand_groups) = (s.toolbar, s.collapsed, s.expand_groups);
-    let (row_size, backdrop, align) = (s.row_size, s.backdrop, s.align);
-    let probe = s.probe;
-    let selected = s.selected.clone();
+    let probe = live.as_ref().and_then(|(p, _, _)| *p);
+    let sample = live.as_ref().and_then(|(_, s, _)| *s);
+    let selected = live.map(|(_, _, id)| id);
 
     stack(vec![
         note(
@@ -340,10 +363,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "the window",
             native_segmented("open", 0)
                 .segments([open_label])
-                .tracking_mode(native_gpui::TrackingMode::Momentary)
-                .on_change(cx.listener(|d: &mut Demo, _: &usize, _, cx| {
-                    open(d, cx);
-                    cx.notify();
+                .tracking_mode(TrackingMode::Momentary)
+                .on_change(cx.listener(|_: &mut Demo, _: &usize, window, cx| {
+                    open(window, cx);
                 }))
                 .into_any_element(),
         ),
@@ -353,8 +375,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 knob(
                     "row_size",
                     ROW_SIZES[row_size].0,
-                    native_segmented("row_size", row_size)
-                        .segments(ROW_SIZES.iter().map(|(name, _)| *name))
+                    native_popup("row_size", row_size)
+                        .items(ROW_SIZES.iter().map(|(name, _)| *name))
                         .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
                             d.sidebar_page.row_size = *value;
                             push(d, cx);
@@ -369,13 +391,23 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      default: .sourceList's 24pt row around a 13pt label, which is not a size \
                      macOS ships.",
                 ),
-                caption(match probe {
-                    Some(p) => format!(
-                        "live: rowHeight {:.1}pt, rowSizeStyle {} resolved to {}",
+                caption(match (probe, sample) {
+                    (Some(p), Some((row, cell, icon, title))) => format!(
+                        "live: rowHeight {:.1} · style {} → {} · row h {row:.1} · cell x {cell:.1} \
+                         · icon {icon:.1}pt · label x {title:.1}",
                         p.row_height, p.row_size_style, p.effective_row_size_style
                     ),
-                    None => "live: open the window to read AppKit back".into(),
+                    (Some(p), None) => format!(
+                        "live: rowHeight {:.1} · style {} → {}",
+                        p.row_height, p.row_size_style, p.effective_row_size_style
+                    ),
+                    _ => "live: open the window to read AppKit back".into(),
                 }),
+                caption(
+                    "Finder, measured through the same accessibility API: item row 32.0, group \
+                     header 19.0, 13.0 above a group, cell inset 10.0, label 45.0 from the row's \
+                     left edge. System matches all five.",
+                ),
             ],
         ),
         section(
@@ -478,9 +510,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     ALIGNS[align].0,
                     native_popup("align", align)
                         .items(ALIGNS.iter().map(|(name, _)| *name))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
+                        .on_change(cx.listener(|d: &mut Demo, value: &usize, window, cx| {
                             d.sidebar_page.align = *value;
-                            reopen(d, cx);
+                            reopen(d, window, cx);
                             cx.notify();
                         }))
                         .into_any_element(),
@@ -492,7 +524,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      broken control arm.",
                 ),
                 caption(
-                    "`backdrop: none` leaves the window unbacked and cannot be re-applied live — \
+                    "`backdrop: none` leaves the window unbacked and cannot be applied live — \
                      there is no view to retint — so pick it before opening the window.",
                 ),
             ],
@@ -505,7 +537,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             (
                 "probe().effective_row_size_style",
-                probe.map_or("—".into(), |p| p.effective_row_size_style.to_string()),
+                probe.map_or("—".into(), |p| {
+                    format!("{} (2 = Medium)", p.effective_row_size_style)
+                }),
             ),
             (
                 "probe().effective_style",
@@ -516,6 +550,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             (
                 "probe().rows",
                 probe.map_or("—".into(), |p| p.rows.to_string()),
+            ),
+            (
+                "probe().toolbar_items",
+                probe.map_or("—".into(), |p| p.toolbar_items.to_string()),
+            ),
+            (
+                "probe().backdrop_material",
+                probe.map_or("—".into(), |p| p.backdrop_material.to_string()),
             ),
             (
                 "on_select",

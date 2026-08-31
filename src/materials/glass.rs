@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::Location;
+use std::ptr;
 
 use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, Hsla,
@@ -14,10 +15,13 @@ use gpui::{
     relative,
 };
 use objc2::rc::Retained;
+use objc2::runtime::NSObject;
+use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSColor, NSGlassEffectContainerView, NSGlassEffectView, NSGlassEffectViewStyle, NSView,
+    NSColor, NSGlassEffectContainerView, NSGlassEffectView, NSGlassEffectViewStyle, NSResponder,
+    NSView,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 
 #[cfg(feature = "private-api")]
 use super::glass_private::{GlassInteractionState, GlassSubvariant, GlassVariant, Private};
@@ -25,9 +29,10 @@ use crate::bridge::appkit::{Container, rects_equal};
 use crate::bridge::host::{Layer, NativeHost, element_key};
 use crate::system::color::to_nscolor;
 
-// No `hitTest:` override, and the obvious one cannot work: `NSGlassEffectView` builds private
-// subviews, so `super`'s `hitTest:` returns one of *those* and [`Container`]'s "null if the hit
-// is me" shape never fires. Unneeded anyway: AppKit walks unhandled mouse events up to GPUI.
+// No `hitTest:` override on the panel, and the obvious one cannot work: `NSGlassEffectView`
+// builds private subviews, so `super`'s `hitTest:` returns one of *those* and [`Container`]'s
+// "null if the hit is me" shape never fires. Unneeded anyway: AppKit walks unhandled mouse
+// events up to GPUI. The container is a different story — see [`Batch`].
 
 /// [`to_nscolor`] memoized: the tint diff runs every frame, and tints come from a palette.
 fn tint_color(color: Hsla) -> Retained<NSColor> {
@@ -277,6 +282,48 @@ impl IntoElement for Glass {
     }
 }
 
+define_class!(
+    /// `NSGlassEffectContainerView`, made to claim a click only where a member is.
+    ///
+    /// Stock, it returns **self** from `hitTest:` for every point inside its bounds — member or
+    /// not, and even though its `contentView` is a [`Container`] that declines its own area
+    /// exactly. Since the container spans the window and `commit` stacks by paint order, one
+    /// [`glass_container`] would otherwise make every control painted before it unclickable.
+    ///
+    /// So ask the `contentView`, which is the only `hitTest:` in here this crate wrote. Asking
+    /// `super` and rejecting self is *not* the same thing: it happens to work only because the
+    /// container's own private full-bounds subview declines, where the panel's equivalent claims
+    /// — which is the note at the top of this file, and the same bet one class over.
+    #[unsafe(super(NSGlassEffectContainerView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGGlassContainer"]
+    struct Batch;
+
+    impl Batch {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            // No content view means no members, so nothing here is ours. Never `super` on this
+            // path: with `setContentView:` unrun the container claims its whole bounds.
+            let Some(content) = self.contentView() else {
+                return ptr::null_mut();
+            };
+            // `hitTest:` is given the point in *our* superview's space; `contentView` wants it in
+            // ours.
+            let local = match unsafe { self.superview() } {
+                Some(parent) => self.convertPoint_fromView(point, Some(&parent)),
+                None => point,
+            };
+            unsafe { msg_send![&*content, hitTest: local] }
+        }
+    }
+);
+
+impl Batch {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), init] }
+    }
+}
+
 /// Batches the [`glass`] panels in its subtree into one glass render pass. Wrap any screen with
 /// more than a handful of them.
 ///
@@ -403,7 +450,7 @@ impl Element for GlassContainer {
         };
 
         let view = host.place(key, self.layer, viewport, viewport, |mtm, _| {
-            let view = NSGlassEffectContainerView::new(mtm);
+            let view = Batch::new(mtm);
             // Flipped, so a member's frame is GPUI's coordinate space verbatim.
             let content = Container::new(mtm, NSRect::ZERO, false);
             view.setContentView(Some(content.as_ref()));
