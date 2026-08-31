@@ -10,6 +10,14 @@ set -uo pipefail
 name=${1:-storybook}
 features=${2:-}
 
+# The storybook exists to show everything, and the glass recipe editor, the private glass variants
+# and nine of the materials do not exist without this feature — those pages compile to a "requires
+# --features private-api" note instead. Announced rather than silent, and overridable by passing $2.
+if [ "$name" = storybook ] && [ -z "$features" ]; then
+  features=private-api
+  echo "storybook: defaulting to --features private-api"
+fi
+
 cd "$(dirname "$0")/.." || exit 1
 
 title=$(python3 -c "import sys; print(sys.argv[1].replace('_',' ').title().replace(' ',''))" "$name")
