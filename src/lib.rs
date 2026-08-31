@@ -11,9 +11,10 @@
 //! ([`native_switch`], [`glass`], [`material`], …) are ordinary GPUI elements that reserve layout
 //! space and place a pooled AppKit view into it.
 //!
-//! [`install_menus`] adds the Edit menu. macOS keeps ⌘X/⌘C/⌘V/⌘A/⌘Z there, a GPUI app has no menu
-//! bar until something asks for one, and a hosted text field answers none of those chords until
-//! it does.
+//! [`install_menus`] installs the standard menu bar — App, File, Edit, View, Window, Help — which
+//! is where macOS keeps ⌘W, ⌘Q, ⌘M, ⌘H and the whole Edit menu. A GPUI app has no menu bar until
+//! something asks for one, so until it does those chords reach nothing at all. Apps add their own
+//! rows with [`add_menu`] and [`extend_menu`], which keep the standard set.
 //!
 //! The value you pass a component must be the state its `on_change` writes. A component pushes its
 //! value on every paint, so a literal — `native_text_field("name", "")` wired to an `on_change`
@@ -71,7 +72,7 @@ pub use bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeHost, NativeRead, NativeValue,
     ValueKind, wire,
 };
-pub use bridge::menus::{edit_menu, install_menus};
+pub use bridge::menus::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus};
 pub use bridge::root::{NativeRoot, native_root, window_options};
 pub use chrome::window_chrome::*;
 pub use chrome::{sidebar, window_chrome};

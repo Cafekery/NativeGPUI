@@ -19,47 +19,48 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# label ;; extended regex ;; path under src/
+# label ;; extended regex ;; path from the repo root (src/… or examples/…)
 read -r -d '' ANCHORS <<'TABLE'
-integerValue is cell state, not selection ;; cell.?s state ;; bridge/host.rs
-NSSlider rounds its origin on construction ;; rounds (its )?(frame )?origin ;; bridge/host.rs
-keyEquivalent does not round-trip ;; reads back as the empty ;; bridge/host.rs
-setTarget: is weak ;; is (a )?\*?weak ;; bridge/host.rs
-stale writes would clobber a user edit ;; delete what the user|clobber ;; bridge/host.rs
-AppKit callbacks defer off gpui.s borrow ;; holds its .?app.? borrow ;; bridge/host.rs
-makeFirstResponder ignores acceptsFirstResponder ;; does not consult ;; bridge/host.rs
-first responder is assigned after becomeFirst ;; overwritten by the call ;; bridge/host.rs
-autorecalculate overwrites an explicit key loop ;; rederive the whole loop ;; bridge/host.rs
-a rebuilt clip is appended, not restacked ;; lands topmost in its container ;; bridge/host.rs
-function keys reach a hosted field as insertions ;; legacy ASCII spelling ;; bridge/appkit.rs
-gpui.s key-equivalent walk skips hosted views ;; never descends ;; bridge/appkit.rs
-gpui.s keyDown: does not forward up the chain ;; dies one link short ;; bridge/appkit.rs
-only the ancestor chain differs for a switch ;; identical either way ;; bridge/appkit.rs
-gpui sizes from the window contentView ;; (pane.?cancelling|negative) origin ;; chrome/sidebar.rs
-corner radius 0 means system default ;; system default ;; chrome/window_chrome.rs
-MinY renders above the anchor ;; renders above|above it ;; surfaces.rs
-glass needs something beneath it ;; beneath it|nothing to sample ;; materials/glass.rs
-glass hitTest: override cannot work ;; never fires ;; materials/glass.rs
-glass container claims every point in its bounds ;; for every point inside its bounds ;; materials/glass.rs
-container decline rests on a private subview ;; full.?bounds subview declines ;; materials/glass.rs
-non-key material flattens ;; flat fill ;; materials/material.rs
-maskImage round-trips, so read-back diff ok ;; round.?trips ;; materials/material.rs
-interaction state traps outside its range ;; traps|aborts the process ;; materials/glass_private.rs
-style cannot report an explicit variant ;; reads back as regular|cannot report ;; materials/glass_private.rs
-RenderImage wants straight alpha ;; divide out alpha ;; system/tokens.rs
-an extension needs the declared type, not the direct lookup ;; declared match wins ;; system/tokens.rs
-drawInRect: selects a representation by output size ;; destination pixels ;; system/tokens.rs
-a file icon does not vary with appearance ;; fixed artwork ;; system/tokens.rs
-NSStringDrawing does not shape an OpenType feature ;; reliably shape ;; system/tokens.rs
-custom glass fidelity was measured once, keyed ;; noise floor ;; materials/custom_glass.rs
-a literal value fights its own write-back ;; wipes the control ;; lib.rs
-a nested NSMenu does not inherit autoenablesItems ;; does not inherit ;; controls/menu.rs
-setSubmenu: owns the host row.s action ;; dismiss the menu on a click|instead of opening the submenu ;; controls/menu.rs
-a zero-framed item view is an invisible row ;; contributes zero height|completely invisible ;; controls/menu.rs
-a menu item.s key mask already defaults to Command ;; own default is ;; controls/menu.rs
-a view with no intrinsic width gets none ;; no width at all ;; chrome/window_chrome.rs
-a momentary group holds no selection ;; reports -1 forever ;; chrome/window_chrome.rs
-a search field must be wired before assignment ;; configured before assigned ;; chrome/window_chrome.rs
+integerValue is cell state, not selection ;; cell.?s state ;; src/bridge/host.rs
+NSSlider rounds its origin on construction ;; rounds (its )?(frame )?origin ;; src/bridge/host.rs
+keyEquivalent does not round-trip ;; reads back as the empty ;; src/bridge/host.rs
+setTarget: is weak ;; is (a )?\*?weak ;; src/bridge/host.rs
+stale writes would clobber a user edit ;; delete what the user|clobber ;; src/bridge/host.rs
+AppKit callbacks defer off gpui.s borrow ;; holds its .?app.? borrow ;; src/bridge/host.rs
+makeFirstResponder ignores acceptsFirstResponder ;; does not consult ;; src/bridge/host.rs
+first responder is assigned after becomeFirst ;; overwritten by the call ;; src/bridge/host.rs
+autorecalculate overwrites an explicit key loop ;; rederive the whole loop ;; src/bridge/host.rs
+a rebuilt clip is appended, not restacked ;; lands topmost in its container ;; src/bridge/host.rs
+function keys reach a hosted field as insertions ;; legacy ASCII spelling ;; src/bridge/appkit.rs
+gpui.s key-equivalent walk skips hosted views ;; never descends ;; src/bridge/appkit.rs
+gpui.s keyDown: does not forward up the chain ;; dies one link short ;; src/bridge/appkit.rs
+only the ancestor chain differs for a switch ;; identical either way ;; src/bridge/appkit.rs
+gpui sizes from the window contentView ;; (pane.?cancelling|negative) origin ;; src/chrome/sidebar.rs
+corner radius 0 means system default ;; system default ;; src/chrome/window_chrome.rs
+MinY renders above the anchor ;; renders above|above it ;; src/surfaces.rs
+glass needs something beneath it ;; beneath it|nothing to sample ;; src/materials/glass.rs
+glass hitTest: override cannot work ;; never fires ;; src/materials/glass.rs
+glass container claims every point in its bounds ;; for every point inside its bounds ;; src/materials/glass.rs
+container decline rests on a private subview ;; full.?bounds subview declines ;; src/materials/glass.rs
+non-key material flattens ;; flat fill ;; src/materials/material.rs
+maskImage round-trips, so read-back diff ok ;; round.?trips ;; src/materials/material.rs
+interaction state traps outside its range ;; traps|aborts the process ;; src/materials/glass_private.rs
+style cannot report an explicit variant ;; reads back as regular|cannot report ;; src/materials/glass_private.rs
+RenderImage wants straight alpha ;; divide out alpha ;; src/system/tokens.rs
+an extension needs the declared type, not the direct lookup ;; declared match wins ;; src/system/tokens.rs
+drawInRect: selects a representation by output size ;; destination pixels ;; src/system/tokens.rs
+a file icon does not vary with appearance ;; fixed artwork ;; src/system/tokens.rs
+NSStringDrawing does not shape an OpenType feature ;; reliably shape ;; src/system/tokens.rs
+custom glass fidelity was measured once, keyed ;; noise floor ;; src/materials/custom_glass.rs
+a literal value fights its own write-back ;; wipes the control ;; src/lib.rs
+a nested NSMenu does not inherit autoenablesItems ;; does not inherit ;; src/controls/menu.rs
+setSubmenu: owns the host row.s action ;; dismiss the menu on a click|instead of opening the submenu ;; src/controls/menu.rs
+a zero-framed item view is an invisible row ;; contributes zero height|completely invisible ;; src/controls/menu.rs
+a menu item.s key mask already defaults to Command ;; own default is ;; src/controls/menu.rs
+a view with no intrinsic width gets none ;; no width at all ;; src/chrome/window_chrome.rs
+a momentary group holds no selection ;; reports -1 forever ;; src/chrome/window_chrome.rs
+a search field must be wired before assignment ;; configured before assigned ;; src/chrome/window_chrome.rs
+Finder's alternating band is an inset pill, not full-bleed ;; stops 10pt short of each edge ;; examples/finder_demo/list.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
@@ -119,17 +120,18 @@ if [[ ${1:-} == --self-test ]]; then
   trap 'rm -rf "$work"' EXIT
   bad=0
 
-  # Stripping ONE file's comments must lose exactly the anchors that name it. Everything else in
-  # src/ stays, so a duplicate of the phrase elsewhere cannot keep the check green.
+  # Stripping ONE file's comments must lose exactly the anchors that name it. Every other file
+  # stays, so a duplicate of the phrase elsewhere cannot keep the check green.
   echo "self-test: each anchor must go LOST when only its own file is stripped"
   while IFS= read -r row; do
     [[ -z $row ]] && continue
     label=${row%% ;; *}
     path=${row##* ;; }
-    rm -rf "$work/src"
+    rm -rf "$work/src" "$work/examples"
     cp -R src "$work/src"
-    strip_comments "$work/src/$path"
-    if anchors "$work/src" | grep -qF "ok    $label"; then
+    cp -R examples "$work/examples"
+    strip_comments "$work/$path"
+    if anchors "$work" | grep -qF "ok    $label"; then
       printf 'BAD   %s  survives its own file being stripped\n' "$label"
       bad=1
     fi
@@ -158,7 +160,7 @@ STALE
   exit 0
 fi
 
-anchors src
+anchors .
 status=$?
 retired src examples || status=1
 exit $status
