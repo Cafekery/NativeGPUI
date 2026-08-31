@@ -10,9 +10,7 @@ use gpui::{
     AnyElement, App, Application, Bounds, Context, Render, SharedString, Window, WindowBounds,
     WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
-use native_gpui::sidebar::{
-    NativeSidebar, SidebarMetrics, SidebarOptions, sidebar_group, sidebar_item,
-};
+use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_group, sidebar_item};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{install_menus, native_root, tokens, window_options};
 
@@ -295,9 +293,14 @@ impl Render for Demo {
             self.install_sidebar(window, cx);
         }
 
-        let metrics = cx
-            .try_global::<SidebarMetrics>()
-            .copied()
+        // Read off the sidebar, not out of the `SidebarMetrics` global: the global is published
+        // from an AppKit layout pass through a spawned task, so it is still unset for the first
+        // frames and every one of them lays the content out under the sidebar. The handle carries
+        // the same numbers synchronously, which is what makes frame one correct.
+        let metrics = self
+            .sidebar
+            .as_ref()
+            .map(NativeSidebar::metrics)
             .unwrap_or_default();
         let page = page_of(&self.selected);
         let body = self.body(window, cx);

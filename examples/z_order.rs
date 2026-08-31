@@ -140,6 +140,10 @@ impl Render for Probe {
 }
 
 static FAILED: AtomicU8 = AtomicU8::new(0);
+/// Set by [`report`]. Without it, a run that never reached the last phase — because the window
+/// only ever painted once — exits 0 with no output at all, and the gate reads that as a pass
+/// having tested nothing.
+static REPORTED: AtomicU8 = AtomicU8::new(0);
 
 fn keys(list: &[u64]) -> String {
     list.iter()
@@ -149,6 +153,7 @@ fn keys(list: &[u64]) -> String {
 }
 
 fn report(readings: &[Reading]) {
+    REPORTED.store(1, Ordering::Relaxed);
     println!(
         "{:<26} {:<16} {:<16} {:<16} {}",
         "PHASE", "PAINT ORDER", "SUBVIEWS", "KEY LOOP", "VERDICT"
@@ -225,6 +230,17 @@ fn main() -> ExitCode {
                 }
             }
             // `Application::run` returning exits 0 regardless, so the verdict has to leave here.
+            // Fail closed: the loop also ends by running out of tries, and a window that painted
+            // once — an occluded window, or a machine whose display link has stalled — reaches
+            // neither the last phase nor `report`, so there is nothing to be right about.
+            if REPORTED.load(Ordering::Relaxed) == 0 {
+                println!(
+                    "FAIL: no phase was reported — the window painted fewer than {} times, so no \
+                     paint order was ever read",
+                    SCRIPT.len() + 1
+                );
+                std::process::exit(1);
+            }
             std::process::exit(FAILED.load(Ordering::Relaxed) as i32);
         })
         .detach();

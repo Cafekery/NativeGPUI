@@ -1324,7 +1324,7 @@ impl FinderDemo {
             tags: HashMap::new(),
             // On, as Finder's own window is: the right pane is why the list is 594pt wide in a
             // 1026pt window, and the column geometry only lands where Finder puts it at that width.
-            preview: false,
+            preview: true,
             path_bar_shown: false,
             status_bar_shown: false,
             icon_size: 64.,
@@ -1795,13 +1795,21 @@ impl FinderDemo {
         }
     }
 
+    /// The sidebar's gutters, read off the handle rather than the `SidebarMetrics` global. The
+    /// global is published from an AppKit layout pass through a spawned task, so it is unset for
+    /// the first frames and each of those lays the tree out under the sidebar; the handle carries
+    /// the same numbers synchronously.
+    fn metrics(&self) -> SidebarMetrics {
+        self.sidebar
+            .as_ref()
+            .map(NativeSidebar::metrics)
+            .unwrap_or_default()
+    }
+
     /// Tiles per band in icon view. The width available is the viewport less the gutters the
     /// sidebar publishes, so a collapse re-flows the grid.
-    fn columns(&self, window: &Window, cx: &App) -> usize {
-        let metrics = cx
-            .try_global::<SidebarMetrics>()
-            .copied()
-            .unwrap_or_default();
+    fn columns(&self, window: &Window, _cx: &App) -> usize {
+        let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right)
@@ -2554,14 +2562,10 @@ impl FinderDemo {
             .items_center()
             .gap(px(8.))
             .text_color(palette.secondary);
+        // Measured: with nothing selected Finder's preview pane is a uniform fill and carries no
+        // label, so an empty div is the match rather than a "No selection" caption.
         let Some(line) = line else {
-            return card
-                .child(
-                    div()
-                        .text_size(tokens::small_system_font_size())
-                        .child("No selection"),
-                )
-                .into_any_element();
+            return div().into_any_element();
         };
 
         card = card
@@ -2724,10 +2728,7 @@ impl Render for FinderDemo {
             }
         }
 
-        let metrics = cx
-            .try_global::<SidebarMetrics>()
-            .copied()
-            .unwrap_or_default();
+        let metrics = self.metrics();
         let palette = Palette::new(self.focus.is_focused(window));
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
