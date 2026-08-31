@@ -233,8 +233,8 @@ pub enum PaneAlign {
     /// The shipped framing: GPUI keeps the window's whole coordinate space.
     #[default]
     WindowAligned,
-    /// Sizes GPUI's view to fill the pane. Broken by construction — a control arm for
-    /// `examples/sidebar.rs` to measure, never a mode to ship.
+    /// Sizes GPUI's view to fill the pane. Broken by construction — the control arm
+    /// `examples/sidebar_probe.rs` measures against under `NG_ARM=fill`, never a mode to ship.
     FillPane,
 }
 
@@ -296,9 +296,8 @@ pub struct SidebarOptions {
     /// onto them. Without it `setContentViewController:` detaches them from the window.
     pub adopt_below_layer: bool,
     /// A window-spanning backdrop, inserted beneath both panes. **This is the sidebar's vibrancy,
-    /// not the window's background** — the content pane paints
-    /// [`tokens::WINDOW_BACKGROUND`](crate::tokens::WINDOW_BACKGROUND) over it, so only the
-    /// sidebar strip is left showing it.
+    /// not the window's background** — the content pane paints [`tokens::WINDOW_BACKGROUND`] over
+    /// it, so only the sidebar strip is left showing it.
     ///
     /// What a Mac window has behind its sidebar. Without it the sidebar samples whatever is
     /// behind the *window*, and `allowsFullHeightLayout` runs it up under a titlebar strip that
