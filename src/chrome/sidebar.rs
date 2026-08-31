@@ -11,7 +11,10 @@
 //! ```
 //!
 //! Rows are real [`NSTableCellView`]s, so the source-list font, insets, indentation, disclosure
-//! control and the label-colour flip under selection are AppKit's. Two rules for the host:
+//! control, icon box and the label-colour flip under selection are AppKit's — the cell's own
+//! `layout` places only the count badge, which `NSTableCellView` has no outlet for. Row height,
+//! icon size and label font come as one class from [`SidebarRowSize`], which defaults to what the
+//! running macOS calls standard. Two rules for the host:
 //!
 //! * The window must be non-opaque ([`crate::window_options`] does this): the sidebar's material
 //!   is `behindWindow`, and on an opaque window it silently renders flat grey.
@@ -34,10 +37,10 @@ use objc2_app_kit::{
     NSImageAlignment, NSImageScaling, NSImageView, NSLineBreakMode, NSOutlineView,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSScreen, NSScrollView, NSSplitViewController,
     NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions,
-    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle, NSTableViewStyle,
-    NSTextAlignment, NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification, NSView,
-    NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
+    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle,
+    NSTableViewStyle, NSTextAlignment, NSTextField, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification,
+    NSView, NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
     NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
@@ -49,9 +52,10 @@ use crate::Material;
 use crate::bridge::appkit::{Container, gpui_view, rects_equal};
 use crate::materials::RawMaterial;
 
-/// Gap between a row's icon and its label, in points. The one hand-chosen number in a row —
-/// AppKit publishes no token for it, and everything else in the row is asked of the system.
-pub const ICON_GAP: f64 = 6.0;
+/// Gap between a row's label and its trailing count badge, in points. The one hand-chosen number
+/// left in a row: AppKit publishes a token for the icon's box and its gap (see
+/// [`SidebarRowSize`]) but none for a badge, which `NSTableCellView` has no outlet for.
+pub const BADGE_GAP: f64 = 6.0;
 
 /// One row. Build with [`sidebar_item`] or [`sidebar_group`].
 #[derive(Clone, Debug)]
@@ -233,6 +237,45 @@ pub enum PaneAlign {
     FillPane,
 }
 
+/// Row metrics class, `NSTableViewRowSizeStyle`.
+///
+/// One knob for four numbers: `NSTableCellView` lays out its `textField` and `imageView` outlets
+/// from this, so it drives row height, the icon's box, the label font and the group-header font
+/// together. Measured on 26.5, source-list rows:
+///
+/// | | row | label | group header |
+/// |---|---|---|---|
+/// | [`Small`](Self::Small) | 24pt | 11pt | 11pt |
+/// | [`Medium`](Self::Medium) | 32pt | 13pt | 11pt |
+/// | [`Large`](Self::Large) | 40pt | 15pt | 11pt |
+///
+/// `NSTableViewRowSizeStyleCustom`, AppKit's own property default, is deliberately absent: it
+/// means "use `rowHeight` and lay out nothing", and `.sourceList` seeds `rowHeight` to 24 — so a
+/// sidebar that never sets this property renders `Small`-height rows around a `Medium` label and
+/// a group header three sizes too big. That hybrid is not one AppKit ships.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum SidebarRowSize {
+    /// `NSTableViewRowSizeStyleDefault` — whatever the running macOS calls standard for a source
+    /// list, which is what Finder gets. Resolves to [`Medium`](Self::Medium) on 26.5; read
+    /// [`SidebarProbe::effective_row_size_style`] for what it resolved to.
+    #[default]
+    System,
+    Small,
+    Medium,
+    Large,
+}
+
+impl SidebarRowSize {
+    fn appkit(self) -> NSTableViewRowSizeStyle {
+        match self {
+            Self::System => NSTableViewRowSizeStyle::Default,
+            Self::Small => NSTableViewRowSizeStyle::Small,
+            Self::Medium => NSTableViewRowSizeStyle::Medium,
+            Self::Large => NSTableViewRowSizeStyle::Large,
+        }
+    }
+}
+
 /// Configuration honoured on the first [`NativeSidebar::install`] for a window.
 #[derive(Clone, Debug)]
 pub struct SidebarOptions {
@@ -245,6 +288,8 @@ pub struct SidebarOptions {
     pub collapsed: bool,
     /// Expand every group on install and on insertion.
     pub expand_groups: bool,
+    /// Row height, icon box and label font, as one class. See [`SidebarRowSize`].
+    pub row_size: SidebarRowSize,
     pub align: PaneAlign,
     /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame
     /// onto them. Without it `setContentViewController:` detaches them from the window.
@@ -274,6 +319,7 @@ impl Default for SidebarOptions {
             toolbar: true,
             collapsed: false,
             expand_groups: true,
+            row_size: SidebarRowSize::default(),
             align: PaneAlign::WindowAligned,
             adopt_below_layer: true,
             backdrop: Some(Material::WindowBackground),
@@ -323,6 +369,10 @@ pub struct SidebarProbe {
     /// `NSTableViewStyle`; 3 is `SourceList`.
     pub style: isize,
     pub effective_style: isize,
+    /// `NSTableViewRowSizeStyle` as set; -1 is `Default`, 0 `Custom`, 1..3 Small/Medium/Large.
+    pub row_size_style: isize,
+    /// What `Default` resolved to. Never -1, so this is the one to assert on.
+    pub effective_row_size_style: isize,
     pub row_height: f64,
     pub indentation_per_level: f64,
     pub divider_thickness: f64,
@@ -404,12 +454,13 @@ struct Views {
     pane: Retained<ContentPane>,
     /// `setDataSource:`/`setDelegate:` are weak, so this must outlive the outline view.
     _source: Retained<OutlineSource>,
-    toolbar: Option<Retained<NSToolbar>>,
-    _toolbar_delegate: Option<Retained<SidebarToolbarDelegate>>,
+    /// Kept built even while detached, so [`NativeSidebar::set_toolbar`] can put it back.
+    toolbar: Retained<NSToolbar>,
+    _toolbar_delegate: Retained<SidebarToolbarDelegate>,
     _sidebar_vc: Retained<NSViewController>,
     _content_vc: Retained<NSViewController>,
     _content_item: Retained<NSSplitViewItem>,
-    _backdrop: Option<Retained<NSVisualEffectView>>,
+    backdrop: Option<Retained<NSVisualEffectView>>,
 }
 
 struct SidebarState {
@@ -474,6 +525,10 @@ impl NativeSidebar {
 
     /// Select the row with this id, or clear the selection. Diffed; does not re-enter
     /// [`NativeSidebar::on_select`].
+    ///
+    /// Expands the item's ancestors first. Without that a collapsed parent leaves the item with
+    /// no row, `rowForItem:` answers -1, and the -1 branch below *clears* the selection — which
+    /// is indistinguishable from success whenever nothing was selected to begin with.
     pub fn set_selected(&self, id: Option<&str>) {
         let state = &*self.0;
         let outline = &state.views.outline;
@@ -481,6 +536,7 @@ impl NativeSidebar {
         let wanted = id.and_then(|id| state.shared.model.borrow().key_for_id(id));
         let row = match wanted {
             Some(key) => {
+                reveal(state, key);
                 let item = state.shared.item(key);
                 unsafe { outline.rowForItem(Some(&item)) }
             }
@@ -531,6 +587,91 @@ impl NativeSidebar {
 
     pub fn is_collapsed(&self) -> bool {
         self.0.views.sidebar_item.isCollapsed()
+    }
+
+    /// Change the row metrics class after install.
+    ///
+    /// `NSTableCellView` reads `rowSizeStyle` when it lays out, and pooled cells were laid out
+    /// under the old one, so the rows have to be rebuilt for the new metrics to reach them.
+    pub fn set_row_size(&self, size: SidebarRowSize) {
+        let state = &*self.0;
+        let outline = &state.views.outline;
+        let wanted = size.appkit();
+        if outline.rowSizeStyle() == wanted {
+            return;
+        }
+        let saved = SavedState::capture(state);
+        outline.setRowSizeStyle(wanted);
+        outline.reloadData();
+        if state.shared.expand_groups.get() {
+            expand_groups(state);
+        }
+        saved.restore(state);
+        state.shared.writes.set(state.shared.writes.get() + 1);
+        state.pane_shared.clone().align(&state.views.pane);
+    }
+
+    pub fn row_size(&self) -> SidebarRowSize {
+        match self.0.views.outline.rowSizeStyle() {
+            NSTableViewRowSizeStyle::Small => SidebarRowSize::Small,
+            NSTableViewRowSizeStyle::Medium => SidebarRowSize::Medium,
+            NSTableViewRowSizeStyle::Large => SidebarRowSize::Large,
+            _ => SidebarRowSize::System,
+        }
+    }
+
+    /// Move the divider. AppKit clamps to the item's min and max thickness.
+    pub fn set_thickness(&self, thickness: Pixels) {
+        let split = self.0.views.split.splitView();
+        split.setPosition_ofDividerAtIndex(thickness.to_f64(), 0);
+        self.0.pane_shared.clone().align(&self.0.views.pane);
+    }
+
+    pub fn set_thickness_limits(&self, min: Pixels, max: Pixels) {
+        let item = &self.0.views.sidebar_item;
+        item.setMinimumThickness(min.to_f64());
+        item.setMaximumThickness(max.to_f64());
+        self.0.views.split.view().layoutSubtreeIfNeeded();
+        self.0.pane_shared.clone().align(&self.0.views.pane);
+    }
+
+    /// Attach or detach the unified toolbar. Detaching it drops the pane's top safe-area inset,
+    /// so [`SidebarMetrics::top`] changes with it.
+    pub fn set_toolbar(&self, visible: bool) {
+        let Some(window) = self.window_frame_window() else {
+            return;
+        };
+        if window.toolbar().is_some() == visible {
+            return;
+        }
+        window.setToolbar(visible.then(|| self.0.views.toolbar.clone()).as_deref());
+        self.0.views.split.view().layoutSubtreeIfNeeded();
+        self.0.pane_shared.clone().align(&self.0.views.pane);
+    }
+
+    pub fn has_toolbar(&self) -> bool {
+        self.window_frame_window()
+            .is_some_and(|w| w.toolbar().is_some())
+    }
+
+    /// Whether later insertions auto-expand their group. Turning it on expands what is there now.
+    pub fn set_expand_groups(&self, expand: bool) {
+        self.0.shared.expand_groups.set(expand);
+        if expand {
+            expand_groups(&self.0);
+        }
+    }
+
+    pub fn expands_groups(&self) -> bool {
+        self.0.shared.expand_groups.get()
+    }
+
+    /// Retint the window-spanning backdrop. A sidebar installed with `backdrop: None` has no view
+    /// to retint and ignores this.
+    pub fn set_backdrop(&self, material: Material) {
+        if let Some(view) = self.0.views.backdrop.as_ref() {
+            view.setMaterial(RawMaterial::from(material).appkit());
+        }
     }
 
     pub fn set_expanded(&self, id: &str, expanded: bool) {
@@ -630,11 +771,18 @@ impl NativeSidebar {
             allows_full_height_layout: views.sidebar_item.allowsFullHeightLayout(),
             style: outline.style().0,
             effective_style: outline.effectiveStyle().0,
+            row_size_style: outline.rowSizeStyle().0,
+            effective_row_size_style: outline.effectiveRowSizeStyle().0,
             row_height: outline.rowHeight(),
             indentation_per_level: outline.indentationPerLevel(),
             divider_thickness: views.split.splitView().dividerThickness(),
             rows: outline.numberOfRows(),
-            toolbar_items: views.toolbar.as_ref().map_or(0, |t| t.items().count()),
+            // The window, not our retained toolbar: the shell keeps one built even while it is
+            // detached, so only the window knows whether one is attached.
+            toolbar_items: outline
+                .window()
+                .and_then(|w| w.toolbar())
+                .map_or(0, |t| t.items().count()),
             scroll_draws_background: views.scroll.drawsBackground(),
             outline_is_first_responder: first_responder,
         }
@@ -887,8 +1035,10 @@ struct CellIvars {
 }
 
 define_class!(
-    /// A source-list row, laid out by hand because [`ICON_GAP`] is the only number to choose —
-    /// the cell's own origin inside the row is AppKit's, and this view is positioned by it.
+    /// A source-list row. `NSTableCellView` lays out its `textField` and `imageView` outlets from
+    /// `rowSizeStyle`, so `super`'s layout is what puts the icon and the label where the system
+    /// wants them — matching Finder to the point. This override only adds the count badge, which
+    /// `NSTableCellView` has no outlet for and therefore never places.
     #[unsafe(super(NSTableCellView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarCell"]
@@ -899,48 +1049,32 @@ define_class!(
         #[unsafe(method(layout))]
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
-            let bounds = self.bounds();
-            let title = unsafe { self.textField() };
-            // Boxing the icon in the label's fitting height (the system line height) keeps every
-            // label on one x: SF Symbol glyphs differ in width, so sizing from the image is ragged.
-            let line = title.as_ref().map_or(0., |t| t.fittingSize().height);
-            let mut x = 0.0f64;
 
             if let Some(icon) = unsafe { self.imageView() } {
-                if icon.image().is_some() {
-                    icon.setHidden(false);
-                    icon.setFrame(NSRect::new(
-                        NSPoint::new(x, ((bounds.size.height - line) / 2.).round()),
-                        NSSize::new(line, line),
-                    ));
-                    x += line + ICON_GAP;
-                } else {
-                    icon.setHidden(true);
-                }
+                // An empty image view still reserves its box, which would indent a symbol-less
+                // row's label past its neighbours'.
+                icon.setHidden(icon.image().is_none());
             }
 
-            let badge = self.ivars().badge.borrow().clone().filter(|b| !b.isHidden());
-            let badge_width = badge.as_ref().map_or(0., |b| b.fittingSize().width);
-            if let Some(badge) = &badge {
-                let height = badge.fittingSize().height;
-                badge.setFrame(NSRect::new(
-                    NSPoint::new(
-                        bounds.size.width - badge_width,
-                        ((bounds.size.height - height) / 2.).round(),
-                    ),
-                    NSSize::new(badge_width, height),
-                ));
-            }
+            let Some(badge) = self.ivars().badge.borrow().clone().filter(|b| !b.isHidden()) else {
+                return;
+            };
+            let bounds = self.bounds();
+            let size = badge.fittingSize();
+            badge.setFrame(NSRect::new(
+                NSPoint::new(
+                    bounds.size.width - size.width,
+                    ((bounds.size.height - size.height) / 2.).round(),
+                ),
+                size,
+            ));
 
-            if let Some(title) = title {
-                let trailing = if badge_width > 0. {
-                    badge_width + ICON_GAP
-                } else {
-                    0.
-                };
+            if let Some(title) = unsafe { self.textField() } {
+                let frame = title.frame();
+                let width = bounds.size.width - size.width - BADGE_GAP - frame.origin.x;
                 title.setFrame(NSRect::new(
-                    NSPoint::new(x, ((bounds.size.height - line) / 2.).round()),
-                    NSSize::new((bounds.size.width - x - trailing).max(0.), line),
+                    frame.origin,
+                    NSSize::new(width.max(0.), frame.size.height),
                 ));
             }
         }
@@ -1423,6 +1557,27 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
     (inserted, removed, moved)
 }
 
+/// Expand `key`'s ancestors, outermost first, so the item has a row.
+fn reveal(state: &SidebarState, key: u64) {
+    let outline = &state.views.outline;
+    let mut ancestors = Vec::new();
+    {
+        let model = state.shared.model.borrow();
+        let mut walk = model.parent_key(key);
+        while let Some(parent) = walk {
+            ancestors.push(parent);
+            walk = model.parent_key(parent);
+        }
+    }
+    for parent in ancestors.into_iter().rev() {
+        let item = state.shared.item(parent);
+        if !unsafe { outline.isItemExpanded(Some(&item)) } {
+            state.shared.writes.set(state.shared.writes.get() + 1);
+            unsafe { outline.expandItem(Some(&item)) };
+        }
+    }
+}
+
 fn expand_groups(state: &SidebarState) {
     let outline = &state.views.outline;
     let keys: Vec<u64> = {
@@ -1583,6 +1738,9 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     unsafe { outline.setOutlineTableColumn(Some(&column)) };
     outline.setHeaderView(None);
     outline.setStyle(NSTableViewStyle::SourceList);
+    // After `.sourceList`, never before: setting that style overwrites `rowHeight`,
+    // `intercellSpacing` and `indentationPerLevel` with its own source-list seeds.
+    outline.setRowSizeStyle(options.row_size.appkit());
     outline.setFloatsGroupRows(false);
     unsafe {
         outline.setDataSource(Some(ProtocolObject::from_ref(&*source)));
@@ -1645,26 +1803,26 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     split.addSplitViewItem(&sidebar_item);
     split.addSplitViewItem(&content_item);
 
-    let (toolbar, toolbar_delegate) = if options.toolbar {
-        let delegate: Retained<SidebarToolbarDelegate> =
-            unsafe { msg_send![SidebarToolbarDelegate::alloc(mtm), init] };
-        let toolbar = NSToolbar::initWithIdentifier(
-            NSToolbar::alloc(mtm),
-            &NSString::from_str("NGSidebarToolbar"),
-        );
-        toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        ns_window.setToolbar(Some(&toolbar));
-        ns_window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-        // A fresh NSToolbar defaults to icon *and* label — the pre-unified look, 14pt taller.
-        toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
-        // `toggleSidebar:` walks the responder chain to the split controller, so no target wiring.
-        unsafe {
-            toolbar.insertItemWithItemIdentifier_atIndex(NSToolbarToggleSidebarItemIdentifier, 0)
-        };
-        (Some(toolbar), Some(delegate))
-    } else {
-        (None, None)
+    // Built whether or not it starts attached: `NSWindow.toolbar` is the only place a toolbar
+    // lives, so a sidebar that never made one could never honour a later
+    // [`NativeSidebar::set_toolbar`].
+    let toolbar_delegate: Retained<SidebarToolbarDelegate> =
+        unsafe { msg_send![SidebarToolbarDelegate::alloc(mtm), init] };
+    let toolbar = NSToolbar::initWithIdentifier(
+        NSToolbar::alloc(mtm),
+        &NSString::from_str("NGSidebarToolbar"),
+    );
+    toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
+    // A fresh NSToolbar defaults to icon *and* label — the pre-unified look, 14pt taller.
+    toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
+    // `toggleSidebar:` walks the responder chain to the split controller, so no target wiring.
+    unsafe {
+        toolbar.insertItemWithItemIdentifier_atIndex(NSToolbarToggleSidebarItemIdentifier, 0)
     };
+    ns_window.setToolbarStyle(NSWindowToolbarStyle::Unified);
+    if options.toolbar {
+        ns_window.setToolbar(Some(&toolbar));
+    }
 
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
     ns_window.setTitlebarAppearsTransparent(true);
@@ -1748,7 +1906,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             _sidebar_vc: sidebar_vc,
             _content_vc: content_vc,
             _content_item: content_item,
-            _backdrop: backdrop,
+            backdrop,
         },
         shared,
         pane_shared,
