@@ -43,7 +43,8 @@ use native_gpui::window_chrome::{
     corner_radius, corner_radius_readback, current_cursor_description, cursor_region, native_rect,
     native_screen_rect, native_window_rect, restore_window_flags, set_corner_radius, set_toolbar,
     set_toolbar_search_active, set_window_flags, supports_corner_radius, system_corner_radius,
-    titlebar_band, toolbar_description, traffic_light_inset, window_flags, window_level,
+    titlebar_band, toolbar_description, toolbar_item_view, traffic_light_inset, window_flags,
+    window_level,
 };
 use native_gpui::{MenuEntry, native_root, tokens, window_options};
 use objc2::MainThreadOnly;
@@ -317,6 +318,24 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 wlog!("MODE set {index}");
             }
         }
+        // The update route for a build-once view item: fetch the view back and write to it.
+        "level" => {
+            if let Ok(value) = arg.parse::<f64>() {
+                match toolbar_item_view(window, "ng.pinned")
+                    .and_then(|view| view.downcast::<NSProgressIndicator>().ok())
+                {
+                    Some(bar) => {
+                        bar.setIndeterminate(false);
+                        bar.setDoubleValue(value);
+                        wlog!(
+                            "LEVEL ng.pinned <- {value} (readback {})",
+                            bar.doubleValue()
+                        );
+                    }
+                    None => log("LEVEL ng.pinned has no view"),
+                }
+            }
+        }
         "search" => {
             set_toolbar_search_active(window, "ng.search", arg != "off");
             wlog!("SEARCH active={}", arg != "off");
@@ -540,7 +559,11 @@ fn toolbar_items() -> Vec<ToolbarItem> {
         }),
         ToolbarItem::view("ng.bare", "Bare", Size::default(), NSView::new),
         ToolbarItem::view("ng.pinned", "Pinned", size(px(90.), px(22.)), |mtm| {
-            Retained::into_super(NSProgressIndicator::new(mtm))
+            let bar = NSProgressIndicator::new(mtm);
+            bar.setIndeterminate(false);
+            // `NSProgressIndicator`'s range is 0..100, so a fraction here shows as a nub.
+            bar.setDoubleValue(35.);
+            Retained::into_super(bar)
         }),
         ToolbarItem::search("ng.search", "Search")
             .placeholder("Search")

@@ -19,7 +19,8 @@ use native_gpui::tokens::{
     appkit_advance, appkit_string_width, cache_stats, current_appearance, file_icon, folder_icon,
     generation, label_font_size, refused, set_app_appearance, sf_symbol, sf_symbol_colored,
     small_system_font_size, srgb, system_color, system_font, system_font_family,
-    system_font_metrics, system_font_size, system_font_size_for, text_font_family,
+    system_font_metrics, system_font_size, system_font_size_for, system_font_tabular,
+    text_font_family,
 };
 use native_gpui::{ControlSize, native_button, native_switch};
 use objc2_app_kit::NSColor;
@@ -28,6 +29,10 @@ use objc2_app_kit::NSColor;
 const SAMPLE: &str = "Handgloves 0123 xnxn";
 
 const SIZES: &[f32] = &[9., 11., 13., 16., 17., 24.];
+
+/// Same length, different digits, so an unequal advance shows up as a ragged right edge rather
+/// than as a number a reader has to trust. U+202F before the meridiem, as Finder writes it.
+const TABULAR_SAMPLE: &[&str] = &["11:11\u{202F}AM", "10:00\u{202F}AM", "8/26/26", "1/11/11"];
 
 /// Types a Finder-shaped list actually shows. Each resolves to a *declared* type here; the icons
 /// are real artwork, not tinted glyphs, so this row is also where a broken channel order or a
@@ -483,6 +488,40 @@ fn font_section(cx: &App) -> AnyElement {
                 ]),
             ),
             demo("cumulative drift over the sample string", stack(drift)),
+            demo(
+                "system_font_tabular — the same face, digits all one width",
+                stack(vec![
+                    div()
+                        .flex()
+                        .gap_8()
+                        .children(
+                            [
+                                ("system_font", system_font(FontWeight::NORMAL)),
+                                (
+                                    "system_font_tabular",
+                                    system_font_tabular(FontWeight::NORMAL),
+                                ),
+                            ]
+                            .map(|(label, font)| {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_0p5()
+                                    .child(caption(label))
+                                    .children(TABULAR_SAMPLE.iter().map(|line| {
+                                        div().font(font.clone()).text_size(px(14.)).child(*line)
+                                    }))
+                                    .into_any_element()
+                            }),
+                        )
+                        .into_any_element(),
+                    caption(
+                        "Left column's rows end at different x because SF's 1 advances 6.34pt \
+                         against 4's 8.86pt; right column's do not. The character before AM is \
+                         U+202F, which is what Finder uses.",
+                    ),
+                ]),
+            ),
             mono(format!(
                 "metrics at {:.0}pt: ascent {:+.3} descent {:+.3} leading {:.3} cap {:.3} \
                  x-height {:.3}  face {}",

@@ -542,6 +542,12 @@ pub enum ToolbarItem {
     /// the crate's own elements can be used here. What the caller gives up is the whole pooled
     /// path — GPUI-driven geometry, the per-frame property diff, and `on_change` plumbing — so the
     /// view has to own its own state and wire its own target/action.
+    ///
+    /// **Build-once.** `build` runs the first time AppKit asks for this identifier and never
+    /// again, so a later `set_toolbar` carrying different state does not rebuild it and a closure
+    /// that captured a value shows that value forever. Unlike the other variants, which
+    /// [`set_toolbar`] re-pushes state onto every call, a view item is updated by asking for the
+    /// view back with [`toolbar_item_view`] and writing to it.
     View {
         id: String,
         label: String,
@@ -1393,6 +1399,25 @@ pub fn toolbar_description(window: &Window) -> String {
         lines.push(format!("{id} {class} {shown}{detail}"));
     }
     lines.join("\n")
+}
+
+/// The view a [`ToolbarItem::View`] built, so a caller can write new state into it.
+///
+/// The update route for the one variant [`set_toolbar`] cannot refresh: its builder runs once per
+/// identifier and the toolbar keeps what it returned, so there is nothing to re-run. The other
+/// variants need this for nothing — a group's selection, a search field's placeholder and width,
+/// and a menu's rows are all pushed on every `set_toolbar` call.
+///
+/// `None` when there is no toolbar, no item by that identifier, or the item is not a view item.
+/// `NSSearchToolbarItem` reports `None` too: it declares `view` unavailable and owns its field.
+pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> {
+    let ns_window = ns_window_of(window);
+    ns_window
+        .toolbar()?
+        .items()
+        .iter()
+        .find(|item| item.itemIdentifier().to_string() == id)
+        .and_then(|item| item.view())
 }
 
 /// Expand a [`ToolbarItem::Search`] to its preferred width and put the keyboard in it, or collapse

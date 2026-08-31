@@ -648,6 +648,29 @@ pub fn system_font(weight: FontWeight) -> Font {
     }
 }
 
+/// The OpenType tag that turns SF's proportional figures into tabular ones. `monospacedDigit`
+/// would name the AppKit call rather than the thing being asked for.
+const TABULAR_FIGURES: &str = "tnum";
+
+/// [`system_font`] with tabular figures, for a column of numbers that must not shift as its digits
+/// change — a date column, a size column, a clock.
+///
+/// The same face and weight, not a monospaced one: only the digits change width. In SF at 14pt the
+/// proportional `1` advances 6.34pt against `4`'s 8.86pt, so `11:11 AM` renders 6.97pt narrower
+/// than `10:00 AM` and every row of a date column starts somewhere different. With this the two
+/// are identical, and each digit advances 8.67pt — the same number AppKit's own
+/// `monospacedDigitSystemFont(ofSize: 14, weight: .regular)` produces.
+///
+/// Verified by `examples/tabular_figures.rs`, which the close-out gate runs: GPUI applies the
+/// feature through a `CTFontDescriptor`, so a toolchain that stopped honouring it would leave this
+/// silently returning a proportional font.
+pub fn system_font_tabular(weight: FontWeight) -> Font {
+    Font {
+        features: FontFeatures(Arc::new(vec![(TABULAR_FIGURES.to_string(), 1)])),
+        ..system_font(weight)
+    }
+}
+
 /// GPUI's nine weights mapped onto AppKit's, by nearest ordinal: SF Pro's `usWeightClass` values
 /// are 100..900 in exactly these steps and [`FontWeight`] is the same CSS scale.
 pub fn ns_font_weight(weight: FontWeight) -> NSFontWeight {
@@ -711,6 +734,14 @@ pub fn ns_font(family: &str, size: Pixels, weight: FontWeight) -> Option<Retaine
 }
 
 /// Typographic width of `text` in `font`, kerning and ligatures off.
+///
+/// `NSAttributedString.size()` does not reliably shape an OpenType feature, so these widths are
+/// only trustworthy for a font whose metrics are in the face itself. Asked about
+/// `monospacedDigitSystemFont(14)` it answers 63.44 for ten `1`s and 88.59 for ten `4`s — the
+/// proportional advances — while `CTLine` shapes both at 86.68; and whether it takes the shaping
+/// path at all turns on the string, since it *does* return the tabular width for
+/// `11:11 AM`. On every font without a feature the two agree exactly: 0.000000 across 22 strings
+/// at four sizes, trailing and leading spaces included.
 fn typeset_width(font: &NSFont, text: &str) -> f64 {
     let zero = NSNumber::new_i32(0);
     let font_obj: &AnyObject = font.as_ref();
@@ -734,7 +765,9 @@ fn typeset_width(font: &NSFont, text: &str) -> f64 {
     attributed.size().width
 }
 
-/// AppKit's own width for a whole string, in points, kerning and ligatures off.
+/// AppKit's own width for a whole string, in points, kerning and ligatures off. Do not measure a
+/// font carrying an OpenType feature with this — see [`system_font_tabular`], and use GPUI's own
+/// `shape_line` for those.
 pub fn appkit_string_width(
     family: &str,
     size: Pixels,

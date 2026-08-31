@@ -653,6 +653,23 @@ impl Element for NativePopup {
         if selectable && popup.indexOfSelectedItem() != wanted {
             popup.selectItemAtIndex(wanted);
         }
+        // A pop-up's tick on the selected row *is* that item's `state`, the same field
+        // [`sync_menu`] writes from [`MenuEntry::checked`], so the diff clears it every frame —
+        // and `selectItemAtIndex:` will not put it back, because re-selecting the index the cell
+        // already holds is a no-op. The tick survives anyway: the cell re-asserts it when it
+        // displays, which is measurable only by removing these lines and finding the tick still
+        // there. They stay because that recovery is undocumented and its failure is silent, and
+        // this makes the pop-up state its own invariant instead of inheriting it. A pull-down is
+        // the other way round — AppKit gives one no state at all, so its rows are right precisely
+        // because the diff left them Off.
+        if selectable && !self.pull_down {
+            let selected = popup.menu().and_then(|menu| menu.itemAtIndex(wanted));
+            if let Some(item) = selected {
+                if item.state() != NSControlStateValueOn {
+                    item.setState(NSControlStateValueOn);
+                }
+            }
+        }
         if popup.isEnabled() != self.enabled {
             popup.setEnabled(self.enabled);
         }

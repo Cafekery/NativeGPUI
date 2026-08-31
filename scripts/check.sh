@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Everything that must hold before the tree is called clean. The two things it runs, `z_order` and
-# `glass_hit`, each open a small unfocused corner window for a fraction of a second and read out of
-# AppKit, so it takes no keyboard focus and captures no pixels: still safe to run while someone
-# else is driving the display.
+# Everything that must hold before the tree is called clean. The three things it runs, `z_order`,
+# `glass_hit` and `tabular_figures`, each open a small unfocused corner window for a fraction of a
+# second and read out of AppKit or gpui's text system, so it takes no keyboard focus and captures no
+# pixels: still safe to run while someone else is driving the display.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -43,6 +43,11 @@ step 'z-order holds paint order'    cargo run --release --example z_order
 # A viewport-sized glass container used to answer `hitTest:` itself, making every hosted control
 # painted before it unclickable. Reads the verdict out of AppKit in-process, so no display.
 step 'glass container declines'     cargo run --release --example glass_hit
+# `system_font_tabular` is a `tnum` feature list, and if the shaper ever stops honouring the tag it
+# still returns a `Font` — a proportional one, under a name promising a column that does not shift.
+# Shapes ten of each digit through gpui's own text system, with a monospaced face and a nonsense
+# tag as the two arms that keep a null meaningful.
+step 'tabular figures apply'         cargo run --release --example tabular_figures
 
 # These docs carry measured platform facts, and a stale one on a public constructor already
 # shipped. `-D warnings` rather than a grep for known lint names: an allowlist silently passes

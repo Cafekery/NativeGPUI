@@ -20,14 +20,14 @@ use gpui::{
     prelude::*, px, rgb, size,
 };
 use native_gpui::{
-    MenuEntry, MenuOrigin, MenuView, native_context_menu, native_root, window_options,
+    MenuEntry, MenuOrigin, MenuView, native_context_menu, native_popup, native_root, window_options,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem, NSView,
+    NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
+    NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSPoint, NSProcessInfo, NSRect, NSRunLoop, NSRunLoopCommonModes,
@@ -271,6 +271,76 @@ fn metrics(mtm: MainThreadMarker) -> bool {
         guarded_child.isEnabled(),
     );
 
+    println!("\n== a pop-up's tick is the selected item's state");
+    let popup =
+        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+    popup.setAutoenablesItems(false);
+    let popup_menu = popup.menu().expect("a fresh NSPopUpButton owns a menu");
+    for title in ["Automatic", "Graphite", "Vivid Blue"] {
+        popup_menu.addItem(&plain(mtm, title));
+    }
+    let states = || -> Vec<isize> {
+        (0..popup_menu.numberOfItems())
+            .map(|i| popup_menu.itemAtIndex(i).expect("in range").state())
+            .collect()
+    };
+    popup.selectItemAtIndex(2);
+    println!("  selected 2 -> states {:?}", states());
+    ok &= check(
+        "selecting a row sets that item's state, which is the drawn tick",
+        states() == vec![0, 0, 1],
+    );
+
+    // What a `sync_menu` pass over entries that are all `checked: false` does.
+    for i in 0..popup_menu.numberOfItems() {
+        let item = popup_menu.itemAtIndex(i).expect("in range");
+        if item.state() != NSControlStateValueOff {
+            item.setState(NSControlStateValueOff);
+        }
+    }
+    println!(
+        "  after an Off pass -> states {:?}, indexOfSelectedItem {}",
+        states(),
+        popup.indexOfSelectedItem()
+    );
+    ok &= check(
+        "the cell keeps its index, so an index-guarded restore never fires",
+        states() == vec![0, 0, 0] && popup.indexOfSelectedItem() == 2,
+    );
+    popup.selectItemAtIndex(2);
+    ok &= check(
+        "re-selecting the index the cell already holds does NOT bring the tick back",
+        states() == vec![0, 0, 0],
+    );
+    popup_menu
+        .itemAtIndex(2)
+        .expect("in range")
+        .setState(NSControlStateValueOn);
+    ok &= check(
+        "only writing the state back restores it",
+        states() == vec![0, 0, 1],
+    );
+
+    let pull =
+        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, true);
+    pull.setAutoenablesItems(false);
+    let pull_menu = pull.menu().expect("a fresh NSPopUpButton owns a menu");
+    for title in ["Document", "New Sketch", "Duplicate"] {
+        pull_menu.addItem(&plain(mtm, title));
+    }
+    pull.selectItemAtIndex(1);
+    let pull_states: Vec<isize> = (0..pull_menu.numberOfItems())
+        .map(|i| pull_menu.itemAtIndex(i).expect("in range").state())
+        .collect();
+    println!(
+        "  pull-down, selected 1 -> states {pull_states:?}, indexOfSelectedItem {}",
+        pull.indexOfSelectedItem()
+    );
+    ok &= check(
+        "a pull-down draws no tick: AppKit sets no state for one",
+        pull_states == vec![0, 0, 0] && pull.indexOfSelectedItem() == 1,
+    );
+
     println!("\n== NSMenuItem properties");
     let key = plain(mtm, "Show View Options");
     key.setKeyEquivalent(&NSString::from_str("j"));
@@ -328,6 +398,77 @@ impl Render for Probe {
             ),
         )
     }
+}
+
+/// A pooled [`native_popup`] that repaints continuously, which is the only way the regression this
+/// guards against shows up: the tick survives the first paint and is lost on the second.
+struct PopupProbe {
+    frames: usize,
+}
+
+impl Render for PopupProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.frames += 1;
+        if self.frames < 40 {
+            cx.notify();
+        }
+        native_root(
+            div()
+                .size_full()
+                .bg(rgb(0x2c2c30))
+                .p(px(24.))
+                .child(native_popup("accent", 2).items(["Automatic", "Graphite", "Vivid Blue"])),
+        )
+    }
+}
+
+/// Finds the `NSPopUpButton` the crate actually placed, by walking the window it went into. An
+/// example cannot reach the view pool, and reaching it would prove less: this is the same object
+/// the user clicks.
+fn find_popup(view: &NSView) -> Option<Retained<NSPopUpButton>> {
+    for subview in view.subviews().iter() {
+        // `downcast` hands the value back on the miss, so the walk keeps its `Retained`.
+        match subview.downcast::<NSPopUpButton>() {
+            Ok(popup) => return Some(popup),
+            Err(subview) => {
+                if let Some(found) = find_popup(&subview) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The tick a pop-up draws on its selected row is that item's `state`, which `sync_menu` also
+/// writes from `MenuEntry::checked`. Read after many paints, because the first paint sets the
+/// selection and every later one re-runs the diff over it.
+fn report_popup_tick(mtm: MainThreadMarker, frames: usize) -> ! {
+    let placed = NSApplication::sharedApplication(mtm)
+        .windows()
+        .iter()
+        .next()
+        .and_then(|window| window.contentView())
+        .and_then(|content| find_popup(&content));
+    let Some(popup) = placed else {
+        println!("no NSPopUpButton was placed\nVERDICT: FAIL");
+        std::process::exit(1);
+    };
+    let menu = popup.menu().expect("a placed NSPopUpButton owns a menu");
+    let states: Vec<isize> = (0..menu.numberOfItems())
+        .map(|i| menu.itemAtIndex(i).expect("in range").state())
+        .collect();
+    println!(
+        "after {frames} paints: indexOfSelectedItem {}  states {states:?}  title {:?}",
+        popup.indexOfSelectedItem(),
+        popup.titleOfSelectedItem()
+    );
+    let ok = check(
+        "the pop-up still ticks its selected row after the diff has run over it",
+        states == vec![0, 0, 1] && popup.indexOfSelectedItem() == 2,
+    );
+    println!("\nVERDICT: {}", if ok { "PASS" } else { "FAIL" });
+    std::process::exit(if ok { 0 } else { 1 });
 }
 
 /// Posts one control-left-mouse-down through this process's own `NSApplication`, routed by window
@@ -431,6 +572,40 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(20);
 
+    if env::var("NG_ARM").as_deref() == Ok("popup") {
+        // No `activate`: the tick is read out of AppKit, so this arm never takes the screen.
+        Application::new().run(move |cx: &mut App| {
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: point(px(180.), px(180.)),
+                        size: size(px(320.), px(140.)),
+                    })),
+                    ..window_options()
+                },
+                |_, cx| cx.new(|_| PopupProbe { frames: 0 }),
+            )
+            .expect("window");
+
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1500))
+                    .await;
+                let _ = cx.update(|_| {
+                    let mtm = MainThreadMarker::new().expect("main thread");
+                    report_popup_tick(mtm, 40);
+                });
+            })
+            .detach();
+
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(hold));
+                println!("timed out before the tick could be read\nVERDICT: FAIL");
+                std::process::exit(1);
+            });
+        });
+        return;
+    }
     Application::new().run(move |cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
