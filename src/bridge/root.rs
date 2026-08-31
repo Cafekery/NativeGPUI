@@ -118,6 +118,14 @@ impl IntoElement for NativeRoot {
 /// band, read as `frame.height - window.contentLayoutRect().height` and never
 /// `frame.height - contentRectForFrameRect(frame).height` — under this style mask the content rect
 /// *is* the frame, so the latter reads a constant 0.00 while the band is really 32pt or more.
+///
+/// Neither arm of `WindowBackgroundAppearance` is where a window's background colour comes from.
+/// `Opaque` writes sRGB black and turns off the renderer's transparency, and under `Transparent`
+/// gpui writes an all-but-clear `alpha = 0.0001`; setting `NSWindow.backgroundColor` yourself is
+/// then inert, because a window-spanning backdrop or the Metal layer covers it. Writing it from
+/// that clear value to an opaque `windowBackgroundColor` — readback in the same call confirming
+/// the write landed — left the window capture byte-identical. Paint the background in the view
+/// that owns the surface; see [`crate::tokens::WINDOW_BACKGROUND`].
 pub fn window_options() -> WindowOptions {
     WindowOptions {
         window_background: WindowBackgroundAppearance::Transparent,

@@ -33,8 +33,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSColor, NSControlTextEditingDelegate, NSFont, NSImage,
-    NSImageAlignment, NSImageScaling, NSImageView, NSLineBreakMode, NSOutlineView,
+    NSAutoresizingMaskOptions, NSBezierPath, NSColor, NSControlTextEditingDelegate, NSFont,
+    NSImage, NSImageAlignment, NSImageScaling, NSImageView, NSLineBreakMode, NSOutlineView,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSScreen, NSScrollView, NSSplitViewController,
     NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions,
     NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle,
@@ -51,6 +51,7 @@ use objc2_foundation::{
 use crate::Material;
 use crate::bridge::appkit::{Container, gpui_view, rects_equal};
 use crate::materials::RawMaterial;
+use crate::tokens;
 
 /// Gap between a row's label and its trailing count badge, in points. The one hand-chosen number
 /// left in a row: AppKit publishes a token for the icon's box and its gap (see
@@ -294,7 +295,10 @@ pub struct SidebarOptions {
     /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame
     /// onto them. Without it `setContentViewController:` detaches them from the window.
     pub adopt_below_layer: bool,
-    /// A window-spanning backdrop, inserted beneath both panes.
+    /// A window-spanning backdrop, inserted beneath both panes. **This is the sidebar's vibrancy,
+    /// not the window's background** — the content pane paints
+    /// [`tokens::WINDOW_BACKGROUND`](crate::tokens::WINDOW_BACKGROUND) over it, so only the
+    /// sidebar strip is left showing it.
     ///
     /// What a Mac window has behind its sidebar. Without it the sidebar samples whatever is
     /// behind the *window*, and `allowsFullHeightLayout` runs it up under a titlebar strip that
@@ -305,6 +309,11 @@ pub struct SidebarOptions {
     /// content pane — a material placed from GPUI stops at the sidebar edge and squares off the
     /// window's rounded corners — and sits below the split view instead of being drawn by GPUI,
     /// whose view covers the traffic lights and toolbar under `NSFullSizeContentViewWindowMask`.
+    ///
+    /// Resist making it opaque to match the content side. It blends behind-window, so it is the
+    /// one surface here that shows the desktop, and swapping it for an opaque material moved the
+    /// sidebar 40 -> 27 in the band and 43 -> 32 in its interior — a flatter panel, and the step
+    /// it was meant to close is closed at the pane instead.
     ///
     /// `None` leaves the window unbacked, for a caller painting its own opaque background.
     pub backdrop: Option<Material>,
@@ -986,10 +995,11 @@ impl PaneShared {
 }
 
 define_class!(
-    /// The content split item's view: clips GPUI's oversized child to the pane and re-aligns it on
-    /// every geometry change. All four overrides are needed — `setFrame:` is *not* implemented in
-    /// terms of `setFrameSize:`/`setFrameOrigin:` and is how `NSSplitView` positions its panes,
-    /// `layout` covers the collapse animation, `setFrameOrigin:` the divider drag.
+    /// The content split item's view: clips GPUI's oversized child to the pane, re-aligns it on
+    /// every geometry change, and paints the window background under it. All four geometry
+    /// overrides are needed — `setFrame:` is *not* implemented in terms of
+    /// `setFrameSize:`/`setFrameOrigin:` and is how `NSSplitView` positions its panes, `layout`
+    /// covers the collapse animation, `setFrameOrigin:` the divider drag.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarContentPane"]
@@ -1019,6 +1029,24 @@ define_class!(
         fn set_frame(&self, frame: NSRect) {
             let _: () = unsafe { msg_send![super(self), setFrame: frame] };
             self.ivars().clone().align(self);
+        }
+
+        /// The window background, for the whole content side including its own toolbar band.
+        ///
+        /// This pane runs the full height of the window and is inset from the band only by its
+        /// `safeAreaInsets`, so GPUI lays out below the band while the pane spans it. Nothing else
+        /// can paint there: GPUI content stops at the inset, and the window's own
+        /// `backgroundColor` is inert while a window-spanning backdrop covers it — writing it from
+        /// clear to an opaque `windowBackgroundColor` left the capture byte-identical.
+        ///
+        /// The fill is beneath every subview, so a [`crate::Layer::Below`] view keeps compositing
+        /// over it. An `NSColor` and not a cached value: it re-resolves in whatever appearance is
+        /// current, and AppKit redisplays a layer-backed view on an appearance change by itself,
+        /// so no invalidation is wired here.
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, dirty: NSRect) {
+            tokens::WINDOW_BACKGROUND.ns_color().setFill();
+            NSBezierPath::fillRect(dirty);
         }
     }
 );

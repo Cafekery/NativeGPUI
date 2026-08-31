@@ -419,6 +419,27 @@ pub fn accent() -> Hsla {
     system_color(SystemColor::ControlAccent)
 }
 
+/// **The** window background: the one colour every opaque surface of a window is painted with —
+/// the toolbar band, the content pane behind it, and whatever an app draws in the body.
+///
+/// One value, because two are visible as a step. A window's toolbar band and its body are the
+/// same surface interrupted by a strip of chrome, and anything that resolves them differently
+/// draws a line across the window where no line exists. The one deliberate exception is a
+/// sidebar, which is vibrancy over this and not a colour at all; see
+/// [`SidebarOptions::backdrop`](crate::sidebar::SidebarOptions::backdrop).
+///
+/// It has to be an opaque colour and not a material. A material is behind-window vibrancy, so its
+/// value moves with the desktop behind the window: measured over a controlled 16-hue window, a
+/// `UnderWindowBackground` band and a body painted `windowBackgroundColor` cannot be reconciled by
+/// any constant, because only one of the two changes when the wallpaper does.
+pub const WINDOW_BACKGROUND: SystemColor = SystemColor::WindowBackground;
+
+/// [`WINDOW_BACKGROUND`] for this process's current appearance. `WINDOW_BACKGROUND.ns_color()` is
+/// the same token for a caller handing it back to AppKit.
+pub fn window_background() -> Hsla {
+    system_color(WINDOW_BACKGROUND)
+}
+
 fn display_scale() -> f32 {
     with_cache(|cache| {
         *cache.scale.get_or_insert_with(|| {

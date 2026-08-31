@@ -323,7 +323,6 @@ impl Render for Demo {
                             .gap_6()
                             .px(px(38.))
                             .py(px(24.))
-                            .bg(system_color(SystemColor::WindowBackground))
                             .child(
                                 div()
                                     .flex()

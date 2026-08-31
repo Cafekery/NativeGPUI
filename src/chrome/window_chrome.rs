@@ -1456,6 +1456,12 @@ pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
 /// Must come from `contentLayoutRect`: under `FullSizeContentView`, which is what
 /// [`crate::window_options`] ships, the content rect *is* the frame, so the obvious
 /// `frame.height - contentRectForFrameRect(frame).height` reads a constant 0.
+///
+/// An inset for *content*, not for a background. With a [`crate::sidebar::NativeSidebar`] the
+/// content pane already paints [`tokens::WINDOW_BACKGROUND`] across its own band, so leaving this
+/// strip unpainted is what makes the band and the body one surface; painting your own colour into
+/// it is how the two stop matching. Without a sidebar nothing paints it, and an app that wants an
+/// opaque window has to fill behind its own content.
 pub fn titlebar_band(window: &Window) -> Pixels {
     let ns_window = ns_window_of(window);
     let frame = ns_window.frame();
