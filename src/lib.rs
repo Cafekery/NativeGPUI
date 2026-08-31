@@ -15,6 +15,11 @@
 //! bar until something asks for one, and a hosted text field answers none of those chords until
 //! it does.
 //!
+//! The value you pass a component must be the state its `on_change` writes. A component pushes its
+//! value on every paint, so a literal — `native_text_field("name", "")` wired to an `on_change`
+//! that stores elsewhere — wipes the control a frame or two after each keystroke, once the pending
+//! write drains. It reads as intermittent input loss rather than as a wiring mistake.
+//!
 //! # Two layers
 //!
 //! * [`Layer::Above`] — subview of GPUI's Metal view. Draws over GPUI content and takes input.

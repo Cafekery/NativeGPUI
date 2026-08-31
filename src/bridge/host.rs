@@ -90,7 +90,10 @@ pub enum NativeValue {
 ///   everything the user can reach** except exactly 1.0 — and 0 is the usual initial value too, so
 ///   a round trip reads 0 → 0 and looks like a control that never moved.
 /// * `integerValue` on `NSPopUpButton` is the cell's state: a constant 1 for every pop-up and 0
-///   for every pull-down, whichever row is picked. `NSSegmentedControl` is the same shape.
+///   for every pull-down, whichever row is picked. `NSSegmentedControl` is **not** the same shape
+///   — its `integerValue` tracks `selectedSegment` exactly, in SelectOne and SelectAny alike, so
+///   [`ValueKind::Int`] is right there. In Momentary, `setSelectedSegment:` never sticks and the
+///   read is always -1.
 ///
 /// So this is for a control's own scalar value; a **selection, index, position or non-scalar** must
 /// go through [`NativeHost::on_event`] with the real accessor.

@@ -295,6 +295,7 @@ pub fn custom_glass(id: impl Into<ElementId>) -> CustomGlass {
         id: id.into(),
         layer: Layer::Above,
         recipe: GlassRecipe::regular(),
+        radius: None,
     }
 }
 
@@ -302,6 +303,7 @@ pub struct CustomGlass {
     id: ElementId,
     layer: Layer,
     recipe: GlassRecipe,
+    radius: Option<f32>,
 }
 
 impl CustomGlass {
@@ -323,9 +325,19 @@ impl CustomGlass {
         self
     }
 
+    /// Overrides the recipe's own radius, in either order. Held separately because writing it into
+    /// the recipe let a later `recipe()` discard it silently.
     pub fn corner_radius(mut self, radius: Pixels) -> Self {
-        self.recipe.corner_radius = radius.to_f64() as f32;
+        self.radius = Some(radius.to_f64() as f32);
         self
+    }
+
+    fn resolved(&self) -> GlassRecipe {
+        let mut recipe = self.recipe;
+        if let Some(radius) = self.radius {
+            recipe.corner_radius = radius;
+        }
+        recipe
     }
 }
 
@@ -386,7 +398,7 @@ impl Element for CustomGlass {
             CustomGlassView::new(mtm)
         });
         view.fit();
-        view.apply(&self.recipe);
+        view.apply(&self.resolved());
     }
 }
 

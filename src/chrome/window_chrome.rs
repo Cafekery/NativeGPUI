@@ -372,9 +372,11 @@ pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
     Some(px(radius as f32))
 }
 
-/// The two toolbar styles that keep a window looking like a document window. Both *give* GPUI
-/// content rather than taking any: AppKit grows the window frame by the whole new titlebar height,
-/// and GPUI's view autoresizes into the extra space.
+/// The two toolbar styles that keep a window looking like a document window. Both *take* GPUI
+/// content: under [`crate::window_options`]'s `FullSizeContentView` the content rect **is** the
+/// frame, so AppKit has no content height to preserve by growing the window. Measured at 820x560:
+/// the frame never moves, while `contentLayoutRect` goes 528 -> 508 unified and -> 520 compact, so
+/// unified costs 20pt and compact 8pt. Inset your chrome by the live band, never by a constant.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ToolbarStyle {
     Unified,

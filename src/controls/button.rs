@@ -761,8 +761,10 @@ impl Element for NativeSegmented {
             control.setTrackingMode(tracking);
             trace!("segmented {key:x} trackingMode <- {:?}", self.tracking);
         }
-        // Momentary has no persistent selection; writing one would fight the control.
-        if self.tracking != TrackingMode::Momentary {
+        // Only `SelectOne` has a selection a single index can describe. Momentary keeps none, and
+        // in `SelectAny` a per-paint write pins the owned segment on: the user cannot switch it
+        // off, and an out-of-range index deselects everything again every frame.
+        if self.tracking == TrackingMode::SelectOne {
             let wanted = self.wanted_selection();
             if control.selectedSegment() != wanted {
                 control.setSelectedSegment(wanted);

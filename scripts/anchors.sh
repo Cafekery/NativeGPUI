@@ -46,6 +46,7 @@ maskImage round-trips, so read-back diff ok ;; round.?trips ;; materials/materia
 interaction state traps outside its range ;; traps|aborts the process ;; materials/glass_private.rs
 style cannot report an explicit variant ;; reads back as regular|cannot report ;; materials/glass_private.rs
 RenderImage wants straight alpha ;; divide out alpha ;; system/tokens.rs
+a literal value fights its own write-back ;; wipes the control ;; lib.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
