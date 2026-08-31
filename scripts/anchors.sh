@@ -79,6 +79,18 @@ relative date formatting supplies the narrow no-break space ;; 2pt a row ;; exam
 NSCalendar normalises an out-of-range day component ;; no carrying of its own ;; examples/finder_demo/data.rs
 the browser row height was never measured ;; only the list view was measured ;; examples/finder_demo/column.rs
 the icon tile pitch includes the gap ;; last column ends up clipped ;; examples/finder_demo/icon.rs
+the window background is one colour, not two ;; visible as a step|one surface interrupted ;; src/system/tokens.rs
+NSWindow.backgroundColor is inert here ;; is then inert|left the window capture byte-identical ;; src/bridge/root.rs
+the sidebar backdrop must not go opaque ;; [Rr]esist making it opaque|flatter panel ;; src/chrome/sidebar.rs
+menu bar answers a chord only after the window declines ;; only after the window declines ;; src/bridge/menus.rs
+gpui.s delegate re-locks its own mutex on a tag miss ;; re-?locks a mutex it is still holding ;; src/bridge/menus.rs
+AppKit adds rows to the bar it is handed ;; rows of its own ;; src/bridge/menus.rs
+presentation lag is an async present ;; hands the surface to Core Animation asynchronously ;; src/bridge/appkit.rs
+queue depth measured at two counts ;; measured as exactly 2 at the default count of 3 ;; src/bridge/appkit.rs
+hosted views led by exactly two frames ;; the lead was exactly 2\.000 frames at every velocity ;; src/bridge/host.rs
+a nested CATransaction commits late ;; a nested commit lands after the one the layout came in on ;; src/bridge/host.rs
+gpui's own flag names the presentation path ;; reading which path is presenting us ;; src/bridge/host.rs
+an unsettled queue is visible at rest ;; visible at rest rather than only under motion ;; src/bridge/host.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
@@ -128,6 +140,7 @@ retired() {
   gone 'caret keys are the window.s own gap'   "separate open gap|anything this crate configures" "${where[@]}"
   gone 'editing needs an upstream gpui change' "needs a change in gpui|[Ff]ixing it needs" "${where[@]}"
   gone 'the shadow follows content alpha'    "derives the drop shadow from|square shadow" "${where[@]}"
+  gone 'the drawable default stands on cost' "extra buffer costs more in long frames|default stands because" "${where[@]}"
   return $fail
 }
 
@@ -166,6 +179,7 @@ if [[ ${1:-} == --self-test ]]; then
 // Fixing it needs a change in gpui.
 // On a transparent window macOS derives the drop shadow from content alpha, so an unpainted band
 // reaching a corner gives a rounded window and a square shadow.
+// The default stands because the extra buffer costs more in long frames than the lead is worth.
 STALE
   echo "self-test: each retired claim must go STALE when planted behind another directory"
   planted_out=$(retired "$work/empty" "$work/planted")

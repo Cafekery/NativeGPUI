@@ -16,13 +16,14 @@ use crate::bridge::host::NativeHost;
 /// It creates the window's [`NativeHost`] before anything paints, and commits every hosted view's
 /// geometry in one pass once your whole tree has painted.
 ///
-/// At rest AppKit and GPUI land on the same pixel. Under motion a hosted view leads its own GPUI
-/// row by `2 x velocity`, returning to 0 the instant motion stops: that lead is the Metal layer's
-/// drawable queue depth, not a commit-ordering problem — dropping
-/// `CAMetalLayer.maximumDrawableCount` from its default 3 to 2 halves it to one frame, and 2 is the
-/// floor, since a count of 1 leaves `nextDrawable` unsatisfiable. The default stands because the
-/// extra buffer costs more in long frames than the lead is worth. `NG_SKEW` in `examples/gallery`
-/// re-measures it.
+/// AppKit and GPUI land on the same pixel at rest and under motion alike. They did not always:
+/// GPUI's presented Metal surface trails the `CATransaction` that carried the same frame's layout
+/// by `CAMetalLayer.maximumDrawableCount - 1` frames, so writing a hosted view its *current*
+/// layout put it ahead of its own GPUI row by that many frames of velocity — measured as exactly
+/// 2.000 frames at 4, 8 and 16 points per frame. [`crate::NativeHost::place`] writes the presented
+/// frame's layout instead, which reads 0.000 at the same velocities and 0.000 at rest after an
+/// abrupt stop. `NG_SKEW` in `examples/gallery` re-measures both arms; `NG_LAG=0` is the
+/// uncompensated one.
 pub fn native_root(child: impl IntoElement) -> NativeRoot {
     NativeRoot {
         child: child.into_any_element(),
