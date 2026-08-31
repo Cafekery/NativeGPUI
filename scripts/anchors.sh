@@ -50,6 +50,7 @@ RenderImage wants straight alpha ;; divide out alpha ;; system/tokens.rs
 an extension needs the declared type, not the direct lookup ;; declared match wins ;; system/tokens.rs
 drawInRect: selects a representation by output size ;; destination pixels ;; system/tokens.rs
 a file icon does not vary with appearance ;; fixed artwork ;; system/tokens.rs
+NSStringDrawing does not shape an OpenType feature ;; reliably shape ;; system/tokens.rs
 custom glass fidelity was measured once, keyed ;; noise floor ;; materials/custom_glass.rs
 a literal value fights its own write-back ;; wipes the control ;; lib.rs
 a nested NSMenu does not inherit autoenablesItems ;; does not inherit ;; controls/menu.rs
@@ -62,7 +63,14 @@ a search field must be wired before assignment ;; configured before assigned ;; 
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
-flat() { find "$@" -name '*.rs' -exec cat {} + 2>/dev/null | tr '\n' ' ' | tr -s ' \t'; }
+# Comment markers are stripped BEFORE the newlines collapse. Without that, a phrase straddling a
+# doc-comment line break flattens to "instead of /// opening the submenu" and reports LOST while
+# the sentence is perfectly intact — a false red that turns up right after a clean run.
+flat() {
+  find "$@" -name '*.rs' -exec cat {} + 2>/dev/null |
+    sed -E 's|^[[:space:]]*//[/!]?||; s|^[[:space:]]*\*[^/]||' |
+    tr '\n' ' ' | tr -s ' \t'
+}
 
 anchors() {
   local root=$1 fail=0 label pat path

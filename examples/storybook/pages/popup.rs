@@ -52,6 +52,7 @@ fn title_of(entries: &[MenuEntry], index: usize) -> String {
     match entries.get(index) {
         Some(MenuEntry::Item { title, .. }) => title.clone(),
         Some(MenuEntry::Separator) => "(separator)".into(),
+        Some(MenuEntry::View(_)) => "(custom view)".into(),
         None => format!("(out of range: {index})"),
     }
 }
