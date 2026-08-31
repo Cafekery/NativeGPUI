@@ -15,11 +15,11 @@ use gpui::{
     prelude::*, px,
 };
 use native_gpui::tokens::{
-    Appearance, SymbolColor, SystemColor, SystemTheme, accent, advance_delta, appkit_advance,
-    appkit_string_width, cache_stats, current_appearance, generation, label_font_size, refused,
-    set_app_appearance, sf_symbol, sf_symbol_colored, small_system_font_size, srgb, system_color,
-    system_font, system_font_family, system_font_metrics, system_font_size, system_font_size_for,
-    text_font_family,
+    Appearance, FileType, SymbolColor, SystemColor, SystemTheme, accent, advance_delta,
+    appkit_advance, appkit_string_width, cache_stats, current_appearance, file_icon, folder_icon,
+    generation, label_font_size, refused, set_app_appearance, sf_symbol, sf_symbol_colored,
+    small_system_font_size, srgb, system_color, system_font, system_font_family,
+    system_font_metrics, system_font_size, system_font_size_for, text_font_family,
 };
 use native_gpui::{ControlSize, native_button, native_switch};
 use objc2_app_kit::NSColor;
@@ -28,6 +28,26 @@ use objc2_app_kit::NSColor;
 const SAMPLE: &str = "Handgloves 0123 xnxn";
 
 const SIZES: &[f32] = &[9., 11., 13., 16., 17., 24.];
+
+/// Types a Finder-shaped list actually shows. Each resolves to a *declared* type here; the icons
+/// are real artwork, not tinted glyphs, so this row is also where a broken channel order or a
+/// premultiplied buffer would be visible as a dark rim.
+const FILE_TYPES: &[(&str, FileType<'static>)] = &[
+    ("Folder", FileType::Folder),
+    ("zip", FileType::Extension("zip")),
+    ("app", FileType::Extension("app")),
+    ("pdf", FileType::Extension("pdf")),
+    ("mov", FileType::Extension("mov")),
+    ("png", FileType::Extension("png")),
+    ("swift", FileType::Extension("swift")),
+    ("md", FileType::Extension("md")),
+    ("dmg", FileType::Extension("dmg")),
+    ("icon", FileType::Extension("icon")),
+    ("plain text", FileType::Uti("public.plain-text")),
+];
+
+/// Declared nowhere, to show [`file_icon`] answers `None` rather than inventing a sheet.
+const ABSENT_UTI: &str = "com.apple.icon";
 
 const SYMBOLS: &[(&str, fn() -> SymbolColor)] = &[
     ("gearshape", || SymbolColor::Label),
@@ -90,6 +110,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
 
     let fonts = font_section(cx);
     let symbols = symbol_section();
+    let file_icons = file_icon_section();
     let colors = color_section(differing);
     let appearance = appearance_section(pinned, cx);
 
@@ -98,6 +119,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         colors,
         fonts,
         symbols,
+        file_icons,
         cache_section(),
         props(&[
             (
@@ -133,6 +155,18 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             (
                 "sf_symbol(name, size, weight)",
                 format!("{} rasterised, 1 absent", SYMBOLS.len()),
+            ),
+            (
+                "file_icon(FileType, size) / folder_icon(size)",
+                format!(
+                    "{} types, 1 undeclared, folder {}",
+                    FILE_TYPES.len(),
+                    if folder_icon(px(16.)).is_some() {
+                        "resolved"
+                    } else {
+                        "refused"
+                    }
+                ),
             ),
             ("generation() / cache_stats()", token_generation.to_string()),
         ]),
@@ -552,6 +586,75 @@ fn symbol_color_name(color: &SymbolColor) -> String {
     }
 }
 
+/// Unlike [`symbol_section`], nothing here is re-asked on an appearance change for correctness'
+/// sake — a file icon is the same bytes in both worlds. It is re-asked anyway because the cache
+/// makes that free.
+fn file_icon_section() -> AnyElement {
+    let catalogue: Vec<AnyElement> = FILE_TYPES
+        .iter()
+        .map(|(label, kind)| {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_1p5()
+                .w(px(116.))
+                .child(file_icon_cell(*kind, px(32.)))
+                .child(mono(*label))
+                .into_any_element()
+        })
+        .collect();
+
+    // 16, 32 and 64 land exactly on a representation rung at 2x; 20 and 48 do not and resample.
+    let sizes: Vec<AnyElement> = [16., 20., 32., 48., 64.]
+        .iter()
+        .map(|&size| file_icon_cell(FileType::Extension("zip"), px(size)))
+        .collect();
+
+    section(
+        "file-type icons",
+        vec![
+            caption(
+                "NSWorkspace's own artwork for a content type, rasterised the same way a symbol \
+                 is. Type lookups only — nothing here takes a path, so no icon depends on a file \
+                 existing. On a checkerboard because these carry real alpha at the corners.",
+            ),
+            grid(catalogue),
+            row("one type across sizes: 16 20 32 48 64", sizes),
+            demo(
+                "an identifier nothing declares",
+                stack(vec![
+                    mono(format!(
+                        "file_icon(FileType::Uti({ABSENT_UTI:?}), 32px) = {}",
+                        match file_icon(FileType::Uti(ABSENT_UTI), px(32.)) {
+                            Some(_) => "Some(..)",
+                            None => "None",
+                        }
+                    )),
+                    caption(
+                        "None. A stand-in sheet would be indistinguishable from the real \
+                         generic-document icon an undeclared extension legitimately gets.",
+                    ),
+                ]),
+            ),
+        ],
+    )
+}
+
+fn file_icon_cell(kind: FileType<'_>, size: Pixels) -> AnyElement {
+    let body = match file_icon(kind, size) {
+        Some(icon) => div()
+            .flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(icon.img())
+            .into_any_element(),
+        None => caption("None").into_any_element(),
+    };
+    checker(72., body)
+}
+
 fn cache_section() -> AnyElement {
     let stats = cache_stats();
     section(
@@ -559,16 +662,18 @@ fn cache_section() -> AnyElement {
         vec![
             mono(format!(
                 "generation() = {}    cache generation = {}    palette_resolves = {}    \
-                 symbol_rasters = {}",
+                 symbol_rasters = {}    file_icon_rasters = {}",
                 generation(),
                 stats.generation,
                 stats.palette_resolves,
-                stats.symbol_rasters
+                stats.symbol_rasters,
+                stats.file_icon_rasters
             )),
             caption(
                 "Counters, not gauges. The palette cache is keyed by appearance, so only \
                  re-entering an appearance you have already visited distinguishes a live cache \
-                 from a stale one.",
+                 from a stale one. file_icon_rasters is the one that never resets: flipping \
+                 appearance clears every symbol raster and leaves the file icons alone.",
             ),
         ],
     )

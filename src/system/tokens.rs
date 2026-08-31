@@ -1,4 +1,4 @@
-//! The system's own colours, fonts and symbols, for the parts GPUI draws itself.
+//! The system's own colours, fonts, symbols and file-type icons, for the parts GPUI draws itself.
 //!
 //! Hosted controls get their pixels from macOS for free; the labels, separators and panel
 //! backgrounds GPUI draws around them do not, and a hex value typed there is wrong the moment the
@@ -39,7 +39,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceName, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
@@ -48,7 +48,7 @@ use objc2_app_kit::{
     NSFontWeightBold, NSFontWeightHeavy, NSFontWeightLight, NSFontWeightMedium,
     NSFontWeightRegular, NSFontWeightSemibold, NSFontWeightThin, NSFontWeightUltraLight,
     NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSImageSymbolScale,
-    NSKernAttributeName, NSLigatureAttributeName, NSScreen,
+    NSKernAttributeName, NSLigatureAttributeName, NSScreen, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSDictionary, NSDistributedNotificationCenter,
@@ -334,8 +334,12 @@ struct Cache {
     /// Max backing scale across all displays, so a symbol survives a move to a Retina one.
     scale: Option<f32>,
     symbols: HashMap<SymbolKey, Option<Symbol>>,
+    /// Outlives the generation, unlike `symbols`: a file icon is fixed artwork keyed by its own
+    /// scale, so nothing a token observer watches can change one.
+    file_icons: HashMap<FileIconKey, Option<Symbol>>,
     palette_resolves: u64,
     symbol_rasters: u64,
+    file_icon_rasters: u64,
 }
 
 /// Counters, not gauges. The palette cache is keyed by appearance, so only re-entering an
@@ -346,6 +350,8 @@ pub struct CacheStats {
     pub palette_resolves: u64,
     /// Including the ones that came back `None`.
     pub symbol_rasters: u64,
+    /// Never reset, because [`file_icon`] survives a generation bump.
+    pub file_icon_rasters: u64,
     /// Lags [`generation`] until the next token read.
     pub generation: u64,
 }
@@ -356,6 +362,7 @@ pub fn cache_stats() -> CacheStats {
         CacheStats {
             palette_resolves: cache.palette_resolves,
             symbol_rasters: cache.symbol_rasters,
+            file_icon_rasters: cache.file_icon_rasters,
             generation: cache.generation,
         }
     })
@@ -373,6 +380,8 @@ fn with_cache<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
             cache.generation = generation;
             cache.palettes = [None, None];
             cache.scale = None;
+            // `file_icons` deliberately survives: appearance, accent and display changes cannot
+            // alter fixed artwork, and its key already carries the backing scale.
             cache.symbols.clear();
         }
         f(&mut cache)
@@ -818,7 +827,9 @@ impl SymbolColor {
     }
 }
 
-/// A rasterised SF Symbol, ready to hand to GPUI.
+/// A rasterised system image, ready to hand to GPUI: an SF Symbol from [`sf_symbol`] or a file
+/// type's own artwork from [`file_icon`]. One type for both, so a list row that shows either can
+/// hold one field.
 #[derive(Clone)]
 pub struct Symbol {
     pub image: Arc<RenderImage>,
@@ -925,6 +936,155 @@ fn rasterize_symbol(
     })
 }
 
+/// Which system icon to fetch. Every variant is a *type* lookup — there is deliberately no
+/// path-taking form, so no icon here depends on a file existing or on reading one.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum FileType<'a> {
+    /// The blue folder, via `public.folder`.
+    Folder,
+    /// A filename extension without the dot, e.g. `"zip"`.
+    Extension(&'a str),
+    /// A uniform type identifier, e.g. `"public.plain-text"`.
+    Uti(&'a str),
+}
+
+impl<'a> FileType<'a> {
+    /// `(is_extension, text)` — the two things the lookup actually varies on.
+    fn tag(self) -> (bool, &'a str) {
+        match self {
+            FileType::Folder => (false, "public.folder"),
+            FileType::Uti(uti) => (false, uti),
+            FileType::Extension(extension) => (true, extension),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FileIconKey {
+    /// Distinguishes [`FileType::Extension`] from [`FileType::Uti`], which can spell the same
+    /// string and mean different types.
+    extension: bool,
+    text: String,
+    /// `Pixels` is `f32`, which is not `Hash`. Bits are exact for a cache key.
+    size: u32,
+    /// Part of the key rather than something a generation bump clears: a display change alters
+    /// only the buffer resolution, and keying it means the old raster stays valid if the user
+    /// moves the window back.
+    scale: u32,
+}
+
+/// The system's own artwork for a file type, rasterised for GPUI: the blue folder, the orange
+/// `.zip`, the document sheet with a type badge. `None` if `UTType` cannot resolve the type at all
+/// — a placeholder would be indistinguishable from a real generic-document icon.
+///
+/// Cached by type, requested size and backing scale, and — unlike [`sf_symbol`] — **not** by
+/// appearance: the four artwork sets measured here are byte-identical under aqua and dark aqua,
+/// where the same comparison on a `labelColor` symbol moves every antialiased pixel. Nothing a
+/// token observer watches can change one, so a generation bump leaves the cache standing. The one
+/// thing that would invalidate an entry is the Launch Services type database changing under the
+/// process — an app installed while it runs, claiming an extension — and this crate does not
+/// observe that.
+///
+/// One lookup plus raster costs around 42µs, nearly all of it the raster, so a list re-requesting
+/// per row per frame would spend more on icons than on everything else it draws.
+///
+/// ```no_run
+/// # use native_gpui::tokens::{FileType, file_icon};
+/// # use gpui::px;
+/// # fn row() -> Option<gpui::Img> {
+/// Some(file_icon(FileType::Extension("zip"), px(32.))?.img())
+/// # }
+/// ```
+pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
+    let (extension, text) = kind.tag();
+    let scale = display_scale();
+    let key = FileIconKey {
+        extension,
+        text: text.to_string(),
+        size: f32::from(size).to_bits(),
+        scale: scale.to_bits(),
+    };
+    with_cache(|cache| match cache.file_icons.get(&key) {
+        Some(hit) => hit.clone(),
+        None => {
+            cache.file_icon_rasters += 1;
+            let icon = rasterize_file_icon(extension, text, size, scale);
+            cache.file_icons.insert(key, icon.clone());
+            icon
+        }
+    })
+}
+
+/// The folder icon at `size`. Shorthand for [`FileType::Folder`], and the only folder form there
+/// is: a per-folder custom icon would need a path.
+pub fn folder_icon(size: Pixels) -> Option<Symbol> {
+    file_icon(FileType::Folder, size)
+}
+
+/// `UTType` for an extension or a uniform type identifier, `None` if the class is missing or the
+/// identifier is not declared.
+///
+/// `typeWithFilenameExtension:` is the obvious call for an extension and it is the wrong one. For
+/// `icon` and `iconset` it answers a *dynamic* `dyn.ah62…` type, whose icon is the blank document
+/// sheet, while `typesWithTag:tagClass:conformingToType:` finds the declared
+/// `com.apple.iconcomposer.icon` in the same process. It also disagrees on `app`, answering the
+/// legacy single-file `com.apple.application-file` where the tag search leads with
+/// `com.apple.application-bundle`. So the first declared match wins, and the direct call is only
+/// the fallback for an extension nothing claims.
+fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
+    let class = AnyClass::get(c"UTType")?;
+    let text = NSString::from_str(text);
+    if !extension {
+        return unsafe { msg_send![class, typeWithIdentifier: &*text] };
+    }
+    let candidates: Retained<NSArray<AnyObject>> = unsafe {
+        msg_send![
+            class,
+            typesWithTag: &*text,
+            tagClass: ns_string!("public.filename-extension"),
+            conformingToType: ptr::null::<AnyObject>(),
+        ]
+    };
+    for candidate in candidates.iter() {
+        let declared: bool = unsafe { msg_send![&*candidate, isDeclared] };
+        if declared {
+            return Some(candidate);
+        }
+    }
+    unsafe { msg_send![class, typeWithFilenameExtension: &*text] }
+}
+
+fn rasterize_file_icon(extension: bool, text: &str, size: Pixels, scale: f32) -> Option<Symbol> {
+    let kind = ut_type(extension, text)?;
+    let workspace = NSWorkspace::sharedWorkspace();
+    let image: Option<Retained<NSImage>> =
+        unsafe { msg_send![&*workspace, iconForContentType: &*kind] };
+    let image = image?;
+
+    // `iconForContentType:` reports 32x32 points however much it holds — 32 representations up to
+    // 2048px — so its own `size()` is no guide and the requested size is what to draw into.
+    // `drawInRect:` then picks a representation by **destination pixels**, not by the point rect:
+    // 32pt into a 2x buffer and 64pt into a 1x buffer come out byte-identical. The rungs are
+    // 16, 18, 24, 32, 36, 48, 64, 128, 256, 512, 1024 and 2048 pixels, so 32pt at 2x lands
+    // exactly on 64 and a size off the ladder resamples.
+    let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);
+    let w = ((points.width * scale as f64).round() as usize).max(1);
+    let h = ((points.height * scale as f64).round() as usize).max(1);
+
+    // No drawing appearance, unlike a symbol: this is fixed artwork, and installing one was
+    // measured to change nothing.
+    let rgba = draw(&image, points, w, h)?;
+
+    Some(Symbol {
+        image: Arc::new(RenderImage::new(vec![Frame::new(
+            RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(&rgba))
+                .expect("raster buffer is w*h*4 by construction"),
+        )])),
+        size: size_of_points(points),
+        scale,
+    })
+}
+
 fn size_of_points(points: NSSize) -> Size<Pixels> {
     size(px(points.width as f32), px(points.height as f32))
 }
@@ -993,4 +1153,184 @@ fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dominant hue in degrees over the opaque pixels of a **BGRA** buffer, and the share of them
+    /// within 30 degrees of it. `None` when the artwork carries no colour, which is the answer for
+    /// every plain document sheet and is what makes a blue or orange verdict falsifiable.
+    ///
+    /// Reading the same buffer as RGBA would swap the verdicts — a folder would report orange —
+    /// so a correct hue here also witnesses the channel order [`to_bgra_straight`] writes.
+    fn dominant_hue(bgra: &[u8]) -> (Option<f32>, f32) {
+        let mut bins = [0usize; 36];
+        let mut achromatic = 0usize;
+        let mut covered = 0usize;
+        for p in bgra.chunks_exact(4) {
+            if p[3] < 200 {
+                continue;
+            }
+            covered += 1;
+            let (b, g, r) = (p[0] as f32, p[1] as f32, p[2] as f32);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let chroma = max - min;
+            if chroma < 24.0 {
+                achromatic += 1;
+                continue;
+            }
+            let hue = if max == r {
+                (60.0 * ((g - b) / chroma) + 360.0) % 360.0
+            } else if max == g {
+                60.0 * ((b - r) / chroma + 2.0)
+            } else {
+                60.0 * ((r - g) / chroma + 4.0)
+            };
+            bins[((hue / 10.0) as usize).min(35)] += 1;
+        }
+        if covered == 0 {
+            return (None, 0.0);
+        }
+        let chromatic: usize = bins.iter().sum();
+        if chromatic < achromatic {
+            return (None, achromatic as f32 / covered as f32);
+        }
+        let peak = (0..36).max_by_key(|i| bins[*i]).expect("36 bins");
+        let near: usize = (0..36)
+            .filter(|k| {
+                let d = (*k as i32 - peak as i32).abs();
+                d.min(36 - d) <= 3
+            })
+            .map(|k| bins[k])
+            .sum();
+        (Some(peak as f32 * 10.0 + 5.0), near as f32 / covered as f32)
+    }
+
+    fn hue_of(kind: FileType<'_>) -> (Option<f32>, f32) {
+        let icon = file_icon(kind, px(32.)).expect("a declared type has an icon");
+        let bytes = icon.image.as_bytes(0).expect("one frame");
+        dominant_hue(bytes)
+    }
+
+    #[test]
+    fn the_folder_icon_is_blue() {
+        let (hue, share) = hue_of(FileType::Folder);
+        let hue = hue.expect("the folder is not a grey document sheet");
+        assert!((190.0..215.0).contains(&hue), "folder hue {hue}");
+        assert!(share > 0.8, "folder blue covers only {share}");
+    }
+
+    #[test]
+    fn the_zip_icon_is_orange() {
+        let (hue, share) = hue_of(FileType::Extension("zip"));
+        let hue = hue.expect("the archive is not a grey document sheet");
+        assert!((15.0..40.0).contains(&hue), "zip hue {hue}");
+        assert!(share > 0.8, "zip orange covers only {share}");
+    }
+
+    /// The control for the two above: the same metric on artwork that carries no hue must answer
+    /// `None`, or a blue and an orange verdict prove nothing about the raster.
+    #[test]
+    fn a_plain_document_icon_reports_no_hue() {
+        let (hue, achromatic) = hue_of(FileType::Uti("public.plain-text"));
+        assert_eq!(hue, None, "plain text should carry no dominant hue");
+        assert!(achromatic > 0.9, "only {achromatic} of it was achromatic");
+    }
+
+    /// Guards the tag search in [`ut_type`]. Simplifying it to the one obvious call still compiles,
+    /// still returns an icon, and silently answers with the legacy single-file application type.
+    #[test]
+    fn an_extension_takes_the_declared_type_not_the_direct_lookup() {
+        let ours = ut_type(true, "app").expect("app is declared");
+        let identifier: Retained<NSString> = unsafe { msg_send![&*ours, identifier] };
+        assert_eq!(&*identifier.to_string(), "com.apple.application-bundle");
+
+        let class = AnyClass::get(c"UTType").expect("UTType is present");
+        let direct: Option<Retained<AnyObject>> =
+            unsafe { msg_send![class, typeWithFilenameExtension: ns_string!("app")] };
+        let direct: Retained<NSString> =
+            unsafe { msg_send![&*direct.expect("app resolves directly too"), identifier] };
+        assert_eq!(
+            &*direct.to_string(),
+            "com.apple.application-file",
+            "the two lookups agreed, so this test no longer discriminates"
+        );
+    }
+
+    #[test]
+    fn an_undeclared_identifier_yields_no_icon() {
+        assert!(file_icon(FileType::Uti("com.apple.icon"), px(32.)).is_none());
+    }
+
+    #[test]
+    fn the_buffer_is_the_requested_size_times_the_backing_scale() {
+        let icon = folder_icon(px(32.)).expect("the folder always has an icon");
+        let pixels = icon.image.size(0);
+        assert_eq!(icon.size, size(px(32.), px(32.)));
+        assert_eq!(u32::from(pixels.width), (32.0 * icon.scale) as u32);
+        assert_eq!(u32::from(pixels.height), (32.0 * icon.scale) as u32);
+    }
+
+    #[test]
+    fn the_second_request_for_one_icon_does_not_raster_again() {
+        let before = cache_stats().file_icon_rasters;
+        let first = folder_icon(px(28.)).expect("folder");
+        let after_one = cache_stats().file_icon_rasters;
+        let second = folder_icon(px(28.)).expect("folder");
+        let after_two = cache_stats().file_icon_rasters;
+
+        assert_eq!(after_one - before, 1, "the first call must raster");
+        assert_eq!(after_two, after_one, "the second call must not");
+        assert!(Arc::ptr_eq(&first.image, &second.image), "same raster");
+
+        // A generation bump drops symbols; file icons are fixed artwork and stay.
+        GENERATION.fetch_add(1, Ordering::AcqRel);
+        let third = folder_icon(px(28.)).expect("folder");
+        assert_eq!(cache_stats().file_icon_rasters, after_two);
+        assert!(Arc::ptr_eq(&first.image, &third.image));
+    }
+
+    /// A different size is a different raster, so the size really is part of the key.
+    #[test]
+    fn a_different_size_is_a_different_entry() {
+        let small = folder_icon(px(16.)).expect("folder");
+        let large = folder_icon(px(64.)).expect("folder");
+        assert!(!Arc::ptr_eq(&small.image, &large.image));
+        assert_eq!(
+            u32::from(small.image.size(0).width),
+            (16.0 * small.scale) as u32
+        );
+        assert_eq!(
+            u32::from(large.image.size(0).width),
+            (64.0 * large.scale) as u32
+        );
+    }
+
+    /// The straight-alpha conversion has to have done something, or the anchored fact it protects
+    /// is untested on this path: a file icon's antialiased rim is where it shows.
+    #[test]
+    fn un_premultiplying_changed_the_rim() {
+        let icon = folder_icon(px(32.)).expect("folder");
+        let bytes = icon.image.as_bytes(0).expect("one frame");
+        let partial = bytes
+            .chunks_exact(4)
+            .filter(|p| p[3] > 0 && p[3] < 255)
+            .count();
+        assert!(
+            partial > 100,
+            "only {partial} antialiased pixels to convert"
+        );
+        // Straight alpha lets a channel exceed its own alpha; premultiplied never can.
+        let over = bytes
+            .chunks_exact(4)
+            .filter(|p| p[3] > 0 && p[3] < 255 && p[..3].iter().any(|c| *c > p[3]))
+            .count();
+        assert!(
+            over > 0,
+            "no pixel exceeds its alpha, so nothing was divided out"
+        );
+    }
 }
