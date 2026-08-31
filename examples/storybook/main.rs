@@ -204,7 +204,13 @@ impl Demo {
     fn new() -> Self {
         Self {
             sidebar: None,
-            selected: "switch".into(),
+            // `NG_PAGE=<id>` opens straight onto a page, so a measurement of one page needs no
+            // click in the sidebar. An unknown id falls back to the first page rather than panicking.
+            selected: std::env::var("NG_PAGE")
+                .ok()
+                .map(|id| page_of(&SharedString::from(id)).id)
+                .unwrap_or("switch")
+                .into(),
             switch: Default::default(),
             slider: Default::default(),
             segmented: Default::default(),
@@ -303,6 +309,19 @@ impl Render for Demo {
             .map(NativeSidebar::metrics)
             .unwrap_or_default();
         let page = page_of(&self.selected);
+        // `NG_LAG=<frames>` is the control arm for the scroll-pinning compensation in
+        // [`native_gpui::NativeHost`]: `0` restores write-through placement, so before and after
+        // are the same binary on the same page.
+        if let Some(want) = std::env::var("NG_LAG")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+        {
+            let host = native_gpui::NativeHost::get(window, cx);
+            if host.lag() != want {
+                host.set_lag(want);
+            }
+        }
+
         let body = self.body(window, cx);
 
         native_root(

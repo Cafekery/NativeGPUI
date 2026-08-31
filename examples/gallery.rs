@@ -6,7 +6,8 @@
 //! header is the observable that proves it.
 //!
 //! `NG_ROWS` sets the list length (default 400). `NG_SKEW=<points-per-frame>` replaces the whole
-//! window with the scroll-skew rig at the bottom of this file.
+//! window with the scroll-skew rig at the bottom of this file, whose arms are `NG_LAG`,
+//! `NG_DRAWABLES`, `NG_PWT`, `NG_SKEW_STOP` and `NG_SKEW_LOAD`.
 
 use std::panic::Location;
 use std::time::Instant;
@@ -357,28 +358,37 @@ fn main() {
 // reference column still leaves four runs, and taking the leftmost four reports the fixture's own
 // `+6.00 pt` — plausible rather than obviously garbage — where the truth was `-24.00`.
 //
-// What it found: a hosted view runs exactly two frames ahead of its row at every velocity, the
-// offset always an exact integer multiple of `v` and never a fraction, so this is presentation
-// order and not a layout offset. Rest reads exactly `0.000 pt`, and the switch stays locked to the
-// marker, so a toggle leads its own row by the same two frames.
+// What it found, and the arms that now exist to re-find it. `NG_LAG=0` turns the crate's
+// compensation off: a hosted view then runs exactly two frames ahead of its row at every velocity —
+// 8.00, 16.00 and 32.00 pt at 4, 8 and 16 pt per frame, the same integer multiple on every row of
+// every capture, sd 0.000 — so this is presentation order and not a layout offset, and no easing
+// curve can produce it. Left at the default the same rows read 0.000, and rest after an abrupt stop
+// from 16 pt per frame reads exactly 0.000 as well. The switch stays locked to the marker in both
+// arms, so a real control moves with the markers.
 //
-// It is not GPUI's layout that is late but its *presented* frame, and the two is a drawable-queue
-// depth rather than a race: the Metal surface reaching the screen is up to
-// `CAMetalLayer.maximumDrawableCount - 1` frames behind the `CATransaction` that carried the same
-// layout's `setFrame`. Setting that to 2 halves the lead exactly as the queue theory predicts.
-// 1 is unreachable — Core Animation's floor is 2, and asking for 1 makes `nextDrawable`
-// unsatisfiable and panics GPUI out of its own entity map before the first frame — so one frame of
-// lead is irreducible from here. The crate leaves the property at the default anyway, because two
-// buffers roughly doubles the share of frames over 1.5x the median interval under load: the median
-// stays the display period, the whole cost is in the tail, which is what less slack to absorb a
-// hiccup predicts. Holding hosted geometry back N frames also subtracts exactly N, and is likewise
-// not done: it would leave geometry two frames stale for every change that is *not* a
-// constant-velocity scroll — a control appearing, a resize, a jump.
+// It is not GPUI's layout that is late but its *presented* frame: the Metal surface reaching the
+// screen is `CAMetalLayer.maximumDrawableCount - 1` frames behind the `CATransaction` that carried
+// the same layout's `setFrame`. `NG_DRAWABLES=2` halves the lead to 0.914 frames exactly as the
+// queue theory predicts, and the crate reads the same property, so that arm also halves the
+// compensation and still lands on 0.047. 1 is unreachable — Core Animation's floor is 2, and asking
+// for 1 makes `nextDrawable` unsatisfiable and panics GPUI out of its own entity map before the
+// first frame. The property is left at its default because the lead no longer depends on it: two
+// buffers roughly doubles the share of frames over 1.5x the median interval under load, all of it
+// in the tail, and buys nothing now that the geometry is written for the presented frame.
+//
+// `NG_PWT` sets `CAMetalLayer.presentsWithTransaction`, the remedy Apple documents for this exact
+// symptom, and it is why the crate does not use it. Set once it reads back false every frame:
+// GPUI turns it on for its own in-transaction draws and off again after, so it overwrites anything
+// set from outside. Re-asserted every frame (`NG_PWT=2`) it sticks and removes one of the two
+// frames, 1.035 against 1.962 — not both, because GPUI still presents through
+// `presentDrawable:` and the flag alone cannot move that call onto the main thread's transaction.
 //
 // One trap, because it produced a clean-looking wrong answer first: a window capture of an
 // *occluded* window reads a re-composite from current `CALayer` state, which collapses the very gap
-// being measured. `-l` is true about content and false about timing. The gate is requiring `-l` and
-// `-R` to agree per capture, which they do to the point on a display the window is scanned out on.
+// being measured. `-l` is true about content and false about timing. A 60x20 overlap of one corner
+// by another app's window was enough to read the two-frame lead as one — a smaller plausible
+// number, not an error. The gate is that the uncompensated arm must read its full 2.000: an arm
+// that cannot see the gap it is supposed to see has disqualified itself.
 
 /// Row pitch. Only every `SKEW_STRIDE`-th row is marked, so marked rows sit 176 pt apart — far
 /// more than any plausible skew, so a band can never pair with the neighbouring row's view.
@@ -580,12 +590,35 @@ impl Gallery {
             );
             std::io::stdout().flush().ok();
 
-            println!(
-                "NG-SKEW-DRAWABLES-PENDING requested={:?}",
-                std::env::var("NG_DRAWABLES").ok()
-            );
-            std::io::stdout().flush().ok();
+            // Presentation arms are applied here, on the first render: `NativeHost` is created
+            // during `native_root`'s layout, which is after this and before frame 2, and it derives
+            // its compensation depth from `maximumDrawableCount`. Setting the count later would
+            // leave the host compensating for a queue the layer no longer has.
+            if let Some(layer) = metal_layer_quiet(&gpui_ns_view(window)) {
+                if let Some(want) = std::env::var("NG_DRAWABLES")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                {
+                    let _: () = unsafe { msg_send![&*layer, setMaximumDrawableCount: want] };
+                }
+                if std::env::var_os("NG_PWT").is_some_and(|value| value != "0") {
+                    let _: () = unsafe { msg_send![&*layer, setPresentsWithTransaction: true] };
+                    let back: bool = unsafe { msg_send![&*layer, presentsWithTransaction] };
+                    println!("NG-SKEW-PWT-SET readback={back}");
+                    std::io::stdout().flush().ok();
+                }
+            }
         }
+
+        // `NG_SKEW_STOP=<frames>` stops the scroll dead after that many frames. The arm that
+        // matters at rest: geometry held back N frames has to catch up on its own once GPUI stops
+        // drawing, or a hosted view sits `N x final velocity` short of its row indefinitely, which
+        // is a defect a still screenshot can see.
+        let stopped = std::env::var("NG_SKEW_STOP")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .is_some_and(|at| self.skew_frames >= at);
+        let velocity = if stopped { 0. } else { velocity };
 
         // Written straight into the handle `uniform_list` reads, so velocity is exact rather than
         // the result of a momentum curve.
@@ -611,22 +644,32 @@ impl Gallery {
         }
         self.skew_last = Some(now);
 
-        // `NG_DRAWABLES` overrides the crate's own `METAL_DRAWABLE_COUNT` so both arms run from one
-        // binary. Not applied in the announce block: `native_root` has not laid out there, so the
-        // crate would install over it afterwards. Read back every tick to prove what the window ran
-        // with for the whole run rather than only at startup.
+        // Read back every tick to prove what the window ran with for the whole run rather than only
+        // at the announce block that set it. `NG_PWT=2` re-asserts it every frame, which separates
+        // "the write never landed" from "something else set it back".
         let mut drawables = 0usize;
+        let mut pwt = false;
         if let Some(layer) = metal_layer_quiet(&gpui_ns_view(window)) {
-            if self.skew_frames == 2 {
-                if let Some(want) = std::env::var("NG_DRAWABLES")
-                    .ok()
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                {
-                    let _: () = unsafe { msg_send![&*layer, setMaximumDrawableCount: want] };
-                }
+            if std::env::var("NG_PWT").ok().as_deref() == Some("2") {
+                let _: () = unsafe { msg_send![&*layer, setPresentsWithTransaction: true] };
             }
             drawables = unsafe { msg_send![&*layer, maximumDrawableCount] };
+            pwt = unsafe { msg_send![&*layer, presentsWithTransaction] };
         }
+
+        // `NG_LAG` is the arm that turns the crate's own compensation off (`0`) or pins it to a
+        // chosen depth. Set every frame: `set_lag` is idempotent and the host is created lazily on
+        // the first layout, after this runs for frame 1.
+        let host = NativeHost::get(window, cx);
+        if let Some(want) = std::env::var("NG_LAG")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+        {
+            if host.lag() != want {
+                host.set_lag(want);
+            }
+        }
+        let lag = host.lag();
 
         // Every frame, not only at the periodic tick: a lone periodic `false` cannot separate
         // "never acquired key" from "acquired it and lost it", and those are different mechanisms.
@@ -664,13 +707,14 @@ impl Gallery {
             // in the ON state renders accent-filled while its window is key and desaturates when it
             // is not, which moves where a luminance edge finder locks onto its capsule.
             println!(
-                "NG-SKEW-TICK frames={} t={:.3} offset={:.2} pooled={} dq={drawables} key={key} keyed={} \
+                "NG-SKEW-TICK frames={} t={:.3} offset={:.2} pooled={} dq={drawables} pwt={pwt} \
+                 lag={lag} key={key} keyed={} \
                  intervals={} p50={:.3}ms p95={:.3}ms p99={:.3}ms max={:.3}ms \
                  over1.5x={long} over2.5x={very_long}",
                 self.skew_frames,
                 self.started.elapsed().as_secs_f64(),
                 self.skew_offset,
-                NativeHost::get(window, cx).len(),
+                host.len(),
                 self.skew_key_frames,
                 sorted.len(),
                 median,

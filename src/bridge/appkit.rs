@@ -11,6 +11,7 @@ use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_quartz_core::CALayer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 define_class!(
@@ -77,6 +78,38 @@ pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {
         NSPoint::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64()),
         NSSize::new(bounds.size.width.to_f64(), bounds.size.height.to_f64()),
     )
+}
+
+/// The `CAMetalLayer` GPUI presents its scene through.
+///
+/// Identified by asking which layer answers `maximumDrawableCount` rather than by assuming a
+/// class name or a position in the tree: GPUI builds its view class at runtime and the property is
+/// the one thing only a Metal layer has.
+pub fn metal_layer(view: &NSView) -> Option<Retained<CALayer>> {
+    let layer = view.layer()?;
+    let responds: bool =
+        unsafe { msg_send![&*layer, respondsToSelector: sel!(maximumDrawableCount)] };
+    responds.then_some(layer)
+}
+
+/// How many frames GPUI's *presented* Metal content trails the `CATransaction` that carried the
+/// same frame's layout, as a count of frames.
+///
+/// `presentDrawable:` hands the surface to Core Animation asynchronously, so a frame is displayed
+/// only once the drawables already queued ahead of it have been, and `CAMetalLayer` lets
+/// `maximumDrawableCount` of them be in flight. GPUI draws one frame per display refresh and
+/// blocks in `nextDrawable`, so the queue sits full and the trail is `maximumDrawableCount - 1`
+/// refreshes — measured as exactly 2 at the default count of 3 and exactly 1 at 2, the same
+/// integer at every scroll velocity.
+///
+/// A layer that is not GPUI's Metal layer trails by nothing, which is also the honest answer for a
+/// window whose scene is not presented through one.
+pub fn presentation_lag(view: &NSView) -> usize {
+    let Some(layer) = metal_layer(view) else {
+        return 0;
+    };
+    let count: usize = unsafe { msg_send![&*layer, maximumDrawableCount] };
+    count.saturating_sub(1)
 }
 
 /// Give keyboard focus back to GPUI.
