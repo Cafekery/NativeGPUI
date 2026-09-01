@@ -501,7 +501,13 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "corner_radius(Pixels)",
             "unused here; overrides recipe.corner_radius in either order".into(),
         ),
-        ("frosting_gpui()", "both specimens".into()),
+        (
+            "frosting_gpui() / frosting_desktop()",
+            "neither is called here, so both specimens are on the frosting_gpui default — \
+             Layer::Above, frosting the GPUI content beneath. frosting_desktop needs a rect the \
+             GPUI scene leaves transparent, which this page has nowhere to put."
+                .into(),
+        ),
         ("custom_glass_available()", available.to_string()),
         ("GlassRecipe fields", "50, every one on a control".into()),
         ("INERT_INPUTS", INERT_INPUTS.len().to_string()),

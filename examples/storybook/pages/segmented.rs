@@ -137,10 +137,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         .into_any_element(),
                 )
                 .child(caption(
-                    "AppKit holds several segments at once here, but the builder writes and \
-                     reports a single index, so the multi-selection is the control's own state \
-                     and Mon is re-asserted on every paint. Reach for several native_checkbox \
-                     instead.",
+                    "AppKit holds several segments at once here, and on_change reports a single \
+                     index, which cannot describe that. So paint leaves the selection alone in \
+                     this mode — the 0 passed in is never written. It has to be: a per-paint \
+                     write would pin that segment on where the user could not switch it off, and \
+                     an out-of-range index would deselect everything again every frame. Reach for \
+                     several native_checkbox instead.",
                 ))
                 .into_any_element(),
         ),
