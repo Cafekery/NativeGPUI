@@ -389,6 +389,22 @@ fn main() {
 // same points per *refresh*, so every stride is the same on-screen velocity and the arms compare
 // directly.
 //
+// Stride 1 is worse than uninformative about the queue's clock: it holds the precondition that
+// keeps the clock healthy. Painting every refresh leaves a placement owed at all times, and the
+// chain that counts refreshes used to switch off exactly when nothing was owed — so this rig could
+// not drop a tick even in principle, and read 0.000 for a defect a trackpad scroll reproduced.
+// Prefer stride 3 or more for anything about timing, and treat a stride-1 green as a null.
+//
+// Skew has two independent statistics and **neither one can see the other's defect**, which is why
+// a clean depth ladder and an unshiftable stutter coexisted here for so long. A wrong queue depth
+// is a constant offset: both columns move by the same amount on every frame pair, so per-pair
+// mismatch reads zero, and it shows only as a step at motion onset that holds for the whole burst.
+// A dropped refresh is the reverse: it redistributes motion between adjacent pairs, so its mean and
+// its steady offset are both zero and only the per-pair distribution's tail carries it. Measure
+// both — per-pair mismatch as a distribution, and steady excursion against the rest a burst starts
+// and ends at — and never report either as a mean. Verified by injecting each defect into a
+// synthetic recording and watching the other statistic stay flat.
+//
 // It is not GPUI's layout that is late but its *presented* frame: the Metal surface reaching the
 // screen is `CAMetalLayer.maximumDrawableCount - 1` frames behind the `CATransaction` that carried
 // the same layout's `setFrame`. `NG_DRAWABLES=2` halves the lead to 0.914 frames exactly as the
@@ -406,12 +422,22 @@ fn main() {
 // frames, 1.035 against 1.962 — not both, because GPUI still presents through
 // `presentDrawable:` and the flag alone cannot move that call onto the main thread's transaction.
 //
-// One trap, because it produced a clean-looking wrong answer first: a window capture of an
-// *occluded* window reads a re-composite from current `CALayer` state, which collapses the very gap
-// being measured. `-l` is true about content and false about timing. A 60x20 overlap of one corner
-// by another app's window was enough to read the two-frame lead as one — a smaller plausible
-// number, not an error. The gate is that the uncompensated arm must read its full 2.000: an arm
-// that cannot see the gap it is supposed to see has disqualified itself.
+// Two traps, both of which produced clean-looking wrong answers first.
+//
+// A window capture of an *occluded* window reads a re-composite from current `CALayer` state, which
+// collapses the very gap being measured. `-l` is true about content and false about timing. A 60x20
+// overlap of one corner by another app's window was enough to read the two-frame lead as one — a
+// smaller plausible number, not an error. The gate is that the uncompensated arm must read its full
+// 2.000: an arm that cannot see the gap it is supposed to see has disqualified itself.
+//
+// And delivery is not observation. A window-scoped `ScreenCaptureKit` stream on this window keeps
+// handing out sample buffers at the display's own rate whether or not the window drew: measured
+// 232 buffers in 2.0 s, every one of them `SCFrameStatus.idle` and not one `.complete`, from a
+// window that painted nothing because its display link was stopped. Taking those as frames writes
+// 232 identical observations and reports a flawless 0.000. Drop everything that is not `.complete`
+// — and then count what arrived and why it was dropped, because `frames = 0` on its own is equally
+// consistent with "the window drew nothing" and with "the filter rejects everything", and only the
+// arrival count separates them.
 
 /// Row pitch. Only every `SKEW_STRIDE`-th row is marked, so marked rows sit 176 pt apart — far
 /// more than any plausible skew, so a band can never pair with the neighbouring row's view.

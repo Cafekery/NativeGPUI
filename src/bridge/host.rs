@@ -446,11 +446,6 @@ impl Slot {
             self.hidden = placement.hidden;
         }
     }
-
-    /// Whether anything is still owed to a refresh that has not happened yet.
-    fn pending(&self) -> bool {
-        self.queued.len > 0
-    }
 }
 
 struct HostState {
@@ -482,12 +477,14 @@ struct HostState {
     /// frame rather than one per hosted view.
     frame_lag: usize,
     frame_lag_at: u64,
-    /// Display ticks this host has observed, which is the clock a placement comes due on. Only
-    /// advanced while `ticking`, and only differences matter, so a stalled chain delays a
-    /// placement rather than mistiming it.
+    /// Display refreshes this host has observed.
+    ///
+    /// This is both the clock a placement is stamped with and the clock it comes due on, and those
+    /// two roles agree only while the chain advancing it has run on every refresh a paint could
+    /// have happened on — see [`NativeHost::tick`].
     tick: u64,
-    /// Set while the tick chain is already running, so a frame that leaves placements queued does
-    /// not stack a second one.
+    /// Set while the tick chain is running, which is for as long as anything is hosted and not
+    /// only while a placement is owed — see [`NativeHost::tick`].
     ticking: bool,
     generation: u64,
 }
@@ -882,9 +879,14 @@ impl NativeHost {
         let generation = state.generation;
 
         let mut retired: Vec<u64> = Vec::new();
+        // Read off the pass that is already visiting every slot: whether anything is still owed is
+        // one of the two facts `chain_runs` decides on.
+        let mut pending = false;
         state.slots.retain(|key, slot| {
             let keep = slot.generation == generation;
-            if !keep {
+            if keep {
+                pending |= slot.queued.len > 0;
+            } else {
                 slot.clip.removeFromSuperview();
                 retired.push(*key);
             }
@@ -963,8 +965,9 @@ impl NativeHost {
         // drawing the instant nothing is dirty, so without this the tail of a scroll would never be
         // written and hosted views would sit `lag x final velocity` short of their rows for as long
         // as the window stood still — the one failure mode that is visible at rest rather than only
-        // under motion. The same chain is what counts refreshes during the scroll.
-        if !state.ticking && state.slots.values().any(Slot::pending) {
+        // under motion. The same chain is also what counts refreshes during the scroll, which is
+        // why it is armed for anything hosted at all rather than only for something owed.
+        if !state.ticking && chain_runs(state.slots.len(), pending) {
             state.ticking = true;
             let host = self.clone();
             let cx = state.cx.clone();
@@ -985,12 +988,31 @@ impl NativeHost {
 
     /// Count one display refresh and write whatever GPUI has presented by it.
     ///
-    /// `Window::on_next_frame` is the hook because GPUI runs those callbacks on **every** display
-    /// tick, dirty or not, so this counts real refreshes without asking for a redraw — and a
-    /// refresh, not a paint, is what a placement is owed to (see [`NativeHost::place`]). It is
-    /// therefore both the clock the queue is due against and how the tail of a scroll plays out:
-    /// `lag` ticks after GPUI's last frame is exactly when that frame reaches the screen, so that
-    /// is when AppKit should be showing the same layout.
+    /// `Window::on_next_frame` is the hook because GPUI runs those callbacks at the top of its
+    /// display-link callback, on **every** refresh, before it asks whether anything is dirty and
+    /// before it draws. So on a refresh that does paint, this has already counted that refresh by
+    /// the time [`NativeHost::place`] reads the counter — and a refresh, not a paint, is what a
+    /// placement is owed to. It is therefore both the clock the queue is due against and how the
+    /// tail of a scroll plays out: `lag` ticks after GPUI's last frame is exactly when that frame
+    /// reaches the screen, so that is when AppKit should be showing the same layout.
+    ///
+    /// **It re-arms for as long as anything is hosted, never only while something is owed.** The
+    /// counter is a refresh clock, and a clock that stops when the queues drain has stopped
+    /// counting refreshes. The queues drain whenever paints skip two refreshes running, and the
+    /// only way back is `commit`'s deferred re-arm, which cannot land before the next turn: two
+    /// paints that arrive while the chain is down are stamped with the same already-past refresh,
+    /// [`Queue::advance`] takes them for one frame, and the earlier layout is dropped. AppKit then
+    /// holds still for a refresh and moves by two refreshes' worth on the next one, which is a
+    /// visible stutter and not a constant offset.
+    ///
+    /// A rig that paints on every refresh cannot see that, and not merely because it fails to
+    /// reproduce it: painting every refresh keeps a placement owed at all times, which is the
+    /// precondition that stops the chain from dropping in the first place.
+    ///
+    /// It costs one callback and one pass over the pool per refresh, on a display link GPUI runs
+    /// unconditionally while the window is visible. GPUI stops that link while the window is not
+    /// visible, so this stops with it — and so do paints, so the counter cannot fall behind the
+    /// thing it counts.
     ///
     /// `state.lag` and not `frame_lag`: the in-transaction path only presents from inside a paint,
     /// and a placement it produced was written on the spot rather than queued.
@@ -1003,14 +1025,27 @@ impl NativeHost {
             if let Some(due) = slot.queued.due(tick, lag) {
                 slot.write(due);
             }
-            pending |= slot.pending();
+            pending |= slot.queued.len > 0;
         }
-        state.ticking = pending;
-        if pending {
+        state.ticking = chain_runs(state.slots.len(), pending);
+        if state.ticking {
             let host = self.clone();
             window.on_next_frame(move |window, _| host.tick(window));
         }
     }
+}
+
+/// Whether the tick chain must be running, given how many views are hosted and whether any
+/// placement is still owed to a future refresh.
+///
+/// **It answers on the pool alone, and deliberately ignores `owed`.** The chain is this host's
+/// refresh counter as much as it is what drains the queues (see [`NativeHost::tick`]), and a
+/// counter that switches off when the queues drain has stopped counting refreshes — so the state
+/// the old shape switched off in, views hosted and nothing owed, is exactly the state the next
+/// paint arrives in and needs a live clock for. `owed` stays in the signature because it is the
+/// input this decision is most tempting to reintroduce.
+fn chain_runs(hosted: usize, _owed: bool) -> bool {
+    hosted > 0
 }
 
 /// How many frames *this* frame's presented content will trail its layout by.
@@ -1153,6 +1188,104 @@ mod tests {
                     "stride {stride}, tick {tick}"
                 );
             }
+        }
+    }
+
+    /// The shape [`chain_runs`] replaced: alive only while a placement was owed.
+    fn while_owed(hosted: usize, owed: bool) -> bool {
+        hosted > 0 && owed
+    }
+
+    /// The decision itself, at the state the two shapes disagree on: views hosted, nothing owed.
+    /// That is the state the old shape switched the clock off in, and the state the next paint
+    /// arrives in.
+    #[test]
+    fn the_chain_runs_on_the_pool_alone() {
+        assert!(chain_runs(1, false));
+        assert!(!while_owed(1, false));
+        assert!(!chain_runs(0, false) && !chain_runs(0, true));
+    }
+
+    /// The property the refresh clock exists for: a placement painted on refresh N is still stamped
+    /// with refresh N after the tick chain has dropped and re-armed.
+    ///
+    /// Both arms run the same cadence — a scroll that hiccups for three refreshes, which is what
+    /// drains the queues, since they only empty when paints skip two refreshes running. They differ
+    /// only in which decision keeps the chain alive:
+    ///
+    /// * [`while_owed`] is the shape this replaced. The re-arm out of `commit` is deferred, so the
+    ///   two paints that follow the hiccup are stamped with the same already-past refresh,
+    ///   [`Queue::advance`] takes them for one frame, and the first of them is never written:
+    ///   `written` loses the layout painted on refresh 13 and jumps 9 -> 14.
+    /// * [`chain_runs`] is alive for as long as anything is hosted, and every painted layout is
+    ///   written once, in order, whatever the deferred re-arm does.
+    ///
+    /// The delay is swept because the re-arm's latency is not ours to choose: it is however long
+    /// GPUI's foreground executor takes to reach a turn holding a `Window`, and one refresh is the
+    /// best case rather than a guarantee.
+    #[test]
+    fn a_placement_keeps_its_refresh_across_a_dropped_chain() {
+        const LAG: u64 = 2;
+        const REFRESHES: u64 = 30;
+        // Dense, a three-refresh stall, dense again.
+        let paints = |refresh: u64| refresh < 10 || (13..26).contains(&refresh);
+        for delay in 1..=3u64 {
+            let mut lost = Vec::new();
+            for (shipped, policy) in [
+                (false, while_owed as fn(usize, bool) -> bool),
+                (true, chain_runs as fn(usize, bool) -> bool),
+            ] {
+                let mut queue = Queue::default();
+                let mut clock = 0u64;
+                let mut alive = true;
+                let mut arm_at = None;
+                let mut written = Vec::new();
+                for refresh in 0..REFRESHES {
+                    if arm_at == Some(refresh) {
+                        (alive, arm_at) = (true, None);
+                    }
+                    if alive {
+                        clock += 1;
+                        if let Some(due) = queue.due(clock, LAG as usize) {
+                            written.push(due.clip_frame.origin.y as u64);
+                        }
+                    }
+                    if paints(refresh) {
+                        let painted = placement(refresh as f64, clock);
+                        if let Some(due) = queue.advance(painted, clock, LAG as usize) {
+                            written.push(due.clip_frame.origin.y as u64);
+                        }
+                        if !alive && arm_at.is_none() {
+                            arm_at = Some(refresh + delay);
+                        }
+                    }
+                    alive = alive && policy(1, queue.len > 0);
+                }
+                let owed: Vec<u64> = (0..REFRESHES - LAG).filter(|r| paints(*r)).collect();
+                let missing: Vec<u64> = owed
+                    .iter()
+                    .copied()
+                    .filter(|refresh| !written.contains(refresh))
+                    .collect();
+                assert_eq!(written, {
+                    let mut sorted = written.clone();
+                    sorted.sort_unstable();
+                    sorted.dedup();
+                    sorted
+                });
+                if shipped {
+                    assert!(missing.is_empty(), "delay {delay}, dropped {missing:?}");
+                } else {
+                    lost = missing;
+                }
+            }
+            // The other arm has to be able to fail, or the first proves nothing. One refresh of
+            // re-arm latency is the case the old shape survives; two or more is not.
+            assert_eq!(
+                lost.is_empty(),
+                delay == 1,
+                "delay {delay}, dropped {lost:?}"
+            );
         }
     }
 
