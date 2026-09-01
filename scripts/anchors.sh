@@ -91,6 +91,8 @@ hosted views led by exactly two frames ;; the lead was exactly 2\.000 frames at 
 a nested CATransaction commits late ;; a nested commit lands after the one the layout came in on ;; src/bridge/host.rs
 gpui's own flag names the presentation path ;; reading which path is presenting us ;; src/bridge/host.rs
 an unsettled queue is visible at rest ;; visible at rest rather than only under motion ;; src/bridge/host.rs
+a bundled app already has a main menu at startup ;; already has a main menu ;; src/bridge/menus.rs
+performKeyEquivalent true is not evidence of effect ;; not.{0,4} evidence the action ran ;; examples/menu_bar.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
