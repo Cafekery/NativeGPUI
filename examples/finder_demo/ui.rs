@@ -24,27 +24,33 @@ pub(crate) const TAGS: &[(&str, SystemColor)] = &[
     ("Gray", SystemColor::SystemGray),
 ];
 
-/// A list row's icon: the system's own artwork for the row's type, falling back to the face's SF
-/// symbol for the props that have no file type behind them.
+/// A row's icon: the system's own artwork for the row's type, falling back to the face's SF
+/// symbol for the props that have no file type behind them. Both the list and the icon view draw
+/// through here, so one row cannot show real artwork in one view and a symbol in the other.
 ///
 /// 32pt at a 2x backing scale lands on the 64px representation the artwork actually ships, so the
 /// icon is crisp rather than resampled — asking for a size off that ladder is what makes one look
 /// soft. The size is the same for every row on purpose: the cache is keyed by it, and varying it
 /// per row would turn a hit into a 42µs raster.
+///
+/// The box is square whichever path answers. A symbol needs the wider slot [`glyph`] gives it, and
+/// handing that slot back to a caller that asked for `size` shifts the icon off the column the
+/// artwork rows line up on.
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
-    let symbol = row
+    let art = row
         .artwork
         .and_then(|kind| file_icon(kind, px(size)))
-        .map(|symbol| symbol.img().into_any_element());
-    match symbol {
-        Some(image) => div()
-            .w(px(size))
-            .h(px(size))
-            .flex_none()
-            .child(image)
-            .into_any_element(),
-        None => glyph(row.face, size),
-    }
+        .map(|symbol| symbol.img().into_any_element())
+        .unwrap_or_else(|| glyph(row.face, size));
+    div()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(art)
+        .into_any_element()
 }
 
 pub(crate) fn glyph(face: Face, size: f32) -> AnyElement {
