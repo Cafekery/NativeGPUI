@@ -29,12 +29,33 @@ use crate::ui::{TAGS, artwork, tag_dot};
 /// [`FinderDemo::preview_resize`] moves it.
 pub(crate) const PREVIEW_W: f32 = 240.;
 
-/// Below this the label/value rows have nowhere left to put a value.
-const MIN_W: f32 = 150.;
-/// What the file list keeps. The preview held 311pt unchanged across a 206pt window-width change
-/// while the list absorbed every point of it, so the list is the pane that gives way — which means
-/// the drag has to stop against the list rather than against the preview.
-const LIST_MIN_W: f32 = 120.;
+/// The pane's own minimum, and a hard stop. One more point of drag past it does not narrow the
+/// pane further, it collapses it outright.
+const MIN_W: f32 = 240.;
+/// The pane's own maximum, and the constraint that actually binds. It held at 480pt at window
+/// widths 1226, 1026, 988 and 748, so it does not move with the window: the travel stops against
+/// the pane, not only against the list.
+const MAX_W: f32 = 480.;
+/// What the file list keeps, also hard. Finder's *window* minimum is derived from it: with the pane
+/// at 240 the window will not go below 748 and with the pane at 480 it will not go below 988, and
+/// both of those are 192 + 316 + the pane. Two window minima, one list minimum.
+const LIST_MIN_W: f32 = 316.;
+
+// The pane never crosses the list, however far the divider travels. The list's trailing edge and
+// the pane's leading edge stayed the same number at every divider position at window widths 1226,
+// 1026, 988 and 748 — and the same subtraction reported 121pt for the list's own horizontal clip
+// in the same reading, so that null is "they do not overlap" and not "this cannot see overlap".
+//
+// What reads as the pane sliding over the list is the list cutting its own columns. Finder's list
+// columns are fixed and its Name column floors at 168pt, so the row content stays a constant 589pt
+// wide however narrow the pane leaves the list: 121pt of it is cut at a 468pt list and 273pt at
+// the 316pt minimum. That is what cuts a Kind string mid-word.
+//
+// The pane's material does sample the list, which is the other half of the same impression. With
+// rows selected, the pane's leading 85pt carried a blurred copy of the selection band at the same
+// y to within 3pt — 12 units against the list's own 55 — while the pane's trailing strip, which
+// has no list behind it, stayed flat through that y and moved 30x less.
+
 /// The grab strip on the pane's leading edge.
 const GRIP_W: f32 = 6.;
 
@@ -373,9 +394,11 @@ impl FinderDemo {
 
     /// Widen or narrow the pane by dragging its divider.
     ///
-    /// The *list* is what gives way: Finder's preview held 311pt across a 206pt window-width change
-    /// while the list absorbed all of it, so the travel stops when the list reaches its minimum
-    /// rather than when the pane reaches a maximum of its own.
+    /// Both ends of the travel are the pane's own — 240pt and 480pt — and the 480 held at four
+    /// window widths, so the earlier reading that the pane has no maximum of its own and only the
+    /// list gives way was measuring a window too wide for the maximum to bind. The list's 316pt
+    /// minimum is a second, independent stop, and it only binds once the window is narrow enough
+    /// for the two to meet.
     pub(crate) fn preview_resize(
         &mut self,
         event: &MouseMoveEvent,
@@ -395,8 +418,8 @@ impl FinderDemo {
         let room = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right);
-        let width =
-            (anchor - f32::from(event.position.x)).clamp(MIN_W, (room - LIST_MIN_W).max(MIN_W));
+        let width = (anchor - f32::from(event.position.x))
+            .clamp(MIN_W, MAX_W.min(room - LIST_MIN_W).max(MIN_W));
         if width != self.preview_w {
             self.preview_w = width;
             cx.notify();
