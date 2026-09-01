@@ -528,7 +528,14 @@ impl NativeHost {
         above.autoresize();
         parent.addSubview(&above);
 
-        let below = Container::new(mtm, frame, false);
+        // `frame` above is `parent.bounds()`, which is the right rect for `above` because that is
+        // a subview of `parent`. `below` is a subview of `parent`'s SUPERVIEW, so it needs
+        // `parent.frame()` — the same rectangle expressed in the space it is actually being put
+        // into. The two are only equal while gpui's view sits at its superview's origin, which a
+        // [`crate::sidebar::NativeSidebar`] breaks: the content pane holds gpui's view at a
+        // pane-cancelling origin, so `bounds()` here lands every below view a sidebar's width to
+        // the right of the GPUI content it is supposed to sit under.
+        let below = Container::new(mtm, parent.frame(), false);
         below.autoresize();
         let content =
             unsafe { parent.superview() }.expect("gpui's view is always inside a content view");

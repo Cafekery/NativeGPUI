@@ -1020,11 +1020,6 @@ impl NativeSidebar {
 
 struct PaneShared {
     gpui: Retained<NSView>,
-    /// The host's `Layer::Below` containers, re-parented into this pane.
-    below: RefCell<Vec<Retained<NSView>>>,
-    /// Pane subview count at the last scan. A `NativeHost` created *after* the sidebar drops its
-    /// below-container in here on its own.
-    below_scanned: Cell<usize>,
     align: PaneAlign,
     adopt_below: bool,
     intended_gpui: Cell<NSRect>,
@@ -1102,21 +1097,19 @@ impl PaneShared {
         }
     }
 
+    /// Put every [`crate::Layer::Below`] container in this pane into GPUI's coordinate space.
+    ///
+    /// `gpui_frame` is the pane-cancelling frame, so this is the only thing that lines a below
+    /// container up with GPUI's own view; one that misses it keeps its pane-local origin and
+    /// everything hosted in it draws a sidebar's width to the right.
+    ///
+    /// Scanned every time rather than cached against the pane's subview **count**, because a
+    /// count is not a set: one container added and another removed between two passes leaves it
+    /// unchanged, and a container created while it happens to be unchanged is never picked up at
+    /// all. The scan is a handful of `isKindOfClass` calls beside work this function already does.
     fn sync_below(&self, pane: &NSView, gpui_frame: NSRect) {
-        let count = pane.subviews().count();
-        if self.below_scanned.get() != count {
-            self.below_scanned.set(count);
-            let mut below = self.below.borrow_mut();
-            for view in pane.subviews().iter() {
-                let is_container = view.isKindOfClass(Container::class());
-                let already = below.iter().any(|v| std::ptr::eq(&**v, &*view));
-                if is_container && !already {
-                    below.push(view.retain());
-                }
-            }
-        }
-        for view in self.below.borrow().iter() {
-            if !rects_equal(view.frame(), gpui_frame) {
+        for view in pane.subviews().iter() {
+            if view.isKindOfClass(Container::class()) && !rects_equal(view.frame(), gpui_frame) {
                 view.setFrame(gpui_frame);
             }
         }
@@ -2372,8 +2365,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
 
     let pane_shared = Rc::new(PaneShared {
         gpui: gpui.clone(),
-        below: RefCell::new(Vec::new()),
-        below_scanned: Cell::new(usize::MAX),
         align: options.align,
         adopt_below: options.adopt_below_layer,
         intended_gpui: Cell::new(NSRect::new(
