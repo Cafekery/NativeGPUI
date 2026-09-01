@@ -18,14 +18,26 @@
 #   ./scripts/menubar.sh                    # launch the probe; every row below must be found
 #   ./scripts/menubar.sh --sabotage         # same, with no bar installed; every row must go MISSING
 #   ./scripts/menubar.sh --proc FinderDemo  # read an app that is already running
+#   ./scripts/menubar.sh --dump <file>      # re-check a dump taken earlier, launching nothing
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 sabotage=0
 proc=""
+dump=/tmp/ng-menubar-ax.tsv
+offline=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--sabotage) sabotage=1 ;;
+	# Check a dump taken earlier instead of reading a live app. This is how the title-alternation
+	# fix above was verified against the app that exposed it, without relaunching anyone's app or
+	# taking the screen: the failing case is a file.
+	--dump)
+		shift
+		dump=${1:-}
+		offline=1
+		[ -r "$dump" ] || { echo "--dump needs a readable file"; exit 1; }
+		;;
 	# Read an app that is ALREADY running instead of launching the probe. This is how the fix
 	# gets a second, independent consumer: an app that inherits the standard set rather than one
 	# built to exercise it. `open -n dist/FinderDemo.app` then `--proc FinderDemo`.
@@ -38,12 +50,25 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+if ((offline)) && { ((sabotage)) || [ -n "$proc" ]; }; then
+	echo "--dump reads a saved file and cannot be combined with --sabotage or --proc"
+	exit 1
+fi
 if ((sabotage)) && [ -n "$proc" ]; then
 	echo "--sabotage launches its own arm and cannot be combined with --proc"
 	exit 1
 fi
 
-# menu | title | key equivalent | modifier mask. Pipe-separated, not tab: bash collapses runs of
+# menu | title | key equivalent | modifier mask. A title may list `/`-separated alternatives,
+# because AppKit rewrites some of these from the SUBJECT APP's state and the title is therefore not
+# ours to predict: it flips Show/Hide Toolbar, Show/Hide Sidebar and Enter/Exit Full Screen while
+# validating the row. Matching those on title alone made this script report 2 MISSING against any
+# app that actually had a toolbar or a sidebar showing — i.e. against every real app — and never
+# against the probe, which has neither surface so its titles never flip. Measured on a second
+# consumer app: both rows present with the same key and mask, enabled, titled Hide rather than Show.
+# That is a check that passed only on the configuration it was written for.
+#
+# Pipe-separated, not tab: bash collapses runs of
 # tabs when IFS is one, so a row with no key equivalent silently shifts its mask into the key
 # column and six correct rows reported MISSING.
 #
@@ -65,17 +90,25 @@ Edit|Paste|V|0
 Edit|Paste and Match Style|V|3
 Edit|Delete||8
 Edit|Select All|A|0
-View|Show Toolbar|T|2
+View|Show Toolbar/Hide Toolbar|T|2
 View|Customize Toolbar…||8
-View|Show Sidebar|S|4
-View|Enter Full Screen|F|24
+View|Show Sidebar/Hide Sidebar|S|4
+View|Enter Full Screen/Exit Full Screen|F|24
 Window|Minimize|M|0
 Window|Zoom||8
 Window|Bring All to Front||8
 Help|{app} Help|?|0
 ROWS
 
-if [ -n "$proc" ]; then
+if ((offline)); then
+	# The app name the expectation table substitutes has to come from the dump, not from a flag:
+	# reading it out of the data is what makes an offline check a check.
+	app=$(awk -F'\t' 'NR == 1 { print $1 }' "$dump")
+	[ -z "$app" ] && { echo "could not read an app name from $dump"; exit 1; }
+	# `Apple` is the system menu, which the AX read sees first and this crate does not install.
+	[ "$app" = Apple ] && app=$(awk -F'\t' '$1 != "Apple" { print $1; exit }' "$dump")
+	echo "checking saved dump $dump as app [$app]; launching nothing"
+elif [ -n "$proc" ]; then
 	app=$proc
 	# Exactly one, or the readback could describe either and neither of us would know which.
 	count=$(pgrep -x "$app" | grep -c '')
@@ -110,14 +143,19 @@ else
 	sleep 2
 fi
 
-osascript scripts/menubar.applescript "$pid" >/tmp/ng-menubar-ax.tsv 2>/tmp/ng-menubar-ax.err
+if ((offline)); then
+	status=0
+else
+
+osascript scripts/menubar.applescript "$pid" >"$dump" 2>/tmp/ng-menubar-ax.err
 status=$?
+fi
 if ((status)); then
 	echo "System Events could not reach the process (needs an Accessibility grant for whatever runs this):"
 	cat /tmp/ng-menubar-ax.err
 	exit 1
 fi
-if grep -q '^NOBAR' /tmp/ng-menubar-ax.tsv; then
+if grep -q '^NOBAR' "$dump"; then
 	echo "read the process but it has no menu bar 1 at all"
 fi
 
@@ -131,7 +169,12 @@ while IFS='|' read -r menu title key mods; do
 	menu=${menu//\{app\}/$app}
 	title=${title//\{app\}/$app}
 	if awk -F'\t' -v m="$menu" -v t="$title" -v k="$key" -v d="$mods" \
-		'$1==m && $2==t && $3==k && $4==d { hit=1 } END { exit !hit }' /tmp/ng-menubar-ax.tsv; then
+		'BEGIN { alts = split(t, alt, "/") }
+		 $1 == m && $3 == k && $4 == d {
+			for (i = 1; i <= alts; i++)
+				if ($2 == alt[i]) hit = 1
+		 }
+		 END { exit !hit }' "$dump"; then
 		printf '%-10s %-24s %-3s %-4s %s\n' "$menu" "$title" "$key" "$mods" ok
 		found=$((found + 1))
 	else
@@ -141,7 +184,7 @@ while IFS='|' read -r menu title key mods; do
 done <<<"$TABLE"
 
 echo
-echo "$found found, $fail missing, $(wc -l </tmp/ng-menubar-ax.tsv | tr -d ' ') rows read"
+echo "$found found, $fail missing, $(wc -l <"$dump" | tr -d ' ') rows read"
 if ((sabotage)); then
 	# Inverted: with no bar installed, a row that is still found means the reader is describing
 	# something other than this app's menus.
