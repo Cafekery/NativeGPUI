@@ -55,7 +55,7 @@ use native_gpui::{
 // are too generic to spill into a consumer's root.
 use native_gpui::tokens::{
     Appearance, FileType, Symbol, SymbolColor, SystemColor, WINDOW_BACKGROUND, accent, file_icon,
-    srgb, system_color, system_font, window_background,
+    system_color, system_font, window_background,
 };
 
 fn main() {}

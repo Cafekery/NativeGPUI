@@ -14,6 +14,15 @@ pub fn to_nscolor(color: Hsla) -> Retained<NSColor> {
     )
 }
 
+/// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion. Reads the
+/// ambient drawing appearance, which matches one appearance and silently contradicts the other,
+/// so for a semantic colour use `SystemColor::try_resolve` instead.
+///
+/// That `try_resolve` genuinely answers per appearance rather than reading the ambient one twice
+/// is checked by the storybook's tokens page, which lists the rows where
+/// `try_resolve(Light) != try_resolve(Dark)`. It is the only live control on this, so a pass that
+/// removes it leaves nothing behind that can fail.
+///
 /// The `Option` must not be collapsed to a default: `redComponent` and friends are undefined
 /// outside an RGB colour space, so the conversion is mandatory, and it returns nil for pattern
 /// colours — which would hand the caller a black indistinguishable from a deliberate one.

@@ -20,6 +20,10 @@ use native_gpui::system::tokens::WINDOW_BACKGROUND;
 // public surface. `supports_corner_radius` answers the same question for anyone with a `Window`.
 use native_gpui::window_chrome::corner_radius_selector;
 
+// probe: deleted. It was a one-line pass-through to a private `to_srgb` in the same file with no
+// caller anywhere, and `from_nscolor` is now the crate's one NSColor-to-Hsla conversion.
+use native_gpui::tokens::srgb;
+
 fn main() {
     // probe: deleted. It was exactly `srgb(&self.ns_color())` with both halves public, and the
     // control it claimed to be lives in the storybook's tokens page instead.

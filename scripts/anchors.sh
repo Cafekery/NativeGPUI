@@ -129,7 +129,7 @@ sidebar-rep-point-not-pixel ;; point size and a pixel size are different ;; src/
 sidebar-drag-defers-commit ;; return does not opt back out ;; src/chrome/sidebar.rs
 sidebar-ivars-not-inherited ;; leaves the superclass.s uninitialised ;; src/chrome/sidebar.rs
 sidebar-eject-ratio ;; ratio is the statistic to compare ;; src/chrome/sidebar.rs
-the try_resolve control lives in the tokens page ;; only live control on this ;; src/system/tokens.rs
+the try_resolve control lives in the tokens page ;; only live control on this ;; src/system/color.rs
 a popover tracks its positioning view, not a rect ;; stays put while the element leaves ;; src/surfaces.rs
 positioningRect does nothing on a shown popover ;; writing it moves nothing ;; src/surfaces.rs
 an explicit close must not call back ;; the incoming one is stored and clears it ;; src/surfaces.rs

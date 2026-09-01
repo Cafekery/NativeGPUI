@@ -43,7 +43,7 @@ use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolOb
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceName, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
-    NSAttributedStringNSStringDrawing, NSBitmapFormat, NSBitmapImageRep, NSColor, NSColorSpace,
+    NSAttributedStringNSStringDrawing, NSBitmapFormat, NSBitmapImageRep, NSColor,
     NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightBlack,
     NSFontWeightBold, NSFontWeightHeavy, NSFontWeightLight, NSFontWeightMedium,
     NSFontWeightRegular, NSFontWeightSemibold, NSFontWeightThin, NSFontWeightUltraLight,
@@ -57,6 +57,7 @@ use objc2_foundation::{
 };
 
 use crate::bridge::host::ControlSize;
+use crate::system::color::from_nscolor;
 
 /// Which of the two colour worlds a value should be resolved in.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -249,7 +250,7 @@ impl SystemColor {
     /// the `Option` has to stay. [`refused`] says which ones.
     pub fn try_resolve(self, appearance: Appearance) -> Option<Hsla> {
         let getter = self.getter();
-        with_appearance(appearance, || to_srgb(&getter()))
+        with_appearance(appearance, || from_nscolor(&getter()))
     }
 }
 
@@ -263,34 +264,6 @@ fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
         .performAsCurrentDrawingAppearance(&block);
     slot.into_inner()
         .expect("performAsCurrentDrawingAppearance never invoked the block")
-}
-
-/// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion. Reads the
-/// ambient drawing appearance, which matches one appearance and silently contradicts the other,
-/// so for a semantic colour use [`SystemColor::try_resolve`] instead.
-///
-/// That `try_resolve` genuinely answers per appearance rather than reading the ambient one twice
-/// is checked by the storybook's tokens page, which lists the rows where
-/// `try_resolve(Light) != try_resolve(Dark)`. It is the only live control on this, so a pass that
-/// removes it leaves nothing behind that can fail.
-pub fn srgb(color: &NSColor) -> Option<Hsla> {
-    to_srgb(color)
-}
-
-fn to_srgb(color: &NSColor) -> Option<Hsla> {
-    let space = NSColorSpace::sRGBColorSpace();
-    let converted = color.colorUsingColorSpace(&space)?;
-    let (mut r, mut g, mut b, mut a) = (0f64, 0f64, 0f64, 0f64);
-    unsafe { converted.getRed_green_blue_alpha(&mut r, &mut g, &mut b, &mut a) };
-    Some(
-        Rgba {
-            r: r as f32,
-            g: g as f32,
-            b: b as f32,
-            a: a as f32,
-        }
-        .into(),
-    )
 }
 
 /// `labelColor`'s value, so a colour that refuses sRGB conversion degrades to readable text.
@@ -404,7 +377,7 @@ pub fn system_color(color: SystemColor) -> Hsla {
                 none.insert(with_appearance(appearance, || {
                     SystemColor::ALL
                         .iter()
-                        .map(|c| to_srgb(&c.ns_color()))
+                        .map(|c| from_nscolor(&c.ns_color()))
                         .collect::<Vec<_>>()
                 }))
             }
