@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Everything that must hold before the tree is called clean. The three things it runs, `z_order`,
-# `glass_hit` and `tabular_figures`, each open a small unfocused corner window for a fraction of a
-# second and read out of AppKit or gpui's text system, so it takes no keyboard focus and captures no
-# pixels: still safe to run while someone else is driving the display.
+# Everything that must hold before the tree is called clean. The four things it runs, `z_order`,
+# `glass_hit`, `decoration_hit` and `tabular_figures`, each open a small unfocused corner window for
+# a fraction of a second and read out of AppKit or gpui's text system, so it takes no keyboard focus
+# and captures no pixels: still safe to run while someone else is driving the display.
 #
 # Contention is fine; a LOCKED session is not. `loginwindow` occludes every window at layer 2001 and
 # up, so a gpui window stops getting display ticks and never paints. `z_order` then reports "the
-# window painted fewer than 6 times", `glass_hit` "the window rendered fewer than 4 frames", and
-# `hosted controls reach their handler` needs a paint within 15 s. Those are the frame-count entry
-# gates refusing to report rather than reporting a false green — so under a lock the verdict cannot
-# be reached at all, and the answer is to unlock, not to skip the step.
+# window painted fewer than 6 times", `glass_hit` and `decoration_hit` "the window rendered fewer
+# than 4 frames", and `hosted controls reach their handler` needs a paint within 15 s. Those are the
+# frame-count entry gates refusing to report rather than reporting a false green — so under a lock
+# the verdict cannot be reached at all, and the answer is to unlock, not to skip the step.
+#
+# Contention is not free either, in one direction: starvation can only REMOVE frames, so a busy
+# machine can manufacture a false red on those four and can never manufacture a green.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -53,6 +56,18 @@ step 'z-order holds paint order'    cargo run --release --example z_order
 # session it reports "no row was evaluated — the window rendered fewer than 4 frames within 12
 # tries". In-process is not the same as needing no frames.
 step 'glass container declines'     cargo run --release --example glass_hit
+# The same property one class over, for the three decorations `material`, `native_label` and
+# `native_rule` place — which `glass_hit` does not put on screen and therefore says nothing about.
+# A stock `NSVisualEffectView`, `NSTextField` and `NSBox` each answer `hitTest:` with self, so a
+# band of material carrying hosted titles and dividers over an interactive region eats every click
+# and drag in its rect while looking perfectly correct.
+#
+# What it gates is the SIBLING RETURN, not a `nil`: a nil hit cannot tell "the view declined" from
+# "nothing was there", so each declining row requires gpui's own view back exactly, at the centre
+# of the view AppKit actually placed. The run also carries a row that must CLAIM — a hosted switch
+# under the same material — without which deleting the layer container, hiding the views or placing
+# nothing at all would read as four passes.
+step 'decorations decline'          cargo run --release --example decoration_hit
 # `system_font_tabular` is a `tnum` feature list, and if the shaper ever stops honouring the tag it
 # still returns a `Font` — a proportional one, under a name promising a column that does not shift.
 # Shapes ten of each digit through gpui's own text system, with a monospaced face and a nonsense

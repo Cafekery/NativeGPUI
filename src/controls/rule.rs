@@ -6,8 +6,11 @@ use gpui::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
     Pixels, Style, Window, relative,
 };
+use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
-use objc2_app_kit::{NSBox, NSBoxType, NSTitlePosition};
+use objc2::{MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSBox, NSBoxType, NSResponder, NSTitlePosition, NSView};
+use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect};
 
 use crate::bridge::host::{Layer, NativeHost, element_key};
 use crate::system::tokens::SystemColor;
@@ -104,17 +107,7 @@ impl Element for NativeRule {
         let mask = window.content_mask().bounds;
         let host = NativeHost::get(window, cx);
 
-        let rule = host.place(key, Layer::Above, bounds, mask, |mtm, _| {
-            let rule = NSBox::new(mtm);
-            // `Custom` is the only box type that draws `fillColor`, so the colour knob would be
-            // silently inert under any other. Filled with an unmistakable magenta and cached to a
-            // bitmap offscreen, the centre pixel comes back magenta under `Custom`, fully
-            // transparent under `Separator`, and the box's own near-clear white under `Primary`.
-            rule.setBoxType(NSBoxType::Custom);
-            rule.setBorderWidth(0.);
-            rule.setTitlePosition(NSTitlePosition::NoTitle);
-            rule
-        });
+        let rule = host.place(key, Layer::Above, bounds, mask, |mtm, _| Rule::new(mtm));
 
         // `NSColor` round-trips through `fillColor`, so this diffs against the readback rather than
         // against a recorded intent — the same measurement that lets the label diff its font.
@@ -130,5 +123,39 @@ impl IntoElement for NativeRule {
 
     fn into_element(self) -> Self {
         self
+    }
+}
+
+define_class!(
+    /// A fill that declines every mouse point, for the reason spelled out on `NGLabel`.
+    ///
+    /// A rule is the worst case of that bug rather than the mildest: a column divider sits exactly
+    /// on the boundary a resize gesture aims at, so a 1pt box claiming its rect eats the drag at
+    /// precisely the x the user targets.
+    #[unsafe(super(NSBox, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGRule"]
+    struct Rule;
+
+    impl Rule {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+impl Rule {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this: Retained<Self> =
+            unsafe { msg_send![Self::alloc(mtm), initWithFrame: NSRect::ZERO] };
+        // `Custom` is the only box type that draws `fillColor`, so the colour knob would be
+        // silently inert under any other. Filled with an unmistakable magenta and cached to a
+        // bitmap offscreen, the centre pixel comes back magenta under `Custom`, fully transparent
+        // under `Separator`, and the box's own near-clear white under `Primary`.
+        this.setBoxType(NSBoxType::Custom);
+        this.setBorderWidth(0.);
+        this.setTitlePosition(NSTitlePosition::NoTitle);
+        this
     }
 }

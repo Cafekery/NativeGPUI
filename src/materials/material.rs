@@ -18,11 +18,12 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 #[cfg(feature = "private-api")]
 use objc2::sel;
+use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSImage, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView,
+    NSBezierPath, NSColor, NSImage, NSResponder, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
-use objc2_foundation::{NSEdgeInsets, NSRect, NSSize};
+use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSObject, NSPoint, NSRect, NSSize};
 
 #[cfg(feature = "private-api")]
 use super::private_api;
@@ -440,9 +441,7 @@ impl Element for NativeMaterial {
         let mask = window.content_mask().bounds;
         let host = NativeHost::get(window, cx);
 
-        let view = host.place(key, self.layer, bounds, mask, |mtm, _| {
-            NSVisualEffectView::new(mtm)
-        });
+        let view = host.place(key, self.layer, bounds, mask, |mtm, _| Backdrop::new(mtm));
 
         let material = self.material.appkit();
         if view.material() != material {
@@ -489,6 +488,40 @@ impl IntoElement for NativeMaterial {
 
     fn into_element(self) -> Self {
         self
+    }
+}
+
+define_class!(
+    /// A material that declines every mouse point.
+    ///
+    /// A stock `NSVisualEffectView` claims one: measured, `hitTest:` over it returns the view. At
+    /// [`Layer::Below`] that is harmless — GPUI's own view is above it and takes the event first —
+    /// but at [`Layer::Above`] the material covers whatever it is drawn over, and
+    /// [`crate::NativeHost`]'s clip container declines only its *own* area and hands a subview's
+    /// hit straight back. So a band of glass over an interactive region silently eats every click,
+    /// drag and scroll in its rect. Unconditional rather than a knob: a material has no handler
+    /// surface, and children are GPUI content painted into the Metal view rather than subviews of
+    /// this one, so nothing inside it ever wanted the point either.
+    ///
+    /// Unlike `NSGlassEffectView`, this needs no bet on a private subview's behaviour — a stock
+    /// `NSVisualEffectView` reports **zero** subviews, so returning `nil` outright is the whole
+    /// story rather than [`crate::glass_container`]'s "ask the one `hitTest:` we wrote".
+    #[unsafe(super(NSVisualEffectView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGBackdrop"]
+    struct Backdrop;
+
+    impl Backdrop {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+impl Backdrop {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), init] }
     }
 }
 

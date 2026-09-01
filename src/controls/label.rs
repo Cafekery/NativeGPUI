@@ -10,8 +10,11 @@ use gpui::{
 };
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
-use objc2_app_kit::{NSFont, NSLineBreakMode, NSTextAlignment, NSTextField};
-use objc2_foundation::NSString;
+use objc2::{ClassType, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{
+    NSControl, NSFont, NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField, NSView,
+};
+use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{Layer, NativeHost, element_key};
@@ -219,12 +222,7 @@ impl Element for NativeLabel {
         let mask = window.content_mask().bounds;
         let host = NativeHost::get(window, cx);
 
-        let field = host.place(key, Layer::Above, bounds, mask, |mtm, _| {
-            // `labelWithString:` is AppKit's own static-text recipe and needs no undoing: bezeled,
-            // bordered, editable, selectable and drawsBackground all read back false and the
-            // cell already does not wrap, so the line break mode below is the only thing to set.
-            NSTextField::labelWithString(&NSString::from_str(""), mtm)
-        });
+        let field = host.place(key, Layer::Above, bounds, mask, |mtm, _| Label::new(mtm));
 
         let want: &str = &self.text;
         if field.stringValue().to_string() != want {
@@ -270,5 +268,46 @@ impl IntoElement for NativeLabel {
 
     fn into_element(self) -> Self {
         self
+    }
+}
+
+define_class!(
+    /// A label that declines every mouse point.
+    ///
+    /// A plain `NSTextField` claims one: measured, `hitTest:` over a stock label returns the label.
+    /// That is invisible until a label is put over something interactive — a header title sitting
+    /// on the click target that sorts the column — and then the click is simply eaten, because
+    /// [`Layer::Above`] puts the view over GPUI's own and [`NativeHost`]'s clip container declines
+    /// only its *own* area and hands a subview's hit straight back. Unconditional rather than a
+    /// knob: a label has no handler surface, so there is no arrangement in which claiming the
+    /// point is useful.
+    ///
+    /// `nil` is not the whole proof. A nil hit cannot tell "declined" from "nothing was there", so
+    /// `examples/decoration_hit.rs` asks with a live view underneath and requires *that* view back.
+    #[unsafe(super(NSTextField, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGLabel"]
+    struct Label;
+
+    impl Label {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+impl Label {
+    /// `labelWithString:` is AppKit's own static-text recipe and needs no undoing: bezeled,
+    /// bordered, editable, selectable and drawsBackground all read back false and the cell already
+    /// does not wrap, so the line break mode in `paint` is the only thing to set. Sent to the
+    /// SUBCLASS it returns an instance of the subclass with all five still false, so the decline
+    /// costs nothing — hand-building an `NSTextField` would mean re-deriving them.
+    ///
+    /// A class message takes no marker, so `_mtm` is the caller's main-thread proof rather than an
+    /// argument AppKit reads.
+    fn new(_mtm: MainThreadMarker) -> Retained<Self> {
+        let empty = NSString::from_str("");
+        unsafe { msg_send![Self::class(), labelWithString: &*empty] }
     }
 }
