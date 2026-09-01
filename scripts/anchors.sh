@@ -165,7 +165,13 @@ if [[ ${1:-} == --self-test ]]; then
     cp -R src "$work/src"
     cp -R examples "$work/examples"
     strip_comments "$work/$path"
-    if anchors "$work" | grep -qF "ok    $label"; then
+    # Capture, then test. `anchors` returns nonzero whenever ANY row is LOST — which is by
+    # construction here, since a file was just stripped — and under `pipefail` that makes
+    # `anchors … | grep` false however grep answered, so `BAD` could never print. This arm
+    # asserted "all anchors falsifiable" while checking nothing, everywhere a file holds more
+    # than one anchor. Same trap `retired()` documents at its own `${@:3}`.
+    out=$(anchors "$work" || true)
+    if grep -qF "ok    $label" <<<"$out"; then
       printf 'BAD   %s  survives its own file being stripped\n' "$label"
       bad=1
     fi
