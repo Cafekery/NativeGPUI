@@ -316,12 +316,6 @@ struct DelegateIvars {
     cx: AsyncWindowContext,
 }
 
-thread_local! {
-    /// `setDelegate:` is weak and `popoverDidClose:` arrives *after* the close animation, so a
-    /// delegate owned only by the caller's [`NativePopover`] is gone before AppKit looks for it.
-    static CLOSING: RefCell<Vec<Retained<PopoverDelegate>>> = const { RefCell::new(Vec::new()) };
-}
-
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -342,9 +336,6 @@ define_class!(
                     let _ = cx.update(|window, app| on_close(window, app));
                 })
                 .detach();
-            CLOSING.with_borrow_mut(|closing| {
-                closing.retain(|delegate| !std::ptr::eq(&**delegate, self));
-            });
         }
     }
 );
@@ -398,9 +389,10 @@ pub fn present_popover(
 }
 
 impl NativePopover {
-    /// Run `on_close` when the popover closes, however it closed. Worth wiring even with
-    /// [`PopoverBehavior::ApplicationDefined`]: AppKit also closes a popover when its positioning
-    /// view leaves the window.
+    /// Run `on_close` when *AppKit* closes the popover — a [`PopoverBehavior::Transient`]
+    /// dismissal, or the positioning view leaving the window, which is why it is worth wiring even
+    /// with [`PopoverBehavior::ApplicationDefined`]. A close you asked for does not call back; see
+    /// [`NativePopover::close`].
     pub fn on_close(
         mut self,
         window: &mut Window,
@@ -421,11 +413,16 @@ impl NativePopover {
         self
     }
 
-    /// Close the popover. `on_close` fires on a later main-loop turn than this call.
+    /// Close the popover.
+    ///
+    /// `on_close` does **not** fire for a close you asked for. It arrives a main-loop turn later,
+    /// so on the close-then-open path — every "open a popover somewhere else" — the outgoing
+    /// popover's callback lands *after* the incoming one is stored and clears it. Dropping that
+    /// handle releases the only strong reference to the surface's [`SurfaceActions`], and
+    /// `setTarget:` is weak, so the popover still on screen has controls that reach nothing and
+    /// no longer closes at all.
     pub fn close(&self) {
-        if let Some(delegate) = self._delegate.clone() {
-            CLOSING.with_borrow_mut(|closing| closing.push(delegate));
-        }
+        self.popover.setDelegate(None);
         self.popover.close();
     }
 
