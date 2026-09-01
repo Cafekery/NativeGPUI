@@ -151,6 +151,9 @@ impl SurfaceEdge {
     }
 }
 
+/// `SurfaceActions`' storage. Public only because `define_class!` makes a class's ivars type part
+/// of its public interface; there is nothing here to reach.
+#[doc(hidden)]
 pub struct ActionIvars {
     handlers: RefCell<Vec<Rc<dyn Fn(&mut Window, &mut App)>>>,
     cx: AsyncWindowContext,
@@ -531,7 +534,7 @@ pub enum SharePickerEvent {
     Closed { chose: Option<String> },
 }
 
-pub struct PickerIvars {
+struct PickerIvars {
     on_event: Rc<dyn Fn(SharePickerEvent, &mut Window, &mut App)>,
     /// AppKit asks for the service list a second time as the picker tears down, with an empty
     /// proposal — reporting it would claim "0 services" about a picker that showed four.

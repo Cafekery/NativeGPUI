@@ -14,7 +14,7 @@ use gpui::{
     Point, Size, Window, px,
 };
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
@@ -1794,11 +1794,6 @@ impl IntoElement for CursorRegion {
     fn into_element(self) -> Self::Element {
         self
     }
-}
-
-/// The selector [`set_corner_radius`] gates on, for a caller with no `Window` in hand.
-pub fn corner_radius_selector() -> Sel {
-    sel!(_setCornerRadius:)
 }
 
 /// The current `NSCursor`'s class, hot spot and image size, for verifying a [`cursor_region`].

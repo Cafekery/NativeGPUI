@@ -251,13 +251,6 @@ impl SystemColor {
         let getter = self.getter();
         with_appearance(appearance, || to_srgb(&getter()))
     }
-
-    /// Resolve in whatever drawing appearance is ambient. Never use it in a UI: it matches one
-    /// appearance and silently contradicts the other, so it exists only to prove
-    /// [`try_resolve`](Self::try_resolve) does something.
-    pub fn resolve_ambient(self) -> Option<Hsla> {
-        to_srgb(&self.ns_color())
-    }
 }
 
 /// Run `f` with `appearance` installed as the current drawing appearance. Panics if the block never
@@ -273,7 +266,13 @@ fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
 }
 
 /// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion. Reads the
-/// ambient drawing appearance; for a semantic colour use [`SystemColor::try_resolve`].
+/// ambient drawing appearance, which matches one appearance and silently contradicts the other,
+/// so for a semantic colour use [`SystemColor::try_resolve`] instead.
+///
+/// That `try_resolve` genuinely answers per appearance rather than reading the ambient one twice
+/// is checked by the storybook's tokens page, which lists the rows where
+/// `try_resolve(Light) != try_resolve(Dark)`. It is the only live control on this, so a pass that
+/// removes it leaves nothing behind that can fail.
 pub fn srgb(color: &NSColor) -> Option<Hsla> {
     to_srgb(color)
 }
@@ -817,7 +816,8 @@ pub fn appkit_advance(family: &str, size: Pixels, weight: FontWeight, ch: char) 
     )
 }
 
-/// GPUI's advance for `ch` in `family`, in pixels.
+/// GPUI's advance for `ch` in `family`, in pixels. The other arm of [`advance_delta`], exposed
+/// separately because a surprising delta is only diagnosable by reading each side on its own.
 pub fn gpui_advance(
     cx: &App,
     family: &str,
