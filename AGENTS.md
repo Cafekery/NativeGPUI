@@ -38,6 +38,18 @@ finding blurred list rows *inside* the band at y 4, 46, 50 and 54. The number st
 sentence did not. It read as flat because at rest there is nothing under it to move, which is one
 reading consistent with two states — the shape § 2 is about.
 
+**The column header band is the same story, one band lower** — and the mechanism has a name now.
+Scroll a 304-item folder and structured content appears inside *both* bands, from y 0 through y 78,
+against an at-rest control on the same window that reads 0 on every one of those rows. It is
+blurred rather than dimmed: max adjacent-x delta 1–2 against a contrast of 6–14, where unblurred
+rows in the same capture give a delta within 1% of their contrast. It is **not key-dependent** —
+key and non-key differ by 0–1 unit, the quantisation floor, while the sidebar *in the same capture
+pair* moves 28 → 41 — so it is a **scroll-edge effect, not vibrancy**, which is why no material
+setting of ours can produce it. Our list reads 0–2 on every one of those rows: it is clipped at the
+header's lower edge. Measure this in the list column only (x 200..540 on a 1026pt window); a range
+that straddles the preview edge makes every row read contrast == delta off the pane boundary and
+the band looks sharp.
+
 **What this crate was doing wrong** (commit `6a6a610`): the toolbar band above the content pane
 showed the window-spanning backdrop while the body was painted an opaque colour, so the two never
 matched — **67 against 30 in dark, 222 against 255 in light**. A **37-unit step** at the toolbar's
