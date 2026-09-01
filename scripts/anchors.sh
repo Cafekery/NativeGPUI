@@ -144,6 +144,14 @@ a rig that paints every refresh cannot see this ;; a paint per refresh is the on
 a below container needs its superview's rect ;; the space it is actually being put into ;; src/bridge/host.rs
 a count is not a set ;; a count is not a set ;; src/chrome/sidebar.rs
 a caller search over src alone reports srgb unused ;; caller search restricted to ;; src/system/tokens.rs
+labelWithString: is already a label ;; needs no undoing ;; src/controls/label.rs
+a label's fittingSize height ignores its string ;; leave the text out ;; src/controls/label.rs
+a label's width is free to keep the cache bounded ;; leak an entry per distinct ;; src/controls/label.rs
+usesSingleLineMode is a no-op on a label ;; not the guard a reader would expect ;; src/controls/label.rs
+NSFont and NSColor round-trip, so isEqual can diff them ;; hands back the identical ;; src/controls/label.rs
+hosted labels reach the top of a material by paint order ;; paint the material first and the labels after ;; src/controls/label.rs
+only a custom NSBox draws its fill ;; silently inert under any other ;; src/controls/rule.rs
+a box keeps the dynamic colour where a layer freezes it ;; frozen at the moment it was written ;; src/controls/rule.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.

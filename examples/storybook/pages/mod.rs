@@ -7,6 +7,7 @@ pub mod custom_glass;
 pub mod glass;
 pub mod glass_variants;
 pub mod indicators;
+pub mod label;
 pub mod material;
 pub mod menus;
 pub mod popup;

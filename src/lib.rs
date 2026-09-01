@@ -12,8 +12,8 @@
 //! because `system_color`, `accent` and `system_font` are too generic to spill into yours.
 //!
 //! * [`controls`] — the hosted controls: [`native_switch`], [`native_slider`],
-//!   [`native_button`], [`native_text_field`], [`native_popup`], [`native_progress`],
-//!   [`native_stepper`], and the rest.
+//!   [`native_button`], [`native_text_field`], [`native_label`], [`native_popup`],
+//!   [`native_progress`], [`native_stepper`], and the rest.
 //! * [`materials`] — vibrancy ([`material`]) and macOS 26 liquid glass ([`glass`],
 //!   [`glass_container`]).
 //! * [`sidebar`] — a real `NSSplitViewItem` source list, [`sidebar::NativeSidebar`]. A window
