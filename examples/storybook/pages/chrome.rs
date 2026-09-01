@@ -287,9 +287,23 @@ impl Render for Popout {
             line("has_shadow", flags.has_shadow.to_string()),
             line("is_opaque", flags.is_opaque.to_string()),
             line("alpha", format!("{:.2}", flags.alpha)),
+            line("titled", flags.titled.to_string()),
+            line("full_size_content", flags.full_size_content.to_string()),
             line(
-                "titled / full_size_content",
-                format!("{} / {}", flags.titled, flags.full_size_content),
+                "movable_by_background",
+                flags.movable_by_background.to_string(),
+            ),
+            line(
+                "titlebar_appears_transparent",
+                flags.titlebar_appears_transparent.to_string(),
+            ),
+            line("collection", format!("{:#x}", flags.collection.0)),
+            line(
+                "appearance",
+                match flags.appearance {
+                    Some(a) => format!("{a:?}"),
+                    None => "follows the system".into(),
+                },
             ),
             line("titlebar band painted", settings.paint_band.to_string()),
         ];
@@ -434,9 +448,15 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 caption(
                     "0 sends _setCornerRadius: 0, which AppKit reads as \"system default\" rather \
                      than square, and reads back as that default — so intent is tracked, never \
-                     diffed against a readback. The second window prints both. Watch \
-                     system_corner_radius while you switch the toolbar too: it is half the \
-                     current band, so it follows the band's 32 / 40 / 52 to 16 / 20 / 26.",
+                     diffed against a readback. The second window prints both.",
+                ),
+                caption(
+                    "system_corner_radius is half the current band, so it would follow the \
+                     band's 32 / 40 / 52 to 16 / 20 / 26 — but only while nothing has been \
+                     written. Once set_corner_radius has run it reports the last value it saw \
+                     and stops tracking, which is why the second window reads 16 under a 52pt \
+                     band while the properties table below, on a window nothing has written, \
+                     reads 26. Do not read it as a live measure of the band; read titlebar_band.",
                 ),
                 knob(
                     "toolbar",
@@ -534,11 +554,15 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                      else.",
                 ),
                 caption(
-                    "WindowFlags has two more this page deliberately leaves off a knob. Clearing \
-                     titled removes the traffic lights, and this window has no other way to \
-                     close; setting full_size_content is what window_options already does, and \
-                     the crate's whole coordinate recipe assumes it. Both also shrink the frame \
-                     on the way through, so they are install-time decisions rather than dials.",
+                    "Five of WindowFlags' ten fields are left off a knob here, for two different \
+                     reasons. titled and full_size_content are install-time: clearing titled \
+                     removes the traffic lights and this window has no other way to close, \
+                     setting full_size_content is what window_options already does and the \
+                     crate's whole coordinate recipe assumes it, and both shrink the frame on the \
+                     way through. is_opaque, titlebar_appears_transparent and collection are left \
+                     off because window_options and the sidebar own them — a dial that fought \
+                     those would be demonstrating this page rather than the crate. All ten are \
+                     read back in the second window.",
                 ),
             ],
         ),
@@ -657,9 +681,10 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 ),
             ),
             (
-                "WindowFlags fields left off",
-                "titled and full_size_content — both shrink the frame and move the traffic \
-                 lights, so they are install-time, not dials"
+                "WindowFlags fields left off a knob",
+                "titled · full_size_content — install-time, they shrink the frame and move the \
+                 traffic lights; is_opaque · titlebar_appears_transparent · collection — owned by \
+                 window_options and the sidebar. All ten are read back in the second window"
                     .into(),
             ),
             (

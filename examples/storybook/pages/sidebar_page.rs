@@ -500,11 +500,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     _ => "live: open the window to read AppKit back".into(),
                 }),
                 caption(
-                    "Finder's own numbers, read out of its accessibility tree while the Finder \
-                     recreation was measured and not re-measured by this page: item row 32.0, \
-                     group header 19.0, 13.0 above a group, cell inset 10.0, label 45.0 from the \
-                     row's left edge. Compare them against the live line above, which is this \
-                     pane read the same way.",
+                    "Figures recorded for Finder on one macOS release: item row 32.0, group \
+                     header 19.0, 13.0 above a group, cell inset 10.0, label 45.0 from the row's \
+                     left edge. Treat them as a record, not as a measurement you can lean on — \
+                     the page does not re-measure them, and no measurement of them survives \
+                     anywhere in this repository, so a reader who needs them should read Finder \
+                     again. The line above is measured: it is this pane, read out of AppKit now.",
                 ),
             ],
         ),
