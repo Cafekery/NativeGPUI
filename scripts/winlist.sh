@@ -13,7 +13,13 @@
 #   ./scripts/winlist.sh          every on-screen window, frontmost first
 #   ./scripts/winlist.sh <pid>    only that pid's; exit 1 if it has none
 #
-# Columns are tab-separated: windowNumber, ownerPID, layer, x, y, w, h, ownerName, title.
+# SIX tab-separated fields, not nine — geometry is ONE field with commas inside it:
+#   $1 windowNumber   $2 ownerPID   $3 layer   $4 x,y,w,h   $5 ownerName   $6 title
+# An earlier version of this comment listed x/y/w/h separately, and an agent reading it took
+# ownerName as $8. That returns empty for every window, so their launcher reported "the app
+# did not come up" and their cleanup — guarded on a non-empty pid — skipped, orphaning a
+# window while announcing a failed launch. Falsify any extractor against a window you know
+# exists before trusting an empty result from it.
 # Uses CGWindowListCopyWindowInfo, so it sees empty-title windows that Accessibility cannot.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
