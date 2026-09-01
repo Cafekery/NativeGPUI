@@ -9,7 +9,8 @@
 
 use block2::RcBlock;
 use gpui::{AnyElement, SharedString, Window, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::sidebar::system_template;
+use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
     MenuEntry, MenuView, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection,
     ToolbarStyle, chrome_host, native_slider, set_toolbar,
@@ -42,22 +43,15 @@ pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
 /// Every capsule in it is a stadium 36pt tall at y 8…44 with a radius of half its height — none of
 /// which is written down here, because `NSToolbarItem` draws all of it.
 ///
-/// What is written down are the two glyphs no symbol name reaches. Both are hand-drawn
-/// approximations, measured off a window capture rather than guessed, and neither is claimed to be
-/// the real artwork.
+/// What is written down is the Group item's grid glyph, which no symbol name reaches. It is a
+/// hand-drawn approximation, measured off a window capture rather than guessed, and it is not
+/// claimed to be the real artwork.
 ///
-/// AirDrop: three concentric 1pt arcs about a common centre with a 2pt filled dot at it, each arc
-/// interrupted by a gap centred on straight down.
-pub(crate) const AIRDROP_RADII: [f64; 3] = [8.5, 6.0, 3.5];
-pub(crate) const AIRDROP_DOT_R: f64 = 1.0;
-/// Half the angular gap at the bottom of each arc, in degrees. The captured arcs run out at 29.5°,
-/// 31° and 38.7° from straight down measured outermost first, which a single gap fits to within
-/// the antialiased tail a threshold eats.
-pub(crate) const AIRDROP_GAP: f64 = 32.0;
-/// The image box the arcs are centred in. An `NSToolbarItem`'s width is its image's width plus a
-/// constant 24pt of padding — measured, by building the item at 20 and reading back 44 — and
-/// Finder's AirDrop item is 45, so the box is 21. The 1.5pt of slack round the 18pt of ink also
-/// keeps the outer stroke's antialiasing off the image edge, which would read as a thin arc.
+/// AirDrop no longer needs one: the system ships that artwork and the sidebar knows where.
+/// The ink is 18pt across, and an `NSToolbarItem`'s width is its image's width plus a constant
+/// 24pt of padding — measured, by building the item at 20 and reading back 44 — so Finder's 45pt
+/// AirDrop item means a 21pt image box with the artwork centred in it rather than filling it.
+pub(crate) const AIRDROP_ART: f32 = 18.;
 pub(crate) const AIRDROP_BOX: f64 = 21.;
 /// The Group item's grid: an 18pt-wide stack of a rule, three 5pt square outlines, a rule, and
 /// three more squares, with no rule under the bottom row. `y` is measured down from the ink top,
@@ -103,45 +97,64 @@ pub(crate) const VIEW_SYMBOLS: &[&str] = &[
 /// this, and it is the *item* width that drives the reflow: at 242 the item came out 250 against
 /// Finder's 248 and every group left of it moved 205pt instead of 203.
 pub(crate) const SEARCH_W: f32 = 240.;
+/// Path-bar crumb icon, unchanged from when the bar drew symbols here.
+const CRUMB_ICON: f32 = 13.;
 
-// ---------------------------------------------------------------------------------------------
-// The two toolbar glyphs that have no symbol name
-// ---------------------------------------------------------------------------------------------
-
-/// Finder's AirDrop glyph, hand-drawn. **Not a match, and not claimed as one.**
+/// A path-bar crumb's icon, at the size the bar has always drawn it.
 ///
-/// `airdrop`, `airdrop.circle` and `airdrop.square` are all in SF Hello's catalogue marked
-/// *private*, and `NSImage(systemSymbolName:)` returns nil for every one of them; the closest
-/// public name scores 0.75 by normalised cross-correlation, which is a different glyph. So this
-/// draws the shape a window capture reads — three concentric arcs about one centre, gapped at the
-/// bottom, over a filled dot — and leaves the fidelity claim to the measurement.
+/// Real artwork, not a symbol: the root crumb is a volume and the rest are folders, and the system
+/// draws those as two different pictures — `public.volume` renders 378 distinct colours against
+/// `public.folder`'s 124 — so a folder glyph at the root is wrong rather than merely generic. The
+/// fallback keeps the row's alignment if a lookup ever fails, which it does not on this build.
+fn crumb_icon(volume: bool) -> AnyElement {
+    let (kind, face) = match volume {
+        true => (FileType::Uti("public.volume"), F::Volume),
+        false => (FileType::Folder, F::Folder),
+    };
+    let art = file_icon(kind, px(CRUMB_ICON))
+        .map(|symbol| symbol.img().into_any_element())
+        .unwrap_or_else(|| glyph(face, CRUMB_ICON));
+    div()
+        .w(px(CRUMB_ICON))
+        .h(px(CRUMB_ICON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(art)
+        .into_any_element()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The toolbar glyphs no symbol name reaches
+// ---------------------------------------------------------------------------------------------
+
+/// Finder's AirDrop glyph, the system's own.
+///
+/// There is no `airdrop` SF Symbol to ask for: `NSImage(systemSymbolName:)` returns nil for
+/// `airdrop`, `airdrop.circle` and `airdrop.square`, and the name is absent from every one of the
+/// shipped catalogue's four tables, so no restriction is being worked around. The artwork exists
+/// anyway, as a monochrome template in the system's `CoreTypes` bundle, and scores 0.892 against a
+/// capture of Finder's own sidebar row where the closest public symbol manages 0.597.
+///
+/// **What is verified and what is not.** The 0.892 is against the *sidebar* row. Nobody has
+/// captured Finder's *toolbar* AirDrop button, so that it draws this same artwork is an assumption
+/// — a reasonable one, since the ink measures 18pt across in both places, but an assumption.
+///
+/// Centred in a 21pt box rather than filling one: the artwork ships at fixed point sizes and 18 is
+/// the one that lands, so the box carries the slack instead of the glyph carrying a resample.
 ///
 /// Template, so AppKit tints it exactly as it tints a symbol: enabled, disabled, and inside a
 /// pressed capsule are all the system's decisions rather than a colour written down here.
-pub(crate) fn airdrop_glyph() -> Retained<NSImage> {
+pub(crate) fn airdrop_glyph() -> Option<Retained<NSImage>> {
+    let art = system_template("SidebarAirDrop", px(AIRDROP_ART))?;
     let box_size = AIRDROP_BOX;
     let handler = RcBlock::new(move |_: NSRect| -> Bool {
-        let centre = NSPoint::new(box_size / 2., box_size / 2.);
-        NSColor::blackColor().setStroke();
-        NSColor::blackColor().setFill();
-        for radius in AIRDROP_RADII {
-            // One path per arc: appending an arc to a path that already has a current point draws
-            // a line to the new arc's start, which would web the three rings together.
-            let arc = NSBezierPath::new();
-            arc.setLineWidth(1.);
-            arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle(
-                centre,
-                radius,
-                AIRDROP_GAP - 90.,
-                270. - AIRDROP_GAP,
-            );
-            arc.stroke();
-        }
-        NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-            NSPoint::new(centre.x - AIRDROP_DOT_R, centre.y - AIRDROP_DOT_R),
-            NSSize::new(AIRDROP_DOT_R * 2., AIRDROP_DOT_R * 2.),
-        ))
-        .fill();
+        let inset = ((box_size - f64::from(AIRDROP_ART)) / 2.).round();
+        art.drawInRect(NSRect::new(
+            NSPoint::new(inset, inset),
+            NSSize::new(AIRDROP_ART.into(), AIRDROP_ART.into()),
+        ));
         Bool::YES
     });
     // `RcBlock`, never `StackBlock`: the image keeps the handler and re-runs it on every appearance
@@ -152,7 +165,7 @@ pub(crate) fn airdrop_glyph() -> Retained<NSImage> {
         &handler,
     );
     image.setTemplate(true);
-    image
+    Some(image)
 }
 
 /// The Group item's grid glyph, hand-drawn. **Not a match, and not claimed as one.**
@@ -206,12 +219,15 @@ pub(crate) fn group_glyph() -> Retained<NSImage> {
 /// Four things live here, and each is a property of one `NSToolbarItem` rather than of the item
 /// list, so none of them is expressible in a `ToolbarItem` spec:
 ///
-/// **The drawn glyphs.** `ToolbarItem` names its image by SF Symbol, which is the right shape for
-/// eleven of Finder's thirteen glyphs and cannot express the other two at all. Rather than give up
-/// the real `NSToolbarItem` subclasses — and with them the capsule, the grey selection pill and the
-/// search reflow, which is the entire point — those two items are built with a name that resolves to
-/// nothing and the artwork is written on afterwards. A failed override therefore shows an empty
-/// capsule, which reads as deliberate, instead of a confidently wrong glyph.
+/// **The two images no symbol name reaches.** `ToolbarItem` names its image by SF Symbol, which is
+/// the right shape for eleven of Finder's thirteen glyphs and cannot express the other two at all
+/// — one because the catalogue has no `airdrop`, the other because nothing public comes near the
+/// grouping grid. Rather than give up the real `NSToolbarItem` subclasses — and with them the
+/// capsule, the grey selection pill and the search reflow, which is the entire point — those two
+/// items are built with a name that resolves to nothing and the image is written on afterwards.
+/// A failed override therefore shows an empty capsule, which reads as deliberate, instead of a
+/// confidently wrong glyph — and `airdrop_glyph` can fail, because it loads a system resource
+/// rather than drawing one.
 ///
 /// **`navigational`.** Without it AppKit lays the whole item run out *after* the window title,
 /// which put back/forward at x 471 against Finder's 196 and left 279pt of empty band in front of
@@ -236,8 +252,10 @@ pub(crate) fn finish_toolbar_items(window: &Window) -> usize {
         match id.as_str() {
             NAV_ID => item.setNavigational(true),
             AIRDROP_ID => {
-                item.setImage(Some(&airdrop_glyph()));
-                done += 1;
+                if let Some(image) = airdrop_glyph() {
+                    item.setImage(Some(&image));
+                    done += 1;
+                }
             }
             GROUP_ID => {
                 item.setImage(Some(&group_glyph()));
@@ -480,11 +498,6 @@ impl FinderDemo {
                     bar = bar.child(chevron);
                 }
             }
-            let face = if index == 0 && crumbs.len() > 1 {
-                F::Volume
-            } else {
-                F::Folder
-            };
             bar = bar.child(
                 div()
                     .flex()
@@ -495,7 +508,7 @@ impl FinderDemo {
                     } else {
                         palette.secondary
                     })
-                    .child(glyph(face, 13.))
+                    .child(crumb_icon(index == 0 && crumbs.len() > 1))
                     .child(*crumb),
             );
         }
