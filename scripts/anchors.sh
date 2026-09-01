@@ -136,6 +136,9 @@ an explicit close must not call back ;; the incoming one is stored and clears it
 a toolbar backdrop is what the item glass samples ;; stadium inverts into an outline ;; src/chrome/window_chrome.rs
 the band's rim is the backdrop's, not the separator's ;; rim belongs to the backdrop ;; src/chrome/window_chrome.rs
 the demo keeps the transparent titlebar on purpose ;; lands on top of the preview pane ;; examples/finder_demo/toolbar.rs
+the preview pane has a maximum of its own ;; held at 480pt at window widths ;; examples/finder_demo/preview.rs
+the list minimum is what sets the window minimum ;; Two window minima, one list minimum ;; examples/finder_demo/preview.rs
+the preview pane never crosses the list ;; never crosses the list ;; examples/finder_demo/preview.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
