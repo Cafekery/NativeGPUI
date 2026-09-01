@@ -66,18 +66,35 @@ step 'docs resolve'                 own_docs
 # components happen to work when a human looks at a window. In-process, no synthetic input, no
 # capture.
 #
-# All three arms run, because a pass arm alone cannot distinguish "the control fired" from
-# "nothing was listening". Verified on the shipped binary: pass exit 0 / verdict=PASS, nohandler
-# exit 90 / VOID, noclear exit 1 / FAIL.
+# All three arms are REQUIRED, and the reason is the pass arm rather than the sabotage arms. Its
+# verdict rests on `cleared_fires == 0`, which is an absence, and two states produce it: the
+# handler was correctly cleared, or the frame-60 `performClick:` never landed at all. The pass arm
+# cannot tell those apart and reads PASS either way.
+#
+# `noclear` is what settles it. It runs the identical click and gets `cleared_fires == 1`, so the
+# click demonstrably lands and demonstrably reaches a handler when one is registered — which is
+# what rules out the second state for the pass arm. It is the control, not a self-test bolted on
+# the side. Running pass alone would be a green that measures nothing.
+#
+# It also covers a third state nobody guards directly: a switch that exists while `performClick:`
+# silently declines, on a disabled or offscreen control. Both arms share that path, so if the click
+# stopped landing, `noclear` would go FAIL -> PASS and the three-arm requirement reports a broken
+# gate instead of a passing one.
+#
+# Verified on the shipped binary: pass exit 0 / verdict=PASS, nohandler exit 90 / VOID, noclear
+# exit 1 / FAIL.
 #
 # NOT verified here: the probe also claims exit 90 if its window stops painting within 15 s. I
 # tried to reproduce that by covering its origin with another window and it still returned PASS,
 # so treat the stall path as untested rather than as a guarantee.
 dispatch_arms() {
-  local bin=target/release/examples/ngdispatch
-  "$bin" >/dev/null 2>&1 || return 1
-  NGD_SABOTAGE=nohandler "$bin" >/dev/null 2>&1; [[ $? -eq 90 ]] || return 1
-  NGD_SABOTAGE=noclear "$bin" >/dev/null 2>&1; [[ $? -eq 1 ]] || return 1
+  local bin=target/release/examples/ngdispatch code
+  "$bin" >/dev/null 2>&1; code=$?
+  printf '  pass arm      exit %-3s want 0\n' "$code"; [[ $code -eq 0 ]] || return 1
+  NGD_SABOTAGE=nohandler "$bin" >/dev/null 2>&1; code=$?
+  printf '  nohandler arm exit %-3s want 90 (VOID)\n' "$code"; [[ $code -eq 90 ]] || return 1
+  NGD_SABOTAGE=noclear "$bin" >/dev/null 2>&1; code=$?
+  printf '  noclear arm   exit %-3s want 1  (FAIL)\n' "$code"; [[ $code -eq 1 ]] || return 1
 }
 step 'hosted controls reach their handler' dispatch_arms
 
