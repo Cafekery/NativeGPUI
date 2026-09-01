@@ -29,6 +29,24 @@
 //!   and nothing here can receive input. Window backgrounds and sidebar materials live here, and
 //!   it needs a non-opaque window — see [`window_options`].
 //!
+//! # One background
+//!
+//! A window has **one** background colour, [`tokens::WINDOW_BACKGROUND`], and every opaque surface
+//! in it resolves to that: the toolbar band, the content pane under it, and whatever an app paints
+//! in the body. Two values are visible as a step — the band and the body are one surface
+//! interrupted by a strip of chrome, and resolving them differently draws a line across the window
+//! where no line exists.
+//!
+//! The exception is a sidebar, and it is the only one. A sidebar is vibrancy, not a colour: it
+//! samples the desktop behind the window, which is what macOS does and what makes it read as
+//! glass. [`SidebarOptions::backdrop`](sidebar::SidebarOptions::backdrop) is that vibrancy and not
+//! the window's background — making it opaque to match the content side flattens the panel and
+//! closes the step in the wrong place.
+//!
+//! So: two surfaces, never three. A sidebar pane in vibrancy, and everything else in one colour.
+//! With [`sidebar::NativeSidebar`] the crate paints it for you, band included, so an app should
+//! paint no background at all; without one, paint [`tokens::window_background`] and nothing else.
+//!
 //! # Budget
 //!
 //! Per hosted view per frame, and only for views whose geometry moved: the host skips `setFrame`
