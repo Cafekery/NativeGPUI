@@ -57,6 +57,13 @@ step 'glass container declines'     cargo run --release --example glass_hit
 # still returns a `Font` — a proportional one, under a name promising a column that does not shift.
 # Shapes ten of each digit through gpui's own text system, with a monospaced face and a nonsense
 # tag as the two arms that keep a null meaningful.
+#
+# Unlike the two steps above it, this one runs fine under a locked session, both instrument arms
+# included. Shaping is synchronous. That is the distinction worth carrying: "opens a window" is not
+# what starves, "needs the window to have PAINTED" is. Exactly 2 renders are reachable while
+# loginwindow occludes — measured, and with a control on an unrelated build to show the ceiling is
+# the lock's and not any one change's — so a probe gated on 4 or 6 frames cannot pass by
+# construction.
 step 'tabular figures apply'         cargo run --release --example tabular_figures
 
 # These docs carry measured platform facts, and a stale one on a public constructor already
@@ -94,9 +101,12 @@ step 'docs resolve'                 own_docs
 # Verified on the shipped binary: pass exit 0 / verdict=PASS, nohandler exit 90 / VOID, noclear
 # exit 1 / FAIL.
 #
-# NOT verified here: the probe also claims exit 90 if its window stops painting within 15 s. I
-# tried to reproduce that by covering its origin with another window and it still returned PASS,
-# so treat the stall path as untested rather than as a guarantee.
+# MEASURED FALSE, and this is the one to know before budgeting a run: the probe claims exit 90 if
+# its window stops painting within 15 s, and that guard does not fire under the condition it names.
+# Each arm run directly under `timeout 30`, session confirmed locked in the same command, returned
+# exit 124 — the timeout's status, not the probe's — with zero bytes on stdout AND stderr. So it
+# hangs rather than reporting, and eats its whole budget where `z_order` and `glass_hit` fail in
+# seconds and say why. A starvation guard that never fires is worse than none.
 dispatch_arms() {
   local bin=target/release/examples/ngdispatch code
   "$bin" >/dev/null 2>&1; code=$?
