@@ -130,6 +130,9 @@ sidebar-drag-defers-commit ;; return does not opt back out ;; src/chrome/sidebar
 sidebar-ivars-not-inherited ;; leaves the superclass.s uninitialised ;; src/chrome/sidebar.rs
 sidebar-eject-ratio ;; ratio is the statistic to compare ;; src/chrome/sidebar.rs
 the try_resolve control lives in the tokens page ;; only live control on this ;; src/system/tokens.rs
+a popover tracks its positioning view, not a rect ;; stays put while the element leaves ;; src/surfaces.rs
+positioningRect does nothing on a shown popover ;; writing it moves nothing ;; src/surfaces.rs
+an explicit close must not call back ;; the incoming one is stored and clears it ;; src/surfaces.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
@@ -185,6 +188,7 @@ retired() {
   gone 'the icon tile pitch includes a gap' "last column ends up clipped" "${where[@]}"
   gone 'header and row insets are staggered' "neither the ink nor the box carries across" "${where[@]}"
   gone 'airdrop is a private SF Hello symbol' "SF Hello" "${where[@]}"
+  gone 'a window-scoped capture misses the popover' "capture scoped to the GPUI window misses it" "${where[@]}"
   return $fail
 }
 
@@ -245,6 +249,7 @@ if [[ ${1:-} == --self-test ]]; then
 // The tile pitch includes the gap, or the last column ends up clipped.
 // The header inset and the row inset stagger: neither the ink nor the box carries across.
 // airdrop, airdrop.circle and airdrop.square are in SF Hello's catalogue marked private.
+// The popover's own NSWindow, which is why a capture scoped to the GPUI window misses it.
 // The header label inset and the icon size coincide at 46.
 STALE
   echo "self-test: each retired claim must go STALE when planted behind another directory"
