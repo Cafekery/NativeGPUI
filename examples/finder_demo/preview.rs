@@ -52,9 +52,10 @@ const LIST_MIN_W: f32 = 316.;
 // the 316pt minimum. That is what cuts a Kind string mid-word.
 //
 // The pane's material does sample the list, which is the other half of the same impression. With
-// rows selected, the pane's leading 85pt carried a blurred copy of the selection band at the same
+// rows selected, the pane's leading 84pt carried a blurred copy of the selection band at the same
 // y to within 3pt — 12 units against the list's own 55 — while the pane's trailing strip, which
-// has no list behind it, stayed flat through that y and moved 30x less.
+// has no list behind it, stayed flat through that y and moved 27x less. 84 is a floor, not the
+// bleed's extent: the card's artwork is opaque and covers the surface beyond it.
 
 /// The grab strip on the pane's leading edge.
 const GRIP_W: f32 = 6.;
