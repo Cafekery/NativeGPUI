@@ -152,6 +152,21 @@ NSFont and NSColor round-trip, so isEqual can diff them ;; hands back the identi
 hosted labels reach the top of a material by paint order ;; paint the material first and the labels after ;; src/controls/label.rs
 only a custom NSBox draws its fill ;; silently inert under any other ;; src/controls/rule.rs
 a box keeps the dynamic colour where a layer freezes it ;; frozen at the moment it was written ;; src/controls/rule.rs
+a stock label claims the mouse point ;; over a stock label returns the label ;; src/controls/label.rs
+nil cannot tell declined from nothing there ;; cannot tell .declined. from .nothing was there ;; src/controls/label.rs
+a 1pt divider claiming its rect eats the resize ;; the boundary a resize gesture aims at ;; src/controls/rule.rs
+a material has nothing inside it that wanted the point ;; ever wanted the point either ;; src/materials/material.rs
+a stock visual effect view reports zero subviews ;; needs no bet on a private subview ;; src/materials/material.rs
+a blanket decline would look identical to a fix ;; whose point must reach the switch ;; examples/decoration_hit.rs
+the probe points are the views AppKit placed ;; never coordinates written here ;; examples/decoration_hit.rs
+the flat half's mean needs an inkless corridor ;; could have disagreed and did not ;; examples/storybook/pages/label.rs
+a fresh open -n is what takes key ;; leaves the app frontmost with a NON.key window ;; examples/storybook/pages/label.rs
+what the tick counter actually counts ;; two roles agree only while ;; src/bridge/host.rs
+gpui runs next-frame callbacks before its dirty check ;; before it asks whether anything is dirty ;; src/bridge/host.rs
+a stopped clock drops a layout, it does not offset one ;; moves by two refreshes. worth ;; src/bridge/host.rs
+stride 1 prevents the clock defect rather than hiding it ;; precondition that keeps the clock healthy ;; examples/gallery.rs
+skew's two statistics are blind to each other's defect ;; neither one can see the other.s defect ;; examples/gallery.rs
+capture delivery is not observation ;; delivery is not observation ;; examples/gallery.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
