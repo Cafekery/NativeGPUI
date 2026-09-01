@@ -146,8 +146,8 @@ impl FinderDemo {
             cursor: None,
             anchor: None,
             tags: HashMap::new(),
-            // On, as Finder's own window is: the right pane is why the list is 594pt wide in a
-            // 1026pt window, and the column geometry only lands where Finder puts it at that width.
+            // On, as Finder's own window is: the right pane is why the list is 468pt wide in a
+            // 1026pt window, which is where the row content starts being cut.
             preview: true,
             preview_w: PREVIEW_W,
             preview_drag: None,

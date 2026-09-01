@@ -19,15 +19,19 @@ use crate::data::{Face, Line, Row};
 use crate::palette::Palette;
 use crate::ui::{TAGS, artwork, tag_dot};
 
-/// Where the pane starts: 239pt of content plus the 1pt divider on its leading edge, which is what
-/// leaves Finder 594pt of list in a 1026pt window. Get it wrong and every column lands somewhere
-/// else.
+/// Where the pane starts: 365pt of content plus the 1pt divider on its leading edge, which is what
+/// leaves 468pt of list in a 1026pt window. Get it wrong and every column lands somewhere else.
 ///
 /// Not a constant to match, though. Finder persists the width per window, so the same build
-/// measured a 239pt pane in the owner's window and a 311pt one in another opened beside it, and
-/// matching either would only mean matching that window. This is where the pane starts, and
-/// [`FinderDemo::preview_resize`] moves it.
-pub(crate) const PREVIEW_W: f32 = 240.;
+/// measured a 239pt pane in the owner's window — which is what leaves Finder 594pt of list in a
+/// 1026pt window — and a 311pt one in another opened beside it, and matching either would only
+/// mean matching that window. Two windows opened fresh both came up at 366 with a 468pt list, so
+/// that is what a window with nothing persisted starts at.
+///
+/// It is also the only one of those readings that shows anything: 240 is the pane's own minimum and
+/// leaves the list wider than the row content is, so a demo launched there has nothing cut.
+/// [`FinderDemo::preview_resize`] moves it from here.
+pub(crate) const PREVIEW_W: f32 = 366.;
 
 /// The pane's own minimum, and a hard stop. One more point of drag past it does not narrow the
 /// pane further, it collapses it outright.
