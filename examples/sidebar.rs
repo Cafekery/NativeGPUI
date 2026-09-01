@@ -1,7 +1,16 @@
 //! A real, system-drawn macOS sidebar — `NSSplitViewItem.sidebar`, with its own vibrant material,
 //! SF Symbol rows and live selection — and GPUI rendering the content pane beside it.
 //!
-//! `NG_QUIT=<frames>` exits after N frames, so a smoke run ends on its own.
+//! The content pane paints no background of its own. That is the whole point: the crate already
+//! paints [`native_gpui::tokens::WINDOW_BACKGROUND`] across the pane and its toolbar band, so an
+//! app that adds one puts a second surface where the window has one.
+//!
+//! Chrome comes from [`native_gpui::tokens`]; the per-row accents are the only literals left, and
+//! they stay literal. They are content — a mailbox's own colour, like a Finder tag — not a surface
+//! the window has an opinion about, and no system colour means "the colour this row is".
+//!
+//! `NG_QUIT=<frames>` exits after N frames, so a smoke run ends on its own. `NG_COLLAPSED=1`
+//! starts with the sidebar collapsed.
 //!
 //! The measurement arms that verify the pane geometry live in `sidebar_probe.rs`.
 
@@ -14,7 +23,8 @@ use gpui::{
 use native_gpui::sidebar::{
     NativeSidebar, SidebarItem, SidebarMetrics, SidebarOptions, sidebar_group, sidebar_item,
 };
-use native_gpui::{native_root, window_options};
+use native_gpui::tokens::{SystemColor, system_color};
+use native_gpui::{native_root, tokens, window_options};
 
 const WIN_W: f32 = 1000.;
 const WIN_H: f32 = 640.;
@@ -76,7 +86,16 @@ struct Demo {
 
 impl Demo {
     fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
+        // Collapsed puts the content pane's own edge on the window's left corners, which is the
+        // arm that shows its background is clipped by the window shape rather than squaring them.
+        let sidebar = NativeSidebar::install(
+            window,
+            cx,
+            SidebarOptions {
+                collapsed: env::var("NG_COLLAPSED").is_ok(),
+                ..SidebarOptions::default()
+            },
+        );
         sidebar.on_select(cx.listener(|this, id: &Option<SharedString>, _, cx| {
             this.selected = id.clone();
             cx.notify();
@@ -122,8 +141,9 @@ impl Render for Demo {
             ),
         };
 
-        // Placed absolutely from the reported gutter: a GPUI background over the sidebar strip
-        // would paint on top of the system material and kill it.
+        // Placed absolutely from the reported gutter, and painting no background: a GPUI fill over
+        // the sidebar strip would cover the system material, and one over the content pane would
+        // put a second surface on top of the one the pane already paints.
         native_root(
             div().relative().size_full().child(
                 div()
@@ -132,7 +152,6 @@ impl Render for Demo {
                     .top(px(top))
                     .w(px(WIN_W - left))
                     .h(px(WIN_H - top))
-                    .bg(rgb(0x16191d))
                     .flex()
                     .flex_col()
                     .gap_5()
@@ -147,19 +166,19 @@ impl Render for Demo {
                     .child(
                         div()
                             .text_size(px(28.))
-                            .text_color(rgb(0xf2f2f7))
+                            .text_color(system_color(SystemColor::Label))
                             .child(title),
                     )
                     .child(
                         div()
                             .text_size(px(14.))
-                            .text_color(rgb(0x9aa0a6))
+                            .text_color(system_color(SystemColor::SecondaryLabel))
                             .child(detail),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(0x6b7075))
+                            .text_color(system_color(SystemColor::TertiaryLabel))
                             .child(format!(
                                 "content pane inset {left:.0}pt from the window edge"
                             )),
@@ -171,6 +190,7 @@ impl Render for Demo {
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        tokens::init(cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
