@@ -1,18 +1,41 @@
 //! `native_label`, `native_rule`, and the ordering claim the whole hosted-decoration idea rests on.
 //!
 //! The hero band is one specimen with its own control built in. A `Material::Header` at
-//! `Layer::Above` with `Blending::WithinWindow` samples and blurs the GPUI content under it — all
-//! of it, a GPUI caption in the same rect included. So the left half of the band draws its text
-//! and its hairline with GPUI and the right half draws the identical things with `native_label`
-//! and `native_rule`, ordered above the material by paint order. One capture row crosses both:
-//! the sharp half is what makes the blurred half mean something, because a frame containing only
-//! blurred content cannot tell blur from nothing drawn.
+//! `Layer::Above` with `Blending::WithinWindow` samples the GPUI content under it and leaves
+//! roughly 1.5% of that content's contrast behind — all of it, a GPUI caption in the same rect
+//! included. So the left half of the band draws its text and its hairline with GPUI and the right
+//! half draws the identical things with `native_label` and `native_rule`, ordered above the
+//! material by paint order. One capture row crosses both: the sharp half is what makes the flat
+//! half mean something, because a frame containing only flat content cannot tell attenuation from
+//! nothing drawn.
+//!
+//! "Attenuates" and not "blurs", deliberately. The note this page renders says the material blurs
+//! every GPUI pixel in its rect, which names the mechanism; what a capture can actually establish
+//! is that the content's contrast is nearly gone and its luminance is still present and confined to
+//! where GPUI painted. A spatial spread would need a reading the numbers below do not contain. The
+//! rendered strings are left exactly as they are because their wrapped height sets this page's
+//! layout, and every y in those numbers with it.
+//!
+//! The sharp half is necessary and not sufficient, because the two halves are drawn by different
+//! code: it proves the frame has ink somewhere, not that the flat half's ink was ever painted.
+//! Measured, the flat half keeps 3 counts of contrast against a ground of 29 — about 1.5% of the
+//! 192 the hosted half carries — and no reading taken inside it can tell that from nothing drawn.
+//! What settles it is a mean over the ink's own x extent against the inkless corridors, because
+//! attenuated ink still carries luminance where erased ink carries none. The ink's extent reads
+//! 30.143 and BOTH corridors read 29.163, one of them 320pt away: identical to three decimals, so
+//! the lift is confined to where GPUI painted rather than being a gradient across the band. Two
+//! strips that could have disagreed and did not are what make the +0.98 mean anything.
+//!
+//! A capture of this page also has to come from a fresh `open -n` of a bundle. Activating an
+//! already-running instance leaves the app frontmost with a NON-key window and `AXRaise` does not
+//! change that, and the key check has to read the close button's saturated red: the green light
+//! reaches only about 169 even when key, so a threshold set for red calls every window non-key.
 //!
 //! The 1pt hairline is the cleanest of the pairs — a hard step of known height, where the text
-//! rows are a superposition of many — and it is the one a blur erases outright.
+//! rows are a superposition of many — and it is the one the material flattens outright.
 //!
 //! The `hosted` switch collapses the right half back to GPUI drawing, which is the falsification
-//! arm: with it off both halves must blur.
+//! arm: with it off both halves must go flat, and measured, both do.
 
 use crate::Demo;
 use crate::ui::*;
@@ -32,7 +55,10 @@ const COLUMNS: [(&str, f32, LabelAlign); 4] = [
 
 const BAND_W: f32 = 620.;
 const BAND_H: f32 = 148.;
-/// Each half of the band. The gap between them is where a capture reads the backdrop alone.
+/// Each half of the band. Both halves are wider than the strings they hold — the 180pt hairline is
+/// the widest ink either one carries — so the band has an inkless corridor from x 192 to x 328 and
+/// another past x 508. Those are not spacing: they are where a capture reads the backdrop with
+/// nothing behind it and nothing over it, and the flat half's mean is meaningless without them.
 const HALF: f32 = 280.;
 
 /// A header title, and a high-frequency string whose adjacent-pixel deltas are as large as text
@@ -87,8 +113,8 @@ fn hosted_line(id: &'static str, text: &str, size: f32, weight: FontWeight) -> A
 }
 
 /// A 1pt hairline drawn by GPUI, and its hosted twin. `SystemColor::Label` rather than
-/// `Separator`: the pair is a blur subject, and the widest possible step off the band's own ground
-/// is what makes the reading legible.
+/// `Separator`: this pair is what the material acts on, and the widest possible step off the band's
+/// own ground is what keeps the surviving 1.5% above the capture's own quantisation.
 fn gpui_hairline() -> AnyElement {
     div()
         .h(px(18.))
@@ -178,8 +204,10 @@ fn hero(hosted: bool) -> AnyElement {
         // Placed before the labels and after the GPUI content: a hosted view's z-order inside the
         // `Layer::Above` container is GPUI paint order, so anything placed after this lands on top
         // of it. `Blending::WithinWindow` is not optional — at the default the material samples
-        // what is behind the *window* and reports a flat tint over GPUI's content instead of
-        // blurring it.
+        // what is behind the *window*, which a window-scoped capture composites over nothing, so
+        // the band reads as a tint bearing no relation to the content underneath. The tell that
+        // `WithinWindow` is sampling at all is the confined lift over the ink's own x extent; a
+        // tint that ignored the content would read identical there and in the inkless corridors.
         .child(
             div().absolute().inset_0().child(
                 material("hero.glass", Material::Header)
