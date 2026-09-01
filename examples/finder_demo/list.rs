@@ -13,7 +13,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::FinderDemo;
 use crate::data::Column;
-use crate::header::{CELL_PAD, CELL_TRAIL, PANE_INSET};
+use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
 use crate::palette::Palette;
 use crate::ui::{artwork, small_glyph, tag_dot};
 
@@ -44,6 +44,27 @@ pub(crate) const LIST_TOP_GAP: f32 = 5.;
 pub(crate) const INDENT: f32 = 15.;
 
 impl FinderDemo {
+    /// A scroll view's top content inset, expressed as the only lever `uniform_list` has: blank
+    /// leading rows, plus the amount the list's frame is lifted above the pane so the last of them
+    /// ends exactly where the first real row rests.
+    ///
+    /// Finder's list is an `NSScrollView` with a top content inset — rows scroll up under the
+    /// toolbar and header bands while the first row sits below both at rest — and `uniform_list`
+    /// has no equivalent. Its own padding is not one: `padding.top` reaches the item origin twice
+    /// (once through `padded_bounds.origin`, once added again) while the visible-range arithmetic
+    /// counts it once, so a padded list stops rendering about `padding.top / row` items early and
+    /// leaves the top of the band empty. That top strip is the one part of the band that must be
+    /// full — it is where the scroll-edge effect is strongest. Blank rows have neither problem: the
+    /// pitch is untouched and so is the range arithmetic.
+    ///
+    /// Returns `(rows, lift)`. Every index the list deals in is a real line plus `rows`, which is
+    /// why anything that scrolls to an item has to add it.
+    pub(crate) fn list_inset(&self) -> (usize, f32) {
+        let inset = f32::from(self.metrics().top) + HEADER_H + LIST_TOP_GAP;
+        let rows = (inset / ROW_H).ceil() as usize;
+        (rows, rows as f32 * ROW_H - inset)
+    }
+
     /// One row is 36pt with a 32pt icon 26pt in from the pane's leading edge, the label 6pt after
     /// the icon, and the disclosure triangle's 15pt hit area in the gap before it. Every offset is
     /// measured from the pane rather than from the Name column, which begins 10pt further in.
@@ -68,10 +89,18 @@ impl FinderDemo {
         // per frame: the feature list behind it allocates.
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
 
-        let list = uniform_list("ng.finder.list", lines.len(), move |range, _, _| {
+        let (pads, lift) = self.list_inset();
+
+        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, _| {
             range
                 .map(|index| {
-                    let line = lines[index].clone();
+                    // The leading blank rows are the scroll view's top content inset: they hold the
+                    // first real row below the bands at rest and scroll away under them, which is
+                    // what puts content behind the glass for it to blur.
+                    let Some(at) = index.checked_sub(pads) else {
+                        return div().id(("ng.finder.pad", index)).h(px(ROW_H)).w_full();
+                    };
+                    let line = lines[at].clone();
                     let is_selected = selected.contains(&line.key);
                     let text = if is_selected { selection_text } else { label };
                     let detail = if is_selected && focused {
@@ -84,7 +113,7 @@ impl FinderDemo {
                     let indent = line.depth as f32 * INDENT;
 
                     let mut row = div()
-                        .id(("ng.finder.row", index))
+                        .id(("ng.finder.row", at))
                         // The row box spans the pane while its cells keep fixed widths and
                         // `flex_none`, so a pane too narrow for them overflows and the ancestor's
                         // clip cuts the last column mid-glyph. Sizing the box to the cells instead
@@ -104,7 +133,7 @@ impl FinderDemo {
                     // carries the same rounded corners, so a selected row needs no band beneath it.
                     let fill = if is_selected {
                         Some(selection)
-                    } else if index % 2 == 1 {
+                    } else if at % 2 == 1 {
                         Some(stripe)
                     } else {
                         None
@@ -126,7 +155,7 @@ impl FinderDemo {
                         let this = this.clone();
                         let key = line.key.clone();
                         let mut slot = div()
-                            .id(("ng.finder.twist", index))
+                            .id(("ng.finder.twist", at))
                             .w(px(TWIST_W))
                             .h_full()
                             .flex_none()
@@ -251,13 +280,15 @@ impl FinderDemo {
         .flex_1()
         .track_scroll(self.scroll.clone());
 
-        // Finder's table starts 5pt below the header hairline rather than flush against it, so the
-        // first row's band does not touch the line.
+        // Lifted by the remainder the blank rows overshoot by, so the last of them ends exactly at
+        // the 5pt gap Finder leaves below the header hairline. The frame's own top then sits above
+        // the pane and is cut by it, which is what a scroll view with a content inset looks like
+        // from the outside.
         div()
             .flex_1()
             .flex()
             .flex_col()
-            .pt(px(LIST_TOP_GAP))
+            .mt(px(-lift))
             .child(list)
             .into_any_element()
     }

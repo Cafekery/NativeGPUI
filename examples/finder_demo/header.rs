@@ -9,10 +9,11 @@
 //! width written down in only one of them is exactly how the two stop lining up.
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, Render, Window, div, prelude::*,
-    px,
+    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Pixels, Render,
+    Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
+use native_gpui::{Blending, Layer, Material, material, native_label, native_rule};
 
 use crate::FinderDemo;
 use crate::data::Column;
@@ -203,10 +204,43 @@ fn overlay(fill: Hsla) -> Div {
         .bg(fill)
 }
 
+/// The glass over the toolbar band and the column-header band, as one material spanning both.
+///
+/// `Layer::Above` is what makes it sample and blur GPUI's own rendering, and that is the whole
+/// mechanism: macOS 26 hands a real `NSScrollView` a scroll-edge surface the chrome above it
+/// samples, and a GPUI list has no scroll view to inherit one from. `Blending::WithinWindow` is
+/// required alongside it — at the default `BehindWindow` the material samples what is behind the
+/// *window*, so over a list it composites over nothing and reports its own flat tint.
+///
+/// One material across both bands rather than one each. Finder's own band carries visible content
+/// at y 54 and y 78, inside the header band as well as the toolbar's, and the contrast across the
+/// pair measures monotonic — a seam between two materials would be a step in it.
+pub(crate) fn band_glass(top: Pixels) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(top + px(HEADER_H))
+        .child(
+            material("ng.finder.band", Material::Header)
+                .layer(Layer::Above)
+                .blending(Blending::WithinWindow)
+                .size_full(),
+        )
+        .into_any_element()
+}
+
 /// The inside of a header cell: the leading inset, the label, and the sort chevron when this is the
 /// sorted column. Shared by the cell in its slot and by the copy a reorder drag carries, so the two
 /// cannot drift apart.
-fn cell_body(column: Column, sorted: bool, ascending: bool, palette: &Palette) -> Div {
+///
+/// The label is a hosted `NSTextField`, not GPUI text, and that is the whole reason this band can
+/// be glass. A `Layer::Above` material is above the entire Metal layer rather than only the pixels
+/// painted before it, so GPUI text here would be sampled and blurred by the very material that is
+/// meant to blur the rows behind it. `id` keys the hosted view's pool slot, so it has to be stable
+/// per cell across frames — keyed by slot, which is a fixed set whatever order the columns are in.
+fn cell_body(id: impl Into<ElementId>, column: Column, sorted: bool, ascending: bool) -> Div {
     // A leading spacer rather than padding: the separator and the sort indicator are positioned
     // from this cell's own edges, and padding would move what those edges mean.
     let inset = if matches!(column, Column::Name) {
@@ -218,26 +252,31 @@ fn cell_body(column: Column, sorted: bool, ascending: bool, palette: &Palette) -
     // deliberately does not mirror the row. The label is not centred in the band either: measured
     // 1pt above centre, which a bottom margin buys without moving the cell's own edges — the
     // separator and the sort indicator are positioned from those.
-    let label = div().mb(px(2.));
-    let label = if sorted {
-        // Nothing is hosted here, so the weight has to be written. AppKit applies it from
-        // `highlightedTableColumn`, and a stock header's sorted `Date Modified` measures 75.0pt of
-        // ink, which is Finder's own number: semibold reproduces it to 0.5pt where medium is 1.0
-        // out and bold 2.0.
-        label
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(palette.label)
-            .child(column_title(column))
-    } else {
-        label.child(column_title(column))
-    };
+    //
+    // The sorted column's weight still has to be written even hosted: `highlightedTableColumn` is
+    // what applies it in a stock header and a plain label has no such notion. A stock header's
+    // sorted `Date Modified` measures 75.0pt of ink, which is Finder's own number: semibold
+    // reproduces it to 0.5pt where medium is 1.0 out and bold 2.0.
+    let label = div().flex_1().mb(px(2.)).child(
+        native_label(id, column_title(column))
+            .font_size(tokens::small_system_font_size())
+            .weight(if sorted {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::NORMAL
+            })
+            .color(if sorted {
+                SystemColor::Label
+            } else {
+                SystemColor::SecondaryLabel
+            }),
+    );
     let mut body = div()
         .h_full()
         .flex()
         .items_center()
         .relative()
         .overflow_hidden()
-        .whitespace_nowrap()
         .child(div().w(px(inset)).flex_none())
         .child(label);
     if sorted {
@@ -246,6 +285,11 @@ fn cell_body(column: Column, sorted: bool, ascending: bool, palette: &Palette) -
         } else {
             "chevron.down"
         };
+        // Still a GPUI raster, and therefore still sampled by the band's material: an SF Symbol
+        // arrives as an `NSImage` and nothing in the crate hosts one. The sorted column stays
+        // identifiable without it — its label is hosted, and semibold in `labelColor` against
+        // regular in `secondaryLabelColor` survives sharp — so what the wash costs is the
+        // direction, not the column.
         if let Some(glyph) = small_glyph(arrow, 9., SystemColor::SecondaryLabel) {
             body = body.child(
                 div()
@@ -301,14 +345,11 @@ impl FinderDemo {
             .flex_none()
             .flex()
             .relative()
-            .font_family(tokens::system_font_family())
-            .text_size(tokens::small_system_font_size())
-            .text_color(palette.secondary)
-            // Finder needs no fill here: its toolbar band is already the table's colour, so the
-            // header, the rows and the chrome above them read as one surface. This window's
-            // backdrop is a material that measures 67 in dark against Finder's 29, so without
-            // this the header would be the one part of the list that is visibly not the list.
-            .bg(palette.surface)
+            // No fill, and that is what makes the band glass. Finder draws no backdrop here either:
+            // the 29 in its band is the list showing through a transparent titlebar, which is why
+            // blurred rows turn up inside the band while a folder is being scrolled. A fill of our
+            // own would be the only thing the band's material had left to sample, and the rows
+            // behind it would never appear.
             .on_drag_move(cx.listener(Self::on_header_drag));
 
         let dragged = carried.map(|(column, _)| column);
@@ -370,10 +411,10 @@ impl FinderDemo {
                     .bg(palette.surface)
                     .child(overlay(wash))
                     .child(cell_body(
+                        "ng.finder.header.carried",
                         column,
                         self.sort == column,
                         self.ascending,
-                        palette,
                     )),
             );
         }
@@ -388,7 +429,7 @@ impl FinderDemo {
                     .right_0()
                     .bottom_0()
                     .h(px(1.))
-                    .bg(palette.separator),
+                    .child(native_rule("ng.finder.header.hairline")),
             )
             .into_any_element()
     }
@@ -409,18 +450,23 @@ impl FinderDemo {
             None => Column::Name,
         };
         let slot = index.map_or(0, |index| index + 1);
-        let mut cell = cell_body(column, self.sort == column, self.ascending, palette)
-            .id(("ng.finder.header", slot))
-            .active(move |style| style.bg(wash))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if this.sort == column {
-                    this.ascending = !this.ascending;
-                } else {
-                    this.sort = column;
-                    this.ascending = true;
-                }
-                cx.notify();
-            }));
+        let mut cell = cell_body(
+            ("ng.finder.header.label", slot),
+            column,
+            self.sort == column,
+            self.ascending,
+        )
+        .id(("ng.finder.header", slot))
+        .active(move |style| style.bg(wash))
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if this.sort == column {
+                this.ascending = !this.ascending;
+            } else {
+                this.sort = column;
+                this.ascending = true;
+            }
+            cx.notify();
+        }));
         cell = match index {
             Some(index) => cell.w(px(self.list_columns[index].width)),
             None => cell.w(px(self.name_w)),
@@ -443,7 +489,7 @@ impl FinderDemo {
                     .top(px(SEP_TOP))
                     .w(px(1.))
                     .h(px(SEP_H))
-                    .bg(palette.separator),
+                    .child(native_rule(("ng.finder.header.sep", slot))),
             );
         }
         match index {

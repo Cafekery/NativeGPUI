@@ -33,9 +33,9 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 
 use gpui::{
-    App, Application, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, size,
+    AnyElement, App, Application, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent,
+    MouseButton, Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
@@ -46,7 +46,7 @@ use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::data::{Column, Folder, Line, Row, build_store};
-use crate::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
+use crate::header::{ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, band_glass, default_columns};
 use crate::icon::{Grid, cell};
 use crate::palette::Palette;
 use crate::preview::{LIST_MIN_W, PREVIEW_W};
@@ -418,7 +418,10 @@ impl FinderDemo {
                 } as usize;
                 let line = lines[next].clone();
                 self.pick(&line, modifiers.shift, false);
-                self.scroll.scroll_to_item(next, ScrollStrategy::Center);
+                // Past the blank rows that stand in for the list's top content inset: every index
+                // the list deals in is a line plus those.
+                self.scroll
+                    .scroll_to_item(next + self.list_inset().0, ScrollStrategy::Center);
                 cx.notify();
             }
             "right" | "left" => {
@@ -511,6 +514,74 @@ impl FinderDemo {
         });
     }
 
+    /// The list column: the file view, the column-header band, and the glass over both bands.
+    ///
+    /// It starts at the window's top edge rather than below the toolbar. Finder's list scroll
+    /// surface does too — the 29 in its toolbar band is the list showing through a transparent
+    /// titlebar, which is why blurred rows turn up inside the band while a folder is being scrolled
+    /// — and running the surface up there is what gives the band's material something of the list's
+    /// own to sample. Only the view that has a header band is built this way: the other three have
+    /// no measured reading for what is behind their chrome, and taking one from a neighbour is what
+    /// this file does not do.
+    fn list_column(
+        &self,
+        body: AnyElement,
+        headers: Option<AnyElement>,
+        palette: &Palette,
+        top: Pixels,
+    ) -> AnyElement {
+        let banded = headers.is_some();
+        let opaque = matches!(self.view, ICON_VIEW | LIST_VIEW | COLUMN_VIEW);
+        div()
+            .flex_1()
+            .relative()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .top(if banded { px(0.) } else { top })
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .when(opaque, |surface| surface.bg(palette.surface))
+                    // No line under the toolbar when the column header is there: the header carries
+                    // the only hairline, and the toolbar and header share one continuous
+                    // background. Either way it stops at the list and never crosses the preview —
+                    // Finder's header band and its hairline span the list pane alone.
+                    //
+                    // Icon view is excluded because Finder draws no rule there: a full-width step
+                    // scan over y 38…62 returns zero rows on Finder and y 51→53 at 100% on ours.
+                    // Column view keeps it — Finder's rule sits at y 51 in two windows, luma 50.37
+                    // and 50.04, which is `separatorColor` over the (29,29,28) body at 51.16,
+                    // exactly what this draws. Gallery is UNMEASURED and keeps the rule rather than
+                    // inheriting a neighbour's answer: the two headerless views that have been
+                    // measured disagree with each other, which is the evidence that this cannot be
+                    // reasoned across.
+                    .when(!banded && self.view != ICON_VIEW, |column| {
+                        column.border_t_1().border_color(palette.separator)
+                    })
+                    .child(body),
+            )
+            // Painted after the body and before the header, which is the whole ordering rule: a
+            // `Layer::Above` view's z-position inside the hosted container is GPUI's paint order,
+            // so the material lands over the rows and the header's own hosted labels land over the
+            // material.
+            .when(banded, |column| column.child(band_glass(top)))
+            .children(headers.map(|headers| {
+                div()
+                    .absolute()
+                    .top(top)
+                    .left_0()
+                    .right_0()
+                    .h(px(HEADER_H))
+                    .child(headers)
+            }))
+            .into_any_element()
+    }
+
     /// Tiles per band in icon view. The width available is the viewport less the gutters the
     /// sidebar publishes, so a collapse re-flows the grid.
     pub(crate) fn columns(&self, window: &Window, _cx: &App) -> usize {
@@ -572,7 +643,6 @@ impl Render for FinderDemo {
             _ => self.list_body(&palette, cx),
         };
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
-        let opaque = matches!(self.view, ICON_VIEW | LIST_VIEW | COLUMN_VIEW);
 
         // The gutters come from `SidebarMetrics` as padding, never as a background: a fill over
         // the sidebar strip would paint on top of its material and flatten it.
@@ -609,66 +679,7 @@ impl Render for FinderDemo {
                                 .flex_1()
                                 .flex()
                                 .overflow_hidden()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .flex()
-                                        .flex_col()
-                                        .overflow_hidden()
-                                        // The toolbar band is a gap in the *list column* rather
-                                        // than padding on the root, because the preview pane
-                                        // beside it has to start at the window's top edge:
-                                        // Finder's preview surface has no top edge at all and
-                                        // runs up behind the toolbar.
-                                        .child(div().h(metrics.top).flex_none())
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .flex()
-                                                .flex_col()
-                                                .overflow_hidden()
-                                                // No line under the toolbar when the column
-                                                // header is there: the header carries the only
-                                                // hairline, and the toolbar and header share one
-                                                // continuous background. Either way it stops at
-                                                // the list and never crosses the preview —
-                                                // Finder's header band and its hairline span the
-                                                // list pane alone.
-                                                //
-                                                // Icon view is excluded because Finder draws no
-                                                // rule there: a full-width step scan over y 38…62
-                                                // returns zero rows on Finder and y 51→53 at 100%
-                                                // on ours. Column view keeps it — Finder's rule
-                                                // sits at y 51 in two windows, luma 50.37 and
-                                                // 50.04, which is `separatorColor` over the
-                                                // (29,29,28) body at 51.16, exactly what this
-                                                // draws. Gallery is UNMEASURED and keeps the rule
-                                                // rather than inheriting a neighbour's answer:
-                                                // the two headerless views that have been
-                                                // measured disagree with each other, which is the
-                                                // evidence that this cannot be reasoned across.
-                                                .when(
-                                                    self.view != ICON_VIEW && headers.is_none(),
-                                                    |column| {
-                                                        column
-                                                            .border_t_1()
-                                                            .border_color(palette.separator)
-                                                    },
-                                                )
-                                                .children(headers)
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .overflow_hidden()
-                                                        .when(opaque, |body| {
-                                                            body.bg(palette.surface)
-                                                        })
-                                                        .child(body),
-                                                ),
-                                        ),
-                                )
+                                .child(self.list_column(body, headers, &palette, metrics.top))
                                 // Column view's preview is the last column of the chain and
                                 // scrolls with it, so the pane pinned to the window's trailing
                                 // edge is not additionally correct there — it is a second one.
