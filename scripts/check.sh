@@ -116,12 +116,19 @@ step 'docs resolve'                 own_docs
 # Verified on the shipped binary: pass exit 0 / verdict=PASS, nohandler exit 90 / VOID, noclear
 # exit 1 / FAIL.
 #
-# MEASURED FALSE, and this is the one to know before budgeting a run: the probe claims exit 90 if
-# its window stops painting within 15 s, and that guard does not fire under the condition it names.
-# Each arm run directly under `timeout 30`, session confirmed locked in the same command, returned
-# exit 124 — the timeout's status, not the probe's — with zero bytes on stdout AND stderr. So it
-# hangs rather than reporting, and eats its whole budget where `z_order` and `glass_hit` fail in
-# seconds and say why. A starvation guard that never fires is worse than none.
+# The stall guard was measured false here and is now fixed; the history is the load-bearing part.
+# The probe claimed exit 90 if its window stopped painting within 15 s, and that test lived inside
+# `render` — the one place that stops running under exactly the starvation it named, so the case it
+# named was the case it could not reach. Each arm run directly under `timeout`, session confirmed
+# locked, returned exit 124 — the timeout's status, not the probe's — with zero bytes on stdout AND
+# stderr: it hung rather than reporting, and ate its whole budget where `z_order` and `glass_hit`
+# fail in seconds and say why. The guard now sleeps on a thread of its own, which nothing in that
+# failure mode can starve. Which numbers that produces depends entirely on the session, and the two
+# cases have been confused once already: under a LOCK all three arms REPORT rather than hang, exit
+# 90 in 15 s reading `frames=2 ... VOID (window painted 2 frames; both arms need 75)` — that is the
+# starved reading, and 2 renders is the ceiling a lock allows. Unlocked, measured on this binary,
+# the three arms read 0 / 90 / 1 as above. A starvation guard that never fires is worse than none,
+# and a comment that leaves a starved reading standing as the normal one is the same defect in prose.
 dispatch_arms() {
   local bin=target/release/examples/ngdispatch code
   "$bin" >/dev/null 2>&1; code=$?

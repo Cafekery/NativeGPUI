@@ -167,6 +167,11 @@ a stopped clock drops a layout, it does not offset one ;; moves by two refreshes
 stride 1 prevents the clock defect rather than hiding it ;; precondition that keeps the clock healthy ;; examples/gallery.rs
 skew's two statistics are blind to each other's defect ;; neither one can see the other.s defect ;; examples/gallery.rs
 capture delivery is not observation ;; delivery is not observation ;; examples/gallery.rs
+WithinWindow is what lets a band sample the list ;; composites over nothing ;; examples/finder_demo/header.rs
+the sort glyph is a raster the band washes out ;; costs is the direction ;; examples/finder_demo/header.rs
+the list's top inset is blank rows, not padding ;; reaches the item origin twice ;; examples/finder_demo/list.rs
+the launch pane is 366 because 240 cuts nothing ;; leaves the list wider than the row content ;; examples/finder_demo/preview.rs
+a stall guard inside render cannot see a stall ;; inside the thing it was guarding against ;; examples/ngdispatch.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
