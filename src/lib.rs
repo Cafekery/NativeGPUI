@@ -120,7 +120,18 @@
 //! # Budget
 //!
 //! Per hosted view per frame, and only for views whose geometry moved: the host skips `setFrame`
-//! when it has not, which is why a static screen costs nothing.
+//! when it has not. A still window writes no geometry at all — measured at 42 hosted views over
+//! 2400 frames, zero `setFrame`, zero `setHidden`, zero restack — and its whole cost is **one**
+//! objc call for the window, not per view: [`NativeHost::place`] reads
+//! `presentsWithTransaction` once a frame to know which presentation path is carrying it.
+//!
+//! Placing a view is cheap; **creating** one is not, and a scrolling list does the second. The
+//! pool is keyed by element identity, so a `uniform_list` row entering the viewport is a new key
+//! and gets a new AppKit view rather than a recycled one — measured at ~460 µs for a row of a
+//! switch and a slider, of which ~380 µs is the control's own constructor and ~55 µs is adding
+//! it to a live view tree. At 44 views scrolling 8 points per frame that churn is ~305 µs per
+//! frame against ~180 µs for every frame write combined. Reuse a stable id for a row that keeps
+//! its meaning, and the cost disappears.
 //!
 //! | | per frame |
 //! |---|---|

@@ -129,6 +129,7 @@ sidebar-rep-point-not-pixel ;; point size and a pixel size are different ;; src/
 sidebar-drag-defers-commit ;; return does not opt back out ;; src/chrome/sidebar.rs
 sidebar-ivars-not-inherited ;; leaves the superclass.s uninitialised ;; src/chrome/sidebar.rs
 sidebar-eject-ratio ;; ratio is the statistic to compare ;; src/chrome/sidebar.rs
+the try_resolve control lives in the tokens page ;; only live control on this ;; src/system/tokens.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.

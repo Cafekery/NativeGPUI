@@ -61,6 +61,26 @@ own_docs() {
 }
 step 'docs resolve'                 own_docs
 
+# A hosted control still reaches its handler. `element_key` -> `place` -> `wire` -> `on_change` is
+# the crate's extension point, and until this step the only thing standing behind it was that the
+# components happen to work when a human looks at a window. In-process, no synthetic input, no
+# capture.
+#
+# All three arms run, because a pass arm alone cannot distinguish "the control fired" from
+# "nothing was listening". Verified on the shipped binary: pass exit 0 / verdict=PASS, nohandler
+# exit 90 / VOID, noclear exit 1 / FAIL.
+#
+# NOT verified here: the probe also claims exit 90 if its window stops painting within 15 s. I
+# tried to reproduce that by covering its origin with another window and it still returned PASS,
+# so treat the stall path as untested rather than as a guarantee.
+dispatch_arms() {
+  local bin=target/release/examples/ngdispatch
+  "$bin" >/dev/null 2>&1 || return 1
+  NGD_SABOTAGE=nohandler "$bin" >/dev/null 2>&1; [[ $? -eq 90 ]] || return 1
+  NGD_SABOTAGE=noclear "$bin" >/dev/null 2>&1; [[ $? -eq 1 ]] || return 1
+}
+step 'hosted controls reach their handler' dispatch_arms
+
 # Warnings do not fail a cargo build, so the zero-warning state would otherwise rot silently.
 # Scoped to this crate's own files: a lint added by a future toolchain shows up as a named file
 # and line rather than as a blanket build failure across every dependency.
