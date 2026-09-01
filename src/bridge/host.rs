@@ -336,6 +336,10 @@ struct Placement {
     clip_frame: NSRect,
     view_frame: NSRect,
     hidden: bool,
+    /// The display tick this layout was painted on. A placement is owed to a **refresh** and not
+    /// to a paint — see [`NativeHost::place`] — so this, and not its position in the queue, is
+    /// what decides when it goes out.
+    tick: u64,
 }
 
 /// The deepest queue `CAMetalLayer` can ask for: `maximumDrawableCount` accepts 2 or 3, so the lag
@@ -344,6 +348,9 @@ const MAX_LAG: usize = 2;
 
 /// One hosted view's placements computed but not yet written, oldest first — see
 /// [`NativeHost::place`] for why they wait.
+///
+/// At most one placement per tick survives, and [`Queue::due`] leaves only those still owed to a
+/// future refresh, so `MAX_LAG` of them can be waiting when the next one arrives.
 #[derive(Default)]
 struct Queue {
     entries: [Option<Placement>; MAX_LAG + 1],
@@ -351,21 +358,44 @@ struct Queue {
 }
 
 impl Queue {
-    /// Append this frame's placement and give back the one due now, which is `lag` frames older.
-    ///
-    /// `None` while the queue is still filling, which is the right answer rather than a gap: a view
-    /// that has just appeared has no history to show, and GPUI has not presented its row either.
-    fn push(&mut self, placement: Placement, lag: usize) -> Option<Placement> {
-        let depth = lag.min(MAX_LAG);
-        // `lag` can shrink mid-run, when GPUI presents a frame inside the `CATransaction` instead
-        // of queueing it. Anything older than the new depth is then owed to a frame that has
-        // already been seen, so it is dropped rather than replayed.
-        while self.len > depth {
-            self.take_front();
+    /// Take this paint's placement and give back the one due now, if any.
+    fn advance(&mut self, placement: Placement, tick: u64, lag: usize) -> Option<Placement> {
+        // Unreachable while ticks arrive, since `due` leaves at most `MAX_LAG` behind. Reachable
+        // if GPUI's display link dies with paints still coming, and then the oldest is the one
+        // that has waited long enough.
+        let forced = (self.len == self.entries.len())
+            .then(|| self.take_front())
+            .flatten();
+        match self.newest() {
+            // Two paints on one tick reach the screen as one frame, so only the later is ever
+            // presented and the earlier has no refresh of its own to be written for.
+            Some(held) if held.tick == placement.tick => {
+                self.entries[self.len - 1] = Some(placement)
+            }
+            _ => {
+                self.entries[self.len] = Some(placement);
+                self.len += 1;
+            }
         }
-        self.entries[self.len] = Some(placement);
-        self.len += 1;
-        (self.len > depth).then(|| self.take_front()).flatten()
+        self.due(tick, lag).or(forced)
+    }
+
+    /// The newest placement GPUI has already presented by `tick`, dropping it and everything
+    /// older.
+    ///
+    /// `None` while the queue is still filling, which is the right answer rather than a gap: a
+    /// view that has just appeared has no history to show, and GPUI has not presented its row
+    /// either.
+    fn due(&mut self, tick: u64, lag: usize) -> Option<Placement> {
+        let mut due = None;
+        while self.len > 0 {
+            let front = self.entries[0].expect("len counts the filled prefix");
+            if front.tick.saturating_add(lag as u64) > tick {
+                break;
+            }
+            due = self.take_front();
+        }
+        due
     }
 
     fn take_front(&mut self) -> Option<Placement> {
@@ -373,10 +403,6 @@ impl Queue {
         self.entries.rotate_left(1);
         self.len = self.len.saturating_sub(1);
         front
-    }
-
-    fn iter(&self) -> impl Iterator<Item = Placement> + '_ {
-        self.entries[..self.len].iter().flatten().copied()
     }
 
     fn newest(&self) -> Option<Placement> {
@@ -395,7 +421,7 @@ struct Slot {
     /// Set when a component adopted the clip out of the layer container — a glass panel inside an
     /// `NSGlassEffectContainerView`. Stored so `commit`'s reorder pass preserves that adoption.
     parent: Option<Retained<NSView>>,
-    /// What was last *written* to AppKit, which is `lag` frames behind `queued`'s newest entry.
+    /// What was last *written* to AppKit, which is the layout of the refresh GPUI is presenting.
     clip_frame: NSRect,
     view_frame: NSRect,
     hidden: bool,
@@ -421,27 +447,9 @@ impl Slot {
         }
     }
 
-    /// Whether everything still queued is what AppKit already shows, so there is nothing left for
-    /// `settle` to play out.
-    fn settled(&self) -> bool {
-        let written = Placement {
-            clip_frame: self.clip_frame,
-            view_frame: self.view_frame,
-            hidden: self.hidden,
-        };
-        self.queued.iter().all(|queued| {
-            rects_equal(queued.clip_frame, written.clip_frame)
-                && rects_equal(queued.view_frame, written.view_frame)
-                && queued.hidden == written.hidden
-        })
-    }
-
-    /// Jump to the newest queued placement and forget the rest.
-    fn settle(&mut self) {
-        if let Some(newest) = self.queued.newest() {
-            self.write(newest);
-        }
-        self.queued = Queue::default();
+    /// Whether anything is still owed to a refresh that has not happened yet.
+    fn pending(&self) -> bool {
+        self.queued.len > 0
     }
 }
 
@@ -453,7 +461,8 @@ struct HostState {
     terminus: Retained<Terminus>,
     target: Retained<Target>,
     dispatch: Rc<Dispatch>,
-    /// Only ever used to get one turn off the paint stack, so `settle` can reach a `Window`.
+    /// Only ever used to get one turn off the paint stack, so the tick chain can reach a
+    /// `Window` — see `commit`.
     cx: AsyncWindowContext,
     slots: HashMap<u64, Slot>,
     /// Placement order this frame, and last frame's, so both of `commit`'s caches of paint order
@@ -473,9 +482,13 @@ struct HostState {
     /// frame rather than one per hosted view.
     frame_lag: usize,
     frame_lag_at: u64,
-    /// Set while a settle chain is already running, so a frame that leaves the queues unsettled
-    /// does not stack a second one.
-    settling: bool,
+    /// Display ticks this host has observed, which is the clock a placement comes due on. Only
+    /// advanced while `ticking`, and only differences matter, so a stalled chain delays a
+    /// placement rather than mistiming it.
+    tick: u64,
+    /// Set while the tick chain is already running, so a frame that leaves placements queued does
+    /// not stack a second one.
+    ticking: bool,
     generation: u64,
 }
 
@@ -549,10 +562,11 @@ impl NativeHost {
             last_order: Vec::new(),
             recreated: false,
             metal: metal_layer(&parent),
-            lag: presentation_lag(&parent),
+            lag: presentation_lag(&parent).min(MAX_LAG),
             frame_lag: 0,
             frame_lag_at: 0,
-            settling: false,
+            tick: 0,
+            ticking: false,
             generation: 1,
         })))
     }
@@ -570,8 +584,9 @@ impl NativeHost {
         self.len() == 0
     }
 
-    /// How many frames of GPUI presentation lag this host is holding geometry back by — see
-    /// [`NativeHost::place`]. Read from the Metal layer when the host was created.
+    /// How many display refreshes of GPUI presentation lag this host is holding geometry back by
+    /// — see [`NativeHost::place`]. Read from the Metal layer when the host was created, and
+    /// clamped to `MAX_LAG`, which is the queue's depth.
     pub fn lag(&self) -> usize {
         self.0.borrow().lag
     }
@@ -585,8 +600,13 @@ impl NativeHost {
         let state = &mut *self.0.borrow_mut();
         state.lag = lag.min(MAX_LAG);
         state.frame_lag_at = 0;
+        let (tick, lag) = (state.tick, state.lag);
         for slot in state.slots.values_mut() {
-            slot.settle();
+            // A shallower lag makes placements due that were not, and `0` makes all of them due,
+            // so the arm takes effect on the frame it is set rather than `lag` frames later.
+            if let Some(due) = slot.queued.due(tick, lag) {
+                slot.write(due);
+            }
         }
     }
 
@@ -655,7 +675,7 @@ impl NativeHost {
     /// object that owns the fact.
     ///
     /// Geometry is written not for *this* frame but for the frame GPUI has already **presented**,
-    /// `presentation_lag` frames back, which is what keeps a hosted view pinned to its GPUI row
+    /// `presentation_lag` refreshes back, which is what keeps a hosted view pinned to its GPUI row
     /// while the row moves. Each slot queues its placements and writes the one that falls out.
     ///
     /// Writing the current frame's layout instead puts a hosted view *ahead* of the GPUI content it
@@ -668,6 +688,15 @@ impl NativeHost {
     /// presentation *order*, not easing: disabling implicit Core Animation actions around these
     /// writes does not reduce it, and wrapping each write in its own `CATransaction` makes it worse
     /// by a frame, because a nested commit lands after the one the layout came in on.
+    ///
+    /// **The lag is counted in display refreshes, not in paints, and they are not the same
+    /// number.** GPUI presents on every refresh while it has recent input, but it re-runs `paint`
+    /// only when something is dirty, so a scroll driven by real events paints on some refreshes
+    /// and not others. A queue that hands back "the placement from two paints ago" is therefore
+    /// right only for a caller that paints on every refresh — which a rig advancing its own offset
+    /// per frame does by construction and a trackpad scroll does not. Each placement carries the
+    /// tick it was painted on and comes due `lag` ticks later, so a paint that skipped refreshes
+    /// is still written for the refresh that shows it.
     ///
     /// The queue depth follows the layer, so the two move together and neither is a tuned constant.
     /// It caps at `MAX_LAG`, which is enough while `CAMetalLayer.maximumDrawableCount` accepts
@@ -699,7 +728,7 @@ impl NativeHost {
         new: impl FnOnce(MainThreadMarker, &Target) -> Retained<V>,
     ) -> Retained<V> {
         let state = &mut *self.0.borrow_mut();
-        let lag = frame_lag(state);
+        let (lag, tick) = (frame_lag(state), state.tick);
         let visible = clamped_intersection(bounds, mask);
         let clip_frame = to_rect(visible);
         let view_frame = NSRect::new(
@@ -753,12 +782,14 @@ impl NativeHost {
             }
         });
 
-        if let Some(due) = slot.queued.push(
+        if let Some(due) = slot.queued.advance(
             Placement {
                 clip_frame,
                 view_frame,
                 hidden,
+                tick,
             },
+            tick,
             lag,
         ) {
             slot.write(due);
@@ -921,47 +952,57 @@ impl NativeHost {
         state.order.clear();
         state.generation += 1;
 
-        // The queues hold `lag` placements this frame did not write. GPUI stops drawing the instant
-        // nothing is dirty, so without this the tail of a scroll would never be written and hosted
-        // views would sit `lag x final velocity` short of their rows for as long as the window stood
-        // still — the one failure mode that is visible at rest rather than only under motion.
-        if !state.settling && !state.slots.values().all(Slot::settled) {
-            state.settling = true;
-            let generation = state.generation;
+        // The queues hold every placement owed to a refresh that has not happened yet. GPUI stops
+        // drawing the instant nothing is dirty, so without this the tail of a scroll would never be
+        // written and hosted views would sit `lag x final velocity` short of their rows for as long
+        // as the window stood still — the one failure mode that is visible at rest rather than only
+        // under motion. The same chain is what counts refreshes during the scroll.
+        if !state.ticking && state.slots.values().any(Slot::pending) {
+            state.ticking = true;
             let host = self.clone();
             let cx = state.cx.clone();
             // Deferred, never here: this runs inside GPUI's paint, and `on_next_frame` has to be
             // registered from a turn where a `Window` is reachable.
             cx.spawn(async move |cx| {
-                let _ = cx.update(|window, _| host.wait_out_lag(window, generation, 0));
+                let armed = cx.update(|window, _| {
+                    let host = host.clone();
+                    window.on_next_frame(move |window, _| host.tick(window));
+                });
+                if armed.is_err() {
+                    host.0.borrow_mut().ticking = false;
+                }
             })
             .detach();
         }
     }
 
-    /// Write the newest queued placement once GPUI has stopped drawing, and not before.
+    /// Count one display refresh and write whatever GPUI has presented by it.
     ///
     /// `Window::on_next_frame` is the hook because GPUI runs those callbacks on **every** display
-    /// tick, dirty or not, so this counts real display frames without asking for a redraw. `lag + 1`
-    /// idle ticks is not a settling constant: `lag` ticks after GPUI's last frame is exactly when
-    /// that frame reaches the screen, so that is when AppKit should be showing the same layout.
-    fn wait_out_lag(&self, window: &Window, generation: u64, idle: usize) {
+    /// tick, dirty or not, so this counts real refreshes without asking for a redraw — and a
+    /// refresh, not a paint, is what a placement is owed to (see [`NativeHost::place`]). It is
+    /// therefore both the clock the queue is due against and how the tail of a scroll plays out:
+    /// `lag` ticks after GPUI's last frame is exactly when that frame reaches the screen, so that
+    /// is when AppKit should be showing the same layout.
+    ///
+    /// `state.lag` and not `frame_lag`: the in-transaction path only presents from inside a paint,
+    /// and a placement it produced was written on the spot rather than queued.
+    fn tick(&self, window: &Window) {
         let state = &mut *self.0.borrow_mut();
-        let idle = if state.generation == generation {
-            idle + 1
-        } else {
-            0
-        };
-        if idle <= state.lag {
-            let generation = state.generation;
-            let host = self.clone();
-            window.on_next_frame(move |window, _| host.wait_out_lag(window, generation, idle));
-            return;
-        }
+        state.tick += 1;
+        let (tick, lag) = (state.tick, state.lag);
+        let mut pending = false;
         for slot in state.slots.values_mut() {
-            slot.settle();
+            if let Some(due) = slot.queued.due(tick, lag) {
+                slot.write(due);
+            }
+            pending |= slot.pending();
         }
-        state.settling = false;
+        state.ticking = pending;
+        if pending {
+            let host = self.clone();
+            window.on_next_frame(move |window, _| host.tick(window));
+        }
     }
 }
 
@@ -1061,7 +1102,7 @@ mod tests {
         assert_eq!(clipped, bounds(10.5, 0., 20.25, 8.));
     }
 
-    fn placement(y: f64) -> Placement {
+    fn placement(y: f64, tick: u64) -> Placement {
         Placement {
             clip_frame: NSRect::new(
                 objc2_foundation::NSPoint::new(0., y),
@@ -1069,30 +1110,53 @@ mod tests {
             ),
             view_frame: NSRect::ZERO,
             hidden: false,
+            tick,
         }
     }
 
-    /// The whole point: what comes out is what went in `lag` frames ago, which is the layout GPUI
-    /// has presented by the time this write reaches the screen.
+    /// The whole point: at every refresh, what AppKit holds is the layout GPUI is presenting —
+    /// the newest paint from `lag` refreshes ago.
+    ///
+    /// Swept over paint strides because paints and refreshes are the same count only for a caller
+    /// that paints on every refresh, which a driven rig is and a real scroll is not. A queue that
+    /// counted paints passed at stride 1 and, at stride 3, held a layout three refreshes too old.
     #[test]
-    fn the_queue_hands_back_the_placement_from_lag_frames_ago() {
-        let mut queue = Queue::default();
-        assert_eq!(queue.push(placement(0.), 2), None);
-        assert_eq!(queue.push(placement(1.), 2), None);
-        for frame in 2..8 {
-            let due = queue
-                .push(placement(frame as f64), 2)
-                .expect("steady state");
-            assert_eq!(due.clip_frame.origin.y, (frame - 2) as f64);
+    fn what_is_written_is_what_gpui_is_presenting_at_every_refresh() {
+        const LAG: usize = 2;
+        for stride in 1..=4u64 {
+            let mut queue = Queue::default();
+            let mut held: Option<Placement> = None;
+            let mut painted: Vec<u64> = Vec::new();
+            for tick in 0..24u64 {
+                let due = if tick % stride == 0 {
+                    painted.push(tick);
+                    queue.advance(placement(tick as f64, tick), tick, LAG)
+                } else {
+                    queue.due(tick, LAG)
+                };
+                held = due.or(held);
+                let presented = painted
+                    .iter()
+                    .rev()
+                    .find(|&&paint| paint + LAG as u64 <= tick)
+                    .copied();
+                assert_eq!(
+                    held.map(|placement| placement.clip_frame.origin.y as u64),
+                    presented,
+                    "stride {stride}, tick {tick}"
+                );
+            }
         }
     }
 
     #[test]
     fn lag_zero_writes_through() {
         let mut queue = Queue::default();
-        for frame in 0..4 {
-            let due = queue.push(placement(frame as f64), 0).expect("no delay");
-            assert_eq!(due.clip_frame.origin.y, frame as f64);
+        for tick in 0..4u64 {
+            let due = queue
+                .advance(placement(tick as f64, tick), tick, 0)
+                .expect("no delay");
+            assert_eq!(due.clip_frame.origin.y, tick as f64);
         }
     }
 
@@ -1101,27 +1165,46 @@ mod tests {
     #[test]
     fn shrinking_lag_catches_up_instead_of_replaying() {
         let mut queue = Queue::default();
-        queue.push(placement(0.), 2);
-        queue.push(placement(1.), 2);
-        let due = queue.push(placement(2.), 0).expect("write-through");
+        queue.advance(placement(0., 0), 0, 2);
+        queue.advance(placement(1., 1), 1, 2);
+        let due = queue
+            .advance(placement(2., 2), 2, 0)
+            .expect("write-through");
         assert_eq!(due.clip_frame.origin.y, 2.);
     }
 
-    /// `MAX_LAG` is the array bound, so a larger request must clamp rather than index out of range.
+    /// Two paints on one refresh reach the screen as one frame, so the earlier one must not be
+    /// written for a refresh of its own — and must not take a queue slot the next tick needs.
     #[test]
-    fn lag_beyond_the_bound_clamps() {
+    fn a_second_paint_on_one_tick_replaces_the_first() {
         let mut queue = Queue::default();
-        for frame in 0..6 {
-            queue.push(placement(frame as f64), 99);
+        queue.advance(placement(0., 0), 0, 2);
+        queue.advance(placement(99., 0), 0, 2);
+        queue.advance(placement(1., 1), 1, 2);
+        let due = queue
+            .advance(placement(2., 2), 2, 2)
+            .expect("tick 0 is due");
+        assert_eq!(due.clip_frame.origin.y, 99.);
+    }
+
+    /// Paints with no refreshes between them — GPUI's display link stopped — must not overrun the
+    /// array or drop the newest layout on the floor.
+    #[test]
+    fn paints_without_ticks_stay_within_the_queue() {
+        let mut queue = Queue::default();
+        let mut held = None;
+        for paint in 0..8u64 {
+            held = queue
+                .advance(placement(paint as f64, paint), 0, 99)
+                .or(held);
         }
+        assert!(queue.len <= MAX_LAG + 1);
         assert_eq!(
-            queue
-                .newest()
-                .expect("something queued")
+            held.expect("the oldest goes out rather than being overwritten")
                 .clip_frame
                 .origin
                 .y,
-            5.
+            4.
         );
     }
 }

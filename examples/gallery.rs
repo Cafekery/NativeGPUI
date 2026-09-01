@@ -7,14 +7,14 @@
 //!
 //! `NG_ROWS` sets the list length (default 400). `NG_SKEW=<points-per-frame>` replaces the whole
 //! window with the scroll-skew rig at the bottom of this file, whose arms are `NG_LAG`,
-//! `NG_DRAWABLES`, `NG_PWT`, `NG_SKEW_STOP` and `NG_SKEW_LOAD`.
+//! `NG_SKEW_STRIDE`, `NG_DRAWABLES`, `NG_PWT`, `NG_SKEW_STOP` and `NG_SKEW_LOAD`.
 
 use std::panic::Location;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Element, ElementId, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Render, SharedString, Style,
+    AnyElement, App, Application, Bounds, Context, Element, ElementId, Entity, GlobalElementId,
+    Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Render, SharedString, Style,
     UniformListScrollHandle, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
     uniform_list,
 };
@@ -48,8 +48,10 @@ struct Gallery {
     choice: usize,
     color: Hsla,
     text: String,
-    /// `Some(v)` puts the window in skew-measurement mode at `v` logical points per frame.
+    /// `Some(v)` puts the window in skew-measurement mode at `v` logical points per **refresh**.
     skew: Option<f32>,
+    /// Refreshes between paints — see `wake_after`.
+    skew_stride: usize,
     skew_offset: f32,
     skew_frames: u64,
     skew_announced: bool,
@@ -219,12 +221,18 @@ impl Gallery {
 impl Render for Gallery {
     #[allow(refining_impl_trait)]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        // Unconditional so the commit pass is exercised every frame, not only on input.
-        window.request_animation_frame();
-
         if self.skew.is_some() {
+            // Stride 1 keeps `request_animation_frame`, byte for byte the cadence the 2.000-frame
+            // lead and its 0.000 fix were measured on, so that arm stays comparable to them. Above
+            // 1 the paints have to skip refreshes, which that call cannot do.
+            match self.skew_stride {
+                1 => window.request_animation_frame(),
+                stride => wake_after(cx.entity(), window, stride),
+            }
             return self.skew_frame(window, cx);
         }
+        // Unconditional so the commit pass is exercised every frame, not only on input.
+        window.request_animation_frame();
 
         let pooled = NativeHost::get(window, cx).len();
         let elapsed = self.started.elapsed().as_secs_f64();
@@ -276,6 +284,12 @@ fn main() {
     let skew = std::env::var("NG_SKEW")
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok());
+    // `NG_SKEW_STRIDE=<n>` paints on every n-th refresh instead of every one — see `wake_after`.
+    let skew_stride: usize = std::env::var("NG_SKEW_STRIDE")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let rows: usize = std::env::var("NG_ROWS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -320,6 +334,7 @@ fn main() {
                     color: rgb(0x0a84ff).into(),
                     text: String::new(),
                     skew,
+                    skew_stride,
                     skew_offset: 0.,
                     skew_frames: 0,
                     skew_announced: false,
@@ -365,6 +380,14 @@ fn main() {
 // curve can produce it. Left at the default the same rows read 0.000, and rest after an abrupt stop
 // from 16 pt per frame reads exactly 0.000 as well. The switch stays locked to the marker in both
 // arms, so a real control moves with the markers.
+//
+// `NG_SKEW_STRIDE=<n>` is the arm the first version of this rig could not have had, because the
+// rig itself was the reason: `request_animation_frame` every frame makes GPUI paint on every
+// refresh, and a paint per refresh is the one cadence where "the placement from two paints ago"
+// and "the placement from two refreshes ago" are the same placement. A scroll driven by real
+// trackpad events is not that cadence. At `n` refreshes per paint the offset still advances the
+// same points per *refresh*, so every stride is the same on-screen velocity and the arms compare
+// directly.
 //
 // It is not GPUI's layout that is late but its *presented* frame: the Metal surface reaching the
 // screen is `CAMetalLayer.maximumDrawableCount - 1` frames behind the `CATransaction` that carried
@@ -557,12 +580,32 @@ fn metal_layer_quiet(view: &NSView) -> Option<Retained<CALayer>> {
     responds.then(|| layer)
 }
 
+/// Mark the rig dirty again `stride` display refreshes from now.
+///
+/// `Window::request_animation_frame` makes GPUI paint on **every** refresh, which is the cadence
+/// the presentation-lag compensation was first measured against and the only one where a paint
+/// count and a refresh count agree. `Window::on_next_frame` runs on every refresh dirty or not, so
+/// chaining `stride` of them and notifying on the last reproduces a scroll that paints on some
+/// refreshes and not others — without an input driver, and with the velocity still stated by this
+/// file rather than recovered from the pixels.
+fn wake_after(gallery: Entity<Gallery>, window: &mut Window, stride: usize) {
+    window.on_next_frame(
+        move |window, cx| match stride.checked_sub(1).filter(|left| *left > 0) {
+            Some(left) => wake_after(gallery, window, left),
+            None => gallery.update(cx, |_, cx| cx.notify()),
+        },
+    );
+}
+
 impl Gallery {
     /// One frame of the rig: advance the offset by exactly the configured velocity, then render.
     fn skew_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         use std::io::Write;
 
-        let velocity = self.skew.expect("skew_frame is only reached in skew mode");
+        // Points per *refresh*, so a stride arm covers the same ground per second as stride 1 and
+        // the two are the same on-screen velocity.
+        let velocity =
+            self.skew.expect("skew_frame is only reached in skew mode") * self.skew_stride as f32;
 
         if !self.skew_announced {
             self.skew_announced = true;
