@@ -284,14 +284,14 @@ impl From<PopoverBehavior> for NSPopoverBehavior {
 
 /// What a popover should look like. `..Default::default()` for everything you do not care about.
 #[derive(Copy, Clone, Debug)]
-pub struct Popover {
+pub struct PopoverOptions {
     pub size: Size<Pixels>,
     pub edge: SurfaceEdge,
     pub behavior: PopoverBehavior,
     pub animates: bool,
 }
 
-impl Default for Popover {
+impl Default for PopoverOptions {
     fn default() -> Self {
         Self {
             size: gpui::size(px(240.), px(110.)),
@@ -357,7 +357,7 @@ pub fn present_popover(
     window: &mut Window,
     cx: &mut App,
     anchor: &SurfaceAnchor,
-    spec: Popover,
+    spec: PopoverOptions,
     build: impl FnOnce(MainThreadMarker, &SurfaceActions) -> Retained<NSView>,
 ) -> Option<NativePopover> {
     let positioning = anchor.tracker()?;

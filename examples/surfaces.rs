@@ -10,9 +10,9 @@ use gpui::{
     WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::surfaces::{
-    NativePopover, NativeSheet, Popover, ShareItem, SharePicker, SharePickerEvent, SheetResponse,
-    SurfaceAnchor, SurfaceEdge, native_anchor, present_popover, present_share_picker,
-    present_sheet, share_service_count,
+    NativePopover, NativeSheet, PopoverOptions, ShareItem, SharePicker, SharePickerEvent,
+    SheetResponse, SurfaceAnchor, SurfaceEdge, native_anchor, present_popover,
+    present_share_picker, present_sheet, share_service_count,
 };
 use native_gpui::{native_root, window_options};
 use objc2::MainThreadOnly;
@@ -38,7 +38,7 @@ struct Surfaces {
 impl Surfaces {
     fn open_popover(&mut self, edge: SurfaceEdge, window: &mut Window, cx: &mut Context<Self>) {
         self.close_popover();
-        let spec = Popover {
+        let spec = PopoverOptions {
             size: size(px(240.), px(110.)),
             edge,
             ..Default::default()

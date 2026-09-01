@@ -266,6 +266,19 @@ fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
         .expect("performAsCurrentDrawingAppearance never invoked the block")
 }
 
+/// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion.
+///
+/// Reads the **ambient** drawing appearance, which matches one appearance and silently
+/// contradicts the other, so for a semantic colour reach for [`SystemColor::try_resolve`].
+///
+/// A one-line pass-through deliberately, and the only public door onto the crate's single
+/// conversion — the function behind it is crate-private. Every caller is in `examples/`, so a
+/// caller search restricted to `src/` reports this unused and deleting it stops the tree
+/// compiling.
+pub fn srgb(color: &NSColor) -> Option<Hsla> {
+    from_nscolor(color)
+}
+
 /// `labelColor`'s value, so a colour that refuses sRGB conversion degrades to readable text.
 fn refusal_fallback(appearance: Appearance) -> Hsla {
     let luminance = match appearance {

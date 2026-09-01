@@ -47,7 +47,7 @@ use native_gpui::{
 // The transient surfaces, reachable from the root and through their own module.
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{
-    NativePopover, NativeSheet, Popover, PopoverBehavior, ShareItem, SurfaceAnchor, native_anchor,
+    NativePopover, NativeSheet, PopoverOptions, PopoverBehavior, ShareItem, SurfaceAnchor, native_anchor,
     present_popover, present_share_picker, present_sheet,
 };
 
@@ -55,7 +55,7 @@ use native_gpui::{
 // are too generic to spill into a consumer's root.
 use native_gpui::tokens::{
     Appearance, FileType, Symbol, SymbolColor, SystemColor, WINDOW_BACKGROUND, accent, file_icon,
-    system_color, system_font, window_background,
+    srgb, system_color, system_font, window_background,
 };
 
 fn main() {}

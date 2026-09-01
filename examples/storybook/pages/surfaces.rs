@@ -12,8 +12,8 @@ use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window, div, prelude::*, px, size};
 use native_gpui::surfaces::{
-    NativePopover, NativeSheet, Popover, PopoverBehavior, ShareItem, SharePicker, SharePickerEvent,
-    SheetResponse, SurfaceAnchor, SurfaceEdge, native_anchor, present_popover,
+    NativePopover, NativeSheet, PopoverBehavior, PopoverOptions, ShareItem, SharePicker,
+    SharePickerEvent, SheetResponse, SurfaceAnchor, SurfaceEdge, native_anchor, present_popover,
     present_share_picker, present_sheet, share_service_count,
 };
 use native_gpui::tokens::{SystemColor, system_color};
@@ -64,7 +64,7 @@ fn open_popover(d: &mut Demo, edge: SurfaceEdge, window: &mut Window, cx: &mut C
     close_popover(d);
 
     let anchor = d.surfaces.anchor.clone();
-    let spec = Popover {
+    let spec = PopoverOptions {
         size: size(px(280.), px(132.)),
         edge,
         behavior: BEHAVIORS[d.surfaces.behavior.min(BEHAVIORS.len() - 1)].1,
@@ -434,14 +434,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         props(&[
             ("native_anchor(&SurfaceAnchor, child)", bounds),
             (
-                "present_popover(window, cx, anchor, Popover, build)",
+                "present_popover(window, cx, anchor, PopoverOptions, build)",
                 match showing {
                     Some(edge) => format!("{edge:?}"),
                     None => "closed".into(),
                 },
             ),
             (
-                "Popover { size, edge, behavior, animates }",
+                "PopoverOptions { size, edge, behavior, animates }",
                 format!("280×132, {}", BEHAVIORS[behavior].0),
             ),
             (
