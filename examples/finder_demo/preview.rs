@@ -51,10 +51,19 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 // 1026, 988 and 748 — and the same subtraction reported 121pt for the list's own horizontal clip
 // in the same reading, so that null is "they do not overlap" and not "this cannot see overlap".
 //
-// What reads as the pane sliding over the list is the list cutting its own columns. Finder's list
-// columns are fixed and its Name column floors at 168pt, so the row content stays a constant 589pt
-// wide however narrow the pane leaves the list: 121pt of it is cut at a 468pt list and 273pt at
-// the 316pt minimum. That is what cuts a Kind string mid-word.
+// What reads as the pane sliding over the list is the list cutting its own columns. Finder's three
+// trailing columns are fixed and its Name column floors at 168pt, so the row content stays a
+// constant 589pt wide however narrow the pane leaves the list: 121pt of it is cut at a 468pt list
+// and 273pt at the 316pt minimum. That is what cuts a Kind string mid-word.
+//
+// That 589 decomposes, and not the way our 577 does. Asked over Accessibility, a real Finder
+// outline reports its four columns CONTIGUOUS — each column's right edge is exactly the next
+// column's left edge — so there is no inter-column allowance anywhere, and the widths are 181, 97
+// and 121, which are ours. What Finder has and this does not is an 11.0pt inset at *both* edges of
+// the outline: 11 + 168 + 181 + 97 + 121 + 11. Our trailing 10 is therefore a trailing inset one
+// point short rather than a gap between columns, and there is no leading one at all. Name also
+// flexes up — it read 409 at an 830pt outline — so the content is constant only once Name is on
+// its floor, which is what the 468pt reading above is.
 //
 // The pane's material does sample the list, which is the other half of the same impression. With
 // rows selected, the pane's leading 84pt carried a blurred copy of the selection band at the same
