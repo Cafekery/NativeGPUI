@@ -322,8 +322,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         ),
         note(
             "Above is NSRectEdge MinY, which reads backwards until you know the edge is \
-             interpreted in the positioning view's space: the chrome host is flipped, so the \
-             anchor's MinY is its top and the popover renders above it.",
+             interpreted in the positioning view's space: a popover is positioned against a \
+             flipped hosted view pinned to the anchor, so the anchor's MinY is its top and the \
+             popover renders above it. That view moves with the element, so scrolling this page \
+             with a popover open takes the popover with it.",
         ),
         knob(
             "behavior",

@@ -20,7 +20,7 @@
 //!   shell rather than an element: install once, then update per frame.
 //! * [`window_chrome`] — the window itself: [`set_corner_radius`], [`set_toolbar`],
 //!   [`window_flags`], [`cursor_region`], and the [`native_rect`] → [`native_window_rect`] →
-//!   [`native_screen_rect`] coordinate recipe every transient surface anchors through.
+//!   [`native_screen_rect`] coordinate recipe a surface positioned once anchors through.
 //! * [`surfaces`] — popovers, sheets and the system share picker, each in an `NSWindow` of its
 //!   own.
 //! * [`tokens`] — the system's colours, fonts, symbols and file icons, so the parts GPUI draws

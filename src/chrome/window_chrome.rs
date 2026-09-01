@@ -1,5 +1,5 @@
-//! The window itself: its corners, toolbar, flags, cursor, and the coordinate recipe every
-//! transient native surface anchors through: [`native_rect`] → [`native_window_rect`] →
+//! The window itself: its corners, toolbar, flags, cursor, and the coordinate recipe a transient
+//! native surface positioned once anchors through: [`native_rect`] → [`native_window_rect`] →
 //! [`native_screen_rect`]. The y-flip happens once, inside `convertRect:toView:nil`; a
 //! hand-rolled `contentHeight - y - h` breaks the moment a toolbar changes the content height.
 

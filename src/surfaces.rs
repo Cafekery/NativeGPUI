@@ -4,10 +4,10 @@
 //! is also the limit on what can go inside one — see [`present_popover`].
 //!
 //! A popover or a share picker points at a GPUI element whose geometry is only known during
-//! `paint`, so wrap it in [`native_anchor`] with a [`SurfaceAnchor`] you own and read the bounds
-//! back from the event handler. Conversion goes through [`crate::native_rect`] and
-//! [`crate::chrome_host`], whose coordinate space *is* GPUI's — do not hand-roll
-//! `content_height - y - height`.
+//! `paint`, so wrap it in [`native_anchor`] with a [`SurfaceAnchor`] you own. A popover follows
+//! its anchor for as long as it is up — see [`present_popover`]. A share picker is positioned
+//! once, through [`crate::native_rect`] and [`crate::chrome_host`], whose coordinate space *is*
+//! GPUI's — do not hand-roll `content_height - y - height`.
 //!
 //! Already native in GPUI, do not wrap again: [`gpui::Window::prompt`] is a real `NSAlert` sheet,
 //! and [`gpui::App::prompt_for_paths`] / [`gpui::App::prompt_for_new_path`] are `NSOpenPanel` /
@@ -36,13 +36,20 @@ use objc2_foundation::{
     NSRectEdge, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
-use crate::bridge::appkit::gpui_view;
+use crate::bridge::appkit::{Container, gpui_view};
+use crate::bridge::host::{Layer, NativeHost};
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
 /// The painted bounds of a GPUI element, kept for a surface to point at. Cheap to clone; every
 /// clone sees the same bounds.
 #[derive(Clone, Default)]
-pub struct SurfaceAnchor(Rc<Cell<Option<Bounds<Pixels>>>>);
+pub struct SurfaceAnchor(Rc<AnchorState>);
+
+#[derive(Default)]
+struct AnchorState {
+    bounds: Cell<Option<Bounds<Pixels>>>,
+    tracker: RefCell<Option<Retained<Container>>>,
+}
 
 impl SurfaceAnchor {
     pub fn new() -> Self {
@@ -51,7 +58,20 @@ impl SurfaceAnchor {
 
     /// `None` until the anchoring element has painted.
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
-        self.0.get()
+        self.0.bounds.get()
+    }
+
+    /// The hosted view [`NativeAnchor`] keeps pinned to the element, or `None` before its first
+    /// paint.
+    fn tracker(&self) -> Option<Retained<Container>> {
+        self.0.tracker.borrow().clone()
+    }
+
+    /// This anchor's key in the window's view pool. [`NativeAnchor`] has no `ElementId` to derive
+    /// one from, and needs none: the anchor *is* the caller-owned identity of the element it
+    /// wraps, so its allocation is unique among live anchors and stable for as long as one lives.
+    fn key(&self) -> u64 {
+        Rc::as_ptr(&self.0) as u64
     }
 }
 
@@ -113,7 +133,21 @@ impl Element for NativeAnchor {
         cx: &mut App,
     ) {
         // Unrounded: a popover centred on a rounded rect is off by up to half a point.
-        self.anchor.0.set(Some(bounds));
+        self.anchor.0.bounds.set(Some(bounds));
+
+        // An `NSPopover` is positioned once and then tracks its positioning view, so the anchor
+        // keeps a hosted view pinned to the element for a popover to point at. Going through the
+        // pool is what makes the popover follow a scroll: `place` writes the frame gpui has
+        // already presented, so the popover lands on the anchor as drawn rather than up to two
+        // frames ahead of it.
+        let key = self.anchor.key();
+        let mask = window.content_mask().bounds;
+        let tracker =
+            NativeHost::get(window, cx).place(key, Layer::Above, bounds, mask, |mtm, _| {
+                Container::new(mtm, NSRect::ZERO, false)
+            });
+        self.anchor.0.tracker.replace(Some(tracker));
+
         self.child.paint(window, cx);
     }
 }
@@ -128,8 +162,8 @@ impl IntoElement for NativeAnchor {
 
 /// Which side of the anchor a surface appears on, named as you see it on screen.
 ///
-/// `NSRectEdge` is interpreted in the *positioning view's* space and [`crate::chrome_host`] is
-/// flipped, so `MinY` is the anchor's **top** edge and the surface renders above it.
+/// `NSRectEdge` is interpreted in the *positioning view's* space, and every positioning view this
+/// crate uses is flipped, so `MinY` is the anchor's **top** edge and the surface renders above it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum SurfaceEdge {
     #[default]
@@ -317,6 +351,13 @@ define_class!(
 
 /// Show a popover pointing at `anchor`, or `None` if `anchor` has never painted.
 ///
+/// The popover **follows the anchor**: it is positioned against the hosted view
+/// [`native_anchor`] keeps pinned to the element, and `NSPopover` re-anchors itself whenever that
+/// view's position in the window changes — so a scroll takes the popover with it. Positioning it
+/// against a rect in [`crate::chrome_host`] instead reads correctly and is wrong the moment the
+/// page moves: the host never moves, so the popover stays put while the element leaves from under
+/// it. `positioningRect` is no help either; on a shown popover, writing it moves nothing.
+///
 /// `build` receives the surface's [`SurfaceActions`] so its controls can drive GPUI state, and the
 /// view it returns becomes the content, sized to `spec.size`. That content must be AppKit: it goes
 /// in a new `_NSPopoverWindow`, and gpui renders a window's whole scene into the one Metal view
@@ -328,9 +369,8 @@ pub fn present_popover(
     spec: Popover,
     build: impl FnOnce(MainThreadMarker, &SurfaceActions) -> Retained<NSView>,
 ) -> Option<NativePopover> {
-    let bounds = anchor.bounds()?;
+    let positioning = anchor.tracker()?;
     let mtm = MainThreadMarker::new().expect("gpui runs its windows on the main thread");
-    let host = chrome_host(window);
     let actions = SurfaceActions::new(window, cx);
     let content_size = NSSize::new(spec.size.width.to_f64(), spec.size.height.to_f64());
 
@@ -345,8 +385,8 @@ pub fn present_popover(
     popover.setBehavior(spec.behavior.into());
     popover.setAnimates(spec.animates);
     popover.showRelativeToRect_ofView_preferredEdge(
-        native_rect(bounds),
-        &host,
+        positioning.bounds(),
+        &positioning,
         spec.edge.rect_edge(),
     );
 
@@ -393,7 +433,9 @@ impl NativePopover {
         self.popover.isShown()
     }
 
-    /// The popover's own `NSWindow`, which is why a capture scoped to the GPUI window misses it.
+    /// The popover's own `NSWindow`, with its own screen rect. It is a *child* of the GPUI
+    /// window, so a capture scoped to that window composites the popover in anyway — the separate
+    /// window number is not a separate capture.
     pub fn window(&self) -> Option<Retained<NSWindow>> {
         self.popover
             .contentViewController()
