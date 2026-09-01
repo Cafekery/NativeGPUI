@@ -139,6 +139,8 @@ the demo keeps the transparent titlebar on purpose ;; lands on top of the previe
 the preview pane has a maximum of its own ;; held at 480pt at window widths ;; examples/finder_demo/preview.rs
 the list minimum is what sets the window minimum ;; Two window minima, one list minimum ;; examples/finder_demo/preview.rs
 the preview pane never crosses the list ;; never crosses the list ;; examples/finder_demo/preview.rs
+the lag counts refreshes, not paints ;; counted in display refreshes, not in paints ;; src/bridge/host.rs
+a rig that paints every refresh cannot see this ;; a paint per refresh is the one cadence ;; examples/gallery.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
