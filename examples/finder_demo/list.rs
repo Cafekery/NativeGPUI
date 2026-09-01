@@ -12,7 +12,8 @@ use gpui::{AnyElement, ClickEvent, FontWeight, SharedString, div, prelude::*, px
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::FinderDemo;
-use crate::header::{CELL_PAD, COL_KIND, COL_MODIFIED, COL_SIZE, PANE_INSET};
+use crate::data::Column;
+use crate::header::{CELL_PAD, CELL_TRAIL, NAME_MIN_W, PANE_INSET};
 use crate::palette::Palette;
 use crate::ui::{artwork, small_glyph, tag_dot};
 
@@ -58,6 +59,9 @@ impl FinderDemo {
         let selection = palette.selection;
         let focused = palette.focused;
         let selection_text = palette.selection_text;
+        // The same order and widths the header is drawing, taken once: a row that read them from
+        // anywhere else is exactly how the two stop lining up.
+        let columns = self.list_columns.clone();
         // Finder's date column is the same face, size and weight as the rest of the row with
         // tabular figures, so a column of times does not shift as its digits change. Resolved once
         // per frame: the feature list behind it allocates.
@@ -158,7 +162,7 @@ impl FinderDemo {
                     // down twice.
                     let mut name = div()
                         .flex_1()
-                        .min_w(px(120.))
+                        .min_w(px(NAME_MIN_W))
                         .h_full()
                         .flex()
                         .items_center()
@@ -187,42 +191,38 @@ impl FinderDemo {
                     }
 
                     let clicked = line.clone();
-                    row.child(name)
-                        .child(
-                            div()
-                                .w(px(COL_MODIFIED))
-                                .flex_none()
-                                .pl(px(CELL_PAD))
-                                .font(dates.clone())
-                                .text_color(detail)
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .child(line.row.modified.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(COL_SIZE))
-                                .flex_none()
-                                .pr(px(CELL_PAD))
+                    let mut row = row.child(name);
+                    for spec in &columns {
+                        let cell = div().w(px(spec.width)).flex_none().text_color(detail);
+                        row = row.child(match spec.column {
+                            // Finder right-aligns Size and left-aligns the other two, and measures
+                            // the inset from whichever edge the text is against.
+                            Column::Size => cell
+                                .pr(px(CELL_TRAIL))
                                 .flex()
                                 .justify_end()
                                 .font(dates.clone())
-                                .text_color(detail)
                                 .child(line.row.size.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(COL_KIND))
-                                .flex_none()
+                            Column::Modified => cell
                                 .pl(px(CELL_PAD))
-                                .text_color(detail)
+                                .font(dates.clone())
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .child(line.row.modified.clone()),
+                            Column::Kind => cell
+                                .pl(px(CELL_PAD))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(line.row.face.kind()),
-                        )
-                        .child(div().w(px(PANE_INSET)).flex_none())
-                        .on_click(move |event: &ClickEvent, window, cx| {
+                            // `list_columns` never holds Name — that is the flexible cell already
+                            // rendered above — so this arm keeps the match exhaustive without
+                            // putting some other column's text in a Name-shaped slot.
+                            Column::Name => cell,
+                        });
+                    }
+                    row.child(div().w(px(PANE_INSET)).flex_none()).on_click(
+                        move |event: &ClickEvent, window, cx| {
                             let (extend, toggle, twice) = match event {
                                 ClickEvent::Mouse(mouse) => (
                                     mouse.up.modifiers.shift,
@@ -240,7 +240,8 @@ impl FinderDemo {
                                 cx.notify();
                             })
                             .ok();
-                        })
+                        },
+                    )
                 })
                 .collect::<Vec<_>>()
         })
