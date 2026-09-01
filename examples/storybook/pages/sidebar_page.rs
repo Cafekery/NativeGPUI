@@ -57,6 +57,7 @@ pub struct State {
     pub toolbar: bool,
     pub collapsed: bool,
     pub expand_groups: bool,
+    pub reorderable: bool,
     pub row_size: usize,
     pub backdrop: usize,
     pub align: usize,
@@ -73,6 +74,7 @@ impl Default for State {
             toolbar: defaults.toolbar,
             collapsed: defaults.collapsed,
             expand_groups: defaults.expand_groups,
+            reorderable: defaults.reorderable,
             row_size: 0,
             backdrop: 0,
             align: 0,
@@ -89,6 +91,7 @@ impl State {
             toolbar: self.toolbar,
             collapsed: self.collapsed,
             expand_groups: self.expand_groups,
+            reorderable: self.reorderable,
             row_size: ROW_SIZES[self.row_size].1,
             align: ALIGNS[self.align].1,
             adopt_below_layer: SidebarOptions::default().adopt_below_layer,
@@ -327,10 +330,11 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         d.sidebar_page.min,
         d.sidebar_page.max,
     );
-    let (toolbar, collapsed, expand_groups) = (
+    let (toolbar, collapsed, expand_groups, reorderable) = (
         d.sidebar_page.toolbar,
         d.sidebar_page.collapsed,
         d.sidebar_page.expand_groups,
+        d.sidebar_page.reorderable,
     );
     let (row_size, backdrop, align) = (
         d.sidebar_page.row_size,
@@ -494,6 +498,17 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         .into_any_element(),
                 ),
                 knob(
+                    "reorderable",
+                    reorderable.to_string(),
+                    native_switch("reorderable", reorderable)
+                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
+                            d.sidebar_page.reorderable = *value;
+                            push(d, cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                knob(
                     "backdrop",
                     BACKDROPS[backdrop].0,
                     native_popup("backdrop", backdrop)
@@ -566,6 +581,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ("set_row_size / set_thickness", "live".into()),
             ("set_toolbar / set_collapsed", "live".into()),
             ("set_expand_groups / set_backdrop", "live".into()),
+            (
+                "reorderable",
+                "install-only; reopen the window after changing it".into(),
+            ),
             (
                 "adopt_below_layer",
                 "install-only; needs a Layer::Below host to show anything".into(),

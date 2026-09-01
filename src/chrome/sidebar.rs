@@ -31,21 +31,26 @@ use std::rc::Rc;
 use gpui::{AnyWindowHandle, App, AsyncWindowContext, Global, Pixels, SharedString, Window, px};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
-use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send};
+use objc2::{
+    AnyThread, ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSColor, NSControlTextEditingDelegate, NSFont,
-    NSImage, NSImageAlignment, NSImageScaling, NSImageView, NSLineBreakMode, NSOutlineView,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSScreen, NSScrollView, NSSplitViewController,
-    NSSplitViewItem, NSTableCellView, NSTableColumn, NSTableColumnResizingOptions,
-    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle,
-    NSTableViewStyle, NSTextAlignment, NSTextField, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification,
-    NSView, NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition,
+    NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSFont,
+    NSFontWeightRegular, NSImage, NSImageAlignment, NSImageScaling, NSImageSymbolConfiguration,
+    NSImageView, NSLineBreakMode, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate,
+    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardWriting, NSScreen, NSScrollView,
+    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle,
+    NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment, NSTextField, NSToolbar,
+    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier,
+    NSUserInterfaceItemIdentification, NSView, NSViewController, NSVisualEffectBlendingMode,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSNumber,
-    NSObject, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
+    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
 
 use crate::Material;
@@ -58,13 +63,37 @@ use crate::tokens;
 /// [`SidebarRowSize`]) but none for a badge, which `NSTableCellView` has no outlet for.
 pub const BADGE_GAP: f64 = 6.0;
 
+/// Where the system keeps the sidebar artwork Finder draws for the rows SF Symbols do not cover.
+/// World-readable, no entitlement, and its images are monochrome and templatable.
+pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bundle";
+
+/// Where a row's glyph comes from.
+///
+/// [`Symbol`](Self::Symbol) is the answer for nearly every row, and that is a measurement rather
+/// than a preference: scored against a capture of the real thing, macOS 26's Finder draws SF
+/// Symbols for most of its own sidebar — `hammer` 0.945, `house` 0.975, `trash` 0.974,
+/// `network` 0.864 — and reaches for Apple's own artwork only where the public catalogue has
+/// nothing. Reach for [`SystemResource`](Self::SystemResource) on that evidence, per row, never as
+/// a blanket rule: a whole sidebar drawn from [`CORE_TYPES_BUNDLE`] is a set Finder has mostly
+/// abandoned and scores *worse* — `compass.drawing` is the wrong glyph for Applications, but
+/// `SidebarDocumentsFolder` is equally wrong for Documents at 0.076 against `doc`'s 0.802.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SidebarIcon {
+    /// An SF Symbol name. One the running macOS does not know renders as no icon.
+    Symbol(SharedString),
+    /// A monochrome image resource in [`CORE_TYPES_BUNDLE`], drawn as a template so the row's
+    /// selection colours still reach it.
+    SystemResource(SharedString),
+}
+
 /// One row. Build with [`sidebar_item`] or [`sidebar_group`].
 #[derive(Clone, Debug)]
 pub struct SidebarItem {
     id: SharedString,
     title: SharedString,
-    symbol: Option<SharedString>,
+    icon: Option<SidebarIcon>,
     badge: Option<i64>,
+    eject: bool,
     group: bool,
     children: Vec<SidebarItem>,
 }
@@ -74,8 +103,9 @@ pub fn sidebar_item(id: impl Into<SharedString>, title: impl Into<SharedString>)
     SidebarItem {
         id: id.into(),
         title: title.into(),
-        symbol: None,
+        icon: None,
         badge: None,
+        eject: false,
         group: false,
         children: Vec::new(),
     }
@@ -91,8 +121,24 @@ pub fn sidebar_group(id: impl Into<SharedString>, title: impl Into<SharedString>
 
 impl SidebarItem {
     /// An SF Symbol name. One the running macOS does not know renders as no icon.
-    pub fn symbol(mut self, name: impl Into<SharedString>) -> Self {
-        self.symbol = Some(name.into());
+    pub fn symbol(self, name: impl Into<SharedString>) -> Self {
+        self.icon(SidebarIcon::Symbol(name.into()))
+    }
+
+    /// A [`CORE_TYPES_BUNDLE`] resource, e.g. `SidebarAirDrop`.
+    pub fn system_image(self, resource: impl Into<SharedString>) -> Self {
+        self.icon(SidebarIcon::SystemResource(resource.into()))
+    }
+
+    pub fn icon(mut self, icon: SidebarIcon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Show the trailing eject affordance a mounted volume has. Clicks arrive at
+    /// [`NativeSidebar::on_eject`]; the sidebar itself unmounts nothing.
+    pub fn ejectable(mut self, ejectable: bool) -> Self {
+        self.eject = ejectable;
         self
     }
 
@@ -122,8 +168,9 @@ struct Node {
     key: u64,
     id: SharedString,
     title: SharedString,
-    symbol: Option<SharedString>,
+    icon: Option<SidebarIcon>,
     badge: Option<i64>,
+    eject: bool,
     group: bool,
     parent: Option<usize>,
     children: Vec<usize>,
@@ -134,8 +181,9 @@ impl Node {
     fn content(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.title.hash(&mut hasher);
-        self.symbol.hash(&mut hasher);
+        self.icon.hash(&mut hasher);
         self.badge.hash(&mut hasher);
+        self.eject.hash(&mut hasher);
         self.group.hash(&mut hasher);
         self.children.is_empty().hash(&mut hasher);
         hasher.finish()
@@ -165,8 +213,9 @@ impl Model {
                 key,
                 id: item.id.clone(),
                 title: item.title.clone(),
-                symbol: item.symbol.clone(),
+                icon: item.icon.clone(),
                 badge: item.badge,
+                eject: item.eject,
                 group: item.group,
                 parent,
                 children: Vec::new(),
@@ -202,6 +251,29 @@ impl Model {
     fn parent_key(&self, key: u64) -> Option<u64> {
         let index = *self.by_key.get(&key)?;
         self.nodes[index].parent.map(|p| self.nodes[p].key)
+    }
+
+    /// Move a child within its own parent. `to` is the index it should end up at *after* the
+    /// removal, which is the convention `moveItemAtIndex:inParent:toIndex:inParent:` uses, so the
+    /// model and AppKit take the same number.
+    fn move_child(&mut self, parent: Option<u64>, from: usize, to: usize) -> bool {
+        let parent_index = match parent {
+            None => None,
+            Some(key) => match self.by_key.get(&key) {
+                Some(&index) => Some(index),
+                None => return false,
+            },
+        };
+        let list = match parent_index {
+            None => &mut self.roots,
+            Some(index) => &mut self.nodes[index].children,
+        };
+        if from >= list.len() || to >= list.len() {
+            return false;
+        }
+        let moved = list.remove(from);
+        list.insert(to, moved);
+        true
     }
 
     /// Parents before children — `apply_diff` reloads everything if a child is visited first.
@@ -275,6 +347,19 @@ impl SidebarRowSize {
             Self::Large => NSTableViewRowSizeStyle::Large,
         }
     }
+
+    /// Height of the icon box `NSTableCellView` lays out for this class, in points.
+    ///
+    /// Read off a laid-out source-list cell on 26.5: the image view comes out 20x15 at
+    /// [`Small`](Self::Small), 23x19 at [`Medium`](Self::Medium), 27x21 at [`Large`](Self::Large).
+    /// The box is wider than it is tall, so the height is what a square glyph gets to use.
+    fn icon_points(style: NSTableViewRowSizeStyle) -> f64 {
+        match style {
+            NSTableViewRowSizeStyle::Small => 15.,
+            NSTableViewRowSizeStyle::Large => 21.,
+            _ => 19.,
+        }
+    }
 }
 
 /// Configuration honoured on the first [`NativeSidebar::install`] for a window.
@@ -295,6 +380,17 @@ pub struct SidebarOptions {
     /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame
     /// onto them. Without it `setContentViewController:` detaches them from the window.
     pub adopt_below_layer: bool,
+    /// Let the user drag a row to a new place among its own siblings, reported through
+    /// [`NativeSidebar::on_reorder`]. Cross-group drops are refused, which is what Finder does.
+    ///
+    /// This changes when a plain click takes effect, and that is AppKit's doing rather than a
+    /// choice made here: a table whose data source merely **defines**
+    /// `outlineView:pasteboardWriterForItem:` stops committing the selection on mouse-down and
+    /// commits it on mouse-up instead — measured both ways, and true even when the method returns
+    /// nil, because AppKit asks `respondsToSelector:` and never calls it. So a sidebar that can be
+    /// dragged does not light up under a held finger, and one that cannot does. The option exists
+    /// to keep that from being imposed on a caller who wanted a plain list.
+    pub reorderable: bool,
     /// A window-spanning backdrop, inserted beneath both panes. **This is the sidebar's vibrancy,
     /// not the window's background** — the content pane paints [`tokens::WINDOW_BACKGROUND`] over
     /// it, so only the sidebar strip is left showing it.
@@ -330,6 +426,7 @@ impl Default for SidebarOptions {
             row_size: SidebarRowSize::default(),
             align: PaneAlign::WindowAligned,
             adopt_below_layer: true,
+            reorderable: false,
             backdrop: Some(Material::WindowBackground),
         }
     }
@@ -409,7 +506,20 @@ pub struct RowLayout {
     pub expanded: bool,
 }
 
+/// A reorder the user just performed. See [`NativeSidebar::on_reorder`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SidebarMove {
+    /// The row that moved.
+    pub id: SharedString,
+    /// The group it belongs to; `None` for a root row.
+    pub parent: Option<SharedString>,
+    /// Its new index among its siblings.
+    pub index: usize,
+}
+
 type SelectHandler = Rc<dyn Fn(&Option<SharedString>, &mut Window, &mut App)>;
+type ReorderHandler = Rc<dyn Fn(&SidebarMove, &mut Window, &mut App)>;
+type EjectHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 
 /// Shared with the outline view's data source and delegate.
 ///
@@ -419,6 +529,8 @@ struct Shared {
     model: RefCell<Model>,
     interned: RefCell<HashMap<u64, Retained<NSNumber>>>,
     on_select: RefCell<Option<SelectHandler>>,
+    on_reorder: RefCell<Option<ReorderHandler>>,
+    on_eject: RefCell<Option<EjectHandler>>,
     /// Non-zero while we drive the selection ourselves, so the round-trip does not echo.
     suppress: Cell<u32>,
     writes: Cell<u64>,
@@ -464,8 +576,10 @@ struct Views {
     split: Retained<NSSplitViewController>,
     sidebar_item: Retained<NSSplitViewItem>,
     pane: Retained<ContentPane>,
-    /// `setDataSource:`/`setDelegate:` are weak, so this must outlive the outline view.
-    _source: Retained<OutlineSource>,
+    /// `setDataSource:`/`setDelegate:` are weak, so this must outlive the outline view. Typed as
+    /// the common superclass because which of the two source classes it is depends on
+    /// [`SidebarOptions::reorderable`].
+    _source: Retained<NSObject>,
     /// Kept built even while detached, so [`NativeSidebar::set_toolbar`] can put it back.
     toolbar: Retained<NSToolbar>,
     _toolbar_delegate: Retained<SidebarToolbarDelegate>,
@@ -584,6 +698,22 @@ impl NativeSidebar {
         handler: impl Fn(&Option<SharedString>, &mut Window, &mut App) + 'static,
     ) {
         *self.0.shared.on_select.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// Called when the user drags a row to a new place, once the outline view has already moved
+    /// it. The host applies the same move to its own data; the next [`NativeSidebar::update`]
+    /// then diffs to nothing. A host that ignores it puts the row back on the next update, which
+    /// is the right answer if the host's order is the truth.
+    ///
+    /// Does nothing unless the sidebar was installed with [`SidebarOptions::reorderable`].
+    pub fn on_reorder(&self, handler: impl Fn(&SidebarMove, &mut Window, &mut App) + 'static) {
+        *self.0.shared.on_reorder.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// Called with the row's id when the user clicks its eject affordance. The sidebar unmounts
+    /// nothing and does not remove the row: what ejecting means is the host's to decide.
+    pub fn on_eject(&self, handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static) {
+        *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
 
     /// Collapse or expand with AppKit's own animation — the toolbar item's own code path.
@@ -1064,13 +1194,27 @@ impl ContentPane {
 
 struct CellIvars {
     badge: RefCell<Option<Retained<NSTextField>>>,
+    eject: RefCell<Option<Retained<NSButton>>>,
+}
+
+impl CellIvars {
+    /// The one thing on a row's trailing edge. Exclusive on purpose: a volume has an eject and a
+    /// mailbox has a count, and no Mac sidebar puts both on one row.
+    fn trailing(&self) -> Option<Retained<NSView>> {
+        let visible = |view: &NSView| !view.isHidden();
+        if let Some(eject) = self.eject.borrow().clone().filter(|v| visible(v)) {
+            return Some(Retained::into_super(Retained::into_super(eject)));
+        }
+        let badge = self.badge.borrow().clone().filter(|v| visible(v))?;
+        Some(Retained::into_super(Retained::into_super(badge)))
+    }
 }
 
 define_class!(
     /// A source-list row. `NSTableCellView` lays out its `textField` and `imageView` outlets from
     /// `rowSizeStyle`, so `super`'s layout is what puts the icon and the label where the system
-    /// wants them — matching Finder to the point. This override only adds the count badge, which
-    /// `NSTableCellView` has no outlet for and therefore never places.
+    /// wants them — matching Finder to the point. This override only adds the trailing accessory,
+    /// which `NSTableCellView` has no outlet for and therefore never places.
     #[unsafe(super(NSTableCellView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarCell"]
@@ -1087,12 +1231,12 @@ define_class!(
             // icon box and pulls that one row's label left of every sibling's. Nil draws nothing
             // on its own, so the row loses its glyph and keeps its alignment.
 
-            let Some(badge) = self.ivars().badge.borrow().clone().filter(|b| !b.isHidden()) else {
+            let Some(trailing) = self.ivars().trailing() else {
                 return;
             };
             let bounds = self.bounds();
-            let size = badge.fittingSize();
-            badge.setFrame(NSRect::new(
+            let size = trailing.fittingSize();
+            trailing.setFrame(NSRect::new(
                 NSPoint::new(
                     bounds.size.width - size.width,
                     ((bounds.size.height - size.height) / 2.).round(),
@@ -1125,9 +1269,19 @@ fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
     field
 }
 
-fn make_cell(mtm: MainThreadMarker, identifier: &str, with_icon: bool) -> Retained<SidebarCell> {
+/// Point size that renders `eject`'s ink at Finder's measured 9.5 x 9.5pt. The `.fill` variant
+/// comes out 9.5 x 9.0 at the same size, so the outline is the one Finder draws.
+const EJECT_POINTS: f64 = 10.0;
+
+fn make_cell(
+    mtm: MainThreadMarker,
+    identifier: &str,
+    with_icon: bool,
+    target: &AnyObject,
+) -> Retained<SidebarCell> {
     let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
         badge: RefCell::new(None),
+        eject: RefCell::new(None),
     });
     let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
     cell.setIdentifier(Some(&NSString::from_str(identifier)));
@@ -1158,10 +1312,105 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, with_icon: bool) -> Retain
     cell.addSubview(&badge);
     *cell.ivars().badge.borrow_mut() = Some(badge);
 
+    let eject = NSButton::new(mtm);
+    eject.setBordered(false);
+    eject.setImagePosition(NSCellImagePosition::ImageOnly);
+    eject.setImage(
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str("eject"),
+            Some(&NSString::from_str("Eject")),
+        )
+        .and_then(|image| {
+            image.imageWithSymbolConfiguration(
+                &NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                    EJECT_POINTS,
+                    unsafe { NSFontWeightRegular },
+                ),
+            )
+        })
+        .as_deref(),
+    );
+    // Finder's eject ink measures 94 peak against its row labels' 244 — a ratio of 0.385, and the
+    // tiers over that background resolve to 220 / 152 / 83 / 49, i.e. 1.00 / 0.69 / 0.38 / 0.22.
+    // The ratio is the statistic to compare, not the absolute: it is taken inside one capture, so
+    // it survives the colour space the capture was written in.
+    eject.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
+    eject.setHidden(true);
+    unsafe {
+        eject.setTarget(Some(target));
+        eject.setAction(Some(sel!(ngSidebarEject:)));
+    }
+    cell.addSubview(&eject);
+    *cell.ivars().eject.borrow_mut() = Some(eject);
+
     cell
 }
 
-fn configure_cell(cell: &SidebarCell, node: &Node) {
+/// A [`SidebarIcon::SystemResource`] as a template image sized for a `points`-tall icon box.
+///
+/// The image is built to hold the representations of **one point size**, because in this bundle a
+/// point size and a pixel size are different questions: `SidebarAirDrop`'s 16pt@2x rep and its
+/// 32pt@1x rep are both 32 pixels square and are *different drawings* — three arcs against four,
+/// scoring 0.35 against each other where two reps of one drawing score 0.89. Gather by pixels and
+/// a 32pt image ends up carrying both, leaving the drawing to whichever rep the scale factor
+/// happens to select; nothing in a build or a screenshot diff would say so. Handing the whole
+/// eight-rep image straight to an image view has the same defect for the same reason.
+fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSImage>> {
+    thread_local! {
+        /// The reps are shared with the bundle's own image, so an entry costs a handle, not pixels.
+        static TEMPLATES: RefCell<HashMap<(SharedString, u32), Option<Retained<NSImage>>>> =
+            RefCell::new(HashMap::new());
+    }
+    let key = (name.clone(), points as u32);
+    if let Some(hit) = TEMPLATES.with_borrow(|cache| cache.get(&key).cloned()) {
+        return hit;
+    }
+    let built = build_core_types_template(name, points);
+    TEMPLATES.with_borrow_mut(|cache| cache.insert(key, built.clone()));
+    built
+}
+
+/// Nearest available representation, in points, ties to the smaller.
+fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> Option<f64> {
+    available.into_iter().fold(None, |held, candidate| {
+        let better = held.is_none_or(|held: f64| {
+            let (a, b) = ((candidate - wanted).abs(), (held - wanted).abs());
+            a < b || (a == b && candidate < held)
+        });
+        Some(if better { candidate } else { held? })
+    })
+}
+
+/// Load a [`CORE_TYPES_BUNDLE`] resource as a template image, taking the representations of the
+/// point size nearest `points`.
+///
+/// Public because the same artwork is the right answer outside a sidebar row — a toolbar item for
+/// AirDrop has the same problem and the same solution. See [`SidebarIcon::SystemResource`] for
+/// when to reach for this instead of a symbol.
+pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
+    build_core_types_template(resource, points.to_f64())
+}
+
+fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage>> {
+    let bundle = NSBundle::bundleWithPath(&NSString::from_str(CORE_TYPES_BUNDLE))?;
+    let source = bundle.imageForResource(&NSString::from_str(name))?;
+    let reps = source.representations();
+    let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(chosen, chosen));
+    for rep in reps.iter() {
+        // Both scales of the chosen point size, so moving the window to another display still
+        // finds a rep and does not fall back to resampling the one that is left.
+        if rep.size().width == chosen {
+            image.addRepresentation(&rep);
+        }
+    }
+    // The bundle's images come through with `isTemplate` false, so nothing would tint them and a
+    // black glyph is invisible in dark mode.
+    image.setTemplate(true);
+    Some(image)
+}
+
+fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     if let Some(title) = unsafe { cell.textField() } {
         let wanted = NSString::from_str(&node.title);
         if title.stringValue() != wanted {
@@ -1169,17 +1418,18 @@ fn configure_cell(cell: &SidebarCell, node: &Node) {
         }
     }
 
-    if let Some(icon) = unsafe { cell.imageView() } {
-        match &node.symbol {
-            Some(name) => {
-                let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+    if let Some(view) = unsafe { cell.imageView() } {
+        let image = match &node.icon {
+            Some(SidebarIcon::Symbol(name)) => {
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str(name),
                     None,
-                );
-                icon.setImage(image.as_deref());
+                )
             }
-            None => icon.setImage(None),
-        }
+            Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
+            None => None,
+        };
+        view.setImage(image.as_deref());
     }
 
     if let Some(badge) = cell.ivars().badge.borrow().as_ref() {
@@ -1195,6 +1445,10 @@ fn configure_cell(cell: &SidebarCell, node: &Node) {
         }
     }
 
+    if let Some(eject) = cell.ivars().eject.borrow().as_ref() {
+        eject.setHidden(!node.eject);
+    }
+
     cell.setNeedsLayout(true);
 }
 
@@ -1204,6 +1458,7 @@ fn row_view(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
     item: &AnyObject,
+    target: &AnyObject,
 ) -> Option<Retained<NSView>> {
     let mtm = MainThreadMarker::new().expect("outline view callbacks are main-thread");
     let model = shared.model.borrow();
@@ -1211,7 +1466,7 @@ fn row_view(
 
     let (identifier, with_icon) = if node.group {
         (ID_GROUP, false)
-    } else if node.symbol.is_some() {
+    } else if node.icon.is_some() {
         (ID_ICON, true)
     } else {
         (ID_PLAIN, false)
@@ -1220,119 +1475,407 @@ fn row_view(
 
     let cell = match unsafe { outline.makeViewWithIdentifier_owner(&name, Some(outline)) } {
         Some(view) => unsafe { Retained::cast_unchecked::<SidebarCell>(view) },
-        None => make_cell(mtm, identifier, with_icon),
+        None => make_cell(mtm, identifier, with_icon, target),
     };
-    configure_cell(&cell, node);
+    configure_cell(
+        &cell,
+        node,
+        SidebarRowSize::icon_points(outline.effectiveRowSizeStyle()),
+    );
     Some(unsafe { Retained::cast_unchecked::<NSView>(cell) })
 }
 
-define_class!(
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "NGSidebarSource"]
-    #[ivars = Rc<Shared>]
-    struct OutlineSource;
+/// The bodies both source classes share.
+///
+/// Free functions rather than an inheritance chain: `objc2`'s `set_ivars` fills **one** class's
+/// slot, so a subclass that declares its own ivars leaves the superclass's unset and every
+/// inherited method reading it panics on the first callback. Two siblings over one set of bodies
+/// has no such contract to get wrong.
+mod source {
+    use super::*;
 
-    unsafe impl NSObjectProtocol for OutlineSource {}
-
-    unsafe impl NSOutlineViewDataSource for OutlineSource {
-        #[unsafe(method(outlineView:numberOfChildrenOfItem:))]
-        fn number_of_children(&self, _: &NSOutlineView, item: Option<&AnyObject>) -> NSInteger {
-            let shared = self.ivars();
-            let model = shared.model.borrow();
-            match item {
-                None => model.roots.len() as NSInteger,
-                Some(item) => model
-                    .node(Shared::key_of_item(item))
-                    .map_or(0, |node| node.children.len() as NSInteger),
-            }
-        }
-
-        #[unsafe(method_id(outlineView:child:ofItem:))]
-        fn child(
-            &self,
-            _: &NSOutlineView,
-            index: NSInteger,
-            item: Option<&AnyObject>,
-        ) -> Retained<AnyObject> {
-            let shared = self.ivars().clone();
-            let key = {
-                let model = shared.model.borrow();
-                let indices = match item {
-                    None => model.roots.clone(),
-                    Some(item) => model
-                        .node(Shared::key_of_item(item))
-                        .map(|node| node.children.clone())
-                        .unwrap_or_default(),
-                };
-                indices
-                    .get(index as usize)
-                    .map(|&i| model.nodes[i].key)
-                    .unwrap_or(0)
-            };
-            shared.item(key)
-        }
-
-        #[unsafe(method(outlineView:isItemExpandable:))]
-        fn is_expandable(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
-            self.ivars()
-                .model
-                .borrow()
+    pub(super) fn children(shared: &Rc<Shared>, item: Option<&AnyObject>) -> NSInteger {
+        let model = shared.model.borrow();
+        match item {
+            None => model.roots.len() as NSInteger,
+            Some(item) => model
                 .node(Shared::key_of_item(item))
-                .is_some_and(|node| !node.children.is_empty())
+                .map_or(0, |node| node.children.len() as NSInteger),
         }
     }
 
-    unsafe impl NSControlTextEditingDelegate for OutlineSource {}
-
-    unsafe impl NSOutlineViewDelegate for OutlineSource {
-        #[unsafe(method(outlineView:isGroupItem:))]
-        fn is_group_item(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
-            self.ivars()
-                .model
-                .borrow()
-                .node(Shared::key_of_item(item))
-                .is_some_and(|node| node.group)
-        }
-
-        #[unsafe(method(outlineView:shouldSelectItem:))]
-        fn should_select(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
-            self.ivars()
-                .model
-                .borrow()
-                .node(Shared::key_of_item(item))
-                .is_some_and(|node| !node.group)
-        }
-
-        #[unsafe(method_id(outlineView:viewForTableColumn:item:))]
-        fn view_for_item(
-            &self,
-            outline: &NSOutlineView,
-            _: Option<&NSTableColumn>,
-            item: &AnyObject,
-        ) -> Option<Retained<NSView>> {
-            row_view(self.ivars(), outline, item)
-        }
-
-        #[unsafe(method(outlineViewSelectionDidChange:))]
-        fn selection_did_change(&self, _: &NSNotification) {
-            let shared = self.ivars().clone();
-            if shared.suppress.get() > 0 {
-                return;
-            }
-            let Some(handler) = shared.on_select.borrow().clone() else {
-                return;
+    pub(super) fn child(
+        shared: &Rc<Shared>,
+        index: NSInteger,
+        item: Option<&AnyObject>,
+    ) -> Retained<AnyObject> {
+        let key = {
+            let model = shared.model.borrow();
+            let indices = match item {
+                None => model.roots.clone(),
+                Some(item) => model
+                    .node(Shared::key_of_item(item))
+                    .map(|node| node.children.clone())
+                    .unwrap_or_default(),
             };
-            // Read the id now, not in the task: the row may be gone by the time it runs.
-            let id = shared.selected_id();
-            shared
-                .cx
-                .borrow()
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| handler(&id, window, app));
-                })
-                .detach();
+            indices
+                .get(index as usize)
+                .map(|&i| model.nodes[i].key)
+                .unwrap_or(0)
+        };
+        shared.item(key)
+    }
+
+    pub(super) fn expandable(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+        shared
+            .model
+            .borrow()
+            .node(Shared::key_of_item(item))
+            .is_some_and(|node| !node.children.is_empty())
+    }
+
+    pub(super) fn is_group(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+        shared
+            .model
+            .borrow()
+            .node(Shared::key_of_item(item))
+            .is_some_and(|node| node.group)
+    }
+
+    pub(super) fn selectable(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+        shared
+            .model
+            .borrow()
+            .node(Shared::key_of_item(item))
+            .is_some_and(|node| !node.group)
+    }
+
+    pub(super) fn selection_changed(shared: &Rc<Shared>) {
+        if shared.suppress.get() > 0 {
+            return;
         }
+        let Some(handler) = shared.on_select.borrow().clone() else {
+            return;
+        };
+        // Read the id now, not in the task: the row may be gone by the time it runs.
+        let id = shared.selected_id();
+        let shared = shared.clone();
+        shared
+            .cx
+            .borrow()
+            .spawn(async move |cx| {
+                let _ = cx.update(|window, app| handler(&id, window, app));
+            })
+            .detach();
+    }
+
+    pub(super) fn eject_clicked(shared: &Rc<Shared>, sender: &NSView) {
+        let Some(outline) = shared.outline.borrow().clone() else {
+            return;
+        };
+        let row = outline.rowForView(sender);
+        let Some(item) = (row >= 0).then(|| outline.itemAtRow(row)).flatten() else {
+            return;
+        };
+        let Some(id) = shared.model.borrow().id_for(Shared::key_of_item(&item)) else {
+            return;
+        };
+        let Some(handler) = shared.on_eject.borrow().clone() else {
+            return;
+        };
+        shared
+            .cx
+            .borrow()
+            .spawn(async move |cx| {
+                let _ = cx.update(|window, app| handler(&id, window, app));
+            })
+            .detach();
+    }
+}
+
+/// Everything a source class does, so the two of them differ only by the drag methods.
+///
+/// A macro because `define_class!` parses its own body and cannot have another macro expanded
+/// inside it, so sharing the eight shared methods means generating the whole class.
+macro_rules! outline_source {
+    ($(#[$meta:meta])* $class:ident, $name:literal, $($drag:tt)*) => {
+define_class!(
+    $(#[$meta])*
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = $name]
+    #[ivars = Rc<Shared>]
+    struct $class;
+
+        unsafe impl NSObjectProtocol for $class {}
+
+        impl $class {
+            /// `setTarget:` is weak, and this object outlives every cell because the sidebar
+            /// retains it, so the buttons can point straight here without a second sink.
+            #[unsafe(method(ngSidebarEject:))]
+            fn eject_clicked(&self, sender: &NSView) {
+                source::eject_clicked(self.ivars(), sender)
+            }
+        }
+
+        unsafe impl NSOutlineViewDataSource for $class {
+            #[unsafe(method(outlineView:numberOfChildrenOfItem:))]
+            fn number_of_children(&self, _: &NSOutlineView, item: Option<&AnyObject>) -> NSInteger {
+                source::children(self.ivars(), item)
+            }
+
+            #[unsafe(method_id(outlineView:child:ofItem:))]
+            fn child(
+                &self,
+                _: &NSOutlineView,
+                index: NSInteger,
+                item: Option<&AnyObject>,
+            ) -> Retained<AnyObject> {
+                source::child(self.ivars(), index, item)
+            }
+
+            #[unsafe(method(outlineView:isItemExpandable:))]
+            fn is_expandable(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+                source::expandable(self.ivars(), item)
+            }
+
+            $($drag)*
+        }
+
+        unsafe impl NSControlTextEditingDelegate for $class {}
+
+        unsafe impl NSOutlineViewDelegate for $class {
+            #[unsafe(method(outlineView:isGroupItem:))]
+            fn is_group_item(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+                source::is_group(self.ivars(), item)
+            }
+
+            #[unsafe(method(outlineView:shouldSelectItem:))]
+            fn should_select(&self, _: &NSOutlineView, item: &AnyObject) -> bool {
+                source::selectable(self.ivars(), item)
+            }
+
+            #[unsafe(method_id(outlineView:viewForTableColumn:item:))]
+            fn view_for_item(
+                &self,
+                outline: &NSOutlineView,
+                _: Option<&NSTableColumn>,
+                item: &AnyObject,
+            ) -> Option<Retained<NSView>> {
+                row_view(self.ivars(), outline, item, self.as_ref())
+            }
+
+            #[unsafe(method(outlineViewSelectionDidChange:))]
+            fn selection_did_change(&self, _: &NSNotification) {
+                source::selection_changed(self.ivars())
+            }
+        }
+);
+    };
+}
+
+outline_source!(OutlineSource, "NGSidebarSource",);
+
+/// The pasteboard type a sidebar row travels under. Private on purpose: a row key means nothing
+/// outside the sidebar that issued it, and a public type would invite other views to accept one.
+const ROW_PASTEBOARD_TYPE: &str = "com.native-gpui.sidebar-row";
+
+fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
+    let text = info
+        .draggingPasteboard()
+        .stringForType(&NSString::from_str(ROW_PASTEBOARD_TYPE))?;
+    text.to_string().parse().ok()
+}
+
+/// Resolve AppKit's proposal into a gap between two siblings, as `(parent, child index)`.
+///
+/// AppKit proposes a drop *onto* whichever row the pointer is over for most of that row's height,
+/// and a sidebar never accepts one — so without this the insertion line would exist only in the
+/// couple of points between rows and blink out everywhere else. A drop onto a group header lands
+/// at the top of that group, which is the only reading of it that means anything.
+fn drop_target(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> Option<(Option<u64>, usize)> {
+    if index != NSOutlineViewDropOnItemIndex as NSInteger {
+        return Some((item.map(Shared::key_of_item), index.max(0) as usize));
+    }
+    let key = Shared::key_of_item(item?);
+    let model = shared.model.borrow();
+    if model.node(key)?.group {
+        return Some((Some(key), 0));
+    }
+    let parent = model.parent_key(key);
+    let at = model.children_keys(parent).iter().position(|&k| k == key)?;
+    let row = unsafe { outline.rowForItem(item) };
+    let rect = outline.rectOfRow(row);
+    let point = outline.convertPoint_fromView(info.draggingLocation(), None);
+    // An outline view is flipped, so a larger y is further down the list.
+    let below = point.y > rect.origin.y + rect.size.height / 2.;
+    Some((parent, at + usize::from(below)))
+}
+
+/// Free functions for the same reason [`row_view`] is one: the method macros wrap a body's tail
+/// expression, so an early `return` inside one does not typecheck against the wrapped type.
+fn row_pasteboard_item(
+    shared: &Rc<Shared>,
+    item: &AnyObject,
+) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
+    let key = Shared::key_of_item(item);
+    if !shared
+        .model
+        .borrow()
+        .node(key)
+        .is_some_and(|node| !node.group)
+    {
+        return None;
+    }
+    let entry = NSPasteboardItem::new();
+    entry.setString_forType(
+        &NSString::from_str(&key.to_string()),
+        &NSString::from_str(ROW_PASTEBOARD_TYPE),
+    );
+    Some(ProtocolObject::from_retained(entry))
+}
+
+fn validate_row_drop(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> NSDragOperation {
+    let Some(source) = dragged_key(info) else {
+        return NSDragOperation::empty();
+    };
+    let Some((parent, at)) = drop_target(shared, outline, info, item, index) else {
+        return NSDragOperation::empty();
+    };
+    // Siblings only. Finder refuses a Favorite dropped into Locations, and a sidebar whose groups
+    // mean different kinds of thing has nothing sensible to do with one.
+    if shared.model.borrow().parent_key(source) != parent {
+        return NSDragOperation::empty();
+    }
+    let parent_item = parent.map(|key| shared.item(key));
+    unsafe { outline.setDropItem_dropChildIndex(parent_item.as_deref(), at as NSInteger) };
+    NSDragOperation::Move
+}
+
+fn accept_row_drop(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> bool {
+    let Some(source) = dragged_key(info) else {
+        return false;
+    };
+    if index < 0 {
+        return false;
+    }
+    let parent = item.map(Shared::key_of_item);
+    let from = {
+        let model = shared.model.borrow();
+        if model.parent_key(source) != parent {
+            return false;
+        }
+        match model
+            .children_keys(parent)
+            .iter()
+            .position(|&k| k == source)
+        {
+            Some(at) => at,
+            None => return false,
+        }
+    };
+    // The drop index counts the row itself; both the model move and AppKit's count the list with
+    // the row already lifted out, so a downward move loses one.
+    let to = (index as usize).saturating_sub(usize::from(index as usize > from));
+    if to == from {
+        return true;
+    }
+    if !shared.model.borrow_mut().move_child(parent, from, to) {
+        return false;
+    }
+    shared.writes.set(shared.writes.get() + 1);
+    let parent_item = parent.map(|key| shared.item(key));
+    unsafe {
+        outline.moveItemAtIndex_inParent_toIndex_inParent(
+            from as NSInteger,
+            parent_item.as_deref(),
+            to as NSInteger,
+            parent_item.as_deref(),
+        );
+    }
+    let Some(handler) = shared.on_reorder.borrow().clone() else {
+        return true;
+    };
+    let moved = {
+        let model = shared.model.borrow();
+        SidebarMove {
+            id: model.id_for(source).unwrap_or_default(),
+            parent: parent.and_then(|key| model.id_for(key)),
+            index: to,
+        }
+    };
+    // Deferred for the same reason a selection is: GPUI may already hold its `App` borrow.
+    shared
+        .cx
+        .borrow()
+        .spawn(async move |cx| {
+            let _ = cx.update(|window, app| handler(&moved, window, app));
+        })
+        .detach();
+    true
+}
+
+outline_source!(
+    /// [`OutlineSource`] plus row dragging.
+    ///
+    /// A second class rather than a flag on the one class, because AppKit reads
+    /// `respondsToSelector:` and never asks what the method would have returned: defining
+    /// `outlineView:pasteboardWriterForItem:` at all is what moves the selection commit from
+    /// mouse-down to mouse-up. A `nil` return does not opt back out.
+    ///
+    /// A sibling and not a subclass. `objc2` fills exactly one class's ivar slot at `set_ivars`,
+    /// so a subclass carrying its own leaves the superclass's uninitialised, and the first
+    /// inherited callback panics reading it — invisible to every build and to `cargo test`,
+    /// because it takes launching the thing.
+    ReorderSource,
+    "NGSidebarReorderSource",
+    #[unsafe(method_id(outlineView:pasteboardWriterForItem:))]
+    fn pasteboard_writer(
+        &self,
+        _: &NSOutlineView,
+        item: &AnyObject,
+    ) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
+        row_pasteboard_item(self.ivars(), item)
+    }
+
+    #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
+    fn validate_drop(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+        item: Option<&AnyObject>,
+        index: NSInteger,
+    ) -> NSDragOperation {
+        validate_row_drop(self.ivars(), outline, info, item, index)
+    }
+
+    #[unsafe(method(outlineView:acceptDrop:item:childIndex:))]
+    fn accept_drop(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+        item: Option<&AnyObject>,
+        index: NSInteger,
+    ) -> bool {
+        accept_row_drop(self.ivars(), outline, info, item, index)
     }
 );
 
@@ -1735,13 +2278,33 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         model: RefCell::new(Model::default()),
         interned: RefCell::new(HashMap::new()),
         on_select: RefCell::new(None),
+        on_reorder: RefCell::new(None),
+        on_eject: RefCell::new(None),
         suppress: Cell::new(0),
         writes: Cell::new(0),
         cx: RefCell::new(window.to_async(cx)),
         expand_groups: Cell::new(options.expand_groups),
         outline: RefCell::new(None),
     });
-    let source = OutlineSource::new(mtm, shared.clone());
+    // Two classes, one of which merely *has* the drag methods. See [`ReorderSource`].
+    let (source, data_source, delegate) = match options.reorderable {
+        true => {
+            let this = ReorderSource::new(mtm, shared.clone());
+            (
+                Retained::into_super(this.clone()),
+                ProtocolObject::from_retained(this.clone()),
+                ProtocolObject::from_retained(this),
+            )
+        }
+        false => {
+            let this = OutlineSource::new(mtm, shared.clone());
+            (
+                Retained::into_super(this.clone()),
+                ProtocolObject::from_retained(this.clone()),
+                ProtocolObject::from_retained(this),
+            )
+        }
+    };
 
     let strip = NSRect::new(
         NSPoint::ZERO,
@@ -1774,8 +2337,17 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     outline.setRowSizeStyle(options.row_size.appkit());
     outline.setFloatsGroupRows(false);
     unsafe {
-        outline.setDataSource(Some(ProtocolObject::from_ref(&*source)));
-        outline.setDelegate(Some(ProtocolObject::from_ref(&*source)));
+        outline.setDataSource(Some(&data_source));
+        outline.setDelegate(Some(&delegate));
+    }
+    if options.reorderable {
+        outline.registerForDraggedTypes(&NSArray::from_slice(&[&*NSString::from_str(
+            ROW_PASTEBOARD_TYPE,
+        )]));
+        // Local only: a row key is meaningless to another process, and offering `Move` outside
+        // the app would let a drag land somewhere that cannot answer for it.
+        outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
+        outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::empty(), false);
     }
     *shared.outline.borrow_mut() = Some(outline.clone());
 
@@ -1949,5 +2521,59 @@ impl OutlineSource {
     fn new(mtm: MainThreadMarker, shared: Rc<Shared>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(shared);
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+impl ReorderSource {
+    fn new(mtm: MainThreadMarker, shared: Rc<Shared>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(shared);
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The eight `SidebarAirDrop` reps as the bundle ships them: 16/18/24/32 points, each at both
+    /// scales.
+    const AIRDROP_REP_POINTS: [f64; 8] = [16., 16., 18., 18., 24., 24., 32., 32.];
+
+    #[test]
+    fn a_medium_icon_box_resolves_to_the_three_arc_airdrop_rep() {
+        // A Medium box is 19pt and the reps are 16/18/24/32, so the box picks the drawing. 30
+        // resolving up to 32 is the arm that matters: 32 is the four-arc AirDrop, and it must be
+        // reachable when something really is that big rather than clamped away.
+        assert_eq!(
+            nearest_rep_points(
+                AIRDROP_REP_POINTS,
+                SidebarRowSize::icon_points(NSTableViewRowSizeStyle::Medium)
+            ),
+            Some(18.)
+        );
+        assert_eq!(
+            nearest_rep_points(
+                AIRDROP_REP_POINTS,
+                SidebarRowSize::icon_points(NSTableViewRowSizeStyle::Small)
+            ),
+            Some(16.)
+        );
+        assert_eq!(nearest_rep_points(AIRDROP_REP_POINTS, 30.), Some(32.));
+        assert_eq!(nearest_rep_points([], 19.), None);
+    }
+
+    #[test]
+    fn the_core_types_bundle_yields_a_sized_template() {
+        let image = build_core_types_template("SidebarAirDrop", 19.)
+            .expect("CoreTypes.bundle is world-readable and ships SidebarAirDrop");
+        assert!(image.isTemplate());
+        assert_eq!(image.size(), NSSize::new(18., 18.));
+        let points: Vec<f64> = image
+            .representations()
+            .iter()
+            .map(|rep| rep.size().width)
+            .collect();
+        assert_eq!(points, vec![18., 18.], "both scales of one point size");
+        assert!(build_core_types_template("SidebarNoSuchThing", 19.).is_none());
     }
 }
