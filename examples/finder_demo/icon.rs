@@ -4,6 +4,11 @@
 //! writes. The grid's column count is `FinderDemo::columns`, which lives in `main` because the
 //! keyboard needs it too.
 //!
+//! What real Finder draws here and this cannot is the **content thumbnail** — a movie's own first
+//! frame, a text file's own words. Those come from `QLThumbnailGenerator`, which needs a file on
+//! disk, and nothing in this demo reads the filesystem. A type lookup is the whole of what is
+//! reachable, so a `.mov` shows the QuickTime document artwork where Finder shows the video.
+//!
 //! Deliberately not here: the gallery view, which is a different arrangement of the same rows and
 //! lives in `gallery`.
 
