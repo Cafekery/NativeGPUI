@@ -11,13 +11,13 @@
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window, div, prelude::*, px, size};
-use native_gpui::native_button;
 use native_gpui::surfaces::{
-    NativePopover, NativeSheet, Popover, ShareItem, SharePicker, SharePickerEvent, SheetResponse,
-    SurfaceAnchor, SurfaceEdge, native_anchor, present_popover, present_share_picker,
-    present_sheet, share_service_count,
+    NativePopover, NativeSheet, Popover, PopoverBehavior, ShareItem, SharePicker, SharePickerEvent,
+    SheetResponse, SurfaceAnchor, SurfaceEdge, native_anchor, present_popover,
+    present_share_picker, present_sheet, share_service_count,
 };
 use native_gpui::tokens::{SystemColor, system_color};
+use native_gpui::{native_button, native_popup};
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSControlStateValueOn, NSSwitch, NSTextField,
@@ -25,12 +25,21 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
+/// `PopoverBehavior`, in the order the picker offers them.
+const BEHAVIORS: &[(&str, PopoverBehavior)] = &[
+    ("ApplicationDefined", PopoverBehavior::ApplicationDefined),
+    ("Transient", PopoverBehavior::Transient),
+    ("Semitransient", PopoverBehavior::Semitransient),
+];
+
 #[derive(Default)]
 pub struct State {
     pub anchor: SurfaceAnchor,
     pub share_anchor: SurfaceAnchor,
     pub popover: Option<NativePopover>,
     pub showing: Option<SurfaceEdge>,
+    /// Index into [`BEHAVIORS`]; read when the popover is presented, so it takes effect next open.
+    pub behavior: usize,
     /// Written only by the switch *inside* the popover.
     pub popover_says: Option<bool>,
     pub sheet: Option<NativeSheet>,
@@ -58,6 +67,7 @@ fn open_popover(d: &mut Demo, edge: SurfaceEdge, window: &mut Window, cx: &mut C
     let spec = Popover {
         size: size(px(280.), px(132.)),
         edge,
+        behavior: BEHAVIORS[d.surfaces.behavior.min(BEHAVIORS.len() - 1)].1,
         ..Default::default()
     };
     let entity = cx.weak_entity();
@@ -259,6 +269,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     let share_anchor = d.surfaces.share_anchor.clone();
     let showing = d.surfaces.showing;
     let popover_says = d.surfaces.popover_says;
+    let behavior = d.surfaces.behavior.min(BEHAVIORS.len() - 1);
     let sheet_ends = d.surfaces.sheet_ends;
     let last_response = d.surfaces.last_response;
     let services = d.surfaces.services;
@@ -313,6 +324,25 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "Above is NSRectEdge MinY, which reads backwards until you know the edge is \
              interpreted in the positioning view's space: the chrome host is flipped, so the \
              anchor's MinY is its top and the popover renders above it.",
+        ),
+        knob(
+            "behavior",
+            BEHAVIORS[behavior].0,
+            native_popup("popover-behavior", behavior)
+                .items(BEHAVIORS.iter().map(|(name, _)| *name))
+                .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
+                    d.surfaces.behavior = *value;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        ),
+        note(
+            "ApplicationDefined is the default because it closes only on NativePopover::close, \
+             and the other two self-dismiss on a click AppKit decides is outside — after which \
+             your open flag disagrees with the screen unless on_close clears it. This page wires \
+             on_close, so pick Transient, open a popover and click the background: the line below \
+             goes back to closed on its own. Semitransient survives clicks inside this window and \
+             closes on one outside it. Read on the next open, so choose before you present.",
         ),
         demo(
             "what the popover's switch wrote",
@@ -410,7 +440,11 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             (
                 "Popover { size, edge, behavior, animates }",
-                "280×132, ApplicationDefined".into(),
+                format!("280×132, {}", BEHAVIORS[behavior].0),
+            ),
+            (
+                "PopoverBehavior",
+                "ApplicationDefined (default) / Transient / Semitransient".into(),
             ),
             (
                 "SurfaceEdge { Above, Below, Left, Right }",

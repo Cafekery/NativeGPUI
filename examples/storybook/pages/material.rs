@@ -9,6 +9,7 @@
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, ElementId, Window, prelude::*, px};
+use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
     Blending, Layer, RawMaterial, material, native_popup, native_segmented, native_slider,
     native_switch,
@@ -164,8 +165,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "Exact collisions",
             vec![
                 caption(
-                    "The documented set is not 19 distinct looks. Appearance Based, Sidebar, Tool \
-                     Tip and Under Window Background render identically:",
+                    "The documented set is not 19 distinct looks. Each group below is laid out \
+                     adjacent over one checkerboard so the claim is checkable here rather than \
+                     taken on trust — if two tiles in a group differ, the grouping is wrong.",
+                ),
+                caption(
+                    "Sidebar and Under Window Background are one surface on macOS 26, which is \
+                     why the Material::Sidebar role maps onto it. Appearance Based and Tool Tip \
+                     land on the same look:",
                 ),
                 collisions(
                     "collide-window",
@@ -176,13 +183,18 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         RawMaterial::UnderWindowBackground,
                     ],
                 ),
-                caption("As do Sheet, Window Background and Content Background:"),
+                caption(
+                    "And the opaque set — no blur at all, so the checkerboard vanishes under \
+                     every one of them. Material::Card is Content Background; if you wanted blur \
+                     you wanted Material::Popover:",
+                ),
                 collisions(
                     "collide-content",
                     &[
                         RawMaterial::Sheet,
                         RawMaterial::WindowBackground,
                         RawMaterial::ContentBackground,
+                        RawMaterial::UnderPageBackground,
                     ],
                 ),
             ],
@@ -364,6 +376,72 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ],
         ),
         section(
+            "Styled — .bg(), borders, radius",
+            vec![
+                caption(
+                    "NativeMaterial is Styled and ParentElement like div(), and the style is \
+                     painted rather than only laid out. A .bg() or .border_1() that silently drew \
+                     nothing would fail only visually — it compiles, it type-checks, and the \
+                     layout even insets by the border width, so the one symptom is a missing \
+                     line.",
+                ),
+                caption(
+                    "These four are at the default Layer::Below, so GPUI's paint lands over the \
+                     material — which is exactly what a style has to do to be visible at all. No \
+                     checkerboard here: at Below the material is behind the Metal view, so a \
+                     checkerboard would cover it rather than be sampled by it.",
+                ),
+                grid(vec![
+                    tile(
+                        "no style — untouched",
+                        SPECIMEN,
+                        material("style-none", REFERENCE)
+                            .size(px(SPECIMEN))
+                            .into_any_element(),
+                    ),
+                    tile(
+                        ".border_2() — a GPUI line on it",
+                        SPECIMEN,
+                        material("style-border", REFERENCE)
+                            .size(px(SPECIMEN))
+                            .border_2()
+                            .border_color(system_color(SystemColor::ControlAccent))
+                            .into_any_element(),
+                    ),
+                    tile(
+                        ".bg() — hides the material",
+                        SPECIMEN,
+                        material("style-bg", REFERENCE)
+                            .size(px(SPECIMEN))
+                            .bg(system_color(SystemColor::ControlAccent))
+                            .into_any_element(),
+                    ),
+                    tile(
+                        "same .bg(), but layer(Above)",
+                        SPECIMEN,
+                        material("style-bg-above", REFERENCE)
+                            .layer(Layer::Above)
+                            .size(px(SPECIMEN))
+                            .bg(system_color(SystemColor::ControlAccent))
+                            .into_any_element(),
+                    ),
+                ]),
+                caption(
+                    "The first has no fill written, and Style::paint skips a transparent \
+                     background, so a material nobody has styled is untouched. The third is the \
+                     trap: an opaque fill on a material hides the material and draws a third \
+                     window surface — see the Backgrounds page. The fourth writes the same fill \
+                     and looks like the first, because at Above the material covers every GPUI \
+                     pixel in its rect and the fill is one of them. A style, like a child, does \
+                     not combine with Above.",
+                ),
+                caption(
+                    "Only NativeMaterial does this. glass() and custom_glass() are not Styled, so \
+                     their size comes from the layout around them and neither takes a .bg().",
+                ),
+            ],
+        ),
+        section(
             "Customiser",
             vec![
                 checker(
@@ -482,6 +560,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             (
                 "Material",
                 "nine named roles that resolve into this catalogue".into(),
+            ),
+            (
+                "Styled — .bg() / .border_*() / .rounded_*()",
+                "painted, not just laid out; a transparent fill is skipped".into(),
+            ),
+            (
+                "ParentElement — .child()",
+                "GPUI content, over the material at Layer::Below only".into(),
             ),
         ]),
     ])

@@ -2,7 +2,7 @@
 
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, Modifiers, SharedString, Window, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{MenuEntry, MenuOrigin, native_context_menu, native_popup};
 
@@ -44,6 +44,25 @@ fn row_entries() -> Vec<MenuEntry> {
         MenuEntry::separator(),
         MenuEntry::item("Move to Trash").symbol("trash"),
         MenuEntry::item("Get Info").symbol("info.circle").disabled(),
+    ]
+}
+
+/// The rest of `MenuEntry`: a checkmark, a chord label and a nested submenu.
+fn full_entries() -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::item("Show Hidden Files").checked(true),
+        MenuEntry::item("Show Path Bar").checked(false),
+        MenuEntry::separator(),
+        MenuEntry::item("Open").key("o", Modifiers::command()),
+        MenuEntry::item("Open in New Window").key("o", Modifiers::command_shift()),
+        MenuEntry::separator(),
+        MenuEntry::item("Sort By")
+            .symbol("arrow.up.arrow.down")
+            .submenu([
+                MenuEntry::item("Name"),
+                MenuEntry::item("Date Modified"),
+                MenuEntry::item("Size"),
+            ]),
     ]
 }
 
@@ -169,12 +188,53 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 mono(picked.clone().unwrap_or_else(|| "nothing picked".into())),
             ],
         ),
+        section(
+            "the rest of MenuEntry",
+            vec![
+                demo(
+                    "right-click — checkmarks, chord labels and a submenu",
+                    native_context_menu("ctx-full", target("Right-click for the full set"))
+                        .entries(full_entries())
+                        .on_select(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
+                            d.popup.picked =
+                                Some(format!("{index} — {}", title_of(&full_entries(), *index)));
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                caption(
+                    "checked(bool) draws macOS's own checkmark in the leading gutter every row \
+                     already reserves, so a menu with one ticked row does not indent the others. \
+                     key(equivalent, modifiers) is a label only outside the menu bar — a \
+                     transient menu is up only while it is tracking and nothing is listening for \
+                     the chord. Pass the unmodified lowercase character; AppKit draws the glyph \
+                     and adds ⇧ itself.",
+                ),
+                caption(
+                    "submenu(entries) hangs a real NSMenu off the row, and AppKit draws the ›, \
+                     opens it on hover and sizes it. Indices stay flat, so a submenu's rows are \
+                     unreachable by design: they carry no action and choosing one reports \
+                     nothing, rather than a number that would mean a different row of the outer \
+                     list. The host row cannot report either — setSubmenu: installs AppKit's own \
+                     submenuAction:. Pick Sort By › Name above and the line below does not move.",
+                ),
+                caption(
+                    "MenuEntry::view(MenuView) is the fourth kind and is not shown here: it is a \
+                     retained NSView of the caller's own, outside GPUI layout and pooling, and \
+                     like a submenu row it is never reported.",
+                ),
+            ],
+        ),
         props(&[
             ("native_popup(id, selected)", format!("{colour} / {tool}")),
             ("items(iter)", "plain rows, all enabled".into()),
             (
                 "entries(iter)",
-                "MenuEntry::item(..).symbol(..).disabled(), ::separator()".into(),
+                "MenuEntry::item / ::separator / ::view".into(),
+            ),
+            (
+                "MenuEntry builders",
+                "symbol · disabled · checked · key · submenu".into(),
             ),
             (
                 "pull_down(bool)",

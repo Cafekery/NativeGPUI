@@ -55,6 +55,7 @@ pub struct State {
     pub appearance: usize,
     pub shadow: bool,
     pub movable_by_background: bool,
+    pub alpha: f64,
     pub paint_band: bool,
 }
 
@@ -68,6 +69,7 @@ impl Default for State {
             appearance: 0,
             shadow: true,
             movable_by_background: true,
+            alpha: 1.,
             paint_band: true,
         }
     }
@@ -81,6 +83,7 @@ struct Settings {
     appearance: Option<Appearance>,
     shadow: bool,
     movable_by_background: bool,
+    alpha: f32,
     paint_band: bool,
 }
 
@@ -102,6 +105,7 @@ impl State {
             },
             shadow: self.shadow,
             movable_by_background: self.movable_by_background,
+            alpha: self.alpha as f32,
             paint_band: self.paint_band,
         }
     }
@@ -141,6 +145,7 @@ impl State {
         };
         self.shadow = flags.has_shadow;
         self.movable_by_background = flags.movable_by_background;
+        self.alpha = flags.alpha as f64;
         self.level = LEVELS
             .iter()
             .position(|(_, level)| window_level(*level) == flags.level)
@@ -161,6 +166,7 @@ fn apply(settings: &Settings, demo: &WeakEntity<Demo>, window: &mut Window, cx: 
     let wanted = WindowFlags {
         has_shadow: settings.shadow,
         movable_by_background: settings.movable_by_background,
+        alpha: settings.alpha,
         level: window_level(settings.level),
         appearance: settings.appearance,
         ..current
@@ -280,6 +286,11 @@ impl Render for Popout {
             line("level", flags.level.to_string()),
             line("has_shadow", flags.has_shadow.to_string()),
             line("is_opaque", flags.is_opaque.to_string()),
+            line("alpha", format!("{:.2}", flags.alpha)),
+            line(
+                "titled / full_size_content",
+                format!("{} / {}", flags.titled, flags.full_size_content),
+            ),
             line("titlebar band painted", settings.paint_band.to_string()),
         ];
 
@@ -342,10 +353,11 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
         d.chrome.level,
         d.chrome.appearance,
     );
-    let (shadow, movable, paint_band) = (
+    let (shadow, movable, paint_band, alpha) = (
         d.chrome.shadow,
         d.chrome.movable_by_background,
         d.chrome.paint_band,
+        d.chrome.alpha,
     );
 
     stack(vec![
@@ -423,8 +435,8 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     "0 sends _setCornerRadius: 0, which AppKit reads as \"system default\" rather \
                      than square, and reads back as that default — so intent is tracked, never \
                      diffed against a readback. The second window prints both. Watch \
-                     system_corner_radius while you switch the toolbar too: it is half the current \
-                     band, so it reads 16 bare and 26 under a unified toolbar.",
+                     system_corner_radius while you switch the toolbar too: it is half the \
+                     current band, so it follows the band's 32 / 40 / 52 to 16 / 20 / 26.",
                 ),
                 knob(
                     "toolbar",
@@ -438,13 +450,20 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                         }))
                         .into_any_element(),
                 ),
-                caption(
-                    "A toolbar takes GPUI content rather than giving any: the frame does not move, \
-                     so the band grows 32 → 40 (compact) → 52 (unified) while the viewport stays \
-                     put, and the space below the band drops 438 → 430 → 418. Under \
+                caption(format!(
+                    "A toolbar takes GPUI content rather than giving any: the frame does not \
+                     move, so the band grows 32 → 40 (compact) → 52 (unified) while the viewport \
+                     stays put, and the space below it drops {:.0} → {:.0} → {:.0} at this \
+                     window's {:.0}pt height. The band figures are contentLayoutRect losing 8pt \
+                     to compact and 20pt to unified, measured on a bare 32pt band. Under \
                      FullSizeContentView the content rect is the frame, so AppKit has no content \
-                     height to preserve by growing it. Inset your own content by titlebar_band.",
-                ),
+                     height to preserve by growing it. Inset your own content by titlebar_band, \
+                     which the second window prints live.",
+                    EXTENT.1 - 32.,
+                    EXTENT.1 - 40.,
+                    EXTENT.1 - 52.,
+                    EXTENT.1
+                )),
                 knob(
                     "window level",
                     LEVELS[level.min(LEVELS.len() - 1)].0,
@@ -495,6 +514,31 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                             cx.notify();
                         }))
                         .into_any_element(),
+                ),
+                knob(
+                    "alpha",
+                    format!("{alpha:.2}"),
+                    native_slider("chrome.alpha", alpha)
+                        .range(0.35, 1.)
+                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
+                            d.chrome.alpha = *value;
+                            d.chrome.push(cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                caption(
+                    "alphaValue is the whole window, chrome included, and it composites against \
+                     the desktop rather than against anything in the window. It stops at 0.35 \
+                     here so the window stays findable — Restore puts it back with everything \
+                     else.",
+                ),
+                caption(
+                    "WindowFlags has two more this page deliberately leaves off a knob. Clearing \
+                     titled removes the traffic lights, and this window has no other way to \
+                     close; setting full_size_content is what window_options already does, and \
+                     the crate's whole coordinate recipe assumes it. Both also shrink the frame \
+                     on the way through, so they are install-time decisions rather than dials.",
                 ),
             ],
         ),
@@ -605,6 +649,18 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             (
                 "window_flags / set_window_flags / restore_window_flags",
                 "read, change one field, write back".into(),
+            ),
+            (
+                "WindowFlags fields on a knob",
+                format!(
+                    "has_shadow · movable_by_background · alpha {alpha:.2} · level · appearance"
+                ),
+            ),
+            (
+                "WindowFlags fields left off",
+                "titled and full_size_content — both shrink the frame and move the traffic \
+                 lights, so they are install-time, not dials"
+                    .into(),
             ),
             (
                 "cursor_region(id, Cursor, child)",
