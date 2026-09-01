@@ -3,6 +3,13 @@
 # `glass_hit` and `tabular_figures`, each open a small unfocused corner window for a fraction of a
 # second and read out of AppKit or gpui's text system, so it takes no keyboard focus and captures no
 # pixels: still safe to run while someone else is driving the display.
+#
+# Contention is fine; a LOCKED session is not. `loginwindow` occludes every window at layer 2001 and
+# up, so a gpui window stops getting display ticks and never paints. `z_order` then reports "the
+# window painted fewer than 6 times", `glass_hit` "the window rendered fewer than 4 frames", and
+# `hosted controls reach their handler` needs a paint within 15 s. Those are the frame-count entry
+# gates refusing to report rather than reporting a false green — so under a lock the verdict cannot
+# be reached at all, and the answer is to unlock, not to skip the step.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -41,7 +48,10 @@ step 'unit tests'                   cargo test --release --lib
 # an unchanged pool key, which is the one stale case a paint-order diff cannot see by itself.
 step 'z-order holds paint order'    cargo run --release --example z_order
 # A viewport-sized glass container used to answer `hitTest:` itself, making every hosted control
-# painted before it unclickable. Reads the verdict out of AppKit in-process, so no display.
+# painted before it unclickable. It reads its verdict out of AppKit rather than off the screen, so
+# it captures no pixels — but it still needs its window to paint, and measured under a locked
+# session it reports "no row was evaluated — the window rendered fewer than 4 frames within 12
+# tries". In-process is not the same as needing no frames.
 step 'glass container declines'     cargo run --release --example glass_hit
 # `system_font_tabular` is a `tnum` feature list, and if the shaper ever stops honouring the tag it
 # still returns a `Font` — a proportional one, under a name promising a column that does not shift.
