@@ -22,8 +22,13 @@ use crate::ui::small_glyph;
 /// Column widths as Finder *draws* them, which are not the widths it stores — Name is stored 178
 /// and drawn 197. Defaults only: Finder keeps a width per column per folder, which is why two
 /// windows on this machine drew the same four columns at 197/181/75/121 and at 168/181/97/128.
+///
+/// These do not flex with the pane. Finder's list columns are fixed, so the row content keeps one
+/// width however narrow the pane leaves the list and the list cuts it. A flexible Name column is
+/// the same layout with the cut removed, and removing the cut is what stops a Kind string ever
+/// being sliced mid-word.
 pub(crate) const COL_MODIFIED: f32 = 181.;
-pub(crate) const COL_SIZE: f32 = 75.;
+pub(crate) const COL_SIZE: f32 = 97.;
 pub(crate) const COL_KIND: f32 = 121.;
 
 /// Finder's column header band. Its own bottom hairline is the only line in the chrome above the
@@ -78,8 +83,12 @@ pub(crate) const CELL_TRAIL: f32 = 6.;
 /// The sort indicator's inset from the sorted column's trailing edge.
 pub(crate) const SORT_INSET: f32 = 7.5;
 
-/// The Name column takes whatever the fixed columns leave, down to this.
-pub(crate) const NAME_MIN_W: f32 = 120.;
+/// The Name column's floor, and also where Finder starts it: four independent readings put Finder's
+/// Name at 168 and none of them went below it, so the default sits exactly on the floor. The
+/// earlier 120 came from a layout where Name absorbed whatever the fixed columns left, which is a
+/// floor no reading ever produced — it was low enough never to bind, and a floor that never binds
+/// is a floor that was never measured.
+pub(crate) const NAME_MIN_W: f32 = 168.;
 /// `NSTableColumn.minWidth`'s default, which Finder has no reason to have changed.
 const COL_MIN_W: f32 = 10.;
 /// The resize hit zone at a column boundary. `NSTableHeaderView` adds a `resizeLeftRight` cursor
@@ -95,10 +104,11 @@ const PRESS_ALPHA: f32 = 0.31;
 
 /// One fixed column: the order these are in is the order they are drawn in.
 ///
-/// Name is deliberately not representable here. It is the flexible column and Finder pins it first
-/// — `NSOutlineView` will happily move its own `outlineTableColumn` out of position 0, so the pin
-/// is Finder's policy, applied through `outlineView:shouldReorderColumn:toColumn:`. Leaving Name
-/// out of the reorderable list is what enforces it here.
+/// Name is deliberately not representable here. It is pinned first, and `NSOutlineView` will
+/// happily move its own `outlineTableColumn` out of position 0, so the pin is Finder's policy,
+/// applied through `outlineView:shouldReorderColumn:toColumn:`. Leaving Name out of the
+/// reorderable list is what enforces it here; its width lives on the demo as `name_w` because a
+/// resize can move it.
 #[derive(Clone, Copy)]
 pub(crate) struct ColumnSpec {
     pub(crate) column: Column,
@@ -129,7 +139,10 @@ pub(crate) fn default_columns() -> Vec<ColumnSpec> {
 pub(crate) enum HeaderGrab {
     /// A column being carried to a new position.
     Column(Column),
-    /// The boundary at `list_columns[index]`'s leading edge.
+    /// The boundary at the *trailing* edge of the column it resizes: index 0 is Name's, and index
+    /// `i` thereafter is `list_columns[i - 1]`'s. That is where `NSTableHeaderView` puts its own
+    /// resize rect, and it is the only mapping under which a fixed left-anchored block resizes the
+    /// column the pointer is pulling rather than the one after it.
     Divider(usize),
 }
 
@@ -146,12 +159,14 @@ pub(crate) enum HeaderDrag {
         grab: f32,
         left: Option<f32>,
     },
-    /// `origin` is the pointer at grab time and `widths` the three widths as they were then, so
-    /// every frame applies one absolute delta to a snapshot instead of accumulating deltas.
+    /// `origin` is the pointer at grab time and `width` the resized column's width as it was then,
+    /// so every frame applies one absolute delta to a snapshot instead of accumulating deltas. One
+    /// column moves: with fixed columns the block is anchored at the pane's leading edge, so a
+    /// boundary drag changes the total content width instead of trading width with a neighbour.
     Resize {
         index: usize,
         origin: f32,
-        widths: [f32; 3],
+        width: f32,
     },
 }
 
@@ -255,11 +270,11 @@ impl FinderDemo {
     /// The sorted column's label is both bolder and brighter than the rest: 11pt semibold in
     /// `labelColor` against 11pt regular in `secondaryLabelColor`.
     ///
-    /// Dragging a header carries the column. Dragging a boundary widens the column behind it and
-    /// narrows the one in front, which is the direction Finder moves in and is what a
-    /// right-anchored block of fixed columns does for free. Neither drag needs a mouse-up listener:
-    /// gpui drops the active drag on the first mouse event that is not a move, so the carried cell
-    /// is gone the frame after the pointer lifts.
+    /// Dragging a header carries the column. Dragging a boundary resizes the column it is the
+    /// trailing edge of and slides everything after it, which is what a fixed block anchored at the
+    /// pane's leading edge does and is the direction `NSTableHeaderView` moves in. Neither drag
+    /// needs a mouse-up listener: gpui drops the active drag on the first mouse event that is not a
+    /// move, so the carried cell is gone the frame after the pointer lifts.
     pub(crate) fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         if self.header_drag.is_some() && !cx.has_active_drag() {
             self.header_drag = None;
@@ -278,6 +293,10 @@ impl FinderDemo {
         };
 
         let mut row = div()
+            // The band spans the pane; the cells inside it do not. Each is `flex_none` at a fixed
+            // width, so a pane too narrow for them overflows and the pane's clip cuts the last
+            // column mid-glyph — which is the visible form of the list going behind the preview.
+            .w_full()
             .h(px(HEADER_H))
             .flex_none()
             .flex()
@@ -301,16 +320,22 @@ impl FinderDemo {
 
         // Painted after every cell so gpui's hit test hands the grab zone to the divider rather
         // than to the header under it, which is what keeps a resize from also sorting.
-        let mut trailing = PANE_INSET;
-        for index in (0..self.list_columns.len()).rev() {
-            trailing += self.list_columns[index].width;
+        //
+        // Anchored from the leading edge, one per column trailing boundary including the last:
+        // Finder's own header lets the final column be resized too, and with a fixed block there is
+        // no neighbour behind it to take the width from.
+        let mut boundary = self.name_w;
+        for index in 0..=self.list_columns.len() {
+            if index > 0 {
+                boundary += self.list_columns[index - 1].width;
+            }
             row = row.child(
                 div()
                     .id(("ng.finder.divider", index))
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .right(px(trailing - DIVIDER_GRAB + DIVIDER_LEAD))
+                    .left(px(boundary - DIVIDER_LEAD))
                     .w(px(DIVIDER_GRAB))
                     .cursor_ew_resize()
                     .on_drag(HeaderGrab::Divider(index), {
@@ -368,8 +393,8 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// One header cell. `index` is a slot in `columns`; `None` is the Name column, which is
-    /// flexible, carries no reorder drag, and has no separator at its leading edge.
+    /// One header cell. `index` is a slot in `columns`; `None` is the Name column, which carries no
+    /// reorder drag and has no separator at its leading edge.
     fn header_cell(
         &self,
         index: Option<usize>,
@@ -398,8 +423,9 @@ impl FinderDemo {
             }));
         cell = match index {
             Some(index) => cell.w(px(self.list_columns[index].width)),
-            None => cell.flex_1().min_w(px(NAME_MIN_W)),
-        };
+            None => cell.w(px(self.name_w)),
+        }
+        .flex_none();
         if dragged == Some(column) {
             // The slot the carried column currently occupies. Its own body stays laid out so the
             // separator holds the boundary; the wash over it is what reads as a gap.
@@ -441,6 +467,19 @@ impl FinderDemo {
         }
     }
 
+    /// The width a divider index resizes, and its floor. Index 0 is Name's trailing boundary.
+    fn resized_column(&self, index: usize) -> (f32, f32) {
+        match index {
+            0 => (self.name_w, NAME_MIN_W),
+            index => (
+                self.list_columns
+                    .get(index - 1)
+                    .map_or(0., |spec| spec.width),
+                COL_MIN_W,
+            ),
+        }
+    }
+
     /// Record what a drag took hold of. `grab` is the pointer's offset inside the cell for a
     /// reorder and is unused for a resize, where the pointer's absolute `origin` is what matters.
     fn begin_header_drag(&mut self, what: HeaderGrab, origin: f32, grab: f32) {
@@ -453,11 +492,7 @@ impl FinderDemo {
             HeaderGrab::Divider(index) => HeaderDrag::Resize {
                 index,
                 origin,
-                widths: [
-                    self.list_columns.first().map_or(0., |spec| spec.width),
-                    self.list_columns.get(1).map_or(0., |spec| spec.width),
-                    self.list_columns.get(2).map_or(0., |spec| spec.width),
-                ],
+                width: self.resized_column(index).0,
             },
         });
     }
@@ -470,9 +505,7 @@ impl FinderDemo {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pane = f32::from(event.bounds.size.width);
         let x = f32::from(event.event.position.x);
-        let end = pane - PANE_INSET;
         match self.header_drag {
             Some(HeaderDrag::Reorder { column, grab, .. }) => {
                 let Some(from) = self
@@ -490,8 +523,13 @@ impl FinderDemo {
                 // flick can, and an unbounded offset puts the carried cell nowhere near the pointer
                 // and picks the wrong slot.
                 let grab = grab.clamp(0., width);
-                let left =
-                    (x - f32::from(event.bounds.origin.x) - grab).clamp(end - total, end - width);
+                // The fixed block starts at Name's trailing boundary and its extent no longer
+                // depends on the pane, so the carried cell is clamped against the block rather than
+                // against the pane's trailing edge. Clamping against the pane is what let a drag in
+                // a narrow pane push a column outside the block it belongs to.
+                let start = self.name_w;
+                let left = (x - f32::from(event.bounds.origin.x) - grab)
+                    .clamp(start, (start + total - width).max(start));
 
                 // The target is chosen against the layout of the *other* columns, which does not
                 // change for the whole drag. Choosing it against the live layout makes the columns
@@ -505,15 +543,15 @@ impl FinderDemo {
                         count += 1;
                     }
                 }
-                let mut tail = 0.;
+                let mut head = start;
                 let mut best = (f32::MAX, from);
-                for slot in (0..=count).rev() {
-                    let error = ((end - tail - width / 2.) - (left + width / 2.)).abs();
+                for slot in 0..=count {
+                    let error = (head - left).abs();
                     if error < best.0 {
                         best = (error, slot);
                     }
-                    if slot > 0 {
-                        tail += others[slot - 1];
+                    if slot < count {
+                        head += others[slot];
                     }
                 }
                 if best.1 != from {
@@ -530,24 +568,20 @@ impl FinderDemo {
             Some(HeaderDrag::Resize {
                 index,
                 origin,
-                widths,
+                width,
             }) => {
-                // Dragging right narrows the column the boundary leads into and hands the width to
-                // whatever is behind it — Name for the first boundary, the previous column
-                // otherwise. That keeps the fixed block right-anchored, so no other boundary moves.
-                let room = if index == 0 {
-                    end - widths.iter().sum::<f32>() - NAME_MIN_W
-                } else {
-                    widths[index - 1] - COL_MIN_W
-                };
-                let dx = (x - origin).clamp(-room.max(0.), (widths[index] - COL_MIN_W).max(0.));
-                let mut next = widths;
-                next[index] -= dx;
-                if index > 0 {
-                    next[index - 1] += dx;
-                }
-                for (spec, width) in self.list_columns.iter_mut().zip(next) {
-                    spec.width = width;
+                // The boundary follows the pointer, so the column it is the trailing edge of takes
+                // the whole delta and every column after it slides. Nothing is traded with a
+                // neighbour: with the block anchored at the pane's leading edge, trading would move
+                // a boundary the pointer is not on.
+                let next = (width + x - origin).max(self.resized_column(index).1);
+                match index {
+                    0 => self.name_w = next,
+                    index => {
+                        if let Some(spec) = self.list_columns.get_mut(index - 1) {
+                            spec.width = next;
+                        }
+                    }
                 }
                 cx.notify();
             }

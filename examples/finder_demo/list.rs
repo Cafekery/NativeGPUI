@@ -13,7 +13,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::FinderDemo;
 use crate::data::Column;
-use crate::header::{CELL_PAD, CELL_TRAIL, NAME_MIN_W, PANE_INSET};
+use crate::header::{CELL_PAD, CELL_TRAIL, PANE_INSET};
 use crate::palette::Palette;
 use crate::ui::{artwork, small_glyph, tag_dot};
 
@@ -62,6 +62,7 @@ impl FinderDemo {
         // The same order and widths the header is drawing, taken once: a row that read them from
         // anywhere else is exactly how the two stop lining up.
         let columns = self.list_columns.clone();
+        let name_w = self.name_w;
         // Finder's date column is the same face, size and weight as the rest of the row with
         // tabular figures, so a column of times does not shift as its digits change. Resolved once
         // per frame: the feature list behind it allocates.
@@ -82,11 +83,13 @@ impl FinderDemo {
                     let open = expanded.contains(&line.key);
                     let indent = line.depth as f32 * INDENT;
 
-                    // `w_full` is load-bearing: a `uniform_list` item is laid out with its own
-                    // width free, so without it the row shrinks to its contents and the flexible
-                    // Name column collapses onto the Date column instead of pushing it right.
                     let mut row = div()
                         .id(("ng.finder.row", index))
+                        // The row box spans the pane while its cells keep fixed widths and
+                        // `flex_none`, so a pane too narrow for them overflows and the ancestor's
+                        // clip cuts the last column mid-glyph. Sizing the box to the cells instead
+                        // would pull the banding pill 17pt in from the pane's trailing edge, where
+                        // a real window measures 10.
                         .w_full()
                         .h(px(ROW_H))
                         .relative()
@@ -161,8 +164,8 @@ impl FinderDemo {
                     // trailing edge lands at ICON_X - TWIST_W without that number being written
                     // down twice.
                     let mut name = div()
-                        .flex_1()
-                        .min_w(px(NAME_MIN_W))
+                        .w(px(name_w))
+                        .flex_none()
                         .h_full()
                         .flex()
                         .items_center()

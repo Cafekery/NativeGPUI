@@ -38,8 +38,9 @@ const MIN_W: f32 = 240.;
 const MAX_W: f32 = 480.;
 /// What the file list keeps, also hard. Finder's *window* minimum is derived from it: with the pane
 /// at 240 the window will not go below 748 and with the pane at 480 it will not go below 988, and
-/// both of those are 192 + 316 + the pane. Two window minima, one list minimum.
-const LIST_MIN_W: f32 = 316.;
+/// both of those are 192 + 316 + the pane. Two window minima, one list minimum — see
+/// [`FinderDemo::sync_window_min`], which is where the derivation is applied.
+pub(crate) const LIST_MIN_W: f32 = 316.;
 
 // The pane never crosses the list, however far the divider travels. The list's trailing edge and
 // the pane's leading edge stayed the same number at every divider position at window widths 1226,

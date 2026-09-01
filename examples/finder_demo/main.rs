@@ -40,12 +40,16 @@ use gpui::{
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
 use native_gpui::{install_menus, native_root, window_options};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSView, NSWindow};
+use objc2_foundation::NSSize;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::data::{Column, Folder, Line, Row, build_store};
-use crate::header::{ColumnSpec, HeaderDrag, default_columns};
+use crate::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
 use crate::icon::{Grid, cell};
 use crate::palette::Palette;
-use crate::preview::PREVIEW_W;
+use crate::preview::{LIST_MIN_W, PREVIEW_W};
 use crate::ui::TAGS;
 
 pub(crate) const ICON_VIEW: usize = 0;
@@ -77,8 +81,11 @@ pub(crate) struct FinderDemo {
     pub(crate) ascending: bool,
     /// The three fixed columns in the order they are drawn, each at the width it is drawn at.
     /// Finder persists both per folder and lets the user drag either, so they are state and not
-    /// constants. Name is absent on purpose: it is the flexible column and Finder pins it first.
+    /// constants. Name is absent on purpose: it is pinned first and carries its own width below.
     pub(crate) list_columns: Vec<ColumnSpec>,
+    /// The Name column's width. Fixed like the rest — the list clips rather than reflowing — but
+    /// draggable, so it is state. Starts on its own floor, which is where Finder starts it.
+    pub(crate) name_w: f32,
     /// The header drag in flight — carrying a column, or moving a boundary.
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
@@ -110,6 +117,9 @@ pub(crate) struct FinderDemo {
     /// Where each icon-view item sits, and the drag in flight. Lives here because the keyboard
     /// scrolls the grid and `columns` sizes it.
     pub(crate) icons: Grid,
+    /// The content minimum last written to the window, so a frame that changes nothing makes no
+    /// AppKit call. `f32::NAN` writes on the first frame whatever the derived value is.
+    pub(crate) window_min_w: f32,
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
     pub(crate) quit_at: Option<u64>,
@@ -128,6 +138,7 @@ impl FinderDemo {
             sort: Column::Name,
             ascending: true,
             list_columns: default_columns(),
+            name_w: NAME_MIN_W,
             header_drag: None,
             query: String::new(),
             expanded: HashSet::new(),
@@ -148,6 +159,7 @@ impl FinderDemo {
             column_scroll: ScrollHandle::new(),
             column_depth: 0,
             icons: Grid::default(),
+            window_min_w: f32::NAN,
             focus: cx.focus_handle(),
             frames: 0,
             quit_at: env::var("NG_QUIT").ok().and_then(|v| v.parse().ok()),
@@ -464,6 +476,41 @@ impl FinderDemo {
             .unwrap_or_default()
     }
 
+    /// Whether the trailing preview pane is on screen. Column view has its own, in the chain.
+    pub(crate) fn preview_shown(&self) -> bool {
+        self.preview && self.view != COLUMN_VIEW
+    }
+
+    /// Hold the window to the width the list's own minimum implies.
+    ///
+    /// Finder derives its window minimum from the list rather than fixing it: the window stops at
+    /// 748 with the pane at 240 and at 988 with the pane at 480, and both are the sidebar's 192
+    /// plus the list's 316 plus the pane. So the minimum moves as the pane is dragged. gpui applies
+    /// `window_min_size` once at creation and offers nothing after, so the derived value goes
+    /// straight to `setContentMinSize:`; the height half is read back rather than written, because
+    /// this derives a width and has no reading for the other axis.
+    fn sync_window_min(&mut self, window: &Window) {
+        let width = f32::from(self.metrics().left)
+            + LIST_MIN_W
+            + if self.preview_shown() {
+                self.preview_w
+            } else {
+                0.
+            };
+        if (width - self.window_min_w).abs() < 0.5 {
+            return;
+        }
+        let Some(ns_window) = ns_window(window) else {
+            return;
+        };
+        self.window_min_w = width;
+        let height = ns_window.contentMinSize().height;
+        ns_window.setContentMinSize(NSSize {
+            width: f64::from(width),
+            height,
+        });
+    }
+
     /// Tiles per band in icon view. The width available is the viewport less the gutters the
     /// sidebar publishes, so a collapse re-flows the grid.
     pub(crate) fn columns(&self, window: &Window, _cx: &App) -> usize {
@@ -476,6 +523,16 @@ impl FinderDemo {
         let tile = cell(self.icon_size as f32);
         ((avail / tile).floor() as usize).max(1)
     }
+}
+
+/// The window behind gpui's view. `native-gpui` keeps its own accessor private, and the one thing
+/// wanted here is not on the `Window` API: gpui writes `contentMinSize` at creation and never again.
+fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?.window()
 }
 
 impl Render for FinderDemo {
@@ -493,6 +550,7 @@ impl Render for FinderDemo {
                 std::process::exit(0);
             }
         }
+        self.sync_window_min(window);
 
         let metrics = self.metrics();
         let palette = Palette::new(self.focus.is_focused(window));
@@ -614,7 +672,7 @@ impl Render for FinderDemo {
                                 // Column view's preview is the last column of the chain and
                                 // scrolls with it, so the pane pinned to the window's trailing
                                 // edge is not additionally correct there — it is a second one.
-                                .when(self.preview && self.view != COLUMN_VIEW, |row| {
+                                .when(self.preview_shown(), |row| {
                                     row.child(self.preview_pane(
                                         cursor.as_ref(),
                                         &palette,
