@@ -428,10 +428,17 @@ pub fn accent() -> Hsla {
 /// sidebar, which is vibrancy over this and not a colour at all; see
 /// [`SidebarOptions::backdrop`](crate::sidebar::SidebarOptions::backdrop).
 ///
-/// It has to be an opaque colour and not a material. A material is behind-window vibrancy, so its
-/// value moves with the desktop behind the window: measured over a controlled 16-hue window, a
-/// `UnderWindowBackground` band and a body painted `windowBackgroundColor` cannot be reconciled by
-/// any constant, because only one of the two changes when the wallpaper does.
+/// It has to be an opaque colour and not a material. A material's value tracks whatever it
+/// samples: `UnderWindowBackground` over a flat grey 29 reads 38 and over grey 60 reads 44, while
+/// `windowBackgroundColor` reads 30 over both. The window-spanning backdrop samples *behind the
+/// window*, so what it tracks is the desktop — a band on that and a body on a colour cannot be
+/// reconciled by any constant, because only one of them moves. Two cheap confirmations that a
+/// surface is the first kind: it is state-dependent, shifting when the window stops being key
+/// (43 to 55 in dark), and a colour is not.
+///
+/// Do not try to re-measure any of that from a window-scoped screen capture. It composites over
+/// nothing behind the window, so a behind-window material reports its own flat tint however
+/// colourful the desktop is, and the null reads as "not sampling".
 pub const WINDOW_BACKGROUND: SystemColor = SystemColor::WindowBackground;
 
 /// [`WINDOW_BACKGROUND`] for this process's current appearance. `WINDOW_BACKGROUND.ns_color()` is
