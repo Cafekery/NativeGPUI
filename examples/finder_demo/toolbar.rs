@@ -449,14 +449,24 @@ impl FinderDemo {
             // always is. Finder puts the folder name in the toolbar, and with `Unified` that is what
             // a visible title *is*, so put it back.
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
-            // Undo `window_options()`'s transparent titlebar, keeping its full-size content view.
-            // A transparent titlebar draws no background, so the 52pt band showed the window's
-            // backdrop — 67 in dark against Finder's 29 — and, worse, **the capsules did not
-            // render at all**: with an opaque backdrop behind a transparent titlebar the fill, the
-            // stroke and the band all measured 29, so there was nothing to see. Opaque here, the
-            // band is AppKit's own 29 and every capsule comes back. GPUI still draws under the
-            // titlebar, which is fine because the tree is inset by `SidebarMetrics::top`.
-            ns_window.setTitlebarAppearsTransparent(false);
+            // `window_options()`'s transparent titlebar is kept, and that is the whole point: it
+            // is what lets the sidebar's material, the content pane's background and the preview
+            // pane's surface each run to the window's top edge, with the toolbar's capsules
+            // floating over them. Turning it off gets AppKit to draw a toolbar backdrop, and the
+            // backdrop stops at the content split item's bounds — so the band lands on top of the
+            // preview pane as a step 38 units tall at y 52, and brings a 1pt rim at y 51 across
+            // the whole content pane. Neither is removable while the backdrop is there:
+            // `NSTitlebarSeparatorStyle::None` written on the window *and* on every
+            // `NSSplitViewItem` reads back as None on all three and leaves the rim at 50 against
+            // a 29 band, unchanged, so the rim belongs to the backdrop and not to the separator.
+            //
+            // It is a trade and the losing side is measurable: with no backdrop to sample,
+            // `NSToolbarItem`'s glass inverts over the content side — a capsule that reads 38
+            // against a 29 band with the backdrop reads 27 against a 30 one without it, and its
+            // top rim 56 instead of 69, so a raised stadium reads as an outline. AppKit gives a
+            // real `NSScrollView` a scroll-edge surface under the toolbar that the glass samples
+            // instead; a GPUI list has none, and nothing this side of one restores the lift —
+            // the capsules over the preview pane's own material read 39 against 66, still down.
         }
         self.toolbar = true;
     }

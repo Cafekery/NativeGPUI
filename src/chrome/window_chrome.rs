@@ -1275,6 +1275,17 @@ fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
 /// `move_traffic_light()` hard-sets all three button frames on open, activation and fullscreen,
 /// overwriting the insets AppKit applied for the toolbar. Nothing warns, the buttons just sit
 /// wrong.
+///
+/// A toolbar draws a backdrop only while the titlebar is opaque, and that backdrop is the whole
+/// difference in how `NSToolbarItem` renders: with one to sample, a capsule reads 38 against a 29
+/// band and its top rim 69; with [`crate::window_options`]'s transparent titlebar left alone it
+/// reads 27 against a 30 band and 56, so the stadium inverts into an outline. AppKit hands a real
+/// `NSScrollView` a scroll-edge surface under the band to stand in for it; a GPUI tree has none.
+///
+/// The backdrop is not separable from the 1pt rim it leaves at the band's lower edge.
+/// `NSTitlebarSeparatorStyle::None` written on the window **and** on every `NSSplitViewItem`
+/// reads back as `None` on all of them and moves that row not at all — it is still 50 against a
+/// 29 band. The rim belongs to the backdrop, so the only way to lose it is to lose the backdrop.
 pub fn set_toolbar(
     window: &mut Window,
     cx: &mut App,
