@@ -98,6 +98,17 @@ dispatch_arms() {
 }
 step 'hosted controls reach their handler' dispatch_arms
 
+# The public surface itself. Nothing in-tree imports `native_gpui::chrome::`, so a `pub mod` put
+# back by a later pass would be invisible to every other step here — the crate would build, the
+# examples would build, and the API would have silently widened again. Metadata-only probes against
+# the built rlib: no link, no frameworks, no window.
+#
+# Four arms, and the negative one counts errors rather than reading an exit code. Proven necessary
+# by sabotage: restoring `pub mod chrome;` left the neg probe still exiting 1, because its other
+# three paths still fail — so a reappeared module hides behind its neighbours and an exit-code
+# check calls that ok. The count is the discriminator.
+step 'public surface holds'         ./scripts/surface.sh
+
 # Warnings do not fail a cargo build, so the zero-warning state would otherwise rot silently.
 # Scoped to this crate's own files: a lint added by a future toolchain shows up as a named file
 # and line rather than as a blanket build failure across every dependency.
