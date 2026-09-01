@@ -34,15 +34,16 @@ use std::env;
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    ScrollStrategy, SharedString, UniformListScrollHandle, Window, WindowBounds, WindowOptions,
-    actions, div, point, prelude::*, px, size,
+    ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window, WindowBounds,
+    WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
 use native_gpui::{install_menus, native_root, window_options};
 
-use crate::data::{Column, Folder, Line, Row, SIDEBAR, build_store};
-use crate::icon::{TILE_GAP, TILE_MARGIN};
+use crate::data::{Column, Folder, Line, Row, build_store};
+use crate::header::{ColumnSpec, HeaderDrag, default_columns};
+use crate::icon::{Grid, cell};
 use crate::palette::Palette;
 use crate::preview::PREVIEW_W;
 use crate::ui::TAGS;
@@ -65,12 +66,21 @@ actions!(finder_demo, [SelectAll, CopyNames]);
 pub(crate) struct FinderDemo {
     pub(crate) store: HashMap<&'static str, Folder>,
     pub(crate) sidebar: Option<NativeSidebar>,
+    /// Sidebar row ids per group. The user can drag rows and eject a volume, so the order and the
+    /// membership are the demo's own data rather than the table's.
+    pub(crate) sidebar_rows: Vec<Vec<&'static str>>,
     pub(crate) toolbar: bool,
     pub(crate) history: Vec<&'static str>,
     pub(crate) at: usize,
     pub(crate) view: usize,
     pub(crate) sort: Column,
     pub(crate) ascending: bool,
+    /// The three fixed columns in the order they are drawn, each at the width it is drawn at.
+    /// Finder persists both per folder and lets the user drag either, so they are state and not
+    /// constants. Name is absent on purpose: it is the flexible column and Finder pins it first.
+    pub(crate) list_columns: Vec<ColumnSpec>,
+    /// The header drag in flight — carrying a column, or moving a boundary.
+    pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
     pub(crate) expanded: HashSet<SharedString>,
     pub(crate) selected: HashSet<SharedString>,
@@ -78,11 +88,28 @@ pub(crate) struct FinderDemo {
     pub(crate) anchor: Option<SharedString>,
     pub(crate) tags: HashMap<SharedString, usize>,
     pub(crate) preview: bool,
+    /// The preview pane's width, which the user drags. Finder persists this per window rather than
+    /// deriving it, so `PREVIEW_W` is only where it starts.
+    pub(crate) preview_w: f32,
+    /// Where the pane's trailing edge would be with the pointer at x 0, captured on mouse-down so
+    /// a drag cannot accumulate error.
+    pub(crate) preview_drag: Option<f32>,
+    pub(crate) preview_expanded: bool,
     /// Both default off: Finder ships them off and the reference window has them off.
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
     pub(crate) icon_size: f64,
     pub(crate) scroll: UniformListScrollHandle,
+    /// The column view's horizontal scroll, and the chain length it was last matched to. Finder
+    /// scrolls the chain right when a selection opens a new column and otherwise leaves the offset
+    /// where the user put it, so following it needs the previous depth as well as the current one:
+    /// re-requesting the scroll every frame would drag the view back rightwards under a user who
+    /// had just scrolled left.
+    pub(crate) column_scroll: ScrollHandle,
+    pub(crate) column_depth: usize,
+    /// Where each icon-view item sits, and the drag in flight. Lives here because the keyboard
+    /// scrolls the grid and `columns` sizes it.
+    pub(crate) icons: Grid,
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
     pub(crate) quit_at: Option<u64>,
@@ -93,12 +120,15 @@ impl FinderDemo {
         Self {
             store: build_store(),
             sidebar: None,
+            sidebar_rows: crate::sidebar::default_rows(),
             toolbar: false,
             history: vec!["documents"],
             at: 0,
             view: LIST_VIEW,
             sort: Column::Name,
             ascending: true,
+            list_columns: default_columns(),
+            header_drag: None,
             query: String::new(),
             expanded: HashSet::new(),
             selected: HashSet::new(),
@@ -108,10 +138,16 @@ impl FinderDemo {
             // On, as Finder's own window is: the right pane is why the list is 594pt wide in a
             // 1026pt window, and the column geometry only lands where Finder puts it at that width.
             preview: true,
+            preview_w: PREVIEW_W,
+            preview_drag: None,
+            preview_expanded: false,
             path_bar_shown: false,
             status_bar_shown: false,
             icon_size: 64.,
             scroll: UniformListScrollHandle::new(),
+            column_scroll: ScrollHandle::new(),
+            column_depth: 0,
+            icons: Grid::default(),
             focus: cx.focus_handle(),
             frames: 0,
             quit_at: env::var("NG_QUIT").ok().and_then(|v| v.parse().ok()),
@@ -170,14 +206,9 @@ impl FinderDemo {
         self.cursor = None;
         self.anchor = None;
         self.query.clear();
+        self.icons.forget();
         self.retitle(window);
-        if let Some(sidebar) = &self.sidebar {
-            let here = self.here();
-            let known = SIDEBAR
-                .iter()
-                .any(|(_, _, rows)| rows.iter().any(|(id, _, _, _)| *id == here));
-            sidebar.set_selected(known.then_some(here));
-        }
+        self.sidebar_follow();
         cx.notify();
     }
 
@@ -318,6 +349,19 @@ impl FinderDemo {
         if lines.is_empty() {
             return;
         }
+        // Column view answers its own arrows: ↑/↓ have to run against the focused column's
+        // listing rather than the window folder's, and ←/→ move between columns instead of
+        // opening a disclosure triangle this view does not have.
+        //
+        // The modifiers go with the key because claiming all four arrows unconditionally also
+        // swallowed ⌘↑ — Go to Enclosing Folder was dead in column view, and only driving the
+        // app found it: every arrow behaved, and the one chord that shares their key names did
+        // not.
+        if self.view == COLUMN_VIEW && self.column_key(event.keystroke.key.as_str(), modifiers, cx)
+        {
+            cx.notify();
+            return;
+        }
         let current = self
             .cursor
             .as_ref()
@@ -331,6 +375,28 @@ impl FinderDemo {
                     self.open(&line, window, cx);
                 }
             }
+            key @ ("up" | "down") | key @ ("left" | "right") if self.view == ICON_VIEW => {
+                let step: isize = match key {
+                    "up" => -(self.columns(window, cx) as isize),
+                    "down" => self.columns(window, cx) as isize,
+                    "left" => -1,
+                    _ => 1,
+                };
+                let next = match current {
+                    Some(index) => (index as isize + step).clamp(0, lines.len() as isize - 1),
+                    None if step > 0 => 0,
+                    None => lines.len() as isize - 1,
+                } as usize;
+                let line = lines[next].clone();
+                self.pick(&line, modifiers.shift, false);
+                self.icons.reveal(
+                    &line.key,
+                    next,
+                    self.columns(window, cx),
+                    self.icon_size as f32,
+                );
+                cx.notify();
+            }
             key @ ("up" | "down") => {
                 let step: isize = if key == "up" { -1 } else { 1 };
                 let next = match current {
@@ -340,14 +406,7 @@ impl FinderDemo {
                 } as usize;
                 let line = lines[next].clone();
                 self.pick(&line, modifiers.shift, false);
-                self.scroll.scroll_to_item(
-                    if tree {
-                        next
-                    } else {
-                        next / self.columns(window, cx)
-                    },
-                    ScrollStrategy::Center,
-                );
+                self.scroll.scroll_to_item(next, ScrollStrategy::Center);
                 cx.notify();
             }
             "right" | "left" => {
@@ -412,9 +471,9 @@ impl FinderDemo {
         let avail = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right)
-            - if self.preview { PREVIEW_W } else { 0. }
+            - if self.preview { self.preview_w } else { 0. }
             - 24.;
-        let tile = self.icon_size as f32 + TILE_MARGIN + TILE_GAP;
+        let tile = cell(self.icon_size as f32);
         ((avail / tile).floor() as usize).max(1)
     }
 }
@@ -467,7 +526,6 @@ impl Render for FinderDemo {
                 .flex()
                 .flex_col()
                 .pl(metrics.left)
-                .pt(metrics.top)
                 .pr(metrics.right)
                 .pb(metrics.bottom)
                 .child(
@@ -481,6 +539,10 @@ impl Render for FinderDemo {
                             MouseButton::Left,
                             cx.listener(|this, _, window, _| window.focus(&this.focus)),
                         )
+                        // The pane only starts the divider drag; the root is what follows the
+                        // pointer, because a hitbox 6pt wide loses it on the first fast move.
+                        .on_mouse_move(cx.listener(Self::preview_resize))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::preview_resize_end))
                         .size_full()
                         .flex()
                         .flex_col()
@@ -489,44 +551,76 @@ impl Render for FinderDemo {
                                 .flex_1()
                                 .flex()
                                 .overflow_hidden()
-                                // No line under the toolbar when the column header is there: the
-                                // header carries the only hairline, and the toolbar and header
-                                // share one continuous background. The other views have no header,
-                                // so the body needs the line drawn for them.
-                                .when(headers.is_none(), |row| {
-                                    row.border_t_1().border_color(palette.separator)
-                                })
                                 .child(
                                     div()
                                         .flex_1()
                                         .flex()
                                         .flex_col()
                                         .overflow_hidden()
-                                        .children(headers)
+                                        // The toolbar band is a gap in the *list column* rather
+                                        // than padding on the root, because the preview pane
+                                        // beside it has to start at the window's top edge:
+                                        // Finder's preview surface has no top edge at all and
+                                        // runs up behind the toolbar.
+                                        .child(div().h(metrics.top).flex_none())
                                         .child(
                                             div()
                                                 .flex_1()
                                                 .flex()
                                                 .flex_col()
                                                 .overflow_hidden()
-                                                .when(opaque, |body| body.bg(palette.surface))
-                                                .child(body),
+                                                // No line under the toolbar when the column
+                                                // header is there: the header carries the only
+                                                // hairline, and the toolbar and header share one
+                                                // continuous background. Either way it stops at
+                                                // the list and never crosses the preview —
+                                                // Finder's header band and its hairline span the
+                                                // list pane alone.
+                                                //
+                                                // Icon view is excluded because Finder draws no
+                                                // rule there: a full-width step scan over y 38…62
+                                                // returns zero rows on Finder and y 51→53 at 100%
+                                                // on ours. Column view keeps it — Finder's rule
+                                                // sits at y 51 in two windows, luma 50.37 and
+                                                // 50.04, which is `separatorColor` over the
+                                                // (29,29,28) body at 51.16, exactly what this
+                                                // draws. Gallery is UNMEASURED and keeps the rule
+                                                // rather than inheriting a neighbour's answer:
+                                                // the two headerless views that have been
+                                                // measured disagree with each other, which is the
+                                                // evidence that this cannot be reasoned across.
+                                                .when(
+                                                    self.view != ICON_VIEW && headers.is_none(),
+                                                    |column| {
+                                                        column
+                                                            .border_t_1()
+                                                            .border_color(palette.separator)
+                                                    },
+                                                )
+                                                .children(headers)
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .overflow_hidden()
+                                                        .when(opaque, |body| {
+                                                            body.bg(palette.surface)
+                                                        })
+                                                        .child(body),
+                                                ),
                                         ),
                                 )
-                                .when(self.preview, |row| {
-                                    row.child(
-                                        div()
-                                            .w(px(PREVIEW_W))
-                                            .flex_none()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .p(px(18.))
-                                            .border_l_1()
-                                            .border_color(palette.separator)
-                                            .child(self.info_card(cursor.as_ref(), &palette, 96.)),
-                                    )
+                                // Column view's preview is the last column of the chain and
+                                // scrolls with it, so the pane pinned to the window's trailing
+                                // edge is not additionally correct there — it is a second one.
+                                .when(self.preview && self.view != COLUMN_VIEW, |row| {
+                                    row.child(self.preview_pane(
+                                        cursor.as_ref(),
+                                        &palette,
+                                        metrics.top,
+                                        cx,
+                                    ))
                                 }),
                         )
                         .when(self.path_bar_shown, |c| c.child(path_bar))

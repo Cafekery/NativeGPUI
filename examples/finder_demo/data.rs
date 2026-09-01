@@ -588,6 +588,60 @@ pub(crate) const DIRS: &[Dir] = &[
             ("studio-mini", F::Device, 202608301200, 0, ""),
         ],
     ),
+    (
+        "developer",
+        "Developer",
+        "home",
+        &["Macintosh HD", "Users", "avery", "Developer"],
+        &[
+            ("Aldermoor", F::Folder, ago(0, 9, 12), 0, "projects"),
+            ("Northwind", F::Folder, 202608221420, 0, ""),
+            ("Scratch", F::Folder, 202607091044, 0, ""),
+            ("bootstrap.sh", F::Code, 202606141902, 3_118, ""),
+            ("toolchain.toml", F::Text, 202605301155, 812, ""),
+        ],
+    ),
+    (
+        "bakery",
+        "Bakery",
+        "",
+        &["Bakery"],
+        &[
+            ("Downloads", F::Folder, ago(1, 18, 3), 0, "downloads-bakery"),
+            ("Masters", F::Folder, 202608180944, 0, ""),
+            ("Renders", F::Folder, 202608291502, 0, ""),
+            ("Iris Trailer.mov", F::Movie, 202608242202, 884_112_004, ""),
+            ("Session 04.wav", F::Audio, 202608261441, 148_220_884, ""),
+        ],
+    ),
+    (
+        "downloads-bakery",
+        "Downloads",
+        "bakery",
+        &["Bakery", "Downloads"],
+        &[
+            ("Chartwell.zip", F::Archive, 202608261019, 4_118_882, ""),
+            ("Plate Set 12.zip", F::Archive, 202608201122, 88_204_118, ""),
+            ("Reference.pdf", F::Pdf, 202608141731, 8_412_770, ""),
+        ],
+    ),
+    (
+        "trash",
+        "Trash",
+        "",
+        &["Trash"],
+        &[
+            ("Old Mixdown.wav", F::Audio, 202608221844, 62_004_118, ""),
+            (
+                "Screenshot 2026-08-02 at 09.14.22.png",
+                F::Image,
+                202608020914,
+                1_884_002,
+                "",
+            ),
+            ("draft.md", F::Text, 202607301613, 2_204, ""),
+        ],
+    ),
 ];
 
 /// Applications are generated rather than written out: a long directory is what makes
@@ -640,49 +694,6 @@ pub(crate) const APPS: &[&str] = &[
 
 pub(crate) const AVAILABLE_BYTES: i64 = 218_420_000_000;
 
-/// Sidebar group id, title, and its rows as (id, title, SF Symbol, badge — 0 for none).
-pub(crate) type Group = (
-    &'static str,
-    &'static str,
-    &'static [(&'static str, &'static str, &'static str, i64)],
-);
-
-pub(crate) const SIDEBAR: &[Group] = &[
-    (
-        "g-favourites",
-        "Favorites",
-        &[
-            ("airdrop", "AirDrop", "dot.radiowaves.right", 0),
-            ("recents", "Recents", "clock", 0),
-            ("applications", "Applications", "square.grid.2x2", 0),
-            ("desktop", "Desktop", "menubar.dock.rectangle", 0),
-            ("documents", "Documents", "doc", 0),
-            ("downloads", "Downloads", "arrow.down.circle", 0),
-            ("pictures", "Pictures", "photo", 0),
-            ("movies", "Movies", "film", 0),
-            ("music", "Music", "music.note", 0),
-            ("home", "avery", "house", 0),
-        ],
-    ),
-    (
-        "g-icloud",
-        "iCloud",
-        &[
-            ("icloud", "iCloud Drive", "icloud", 0),
-            ("shared", "Shared", "person.2", 0),
-        ],
-    ),
-    (
-        "g-locations",
-        "Locations",
-        &[
-            ("hd", "Macintosh HD", "internaldrive", 0),
-            ("timemachine", "Time Machine", "clock.arrow.circlepath", 0),
-            ("network", "Network", "globe", 0),
-        ],
-    ),
-];
-
 // ---------------------------------------------------------------------------------------------
 // System formatting
 // ---------------------------------------------------------------------------------------------
@@ -714,20 +725,24 @@ pub(crate) fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64,
     )
 }
 
-/// The date a stamp names, in the user's own calendar and timezone.
+/// The date a stamp names, in the user's own calendar and timezone, `back` calendar days earlier.
 ///
 /// Built from components rather than from an epoch offset: the relative stamps have to land on a
-/// calendar day, and a day is not 86,400 seconds long twice a year.
+/// calendar day, and a day is not 86,400 seconds long twice a year. `back` is subtracted from the
+/// day component and left out of range on purpose, for the same reason [`stamp_parts`] leaves a
+/// relative day out of range — the 3rd minus 40 days is day −37 of that month, and NSCalendar
+/// resolves it into the right month and year.
 pub(crate) fn stamp_date(
     calendar: &NSCalendar,
     today: (i64, i64, i64),
     stamp: u64,
+    back: i64,
 ) -> Option<objc2::rc::Retained<NSDate>> {
     let (year, month, day, hour, minute) = stamp_parts(stamp, today);
     let parts = NSDateComponents::new();
     parts.setYear(year as isize);
     parts.setMonth(month as isize);
-    parts.setDay(day as isize);
+    parts.setDay((day - back) as isize);
     parts.setHour(hour as isize);
     parts.setMinute(minute as isize);
     parts.setSecond(0);
@@ -753,6 +768,14 @@ pub(crate) struct Row {
     pub(crate) stamp: u64,
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
+    /// Finder's preview shows Created above Modified, so a row needs a second date. Back-dated
+    /// from the same stamp rather than stored separately: a file is created before it is modified,
+    /// and the demo's dates are all relative to launch.
+    pub(crate) created: SharedString,
+    /// Only the faces that have them. Finder's Information rows are driven by the metadata the
+    /// item actually carries, so a movie shows Dimensions and Duration and a folder shows neither.
+    pub(crate) dimensions: Option<SharedString>,
+    pub(crate) duration: Option<SharedString>,
     pub(crate) face: Face,
     pub(crate) opens: Option<&'static str>,
     /// Resolved once at build time: a lookup plus raster is cached, but deciding *which* type to
@@ -806,14 +829,36 @@ pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
         parts.day() as i64,
     );
 
+    // Deterministic in the byte count, so a row's dimensions and duration never move between
+    // frames or runs the way a random draw would.
+    const FRAMES: [(u32, u32); 6] = [
+        (1920, 1080),
+        (3840, 2160),
+        (1280, 720),
+        (2560, 1440),
+        (6016, 3384),
+        (1170, 2532),
+    ];
     let row = |src: &Src| {
         let (name, face, stamp, bytes, opens) = *src;
-        let modified = stamp_date(&calendar, today, stamp)
-            .map(|date| formatter.stringFromDate(&date).to_string())
-            .unwrap_or_default();
+        let text = |back: i64| {
+            stamp_date(&calendar, today, stamp, back)
+                .map(|date| formatter.stringFromDate(&date).to_string())
+                .unwrap_or_default()
+        };
         Row {
             name: name.into(),
-            modified: modified.into(),
+            modified: text(0).into(),
+            created: text(1 + (bytes % 407) as i64).into(),
+            dimensions: matches!(face, F::Image | F::Movie).then(|| {
+                let (w, h) = FRAMES[(bytes % FRAMES.len() as u64) as usize];
+                // The multiplication sign, not an x: it is what Finder writes.
+                SharedString::from(format!("{w} × {h}"))
+            }),
+            duration: matches!(face, F::Movie | F::Audio).then(|| {
+                let seconds = 7 + bytes % 5_393;
+                SharedString::from(format!("{}:{:02}", seconds / 60, seconds % 60))
+            }),
             stamp,
             size: if face == F::Folder || face == F::Volume || face == F::Device {
                 "--".into()

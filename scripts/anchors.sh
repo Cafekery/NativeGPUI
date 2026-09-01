@@ -62,7 +62,6 @@ a momentary group holds no selection ;; reports -1 forever ;; src/chrome/window_
 a search field must be wired before assignment ;; configured before assigned ;; src/chrome/window_chrome.rs
 Finder's alternating band is an inset pill, not full-bleed ;; stops 10pt short of each edge ;; examples/finder_demo/list.rs
 Finder draws column widths it does not store ;; stored 178 and drawn 197 ;; examples/finder_demo/header.rs
-the header label inset does not track the icon size ;; coincide at 46 ;; examples/finder_demo/header.rs
 list offsets are measured from the pane edge ;; sits 26 in ;; examples/finder_demo/list.rs
 the pill radius needed calibrating against AppKit ;; ideal quarter.disc ;; examples/finder_demo/list.rs
 the list font size is a folder view option, not a metric ;; defaults to 13 ;; examples/finder_demo/list.rs
@@ -70,15 +69,12 @@ a toolbar item is its image plus 24pt ;; building the item at 20 and reading bac
 without navigational the run lands after the title ;; 471 against Finder.s 196 ;; examples/finder_demo/toolbar.rs
 NSMenuToolbarItem shows an indicator by default ;; it cost 13pt ;; examples/finder_demo/toolbar.rs
 the search item width drives the reflow, not the field ;; 205pt instead of 203 ;; examples/finder_demo/toolbar.rs
-the private airdrop symbol has no usable public stand-in ;; scores 0.75 ;; examples/finder_demo/toolbar.rs
 the sidebar width is chosen for where it leaves the list ;; pane began at 200 ;; examples/finder_demo/sidebar.rs
 the preview pane width includes its divider ;; 594pt of list ;; examples/finder_demo/preview.rs
 the even row fill differs by appearance, not just in value ;; 0.047 alpha ;; examples/finder_demo/palette.rs
 icon size must land on a shipped representation ;; 64px representation ;; examples/finder_demo/ui.rs
 relative date formatting supplies the narrow no-break space ;; 2pt a row ;; examples/finder_demo/data.rs
 NSCalendar normalises an out-of-range day component ;; no carrying of its own ;; examples/finder_demo/data.rs
-the browser row height was never measured ;; only the list view was measured ;; examples/finder_demo/column.rs
-the icon tile pitch includes the gap ;; last column ends up clipped ;; examples/finder_demo/icon.rs
 the window background is one colour, not two ;; visible as a step|one surface interrupted ;; src/system/tokens.rs
 NSWindow.backgroundColor is inert here ;; is then inert|left the window capture byte-identical ;; src/bridge/root.rs
 the sidebar backdrop must not go opaque ;; [Rr]esist making it opaque|flatter panel ;; src/chrome/sidebar.rs
@@ -94,6 +90,45 @@ an unsettled queue is visible at rest ;; visible at rest rather than only under 
 a bundled app already has a main menu at startup ;; already has a main menu ;; src/bridge/menus.rs
 performKeyEquivalent true is not evidence of effect ;; not.{0,4} evidence the action ran ;; examples/menu_bar.rs
 a window capture cannot see a material sampling ;; reports its own flat tint ;; src/system/tokens.rs
+screencapture writes Display P3, greys cannot detect it ;; 52,120,246 ;; AGENTS.md
+Finder's opaque surface is one colour across band and body ;; 29,29,28 ;; AGENTS.md
+browser-row-three-routes ;; Three routes agree on the twenty-four ;; examples/finder_demo/column.rs
+browser-rowheight-needs-item-delegate ;; against a matrix delegate it raises ;; examples/finder_demo/column.rs
+column-divider-not-separator ;; over this body would read 51 ;; examples/finder_demo/column.rs
+header-label-inset-icon-size ;; coincide and at 32pt they do not ;; examples/finder_demo/header.rs
+header-ink-not-box ;; a label box is not its ink ;; examples/finder_demo/header.rs
+header-press-wash-untokened ;; No public colour reaches it ;; examples/finder_demo/header.rs
+header-name-pinned ;; out of the reorderable list is what enforces it here ;; examples/finder_demo/header.rs
+header-drag-listener-order ;; the frame that begins a drag has no position yet ;; examples/finder_demo/header.rs
+header-ghost-both-axes ;; an active drag's view at the cursor in ;; examples/finder_demo/header.rs
+header-divider-hit-order ;; hands the grab zone to the divider ;; examples/finder_demo/header.rs
+header-reorder-stable-target ;; a narrow column dropped past a wide one ;; examples/finder_demo/header.rs
+material-paints-its-style ;; skips a transparent background ;; src/materials/material.rs
+icon grid pitch is the cell ;; there is no gap between cells to leave out ;; examples/finder_demo/icon.rs
+icon surround is constant not a ratio ;; the surround is a constant that does not scale ;; examples/finder_demo/icon.rs
+icon view stores positions not an order ;; stores one position per item rather than an order ;; examples/finder_demo/icon.rs
+selection plate is out of flow ;; drawn out of flow, inset negatively ;; examples/finder_demo/icon.rs
+selection plate is not a selection colour ;; does not change when the window loses key ;; examples/finder_demo/icon.rs
+absolute tiles give the canvas no height ;; absolute and so contribute no height ;; examples/finder_demo/icon.rs
+drop hit-tests rather than stopping propagation ;; itself a bubble-phase mouse listener ;; examples/finder_demo/icon.rs
+the elide budget is deliberately tight ;; generous hands the string to the line clamp ;; examples/finder_demo/icon.rs
+artwork answers a square box on both arms ;; box is square whichever path answers ;; examples/finder_demo/ui.rs
+a filmstrip size between rungs is resampled ;; a size between two of them is resampled ;; examples/finder_demo/gallery.rs
+the gallery pane already shows the inspector ;; already renders the trailing preview pane in gallery view ;; examples/finder_demo/gallery.rs
+header-rule-not-flush ;; nine rules, it runs y 56.0 to 75.0 ;; examples/finder_demo/header.rs
+header-rule-peak-is-hairline ;; the 63 belongs to the hairline ;; examples/finder_demo/header.rs
+header-one-leading-inset ;; there is no stagger and one constant is right ;; examples/finder_demo/header.rs
+header-lead-trail-asymmetry ;; asymmetric is leading against ;; examples/finder_demo/header.rs
+content thumbnails are out of reach ;; nothing in this demo reads the filesystem ;; examples/finder_demo/icon.rs
+airdrop-coretypes-route ;; no restriction is being worked around ;; examples/finder_demo/toolbar.rs
+airdrop-toolbar-unverified ;; draws this same artwork is an assumption ;; examples/finder_demo/toolbar.rs
+crumb-volume-not-folder ;; wrong rather than merely generic ;; examples/finder_demo/toolbar.rs
+sidebar-mostly-symbols ;; reaches into its own artwork only where ;; examples/finder_demo/sidebar.rs
+sidebar-emphasis-is-focus ;; drawn emphasized .+ only while its outline ;; examples/finder_demo/sidebar.rs
+sidebar-rep-point-not-pixel ;; point size and a pixel size are different ;; src/chrome/sidebar.rs
+sidebar-drag-defers-commit ;; return does not opt back out ;; src/chrome/sidebar.rs
+sidebar-ivars-not-inherited ;; leaves the superclass.s uninitialised ;; src/chrome/sidebar.rs
+sidebar-eject-ratio ;; ratio is the statistic to compare ;; src/chrome/sidebar.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
@@ -101,7 +136,7 @@ TABLE
 # doc-comment line break flattens to "instead of /// opening the submenu" and reports LOST while
 # the sentence is perfectly intact — a false red that turns up right after a clean run.
 flat() {
-  find "$@" -name '*.rs' -exec cat {} + 2>/dev/null |
+  find "$@" \( -name '*.rs' -o -name '*.md' \) -exec cat {} + 2>/dev/null |
     sed -E 's|^[[:space:]]*//[/!]?||; s|^[[:space:]]*\*[^/]||' |
     tr '\n' ' ' | tr -s ' \t'
 }
@@ -144,10 +179,22 @@ retired() {
   gone 'editing needs an upstream gpui change' "needs a change in gpui|[Ff]ixing it needs" "${where[@]}"
   gone 'the shadow follows content alpha'    "derives the drop shadow from|square shadow" "${where[@]}"
   gone 'the drawable default stands on cost' "extra buffer costs more in long frames|default stands because" "${where[@]}"
+  gone 'the browser row height is unmeasured' "only the list view was measured" "${where[@]}"
+  gone 'the header label inset is 46'      "coincide at 46" "${where[@]}"
+  gone 'the icon tile pitch includes a gap' "last column ends up clipped" "${where[@]}"
+  gone 'header and row insets are staggered' "neither the ink nor the box carries across" "${where[@]}"
+  gone 'airdrop is a private SF Hello symbol' "SF Hello" "${where[@]}"
   return $fail
 }
 
-strip_comments() { find "$1" -name '*.rs' -exec sed -i '' -E '/^[[:space:]]*\/\//d' {} +; }
+# A `.rs` file's guarded prose is its comments, so stripping them is what falsifies an anchor. A
+# `.md` file is prose end to end — there is nothing to strip *around* — so the equivalent is
+# emptying it. Without that distinction a markdown anchor survives its own file being stripped and
+# the self-test correctly reports it unfalsifiable, which is how this was found.
+strip_comments() {
+  find "$1" -name '*.rs' -exec sed -i '' -E '/^[[:space:]]*\/\//d' {} +
+  find "$1" -name '*.md' -exec sh -c ': > "$1"' _ {} \;
+}
 
 if [[ ${1:-} == --self-test ]]; then
   work=$(mktemp -d)
@@ -162,8 +209,12 @@ if [[ ${1:-} == --self-test ]]; then
     label=${row%% ;; *}
     path=${row##* ;; }
     rm -rf "$work/src" "$work/examples"
+    rm -f "$work"/*.md
     cp -R src "$work/src"
     cp -R examples "$work/examples"
+    # Root-level docs are anchorable too, so they have to be in the scratch tree or every
+    # markdown row reports LOST for the wrong reason — absent rather than stripped.
+    cp ./*.md "$work"/ 2>/dev/null || true
     strip_comments "$work/$path"
     # Capture, then test. `anchors` returns nonzero whenever ANY row is LOST — which is by
     # construction here, since a file was just stripped — and under `pipefail` that makes
@@ -189,6 +240,11 @@ if [[ ${1:-} == --self-test ]]; then
 // On a transparent window macOS derives the drop shadow from content alpha, so an unpainted band
 // reaching a corner gives a rounded window and a square shadow.
 // The default stands because the extra buffer costs more in long frames than the lead is worth.
+// The browser (column) view keeps the compact row: only the list view was measured.
+// The tile pitch includes the gap, or the last column ends up clipped.
+// The header inset and the row inset stagger: neither the ink nor the box carries across.
+// airdrop, airdrop.circle and airdrop.square are in SF Hello's catalogue marked private.
+// The header label inset and the icon size coincide at 46.
 STALE
   echo "self-test: each retired claim must go STALE when planted behind another directory"
   planted_out=$(retired "$work/empty" "$work/planted")

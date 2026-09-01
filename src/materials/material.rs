@@ -374,7 +374,7 @@ impl ParentElement for NativeMaterial {
 }
 
 impl Element for NativeMaterial {
-    type RequestLayoutState = ();
+    type RequestLayoutState = Style;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -391,7 +391,7 @@ impl Element for NativeMaterial {
         _: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, ()) {
+    ) -> (LayoutId, Style) {
         // `fittingSize` is 0x0 today; asked per axis so a future macOS with an opinion wins.
         let fitting = fitting_size("NSVisualEffectView", |mtm| {
             NSVisualEffectView::new(mtm).fittingSize()
@@ -409,7 +409,7 @@ impl Element for NativeMaterial {
             .iter_mut()
             .map(|child| child.request_layout(window, cx))
             .collect::<Vec<_>>();
-        (window.request_layout(style, children, cx), ())
+        (window.request_layout(style.clone(), children, cx), style)
     }
 
     fn prepaint(
@@ -417,7 +417,7 @@ impl Element for NativeMaterial {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        _: &mut (),
+        _: &mut Style,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -431,7 +431,7 @@ impl Element for NativeMaterial {
         id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        _: &mut (),
+        style: &mut Style,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
@@ -471,9 +471,16 @@ impl Element for NativeMaterial {
         );
         apply_corner_radius(&view, self.corner_radius.to_f64());
 
-        for child in &mut self.children {
-            child.paint(window, cx);
-        }
+        // The style is painted, not just laid out. A `Styled` element whose `.bg()` and
+        // `.border_1()` silently drew nothing would fail only visually — it compiles, it
+        // type-checks, and the layout even insets by the border width, so the one symptom is a
+        // missing line. `Style::paint` skips a transparent background, so a material nobody has
+        // written a fill on is untouched.
+        style.paint(bounds, window, cx, |window, cx| {
+            for child in &mut self.children {
+                child.paint(window, cx);
+            }
+        });
     }
 }
 
