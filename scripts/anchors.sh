@@ -141,6 +141,9 @@ the list minimum is what sets the window minimum ;; Two window minima, one list 
 the preview pane never crosses the list ;; never crosses the list ;; examples/finder_demo/preview.rs
 the lag counts refreshes, not paints ;; counted in display refreshes, not in paints ;; src/bridge/host.rs
 a rig that paints every refresh cannot see this ;; a paint per refresh is the one cadence ;; examples/gallery.rs
+a below container needs its superview's rect ;; the space it is actually being put into ;; src/bridge/host.rs
+a count is not a set ;; a count is not a set ;; src/chrome/sidebar.rs
+a caller search over src alone reports srgb unused ;; caller search restricted to ;; src/system/tokens.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
