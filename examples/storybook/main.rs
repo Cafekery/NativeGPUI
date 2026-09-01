@@ -137,6 +137,22 @@ pub const PAGES: &[Page] = &[
         blurb: "Semantic colours, the system font, and SF Symbols, so GPUI-drawn parts match.",
     },
     Page {
+        id: "menus",
+        group: "System",
+        title: "Menu Bar",
+        symbol: "menubar.rectangle",
+        class: "NSMenu / NSMenuItem",
+        blurb: "The standard bar, read back out of NSApp. Where ⌘W, ⌘Q, ⌘M and ⌘H live.",
+    },
+    Page {
+        id: "background",
+        group: "Window",
+        title: "Backgrounds",
+        symbol: "rectangle.inset.filled",
+        class: "NSColor.windowBackgroundColor",
+        blurb: "One background colour per window, and what a second one looks like.",
+    },
+    Page {
         id: "sidebar",
         group: "Window",
         title: "Sidebar",
@@ -196,8 +212,10 @@ pub struct Demo {
     pub custom_glass: pages::custom_glass::State,
     pub surfaces: pages::surfaces::State,
     pub tokens: pages::tokens::State,
+    pub menus: pages::menus::State,
     pub sidebar_page: pages::sidebar_page::State,
     pub chrome: pages::chrome::State,
+    pub background: pages::background::State,
 }
 
 impl Demo {
@@ -225,8 +243,10 @@ impl Demo {
             custom_glass: Default::default(),
             surfaces: Default::default(),
             tokens: Default::default(),
+            menus: Default::default(),
             sidebar_page: Default::default(),
             chrome: Default::default(),
+            background: Default::default(),
         }
     }
 
@@ -286,8 +306,10 @@ impl Demo {
             "custom_glass" => pages::custom_glass::render(self, window, cx),
             "surfaces" => pages::surfaces::render(self, window, cx),
             "tokens" => pages::tokens::render(self, window, cx),
+            "menus" => pages::menus::render(self, window, cx),
             "sidebar" => pages::sidebar_page::render(self, window, cx),
             "chrome" => pages::chrome::render(self, window, cx),
+            "background" => pages::background::render(self, window, cx),
             _ => pages::switch::render(self, window, cx),
         }
     }

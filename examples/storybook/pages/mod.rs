@@ -1,5 +1,6 @@
 //! One module per entry in `crate::PAGES`.
 
+pub mod background;
 pub mod buttons;
 pub mod chrome;
 pub mod custom_glass;
@@ -7,6 +8,7 @@ pub mod glass;
 pub mod glass_variants;
 pub mod indicators;
 pub mod material;
+pub mod menus;
 pub mod popup;
 pub mod segmented;
 pub mod sidebar_page;
