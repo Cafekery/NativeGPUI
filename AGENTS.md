@@ -26,10 +26,17 @@ the window where no line exists. See `src/lib.rs` § *One background* and `token
 in `src/system/tokens.rs`.
 
 **Measured on real Finder** rather than asserted (commit `65742ad`, `git show 65742ad`): its toolbar
-band above the file list and the list body are the same colour, **(29,29,28)**, both key-invariant
-and flat. Its sidebar and preview pane are **not colours** — they read **27 when key, 41 and 46 when
+band above the file list and the list body read the same, **(29,29,28)**, both key-invariant and
+flat. Its sidebar and preview pane are **not colours** — they read **27 when key, 41 and 46 when
 not**, which a fill cannot do. These are numbers about *another app on one macOS release*, which is
 why they are here and deliberately not in a doc comment — see § 6.
+
+**Corrected later, and the correction is the more useful fact** (commit `b77e236`): Finder's toolbar
+draws **no backdrop at all**. That (29,29,28) is the list's own background showing through a
+transparent toolbar, not a fill — proven by scrolling a 304-item folder in a Finder window and
+finding blurred list rows *inside* the band at y 4, 46, 50 and 54. The number stands; the mechanism
+sentence did not. It read as flat because at rest there is nothing under it to move, which is one
+reading consistent with two states — the shape § 2 is about.
 
 **What this crate was doing wrong** (commit `6a6a610`): the toolbar band above the content pane
 showed the window-spanning backdrop while the body was painted an opaque colour, so the two never

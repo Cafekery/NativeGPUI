@@ -133,6 +133,9 @@ the try_resolve control lives in the tokens page ;; only live control on this ;;
 a popover tracks its positioning view, not a rect ;; stays put while the element leaves ;; src/surfaces.rs
 positioningRect does nothing on a shown popover ;; writing it moves nothing ;; src/surfaces.rs
 an explicit close must not call back ;; the incoming one is stored and clears it ;; src/surfaces.rs
+a toolbar backdrop is what the item glass samples ;; stadium inverts into an outline ;; src/chrome/window_chrome.rs
+the band's rim is the backdrop's, not the separator's ;; rim belongs to the backdrop ;; src/chrome/window_chrome.rs
+the demo keeps the transparent titlebar on purpose ;; lands on top of the preview pane ;; examples/finder_demo/toolbar.rs
 TABLE
 
 # Newlines collapse to spaces, so a phrase split across lines still matches.
@@ -189,6 +192,7 @@ retired() {
   gone 'header and row insets are staggered' "neither the ink nor the box carries across" "${where[@]}"
   gone 'airdrop is a private SF Hello symbol' "SF Hello" "${where[@]}"
   gone 'a window-scoped capture misses the popover' "capture scoped to the GPUI window misses it" "${where[@]}"
+  gone 'the capsules did not render at all' "capsules did not render at all" "${where[@]}"
   return $fail
 }
 
@@ -250,6 +254,7 @@ if [[ ${1:-} == --self-test ]]; then
 // The header inset and the row inset stagger: neither the ink nor the box carries across.
 // airdrop, airdrop.circle and airdrop.square are in SF Hello's catalogue marked private.
 // The popover's own NSWindow, which is why a capture scoped to the GPUI window misses it.
+// With an opaque backdrop behind a transparent titlebar the capsules did not render at all.
 // The header label inset and the icon size coincide at 46.
 STALE
   echo "self-test: each retired claim must go STALE when planted behind another directory"
