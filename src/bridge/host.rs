@@ -134,7 +134,7 @@ struct Entry {
     /// with more than one event channel registers extra tags under the same owner.
     owner: u64,
     read: NativeRead,
-    handler: Option<NativeDispatch>,
+    handler: NativeDispatch,
 }
 
 #[derive(Default)]
@@ -143,7 +143,7 @@ struct Dispatch {
 }
 
 impl Dispatch {
-    fn lookup(&self, tag: u64) -> Option<(NativeRead, Option<NativeDispatch>)> {
+    fn lookup(&self, tag: u64) -> Option<(NativeRead, NativeDispatch)> {
         self.table
             .borrow()
             .get(&tag)
@@ -153,29 +153,47 @@ impl Dispatch {
 
 impl ValueKind {
     /// The reader for one of the five common control values.
+    ///
+    /// One `Rc` per kind for the life of the thread, cloned rather than rebuilt. Components call
+    /// this from `paint`, so allocating here is a heap allocation per control per frame whose only
+    /// contents are a copy of `self`, freed on the next frame and replaced with an identical one.
     pub fn reader(self) -> NativeRead {
-        Rc::new(move |sender| {
-            let value = match self {
-                ValueKind::None => NativeValue::None,
-                ValueKind::Bool => {
-                    let raw: isize = unsafe { msg_send![sender, integerValue] };
-                    NativeValue::Bool(raw != 0)
-                }
-                ValueKind::Number => {
-                    let raw: f64 = unsafe { msg_send![sender, doubleValue] };
-                    NativeValue::Number(raw)
-                }
-                ValueKind::Int => {
-                    let raw: isize = unsafe { msg_send![sender, integerValue] };
-                    NativeValue::Int(raw as i64)
-                }
-                ValueKind::Text => {
-                    let raw: Retained<NSString> = unsafe { msg_send![sender, stringValue] };
-                    NativeValue::Text(raw.to_string())
-                }
-            };
-            Box::new(value)
+        thread_local! {
+            static CACHE: RefCell<Vec<Option<NativeRead>>> = const { RefCell::new(Vec::new()) };
+        }
+        let index = self as usize;
+        CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() <= index {
+                cache.resize(index + 1, None);
+            }
+            cache[index]
+                .get_or_insert_with(|| -> NativeRead { Rc::new(move |sender| self.read(sender)) })
+                .clone()
         })
+    }
+
+    fn read(self, sender: &AnyObject) -> Box<dyn Any> {
+        let value = match self {
+            ValueKind::None => NativeValue::None,
+            ValueKind::Bool => {
+                let raw: isize = unsafe { msg_send![sender, integerValue] };
+                NativeValue::Bool(raw != 0)
+            }
+            ValueKind::Number => {
+                let raw: f64 = unsafe { msg_send![sender, doubleValue] };
+                NativeValue::Number(raw)
+            }
+            ValueKind::Int => {
+                let raw: isize = unsafe { msg_send![sender, integerValue] };
+                NativeValue::Int(raw as i64)
+            }
+            ValueKind::Text => {
+                let raw: Retained<NSString> = unsafe { msg_send![sender, stringValue] };
+                NativeValue::Text(raw.to_string())
+            }
+        };
+        Box::new(value)
     }
 }
 
@@ -200,7 +218,7 @@ define_class!(
         fn ng_action(&self, sender: *mut AnyObject) {
             let ivars = self.ivars();
             let tag: isize = unsafe { msg_send![sender, tag] };
-            let Some((read, Some(dispatch))) = ivars.dispatch.lookup(tag as u64) else {
+            let Some((read, dispatch)) = ivars.dispatch.lookup(tag as u64) else {
                 return;
             };
 
@@ -798,14 +816,25 @@ impl NativeHost {
         read: NativeRead,
         handler: Option<NativeDispatch>,
     ) {
-        self.0.borrow().dispatch.table.borrow_mut().insert(
-            tag,
-            Entry {
-                owner,
-                read,
-                handler,
-            },
-        );
+        let table = &self.0.borrow().dispatch.table;
+        // `None` retires the channel rather than parking a handler-less entry. `ngAction:` needs a
+        // handler to do anything, so such an entry can never fire, and registering one costs a
+        // table insert and a reader allocation on every frame a control with no handler paints.
+        match handler {
+            None => {
+                table.borrow_mut().remove(&tag);
+            }
+            Some(handler) => {
+                table.borrow_mut().insert(
+                    tag,
+                    Entry {
+                        owner,
+                        read,
+                        handler,
+                    },
+                );
+            }
+        }
     }
 
     /// Retire views that were not placed this frame, fix z-order if placement order changed, and
