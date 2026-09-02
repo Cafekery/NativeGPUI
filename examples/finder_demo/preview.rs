@@ -273,7 +273,11 @@ impl FinderDemo {
         match &mut self.preview_window {
             Some(pane) if !same_rect(pane.frame, frame) => {
                 pane.frame = frame;
-                pane.window.setFrame_display(frame, true);
+                // Moved off this draw: resizing the pane's window from inside the parent's frame
+                // leaves the pane's own gpui window without its size change.
+                let pane_window = pane.window.clone();
+                cx.spawn(async move |_, _| pane_window.setFrame_display(frame, true))
+                    .detach();
             }
             Some(_) => {}
             None if self.preview_opening => {}
