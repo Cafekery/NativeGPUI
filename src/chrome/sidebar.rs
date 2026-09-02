@@ -30,6 +30,7 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
     NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
+use objc2_quartz_core::CAAutoresizingMask;
 
 use crate::Material;
 use crate::bridge::appkit::{Container, gpui_view, rects_equal};
@@ -2147,6 +2148,12 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         view
     });
     pane.addSubview(&gpui);
+    // GPUI's Metal layer autoresizes with its superlayer, which is right only while the view fills
+    // its superview. Here the view is wider than the pane, so AppKit sizes the layer from the view
+    // and CA then adds the pane's resize delta on top, and every frame is displayed scaled.
+    if let Some(layer) = gpui.layer() {
+        layer.setAutoresizingMask(CAAutoresizingMask::empty());
+    }
     for orphan in &orphans {
         orphan.removeFromSuperview();
         pane.addSubview_positioned_relativeTo(orphan, NSWindowOrderingMode::Below, Some(&gpui));
