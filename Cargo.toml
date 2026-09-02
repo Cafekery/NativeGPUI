@@ -41,3 +41,6 @@ required-features = ["private-api"]
 
 [profile.release]
 lto = "thin"
+
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
