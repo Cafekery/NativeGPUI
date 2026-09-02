@@ -141,12 +141,14 @@ pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// The glass over the toolbar band and the column-header band, as one material spanning both.
-pub(crate) fn band_glass(left: Pixels, right: Pixels, top: Pixels) -> AnyElement {
+/// The glass over the toolbar band and the column-header band, as one material spanning both,
+/// from the window's edge: it runs on under the floating sidebar, as Finder's does, so the
+/// sidebar's gutters and corners show frosted band rather than the rows behind it.
+pub(crate) fn band_glass(right: Pixels, top: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
-        .left(left)
+        .left_0()
         .right(right)
         .h(top + px(HEADER_H))
         .child(
