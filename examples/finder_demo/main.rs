@@ -499,7 +499,6 @@ impl FinderDemo {
                         .min_w(relative(1.))
                         .pl(metrics.left)
                         .pr(px(pane))
-                        .pr(px(pane))
                         .flex()
                         .flex_col()
                         .child(body),
@@ -515,10 +514,12 @@ impl FinderDemo {
             .child(surface)
             // A Layer::Above material blurs only what is painted before it: rows, glass, header.
             .when(banded, |column| {
-                column.child(band_glass(metrics.left, px(pane), top))
+                column.child(band_glass(px(pane), top))
             })
             .when(banded && pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             // A second scroller on the same handle, so the header clamps exactly as the rows do.
+            // It ends at the pane, as Finder's does even while the rows run beneath, and is the
+            // pane's width shorter so the two scroll the same distance.
             .children(headers.map(|headers| {
                 axis_locked(
                     div()
@@ -526,7 +527,7 @@ impl FinderDemo {
                         .absolute()
                         .top(top)
                         .left_0()
-                        .right_0()
+                        .right(px(pane))
                         .h(px(HEADER_H))
                         .overflow_x_scroll()
                         .track_scroll(&self.hscroll),
@@ -534,7 +535,7 @@ impl FinderDemo {
                 .child(
                     div()
                         .h_full()
-                        .w(width)
+                        .w(width - px(pane))
                         .min_w(relative(1.))
                         .pl(metrics.left)
                         .child(headers),
