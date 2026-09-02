@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-// Window-server enumeration, not Accessibility: AX cannot see an empty-title window and this can.
+// Window-server enumeration, not Accessibility: AX cannot see an empty-title window.
 let wantPid = CommandLine.arguments.count > 1 ? Int(CommandLine.arguments[1]) : nil
 
 guard

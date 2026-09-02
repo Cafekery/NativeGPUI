@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Measure structure out of window captures, so a UI comparison is numbers rather than impressions.
+"""Report structure measured out of window captures: full-width horizontal boundaries, the
+dominant row pitch, and the column edges of the header band.
 
-Capture window-scoped and native:  screencapture -x -o -l <windowid> out.png
-That contains the window's own pixels and nothing else, so the wallpaper and the desktop cannot
-leak into a reading — a stronger guarantee than setting the desktop to something plain. `-o` omits
-the drop shadow, so the frame is exact; do not use it if the shadow is the subject.
-
-Reports per image: full-width horizontal boundaries (toolbar height, header height), the dominant
-row pitch by autocorrelation, and the vertical edges inside a band (column positions).
+Capture with: screencapture -x -o -l <windowid> out.png
 """
 
 import sys
@@ -22,8 +17,7 @@ def load(path):
 
 
 def full_width_steps(a, frac=0.55, threshold=10.0):
-    """y where a step spans most of the width. Real UI boundaries are full-width lines; text
-    antialiasing is not, which is what a plain row-mean threshold picks up instead."""
+    """y where a step spans most of the width; text antialiasing does not."""
     luma = a.mean(axis=2)
     d = np.abs(np.diff(luma, axis=0))
     spanning = (d > threshold).mean(axis=1)
@@ -31,8 +25,7 @@ def full_width_steps(a, frac=0.55, threshold=10.0):
 
 
 def pitch(luma, y0, y1):
-    """Dominant period of the alternating row bands, by autocorrelation. Reads the repeat directly
-    and does not care how many boundaries were missed or invented."""
+    """Dominant period of the alternating row bands, by autocorrelation."""
     seg = luma[y0:y1]
     if len(seg) < 40:
         return None, 0.0
@@ -49,7 +42,7 @@ def pitch(luma, y0, y1):
 
 
 def col_edges(a, y0, y1, threshold=8.0):
-    """x where the band's column-mean luma steps. Column separators and text starts land here."""
+    """x where the band's column-mean luma steps."""
     band = a[y0:y1].mean(axis=2).mean(axis=0)
     d = np.abs(np.diff(band))
     return [int(i) + 1 for i in np.nonzero(d > threshold)[0]]
@@ -67,7 +60,6 @@ def describe(path, scale):
     pt = lambda v: round(v / scale, 1)
     print(f"  full-width boundaries (pt): {[pt(s) for s in steps[:14]]}")
 
-    # The list starts after the last boundary in the top third; above it is chrome.
     top_third = [s for s in steps if s < size[1] / 3]
     list_top = top_third[-1] if top_third else steps[0]
     print(f"  chrome ends / list starts at: {pt(list_top)} pt")

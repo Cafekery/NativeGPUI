@@ -1,20 +1,11 @@
--- Dump one process's whole menu bar as TSV: menu, row title, key equivalent, modifier mask, enabled.
---
--- Reading another app's menus needs an Accessibility grant but NOT keyboard focus, which is the
--- whole reason this exists: it is the one instrument here that can check the bar without taking
--- the screen from anyone.
---
--- Every attribute is read WITHOUT coercing to text first. `value of attribute "…" as text` turns
--- an absent attribute into the literal string "missing value", so a row with no key equivalent
--- compares unequal to an empty expectation and six correct rows reported MISSING.
+-- usage: osascript menubar.applescript <pid> — dump that process's menu bar as TSV:
+-- menu, row title, key equivalent, modifier mask, enabled.
 on run argv
 	set thePid to (item 1 of argv) as integer
 	set out to ""
 	tell application "System Events"
 		set proc to first application process whose unix id is thePid
-		-- Reached before anything else, and deliberately not inside a `try`: it is the one read
-		-- that needs the Accessibility grant, so a missing grant has to error here rather than be
-		-- mistaken for an app with no menu bar.
+		-- Outside any `try`: a missing Accessibility grant must error here, not read as "no bar".
 		set probeName to name of proc
 		set barCount to 0
 		try
@@ -22,9 +13,6 @@ on run argv
 				set barCount to count of menu bar items of menu bar 1
 			end tell
 		end try
-		-- An app that installed no bar has no `menu bar 1` at all: System Events raises
-		-- "Invalid index" rather than returning an empty list. Reported as a row, so the caller
-		-- distinguishes it from a read that failed.
 		if barCount is 0 then return "NOBAR" & tab & probeName & tab & tab & tab & linefeed
 		repeat with b from 1 to barCount
 			tell proc
@@ -41,6 +29,7 @@ on run argv
 				tell proc
 					set theRow to menu item r of menu 1 of menu bar item b of menu bar 1
 					set rowName to name of theRow
+					-- Read raw: coercing an absent attribute `as text` yields "missing value".
 					set ch to missing value
 					try
 						set ch to value of attribute "AXMenuItemCmdChar" of theRow

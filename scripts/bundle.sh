@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
-# Assemble a double-clickable .app around one example binary.
-#
-# A bare Cargo binary is not a bundle, and macOS treats it differently in ways that show up
-# during testing: LaunchServices will not activate it, so `activate(ignoringOtherApps:)` is
-# ignored and the window can fail to take key. `open -n Foo.app` on the output of this script
-# takes key on every launch. Measured on macOS 26.5.
+# usage: bundle.sh [example] [features] — build an example into dist/<Name>.app and print its path
 set -uo pipefail
 
 name=${1:-storybook}
 features=${2:-}
 
-# The storybook exists to show everything, and the glass recipe editor, the private glass variants
-# and nine of the materials do not exist without this feature — those pages compile to a "requires
-# --features private-api" note instead. Announced rather than silent, and overridable by passing $2.
 if [ "$name" = storybook ] && [ -z "$features" ]; then
   features=private-api
   echo "storybook: defaulting to --features private-api"
@@ -57,8 +49,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature. Unsigned bundles are refused activation, and a TCC grant is keyed to the
-# signature, so an unsigned rebuild would re-prompt for permissions every time.
+# An unsigned bundle is refused activation, and its TCC grant is keyed to the signature.
 codesign --force --sign - --timestamp=none "$app" 2>/dev/null || echo "warning: codesign failed"
 
 echo "$app"

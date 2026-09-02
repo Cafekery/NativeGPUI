@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# Abort if the display is locked or asleep. A capture taken then returns a shield window or stale
-# black and still produces plausible numbers, which is the whole hazard. Exit 90 so a harness can
-# tell "blocked" from "failed". Call before AND after anything that produces a number.
-#
-# `loginwindow` is ALWAYS a running process, so its presence means nothing — the signal is it being
-# FRONTMOST. A first version of this file aborted every time for exactly that reason.
-#
-# LOCKGUARD_FAKE_SHOT points the black-screen arm at a file instead of the screen, so each arm can
-# be proven able to fire without waiting for a real lock.
+# usage: lockguard.sh — abort with exit 90 if the display is locked or asleep.
+#   env: LOCKGUARD_FAKE_SHOT=<png> reads that file instead of capturing the screen
 set -uo pipefail
 
 front=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || echo unknown)
+# loginwindow always runs; only its being frontmost means locked.
 if [ "$front" = loginwindow ]; then
   echo "LOCKGUARD ABORT: loginwindow is frontmost — screen locked" >&2
   exit 90

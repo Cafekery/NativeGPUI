@@ -1,9 +1,4 @@
-// CONTROL for the positive arm — the same shape as pos.rs plus one name that has never existed.
-// Must FAIL.
-//
-// Without it, pos.rs compiling says only that rustc ran. A `--extern` pointed at a stale rlib, a
-// path typo that happens to resolve to something else, or an arm that never reached the crate at
-// all would all read as a pass.
+// Control for the positive arm: pos.rs's shape plus one name that never existed. Must FAIL.
 #![allow(unused_imports)]
 
 use native_gpui::{

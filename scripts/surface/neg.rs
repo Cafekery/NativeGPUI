@@ -1,27 +1,17 @@
-// NEGATIVE ARM — every path deliberately removed from the public surface must stay gone.
-// Must FAIL, with one error per probe.
-//
-// This is the half nothing else in the tree can see. `chrome` and `system` are private grouping
-// modules so that each feature has one obvious path instead of three; a future `pub mod` would
-// hand back the extra paths and every other check would stay green, because no example imports
-// `native_gpui::chrome::` to notice. Same for a deleted item reappearing.
-//
-// Each probe is marked `// probe:` and surface.sh requires the error count to equal the probe
-// count, so one unrelated error cannot stand in for four.
+// Negative arm: every path removed from the public surface must stay gone.
+// Must FAIL, with one error per marked probe.
 #![allow(unused_imports)]
 
-// probe: `chrome` is a private grouping module — reach the sidebar at the root or via `sidebar`.
+// probe: `chrome` is a private grouping module.
 use native_gpui::chrome::sidebar::sidebar_item;
 
-// probe: `system` is a private grouping module — reach the tokens via `tokens`.
+// probe: `system` is a private grouping module.
 use native_gpui::system::tokens::WINDOW_BACKGROUND;
 
-// probe: deleted. It had no caller and was the only place `objc2::runtime::Sel` reached the
-// public surface. `supports_corner_radius` answers the same question for anyone with a `Window`.
+// probe: deleted; `supports_corner_radius` replaces it.
 use native_gpui::window_chrome::corner_radius_selector;
 
 fn main() {
-    // probe: deleted. It was exactly `srgb(&self.ns_color())` with both halves public, and the
-    // control it claimed to be lives in the storybook's tokens page instead.
+    // probe: deleted; it was `srgb(&self.ns_color())` with both halves public.
     let _ = native_gpui::tokens::SystemColor::Label.resolve_ambient();
 }
