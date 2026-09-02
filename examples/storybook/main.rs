@@ -1,7 +1,5 @@
-//! Component browser: native macOS sidebar, GPUI content.
-//!
-//! One page per module in `pages/`, each owning its own state. `PAGES` is the only place a page is
-//! registered — the sidebar, the header and the router all read it.
+//! Component browser: native macOS sidebar, GPUI content, one page per module in `pages/`.
+//! `NG_PAGE=<id>` opens straight onto a page.
 
 mod pages;
 mod ui;
@@ -13,6 +11,8 @@ use gpui::{
 use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_group, sidebar_item};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{install_menus, native_root, tokens, window_options};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 pub struct Page {
     pub id: &'static str,
@@ -182,8 +182,7 @@ pub fn page_of(id: &str) -> &'static Page {
     PAGES.iter().find(|p| p.id == id).unwrap_or(&PAGES[0])
 }
 
-/// Opens a second window with its own [`native_gpui::NativeHost`]. A sidebar and the window chrome
-/// configure the window itself, so neither can be demonstrated inside this one's content pane.
+/// Opens a second window with its own host, for the pages that configure the window itself.
 pub fn popout<V: 'static + Render>(
     cx: &mut App,
     origin: (f32, f32),
@@ -206,6 +205,7 @@ pub fn popout<V: 'static + Render>(
 pub struct Demo {
     sidebar: Option<NativeSidebar>,
     selected: SharedString,
+    frames: VecDeque<Instant>,
     pub switch: pages::switch::State,
     pub slider: pages::slider::State,
     pub segmented: pages::segmented::State,
@@ -231,11 +231,10 @@ impl Demo {
     fn new() -> Self {
         Self {
             sidebar: None,
-            // `NG_PAGE=<id>` opens straight onto a page, so a measurement of one page needs no
-            // click in the sidebar. An unknown id falls back to the first page rather than panicking.
+            frames: VecDeque::new(),
             selected: std::env::var("NG_PAGE")
                 .ok()
-                .map(|id| page_of(&SharedString::from(id)).id)
+                .map(|id| page_of(&id).id)
                 .unwrap_or("switch")
                 .into(),
             switch: Default::default(),
@@ -260,6 +259,31 @@ impl Demo {
         }
     }
 
+    /// Frames rendered in the last second and the longest gap between two of them.
+    fn frame_stats(&mut self) -> String {
+        let now = Instant::now();
+        while self
+            .frames
+            .front()
+            .is_some_and(|t| now - *t > Duration::from_secs(1))
+        {
+            self.frames.pop_front();
+        }
+        self.frames.push_back(now);
+        let worst = self
+            .frames
+            .iter()
+            .zip(self.frames.iter().skip(1))
+            .map(|(a, b)| *b - *a)
+            .max()
+            .unwrap_or_default();
+        format!(
+            "{} fps · worst {:.1} ms",
+            self.frames.len(),
+            worst.as_secs_f64() * 1e3
+        )
+    }
+
     fn install_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
 
@@ -269,7 +293,6 @@ impl Demo {
                 groups.push(page.group);
             }
         }
-
         let items: Vec<_> = groups
             .iter()
             .map(|group| {
@@ -282,8 +305,7 @@ impl Demo {
             })
             .collect();
 
-        // Before `update`: any selection AppKit decides while building the rows is dropped if no
-        // handler is listening yet, and nothing resyncs it, so the highlight and `selected` diverge.
+        // Before `update`: a selection made while building the rows is dropped if nothing listens.
         let entity = cx.entity().downgrade();
         sidebar.on_select(move |id, _, cx| {
             let Some(id) = id.clone() else { return };
@@ -294,10 +316,8 @@ impl Demo {
                 })
                 .ok();
         });
-
         sidebar.update(&items);
         sidebar.set_selected(Some(&self.selected));
-
         self.sidebar = Some(sidebar);
     }
 
@@ -331,30 +351,14 @@ impl Render for Demo {
         if self.sidebar.is_none() {
             self.install_sidebar(window, cx);
         }
-
-        // Read off the sidebar, not out of the `SidebarMetrics` global: the global is published
-        // from an AppKit layout pass through a spawned task, so it is still unset for the first
-        // frames and every one of them lays the content out under the sidebar. The handle carries
-        // the same numbers synchronously, which is what makes frame one correct.
+        // The handle carries the metrics synchronously; the global is set a few frames later.
         let metrics = self
             .sidebar
             .as_ref()
             .map(NativeSidebar::metrics)
             .unwrap_or_default();
         let page = page_of(&self.selected);
-        // `NG_LAG=<frames>` is the control arm for the scroll-pinning compensation in
-        // [`native_gpui::NativeHost`]: `0` restores write-through placement, so before and after
-        // are the same binary on the same page.
-        if let Some(want) = std::env::var("NG_LAG")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-        {
-            let host = native_gpui::NativeHost::get(window, cx);
-            if host.lag() != want {
-                host.set_lag(want);
-            }
-        }
-
+        let stats = self.frame_stats();
         let body = self.body(window, cx);
 
         native_root(
@@ -394,18 +398,34 @@ impl Render for Demo {
                                     .child(
                                         div()
                                             .mt_1()
-                                            .px_2p5()
-                                            .py_1()
-                                            .rounded_md()
-                                            .bg(system_color(SystemColor::ControlAccent))
+                                            .flex()
+                                            .gap_2()
                                             .text_xs()
-                                            .text_color(system_color(
-                                                SystemColor::AlternateSelectedControlText,
-                                            ))
-                                            .child(SharedString::from(format!(
-                                                "drawn by macOS · {}",
-                                                page.class
-                                            ))),
+                                            .child(
+                                                div()
+                                                    .px_2p5()
+                                                    .py_1()
+                                                    .rounded_md()
+                                                    .bg(system_color(SystemColor::ControlAccent))
+                                                    .text_color(system_color(
+                                                        SystemColor::AlternateSelectedControlText,
+                                                    ))
+                                                    .child(SharedString::from(format!(
+                                                        "drawn by macOS · {}",
+                                                        page.class
+                                                    ))),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px_2p5()
+                                                    .py_1()
+                                                    .rounded_md()
+                                                    .bg(system_color(
+                                                        SystemColor::QuaternarySystemFill,
+                                                    ))
+                                                    .text_color(system_color(SystemColor::Label))
+                                                    .child(SharedString::from(stats)),
+                                            ),
                                     ),
                             )
                             .child(body),
