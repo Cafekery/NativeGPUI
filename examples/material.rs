@@ -1,9 +1,9 @@
 //! Hosted `NSVisualEffectView` materials over a busy backdrop.
 
 use gpui::{
-    App, AppContext, Application, Bounds, Context, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions,
-    div, point, px, rgb, rgba, size,
+    App, AppContext, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,
+    point, px, rgb, rgba, size,
 };
 use native_gpui::{Material, RawMaterial, material, native_root, window_options};
 
@@ -230,7 +230,7 @@ fn main() {
         .collect::<Vec<_>>();
     println!("{} materials: {}", catalogue.len(), catalogue.join(", "));
 
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         // Backdrop first, so the demo window ends up in front of it.
         cx.open_window(
             WindowOptions {

@@ -144,7 +144,7 @@ impl FinderDemo {
             if let Some(sidebar) = &this.sidebar {
                 sidebar.focus_content();
             }
-            window.focus(&this.focus);
+            window.focus(&this.focus, cx);
         }));
         sidebar.on_reorder(cx.listener(|this, moved: &SidebarMove, _, cx| {
             this.reorder(moved);
@@ -157,7 +157,7 @@ impl FinderDemo {
         self.sidebar = Some(sidebar);
         self.sidebar_follow();
         self.retitle(window);
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
     }
 
     fn reorder(&mut self, moved: &SidebarMove) {

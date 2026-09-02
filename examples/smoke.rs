@@ -1,8 +1,7 @@
 //! A real `NSSwitch` above GPUI's Metal content, driving the square GPUI paints beside it.
 
 use gpui::{
-    App, Application, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,
-    rgb, size,
+    App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{native_root, native_switch, window_options};
 
@@ -36,7 +35,7 @@ impl Render for Smoke {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

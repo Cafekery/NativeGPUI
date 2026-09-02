@@ -3,8 +3,8 @@
 use std::io::Write;
 
 use gpui::{
-    App, Application, Bounds, Context, Div, Render, Window, WindowBounds, div, point, prelude::*,
-    px, rgb, rgba, size,
+    App, Bounds, Context, Div, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, rgba,
+    size,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{NSScreen, NSView, NSWindow};
@@ -266,7 +266,7 @@ fn main() {
         .ok()
         .and_then(|value| value.trim().parse().ok());
 
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

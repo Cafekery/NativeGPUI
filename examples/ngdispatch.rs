@@ -7,8 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Render, Window, WindowBounds, div, point,
-    prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,
+    size,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -155,7 +155,7 @@ fn main() {
     let counters = Arc::new(Counters::default());
     let started = Instant::now();
     watchdog(counters.clone(), started);
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
             gpui::WindowOptions {

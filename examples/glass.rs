@@ -1,8 +1,8 @@
 //! macOS 26 liquid glass: both styles, tints, the corner-radius range, and a `glass_container`.
 
 use gpui::{
-    App, Application, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, hsla,
-    point, prelude::*, px, rgb, size,
+    App, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, hsla, point,
+    prelude::*, px, rgb, size,
 };
 use native_gpui::{Glass, glass, glass_container, native_root, window_options};
 
@@ -122,7 +122,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

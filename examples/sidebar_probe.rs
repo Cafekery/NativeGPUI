@@ -5,8 +5,8 @@ use std::ffi::c_void;
 use std::time::Instant;
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, Render, SharedString, Window, WindowBounds,
-    WindowOptions, div, point, prelude::*, px, rgb, rgba, size,
+    App, Bounds, Context, MouseButton, Render, SharedString, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, rgb, rgba, size,
 };
 use native_gpui::sidebar::{
     NativeSidebar, PaneAlign, SidebarDiff, SidebarItem, SidebarMetrics, SidebarOptions,
@@ -1562,7 +1562,7 @@ fn main() {
         options.window_background
     );
 
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         cx.open_window(options, |_, cx| {
             cx.new(|_| Demo {
                 installed: false,
