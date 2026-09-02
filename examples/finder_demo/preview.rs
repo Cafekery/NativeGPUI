@@ -6,12 +6,13 @@ use gpui::{
 use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored, system_color};
 use native_gpui::{
     Cursor, Material, chrome_host, cursor_region, material, native_root, native_screen_rect,
-    window_options,
+    system_corner_radius, window_options,
 };
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
+use objc2_quartz_core::CACornerMask;
 
 use crate::data::{Face, Line, Row};
 use crate::palette::Palette;
@@ -166,6 +167,7 @@ fn open_preview_window(
     finder: Entity<FinderDemo>,
     parent: Option<Retained<NSWindow>>,
     frame: NSRect,
+    corner: f64,
     cx: &mut App,
 ) {
     let pane_finder = finder.clone();
@@ -200,6 +202,16 @@ fn open_preview_window(
         // An NSPanel: a click in the pane must not take key from the list.
         unsafe {
             let _: () = msg_send![&*window, setBecomesKeyOnlyIfNeeded: true];
+        }
+        // The pane meets the window's bottom-right corner, which the window rounds and this
+        // window would otherwise overhang.
+        if let Some(content) = window.contentView() {
+            content.setWantsLayer(true);
+            if let Some(layer) = content.layer() {
+                layer.setCornerRadius(corner);
+                layer.setMaskedCorners(CACornerMask::LayerMaxXMinYCorner);
+                layer.setMasksToBounds(true);
+            }
         }
         window.setFrame_display(frame, true);
         unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
@@ -263,7 +275,8 @@ impl FinderDemo {
                 self.preview_opening = true;
                 let finder = cx.entity();
                 let parent = ns_window(window);
-                cx.defer(move |cx| open_preview_window(finder, parent, frame, cx));
+                let corner = f32::from(system_corner_radius(window)) as f64;
+                cx.defer(move |cx| open_preview_window(finder, parent, frame, corner, cx));
             }
         }
     }

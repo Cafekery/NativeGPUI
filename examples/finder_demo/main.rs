@@ -31,7 +31,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::data::{Column, Folder, Line, Row, build_store};
 use crate::header::{
-    ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
+    ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns, pane_cap,
 };
 use crate::icon::{Grid, cell};
 use crate::palette::Palette;
@@ -504,7 +504,10 @@ impl FinderDemo {
             .overflow_hidden()
             .child(surface)
             // A Layer::Above material blurs only what is painted before it: rows, glass, header.
-            .when(banded, |column| column.child(band_glass(metrics.left, top)))
+            .when(banded, |column| {
+                column.child(band_glass(metrics.left, px(pane), top))
+            })
+            .when(banded && pane > 0., |column| column.child(pane_cap(px(pane), top)))
             // A second scroller on the same handle, so the header clamps exactly as the rows do.
             .children(headers.map(|headers| {
                 axis_locked(

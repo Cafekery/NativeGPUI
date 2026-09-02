@@ -103,13 +103,30 @@ fn overlay(fill: Hsla) -> Div {
         .bg(fill)
 }
 
+/// The pane's material continued up under the toolbar, where the pane window cannot reach.
+pub(crate) fn pane_cap(width: Pixels, top: Pixels) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .right_0()
+        .w(width)
+        .h(top)
+        .child(
+            material("ng.finder.pane.cap", Material::Sidebar)
+                .layer(Layer::Above)
+                .blending(Blending::WithinWindow)
+                .size_full(),
+        )
+        .into_any_element()
+}
+
 /// The glass over the toolbar band and the column-header band, as one material spanning both.
-pub(crate) fn band_glass(left: Pixels, top: Pixels) -> AnyElement {
+pub(crate) fn band_glass(left: Pixels, right: Pixels, top: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
         .left(left)
-        .right_0()
+        .right(right)
         .h(top + px(HEADER_H))
         .child(
             material("ng.finder.band", Material::Header)
