@@ -5,14 +5,12 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored, system_color};
 use native_gpui::{
-    Cursor, Material, chrome_host, cursor_region, material, native_root, native_screen_rect,
-    system_corner_radius, window_options,
+    Cursor, chrome_host, cursor_region, native_root, native_screen_rect, window_options,
 };
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
-use objc2_quartz_core::CACornerMask;
 
 use crate::data::{Face, Line, Row};
 use crate::palette::Palette;
@@ -61,20 +59,14 @@ pub(crate) struct PreviewWindow {
 
 pub(crate) struct PreviewPane {
     finder: Entity<FinderDemo>,
-    /// The window's corner radius, which the pane's outer edge follows.
-    corner: f32,
     /// The pane's right edge in screen points while the grip is held.
     drag: Option<f32>,
 }
 
 impl PreviewPane {
-    fn new(finder: Entity<FinderDemo>, corner: f32, cx: &mut Context<Self>) -> Self {
+    fn new(finder: Entity<FinderDemo>, cx: &mut Context<Self>) -> Self {
         cx.observe(&finder, |_, _, cx| cx.notify()).detach();
-        Self {
-            finder,
-            corner,
-            drag: None,
-        }
+        Self { finder, drag: None }
     }
 
     fn resize_start(&mut self, _: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
@@ -143,19 +135,11 @@ impl Render for PreviewPane {
                     });
                 }))
                 .child(
-                    // The child window is never key, so a material following its active state
-                    // would stay flat; unlike Finder's, this pane does not grey out when the
-                    // window is not key.
-                    // Hairlines on the edges that meet the list and the window's outer edge,
-                    // the last one following the window's rounded corner, as Finder's pane has.
-                    material("finder.preview", Material::Sidebar)
+                    // The parent paints the pane's material and edges; this window, never key,
+                    // carries only what must draw above that material.
+                    div()
                         .size_full()
                         .relative()
-                        .border_l_1()
-                        .border_b_1()
-                        .border_r_1()
-                        .rounded_br(px(self.corner))
-                        .border_color(palette.separator)
                         .child(card)
                         .child(cursor_region(
                             "finder.preview.grip",
@@ -184,7 +168,6 @@ fn open_preview_window(
     finder: Entity<FinderDemo>,
     parent: Option<Retained<NSWindow>>,
     frame: NSRect,
-    corner: f64,
     cx: &mut App,
 ) {
     let pane_finder = finder.clone();
@@ -204,7 +187,7 @@ fn open_preview_window(
                     })),
                     ..window_options()
                 },
-                |_, cx| cx.new(|cx| PreviewPane::new(pane_finder, corner as f32, cx)),
+                |_, cx| cx.new(|cx| PreviewPane::new(pane_finder, cx)),
             )
             .ok()?;
         let window = handle
@@ -219,16 +202,6 @@ fn open_preview_window(
         // An NSPanel: a click in the pane must not take key from the list.
         unsafe {
             let _: () = msg_send![&*window, setBecomesKeyOnlyIfNeeded: true];
-        }
-        // The pane meets the window's bottom-right corner, which the window rounds and this
-        // window would otherwise overhang.
-        if let Some(content) = window.contentView() {
-            content.setWantsLayer(true);
-            if let Some(layer) = content.layer() {
-                layer.setCornerRadius(corner);
-                layer.setMaskedCorners(CACornerMask::LayerMaxXMinYCorner);
-                layer.setMasksToBounds(true);
-            }
         }
         window.setFrame_display(frame, true);
         unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
@@ -296,8 +269,7 @@ impl FinderDemo {
                 self.preview_opening = true;
                 let finder = cx.entity();
                 let parent = ns_window(window);
-                let corner = f32::from(system_corner_radius(window)) as f64;
-                cx.defer(move |cx| open_preview_window(finder, parent, frame, corner, cx));
+                cx.defer(move |cx| open_preview_window(finder, parent, frame, cx));
             }
         }
     }

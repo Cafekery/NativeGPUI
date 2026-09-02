@@ -62,7 +62,7 @@ Handlers are registered every paint (`slot.on_change(kind, handler)`) and remove
 
 A window is two surfaces: the sidebar pane is vibrancy and everything else is one opaque colour, `tokens::WINDOW_BACKGROUND`. That is also why the storybook's sidebar looks different from its body: it is the system's sidebar material, exactly as in Finder.
 
-One thing a single window cannot do: GPUI content over a blur of GPUI content. GPUI is one Metal layer, so it is either entirely under a material (`Layer::Above`, which blurs it) or entirely over it (`Layer::Below`, which cannot see it). Finder's preview pane is both, a blur of the list with a card on top, and the Finder demo does it with a borderless, non-activating child window laid over the list: a `Layer::Below` material there samples the parent window behind it, and the child's own GPUI paints the card. See `PreviewPane` in [`examples/finder_demo/preview.rs`](../examples/finder_demo/preview.rs).
+One thing a single window cannot do: GPUI content over a blur of GPUI content. GPUI is one Metal layer, so it is either entirely under a material (`Layer::Above`, which blurs it) or entirely over it (`Layer::Below`, which cannot see it). Finder's preview pane is both, a blur of the list with a card on top, and the Finder demo splits it: a `glass` in the main window frosts the rows (and its rim is the hairline Finder shows on the pane's edges), and a borderless, non-activating, transparent child window laid over it paints the card with its own GPUI. See `pane_surface` in [`examples/finder_demo/header.rs`](../examples/finder_demo/header.rs) and `PreviewPane` in [`examples/finder_demo/preview.rs`](../examples/finder_demo/preview.rs).
 
 ## Materials and glass
 
