@@ -1,4 +1,4 @@
-//! Layout helpers every page shares. No component logic lives here.
+//! Layout helpers every page shares.
 
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
@@ -16,7 +16,6 @@ pub fn sized(width: f32, child: AnyElement) -> AnyElement {
     div().w(px(width)).child(child).into_any_element()
 }
 
-/// One labelled specimen.
 pub fn demo(label: &str, child: AnyElement) -> AnyElement {
     div()
         .flex()
@@ -27,7 +26,6 @@ pub fn demo(label: &str, child: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-/// A labelled band of specimens laid out along the row.
 pub fn row(label: &str, children: Vec<AnyElement>) -> AnyElement {
     demo(
         label,
@@ -41,7 +39,6 @@ pub fn row(label: &str, children: Vec<AnyElement>) -> AnyElement {
     )
 }
 
-/// A heading for a long catalogue, where `demo` labels would all look alike.
 pub fn section(title: &str, children: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
@@ -65,7 +62,6 @@ pub fn caption(text: impl Into<String>) -> AnyElement {
         .into_any_element()
 }
 
-/// A measured value, in the same face the properties table uses.
 pub fn mono(text: impl Into<String>) -> AnyElement {
     div()
         .font_family("SF Mono")
@@ -75,7 +71,6 @@ pub fn mono(text: impl Into<String>) -> AnyElement {
         .into_any_element()
 }
 
-/// Something the reader needs before the page makes sense — a feature gate, a caveat.
 pub fn note(text: impl Into<String>) -> AnyElement {
     div()
         .px_3()
@@ -88,7 +83,6 @@ pub fn note(text: impl Into<String>) -> AnyElement {
         .into_any_element()
 }
 
-/// Fixed-width tiles that wrap, for catalogues of materials or glass.
 pub fn grid(children: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
@@ -98,7 +92,6 @@ pub fn grid(children: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-/// One catalogue tile: the specimen at a fixed size with its name beneath.
 pub fn tile(label: impl Into<String>, width: f32, child: AnyElement) -> AnyElement {
     div()
         .flex()
@@ -110,7 +103,6 @@ pub fn tile(label: impl Into<String>, width: f32, child: AnyElement) -> AnyEleme
         .into_any_element()
 }
 
-/// The name/value table each page closes with.
 pub fn props(rows: &[(&str, String)]) -> AnyElement {
     div()
         .flex()
@@ -142,7 +134,6 @@ pub fn props(rows: &[(&str, String)]) -> AnyElement {
         .into_any_element()
 }
 
-/// A control paired with its label and live value, for the customiser pages.
 pub fn knob(label: &str, value: impl Into<String>, control: AnyElement) -> AnyElement {
     div()
         .flex()
@@ -161,8 +152,6 @@ pub fn knob(label: &str, value: impl Into<String>, control: AnyElement) -> AnyEl
         .into_any_element()
 }
 
-/// Checkerboard, so a translucent specimen has something to be translucent against. A flat fill
-/// cannot show whether a material is sampling or has collapsed.
 pub fn checker(size_px: f32, child: AnyElement) -> AnyElement {
     let cells: Vec<AnyElement> = (0..64)
         .map(|i| {

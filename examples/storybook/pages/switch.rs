@@ -1,13 +1,3 @@
-//! Reference page. Every other page in `pages/` follows this shape:
-//!
-//! * `State` holds only this page's own fields and derives or implements `Default`.
-//! * `render` reads `d.<page>` for values and writes through `cx.listener`, which is the only way
-//!   to get a `&mut Demo` inside a callback.
-//! * The page ends with `props`, naming the API a reader would go looking for.
-//!
-//! Check the builder exists before demonstrating it — the controls do not share one set. `NSSwitch`
-//! takes `on_change` and `enabled` and nothing else.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window, prelude::*};

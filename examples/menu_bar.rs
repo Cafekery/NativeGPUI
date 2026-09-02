@@ -1,44 +1,14 @@
-//! The standard menu bar, read back out of AppKit rather than assumed.
+//! The standard menu bar, read back out of AppKit. Exits with the number of failed rows.
 //!
 //! ```text
-//! NG_ARM=table   default; installs the bar, reads every row out of `NSApp.mainMenu`, compares it
-//!                against the table written below, then fires ⌘H, ⌘M and ⌘W through the menu and
-//!                checks the state each one is supposed to change.
-//! NG_ARM=extend  adds an app menu and an app row, then requires every standard row to still be
-//!                there, in order, with its selector intact.
-//! NG_ARM=order   which layer answers a chord AppKit owns. Fires ⌘M through `NSApp.sendEvent:`
-//!                with and without a gpui keybinding for it, so AppKit does the sequencing.
-//! NG_ARM=quit    fires ⌘Q through the menu. Success is this process being gone: it prints
-//!                STILL ALIVE and exits non-zero if it is not.
-//! NG_ARM=noquit  the control for `quit` — same fire, no menu bar installed. Must stay alive.
-//! NG_ARM=hold    installs the bar and waits NG_HOLD seconds (default 12) so a second process can
-//!                read the bar back out of the accessibility tree, which needs no focus.
-//! NG_MENUS=0     skips install_menus entirely, in any arm. The arm an external reader has to go
-//!                red in.
+//! NG_ARM=table   default; compares every row against the table below, then fires ⌘H, ⌘M and ⌘W
+//! NG_ARM=extend  adds an app menu and an app row; every standard row must survive
+//! NG_ARM=order   which layer answers ⌘M, with and without a gpui binding for it
+//! NG_ARM=quit    fires ⌘Q through the menu; the pass is this process being gone
+//! NG_ARM=noquit  the control for `quit`: the same fire with no bar installed, must stay alive
+//! NG_ARM=hold    installs the bar and waits NG_HOLD seconds (default 12) for an external reader
+//! NG_MENUS=0     skips install_menus entirely, in any arm
 //! ```
-//!
-//! Five things keep a row from passing by measuring nothing:
-//!
-//! * `isEnabled` is YES on a fresh `NSMenuItem`, so a table read without `NSMenu::update` reports
-//!   every row enabled including one with no action at all. Every table run therefore plants two
-//!   control rows in File — one with a nil action, one with a selector nothing implements — and
-//!   fails if either comes back enabled.
-//! * The expected table below is written out by hand from Apple's own menu set, not derived from
-//!   the installer. A shared table would only prove the installer agrees with itself.
-//! * A chord's effect is read from the object that owns it — `NSApp.isHidden`,
-//!   `NSWindow.isMiniaturized`, `NSWindow.isVisible` — and every row records the state before the
-//!   chord as well as after, so a state the app was already in reports VACUOUS, never PASS.
-//! * `NSMenu::performKeyEquivalent` returning true is **not** evidence the action ran. Measured:
-//!   it returned true for a Close row `enabled_for` read as disabled in the same breath. It is
-//!   reported next to every fire row because a true return with no state change is worth seeing,
-//!   but only the state change is evidence. This bullet said the opposite first, as a proof of
-//!   target resolution, and the bundled run falsified it.
-//! * `hide:`, `performMiniaturize:` and `deminiaturize` all complete on a later run-loop turn, so
-//!   every fire row settles before reading, and refuses to fire unless its precondition holds — a
-//!   window already miniaturised, or an app already hidden, reports BLOCKED and never PASS.
-//! * A window action resolves against the *key* window, so a run with none cannot tell a broken
-//!   `performClose:` from an app that simply has no window to close. The key-window state is
-//!   printed first and a run without one reports BLOCKED rather than a verdict.
 
 use std::env;
 use std::process::ExitCode;
@@ -59,19 +29,15 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSProcessInfo, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-/// Stands in for the app's name, so the expectation is checked against whatever the bundle or the
-/// process is called rather than against a name written out twice.
+/// Stands in for the app's own name in the table below.
 const APP: &str = "{}";
 
 /// title, key equivalent, modifier chord, selector. A separator is a title of `-`; a submenu host
 /// reports `(submenu)`.
 type Row = (&'static str, &'static str, &'static str, &'static str);
 
-/// `exact` is true only where every row is this crate's. AppKit maintains a tail on the others:
-/// its own Close All alternate in File, Writing Tools / AutoFill / Dictation / Emoji in Edit,
-/// Globe-key alternates in View, the window list under Window and its search field in Help. So
-/// only the standard prefix is compared row for row, and the tail is checked for the one thing
-/// that would matter — a row shadowing one of the four chords.
+/// `exact` is true only where every row is this crate's: AppKit maintains a tail of its own on
+/// the rest, so there only the standard prefix is compared.
 struct Expect {
     menu: &'static str,
     exact: bool,
@@ -134,9 +100,8 @@ const EXPECTED: &[Expect] = &[
             ("-", "", "", ""),
             ("Show Sidebar", "s", "cmd-ctrl", "toggleSidebar:"),
             ("-", "", "", ""),
-            // ⌃⌘F is what this crate asks for; macOS 26 substitutes Globe-F and keeps ⌃⌘F on an
-            // alternate of its own. AppKit owning the equivalent for this selector is the
-            // localisation the standard set is here to inherit, so the read-back is the truth.
+            // macOS substitutes Globe-F for the ⌃⌘F this crate asks for, keeping ⌃⌘F on an
+            // alternate of its own.
             ("Enter Full Screen", "f", "fn", "toggleFullScreen:"),
         ],
     },
@@ -158,8 +123,7 @@ const EXPECTED: &[Expect] = &[
 ];
 
 const CMD: NSEventModifierFlags = NSEventModifierFlags::Command;
-/// Physical key codes on a US layout. `NSMenu` matches on the characters, but gpui names the key
-/// by asking the current layout what this code produces, so the ordering arm needs the real one.
+/// Physical US-layout key codes: gpui names a key by asking the layout what the code produces.
 const KEY_M: u16 = 46;
 const KEY_H: u16 = 4;
 const KEY_W: u16 = 13;
@@ -167,7 +131,6 @@ const KEY_Q: u16 = 12;
 
 static FAIL: AtomicU32 = AtomicU32::new(0);
 static ROWS: AtomicU32 = AtomicU32::new(0);
-/// Counts, not flags: a chord claimed twice has to be distinguishable from one claimed once.
 static GPUI_CLAIMED: AtomicU32 = AtomicU32::new(0);
 static MENU_CLAIMED: AtomicU32 = AtomicU32::new(0);
 
@@ -198,7 +161,6 @@ fn blocked(name: &str, why: &str) {
     println!("{:<8} {:<40} {}", "BLOCKED", name, why);
 }
 
-/// A row whose "after" state equals its "before" state proves nothing, whichever way it reads.
 fn effect(name: &str, before: bool, after: bool, fired: bool) {
     ROWS.fetch_add(1, Ordering::Relaxed);
     let detail = format!("pre[{before}] post[{after}] want[true] performKeyEquivalent[{fired}]");
@@ -230,8 +192,7 @@ fn mods_string(mask: NSEventModifierFlags) -> String {
     parts.join("-")
 }
 
-/// SAFETY: a `Sel` obtained from `NSMenuItem::action` or `sel!` is always a registered selector,
-/// which is the only precondition.
+/// SAFETY: a `Sel` from `NSMenuItem::action` or `sel!` is always a registered selector.
 fn selector_string(selector: Sel) -> String {
     unsafe { NSString::from_selector(selector) }.to_string()
 }
@@ -251,10 +212,8 @@ fn class_name(object: &AnyObject) -> String {
     object.class().name().to_string_lossy().into_owned()
 }
 
-/// One row's four compared fields, as one string, so a whole menu compares as a sequence.
 fn signature(item: &NSMenuItem) -> String {
-    // A separator's key equivalent, mask and action mean nothing, and `separatorItem` comes back
-    // with a Command mask whether or not anything asked for one.
+    // `separatorItem` reports a Command mask whether or not anything asked for one.
     if item.isSeparatorItem() {
         return "-|||".to_string();
     }
@@ -271,12 +230,8 @@ fn expected_signature(row: &Row, name: &str) -> String {
     format!("{}|{}|{}|{}", row.0.replace(APP, name), row.1, row.2, row.3)
 }
 
-/// Every object AppKit would consult for a nil-target action, in AppKit's own order, and the first
-/// one that answers `selector`.
-///
-/// Written out rather than asked of `targetForAction:to:from:`, which searches from the key window:
-/// a run without one would report every window action as unreachable while the responder that owns
-/// it is sitting right there in the chain.
+/// Walked rather than asked of `targetForAction:to:from:`, which searches from the key window and
+/// so reports every window action as unreachable on a run without one.
 fn responder_for(window: &NSWindow, selector: Sel) -> Option<String> {
     let mut next = window.firstResponder();
     while let Some(responder) = next {
@@ -356,7 +311,7 @@ fn menu_titles(bar: &NSMenu) -> Vec<String> {
 }
 
 fn rows_of(menu: &NSMenu) -> Vec<Retained<NSMenuItem>> {
-    // Runs the validation that decides `isEnabled`. Read without it, every row reports the YES an
+    // Runs the validation that decides `isEnabled`; without it every row reports the YES an
     // `NSMenuItem` is born with.
     menu.update();
     menu.itemArray().iter().collect()
@@ -391,7 +346,6 @@ fn print_row(menu: &str, item: &NSMenuItem) {
     );
 }
 
-/// Predicted against read back, row for row.
 fn read_table(bar: &NSMenu, name: &str) {
     let want: Vec<String> = EXPECTED
         .iter()
@@ -439,10 +393,6 @@ fn read_table(bar: &NSMenu, name: &str) {
                 &format!("{} rows, want {}", items.len(), section.rows.len()),
             );
         } else {
-            // AppKit maintains a tail on most of these — its own Close All alternate in File, the
-            // text services in Edit, Globe-key alternates in View, the window list under Window.
-            // What matters is that none of it shadows one of the four chords the owner asked for,
-            // which a plain row count would not notice.
             let shadow: Vec<String> = items[section.rows.len().min(items.len())..]
                 .iter()
                 .filter(|item| {
@@ -464,10 +414,8 @@ fn read_table(bar: &NSMenu, name: &str) {
     println!();
 }
 
-/// Whether AppKit was actually handed the three menus it maintains, read back by object identity
-/// rather than by looking for a tail. A tail only appears when the app has something to put in one
-/// — a titled window, a help book — so its absence says nothing, and asserting on it would call a
-/// correctly-registered menu broken on any run without those.
+/// By object identity rather than by looking for the tail AppKit maintains: that tail only appears
+/// when the app has something to put in one, so its absence says nothing.
 fn registered_menus(bar: &NSMenu, name: &str) {
     let mtm = bar.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -502,8 +450,7 @@ fn registered_menus(bar: &NSMenu, name: &str) {
     }
 }
 
-/// Whether the ENABLED column can report a false. Two rows that must both come back disabled: one
-/// with no action at all, one with a selector nothing in the process implements.
+/// Whether the ENABLED column can report a false at all.
 fn controls(mtm: MainThreadMarker, bar: &NSMenu) {
     let Some(file) = submenu(bar, "File") else {
         verdict("control.file_menu", false, "no File menu to plant in");
@@ -536,8 +483,7 @@ fn controls(mtm: MainThreadMarker, bar: &NSMenu) {
     file.removeItem(&unimplemented);
 }
 
-/// The enable state AppKit gives the row carrying `key`+`mask`, right now. `performKeyEquivalent:`
-/// declines a disabled row, so a fire with no effect has to be readable against this.
+/// `performKeyEquivalent:` declines a disabled row, so a fire with no effect reads against this.
 fn enabled_for(menu: &NSMenu, key: &str, mask: NSEventModifierFlags) -> Option<bool> {
     menu.update();
     menu.itemArray()
@@ -548,13 +494,8 @@ fn enabled_for(menu: &NSMenu, key: &str, mask: NSEventModifierFlags) -> Option<b
         .map(|item| item.isEnabled())
 }
 
-/// Every row this crate installed carries tag 0.
-///
-/// The gate under the freeze this library works around: gpui's app delegate looks a sender's tag
-/// up in a table with one entry, and on a miss re-locks a mutex it is still holding, hanging the
-/// process with no panic and no log. A non-zero tag on any row whose action can reach that
-/// delegate reintroduces it, so the invariant is checked rather than trusted. Rows AppKit added
-/// itself are excluded: they are targeted at NSApp and carry whatever tag AppKit likes.
+/// Every row this crate installed carries tag 0: gpui's app delegate looks a sender's tag up in a
+/// one-entry table and, on a miss, re-locks a mutex it still holds and freezes the process.
 fn tags(bar: &NSMenu, name: &str) {
     let mut offenders = Vec::new();
     let mut checked = 0;
@@ -578,17 +519,8 @@ fn tags(bar: &NSMenu, name: &str) {
 }
 
 /// Each of ⌘H, ⌘M, ⌘W and ⌘Q: the responder its selector reaches, and for the first three the
-/// state the chord is supposed to move.
-///
-/// Every row settles the run loop before reading, and refuses to fire at all unless its
-/// precondition holds. Both were learned the expensive way on the one run that can measure this:
-/// `hide:` and `performMiniaturize:` complete on a later turn, so reading in the same statement
-/// reported ⌘H as having done nothing; and `deminiaturize` had not landed before ⌘W, so ⌘W tested
-/// a window that was already invisible and reported VACUOUS with `performKeyEquivalent` true.
-///
-/// That pairing is itself the finding worth keeping: **`NSMenu::performKeyEquivalent` returning
-/// true does not mean the action ran.** It returned true for a Close row that
-/// `enabled_for` read as disabled in the same breath. Only the state change is evidence.
+/// state the chord is supposed to move. `hide:`, `performMiniaturize:` and `deminiaturize` all
+/// complete on a later run-loop turn, so every row settles before reading.
 async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, resolvable: bool) {
     let mtm = window.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -629,8 +561,8 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
         return;
     };
 
-    // ⌘M first, then ⌘W, then ⌘H: ⌘W destroys the window ⌘M needs, and `hide:` orders the app's
-    // windows out and takes the key window with them, so it goes last where it can cost nothing.
+    // ⌘M first, then ⌘W, then ⌘H: ⌘W destroys the window ⌘M needs, and `hide:` takes the key
+    // window with it.
     if let Some(event) = chord(window, "m", KEY_M, CMD) {
         let enabled = enabled_for(&window_menu, "m", CMD);
         if window.isMiniaturized() {
@@ -683,9 +615,8 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
     }
 }
 
-/// An app menu and an app row alongside the standard set. Every standard row has to still be
-/// present, in order, with its selector intact — a subsequence match, so an inserted row is fine
-/// and a dropped or reordered one is not.
+/// An app menu and an app row alongside the standard set. A subsequence match, so an inserted row
+/// is fine and a dropped or reordered one is not.
 fn extended(bar: &NSMenu, name: &str) {
     let read = menu_titles(bar);
     let want = vec![
@@ -762,8 +693,6 @@ fn extended(bar: &NSMenu, name: &str) {
         ],
         &format!("{rows:?}"),
     );
-    // An app row's target is this crate's sink and its enable state comes from that sink, not from
-    // the responder chain — the one place the standard set's nil target would be wrong.
     let enabled = rows_of(&probe).first().map(|item| item.isEnabled());
     verdict(
         "extend.probe_row_enabled",
@@ -780,7 +709,7 @@ impl Render for Probe {
     }
 }
 
-fn app_menus(cx: &mut App) {
+fn app_menus() {
     add_menu(
         "Probe",
         [
@@ -793,32 +722,26 @@ fn app_menus(cx: &mut App) {
         MenuSection::App,
         [MenuCommand::new("Settings…", FromMenu).key("cmd-,")],
     );
-    let _ = cx;
 }
 
 fn main() -> ExitCode {
     let arm = env::var("NG_ARM").unwrap_or_else(|_| "table".into());
     Application::new().run(move |cx: &mut App| {
-        // `NG_MENUS=0` is the arm every external check needs to be able to fail in: no bar at
-        // all, so an assertion that still passes was never reading the bar.
         if arm != "noquit" && env::var("NG_MENUS").as_deref() != Ok("0") {
             install_menus(cx);
         }
         cx.on_action(|_: &FromMenu, _| {
             MENU_CLAIMED.fetch_add(1, Ordering::Relaxed);
         });
-        // Stops propagation, which is what makes gpui's `performKeyEquivalent:` report the chord
-        // handled. Without it gpui declines and the menu answers anyway, and the two arms of the
-        // ordering measurement would read the same.
+        // Without the stop, gpui declines the chord and the menu answers it anyway, so both arms
+        // of the ordering measurement would read the same.
         cx.on_action(|_: &FromKeymap, cx| {
             GPUI_CLAIMED.fetch_add(1, Ordering::Relaxed);
             cx.stop_propagation();
         });
         if arm == "extend" {
-            app_menus(cx);
-            // The second call has to be a no-op, not a rebuild: if the guard were missing, the
-            // Probe menu and the Settings… row would be gone by the time anything reads the bar,
-            // and the standard rows would look perfect while an app's own had been wiped.
+            app_menus();
+            // The second call must be a no-op rather than a rebuild that wipes the app's own rows.
             install_menus(cx);
         }
 
@@ -829,9 +752,8 @@ fn main() -> ExitCode {
                         origin: point(px(1400.), px(40.)),
                         size: size(px(200.), px(120.)),
                     })),
-                    // Takes the keyboard away from nothing, the way every other headless probe in
-                    // this repo does. `run` makes the window key inside this app without
-                    // activating it, which is what a window action has to resolve against.
+                    // `run` makes the window key inside this app without activating it, which is
+                    // what a window action resolves against.
                     focus: false,
                     ..window_options()
                 },
@@ -855,8 +777,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One turn of the run loop. Nothing here needs a rendered frame, but AppKit needs a chance to
-/// order the window in and fill the window list, and a deferred action needs one to arrive.
 async fn settle(cx: &mut AsyncApp) {
     cx.background_executor()
         .timer(Duration::from_millis(140))
@@ -870,8 +790,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     };
     let app = NSApplication::sharedApplication(mtm);
     let process = NSProcessInfo::processInfo().processName().to_string();
-    // Set only by the bundled run, to a name deliberately different from the executable's, so the
-    // app menu reading it back proves the bundle key was consulted rather than the process name.
+    // The bundled run sets `NG_EXPECT_NAME` to a name the executable does not have.
     let expected = env::var("NG_EXPECT_NAME").ok();
     let name = expected.clone().unwrap_or_else(|| process.clone());
 
@@ -881,7 +800,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
         return;
     };
     // Key inside this app, without `NSApp.activate`: a window action resolves against the key
-    // window, and activating would take the display from whoever else is using it.
+    // window.
     window.makeKeyAndOrderFront(None);
     settle(cx).await;
 
@@ -898,8 +817,8 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     );
 
     if arm == "noquit" {
-        // Not "there is no bar": a bundled app has a system main menu whether or not this crate
-        // installed one. What has to be absent is the standard set.
+        // A bundled app has a system main menu whether or not this crate installed one, so what
+        // has to be absent is the standard set.
         let bar = app.mainMenu();
         let ours: Vec<&str> = ["File", "Edit", "View", "Window", "Help"]
             .into_iter()
@@ -931,10 +850,8 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     };
 
     if let Some(expected) = expected.as_deref() {
-        // The menu count is part of the condition, not decoration. A bundled app already has a
-        // system main menu whose first item AppKit titles with the app's name, so on its own this
-        // read passes whether or not `install_menus` did anything — and it did exactly that once,
-        // reporting the name substitution as working on a bar this crate had never touched.
+        // The menu count is part of the condition: AppKit titles the first item of a bundled
+        // app's system menu with the app's name whether or not `install_menus` ran.
         let titles = menu_titles(&bar);
         let first = titles.first().cloned().unwrap_or_default();
         verdict(
@@ -1011,11 +928,8 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     }
 }
 
-/// Which layer claims ⌘M, with an arm that has to come out the other way.
-///
-/// The chord goes into `NSApp.sendEvent:`, so AppKit sequences the layers rather than this probe
-/// calling them in an order it chose. ⌘M rather than an invented chord because the question is
-/// about a chord AppKit owns, and because miniaturising is observable without gpui's help.
+/// Which layer claims ⌘M. The chord goes into `NSApp.sendEvent:` so AppKit sequences the layers
+/// rather than this probe calling them in an order it chose.
 async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
     let mtm = window.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -1025,9 +939,8 @@ async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
         return;
     };
 
-    // The previous arm miniaturised this window, and `deminiaturize` lands on a later turn. Fired
-    // against a still-miniaturised window the chord routes nowhere and BOTH arms read zero, which
-    // looks exactly like "gpui never claimed it".
+    // `deminiaturize` lands on a later turn, and fired at a miniaturised window the chord routes
+    // nowhere and both arms read zero.
     window.deminiaturize(None);
     settle(cx).await;
     settle(cx).await;

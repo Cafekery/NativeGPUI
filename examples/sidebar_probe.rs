@@ -1,35 +1,4 @@
-//! Measurement apparatus for the native sidebar's pane geometry. `sidebar.rs` is the demo.
-//!
-//! Every arm verifies the same invariant: gpui reads its logical size from `contentView.frame()`,
-//! sizes its drawable from its own frame, and takes mouse coordinates from `locationInWindow`
-//! with no view conversion, so GPUI's view is given the contentView's size at a pane-cancelling
-//! negative origin. `NG_ARM=fill` is the deliberately-broken control.
-//!
-//! Env-gated arms:
-//!
-//! ```text
-//! NG_ARM=aligned|fill    pane framing; `fill` is the broken control arm
-//! NG_OPAQUE=1            default gpui window background, to show the material die
-//! NG_BACKDROP=white|black  flat backdrop window behind, for the material transmission test
-//! NG_NOBELOW=1           do not adopt the host's Layer::Below container
-//! NG_NOSIDEBAR=1         no sidebar at all (baseline geometry)
-//! NG_COLLAPSED=1         start collapsed
-//! NG_TOGGLE_EVERY=n      toggle every n frames, so a capture lands mid-animation
-//! NG_NOPROBES=1          omit the two NativeHost layer probes
-//! NG_PROBE=1             print the AppKit probe + geometry table every 30 frames
-//! NG_RESIZE=1            scripted resize sweep, logging logical-vs-drawable per frame
-//! NG_TOGGLE=1            scripted collapse/expand, logging every animation frame
-//! NG_CHURN=1             force GPUI re-renders and re-push the model every frame
-//! NG_STATE=1             after the row clicks: collapse a group, scroll, then churn
-//! NG_ROWS=n              pad the last group with n extra rows so the list scrolls
-//! NG_CLICK=x,y;x,y       post synthetic clicks at window-content points, restoring between
-//! NG_ROWCLICK=n:id,n:id  click sidebar row n, expecting selection `id`
-//! NG_EDGE=1              pane-edge click sweep, expanded / after a resize / collapsed / mid-
-//!                        animation, across the pane's left edge, mid-pane and the right edge
-//! NG_EDGE_HOLD=1         with NG_EDGE: paint the sweep's targets and post no input
-//! NG_MUTATE=1            after 120 frames: badge change, insert, remove, reorder
-//! NG_QUIT=<frames>       exit after N frames
-//! ```
+//! Measurement apparatus for the native sidebar's pane geometry.
 
 use std::env;
 use std::ffi::c_void;
@@ -53,10 +22,8 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 
 const WIN_W: f32 = 1000.;
 const WIN_H: f32 = 640.;
-/// Where the two `NativeHost` probes go, in GPUI-logical points relative to the gutter.
 const PROBE_ABOVE: (f32, f32, f32, f32) = (500., 24., 64., 64.);
 const PROBE_BELOW: (f32, f32, f32, f32) = (500., 108., 168., 96.);
-/// Hairline comb period, in GPUI-logical points.
 const COMB: f32 = 47.;
 
 #[repr(C)]
@@ -103,9 +70,7 @@ fn post(kind: u32, at: CGPoint) {
     }
 }
 
-/// One click at a global top-left-origin point, pointer restored before returning.
-/// `CGWarpMouseCursorPosition` moves the cursor but posts no event of its own, so the move has to
-/// be posted separately or nothing hovers.
+/// `CGWarpMouseCursorPosition` posts no event of its own, so the move has to be posted too.
 fn click_at(global: CGPoint) {
     let was = pointer_now();
     unsafe { CGWarpMouseCursorPosition(global) };
@@ -123,34 +88,19 @@ fn click_at(global: CGPoint) {
     );
 }
 
-/// Height of the screen whose bottom-left is Cocoa's global origin.
-/// Not `CGDisplayPixelsHigh`: that is the display mode's *pixel* height, which on a scaled Retina
-/// display is not the point height, and the flip comes out wrong by hundreds of points.
 fn screen_height() -> f64 {
     unsafe { NG_SCREEN_HEIGHT }
 }
 static mut NG_SCREEN_HEIGHT: f64 = 0.0;
 
-/// First hit-target row's logical y, and the spacing between rows. A band nothing else paints in.
 const EDGE_Y0: f64 = 386.;
 const EDGE_DY: f64 = 16.;
-/// Offsets inside the **window's** left edge for the left-strip probe. The last is the
-/// known-positive: far enough in that nothing can be claiming it.
 const EDGE_BORDER: [f64; 5] = [1., 2., 3., 5., 12.];
-/// The mid-animation target's logical rect and aimed point.
-///
-/// Fixed in GPUI-logical space and deliberately not derived from the gutter: a target relative to
-/// `metrics.left` would move while the pane animates, racing what is being measured. At a fixed
-/// logical x it is stationary in the aligned arm and moves only in the broken one.
+// Fixed in GPUI-logical space, not derived from the gutter: it must not move while the pane does.
 const EDGE_ANIM: (f32, f32, f32, f32) = (690., 292., 22., 22.);
 const EDGE_ANIM_AIM: (f64, f64) = (700., 303.);
 
-/// Where GPUI's logical (0,0) is actually drawn, in window-content top-left points: the pane's
-/// origin plus GPUI's frame origin, flipped.
-///
-/// Aiming at `draw_origin + logical` is what makes the sweep falsifiable. Aiming at the logical
-/// point directly — what `NG_CLICK` does — posts at the same global place in both arms, so the
-/// control fabricates a pass.
+/// Where GPUI's logical (0,0) is drawn, in window-content top-left points.
 fn draw_origin(sidebar: &NativeSidebar) -> (f64, f64) {
     let pane = sidebar.pane_rect();
     let gpui = sidebar.gpui_frame();
@@ -161,9 +111,7 @@ fn draw_origin(sidebar: &NativeSidebar) -> (f64, f64) {
     )
 }
 
-/// A click posted from a worker thread, so the main thread keeps running AppKit's animation.
-/// [`click_at`] sleeps on the calling thread, which on the main thread would stall the very
-/// collapse the click is aimed into. `CGEventPost` is thread-safe.
+/// Posted off the main thread, so the animation the click is aimed into keeps running.
 fn click_async(global: CGPoint, delay_ms: u64) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -180,19 +128,15 @@ fn click_async(global: CGPoint, delay_ms: u64) {
     });
 }
 
-/// One GPUI hit target: a painted rect and the logical point aimed at inside it.
 #[derive(Clone)]
 struct EdgeTarget {
     label: &'static str,
     rect: (f32, f32, f32, f32),
     aim: (f64, f64),
-    /// Points inside the pane's left edge, for the left-edge profile rows only.
     dx: Option<f64>,
 }
 
 impl EdgeTarget {
-    /// Row `k`'s 20x14 rect, holding `ax` one point in from the rect's own left edge so a point
-    /// aimed flush with the pane's edge is still inside its target. Clamped clear of the strip.
     fn new(label: &'static str, ax: f64, k: usize, left: f64, w: f64, dx: Option<f64>) -> Self {
         let ay = EDGE_Y0 + k as f64 * EDGE_DY;
         let rx = (ax - 1.).clamp(left, (w - 20.).max(left));
@@ -205,12 +149,6 @@ impl EdgeTarget {
     }
 }
 
-/// Targets across the pane, in GPUI-logical points, built from the gutter the sidebar reports.
-///
-/// Both edges get a *profile* rather than spot checks: a single null cannot say what swallowed the
-/// click, but the offset at which clicks start arriving can, and every landing offset is a
-/// known-positive proving the stimulus reaches the window at that x. Each offset gets its own y
-/// row, since a divider band and a window resize border are both vertical strips.
 fn edge_targets(sidebar: &NativeSidebar) -> Vec<EdgeTarget> {
     let left = f64::from(f32::from(sidebar.metrics().left));
     let w = sidebar.content_view_size().width;
@@ -251,7 +189,6 @@ fn edge_targets(sidebar: &NativeSidebar) -> Vec<EdgeTarget> {
     out
 }
 
-/// What GPUI reported for one received mouse-down, with the geometry read at the same instant.
 #[derive(Copy, Clone)]
 struct Recv {
     x: f32,
@@ -272,7 +209,6 @@ struct EdgeRow {
     onscreen: bool,
     tries: u32,
     sel: Option<String>,
-    /// Points inside the pane's left edge, for the left-edge profile rows only.
     dx: Option<f64>,
 }
 
@@ -284,8 +220,6 @@ struct Edge {
     targets: Vec<EdgeTarget>,
     ti: usize,
     tries: u32,
-    /// Watermark on `recv_n`, so a late event from the previous target is never read as this
-    /// target's answer.
     seen: usize,
     recv_n: usize,
     recv: Option<Recv>,
@@ -295,7 +229,6 @@ struct Edge {
     rows: Vec<EdgeRow>,
     border_i: usize,
     border_tries: u32,
-    /// Offset inside the window's left edge, and whether AppKit's own outline view answered.
     border_rows: Vec<(f64, bool, u32)>,
 }
 
@@ -325,8 +258,6 @@ fn edge_readout(when: &str, sidebar: &NativeSidebar) {
         sidebar.align_count(),
         sidebar.frame_corrections(),
     );
-    // Where the rows start, in the space the left-strip probe aims in: without it, a null from
-    // that probe cannot be told from a click that landed on the sidebar item's own background.
     if let (Some(p), Some(l)) = (sidebar.row_point(1), sidebar.row_layout(1)) {
         println!(
             "EDGE-ROW1  {:<22} row 1 centre in contentView ({:7.2},{:7.2}) | row rect in outline ({:.2},{:.2}) {:.2}x{:.2} | rows start at contentView x = {:.2}",
@@ -342,7 +273,6 @@ fn edge_readout(when: &str, sidebar: &NativeSidebar) {
     }
 }
 
-/// Drive one target per call. Returns true when the pass is finished.
 fn edge_pass(edge: &mut Edge, sidebar: &NativeSidebar) -> bool {
     if edge.ti >= edge.targets.len() {
         edge.ti = 0;
@@ -457,8 +387,6 @@ fn edge_pass(edge: &mut Edge, sidebar: &NativeSidebar) -> bool {
     false
 }
 
-/// Log the alignment on every frame of a collapse/expand animation, and pick up the one click
-/// posted asynchronously into it. Returns true when the animation window has elapsed.
 fn edge_anim(edge: &mut Edge, sidebar: &NativeSidebar) -> bool {
     edge.anim_frames += 1;
     let draw = draw_origin(sidebar);
@@ -578,8 +506,6 @@ fn edge_table(edge: &Edge, sidebar: &NativeSidebar) {
         worst,
     );
 
-    // The offset at which the left edge starts answering, per state — a band a couple of points
-    // wide is a tracking region, a null all the way across would be a broken hit path.
     let mut states: Vec<&str> = edge.rows.iter().map(|r| r.state).collect();
     states.dedup();
     for state in states {
@@ -660,7 +586,6 @@ fn print_targets(targets: &[EdgeTarget]) {
     }
 }
 
-/// The sweep's state machine. One step per GPUI frame.
 fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: &mut App) {
     if edge.wait > 0 {
         edge.wait -= 1;
@@ -674,8 +599,7 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             edge.state = "expanded";
             edge.targets = edge_targets(sidebar);
             print_targets(&edge.targets);
-            // Captures and synthetic input cannot share a run: a `screencapture` loop silently
-            // stops synthetic clicks being delivered, so a capture pass posts nothing at all.
+            // A concurrent `screencapture` loop silently stops synthetic clicks being delivered.
             if env_flag("NG_EDGE_HOLD") {
                 println!("EDGE HOLD: targets painted, no input will be posted");
                 edge.phase = 100;
@@ -715,7 +639,6 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             }
         }
         6 => {
-            // Queue the click first, then start the animation, so it lands mid-collapse.
             let draw = draw_origin(sidebar);
             let at = window_to_global(sidebar, draw.0 + EDGE_ANIM_AIM.0, draw.1 + EDGE_ANIM_AIM.1);
             println!(
@@ -770,10 +693,6 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
                 edge.phase = 12;
             }
         }
-        // Left-strip probe: is the window's far-left band clickable by anything at all? Aimed into
-        // the sidebar strip at row 1's centre with the sidebar expanded, so the divider is 248pt
-        // away; the detector is AppKit's own selection. It cannot isolate a window frame border —
-        // rows start 8pt inside the window, so smaller offsets land on the item's own background.
         12 => {
             if edge.border_i >= EDGE_BORDER.len() {
                 edge.phase = 13;
@@ -812,7 +731,7 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             click_at(window_to_global(sidebar, dx, at.y));
             edge.wait = 14;
         }
-        // Capture pose: paint the targets and wait, posting nothing.
+        // Capture pose: paint the targets and post nothing.
         100 => {}
         _ => {
             edge_table(edge, sidebar);
@@ -826,7 +745,6 @@ fn env_flag(key: &str) -> bool {
     env::var(key).map(|v| v != "0").unwrap_or(false)
 }
 
-/// ~12 rows over 3 groups, each leaf with a real SF Symbol name.
 fn items(extra: bool, renamed: bool, reordered: bool) -> Vec<SidebarItem> {
     let inbox = sidebar_item("inbox", "Inbox").symbol("tray.full").badge(12);
     let sent = sidebar_item("sent", "Sent").symbol("paperplane");
@@ -910,7 +828,6 @@ struct Demo {
     writes_at_mark: u64,
     renders_at_mark: u64,
     backdrop: Option<Retained<NSWindow>>,
-    /// `NG_EDGE` pane-edge click sweep. `None` when the arm is off.
     edge: Option<Edge>,
 }
 
@@ -937,7 +854,7 @@ impl Demo {
         );
 
         let sidebar = NativeSidebar::install(window, cx, options);
-        // Idempotence: a second call must not stack a second split controller.
+        // Idempotence: a second install must not stack a second split controller.
         let again = NativeSidebar::install(window, cx, SidebarOptions::default());
         println!(
             "idempotent: subviews of window contentView = {}, second install same handle = {}",
@@ -956,7 +873,6 @@ impl Demo {
         let diff = sidebar.update(&items(self.extra, self.renamed, self.reordered));
         let frame = sidebar.window_frame();
         unsafe { NG_SCREEN_HEIGHT = sidebar.screen_height() };
-        // For the capture script: `screencapture -l` needs the CGWindowID, read from in-process.
         println!(
             "WINDOW id={} frame=({:.0},{:.0},{:.0},{:.0}) scale={:.1}",
             sidebar.window_number(),
@@ -1047,12 +963,7 @@ impl Demo {
     }
 }
 
-/// A borderless flat-colour window glued behind the main window, 80pt larger on every side.
-///
-/// The sidebar's material is `behindWindow`, so it blurs what the WindowServer has behind the
-/// window, which a window-scoped capture does not contain. Putting a known colour back there and
-/// swinging it black/white is the only way to measure that the blur is live, and the swing has to
-/// be full-field: AppKit samples the backdrop at one-eighth scale, far wider than any one band.
+/// The sidebar's material blurs what is behind the window, which a window capture cannot contain.
 fn install_backdrop(sidebar: &NativeSidebar, white: bool) -> Retained<NSWindow> {
     let mtm = MainThreadMarker::new().expect("main thread");
     let f = sidebar.window_frame();
@@ -1081,10 +992,6 @@ fn install_backdrop(sidebar: &NativeSidebar, white: bool) -> Retained<NSWindow> 
     win
 }
 
-/// A plain AppKit view with a flat layer colour, hosted by [`NativeHost`] at `layer`.
-///
-/// Three outcomes, not two: the probe's colour means present and correctly placed, the GPUI
-/// panel colour means absent, and the colour anywhere else means present but misplaced.
 fn host_probe(
     window: &mut Window,
     cx: &mut App,
@@ -1194,12 +1101,10 @@ impl Render for Demo {
         let last_click = self.last_click;
         let frames = self.frames;
 
-        // Everything below is placed absolutely from the reported gutter; nothing paints over the
-        // sidebar strip, where a GPUI background would hide the system material.
+        // Nothing paints over the sidebar strip: a GPUI background there hides its material.
         let mut root = div().relative().size_full();
 
-        // Four pieces, leaving an unpainted hole exactly over the Layer::Below probe: a below
-        // view is composited *under* GPUI's Metal content, so a background over it hides it.
+        // A hole over the Layer::Below probe, which composites under GPUI's own content.
         let (hx, hy, hw, hh) = (
             left + PROBE_BELOW.0,
             top + PROBE_BELOW.1,
@@ -1224,11 +1129,6 @@ impl Render for Demo {
             );
         }
 
-        // 1pt hairlines every COMB pt of logical x, measuring offset AND stretch: an offset view
-        // shifts them all equally, a drawable disagreeing with the logical size changes spacing.
-        // 47 and not 50: the sidebar is 248pt, so a 50pt comb puts the correct prediction and the
-        // broken one 2pt apart and both "fit"; a period that does not divide the inset separates
-        // them by 13pt or more.
         let mut comb = div().absolute().left(px(0.)).top(px(0.)).size_full();
         for k in 1..22 {
             comb = comb.child(
@@ -1243,7 +1143,6 @@ impl Render for Demo {
         }
         root = root.child(comb);
 
-        // A click target flush to the pane's left edge, 4pt clear of the divider's tracking band.
         root = root.child(
             div()
                 .absolute()
@@ -1253,8 +1152,6 @@ impl Render for Demo {
                 .h(px(44.))
                 .bg(rgb(0xffcc00)),
         );
-        // Paired white-over-black occlusion gate, self-locating so a display capture can be
-        // searched for it. A single-colour foreign window can pass at most one half.
         for (dy, color) in [(330., 0xffffff), (370., 0x000000)] {
             root = root.child(
                 div()
@@ -1267,8 +1164,6 @@ impl Render for Demo {
             );
         }
 
-        // Selection round-trip: painted by GPUI from `self.selected`, so tracking the clicked row
-        // proves the AppKit -> deferred dispatch -> GPUI state -> re-render path.
         root = root.child(
             div()
                 .absolute()
@@ -1300,7 +1195,6 @@ impl Render for Demo {
                 ),
         );
 
-        // A per-selection swatch, so a screenshot alone shows the selection changed.
         let swatch = match selected.as_ref() {
             "inbox" => 0x0a84ff,
             "sent" => 0x30d158,
@@ -1337,9 +1231,6 @@ impl Render for Demo {
                     .bg(rgb(0x00ff44)),
             );
         }
-        // The sweep's hit targets, painted last so they sit on top. Each carries its own
-        // `on_mouse_down`, which gpui fires only inside that element's painted bounds, so "landed
-        // on target" is gpui's hit test answering rather than arithmetic here.
         if let Some(targets) = self.edge.as_ref().map(|e| e.targets.clone()) {
             for (k, t) in targets.iter().enumerate() {
                 let (tx, ty, tw, th) = t.rect;
@@ -1387,8 +1278,7 @@ impl Render for Demo {
                 println!("GPUI RECEIVED mouse down at ({x:.2}, {y:.2})");
                 this.last_click = Some((x, y));
                 this.clicks.push((x, y));
-                // Snapshot the geometry in the same dispatch that delivered the event: read
-                // afterwards it would describe a pane that has since moved.
+                // Read in the delivering dispatch: afterwards the pane has already moved.
                 let sidebar = this.sidebar.clone();
                 if let (Some(edge), Some(sidebar)) = (this.edge.as_mut(), sidebar) {
                     edge.recv_n += 1;
@@ -1407,12 +1297,9 @@ impl Render for Demo {
     }
 }
 
-/// Scripted arms, driven off the frame counter so every log line is attributable.
 fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mut Context<Demo>) {
     let f = demo.frames;
 
-    // The sweep owns the frame while it runs: it drives its own resize and collapse, and any
-    // other arm moving the window underneath it would invalidate every aimed point.
     if let Some(mut edge) = demo.edge.take() {
         edge_step(&mut edge, sidebar, window, cx);
         demo.edge = Some(edge);
@@ -1473,8 +1360,6 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
             let gpui = sidebar.gpui_frame();
             let content = sidebar.content_view_size();
             let pane = sidebar.pane_rect();
-            // What THIS render pass lays out against. Tracking the pane means the deferred
-            // publish really drives GPUI's layout every animation frame, not just at the ends.
             let global_left = cx
                 .try_global::<SidebarMetrics>()
                 .map(|m| f32::from(m.left))
@@ -1530,10 +1415,7 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         }
     }
 
-    // Three separate things silently eat a synthetic click: `acceptsFirstMouse:` is NO by default,
-    // a non-key window gets nothing, and a warp posts no event of its own. So each click
-    // re-activates first, then waits for the mouse-down count to rise; one still unreceived while
-    // the window is verifiably key is a real swallow.
+    // A non-key window silently eats synthetic clicks, so every attempt re-activates first.
     if demo.click_index < demo.click_points.len() {
         if demo.click_wait > 0 {
             demo.click_wait -= 1;
@@ -1576,9 +1458,6 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         return;
     }
 
-    // Put the sidebar into state only AppKit knows about — selection, a collapsed group, a
-    // scroll offset — then re-render hard with `update()` on every frame and read all three
-    // back. A `reloadData` would have lost them; the `appkit_writes` delta must be 0.
     if env_flag("NG_STATE") && demo.row_click_index >= demo.row_click_rows.len() {
         demo.state_frames += 1;
         let n = demo.state_frames;
@@ -1656,7 +1535,6 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
     }
 }
 
-/// GPUI-logical window-content point -> global CGEvent point (top-left origin).
 fn window_to_global(sidebar: &NativeSidebar, x: f64, y: f64) -> CGPoint {
     let frame = sidebar.window_frame();
     let flipped_top = screen_height() - (frame.origin.y + frame.size.height);

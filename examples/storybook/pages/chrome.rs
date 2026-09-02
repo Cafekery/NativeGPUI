@@ -1,8 +1,4 @@
-//! Window chrome configures the window itself, so none of it can be shown inside the storybook's
-//! content pane: the knobs here drive a second window opened through [`crate::popout`].
-//!
-//! Chrome is written from the knob handlers, never from [`Popout::render`]: installing a toolbar
-//! reconfigures the window, which is not something to do to a window part-way through drawing it.
+//! Window chrome, driven onto a second window opened through [`crate::popout`].
 
 use crate::Demo;
 use crate::ui::*;
@@ -19,7 +15,6 @@ use native_gpui::{
     traffic_light_inset, window_flags, window_level,
 };
 
-/// Left of the storybook window, which opens at x=1180.
 const ORIGIN: (f32, f32) = (300., 240.);
 const EXTENT: (f32, f32) = (640., 470.);
 
@@ -90,7 +85,7 @@ struct Settings {
 impl State {
     fn settings(&self) -> Settings {
         Settings {
-            // Matches `set_corner_radius`'s own filter: a radius of 0 is "follow the system".
+            // A radius of 0 means "follow the system", not "square".
             radius: (self.radius > 0.).then(|| px(self.radius as f32)),
             toolbar: match self.toolbar {
                 1 => Some(ToolbarStyle::Unified),
@@ -132,8 +127,7 @@ impl State {
             .ok();
     }
 
-    /// Puts the flags back to what the crate saw before it first touched the window, then reads
-    /// them back into the knobs — otherwise the next [`State::push`] would undo the restore.
+    // The knobs are re-read from the window, or the next `push` would undo the restore.
     fn restore(&mut self, cx: &mut App) {
         let Some(handle) = self.window else { return };
         let Ok(flags) = handle.update(cx, |_, window, cx| {
@@ -171,15 +165,12 @@ fn apply(settings: &Settings, demo: &WeakEntity<Demo>, window: &mut Window, cx: 
         appearance: settings.appearance,
         ..current
     };
-    // `setAppearance:` with an equal-but-fresh NSAppearance would re-announce the change every
-    // frame, so nothing is written unless something actually moved.
+    // `setAppearance:` with an equal-but-fresh NSAppearance re-announces the change every frame.
     if wanted != current {
         set_window_flags(window, wanted);
     }
 }
 
-/// The two wired items reach back into the page's own state, so the reader can see an AppKit-drawn
-/// toolbar button move a GPUI control in the other window.
 fn toolbar_items(demo: &WeakEntity<Demo>) -> Vec<ToolbarItem> {
     vec![
         ToolbarItem::symbol("chrome.sidebar", "sidebar.left", "Sidebar"),
@@ -205,8 +196,7 @@ fn toolbar_items(demo: &WeakEntity<Demo>) -> Vec<ToolbarItem> {
     ]
 }
 
-/// A toolbar action runs with its own window taken out of the app's window list, and
-/// [`State::push`] has to update that window — so the write is deferred until it is back.
+// A toolbar action runs with its own window off the app's window list; defer until it is back.
 fn edit(demo: WeakEntity<Demo>, change: fn(&mut State)) -> impl Fn(&mut Window, &mut App) {
     move |_, cx| {
         let demo = demo.clone();
@@ -221,9 +211,7 @@ fn edit(demo: WeakEntity<Demo>, change: fn(&mut State)) -> impl Fn(&mut Window, 
     }
 }
 
-/// The popped-out window. It owns a copy of the knobs rather than reading the page's: `open_window`
-/// draws synchronously, so the first draw lands while the caller still holds `Demo` leased, and
-/// reading it from here would panic.
+/// The popped-out window. It copies the knobs: `open_window` draws while `Demo` is still leased.
 pub struct Popout {
     settings: Settings,
 }
@@ -391,8 +379,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                             let demo = demo.clone();
                             move |_, cx| Popout::new(&demo, settings, cx)
                         });
-                        // Deferred so the first chrome write lands on a window that has been laid
-                        // out: `titlebar_band` and the traffic-light inset are read from AppKit.
+                        // AppKit reports the band and inset only once the window is laid out.
                         cx.defer(move |cx: &mut App| {
                             demo.update(cx, |d: &mut Demo, cx| {
                                 d.chrome.push(cx);
@@ -722,8 +709,7 @@ fn cursor_strip(cx: &mut Context<Demo>) -> AnyElement {
         .flex()
         .flex_wrap()
         .gap_2()
-        // So the readout below is the cursor as of the last pointer move, not as of the last
-        // unrelated repaint.
+        // Repaint on pointer move, so the readout below tracks the cursor.
         .on_mouse_move(cx.listener(|_: &mut Demo, _: &MouseMoveEvent, _, cx| cx.notify()))
         .children(swatches)
         .into_any_element()

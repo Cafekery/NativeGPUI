@@ -1,18 +1,3 @@
-//! The standard macOS menu bar, which is where ⌘W, ⌘Q, ⌘M, ⌘H and the whole Edit menu live.
-//!
-//! A GPUI app has no menu bar until something asks for one, so without [`install_menus`] a chord
-//! is offered to the view hierarchy, declined, offered to a bar that is not there, and dropped.
-//! `main` installs it before opening this window.
-//!
-//! The table is `NSApp.mainMenu` read back, selector column and all, so it is the bar this process
-//! actually has rather than a picture of the one that was asked for. Every standard row carries one
-//! of AppKit's own selectors and **no target**; an app row carries `ngMenuCommand:` and a target,
-//! which is the one visible difference between a row macOS runs and a row this crate runs.
-//!
-//! [`add_menu`] and [`extend_menu`] mutate the process's one bar, so the controls here fire once
-//! and then disable: a second `add_menu("Storybook", …)` appends a second Storybook menu rather
-//! than replacing the first.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, App, Context, SharedString, WeakEntity, Window, div, prelude::*, px};
@@ -23,9 +8,6 @@ use native_gpui::{
 use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
 use objc2_foundation::MainThreadMarker;
 
-/// The rows this page adds dispatch these, so "did the row fire" is answered by a counter rather
-/// than by the row looking right. A menu row runs on the next run-loop turn, not in place — it
-/// fires from inside AppKit's menu-tracking loop, and the crate defers every AppKit callback.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = ng_storybook)]
 struct MenuPing;
@@ -50,14 +32,11 @@ pub struct State {
     pub reinstalls: usize,
 }
 
-/// One row of the live bar.
 struct BarRow {
     title: String,
     chord: String,
     selector: String,
     separator: bool,
-    /// Hidden until ⌥ is held, so it is in the bar without being on screen — Close All beside
-    /// Close is AppKit's, not this crate's.
     alternate: bool,
 }
 
@@ -230,12 +209,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      Close closing. The standard set therefore binds nothing into GPUI's keymap.",
                 ),
                 caption(
-                    "Measured both ways through NSApp.sendEvent:, so AppKit did the sequencing: \
-                     ⌘M with no GPUI binding reached the menu and miniaturised the window with \
-                     zero GPUI actions; the same chord bound in GPUI raised one GPUI action and \
-                     left the window alone. Exclusive in both directions, never both layers.",
-                ),
-                caption(
                     "The order for one chord in a window running this crate: hosted AppKit \
                      subviews first, then GPUI's keymap while GPUI's view is first responder, \
                      then this bar. Nothing on this page can demonstrate that — a chord typed \
@@ -298,8 +271,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
-/// One global listener per action, for the life of the process: `App::on_action` has no
-/// unsubscribe, and the rows it answers are equally permanent.
 fn listen(entity: WeakEntity<Demo>, cx: &mut App) {
     let ping = entity.clone();
     cx.on_action(move |_: &MenuPing, cx: &mut App| {
@@ -358,7 +329,6 @@ fn bar_row(item: &NSMenuItem) -> BarRow {
     }
 }
 
-/// The equivalent as the menu draws it: ⌃⌥⇧⌘ in Apple's order, then the key.
 fn chord(item: &NSMenuItem) -> String {
     let key = item.keyEquivalent().to_string();
     if key.is_empty() {

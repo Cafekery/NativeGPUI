@@ -1,10 +1,4 @@
-//! The whole `NSVisualEffectView` catalogue and the five knobs that change how one draws.
-//!
-//! Every specimen over a checkerboard is `Layer::Above` with `Blending::WithinWindow` on purpose:
-//! that is the only pairing where the checkerboard beneath is what the material samples. At the
-//! default `Layer::Below` the material sits behind GPUI's Metal view, so the checkerboard would
-//! cover it instead of being sampled by it, and `WithinWindow` is a no-op there. The `layer` knob
-//! drives a specimen with a GPUI text child for that reason, not one over a checkerboard.
+//! The `NSVisualEffectView` catalogue and the knobs that change how one draws.
 
 use crate::Demo;
 use crate::ui::*;
@@ -18,7 +12,6 @@ use native_gpui::{
 const SPECIMEN: f32 = 128.;
 const HERO: f32 = 240.;
 
-/// One material for every knob demonstration, so the knob is the only variable.
 const REFERENCE: RawMaterial = RawMaterial::HudWindow;
 
 pub struct State {
@@ -63,8 +56,6 @@ fn catalogue_tile(m: RawMaterial) -> AnyElement {
     tile(label, SPECIMEN, over_checker(m.title(), m))
 }
 
-/// Materials that render identically, laid out adjacent so the claim is checkable rather than
-/// taken on trust. `id` keys the pooled views apart from the catalogue's own copies.
 fn collisions(id: &'static str, group: &[RawMaterial]) -> AnyElement {
     grid(
         group

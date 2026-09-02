@@ -1,15 +1,4 @@
-//! The one-background rule: a window has **one** background colour, and every opaque surface in it
-//! resolves to that.
-//!
-//! The rule is short and the reason is not. A window's toolbar band and its body are one surface
-//! interrupted by a strip of chrome, so two values are visible as a step — a line across the window
-//! where no line exists. The one exception is a sidebar, which is vibrancy over this and not a
-//! colour at all.
-//!
-//! Nothing on this page is a claim about the reader's Mac that the page cannot show them. Every
-//! swatch carries the value it resolved to in this appearance, the step demo prints the two hexes
-//! it is drawing so a reader can see whether there is a step at all, and the material demonstration
-//! puts the same material over two different tones side by side.
+//! The one-background rule: every opaque surface in a window resolves to one colour.
 
 use crate::Demo;
 use crate::ui::*;
@@ -22,22 +11,16 @@ use native_gpui::{
     Blending, Layer, RawMaterial, TrackingMode, material, native_segmented, native_slider,
 };
 
-/// Big enough that the material patch has a border of the tone it is sampling on every side.
 const TONE: f32 = 132.;
 const PATCH: f32 = 76.;
 
-/// The two greys the sampling measurement in `tokens.rs` was taken over, so the numbers quoted in
-/// the caption belong to what is on screen rather than to some other pair.
 const DARK_TONE: u32 = 0x1d1d1d;
 const LIGHT_TONE: u32 = 0x3c3c3c;
 
-/// The dial's start: a plausible dark grey somebody typed once. Not a system colour, so it cannot
-/// accidentally equal the window background and leave the seam demo showing nothing.
 const HAND_PICKED: f64 = 37.;
 
 pub struct State {
-    /// The hand-picked grey, 0…255, on a dial so a reader can hunt for the value that closes the
-    /// seam instead of being told what it is.
+    /// 0…255.
     pub grey: f64,
 }
 
@@ -289,9 +272,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "hand-picked grey on the dial",
-                // Rounded bytes, not `Hsla` equality: the token comes back through
-                // `colorWithSRGBRed:` and the dial's grey is an integer, so two colours that
-                // paint the same pixel are not bit-equal and this row could only ever say "not".
+                // The token round-trips through `colorWithSRGBRed:`: compare bytes, not `Hsla`.
                 format!(
                     "{} — {} the token",
                     hex(picked),
@@ -306,7 +287,6 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
     ])
 }
 
-/// A Light | Dark split swatch over the checkerboard, so an alpha below 1 is visible as such.
 fn swatch(label: &str, color: SystemColor) -> AnyElement {
     let (light, dark) = (
         color.try_resolve(Appearance::Light),
@@ -339,7 +319,6 @@ fn swatch(label: &str, color: SystemColor) -> AnyElement {
         .into_any_element()
 }
 
-/// One panel of the step demo, printing what it painted.
 fn step_panel(label: &str, color: Hsla) -> AnyElement {
     div()
         .w(px(168.))
@@ -360,7 +339,6 @@ fn step_panel(label: &str, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// A patch centred in a flat tone, with a margin of that tone on every side.
 fn tone_tile(label: &str, tone: u32, patch: AnyElement) -> AnyElement {
     tile(
         label,
@@ -376,14 +354,11 @@ fn tone_tile(label: &str, tone: u32, patch: AnyElement) -> AnyElement {
     )
 }
 
-/// The dial position that reproduces `color`, taking the red channel — every colour the button is
-/// pointed at here is neutral, and the dial has no way to express one that is not.
 fn grey_byte(color: Hsla) -> u8 {
     let c = Rgba::from(color);
     (c.r.clamp(0., 1.) * 255.).round() as u8
 }
 
-/// A neutral grey from the dial's 0…255, rounded so the printed hex is the value the dial reads.
 fn grey_hsla(level: f64) -> Hsla {
     let byte = level.round().clamp(0., 255.) as u32;
     rgb(byte << 16 | byte << 8 | byte).into()

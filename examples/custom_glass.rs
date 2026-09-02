@@ -1,12 +1,4 @@
-//! Liquid glass built from a [`GlassRecipe`] rather than from one of the two styles AppKit
-//! offers: a stock `NSGlassEffectView`, the ported presets beside it, then one filter input at a
-//! time moved off `regular`.
-//!
-//! The same seven panels are drawn twice over two different backdrops, so a panel's response to
-//! what is behind it is visible rather than assumed. Panels are pitched at a whole number of
-//! stripe periods, so two panels in a row sample the same pattern and differ only by recipe.
-//!
-//! Run with `--features private-api`.
+//! Liquid glass built from a [`GlassRecipe`], drawn twice over two different backdrops.
 
 use gpui::{
     App, Application, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, point,
@@ -27,8 +19,6 @@ const COUNT: usize = 7;
 const W: f32 = 2. * MARGIN + COUNT as f32 * PANEL_W + (COUNT - 1) as f32 * (PITCH - PANEL_W);
 const H: f32 = 2. * BAND + 10.;
 
-// Five colours, so the palette repeats every 80pt and [`PITCH`] is a whole number of repeats:
-// two panels in a row then sample the same pattern, not merely the same stripe phase.
 const WARM: [u32; 5] = [0xff375f, 0xffd60a, 0x30d158, 0x0a84ff, 0xbf5af2];
 const COOL: [u32; 5] = [0x00c7be, 0xff9f0a, 0x5e5ce6, 0xff2d55, 0x32d74b];
 
@@ -75,7 +65,6 @@ fn caption(index: usize, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// The seven panels, twice: `band` distinguishes the two element ids and the two backdrops.
 fn row(band: f32) -> impl IntoIterator<Item = Div> {
     let regular = GlassRecipe::regular();
     let key = |name: &'static str| (name, band as u32);

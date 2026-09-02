@@ -1,16 +1,4 @@
-//! A sidebar is `NSSplitViewItem.sidebar` — a property of the *window's* view hierarchy, not of a
-//! rectangle inside it. So it cannot be shown in this window's content pane, which is itself the
-//! non-sidebar pane of a split view. Every control here drives a real sidebar in a second window.
-//!
-//! Most of [`SidebarOptions`] is honoured on install and then live: `set_row_size`,
-//! `set_thickness`, `set_thickness_limits`, `set_toolbar`, `set_collapsed`, `set_expand_groups`
-//! and `set_backdrop` all reach into the installed shell. [`PaneAlign`] and `reorderable` are the
-//! exceptions — one decides how GPUI's view is framed at install, the other decides which
-//! selectors the data source defines — so both reopen the window.
-//!
-//! The popped-out window never writes back into [`Demo`]. It is opened from inside a `Demo`
-//! listener, gpui draws it before that listener returns, and a cross-entity update from its
-//! `render` aborts the process with gpui's double-lease panic. This page reads the window instead.
+//! A sidebar is a property of the window, so this page drives one in a second window.
 
 use crate::ui::*;
 use crate::{Demo, popout};
@@ -101,8 +89,6 @@ impl State {
     }
 }
 
-/// A Finder-shaped tree: groups, both glyph sources, a nested child, two count badges and one
-/// ejectable volume.
 fn items() -> Vec<SidebarItem> {
     vec![
         sidebar_group("favorites", "Favorites").children([
@@ -118,15 +104,11 @@ fn items() -> Vec<SidebarItem> {
         sidebar_group("locations", "Locations").children([
             sidebar_item("icloud", "iCloud Drive").symbol("icloud"),
             sidebar_item("network", "Network").symbol("globe"),
-            // The trailing eject affordance a mounted volume has. Clicking it reaches `on_eject`
-            // and nothing else — the sidebar unmounts nothing.
             sidebar_item("volume", "Bakery")
                 .symbol("externaldrive")
                 .ejectable(true),
             sidebar_item("trash", "Trash").symbol("trash"),
         ]),
-        // Both routes for the same three rows, adjacent, because the answer is per row and not a
-        // rule. See the caption for what each pair scored against a capture of Finder.
         sidebar_group("glyphs", "Icon sources").children([
             sidebar_item("air-sym", "AirDrop · symbol").symbol("dot.radiowaves.right"),
             sidebar_item("air-art", "AirDrop · artwork").system_image("SidebarAirDrop"),
@@ -138,27 +120,18 @@ fn items() -> Vec<SidebarItem> {
         ]),
         sidebar_group("tags", "Tags").children([
             sidebar_item("red", "Red").symbol("circle.fill"),
-            // A name no macOS knows: the glyph is absent and the label must still line up, which
-            // is why the cell never hides its image view.
             sidebar_item("unknown", "Unknown symbol").symbol("not.a.real.sf.symbol"),
-            // The same miss on the other route — an absent bundle resource, not an absent symbol.
             sidebar_item("unknown-art", "Unknown resource").system_image("SidebarNotAResource"),
-            // No icon at all, so the cell has no image view to indent from and AppKit puts the
-            // label at the cell's leading edge — visibly left of its lettered siblings.
             sidebar_item("untagged", "Untagged"),
         ]),
     ]
 }
 
-/// The popped-out window's root. It owns the real sidebar; this page only drives it.
 pub struct SidebarWindow {
     sidebar: Option<NativeSidebar>,
     options: SidebarOptions,
     selected: SharedString,
-    /// The last drag AppKit committed, so `on_reorder` is answered by a record rather than by the
-    /// row having moved — a row can move on screen and report nothing.
     moved: Option<SidebarMove>,
-    /// The last eject click. The sidebar unmounts nothing; this is the whole effect.
     ejected: Option<SharedString>,
 }
 
@@ -201,8 +174,7 @@ impl SidebarWindow {
         self.sidebar = Some(sidebar);
     }
 
-    /// Apply everything that can change without reinstalling. `collapsed` goes last: moving the
-    /// divider expands the pane, so a thickness write would otherwise undo it.
+    // `collapsed` goes last: a thickness write reopens the pane, undoing an earlier collapse.
     fn apply(&mut self, options: SidebarOptions) {
         let Some(sidebar) = &self.sidebar else { return };
         sidebar.set_row_size(options.row_size);
@@ -221,8 +193,6 @@ impl SidebarWindow {
         self.sidebar.as_ref().map(|s| s.probe())
     }
 
-    /// The first row carrying an icon, so the reported label and icon offsets are an item row's
-    /// rather than a group header's zeroes.
     fn sample_row(&self) -> Option<(f64, f64, f64, f64)> {
         let sidebar = self.sidebar.as_ref()?;
         (0..sidebar.probe().rows)
@@ -238,15 +208,12 @@ impl SidebarWindow {
             })
     }
 
-    /// Row 0 is always a group header here, so this is the live counterpart to the header figure
-    /// quoted from Finder — a number this pane produced rather than one the page asserts.
     fn header_height(&self) -> Option<f64> {
         let sidebar = self.sidebar.as_ref()?;
         sidebar.row_layout(0).map(|l| l.row.size.height)
     }
 }
 
-/// A root row's `parent` is `None`; naming that is clearer than an empty cell.
 fn parent_of(moved: &SidebarMove) -> &str {
     moved.parent.as_ref().map_or("(root)", |id| id.as_ref())
 }
@@ -340,10 +307,7 @@ impl Render for SidebarWindow {
     }
 }
 
-/// Open the second window, or bring the existing one forward.
-///
-/// Deferred: `open_window` draws the new window before returning, and this runs inside a `Demo`
-/// listener that still holds `Demo`'s lease.
+// Deferred: opening a window draws it before this returns, inside a listener holding Demo's lease.
 fn open(window: &mut Window, cx: &mut Context<Demo>) {
     cx.defer_in(window, |d: &mut Demo, _, cx| {
         if let Some(handle) = d.sidebar_page.window {
@@ -367,7 +331,6 @@ fn open(window: &mut Window, cx: &mut Context<Demo>) {
     });
 }
 
-/// Push the current options at the open window. Reinstall-only fields go through [`reopen`].
 fn push(d: &mut Demo, cx: &mut Context<Demo>) {
     let Some(handle) = d.sidebar_page.window else {
         return;
@@ -384,8 +347,6 @@ fn push(d: &mut Demo, cx: &mut Context<Demo>) {
     }
 }
 
-/// `PaneAlign` and `reorderable` are read once, during install, so the only way to change either
-/// is a fresh window.
 fn reopen(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
     if let Some(handle) = d.sidebar_page.window.take() {
         handle
@@ -395,8 +356,6 @@ fn reopen(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
     open(window, cx);
 }
 
-/// What the page reads out of the popped-out window each frame. Read, never written back — see the
-/// module note for why the popped-out window cannot update `Demo`.
 struct Live {
     probe: Option<SidebarProbe>,
     sample: Option<(f64, f64, f64, f64)>,
@@ -424,7 +383,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         d.sidebar_page.align,
     );
 
-    // Read the popped-out window rather than having it write here — see the module note.
     let live = d.sidebar_page.window.and_then(|handle| {
         handle.read(cx).ok().map(|w| Live {
             probe: w.probe(),
@@ -499,14 +457,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     ),
                     _ => "live: open the window to read AppKit back".into(),
                 }),
-                caption(
-                    "Figures recorded for Finder on one macOS release: item row 32.0, group \
-                     header 19.0, 13.0 above a group, cell inset 10.0, label 45.0 from the row's \
-                     left edge. Treat them as a record, not as a measurement you can lean on — \
-                     the page does not re-measure them, and no measurement of them survives \
-                     anywhere in this repository, so a reader who needs them should read Finder \
-                     again. The line above is measured: it is this pane, read out of AppKit now.",
-                ),
             ],
         ),
         section(

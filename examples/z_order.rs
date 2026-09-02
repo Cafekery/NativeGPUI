@@ -1,16 +1,5 @@
-//! Whether `commit` leaves each container's `subviews` array equal to paint order.
-//!
-//! Every verdict is read in-process out of AppKit, through [`NativeHost::stacking`] and
-//! [`NativeHost::key_loop`], so nothing here needs a screenshot or the keyboard. Exits non-zero
-//! naming the first phase whose order is wrong.
-//!
-//! It cannot be a unit test: libtest runs every test body on a spawned thread, where
-//! `MainThreadMarker::new()` is `None` and no `NSView` can honestly be built — and the observable
-//! is AppKit's own array, which a model of it could not have caught.
-//!
-//! The phases that matter are the ones where paint order is byte-identical between frames and a
-//! view is replaced anyway. `place` is called directly with fixed keys rather than through a
-//! component, so the printed arrays read as paint order.
+//! Gate: `commit` leaves each container's `subviews` array and the key loop equal to paint order.
+//! Exits 0 pass, 1 fail.
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -24,15 +13,12 @@ use native_gpui::{Layer, NativeHost, native_root, window_options};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSSwitch, NSView};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 const FIRST: u64 = 101;
 const MIDDLE: u64 = 102;
 const LAST: u64 = 103;
 
-/// What the middle key's view is this frame. Its pool key and its position in paint order are
-/// identical either way, so changing it is exactly `place_in`'s stale branch: dropped and rebuilt
-/// under an unchanged key, at an unchanged place in paint order.
 #[derive(Copy, Clone, PartialEq)]
 enum Middle {
     Plain,
@@ -80,23 +66,13 @@ struct Reading {
 }
 
 struct Probe {
-    /// Which phase this frame paints. One past the script means the run is over.
     phase: usize,
     readings: Vec<Reading>,
     done: bool,
 }
 
-fn plain(mtm: MainThreadMarker) -> Retained<NSView> {
-    NSView::initWithFrame(
-        NSView::alloc(mtm),
-        NSRect::new(NSPoint::ZERO, NSSize::new(24., 24.)),
-    )
-}
-
 impl Render for Probe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The previous phase's `commit` has run and this frame has placed nothing yet, so this is
-        // that phase's settled answer.
         if self.phase > 0 {
             let host = NativeHost::get(window, cx);
             self.readings.push(Reading {
@@ -124,7 +100,12 @@ impl Render for Probe {
                         });
                 } else {
                     let _: Retained<NSView> =
-                        host.place(*key, Layer::Above, bounds, mask, |mtm, _| plain(mtm));
+                        host.place(*key, Layer::Above, bounds, mask, |mtm, _| {
+                            NSView::initWithFrame(
+                                NSView::alloc(mtm),
+                                NSRect::new(NSPoint::ZERO, NSSize::new(24., 24.)),
+                            )
+                        });
                 }
             }
         }
@@ -140,9 +121,6 @@ impl Render for Probe {
 }
 
 static FAILED: AtomicU8 = AtomicU8::new(0);
-/// Set by [`report`]. Without it, a run that never reached the last phase — because the window
-/// only ever painted once — exits 0 with no output at all, and the gate reads that as a pass
-/// having tested nothing.
 static REPORTED: AtomicU8 = AtomicU8::new(0);
 
 fn keys(list: &[u64]) -> String {
@@ -195,10 +173,8 @@ fn main() -> ExitCode {
                         origin: point(px(0.), px(0.)),
                         size: size(px(64.), px(48.)),
                     })),
-                    // gpui starts its display link only once the window's occlusion state reports
-                    // visible, so `show: false` never renders a frame. Hence a 64x48 corner window
-                    // and `focus: false`: the smallest thing that gets frames, taking the keyboard
-                    // away from nothing.
+                    // gpui starts its display link only once occlusion reports visible, so
+                    // `show: false` never renders a frame.
                     focus: false,
                     ..window_options()
                 },
@@ -212,8 +188,8 @@ fn main() -> ExitCode {
             )
             .unwrap();
 
-        // One frame per phase, asked for from outside `render`: a `notify` raised *during* render
-        // is swallowed, so a self-driving tree renders exactly once.
+        // A `notify` raised during render is swallowed, so the frames have to be asked for from
+        // outside it.
         cx.spawn(async move |cx: &mut AsyncApp| {
             for _ in 0..SCRIPT.len() + 4 {
                 cx.background_executor()
@@ -229,10 +205,6 @@ fn main() -> ExitCode {
                     break;
                 }
             }
-            // `Application::run` returning exits 0 regardless, so the verdict has to leave here.
-            // Fail closed: the loop also ends by running out of tries, and a window that painted
-            // once — an occluded window, or a machine whose display link has stalled — reaches
-            // neither the last phase nor `report`, so there is nothing to be right about.
             if REPORTED.load(Ordering::Relaxed) == 0 {
                 println!(
                     "FAIL: no phase was reported — the window painted fewer than {} times, so no \

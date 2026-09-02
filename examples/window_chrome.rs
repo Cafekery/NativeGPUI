@@ -1,32 +1,5 @@
-//! Window-level chrome, live: the corner radius driven by GPUI controls, a real unified toolbar
-//! carrying one of every [`ToolbarItem`] kind, a GPUI region wearing the system pointing hand, and
-//! the titlebar band and traffic-light inset read from the system every frame and painted by GPUI.
-//!
-//! The arms with no on-screen control are driven by appending to a command file:
-//!
-//! ```text
-//! echo corner 24       >> /tmp/wchrome/cmd
-//! echo toolbar unified >> /tmp/wchrome/cmd
-//! echo overlay int     >> /tmp/wchrome/cmd
-//! echo flags dark on   >> /tmp/wchrome/cmd
-//! echo activate        >> /tmp/wchrome/cmd
-//! echo move <x> <y>    >> /tmp/wchrome/cmd   # global top-left, over the cyan region
-//! echo cursor          >> /tmp/wchrome/cmd
-//! echo probe           >> /tmp/wchrome/cmd
-//! echo items           >> /tmp/wchrome/cmd   # what the toolbar actually built
-//! echo mode 2          >> /tmp/wchrome/cmd   # push a new selection at the view-mode group
-//! ```
-//!
-//! Everything it prints is prefixed `WC `. `move` and `click` warp the real pointer; `pointer`
-//! puts it back, and so does `quit`.
-//!
-//! `cursor` reports whether the claim registered, which is key-independent. Seeing the glyph
-//! itself swap additionally needs the app to be key, which is what `activate` is for — one-shot
-//! activation at launch does not survive focus being stolen.
-//!
-//! The GPUI-painted probes, in content-logical points: `anchor` and `fract` are the orange
-//! coordinate-recipe targets the `overlay` arm lands a child window on, `claimed` is the cyan
-//! cursor region, and the blue control beside it is never claimed, so it must keep reacting.
+//! Window-level chrome, live: corner radius, a unified toolbar, cursor regions and the titlebar
+//! band. Arms with no on-screen control are driven by appending lines to `/tmp/wchrome/cmd`.
 
 use std::cell::{Cell, RefCell};
 use std::fs;
@@ -104,9 +77,7 @@ extern "C" {
     fn CFRelease(cf: *const std::ffi::c_void);
 }
 
-/// Both halves are load-bearing: `CGWarpMouseCursorPosition` moves the pointer but posts nothing,
-/// so AppKit never re-evaluates which cursor rect it is in, and a posted move without the warp
-/// drives the event path with the pointer somewhere else.
+/// `CGWarpMouseCursorPosition` posts no event of its own, so the move has to be posted too.
 fn synth(kind: u32, x: f64, y: f64) {
     let at = NSPoint::new(x, y);
     DRIVER.with(|h| h.borrow_mut().warped = true);
@@ -125,11 +96,7 @@ const LEFT_DOWN: u32 = 1;
 const LEFT_UP: u32 = 2;
 
 thread_local! {
-    /// Scratch state only. Everything the *crate* owns is read back from the crate, never mirrored
-    /// here, so a readout cannot drift from the thing it reports.
     static DRIVER: RefCell<Driver> = RefCell::new(Driver::default());
-    /// The view-mode index the `ng.view` group reports and reads back — the caller's state, which
-    /// is what a toolbar group's selection has to follow.
     static MODE: Cell<usize> = const { Cell::new(1) };
 }
 
@@ -137,16 +104,11 @@ thread_local! {
 struct Driver {
     cx: Option<gpui::AsyncWindowContext>,
     overlay: Option<Retained<NSWindow>>,
-    /// Where the operator's pointer was at launch, already flipped to the global top-left space
-    /// `CGWarpMouseCursorPosition` takes.
     pointer_home: Option<NSPoint>,
     warped: bool,
-    /// Held only so the sidebar the `sidebar` arm installs outlives the command.
     sidebar: Option<NativeSidebar>,
 }
 
-/// Put the operator's pointer back, but only if this process moved it — otherwise `quit` would
-/// yank a pointer the operator has since moved themselves.
 fn restore_pointer() {
     let home = DRIVER.with(|h| {
         let h = h.borrow();
@@ -195,8 +157,6 @@ fn corner_probe(window: &Window, tag: &str) {
     );
 }
 
-/// Place a magenta child window at exactly `native_screen_rect(host, bounds)`. If the coordinate
-/// recipe is exact, it covers the orange GPUI target with no orange left.
 fn overlay(window: &Window, which: Option<[f32; 4]>) {
     let mtm = MainThreadMarker::new().unwrap();
     let parent = ns_window(window);
@@ -318,7 +278,6 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 wlog!("MODE set {index}");
             }
         }
-        // The update route for a build-once view item: fetch the view back and write to it.
         "level" => {
             if let Ok(value) = arg.parse::<f64>() {
                 match toolbar_item_view(window, "ng.pinned")
@@ -351,8 +310,6 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 }
             }
         }
-        // The one item that needs a split view to track. Installs a sidebar first, so the
-        // `Separator` arm is exercised rather than silently dropped.
         "sidebar" => {
             let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
             sidebar.update(&[
@@ -406,8 +363,7 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 && mouse.x <= want.origin.x + want.size.width
                 && mouse.y >= want.origin.y
                 && mouse.y <= want.origin.y + want.size.height;
-            // `currentCursor` is this process's own cursor stack; `currentSystemCursor` is what
-            // the WindowServer is showing. If only the first moves, we set a cursor nobody sees.
+            // `currentCursor` is this process's own stack; `currentSystemCursor` is what shows.
             #[allow(deprecated)]
             let system = objc2_app_kit::NSCursor::currentSystemCursor()
                 .map(|c| {
@@ -421,9 +377,7 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                     )
                 })
                 .unwrap_or_else(|| "none".into());
-            // `hitTest:` takes a point in the RECEIVER's superview space, so ask the content view
-            // and let it walk down. Anything but NGChrome means the claim never registered, which
-            // separates "the claim is wrong" from "the cursor is wrong".
+            // `hitTest:` takes a point in the receiver's superview space, so ask the content view.
             let in_window = native_window_rect(&host, bounds_of(CLAIMED));
             let centre = NSPoint::new(
                 in_window.origin.x + in_window.size.width / 2.,
@@ -456,8 +410,7 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
             );
             wlog!("PROBE flags={:?}", window_flags(window));
         }
-        // Cursor rects only apply to a key, active app, so `cursor` cannot observe a glyph swap
-        // until this has run. One-shot activation at launch does not survive focus being stolen.
+        // Cursor rects only apply to a key, active app.
         "activate" => {
             let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
             #[allow(deprecated)]
@@ -496,9 +449,6 @@ fn pump() {
     });
 }
 
-/// Every [`ToolbarItem`] kind in one band, in Finder's order: a glyph, the view-mode capsule, a
-/// menu with a chevron, the system share picker, a plain glyph, an unpinned view item, and the
-/// search field that collapses to a magnifier.
 fn toolbar_items() -> Vec<ToolbarItem> {
     let mode = MODE.with(|slot| slot.get());
     vec![
@@ -532,8 +482,6 @@ fn toolbar_items() -> Vec<ToolbarItem> {
             ],
         )
         .on_select(|index, _, _| wlog!("TOOLBAR menu ng.sort -> {index}")),
-        // Momentary keeps no selection, so its index cannot come from `selectedIndex` — this arm
-        // is what proves it does not.
         ToolbarItem::group(
             "ng.nav",
             "Navigate",
@@ -547,9 +495,6 @@ fn toolbar_items() -> Vec<ToolbarItem> {
         .on_select(|index, _, _| wlog!("TOOLBAR group ng.nav -> {index}")),
         ToolbarItem::share("ng.share", "Share", ["A shared string from the toolbar"]),
         ToolbarItem::symbol("ng.tag", "tag", "Tags").on_click(|_, _| log("TOOLBAR clicked ng.tag")),
-        // Three arms of the same question, printed side by side by `items`: a control with an
-        // intrinsic size in both axes needs no size, a bare `NSView` has one in neither and is
-        // measured at 0x0, and a pinned size is honoured exactly.
         ToolbarItem::view("ng.seg", "Segmented", Size::default(), |mtm| {
             let control = NSSegmentedControl::new(mtm);
             control.setSegmentCount(2);
@@ -561,7 +506,7 @@ fn toolbar_items() -> Vec<ToolbarItem> {
         ToolbarItem::view("ng.pinned", "Pinned", size(px(90.), px(22.)), |mtm| {
             let bar = NSProgressIndicator::new(mtm);
             bar.setIndeterminate(false);
-            // `NSProgressIndicator`'s range is 0..100, so a fraction here shows as a nub.
+            // `NSProgressIndicator`'s range is 0..100, not 0..1.
             bar.setDoubleValue(35.);
             Retained::into_super(bar)
         }),
@@ -584,10 +529,7 @@ impl Render for Demo {
             self.installed = true;
             let _ = fs::create_dir_all(DIR);
             let _ = fs::write(CMD, "");
-            // `mouseLocation` is Cocoa bottom-left; `CGWarpMouseCursorPosition` takes global
-            // top-left. Both spaces are anchored to the PRIMARY screen, so the flip constant is
-            // `screens()[0]`'s height and not this window's screen — a pointer parked on a
-            // display above the primary correctly flips to a negative y.
+            // Both spaces are anchored to the PRIMARY screen, so the flip uses screens()[0].
             let mouse = objc2_app_kit::NSEvent::mouseLocation();
             let height = objc2_app_kit::NSScreen::screens(MainThreadMarker::new().unwrap())
                 .firstObject()
@@ -637,10 +579,7 @@ impl Render for Demo {
                 .size_full()
                 .relative()
                 .font_family(tokens::system_font_family())
-                // Starts BELOW the live band, not at the frame top: on a FullSizeContentView
-                // window GPUI's content view spans the whole frame, so a full-bleed background
-                // paints over the toolbar and the traffic lights and they vanish. It still reaches
-                // the bottom corners opaquely, which is what the drop shadow needs.
+                // Below the band: on a full-size content view a full-bleed fill hides the toolbar.
                 .child(
                     div()
                         .absolute()
@@ -795,7 +734,6 @@ impl Render for Demo {
                                 .child("pointing hand"),
                         )),
                 )
-                // Never claimed: the discriminator for "claiming costs GPUI nothing".
                 .child(
                     div()
                         .id("control")
@@ -853,8 +791,7 @@ fn main() {
                     origin: point(px(1150.), px(200.)),
                     size: size(px(820.), px(560.)),
                 })),
-                // Deliberately NOT setting TitlebarOptions::traffic_light_position: it is mutually
-                // exclusive with a toolbar. See `set_toolbar`.
+                // No TitlebarOptions::traffic_light_position: it excludes a toolbar.
                 ..window_options()
             },
             |_, cx| {

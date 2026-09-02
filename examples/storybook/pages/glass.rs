@@ -1,8 +1,4 @@
-//! Public liquid glass: one panel with its knobs, its properties, then the container that batches
-//! many panels.
-//!
-//! Every specimen sits on something busy. Glass frosting GPUI's own Metal content is the thing
-//! worth seeing, and a flat fill leaves it nothing to bend.
+//! Public liquid glass: one panel with its knobs, then the container that batches many panels.
 
 use crate::Demo;
 use crate::ui::*;
@@ -11,14 +7,11 @@ use native_gpui::{
     glass, glass_container, native_color_well, native_segmented, native_slider, native_switch,
 };
 
-/// Stripe half-period. Fine enough that a blur has plenty of structure to eat.
 const STRIPE: f32 = 8.;
 const STRIPE_COLORS: [u32; 6] = [0xff375f, 0xffd60a, 0x30d158, 0x0a84ff, 0xbf5af2, 0xf2f2f7];
 
 const RADII: [f32; 6] = [0., 8., 16., 26., 40., 44.];
 
-/// The batch band. A fixed column count keeps the row count exact at any window width, so the
-/// band's height is stated rather than left to a percentage against an auto-sized parent.
 const COLS: usize = 12;
 const PANEL_W: f32 = 44.;
 const PANEL_H: f32 = 30.;
@@ -359,8 +352,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
-/// GPUI-drawn stripes behind a specimen. A checkerboard shows whether a material collapsed; fine
-/// stripes also show the glass bending what is underneath it.
+/// GPUI-drawn stripes for a specimen to sit on.
 pub fn stripes(width: f32, height: f32, child: AnyElement) -> AnyElement {
     let count = (width / (2. * STRIPE)).ceil() as usize;
     div()

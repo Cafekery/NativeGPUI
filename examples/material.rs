@@ -1,10 +1,4 @@
 //! Hosted `NSVisualEffectView` materials over a busy backdrop.
-//!
-//! Two windows. The back one paints 16pt complementary stripes, so a working material and a dead
-//! grey fallback cannot look the same — over a flat desktop they can. The front one is the demo:
-//! a titlebar band, a sidebar with GPUI labels on it, a window background, a card whose material
-//! and corners cycle, a grid of the whole [`RawMaterial`] catalogue, and a tray of every
-//! semantic [`Material`] variant.
 
 use gpui::{
     App, AppContext, Application, Bounds, Context, InteractiveElement, IntoElement, ParentElement,
@@ -18,8 +12,6 @@ const WIN_Y: f32 = 160.;
 const WIN_W: f32 = 900.;
 const WIN_H: f32 = 680.;
 
-/// The backdrop window is inset outward so the front window's behind-window blur samples nothing
-/// but stripes. Deliberately not a child window, which would move and raise as one with it.
 const BACK_INSET: f32 = 20.;
 
 const STRIPE_W: f32 = 16.;

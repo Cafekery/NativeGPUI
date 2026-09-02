@@ -1,31 +1,4 @@
-//! Whether [`system_font_tabular`] actually produces tabular figures.
-//!
-//! The token is one line — a `FontFeatures` list carrying `tnum` — and its whole value rests on
-//! GPUI's shaper honouring that tag on `.AppleSystemUIFont`. If a toolchain stops honouring it the
-//! function still compiles, still returns a `Font`, and returns a proportional one: a caller then
-//! has a name promising a stable column and a column that still shifts under every row. Nothing
-//! else in the gate would notice, so this exists.
-//!
-//! It cannot be a unit test. An OpenType feature is a shaping-time glyph substitution, so it is
-//! invisible to `TextSystem::advance`, which looks up the character's default glyph and asks its
-//! width. Only `shape_line` shapes, and `shape_line` lives on `WindowTextSystem` — so this needs a
-//! real window. It takes no keyboard focus and captures no pixels; every number comes out of
-//! GPUI's own text system in-process.
-//!
-//! Three arms, because the interesting one is a *null* — "the digits came out equal" — and a null
-//! is worthless from an instrument that cannot say otherwise:
-//!
-//! * `Menlo` with no features must read TABULAR. It is monospaced on every Mac, so an instrument
-//!   that cannot see equal advances there is measuring nothing.
-//! * `.AppleSystemUIFont` with no features must read proportional. If the plain system font
-//!   already reads tabular there is no change left to detect and every verdict below is vacuous.
-//! * A tag no font implements must leave the spread alone. Without it, "tnum equalised the digits"
-//!   could just as well mean "attaching any feature perturbs the shaper", which would make the
-//!   choice of tag arbitrary and the token a coincidence.
-//!
-//! The width is also checked against a *value*, not just against itself: AppKit's own
-//! `monospacedDigitSystemFont(ofSize: 14, weight: .regular)`, shaped through `CTLine`, puts ten
-//! digits at 86.68pt. Equal-but-wrong would pass a spread test on its own.
+//! Gate: `system_font_tabular` shapes digits to equal advances. Exits 0 pass, non-zero fail.
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -38,23 +11,12 @@ use gpui::{
 use native_gpui::tokens::{system_font, system_font_tabular};
 use native_gpui::window_options;
 
-/// Ten of one digit, so a per-digit difference of a third of a point is ten times as visible as the
-/// f32 noise floor.
 const REPEATS: usize = 10;
-
-/// AppKit's `monospacedDigitSystemFont(14, .regular)` through `CTLine`, for [`REPEATS`] digits.
 const APPKIT_TABULAR_WIDTH: f32 = 86.68;
-
-/// Below this a spread is equality: the widest and narrowest SF digits differ by 25.16pt over ten
-/// repeats, so there is no ambiguous middle to worry about.
 const EQUAL: f32 = 0.01;
 
 static FAILED: AtomicU8 = AtomicU8::new(0);
 static RAN: AtomicU8 = AtomicU8::new(0);
-
-fn tag(name: &str) -> FontFeatures {
-    FontFeatures(std::sync::Arc::new(vec![(name.to_string(), 1)]))
-}
 
 fn shaped_width(window: &Window, font: &Font, size: Pixels, text: &str) -> f32 {
     let run = TextRun {
@@ -73,8 +35,12 @@ fn shaped_width(window: &Window, font: &Font, size: Pixels, text: &str) -> f32 {
     )
 }
 
-/// Widths of `REPEATS` copies of each of `0`..`9`, and how far apart the widest and narrowest are.
-fn digit_spread(window: &Window, font: &Font, size: Pixels) -> (Vec<f32>, f32) {
+enum Want {
+    Tabular,
+    Proportional,
+}
+
+fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) {
     let widths: Vec<f32> = ('0'..='9')
         .map(|d| {
             let text: String = std::iter::repeat(d).take(REPEATS).collect();
@@ -83,16 +49,6 @@ fn digit_spread(window: &Window, font: &Font, size: Pixels) -> (Vec<f32>, f32) {
         .collect();
     let spread = widths.iter().cloned().fold(f32::MIN, f32::max)
         - widths.iter().cloned().fold(f32::MAX, f32::min);
-    (widths, spread)
-}
-
-enum Want {
-    Tabular,
-    Proportional,
-}
-
-fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) -> f32 {
-    let (widths, spread) = digit_spread(window, font, size);
     RAN.fetch_add(1, Ordering::Relaxed);
     let tabular = spread < EQUAL;
     let ok = match want {
@@ -109,7 +65,6 @@ fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) -> f
         if tabular { "tabular" } else { "proportional" },
         if ok { "ok" } else { "WRONG" }
     );
-    spread
 }
 
 struct Probe {
@@ -145,7 +100,7 @@ impl Render for Probe {
             );
 
             let mut nonsense = system_font(FontWeight::NORMAL);
-            nonsense.features = tag("zzzz");
+            nonsense.features = FontFeatures(std::sync::Arc::new(vec![("zzzz".to_string(), 1)]));
             row(
                 window,
                 "system face + zzzz=1 [tag is not arbitrary]",
@@ -163,14 +118,8 @@ impl Render for Probe {
                 Want::Tabular,
             );
 
-            // Equal is not enough: it has to be equal to AppKit's own answer, or the feature could
-            // be substituting some other equal-width set.
-            //
-            // The digit has to be `1`. SF's proportional `0` already advances 8.668pt, which is
-            // the tabular advance, so ten `0`s measure 86.68 whether the feature applied or not —
-            // a first draft of this check used `0` and stayed green while the token returned a
-            // proportional font. `1` is the narrowest at 6.34, so ten of them are 63.44 without
-            // the feature and 86.68 with it.
+            // Must be `1`: SF's proportional `0` already advances at the tabular width, so ten of
+            // them measure 86.68 whether the feature applied or not.
             let width = shaped_width(window, &tabular, size, &"1".repeat(REPEATS));
             let off = (width - APPKIT_TABULAR_WIDTH).abs();
             RAN.fetch_add(1, Ordering::Relaxed);
@@ -184,7 +133,6 @@ impl Render for Probe {
                 if matches { "ok" } else { "WRONG" }
             );
 
-            // The jitter a date column would show, in the units the caller cares about.
             for (label, font) in [
                 ("system_font", system_font(FontWeight::NORMAL)),
                 ("system_font_tabular", tabular.clone()),
@@ -196,7 +144,6 @@ impl Render for Probe {
                     (a - b).abs()
                 );
             }
-            // The one row whose failure is the whole point of the file.
             let a = shaped_width(window, &tabular, size, "11:11\u{202F}AM");
             let b = shaped_width(window, &tabular, size, "10:00\u{202F}AM");
             RAN.fetch_add(1, Ordering::Relaxed);
@@ -242,9 +189,6 @@ fn main() -> ExitCode {
                     break;
                 }
             }
-            // `Application::run` returning exits 0 regardless, so the verdict has to leave here.
-            // Fail closed: the loop also ends by running out of tries or by `window.update`
-            // erroring, and neither of those has measured anything.
             if RAN.load(Ordering::Relaxed) == 0 {
                 println!("FAIL: nothing was measured — the window never rendered");
                 std::process::exit(1);

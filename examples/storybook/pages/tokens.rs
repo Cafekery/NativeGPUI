@@ -1,12 +1,4 @@
 //! The system's own colours, fonts and symbols — the parts GPUI draws itself.
-//!
-//! Every swatch is split Light | Dark, resolved through [`SystemColor::try_resolve`] rather than the
-//! live appearance, because most of these colours differ between the two worlds: a single-column
-//! grid would document one appearance and quietly contradict the other.
-//!
-//! The appearance switch is a real `NSSwitch` driving [`set_app_appearance`], which flips the whole
-//! process through the same KVO a system change does. That is a side effect outside this page, so
-//! leaving the page drops the override — see [`watch_for_leave`].
 
 use crate::Demo;
 use crate::ui::*;
@@ -25,18 +17,12 @@ use native_gpui::tokens::{
 use native_gpui::{ControlSize, native_button, native_switch};
 use objc2_app_kit::NSColor;
 
-/// Ascenders, descenders, digits and a repeated pair, so cumulative advance drift is visible.
 const SAMPLE: &str = "Handgloves 0123 xnxn";
 
 const SIZES: &[f32] = &[9., 11., 13., 16., 17., 24.];
 
-/// Same length, different digits, so an unequal advance shows up as a ragged right edge rather
-/// than as a number a reader has to trust. U+202F before the meridiem, as Finder writes it.
 const TABULAR_SAMPLE: &[&str] = &["11:11\u{202F}AM", "10:00\u{202F}AM", "8/26/26", "1/11/11"];
 
-/// Types a Finder-shaped list actually shows. Each resolves to a *declared* type here; the icons
-/// are real artwork, not tinted glyphs, so this row is also where a broken channel order or a
-/// premultiplied buffer would be visible as a dark rim.
 const FILE_TYPES: &[(&str, FileType<'static>)] = &[
     ("Folder", FileType::Folder),
     ("zip", FileType::Extension("zip")),
@@ -51,7 +37,6 @@ const FILE_TYPES: &[(&str, FileType<'static>)] = &[
     ("plain text", FileType::Uti("public.plain-text")),
 ];
 
-/// Declared nowhere, to show [`file_icon`] answers `None` rather than inventing a sheet.
 const ABSENT_UTI: &str = "com.apple.icon";
 
 const SYMBOLS: &[(&str, fn() -> SymbolColor)] = &[
@@ -83,17 +68,13 @@ const SYMBOLS: &[(&str, fn() -> SymbolColor)] = &[
     ("lock.fill", || SymbolColor::Raw),
 ];
 
-/// A name no release ships, to show [`sf_symbol`] answers `None` rather than a placeholder glyph.
 const ABSENT_SYMBOL: &str = "definitely.not.a.symbol";
 
 #[derive(Default)]
 pub struct State {
-    /// Whether *this page* installed the process-wide appearance override.
     pinned: bool,
-    /// Whether a leave-watching frame callback is already armed.
     watching: bool,
     theme: Option<Subscription>,
-    /// Light-vs-dark difference count, keyed by the token generation it was measured in.
     differing: Option<(u64, usize)>,
 }
 
@@ -113,18 +94,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     let differing = d.tokens.differing.map_or(0, |(_, n)| n);
     let pinned = d.tokens.pinned;
 
-    let fonts = font_section(cx);
-    let symbols = symbol_section();
-    let file_icons = file_icon_section();
-    let colors = color_section(differing);
-    let appearance = appearance_section(pinned, cx);
-
     stack(vec![
-        appearance,
-        colors,
-        fonts,
-        symbols,
-        file_icons,
+        appearance_section(pinned, cx),
+        color_section(differing),
+        font_section(cx),
+        symbol_section(),
+        file_icon_section(),
         cache_section(),
         props(&[
             (
@@ -178,9 +153,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
-/// The appearance override is process-wide, and `render` runs only while this page is showing —
-/// so a frame callback is the only hook that fires on the frame that draws a *different* page.
-/// Without it the user is left pinned to an appearance they never asked for.
 fn watch_for_leave(window: &mut Window, cx: &mut Context<Demo>) {
     cx.on_next_frame(window, |d: &mut Demo, window, cx| {
         if !d.tokens.pinned {
@@ -455,18 +427,7 @@ fn font_section(cx: &App) -> AnyElement {
                 f32::from(small_system_font_size()),
                 f32::from(label_font_size())
             )),
-            demo(
-                "system_font_size_for(ControlSize)",
-                stack(vec![
-                    mono(control_sizes),
-                    caption(
-                        "Five sizes, but AppKit does not answer with five distinct values — the \
-                         crate documents 13pt for Regular, Large and ExtraLarge alike, and the \
-                         row above is what this machine answered. Hardcoding 15 or 17 puts a GPUI \
-                         label out of step with the control beside it.",
-                    ),
-                ]),
-            ),
+            demo("system_font_size_for(ControlSize)", mono(control_sizes)),
             demo("sizes", stack(ramp)),
             demo(
                 "FontWeight::ALL, with the face AppKit resolved",
@@ -474,18 +435,7 @@ fn font_section(cx: &App) -> AnyElement {
             ),
             demo(
                 "advance of 'x', GPUI minus AppKit, in points",
-                stack(vec![
-                    stack(advances),
-                    caption(
-                        "GPUI reaches the right face but does not apply SF's optical-size (opsz) \
-                         axis, which CoreText applies whenever you ask NSFont for a size. The \
-                         crate documents GPUI about 2.6% narrow at 13pt, exact around 16pt and \
-                         wider above — the row above is what this machine answered, so compare \
-                         the two rather than trusting either alone. Menlo is the control, not \
-                         decoration: if it disagrees too then the two instruments are \
-                         incomparable and the system column is noise rather than a gap.",
-                    ),
-                ]),
+                stack(advances),
             ),
             demo("cumulative drift over the sample string", stack(drift)),
             demo(
@@ -537,8 +487,6 @@ fn font_section(cx: &App) -> AnyElement {
     )
 }
 
-/// Symbols are asked for fresh on every render rather than held in `State`: a `Symbol` kept across
-/// an appearance change is a stale raster, and a `labelColor` one goes invisible.
 fn symbol_section() -> AnyElement {
     let base = system_font_size();
     let weight = FontWeight::NORMAL;
@@ -625,9 +573,6 @@ fn symbol_color_name(color: &SymbolColor) -> String {
     }
 }
 
-/// Unlike [`symbol_section`], nothing here is re-asked on an appearance change for correctness'
-/// sake — a file icon is the same bytes in both worlds. It is re-asked anyway because the cache
-/// makes that free.
 fn file_icon_section() -> AnyElement {
     let catalogue: Vec<AnyElement> = FILE_TYPES
         .iter()

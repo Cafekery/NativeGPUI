@@ -25,8 +25,7 @@ impl Default for State {
     }
 }
 
-/// A vertical slider gets its length from layout: `fittingSize` reports the free axis as zero, so
-/// without an explicit height the specimen collapses to nothing.
+// A vertical slider's `fittingSize` is zero on the free axis, so it needs an explicit height.
 fn upright(height: f32, child: AnyElement, value: String) -> AnyElement {
     div()
         .flex()

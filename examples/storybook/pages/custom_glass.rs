@@ -1,9 +1,4 @@
-//! A live editor for [`GlassRecipe`]: every input of the private `glassBackground` filter that
-//! moves a pixel, on its own dial, over a checkerboard and over a hue sweep so refraction and
-//! blur have structure to act on.
-//!
-//! Nothing clamps in the filter, so the ranges here are chosen to contain all four presets with
-//! room either side rather than to bound anything.
+//! A live editor for [`GlassRecipe`]: every input of the private `glassBackground` filter on a dial.
 
 use crate::Demo;
 use crate::ui::*;
@@ -516,8 +511,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     stack(page)
 }
 
-/// A hue sweep and a line of text for the glass to refract and frost. A flat fill would leave
-/// every refraction and blur dial looking dead.
 #[cfg(feature = "private-api")]
 fn specimen(recipe: GlassRecipe) -> AnyElement {
     let bars = (0..24).map(|i| {
@@ -557,9 +550,7 @@ fn specimen(recipe: GlassRecipe) -> AnyElement {
         .into_any_element()
 }
 
-/// A pull-down rather than a pop-up: AppKit keeps entry 0 on the face and hides it from the list,
-/// so it never claims an edited recipe is still the preset it came from, and re-picking the row
-/// you are already on still fires.
+// A pull-down hides entry 0 from the list, so re-picking the row you are already on still fires.
 #[cfg(feature = "private-api")]
 fn preset_popup(cx: &mut Context<Demo>) -> AnyElement {
     native_popup("preset", 0)
@@ -614,8 +605,7 @@ fn flag(
     )
 }
 
-/// The switch is the whole point: a `None` fill means the matrix takes no fill colour, which the
-/// colour well cannot express — a fully transparent swatch is a clear fill, not an absent one.
+// The switch expresses `None` — a fully transparent swatch is a clear fill, not an absent one.
 #[cfg(feature = "private-api")]
 fn fill(
     field: &'static str,
@@ -655,8 +645,6 @@ fn fill(
     )
 }
 
-/// Log-scaled, because 1 to 9999 linear puts the whole range that clamps anything in the first
-/// pixel of travel.
 #[cfg(feature = "private-api")]
 fn headroom(value: f32, cx: &mut Context<Demo>) -> AnyElement {
     const TOP: f32 = 9999.;
@@ -677,10 +665,8 @@ fn headroom(value: f32, cx: &mut Context<Demo>) -> AnyElement {
 
 #[cfg(feature = "private-api")]
 fn fmt(value: f32) -> String {
-    let text = format!("{value:.3}");
-    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
-    match trimmed {
-        "" | "-" => "0".to_string(),
-        text => text.to_string(),
-    }
+    format!("{value:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }

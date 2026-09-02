@@ -1,5 +1,4 @@
-//! The button family: checkbox, radio, push button, segmented control. Each control is a real
-//! AppKit view; the readout under it is drawn by GPUI from state only its action changes.
+//! The button family: checkbox, radio, push button, segmented control.
 
 use gpui::{
     App, Application, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,

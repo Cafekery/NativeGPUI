@@ -1,8 +1,4 @@
-//! The undocumented `NSGlassEffectView` surface: 13 render classes, their subvariants, and the
-//! interaction states.
-//!
-//! Behind `--features private-api`. Every selector is resolved at runtime, so a macOS that drops
-//! one degrades to the public behaviour rather than raising.
+//! The undocumented `NSGlassEffectView` surface: render classes, subvariants, interaction states.
 
 use crate::Demo;
 use crate::ui::*;
@@ -28,10 +24,9 @@ const TILE_H: f32 = 90.;
 pub struct State {
     /// Index into [`GlassVariant::ALL`].
     pub variant: usize,
-    /// Index into the *accepted* subvariants of the current variant, never into
-    /// [`GlassSubvariant::ALL`], so the control cannot offer a pairing the variant drops.
+    /// Index into the *accepted* subvariants of the current variant, not [`GlassSubvariant::ALL`].
     pub subvariant: usize,
-    /// Index into [`GlassInteractionState::ALL`], clamped on read.
+    /// Index into [`GlassInteractionState::ALL`].
     pub interaction: usize,
     pub subdued: bool,
     pub scrim: bool,
@@ -51,7 +46,6 @@ pub fn render(_d: &mut Demo, _window: &mut Window, _cx: &mut Context<Demo>) -> A
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
     let variant = GlassVariant::ALL[d.glass_variants.variant.min(GlassVariant::ALL.len() - 1)];
     let accepted = variant.subvariants();
-    // Switching variants shrinks this list, and the stored index can outlive the list it indexed.
     let chosen = d.glass_variants.subvariant.min(accepted.len() - 1);
     let subvariant = accepted[chosen];
     let states = GlassInteractionState::ALL;
@@ -352,8 +346,6 @@ fn variant_label(variant: GlassVariant) -> String {
     }
 }
 
-/// Subvariants that carry an API name. `None` is in every accepted list and names nothing, so
-/// counting the list itself would report a variant that takes no refinement as taking one.
 #[cfg(feature = "private-api")]
 fn named(subvariants: &[GlassSubvariant]) -> usize {
     subvariants

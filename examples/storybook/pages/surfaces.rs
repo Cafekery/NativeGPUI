@@ -1,12 +1,4 @@
 //! The transient surfaces: `NSPopover`, a real `NSWindow` sheet, and `NSSharingServicePicker`.
-//!
-//! These are not builders. Each takes `&mut Window, &mut App` and presents there and then, so it
-//! is called from a click handler rather than during render. Everything this page shows after a
-//! click is GPUI painting state that only an AppKit callback ever wrote — the switch inside the
-//! popover, the sheet's completion handler, the picker's delegate.
-//!
-//! A surface points at a GPUI element, whose geometry only exists during `paint`, so the element
-//! is wrapped in `native_anchor` and the handler reads the bounds back out of the `SurfaceAnchor`.
 
 use crate::Demo;
 use crate::ui::*;
@@ -25,7 +17,6 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-/// `PopoverBehavior`, in the order the picker offers them.
 const BEHAVIORS: &[(&str, PopoverBehavior)] = &[
     ("ApplicationDefined", PopoverBehavior::ApplicationDefined),
     ("Transient", PopoverBehavior::Transient),
@@ -38,9 +29,7 @@ pub struct State {
     pub share_anchor: SurfaceAnchor,
     pub popover: Option<NativePopover>,
     pub showing: Option<SurfaceEdge>,
-    /// Index into [`BEHAVIORS`]; read when the popover is presented, so it takes effect next open.
     pub behavior: usize,
-    /// Written only by the switch *inside* the popover.
     pub popover_says: Option<bool>,
     pub sheet: Option<NativeSheet>,
     pub sheet_ends: usize,
@@ -48,8 +37,6 @@ pub struct State {
     pub services: Option<usize>,
     pub blocked_ms: Option<f64>,
     pub shared: Option<String>,
-    /// Asked once: `sharingServicesForItems:` is a real AppKit lookup and the answer for a fixed
-    /// item list does not change.
     pub offered: Option<usize>,
 }
 
@@ -167,7 +154,6 @@ fn open_sheet(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
             label.setFrame(NSRect::new(NSPoint::new(24., 106.), NSSize::new(332., 20.)));
             content.addSubview(&label);
 
-            // A third response proves `SheetResponse` is not limited to AppKit's own two.
             for (title, response, x) in [
                 ("Cancel", SheetResponse::CANCEL, 24.),
                 ("Later", SheetResponse(42), 148.),

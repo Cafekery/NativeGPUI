@@ -1,5 +1,4 @@
-//! macOS 26 liquid glass over a busy GPUI backdrop: both styles, tints, the corner-radius range,
-//! and a batch of panels inside a `glass_container`.
+//! macOS 26 liquid glass: both styles, tints, the corner-radius range, and a `glass_container`.
 
 use gpui::{
     App, Application, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, hsla,
@@ -10,7 +9,6 @@ use native_gpui::{Glass, glass, glass_container, native_root, window_options};
 const W: f32 = 940.;
 const H: f32 = 520.;
 
-/// Stripe half-period. Fine enough that a blur has plenty of structure to eat.
 const STRIPE: f32 = 8.;
 const STRIPE_COLORS: [u32; 6] = [0xff375f, 0xffd60a, 0x30d158, 0x0a84ff, 0xbf5af2, 0xf2f2f7];
 

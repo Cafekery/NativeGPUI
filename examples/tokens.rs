@@ -1,9 +1,4 @@
-//! `native_gpui::tokens` on screen.
-//!
-//! Every exposed semantic colour as a labelled swatch, the system font at 11/13/17 beside AppKit's
-//! own rasterisation of the same string, and ten SF Symbols with assorted tints. The appearance
-//! switch is a real `NSSwitch`; flipping it drives the same KVO a system flip does, so the whole
-//! window re-renders through [`SystemTheme`] with re-resolved colours.
+//! `native_gpui::tokens` on screen: colours, fonts, symbols, and a live appearance switch.
 
 use std::ptr;
 use std::sync::Arc;
@@ -53,7 +48,6 @@ fn to_straight_bgra(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-/// AppKit's own rasterisation of a string, so GPUI's line can sit next to it on screen.
 struct TextStrip {
     size: f32,
     image: Arc<RenderImage>,
@@ -233,8 +227,6 @@ impl Tokens {
             m.resolved_name
         );
 
-        // GPUI does not apply SF's optical-size axis. Menlo and Helvetica Neue are the controls:
-        // they agree between the two instruments, so the system-font column is a real gap.
         let w = gpui::FontWeight::NORMAL;
         println!("\nadvance of 'x', GPUI minus AppKit, in points:");
         println!(
@@ -292,8 +284,6 @@ impl Tokens {
         let rows = all.len().div_ceil(SWATCH_COLS);
         let mut grid = div().flex().flex_row().gap(px(4.));
         for col in 0..SWATCH_COLS {
-            // Without `overflow_hidden` a name as long as `unemphasizedSelectedContentBackground`
-            // overruns its column and paints across the next column's swatch.
             let mut column = div().flex().flex_col().w(px(130.)).overflow_hidden();
             for row in 0..rows {
                 let Some(c) = all.get(col * rows + row) else {
@@ -307,16 +297,12 @@ impl Tokens {
                         .gap(px(3.))
                         .h(px(13.))
                         .child(
+                            // `w()` is a flex basis, not a floor: a long label squeezes the swatch.
                             div()
-                                // `w()` in a flex row is a basis, not a floor: without
-                                // `flex_shrink_0` the longest-labelled rows squeeze their swatch
-                                // down to a couple of points.
                                 .flex_shrink_0()
                                 .w(px(24.))
                                 .h(px(11.))
                                 .bg(tokens::system_color(*c))
-                                // The border is what makes a swatch close to the page background
-                                // visible at all.
                                 .border_1()
                                 .border_color(tokens::system_color(SystemColor::Separator)),
                         )
@@ -369,8 +355,7 @@ impl Tokens {
         col
     }
 
-    /// Symbols are asked for fresh every render rather than held in the view: a `Symbol` kept
-    /// across an appearance change is a stale raster, and a `labelColor` one goes invisible.
+    /// A `Symbol` held across an appearance change is a stale raster, so ask for one per render.
     fn symbol_row(&self) -> impl IntoElement {
         let size = system_font_size();
         let mut row = div().flex().flex_row().flex_wrap().gap(px(6.));

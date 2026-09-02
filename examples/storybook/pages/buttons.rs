@@ -46,8 +46,7 @@ const BEZELS: &[(ButtonBezel, &str)] = &[
 const SIZES: &[&str] = &["Small", "Medium", "Large"];
 const ALIGN: &[&str] = &["Leading", "Centre", "Trailing"];
 
-/// AppKit only auto-groups radios that share a superview, and every hosted element gets its own
-/// clip wrapper, so the page owns the selected index and each radio reports only `true`.
+// Each hosted element gets its own clip wrapper, so AppKit cannot auto-group these radios itself.
 fn radio_group(
     id: &'static str,
     titles: &'static [&'static str],

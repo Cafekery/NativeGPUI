@@ -1,17 +1,13 @@
-//! Keyboard behaviour in a window full of hosted AppKit views, measured rather than eyeballed.
+//! Keyboard behaviour in a window full of hosted AppKit views. This process synthesises no
+//! `NSEvent`: it hands an AppleScript fragment to `scripts/keys.sh` for System Events to deliver,
+//! and reads every result back out of AppKit. Rows are written to `$KEYS_DIR/results.tsv`.
 //!
-//! Assertions read AppKit's own state on the main thread — `selectedRange`, `stringValue`, the real
-//! `NSPasteboard`, `NSWindow.firstResponder` — never a screenshot. Keystrokes are equally real:
-//! this process synthesises no `NSEvent`, it hands an AppleScript fragment to `scripts/keys.sh`
-//! for System Events to deliver.
-//!
-//! * A row whose pre-state already equals its expectation reports `VACUOUS`, never `PASS`: the
-//!   keystroke cannot have caused a state it was already in.
-//! * A row measured while this window was not key, or another app was frontmost, reports `NOKEY`
-//!   and is not counted.
-//! * `KEYS_SABOTAGE=want` inverts every expectation; `KEYS_SABOTAGE=nokeys` runs the handshake
-//!   delivering no keystroke. Green in either arm is a harness bug, not a finding.
-//! * `KEYS_MENUS=0` skips [`native_gpui::install_menus`].
+//! ```text
+//! KEYS_SABOTAGE=want    inverts every expectation; every measuring row must go red
+//! KEYS_SABOTAGE=nokeys  runs the handshake delivering no keystroke; no measuring row may pass
+//! KEYS_MENUS=0          skips install_menus
+//! KEYS_DIR              where the handshake files and results.tsv go
+//! ```
 
 use std::fs;
 use std::io::Write;
@@ -38,7 +34,6 @@ use objc2_foundation::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-/// Covers System Events' delivery plus one GPUI frame; every state read is synchronous AppKit.
 const SETTLE: Duration = Duration::from_millis(160);
 const POLL: Duration = Duration::from_millis(15);
 
@@ -175,8 +170,8 @@ fn descend(view: &NSView, out: &mut Vec<Retained<NSView>>) {
     }
 }
 
-/// `isKindOfClass` rather than a downcast: objc2 hands out no checked cast for a main-thread-only
-/// class, so the class test has to be explicit.
+/// `isKindOfClass` rather than a downcast: objc2 offers no checked cast for a main-thread-only
+/// class.
 fn as_kind<T: objc2::Message + objc2::ClassType>(view: &Retained<NSView>) -> Option<Retained<T>> {
     if view.isKindOfClass(T::class()) {
         Some(unsafe { Retained::cast_unchecked::<T>(view.clone()) })
@@ -235,14 +230,12 @@ fn set_board(text: &str) {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Sabotage {
     None,
-    /// Invert every expectation. Every measuring row must go red.
     Want,
-    /// Run the handshake but deliver no keystroke. No measuring row may pass.
     NoKeys,
 }
 
-/// The modifier keys the OS still believes are held down. `NSEvent.modifierFlags` as a class
-/// method is live keyboard state, so it catches an injector that never released a modifier.
+/// `NSEvent.modifierFlags` as a class method is live keyboard state, so this catches an injector
+/// that never released a modifier.
 fn residual_modifiers() -> String {
     let flags = NSEvent::modifierFlags_class();
     let mut held = Vec::new();
@@ -259,23 +252,16 @@ fn residual_modifiers() -> String {
     held.join("+")
 }
 
-/// What the OS said about focus while a keystroke was being delivered.
 struct Sent {
     key: String,
-    /// Frontmost pid, asked inside the same AppleScript that sent the keystroke — a pid, because a
-    /// second copy of this binary answers to the same name.
     frontmost: String,
     frontmost_ok: bool,
     key_window_before: bool,
     key_window_after: bool,
-    /// Modifiers still down afterwards. Any is disqualifying: the next row would be measured with
-    /// a chord it never asked for.
     residual_modifiers: String,
 }
 
 impl Sent {
-    /// Why this row is not a result, if it is not one. A stuck modifier gets its own verdict: it
-    /// corrupts every row after this one too.
     fn disqualified(&self) -> Option<&'static str> {
         if self.key == "-" {
             return None;
@@ -308,7 +294,6 @@ impl Sent {
     }
 }
 
-/// A view's class plus its placeholder when it has one, which is what distinguishes the two fields.
 fn describe(view: Option<&NSView>) -> String {
     let Some(view) = view else {
         return "<nil>".into();
@@ -345,7 +330,7 @@ struct Suite {
     rows: Vec<Row>,
     controls_passed: usize,
     name: String,
-    /// This process's pid; every frontmost test compares against it, the name being non-unique.
+    /// Every frontmost test compares against this, the process name being non-unique.
     pid: u32,
 }
 
@@ -401,17 +386,13 @@ impl Suite {
         self.controls.alpha.stringValue().to_string()
     }
 
-    /// Text and selection together, the text escaped so an inserted control character is visible.
     fn caret_state(&self) -> String {
         format!("{:?}|{}", self.alpha_text(), self.selection())
     }
 
-    /// Put the field into a known state through GPUI, so the crate's own text sync owns the value
-    /// rather than a `setStringValue:` the next paint would fight.
-    ///
-    /// The selection is verified, not just written: `makeFirstResponder:` selects the whole string
-    /// and the field editor is not always installed yet, so a missed write turns the next Delete
-    /// into "clear the field" — a broken setup reading as a broken key.
+    /// Put the field into a known state through GPUI, so the crate's own text sync owns the
+    /// value. The selection is verified rather than just written: `makeFirstResponder:` selects
+    /// the whole string, and the field editor is not always installed yet.
     async fn arm(&mut self, cx: &mut AsyncApp, text: &str, caret: usize) {
         self.controls.window.makeFirstResponder(None);
         let owned = text.to_owned();
@@ -445,8 +426,7 @@ impl Suite {
         }
     }
 
-    /// Hand one whole AppleScript to `scripts/keys.sh` and return what it printed. The temp names
-    /// are distinct: `req` and `req.applescript` would otherwise both stage through `req.tmp`.
+    /// Hand one whole AppleScript to `scripts/keys.sh` and return what it printed.
     async fn run_script(&mut self, cx: &mut AsyncApp, script: String) -> String {
         self.seq += 1;
         let scpt = self.dir.join("req.applescript");
@@ -475,11 +455,8 @@ impl Suite {
 
     /// One input action, with the OS asked in the same breath which app was frontmost while it
     /// landed. `body` is an AppleScript fragment for System Events; `tool` is a cliclick argument
-    /// list posting raw CGEvents. Exactly one of them carries the action.
-    ///
-    /// Neither tool covers the matrix alone: System Events types letters and letter chords but its
-    /// `click at` is a measured no-op — no focus, no mouse-down — while cliclick's clicks are real
-    /// CGEvents that land, but it cannot press a letter with a modifier held.
+    /// list posting raw CGEvents. Exactly one of them carries the action: System Events' own
+    /// `click at` is a no-op, and cliclick cannot press a letter with a modifier held.
     async fn deliver(&mut self, cx: &mut AsyncApp, key: &str, body: &str, tool: &str) -> Sent {
         if !self.window_is_key() {
             cx.update(|cx| cx.activate(true)).ok();
@@ -488,18 +465,17 @@ impl Suite {
         let key_window_before = self.window_is_key();
         let suppress = self.sabotage == Sabotage::NoKeys;
         let delivered = if suppress { "delay 0.01" } else { body };
-        // Modifiers are explicitly released and the residual flags read back below: a lost keyup
-        // leaves shift down for the rest of the run, and ⇧⌘← still reads as a plausible failure.
+        // A lost keyup leaves a modifier down for the rest of the run, so they are released
+        // explicitly and read back below.
         let tool = if suppress || tool.is_empty() {
             String::new()
         } else {
             format!("{tool} ku:cmd,alt,ctrl,shift,fn")
         };
         fs::write(self.dir.join("req.cliclick"), &tool).ok();
-        // The frontmost test and the keystroke are one script on purpose: checking from Rust and
-        // then sending leaves a window in which this suite types into whatever the user focused.
-        // The test is on `unix id`, not the process name — a stale copy of this same binary
-        // satisfies a name comparison, and every row then reports a trusted measurement of nothing.
+        // One script, because checking from Rust and then sending leaves a window in which this
+        // types into whatever the user focused meanwhile. On `unix id`, not the process name: a
+        // stale copy of this binary satisfies a name comparison.
         let pid = self.pid;
         let script = format!(
             "tell application \"System Events\"\n\
@@ -556,20 +532,16 @@ impl Suite {
             .await
     }
 
-    /// Arm the hosted field, deliver one event shape, report what it did. A probe, not an
-    /// assertion: it separates a wrong event from a window mishandling the right one.
     async fn probe_hosted(&mut self, cx: &mut AsyncApp, tool: &str) -> String {
         self.arm(cx, "abcdef", 3).await;
         let sent = self.press(cx, "probe", tool).await;
         format!("{} trusted={}", self.caret_state(), sent.trusted())
     }
 
-    /// The same event shape delivered to a bare `NSTextField` this suite creates itself, with none
-    /// of the crate's configuration on it.
+    /// The same event shape delivered to a bare `NSTextField` this suite creates itself.
     ///
-    /// `parent`: `"plain"` gives it an `NSWindow` of its own, `"gpui"` makes it a subview of GPUI's
-    /// Metal view where the crate puts hosted controls, `"content"` a sibling of the Metal view in
-    /// the content view. Those arms separate injector from window from view from crate.
+    /// `parent`: `"plain"` gives it an `NSWindow` of its own, `"content"` makes it a sibling of
+    /// GPUI's view, anything else a subview of it.
     async fn probe_bare_field(&mut self, cx: &mut AsyncApp, tool: &str, parent: &str) -> String {
         let mtm = MainThreadMarker::new().expect("probes run on the main thread");
         let field = NSTextField::initWithFrame(
@@ -578,9 +550,8 @@ impl Suite {
         );
         field.setStringValue(&NSString::from_str("abcdef"));
 
-        // Below the suite's own window, never over it: an overlap would change what the click rows
-        // land on. `setReleasedWhenClosed(false)` is not optional — a programmatically created
-        // NSWindow releases itself on close and the retained handle here would then dangle.
+        // Below the suite's own window, never over it, or the click rows would land on it. A
+        // programmatically created NSWindow releases itself on close, hence setReleasedWhenClosed.
         let frame = self.controls.window.frame();
         let window = match parent {
             "plain" => {
@@ -673,7 +644,6 @@ impl Suite {
         result
     }
 
-    /// The menu bar as the OS sees it, which is the fact the ⌘ keys hang off.
     async fn menu_bar_from_os(&mut self, cx: &mut AsyncApp) -> String {
         let pid = self.pid;
         let script = format!(
@@ -732,7 +702,7 @@ impl Suite {
         });
     }
 
-    /// For a row whose expectation is only "this moved": the step size is AppKit's to choose.
+    /// For a row whose expectation is only "this moved".
     fn expect_change(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
         let inverted = self.sabotage == Sabotage::Want;
         let changed = pre != post;
@@ -754,8 +724,7 @@ impl Suite {
         });
     }
 
-    /// The negative control: a chord bound to nothing must move nothing. Passes under
-    /// `KEYS_SABOTAGE=nokeys` by construction, and is excluded from that arm's claim.
+    /// The negative control: what the keystroke must leave alone.
     fn expect_stable(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
         let inverted = self.sabotage == Sabotage::Want;
         let stable = pre == post;
@@ -792,7 +761,7 @@ impl Suite {
         });
     }
 
-    /// Screen point, in the top-left-origin space System Events clicks in, at the centre of a view.
+    /// The centre of a view, in the top-left-origin screen space the click tools take.
     fn point_of(&self, view: &NSView) -> (f64, f64) {
         let in_window = view.convertRect_toView(view.bounds(), None);
         let on_screen = self.controls.window.convertRectToScreen(in_window);
@@ -967,8 +936,8 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = suite.alpha_text();
     suite.expect("type.plain", &pre, &post, "Hello", &sent);
 
-    // `keystroke (character id 233)` lands a bare "a", so this row goes through the real dead-key
-    // path instead: ⌥e arms the acute accent, then "e" commits "é".
+    // `keystroke (character id 233)` lands a bare "a", so this goes through the real dead-key
+    // path: ⌥e arms the acute accent, then "e" commits "é".
     suite.arm(cx, "Hello", 5).await;
     let pre = suite.alpha_text();
     let sent = suite
@@ -989,8 +958,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.note("type.char_id_233_lands", format!("{landed:?}"));
 
     // A bare injected arrow key inserts U+001C into the hosted field instead of moving the caret.
-    // These rows separate injector from window: the same field with a function-flagged arrow, with
-    // System Events' own arrow, and the same events into a plain NSTextField in a plain NSWindow.
     let state = suite.probe_hosted(cx, "kp:arrow-left").await;
     suite.note("probe.hosted_arrow_bare", state);
     let state = suite.probe_hosted(cx, "kd:fn kp:arrow-left ku:fn").await;
@@ -1006,9 +973,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let state = suite.probe_bare_field(cx, "kp:arrow-left", "gpui").await;
     suite.note("probe.bare_field_gpui_view", state);
 
-    // Home and End in a window this suite fully controls, so the caret rows below have a baseline.
-    // A plain `NSWindow`'s field editor answers them with `scrollTo{Beginning,End}OfDocument:`,
-    // neither of which moves the insertion point in a single-line editor.
     for (name, tool) in [
         ("probe.bare_field_plain_home", "kp:home"),
         ("probe.bare_field_plain_end", "kp:end"),
@@ -1140,10 +1104,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     }
 
     // Home and End assert stability, not movement: a field editor answers them with
-    // `scrollTo{Beginning,End}OfDocument:` and neither touches the insertion point. Measured
-    // against an unhosted control rather than assumed — the `probe.bare_field_plain_*` rows show
-    // the caret staying put in a bare `NSTextField` too. What these rows catch is the key arriving
-    // as an inserted U+0001 or U+0004.
+    // `scrollTo{Beginning,End}OfDocument:`, which does not touch a single-line insertion point.
     for (name, key, tool) in [
         ("caret.home", "home", "kp:home"),
         ("caret.end", "end", "kp:end"),
@@ -1155,8 +1116,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         suite.expect_stable(name, &pre, &post, &sent);
     }
 
-    // Selection is asserted with the text: a Delete that clears the whole field means the setup
-    // left everything selected — a broken `arm`, not a broken key.
     for (name, text, caret, key, tool, want) in [
         (
             "edit.backspace",
@@ -1190,7 +1149,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = suite.selection();
     suite.expect("edit.cmd_a_select_all", &pre, &post, "(0,6)", &sent);
 
-    // Copy is isolated from select-all: the selection is set here, not typed.
     suite.arm(cx, "abcdef", 0).await;
     if let Some(editor) = suite.controls.alpha.currentEditor() {
         editor.setSelectedRange(NSRange {
@@ -1198,8 +1156,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
             length: 6,
         });
     }
-    // A sentinel on the board first, so `pre` differs from the expectation and the row can report
-    // a result instead of VACUOUS.
     set_board("sentinel-copy");
     let pre = board();
     let sent = suite
@@ -1232,7 +1188,6 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = format!("text={}|board={}", suite.alpha_text(), board());
     suite.expect("edit.cmd_x_cut", &pre, &post, "text=|board=abcdef", &sent);
 
-    // Undo needs a real edit to undo, so the setup keystroke is asserted in its own right.
     suite.arm(cx, "abcdef", 6).await;
     let pre = suite.alpha_text();
     let sent = suite.send(cx, "X", "keystroke \"X\"").await;
@@ -1244,7 +1199,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = suite.alpha_text();
     suite.expect("edit.cmd_z_undo", &typed, &post, "abcdef", &sent);
 
-    // Redo's undo runs through the undo manager, not through ⌘Z, so a red ⌘Z cannot mask it.
+    // The undo here runs through the undo manager rather than ⌘Z, so a red ⌘Z cannot mask it.
     suite.arm(cx, "abcdef", 6).await;
     let pre = suite.alpha_text();
     let sent = suite.send(cx, "X", "keystroke \"X\"").await;
@@ -1322,8 +1277,8 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = suite.responder();
     suite.expect_change("focus.tab_leaves_last_field", &pre, &post, &sent);
 
-    // Named rather than left to `expect_change`, which would pass on any neighbour: a chain closed
-    // into a ring among the hosted views could never leave them, and must fail here.
+    // Named rather than left to `expect_change`, which any neighbour would satisfy: a loop closed
+    // into a ring among the hosted views must fail here.
     suite.arm(cx, "abcdef", 0).await;
     suite
         .controls
@@ -1379,9 +1334,8 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.note("control.switch_makeFirstResponder", took.to_string());
     suite.expect("control.switch_takes_focus", &pre, &post, "switch", &no_key);
 
-    // `want` is derived from the state read *before* the keystroke. Derived from `post` it is
-    // `!post`, which no behaviour can ever equal, so the row reports FAIL either way — and
-    // inverting every expectation under `KEYS_SABOTAGE=want` cannot catch that, for the same reason.
+    // `want` is `!before`, never `!post`: no behaviour can equal `!post`, so such a row would
+    // report FAIL whatever happened, in either sabotage arm too.
     let on = |suite: &Suite| suite.controls.toggle.state() == NSControlStateValueOn;
     let before = on(&suite);
     let pre = before.to_string();
@@ -1440,8 +1394,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     );
 
     // Escape reaches the field editor's `cancelOperation:` and leaves the edit in place; it does
-    // *not* revert — measured with a bare `NSTextField` in a plain `NSWindow` too. The regression
-    // this catches is Escape arriving as an inserted U+001B.
+    // not revert. What this catches is Escape arriving as an inserted U+001B.
     suite.arm(cx, "abcdef", 6).await;
     let pre = suite.alpha_text();
     let sent = suite.send(cx, "Z", "keystroke \"Z\"").await;

@@ -1,5 +1,4 @@
-//! Real `NSSlider`s driving GPUI state: horizontal, 5-tick snapping, and vertical, each paired
-//! with a bar GPUI paints from the value the slider's action produced.
+//! Real `NSSlider`s driving GPUI state: horizontal, 5-tick snapping, and vertical.
 
 use gpui::{
     App, Application, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,

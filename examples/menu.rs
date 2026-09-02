@@ -1,5 +1,4 @@
-//! Real `NSPopUpButton`s and real `NSMenu`s driving GPUI state: a pop-up with SF Symbols, a
-//! separator and a disabled row; a pull-down; and right-click menus on GPUI-drawn regions.
+//! Real `NSPopUpButton`s and `NSMenu`s driving GPUI state: pop-up, pull-down and context menus.
 
 use gpui::{
     App, Application, Bounds, Context, Hsla, Render, Window, WindowBounds, div, point, prelude::*,
@@ -30,7 +29,7 @@ fn accent_color(index: usize) -> Hsla {
     }
 }
 
-/// AppKit lifts entry 0 onto the button face and hides it from the list.
+// AppKit lifts entry 0 onto a pull-down's button face and hides it from the list.
 fn document_entries() -> Vec<MenuEntry> {
     vec![
         MenuEntry::item("Document"),

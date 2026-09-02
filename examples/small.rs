@@ -1,5 +1,4 @@
-//! The small controls, each beside a GPUI-painted mirror of its own value. Click the stepper's up
-//! arrow and the big number follows it.
+//! The small controls, each beside a GPUI-painted mirror of its own value.
 
 use gpui::{
     App, Application, Bounds, Context, Hsla, Render, Window, WindowBounds, div, hsla, point,
@@ -11,10 +10,8 @@ use native_gpui::{
 };
 use objc2_foundation::{NSDate, NSISO8601DateFormatter, NSTimeZone};
 
-/// 2026-08-30T12:00:00Z, so the window is not a clock.
 const START: f64 = 1_788_091_200.;
 
-/// The fixed colour of the third well, which is a drag source rather than an editor.
 const DRAG_SRC: Hsla = Hsla {
     h: 0.09,
     s: 0.95,
@@ -30,14 +27,12 @@ struct Small {
 }
 
 impl Small {
-    /// Shared by both editable wells, so either one drives the single `color` value.
     fn took_color(&mut self, color: &Hsla, _: &mut Window, cx: &mut Context<Self>) {
         self.color = *color;
         cx.notify();
     }
 }
 
-/// Local-zone ISO-8601 — macOS does the formatting, so no `chrono` and no hand-rolled calendar.
 fn iso8601(seconds: f64) -> String {
     let formatter = NSISO8601DateFormatter::new();
     formatter.setTimeZone(Some(&NSTimeZone::localTimeZone()));
@@ -114,8 +109,6 @@ impl Render for Small {
                                         .child(
                                             div().w(px(56.)).h(px(24.)).rounded_sm().bg(self.color),
                                         )
-                                        // Two editable wells on one value: whichever the user
-                                        // drives, both follow.
                                         .child(
                                             native_color_well("swatch", self.color)
                                                 .style(ColorWellStyle::Swatch)
@@ -126,8 +119,6 @@ impl Render for Small {
                                                 .style(ColorWellStyle::Minimal)
                                                 .on_change(cx.listener(Self::took_color)),
                                         )
-                                        // A well is a drag *source* too: drag this one onto
-                                        // either above to set the value with no picker involved.
                                         .child(
                                             native_color_well("swatch-src", DRAG_SRC)
                                                 .style(ColorWellStyle::Expanded),

@@ -1,5 +1,4 @@
-//! Real `NSProgressIndicator`s (bar and spinner) and `NSLevelIndicator`s inside GPUI. The star
-//! rating is editable, and drives the number and the squares GPUI paints under it.
+//! Real `NSProgressIndicator`s (bar and spinner) and `NSLevelIndicator`s inside GPUI.
 
 use std::time::Duration;
 

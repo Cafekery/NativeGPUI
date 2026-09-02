@@ -1,5 +1,4 @@
-//! The three hosted text controls — plain, secure and search — each mirrored into GPUI-painted
-//! text as you type, with Return reporting a submit.
+//! The three hosted text controls: plain, secure and search.
 
 use gpui::{
     App, Application, Bounds, Context, Render, SharedString, Window, WindowBounds, div, point,

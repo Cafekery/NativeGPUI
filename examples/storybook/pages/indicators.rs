@@ -144,9 +144,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 .iter()
                 .enumerate()
                 .map(|(i, (name, style))| {
-                    // A Rating's intrinsic width is one star per unit of range, so it takes the
-                    // range it can draw; the meter styles declare their width free and stretch to
-                    // whatever `sized` gives them.
+                    // A Rating is one star per unit of range; the meters stretch instead.
                     let max = if *style == LevelStyle::Rating {
                         10.
                     } else {

@@ -1,15 +1,9 @@
-//! Measurement apparatus for `NSMenu` submenus and custom-view rows. `menu.rs` is the demo.
+//! Measurement apparatus for `NSMenu` submenus, custom-view rows and pop-up ticks. `menu.rs` is
+//! the demo.
 //!
-//! Every reading is differential — the same menu with and without the row under test — because
-//! nothing public reports an `NSMenuItem`'s own height.
-//!
-//! ```text
-//! NG_ARM=metrics   default; headless, opens no window. Asserts the facts `menu.rs` records,
-//!                  and that every SF Symbol name below resolves non-nil.
-//! NG_ARM=open      opens a window, posts a right-click through this process's own NSApplication
-//!                  and holds the resulting menu open so it can be captured.
-//! NG_HOLD=n        seconds to hold the open menu (default 20)
-//! ```
+//! `NG_ARM=metrics` (default) is headless; `popup` reads a placed pop-up's tick back; `open`
+//! right-clicks and holds the menu open for `NG_HOLD` seconds, walking into a submenu if
+//! `NG_SUBMENU` is set.
 
 use std::env;
 use std::ptr::NonNull;
@@ -34,8 +28,6 @@ use objc2_foundation::{
     NSSize, NSString, NSTimer,
 };
 
-/// Every SF Symbol name this probe puts in a menu. An unknown name resolves to no image rather
-/// than a placeholder, so a typo degrades to a blank row that looks deliberate.
 const SYMBOLS: &[&str] = &[
     "arrow.up.arrow.down",
     "slider.horizontal.3",
@@ -45,13 +37,10 @@ const SYMBOLS: &[&str] = &[
     "iphone",
 ];
 
-/// Finder's seven tag colours, in Finder's order.
 const TAGS: &[u32] = &[
     0xfc5b57, 0xf5a623, 0xf7ce46, 0x7bc862, 0x55a8f2, 0xc87fe0, 0xb8b8b8,
 ];
 
-/// The shape of Finder's `…` menu: two submenu hosts, a strip of tag swatches on one row, a
-/// checked row, a row that draws a chord, and a trailing row with no symbol at all.
 fn more_entries() -> Vec<MenuEntry> {
     let colors: Vec<Hsla> = TAGS.iter().map(|hex| Hsla::from(rgb(*hex))).collect();
     vec![
@@ -211,9 +200,6 @@ fn metrics(mtm: MainThreadMarker) -> bool {
         host.action() == Some(sel!(submenuAction:)),
     );
 
-    // The ordering `sync_submenu` depends on. `setSubmenu:` is not a reset: it fills a nil action
-    // and leaves any other one alone, so a row that gains a submenu after a frame as an ordinary
-    // row keeps firing the caller's action unless it is cleared first.
     let sink: Retained<NSObject> = NSObject::new();
     let target: &AnyObject = sink.as_ref();
     let kept = plain(mtm, "Sort By");
@@ -291,7 +277,6 @@ fn metrics(mtm: MainThreadMarker) -> bool {
         states() == vec![0, 0, 1],
     );
 
-    // What a `sync_menu` pass over entries that are all `checked: false` does.
     for i in 0..popup_menu.numberOfItems() {
         let item = popup_menu.itemAtIndex(i).expect("in range");
         if item.state() != NSControlStateValueOff {
@@ -400,8 +385,6 @@ impl Render for Probe {
     }
 }
 
-/// A pooled [`native_popup`] that repaints continuously, which is the only way the regression this
-/// guards against shows up: the tick survives the first paint and is lost on the second.
 struct PopupProbe {
     frames: usize,
 }
@@ -422,12 +405,8 @@ impl Render for PopupProbe {
     }
 }
 
-/// Finds the `NSPopUpButton` the crate actually placed, by walking the window it went into. An
-/// example cannot reach the view pool, and reaching it would prove less: this is the same object
-/// the user clicks.
 fn find_popup(view: &NSView) -> Option<Retained<NSPopUpButton>> {
     for subview in view.subviews().iter() {
-        // `downcast` hands the value back on the miss, so the walk keeps its `Retained`.
         match subview.downcast::<NSPopUpButton>() {
             Ok(popup) => return Some(popup),
             Err(subview) => {
@@ -440,9 +419,6 @@ fn find_popup(view: &NSView) -> Option<Retained<NSPopUpButton>> {
     None
 }
 
-/// The tick a pop-up draws on its selected row is that item's `state`, which `sync_menu` also
-/// writes from `MenuEntry::checked`. Read after many paints, because the first paint sets the
-/// selection and every later one re-runs the diff over it.
 fn report_popup_tick(mtm: MainThreadMarker, frames: usize) -> ! {
     let placed = NSApplication::sharedApplication(mtm)
         .windows()
@@ -471,13 +447,8 @@ fn report_popup_tick(mtm: MainThreadMarker, frames: usize) -> ! {
     std::process::exit(if ok { 0 } else { 1 });
 }
 
-/// Posts one control-left-mouse-down through this process's own `NSApplication`, routed by window
-/// number, so it cannot reach another application and nothing goes near the global HID tap.
-///
-/// Control-left rather than right: gpui derives the button from `NSEvent.buttonNumber`, and a
-/// synthesised event reports 0 whatever type it carries, so a right-mouse-down arrives as a left
-/// click and a context menu correctly ignores it. Control-left is the same gesture by the other
-/// route macOS offers, and it survives the zero.
+/// Control-left rather than right: gpui derives the button from `NSEvent.buttonNumber`, which a
+/// synthesised event reports as 0 whatever type it carries.
 fn click_own_window(mtm: MainThreadMarker, at: NSPoint) {
     let app = NSApplication::sharedApplication(mtm);
     let Some(window) = app.windows().iter().next() else {
@@ -509,8 +480,6 @@ fn click_own_window(mtm: MainThreadMarker, at: NSPoint) {
     }
 }
 
-/// Posts one key-down into this process's own queue. Menu tracking reads the same queue, so this
-/// is how the open menu is navigated without moving the pointer or touching the global HID tap.
 fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_code: u16) {
     let app = NSApplication::sharedApplication(mtm);
     let text = NSString::from_str(&character.to_string());
@@ -532,13 +501,9 @@ fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_co
     }
 }
 
-/// Highlights the first row and opens its submenu, from inside the tracking loop.
-///
-/// It has to be an `NSTimer` added for the *common* run-loop modes: menu tracking runs the loop in
-/// `NSEventTrackingRunLoopMode`, so a timer left in the default mode never fires while the menu is
-/// up, and a background thread cannot do it instead — building an `NSEvent` or reaching `NSApp`
-/// off the main thread would need a main-thread marker that would be a lie.
-fn schedule_submenu_reveal(mtm: MainThreadMarker, window_number: isize, after: f64) {
+/// Menu tracking runs the run loop in `NSEventTrackingRunLoopMode`, so the timer has to be added
+/// for the common modes or it never fires while the menu is up.
+fn schedule_submenu_reveal(window_number: isize, after: f64) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -551,7 +516,6 @@ fn schedule_submenu_reveal(mtm: MainThreadMarker, window_number: isize, after: f
     unsafe {
         NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
-    let _ = mtm;
 }
 
 fn main() {
@@ -573,7 +537,6 @@ fn main() {
         .unwrap_or(20);
 
     if env::var("NG_ARM").as_deref() == Ok("popup") {
-        // No `activate`: the tick is read out of AppKit, so this arm never takes the screen.
         Application::new().run(move |cx: &mut App| {
             cx.open_window(
                 gpui::WindowOptions {
@@ -620,8 +583,7 @@ fn main() {
         .expect("window");
         cx.activate(true);
 
-        // The tracking loop the menu enters blocks the main thread, so the deadline that ends the
-        // run is a plain sleeping thread rather than anything scheduled on the main queue.
+        // Menu tracking blocks the main thread, so the deadline cannot be a main-queue timer.
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(hold + 2));
             println!("hold expired");
@@ -640,7 +602,7 @@ fn main() {
                     .next()
                     .map_or(0, |window| window.windowNumber());
                 if env::var("NG_SUBMENU").is_ok() {
-                    schedule_submenu_reveal(mtm, number, 2.5);
+                    schedule_submenu_reveal(number, 2.5);
                 }
                 // Window coordinates: y-up from the bottom-left of a 520x420 content rect.
                 click_own_window(mtm, NSPoint::new(150., 260.));

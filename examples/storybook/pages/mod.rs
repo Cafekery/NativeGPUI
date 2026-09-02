@@ -1,5 +1,3 @@
-//! One module per entry in `crate::PAGES`.
-
 pub mod background;
 pub mod buttons;
 pub mod chrome;

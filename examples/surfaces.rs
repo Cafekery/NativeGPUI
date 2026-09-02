@@ -1,13 +1,8 @@
-//! The transient surfaces: an `NSPopover` anchored to a GPUI element, a real `NSWindow` sheet
-//! that reports back through its completion handler, and the system share picker.
-//!
-//! Every button here is GPUI-drawn. Everything the buttons open is drawn by macOS, and the status
-//! line is painted by GPUI from state that only an AppKit callback ever writes — the switch
-//! inside the popover, the sheet's completion handler, the share picker's delegate.
+//! The transient surfaces: an `NSPopover` on a GPUI anchor, an `NSWindow` sheet, the share picker.
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, MouseDownEvent, Render, Rgba, Window,
-    WindowBounds, div, point, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, MouseButton, MouseDownEvent, Render, Window, WindowBounds,
+    div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::surfaces::{
     NativePopover, NativeSheet, PopoverOptions, ShareItem, SharePicker, SharePickerEvent,
@@ -26,9 +21,7 @@ struct Surfaces {
     anchor: SurfaceAnchor,
     popover: Option<NativePopover>,
     sheet: Option<NativeSheet>,
-    /// Written only from a control *inside the popover*.
     popover_says: Option<bool>,
-    /// Written only by the sheet's completion handler.
     sheet_ends: usize,
     last_response: Option<SheetResponse>,
     services: Option<usize>,
@@ -285,20 +278,16 @@ impl Render for Surfaces {
                 )
                 .child(native_anchor(
                     &self.anchor,
-                    patch(200., 200., 120., 32., rgb(0xff9f0a)),
+                    div()
+                        .absolute()
+                        .left(px(200.))
+                        .top(px(200.))
+                        .w(px(120.))
+                        .h(px(32.))
+                        .bg(rgb(0xff9f0a)),
                 )),
         )
     }
-}
-
-fn patch(x: f32, y: f32, w: f32, h: f32, colour: Rgba) -> gpui::Div {
-    div()
-        .absolute()
-        .left(px(x))
-        .top(px(y))
-        .w(px(w))
-        .h(px(h))
-        .bg(colour)
 }
 
 fn main() {

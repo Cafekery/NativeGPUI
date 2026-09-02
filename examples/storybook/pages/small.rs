@@ -305,9 +305,7 @@ fn now_seconds() -> f64 {
         .unwrap_or(0.)
 }
 
-/// The picker's value is a bare epoch offset, so the page does its own calendar arithmetic rather
-/// than pull in a date crate: Hinnant's `civil_from_days`, which is exact for every proleptic
-/// Gregorian date and needs no lookup table.
+/// Epoch seconds to `YYYY-MM-DD hh:mm:ssZ`, by Hinnant's `civil_from_days`.
 fn utc_stamp(seconds: f64) -> String {
     let total = seconds.floor() as i64;
     let (days, time) = (total.div_euclid(86_400), total.rem_euclid(86_400));

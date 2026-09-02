@@ -1,14 +1,4 @@
 //! The private glass catalogue, one panel per render class over a periodic backdrop.
-//!
-//! Every panel sits on the same lattice as the backdrop's period, so each one — and each one's
-//! surround, which a blur also reaches — is a translation of every other. Differences between
-//! cells are therefore the variant and nothing else. Bare cells carry the backdrop through the
-//! same capture: they must agree with each other, and the public regular/clear pair must not.
-//!
-//! ```text
-//! NG_PHASE=<n>   shift and recolour the backdrop; cells stay identical to each other
-//! NG_QUIT=<n>    exit after n frames
-//! ```
 
 use std::io::Write;
 
@@ -29,8 +19,6 @@ const STRIPE: f32 = 8.;
 const BAND: f32 = 10.;
 const STRIPE_COLORS: [u32; 5] = [0xff375f, 0xffd60a, 0x30d158, 0x0a84ff, 0xf2f2f7];
 
-/// Cell pitch, a whole number of backdrop periods on both axes: 160 = 10 stripes = 2 colour
-/// cycles, 120 = 6 bands. The margin is likewise whole, so every cell shares one backdrop phase.
 const PITCH_X: f32 = 160.;
 const PITCH_Y: f32 = 120.;
 const MARGIN_X: f32 = 96.;
@@ -43,7 +31,6 @@ const ROWS: usize = 5;
 const W: f32 = 2. * MARGIN_X + COLS as f32 * PITCH_X;
 const H: f32 = 2. * MARGIN_Y + ROWS as f32 * PITCH_Y;
 
-/// What a slot draws. `Bare` is the backdrop with nothing over it.
 enum Slot {
     Bare,
     Public { clear: bool },
@@ -81,7 +68,6 @@ fn slots() -> Vec<(&'static str, Slot)> {
     slots
 }
 
-/// Zip truncates in silence, and a missing key would drop a variant out of the grid.
 const _: () = assert!(VARIANT_KEYS.len() == GlassVariant::ALL.len());
 
 const VARIANT_KEYS: [&str; 13] = [
@@ -145,9 +131,7 @@ impl Render for Catalogue {
             self.announce(window);
         }
         if let Some(quit_at) = self.quit_at {
-            // Glass loses its chroma when its window stops being key, which reads as a flat fill
-            // and is indistinguishable from a variant that draws nothing. Stated per frame so a
-            // capture taken while another app activated can be thrown away rather than believed.
+            // Glass loses its chroma when its window stops being key.
             let ns = ns_window(window);
             println!(
                 "GLASS-FRAME {} key={} main={}",
@@ -204,8 +188,6 @@ fn cell_origin(index: usize) -> (f32, f32) {
 }
 
 impl Catalogue {
-    /// The window id, the backing scale and every cell rect, stated by the process that laid them
-    /// out so the harness never guesses a coordinate.
     fn announce(&self, window: &Window) {
         let ns = ns_window(window);
         let frame = ns.frame();

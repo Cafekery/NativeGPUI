@@ -47,7 +47,6 @@ fn row_entries() -> Vec<MenuEntry> {
     ]
 }
 
-/// The rest of `MenuEntry`: a checkmark, a chord label and a nested submenu.
 fn full_entries() -> Vec<MenuEntry> {
     vec![
         MenuEntry::item("Show Hidden Files").checked(true),
@@ -66,7 +65,6 @@ fn full_entries() -> Vec<MenuEntry> {
     ]
 }
 
-/// Every index this module reports indexes the entry list directly, separators included.
 fn title_of(entries: &[MenuEntry], index: usize) -> String {
     match entries.get(index) {
         Some(MenuEntry::Item { title, .. }) => title.clone(),

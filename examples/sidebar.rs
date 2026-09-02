@@ -1,18 +1,4 @@
-//! A real, system-drawn macOS sidebar — `NSSplitViewItem.sidebar`, with its own vibrant material,
-//! SF Symbol rows and live selection — and GPUI rendering the content pane beside it.
-//!
-//! The content pane paints no background of its own. That is the whole point: the crate already
-//! paints [`native_gpui::tokens::WINDOW_BACKGROUND`] across the pane and its toolbar band, so an
-//! app that adds one puts a second surface where the window has one.
-//!
-//! Chrome comes from [`native_gpui::tokens`]; the per-row accents are the only literals left, and
-//! they stay literal. They are content — a mailbox's own colour, like a Finder tag — not a surface
-//! the window has an opinion about, and no system colour means "the colour this row is".
-//!
-//! `NG_QUIT=<frames>` exits after N frames, so a smoke run ends on its own. `NG_COLLAPSED=1`
-//! starts with the sidebar collapsed.
-//!
-//! The measurement arms that verify the pane geometry live in `sidebar_probe.rs`.
+//! A real `NSSplitViewItem.sidebar` with GPUI rendering the content pane beside it.
 
 use std::env;
 
@@ -29,7 +15,6 @@ use native_gpui::{native_root, tokens, window_options};
 const WIN_W: f32 = 1000.;
 const WIN_H: f32 = 640.;
 
-/// id, title, SF Symbol, badge count (0 for none), accent shown in the content pane.
 type Row = (&'static str, &'static str, &'static str, i64, u32);
 
 const MAILBOXES: &[Row] = &[
@@ -70,7 +55,6 @@ fn items() -> Vec<SidebarItem> {
         .collect()
 }
 
-/// The selected row and the group holding it.
 fn find(id: &str) -> Option<(&'static str, &'static Row)> {
     GROUPS
         .iter()
@@ -86,8 +70,6 @@ struct Demo {
 
 impl Demo {
     fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Collapsed puts the content pane's own edge on the window's left corners, which is the
-        // arm that shows its background is clipped by the window shape rather than squaring them.
         let sidebar = NativeSidebar::install(
             window,
             cx,
@@ -141,9 +123,7 @@ impl Render for Demo {
             ),
         };
 
-        // Placed absolutely from the reported gutter, and painting no background: a GPUI fill over
-        // the sidebar strip would cover the system material, and one over the content pane would
-        // put a second surface on top of the one the pane already paints.
+        // No background: a fill would hide the sidebar's material and double the pane's own.
         native_root(
             div().relative().size_full().child(
                 div()
