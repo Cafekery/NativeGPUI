@@ -99,7 +99,6 @@ impl InstanceBufferPool {
 pub(crate) struct MetalRenderer {
     device: metal::Device,
     layer: metal::MetalLayer,
-    presents_with_transaction: bool,
     command_queue: CommandQueue,
     paths_rasterization_pipeline_state: metal::RenderPipelineState,
     path_sprites_pipeline_state: metal::RenderPipelineState,
@@ -144,6 +143,7 @@ impl MetalRenderer {
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
         layer.set_opaque(false);
         layer.set_maximum_drawable_count(3);
+        layer.set_presents_with_transaction(true);
         unsafe {
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
@@ -257,7 +257,6 @@ impl MetalRenderer {
         Self {
             device,
             layer,
-            presents_with_transaction: false,
             command_queue,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -289,11 +288,9 @@ impl MetalRenderer {
         &self.sprite_atlas
     }
 
-    pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
-        self.presents_with_transaction = presents_with_transaction;
-        self.layer
-            .set_presents_with_transaction(presents_with_transaction);
-    }
+    // native-gpui: every frame is presented inside the CATransaction, so AppKit views hosted over
+    // the Metal surface reach the screen in the same frame as the content they sit on.
+    pub fn set_presents_with_transaction(&mut self, _: bool) {}
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         let size = NSSize {
@@ -385,14 +382,9 @@ impl MetalRenderer {
                     let block = block.copy();
                     command_buffer.add_completed_handler(&block);
 
-                    if self.presents_with_transaction {
-                        command_buffer.commit();
-                        command_buffer.wait_until_scheduled();
-                        drawable.present();
-                    } else {
-                        command_buffer.present_drawable(drawable);
-                        command_buffer.commit();
-                    }
+                    command_buffer.commit();
+                    command_buffer.wait_until_scheduled();
+                    drawable.present();
                     return;
                 }
                 Err(err) => {

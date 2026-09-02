@@ -48,7 +48,7 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
     sync::{Arc, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use util::ResultExt;
 
@@ -392,6 +392,7 @@ struct MacWindowState {
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
     display_link: Option<DisplayLink>,
+    last_input_frame: Instant,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
@@ -689,6 +690,7 @@ impl MacWindow {
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
                 display_link: None,
+                last_input_frame: Instant::now(),
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -1900,6 +1902,24 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
             drop(lock);
             callback(event);
             window_state.lock().event_callback = Some(callback);
+            // native-gpui: draw the frame an input event dirtied now, inside the event, so the
+            // refresh it lands in is decided by the event's time and not by whether it beat the
+            // display link's tick. Trackpads report at 125 Hz against a 120 Hz display; a frame
+            // that only draws at the tick shows stall-and-double-step pairs whenever the two cross.
+            let mut lock = window_state.lock();
+            if lock.last_input_frame.elapsed() >= Duration::from_millis(3) {
+                lock.last_input_frame = Instant::now();
+                drop(lock);
+                unsafe {
+                    step_with(
+                        this as *const Object as *mut c_void,
+                        RequestFrameOptions {
+                            only_if_dirty: true,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
         }
     }
 }
@@ -2155,14 +2175,35 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 }
 
 unsafe extern "C" fn step(view: *mut c_void) {
+    // A tick right after an input-driven frame has nothing new to present; the frame the input
+    // drew is what keeps the display at full rate.
+    let window_state = unsafe { get_window_state(&*(view as id)) };
+    let recent = window_state.lock().last_input_frame.elapsed() < Duration::from_millis(8);
+    unsafe {
+        step_with(
+            view,
+            RequestFrameOptions {
+                only_if_dirty: recent,
+                ..Default::default()
+            },
+        )
+    }
+}
+
+unsafe fn step_with(view: *mut c_void, options: RequestFrameOptions) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
         drop(lock);
-        callback(Default::default());
+        callback(options);
         window_state.lock().request_frame_callback = Some(callback);
+        // native-gpui: commit the transaction carrying this frame's drawable and every AppKit
+        // change made alongside it now, rather than whenever the run loop next idles.
+        unsafe {
+            let _: () = msg_send![class!(CATransaction), flush];
+        }
     }
 }
 

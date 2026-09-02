@@ -1052,7 +1052,7 @@ impl Window {
                             })
                             .log_err();
                     })
-                } else if needs_present {
+                } else if needs_present && !request_frame_options.only_if_dirty {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();

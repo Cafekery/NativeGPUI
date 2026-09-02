@@ -455,6 +455,8 @@ pub(crate) struct RequestFrameOptions {
     pub(crate) require_presentation: bool,
     /// Force refresh of all rendering states when true
     pub(crate) force_render: bool,
+    /// Draw only if something changed; never re-present an unchanged scene.
+    pub(crate) only_if_dirty: bool,
 }
 
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
