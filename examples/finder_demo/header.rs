@@ -104,16 +104,40 @@ fn overlay(fill: Hsla) -> Div {
 }
 
 /// The pane's surface: Finder's own, a regular glass frosting the rows, run up under the toolbar
-/// and down to the window's corner; its rim is the hairline Finder shows on those edges. The pane
+/// and down to the window's corner; its rim is the hairline Finder shows on those edges. Only its
+/// right corners round, with the window's; the glass starts a radius left of the pane so its left
+/// corners fall outside the clip, and a rule draws the straight edge against the list. The pane
 /// window over it carries only the card.
-pub(crate) fn pane_surface(width: Pixels) -> AnyElement {
+pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
         .right_0()
         .bottom_0()
         .w(width)
-        .child(glass("ng.finder.pane").frosting_gpui())
+        .overflow_hidden()
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .left(-corner)
+                .child(
+                    glass("ng.finder.pane")
+                        .frosting_gpui()
+                        .corner_radius(corner),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .bottom_0()
+                .w(px(1.))
+                .child(native_rule("ng.finder.pane.edge")),
+        )
         .into_any_element()
 }
 
