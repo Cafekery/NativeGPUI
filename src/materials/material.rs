@@ -1,10 +1,4 @@
-//! `NSVisualEffectView` — the vibrancy materials macOS draws its own chrome with.
-//!
-//! Materials default to [`Layer::Below`], a sibling *underneath* GPUI's Metal view, so GPUI text
-//! composites on top of them. That needs a non-opaque window: see [`crate::window_options`].
-//!
-//! [`Material`] is the supported surface; [`RawMaterial`] is the whole catalogue, whose
-//! undocumented entries and the private knob need the `private-api` feature.
+//! `NSVisualEffectView`: the vibrancy materials macOS draws its own chrome with.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,32 +24,21 @@ use super::private_api;
 use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{Layer, NativeHost, element_key};
 
-/// Which macOS surface this is, named for the role rather than transcribing AppKit's list.
-/// Reach for [`RawMaterial`] only when none of these is the thing you mean.
+/// The supported materials, named for their role.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Material {
-    /// The whole window's background. Maps to `UnderWindowBackground`; AppKit's same-named
-    /// `WindowBackground` is opaque.
+    /// Maps to `UnderWindowBackground`; AppKit's `WindowBackground` is opaque.
     WindowBackground,
-    /// A source-list or navigation sidebar. macOS 26 draws it identically to
-    /// [`Material::WindowBackground`].
     Sidebar,
-    /// The window's titlebar band, for an app drawing its own title area.
     Titlebar,
-    /// A header or footer band inside the content: a table header, an inspector's title row.
     Header,
-    /// A popover or floating panel attached to a control. Small surfaces only — it transmits
-    /// twice what the chrome materials do, which reads as a tint over a large one.
+    /// Small surfaces only: it transmits twice what the chrome materials do.
     Popover,
-    /// A menu. Small surfaces only, for the same reason as [`Material::Popover`].
     Menu,
-    /// A heads-up display: a transport bar, a volume overlay, an inspector over media.
     Hud,
-    /// The highlight behind a selected row or cell. [`NativeMaterial::emphasized`] is what turns
-    /// its accent tint on; without it a focused row renders grey.
+    /// The accent tint needs [`NativeMaterial::emphasized`].
     Selection,
-    /// An elevated content surface: a settings card, a grouped box. Opaque, as are `Sheet` and
-    /// `UnderPageBackground`; if you wanted blur you wanted [`Material::Popover`].
+    /// Opaque.
     Card,
 }
 
@@ -75,9 +58,7 @@ impl From<Material> for RawMaterial {
     }
 }
 
-/// Every material `NSVisualEffectView` draws, deprecated ones included, for a browser or for the
-/// cases [`Material`]'s nine roles do not cover. The undocumented entries are gated behind
-/// `private-api`: they render today and an OS update is free to change them.
+/// Every material `NSVisualEffectView` draws; the undocumented ones need `private-api`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum RawMaterial {
     AppearanceBased,
@@ -142,7 +123,6 @@ impl RawMaterial {
         Self::UltraDark,
     ];
 
-    /// Empty without `private-api`, so a browser can iterate it either way.
     #[cfg(feature = "private-api")]
     pub const UNDOCUMENTED: &'static [Self] = &[
         Self::Undocumented14,
@@ -255,16 +235,12 @@ impl RawMaterial {
     }
 }
 
-/// What the material samples to build its blur.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum Blending {
-    /// Everything behind the *window*: the desktop, other apps, other windows.
+    /// Everything behind the window.
     #[default]
     BehindWindow,
-    /// What is drawn behind this view *inside* the window — on [`Layer::Above`], GPUI's own
-    /// rendered content. Costs several times [`Blending::BehindWindow`] and is billed in the
-    /// WindowServer, so a CPU-only measurement will call it free. A no-op on [`Layer::Below`]:
-    /// nothing in the window is beneath it, so AppKit falls back to the window's backdrop.
+    /// What is drawn behind the view inside the window; a no-op on `Layer::Below`.
     WithinWindow,
 }
 
@@ -277,17 +253,8 @@ impl Blending {
     }
 }
 
-/// A real macOS vibrancy surface: [`Styled`] and [`ParentElement`] like `div()`, with no size of
-/// its own.
-///
-/// ```ignore
-/// material("sidebar", Material::Sidebar).w(px(180.)).h_full().p_3().child("Library")
-/// material("tip", RawMaterial::ToolTip).w(px(120.)).h(px(28.))
-/// ```
-///
-/// Children are GPUI content painted into the Metal view, so the default [`Layer::Below`] puts
-/// them crisply *over* the material. They do not combine with
-/// [`NativeMaterial::layer`]`(Layer::Above)`, which covers every GPUI pixel in its rect.
+/// A vibrancy surface that is `Styled` and a `ParentElement` like `div()`. Children are GPUI
+/// content, so the default `Layer::Below` puts them crisply over the material.
 pub fn material(id: impl Into<ElementId>, material: impl Into<RawMaterial>) -> NativeMaterial {
     NativeMaterial {
         id: id.into(),
@@ -324,37 +291,28 @@ impl NativeMaterial {
         self
     }
 
-    /// AppKit's "first responder is on this surface" look; turns the accent tint on for
-    /// [`Material::Selection`].
     pub fn emphasized(mut self, emphasized: bool) -> Self {
         self.emphasized = emphasized;
         self
     }
 
-    /// Round the material's corners, applied as the view's `maskImage`. `layer.cornerRadius`
-    /// also clips a behind-window backdrop, but it measures a softer arc and clips subviews too.
     pub fn corner_radius(mut self, radius: Pixels) -> Self {
         self.corner_radius = radius;
         self
     }
 
-    /// Where the material sits relative to GPUI's content. Defaults to [`Layer::Below`], which
-    /// is what lets GPUI text and icons composite on top of it.
     pub fn layer(mut self, layer: Layer) -> Self {
         self.layer = layer;
         self
     }
 
-    /// Let the material flatten when the window stops being key, AppKit's default. Off here: a
-    /// non-key `NSVisualEffectView` collapses to a flat fill, so a sidebar would go grey the
-    /// moment you click another window. Turn it on for something whose job is to signal focus.
+    /// Off by default: a non-key `NSVisualEffectView` collapses to a flat fill.
     pub fn dims_when_inactive(mut self, dims: bool) -> Self {
         self.dims_when_inactive = dims;
         self
     }
 
-    /// Flatten the material to an opaque dark fill, backdrop and vibrancy gone. The one private
-    /// `NSVisualEffectView` knob that draws; a macOS without it leaves the material alone.
+    /// Flatten the material to an opaque dark fill.
     #[cfg(feature = "private-api")]
     pub fn artificial_chameleon(mut self, forced: bool) -> Self {
         self.artificial_chameleon = forced;
@@ -393,7 +351,6 @@ impl Element for NativeMaterial {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Style) {
-        // `fittingSize` is 0x0 today; asked per axis so a future macOS with an opinion wins.
         let fitting = fitting_size("NSVisualEffectView", |mtm| {
             NSVisualEffectView::new(mtm).fittingSize()
         });
@@ -440,7 +397,6 @@ impl Element for NativeMaterial {
         let key = element_key(id);
         let mask = window.content_mask().bounds;
         let host = NativeHost::get(window, cx);
-
         let view = host.place(key, self.layer, bounds, mask, |mtm, _| Backdrop::new(mtm));
 
         let material = self.material.appkit();
@@ -470,11 +426,6 @@ impl Element for NativeMaterial {
         );
         apply_corner_radius(&view, self.corner_radius.to_f64());
 
-        // The style is painted, not just laid out. A `Styled` element whose `.bg()` and
-        // `.border_1()` silently drew nothing would fail only visually — it compiles, it
-        // type-checks, and the layout even insets by the border width, so the one symptom is a
-        // missing line. `Style::paint` skips a transparent background, so a material nobody has
-        // written a fill on is untouched.
         style.paint(bounds, window, cx, |window, cx| {
             for child in &mut self.children {
                 child.paint(window, cx);
@@ -492,20 +443,8 @@ impl IntoElement for NativeMaterial {
 }
 
 define_class!(
-    /// A material that declines every mouse point.
-    ///
-    /// A stock `NSVisualEffectView` claims one: measured, `hitTest:` over it returns the view. At
-    /// [`Layer::Below`] that is harmless — GPUI's own view is above it and takes the event first —
-    /// but at [`Layer::Above`] the material covers whatever it is drawn over, and
-    /// [`crate::NativeHost`]'s clip container declines only its *own* area and hands a subview's
-    /// hit straight back. So a band of glass over an interactive region silently eats every click,
-    /// drag and scroll in its rect. Unconditional rather than a knob: a material has no handler
-    /// surface, and children are GPUI content painted into the Metal view rather than subviews of
-    /// this one, so nothing inside it ever wanted the point either.
-    ///
-    /// Unlike `NSGlassEffectView`, this needs no bet on a private subview's behaviour — a stock
-    /// `NSVisualEffectView` reports **zero** subviews, so returning `nil` outright is the whole
-    /// story rather than [`crate::glass_container`]'s "ask the one `hitTest:` we wrote".
+    /// A material that declines every mouse point: a stock one claims them, and at `Layer::Above`
+    /// that eats every click under it.
     #[unsafe(super(NSVisualEffectView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGBackdrop"]
@@ -525,8 +464,6 @@ impl Backdrop {
     }
 }
 
-/// Reads the applied radius back off the view's own mask, safe only because `maskImage`
-/// round-trips faithfully; a property AppKit normalises would be rewritten every frame.
 fn apply_corner_radius(view: &NSVisualEffectView, radius: f64) {
     let applied = view
         .maskImage()
@@ -541,11 +478,7 @@ fn apply_corner_radius(view: &NSVisualEffectView, radius: f64) {
     }
 }
 
-/// A nine-part resizable rounded-rect mask, the smallest that can express `radius`.
-///
-/// `drawingHandler:` rather than `lockFocus` because the handler is re-run at whatever scale
-/// AppKit needs, so the arc rasterises at backing scale instead of stair-stepping from 1x. Cap
-/// insets pin the corners so only the middle point stretches, keeping the radius constant.
+/// A nine-part resizable rounded-rect mask; the drawing handler re-runs at backing scale.
 fn corner_mask(radius: f64) -> Retained<NSImage> {
     thread_local! {
         static CACHE: RefCell<HashMap<u64, Retained<NSImage>>> = RefCell::new(HashMap::new());
@@ -558,7 +491,6 @@ fn corner_mask(radius: f64) -> Retained<NSImage> {
         let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
             let path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, radius, radius);
-            // Only alpha is read; the clear start is what leaves the corners transparent.
             NSColor::blackColor().setFill();
             path.fill();
             Bool::YES

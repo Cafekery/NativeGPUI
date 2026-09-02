@@ -1,10 +1,6 @@
-//! Runtime-gated sends for the undocumented AppKit selectors, behind the `private-api` feature.
-//!
-//! Each send resolves its selector and checks the type the runtime declares for it, so a macOS
-//! that drops or retypes one leaves the object at its public behaviour. Both halves are
-//! load-bearing: a missing selector raises `NSInvalidArgumentException`, and an integer sent to
-//! a setter that takes an object segfaults with nothing to catch. Selectors are parameters
-//! rather than spelled here because `msg_send!` needs a literal and gating needs the same one.
+//! Runtime-gated sends for undocumented AppKit selectors: a selector the runtime does not
+//! declare with the expected shape is not sent, so a macOS that drops one leaves the object at
+//! its public behaviour.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,8 +18,6 @@ enum Shape {
     ReturnsObject,
 }
 
-/// Whether `selector` exists on `object`'s class with the expected shape. Memoized: the answer
-/// cannot change while the process runs, and `method_copyArgumentType` allocates on every call.
 fn gate<T: Message>(object: &T, selector: Sel, shape: Shape) -> bool {
     thread_local! {
         static CACHE: RefCell<HashMap<(usize, Sel, Shape), bool>> = RefCell::new(HashMap::new());
@@ -36,7 +30,6 @@ fn gate<T: Message>(object: &T, selector: Sel, shape: Shape) -> bool {
     if let Some(answer) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
         return answer;
     }
-
     let integer = |encoding: &[u8]| encoding.len() == 1 && b"qQiIlLsScCB".contains(&encoding[0]);
     let object_encoding = |encoding: &[u8]| encoding.first() == Some(&b'@');
     let answer = class

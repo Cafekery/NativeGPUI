@@ -1,26 +1,4 @@
-//! A system-drawn macOS sidebar.
-//!
-//! `NSSplitViewItem.sidebar` is a property of the *window's* view hierarchy, not of a rectangle
-//! inside it, so unlike everything else in this crate this is a window shell: install once, then
-//! update per frame.
-//!
-//! ```ignore
-//! let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
-//! sidebar.update(&items);
-//! sidebar.set_selected(self.route.as_deref());
-//! ```
-//!
-//! Rows are real [`NSTableCellView`]s, so the source-list font, insets, indentation, disclosure
-//! control, icon box and the label-colour flip under selection are AppKit's — the cell's own
-//! `layout` places only the count badge, which `NSTableCellView` has no outlet for. Row height,
-//! icon size and label font come as one class from [`SidebarRowSize`], which defaults to what the
-//! running macOS calls standard. Two rules for the host:
-//!
-//! * The window must be non-opaque ([`crate::window_options`] does this): the sidebar's material
-//!   is `behindWindow`, and on an opaque window it silently renders flat grey.
-//! * GPUI's coordinate space still spans the whole window, but the sidebar strip is not yours —
-//!   read [`SidebarMetrics`] for the gutter, paint no background over it, and keep interactive
-//!   targets 3pt clear of the pane's left edge: a click 1-2pt in never reaches GPUI.
+//! A system-drawn macOS sidebar: an `NSSplitViewItem` shell installed around GPUI's view.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -58,35 +36,17 @@ use crate::bridge::appkit::{Container, gpui_view, rects_equal};
 use crate::materials::RawMaterial;
 use crate::tokens;
 
-/// Gap between a row's label and its trailing count badge, in points. The one hand-chosen number
-/// left in a row: AppKit publishes a token for the icon's box and its gap (see
-/// [`SidebarRowSize`]) but none for a badge, which `NSTableCellView` has no outlet for.
+/// Gap between a row's label and its trailing count badge, in points.
 pub const BADGE_GAP: f64 = 6.0;
 
-/// Where the system keeps the sidebar artwork Finder draws for the rows SF Symbols do not cover.
-/// World-readable, no entitlement, and its images are monochrome and templatable.
 pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bundle";
 
-/// Where a row's glyph comes from.
-///
-/// [`Symbol`](Self::Symbol) is the answer for nearly every row, and that is a measurement rather
-/// than a preference: scored against a capture of the real thing, macOS 26's Finder draws SF
-/// Symbols for most of its own sidebar — `hammer` 0.945, `house` 0.975, `trash` 0.974,
-/// `network` 0.864 — and reaches for Apple's own artwork only where the public catalogue has
-/// nothing. Reach for [`SystemResource`](Self::SystemResource) on that evidence, per row, never as
-/// a blanket rule: a whole sidebar drawn from [`CORE_TYPES_BUNDLE`] is a set Finder has mostly
-/// abandoned and scores *worse* — `compass.drawing` is the wrong glyph for Applications, but
-/// `SidebarDocumentsFolder` is equally wrong for Documents at 0.076 against `doc`'s 0.802.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SidebarIcon {
-    /// An SF Symbol name. One the running macOS does not know renders as no icon.
     Symbol(SharedString),
-    /// A monochrome image resource in [`CORE_TYPES_BUNDLE`], drawn as a template so the row's
-    /// selection colours still reach it.
     SystemResource(SharedString),
 }
 
-/// One row. Build with [`sidebar_item`] or [`sidebar_group`].
 #[derive(Clone, Debug)]
 pub struct SidebarItem {
     id: SharedString,
@@ -98,7 +58,6 @@ pub struct SidebarItem {
     children: Vec<SidebarItem>,
 }
 
-/// A selectable row.
 pub fn sidebar_item(id: impl Into<SharedString>, title: impl Into<SharedString>) -> SidebarItem {
     SidebarItem {
         id: id.into(),
@@ -111,7 +70,6 @@ pub fn sidebar_item(id: impl Into<SharedString>, title: impl Into<SharedString>)
     }
 }
 
-/// A non-selectable group header — `isGroupItem:` is what makes the tree read as a source list.
 pub fn sidebar_group(id: impl Into<SharedString>, title: impl Into<SharedString>) -> SidebarItem {
     SidebarItem {
         group: true,
@@ -120,7 +78,6 @@ pub fn sidebar_group(id: impl Into<SharedString>, title: impl Into<SharedString>
 }
 
 impl SidebarItem {
-    /// An SF Symbol name. One the running macOS does not know renders as no icon.
     pub fn symbol(self, name: impl Into<SharedString>) -> Self {
         self.icon(SidebarIcon::Symbol(name.into()))
     }
@@ -135,8 +92,6 @@ impl SidebarItem {
         self
     }
 
-    /// Show the trailing eject affordance a mounted volume has. Clicks arrive at
-    /// [`NativeSidebar::on_eject`]; the sidebar itself unmounts nothing.
     pub fn ejectable(mut self, ejectable: bool) -> Self {
         self.eject = ejectable;
         self
@@ -177,7 +132,6 @@ struct Node {
 }
 
 impl Node {
-    /// Row appearance only — `children.is_empty()` is here because it draws the disclosure arrow.
     fn content(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.title.hash(&mut hasher);
@@ -253,9 +207,6 @@ impl Model {
         self.nodes[index].parent.map(|p| self.nodes[p].key)
     }
 
-    /// Move a child within its own parent. `to` is the index it should end up at *after* the
-    /// removal, which is the convention `moveItemAtIndex:inParent:toIndex:inParent:` uses, so the
-    /// model and AppKit take the same number.
     fn move_child(&mut self, parent: Option<u64>, from: usize, to: usize) -> bool {
         let parent_index = match parent {
             None => None,
@@ -276,7 +227,6 @@ impl Model {
         true
     }
 
-    /// Parents before children — `apply_diff` reloads everything if a child is visited first.
     fn preorder(&self) -> Vec<u64> {
         let mut out = Vec::with_capacity(self.nodes.len());
         let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
@@ -299,38 +249,17 @@ impl Model {
     }
 }
 
-/// How GPUI's view is framed inside the content pane.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+/// How GPUI's view is framed inside the content pane.
 pub enum PaneAlign {
-    /// The shipped framing: GPUI keeps the window's whole coordinate space.
     #[default]
     WindowAligned,
-    /// Sizes GPUI's view to fill the pane. Broken by construction — the control arm
-    /// `examples/sidebar_probe.rs` measures against under `NG_ARM=fill`, never a mode to ship.
     FillPane,
 }
 
-/// Row metrics class, `NSTableViewRowSizeStyle`.
-///
-/// One knob for four numbers: `NSTableCellView` lays out its `textField` and `imageView` outlets
-/// from this, so it drives row height, the icon's box, the label font and the group-header font
-/// together. Measured on 26.5, source-list rows:
-///
-/// | | row | label | group header |
-/// |---|---|---|---|
-/// | [`Small`](Self::Small) | 24pt | 11pt | 11pt |
-/// | [`Medium`](Self::Medium) | 32pt | 13pt | 11pt |
-/// | [`Large`](Self::Large) | 40pt | 15pt | 11pt |
-///
-/// `NSTableViewRowSizeStyleCustom`, AppKit's own property default, is deliberately absent: it
-/// means "use `rowHeight` and lay out nothing", and `.sourceList` seeds `rowHeight` to 24 — so a
-/// sidebar that never sets this property renders `Small`-height rows around a `Medium` label and
-/// a group header three sizes too big. That hybrid is not one AppKit ships.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+/// Row height, icon box, label font and group-header font, as one `NSTableViewRowSizeStyle`.
 pub enum SidebarRowSize {
-    /// `NSTableViewRowSizeStyleDefault` — whatever the running macOS calls standard for a source
-    /// list, which is what Finder gets. Resolves to [`Medium`](Self::Medium) on 26.5; read
-    /// [`SidebarProbe::effective_row_size_style`] for what it resolved to.
     #[default]
     System,
     Small,
@@ -348,11 +277,6 @@ impl SidebarRowSize {
         }
     }
 
-    /// Height of the icon box `NSTableCellView` lays out for this class, in points.
-    ///
-    /// Read off a laid-out source-list cell on 26.5: the image view comes out 20x15 at
-    /// [`Small`](Self::Small), 23x19 at [`Medium`](Self::Medium), 27x21 at [`Large`](Self::Large).
-    /// The box is wider than it is tall, so the height is what a square glyph gets to use.
     fn icon_points(style: NSTableViewRowSizeStyle) -> f64 {
         match style {
             NSTableViewRowSizeStyle::Small => 15.,
@@ -362,55 +286,21 @@ impl SidebarRowSize {
     }
 }
 
-/// Configuration honoured on the first [`NativeSidebar::install`] for a window.
 #[derive(Clone, Debug)]
+/// Configuration honoured on the first [`NativeSidebar::install`] for a window.
 pub struct SidebarOptions {
-    /// Requested thickness. AppKit rounds it to its own standard width.
     pub thickness: Pixels,
     pub min_thickness: Pixels,
     pub max_thickness: Pixels,
-    /// Attach a unified `NSToolbar` carrying the system sidebar-toggle item.
     pub toolbar: bool,
     pub collapsed: bool,
-    /// Expand every group on install and on insertion.
     pub expand_groups: bool,
-    /// Row height, icon box and label font, as one class. See [`SidebarRowSize`].
     pub row_size: SidebarRowSize,
     pub align: PaneAlign,
-    /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame
-    /// onto them. Without it `setContentViewController:` detaches them from the window.
+    /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame.
     pub adopt_below_layer: bool,
-    /// Let the user drag a row to a new place among its own siblings, reported through
-    /// [`NativeSidebar::on_reorder`]. Cross-group drops are refused, which is what Finder does.
-    ///
-    /// This changes when a plain click takes effect, and that is AppKit's doing rather than a
-    /// choice made here: a table whose data source merely **defines**
-    /// `outlineView:pasteboardWriterForItem:` stops committing the selection on mouse-down and
-    /// commits it on mouse-up instead — measured both ways, and true even when the method returns
-    /// nil, because AppKit asks `respondsToSelector:` and never calls it. So a sidebar that can be
-    /// dragged does not light up under a held finger, and one that cannot does. The option exists
-    /// to keep that from being imposed on a caller who wanted a plain list.
     pub reorderable: bool,
-    /// A window-spanning backdrop, inserted beneath both panes. **This is the sidebar's vibrancy,
-    /// not the window's background** — the content pane paints [`tokens::WINDOW_BACKGROUND`] over
-    /// it, so only the sidebar strip is left showing it.
-    ///
-    /// What a Mac window has behind its sidebar. Without it the sidebar samples whatever is
-    /// behind the *window*, and `allowsFullHeightLayout` runs it up under a titlebar strip that
-    /// is unpainted too; with it both sample the window's own backing and still read as vibrancy
-    /// rather than a flat fill.
-    ///
-    /// It spans the window instead of living in a pane because GPUI's drawing is clipped to the
-    /// content pane — a material placed from GPUI stops at the sidebar edge and squares off the
-    /// window's rounded corners — and sits below the split view instead of being drawn by GPUI,
-    /// whose view covers the traffic lights and toolbar under `NSFullSizeContentViewWindowMask`.
-    ///
-    /// Resist making it opaque to match the content side. It blends behind-window, so it is the
-    /// one surface here that shows the desktop, and swapping it for an opaque material moved the
-    /// sidebar 40 -> 27 in the band and 43 -> 32 in its interior — a flatter panel, and the step
-    /// it was meant to close is closed at the pane instead.
-    ///
-    /// `None` leaves the window unbacked, for a caller painting its own opaque background.
+    /// Window-spanning vibrancy beneath both panes; only the sidebar strip is left showing it.
     pub backdrop: Option<Material>,
 }
 
@@ -432,40 +322,30 @@ impl Default for SidebarOptions {
     }
 }
 
-/// Insets the sidebar imposes on GPUI's layout, in GPUI-logical points.
-///
-/// A [`Global`], republished with a window refresh whenever AppKit moves the pane — which
-/// includes every frame of the collapse animation.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
+/// Insets the sidebar imposes on GPUI's layout, in GPUI-logical points.
 pub struct SidebarMetrics {
     pub left: Pixels,
-    /// Pane top offset plus its `safeAreaInsets.top`, which is where a unified toolbar's height
-    /// comes from instead of a constant.
     pub top: Pixels,
     pub right: Pixels,
     pub bottom: Pixels,
-    /// Effective sidebar thickness, 0 when collapsed.
     pub thickness: Pixels,
     pub collapsed: bool,
 }
 
 impl Global for SidebarMetrics {}
 
-/// What one [`NativeSidebar::update`] wrote to AppKit. A steady render loop must produce
-/// `SidebarDiff::default()`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+/// What one [`NativeSidebar::update`] wrote to AppKit.
 pub struct SidebarDiff {
     pub unchanged: bool,
     pub reloaded_items: usize,
     pub inserted: usize,
     pub removed: usize,
     pub moved: usize,
-    /// 1 on the first push, since there is nothing to diff against. Afterwards it means the
-    /// incremental path bailed out and reloaded.
     pub full_reloads: usize,
 }
 
-/// Live AppKit state, for callers that want to prove the sidebar is the system's.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct SidebarProbe {
     /// `NSSplitViewItemBehavior`; 1 is `Sidebar`.
@@ -476,29 +356,24 @@ pub struct SidebarProbe {
     pub effective_style: isize,
     /// `NSTableViewRowSizeStyle` as set; -1 is `Default`, 0 `Custom`, 1..3 Small/Medium/Large.
     pub row_size_style: isize,
-    /// What `Default` resolved to. Never -1, so this is the one to assert on.
+    /// What `Default` resolved to; never -1.
     pub effective_row_size_style: isize,
     pub row_height: f64,
     pub indentation_per_level: f64,
     pub divider_thickness: f64,
     pub rows: isize,
-    /// `NSVisualEffectMaterial` of the window-spanning backdrop, or -1 without one. Every
-    /// material renders near-black over a dark desktop, so this readback — not a pixel mean — is
-    /// what tells a caller the backdrop changed.
+    /// `NSVisualEffectMaterial` of the window-spanning backdrop, or -1 without one.
     pub backdrop_material: isize,
     pub toolbar_items: usize,
     pub scroll_draws_background: bool,
     pub outline_is_first_responder: bool,
 }
 
-/// Where AppKit placed the parts of one row. See [`NativeSidebar::row_layout`].
 #[derive(Copy, Clone, PartialEq, Debug)]
+/// Where AppKit placed one row's parts: `row` and `cell` in the outline view, the rest in the cell.
 pub struct RowLayout {
-    /// In the outline view.
     pub row: NSRect,
-    /// In the outline view; `origin.x` is AppKit's own style inset.
     pub cell: NSRect,
-    /// In the cell's coordinates.
     pub icon: NSRect,
     pub title: NSRect,
     pub badge: NSRect,
@@ -506,14 +381,10 @@ pub struct RowLayout {
     pub expanded: bool,
 }
 
-/// A reorder the user just performed. See [`NativeSidebar::on_reorder`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SidebarMove {
-    /// The row that moved.
     pub id: SharedString,
-    /// The group it belongs to; `None` for a root row.
     pub parent: Option<SharedString>,
-    /// Its new index among its siblings.
     pub index: usize,
 }
 
@@ -521,10 +392,6 @@ type SelectHandler = Rc<dyn Fn(&Option<SharedString>, &mut Window, &mut App)>;
 type ReorderHandler = Rc<dyn Fn(&SidebarMove, &mut Window, &mut App)>;
 type EjectHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 
-/// Shared with the outline view's data source and delegate.
-///
-/// Split from [`Views`] on purpose: `reloadData`, `endUpdates` and `expandItem:` all re-enter the
-/// data source synchronously, so what the callbacks read must not be borrowed during a mutation.
 struct Shared {
     model: RefCell<Model>,
     interned: RefCell<HashMap<u64, Retained<NSNumber>>>,
@@ -536,13 +403,11 @@ struct Shared {
     writes: Cell<u64>,
     cx: RefCell<AsyncWindowContext>,
     expand_groups: Cell<bool>,
-    /// Set once the outline view exists, so the delegate needs no back-reference to [`Views`].
     outline: RefCell<Option<Retained<NSOutlineView>>>,
 }
 
 impl Shared {
-    /// One retained `NSNumber` per key for the sidebar's life: `NSOutlineView` keys expansion and
-    /// selection on item *identity*, so a fresh equal-but-distinct object would lose both.
+    /// One `NSNumber` per key: `NSOutlineView` keys expansion and selection on item identity.
     fn item(&self, key: u64) -> Retained<AnyObject> {
         let number = self
             .interned
@@ -569,18 +434,13 @@ impl Shared {
     }
 }
 
-/// The AppKit objects the shell owns. Retained for the window's lifetime.
 struct Views {
     outline: Retained<NSOutlineView>,
     scroll: Retained<NSScrollView>,
     split: Retained<NSSplitViewController>,
     sidebar_item: Retained<NSSplitViewItem>,
     pane: Retained<ContentPane>,
-    /// `setDataSource:`/`setDelegate:` are weak, so this must outlive the outline view. Typed as
-    /// the common superclass because which of the two source classes it is depends on
-    /// [`SidebarOptions::reorderable`].
     _source: Retained<NSObject>,
-    /// Kept built even while detached, so [`NativeSidebar::set_toolbar`] can put it back.
     toolbar: Retained<NSToolbar>,
     _toolbar_delegate: Retained<SidebarToolbarDelegate>,
     _sidebar_vc: Retained<NSViewController>,
@@ -595,8 +455,8 @@ struct SidebarState {
     pane_shared: Rc<PaneShared>,
 }
 
-/// A handle on the window's sidebar. Cheap to clone; every clone is the same sidebar.
 #[derive(Clone)]
+/// A handle on the window's sidebar. Cheap to clone; every clone is the same sidebar.
 pub struct NativeSidebar(Rc<SidebarState>);
 
 #[derive(Default)]
@@ -604,10 +464,7 @@ struct Sidebars(HashMap<AnyWindowHandle, NativeSidebar>);
 impl Global for Sidebars {}
 
 impl NativeSidebar {
-    /// Install the split-view shell into this window, or return the one already installed.
-    ///
-    /// Idempotent — a second call is a lookup and ignores `options` — so calling it
-    /// unconditionally from `render` does not stack two split controllers.
+    /// Install the shell, or return the one already there; a second call ignores `options`.
     pub fn install(window: &mut Window, cx: &mut App, options: SidebarOptions) -> Self {
         if let Some(existing) = Self::get(window, cx) {
             return existing;
@@ -627,18 +484,13 @@ impl NativeSidebar {
     }
 
     /// Push the row model, diffed against what the outline view already shows.
-    ///
-    /// An unchanged model writes nothing at all, which is what lets selection, expansion and
-    /// scroll offset survive a render loop running at the display's refresh rate.
     pub fn update(&self, items: &[SidebarItem]) -> SidebarDiff {
         let state = &*self.0;
-        // The pane's own hooks catch everything AppKit does to the pane, but the host's
-        // `Layer::Below` container appears in it a frame after `install` with the pane unmoved.
         state.pane_shared.clone().align(&state.views.pane);
 
         let next = Model::build(items);
-        let plan = plan_diff(&state.shared.model.borrow(), &next);
         // Model first, AppKit second: every delta call in `apply_diff` re-enters the data source.
+        let plan = plan_diff(&state.shared.model.borrow(), &next);
         *state.shared.model.borrow_mut() = next;
         if plan.is_empty() {
             return SidebarDiff {
@@ -649,12 +501,6 @@ impl NativeSidebar {
         apply_diff(state, plan)
     }
 
-    /// Select the row with this id, or clear the selection. Diffed; does not re-enter
-    /// [`NativeSidebar::on_select`].
-    ///
-    /// Expands the item's ancestors first. Without that a collapsed parent leaves the item with
-    /// no row, `rowForItem:` answers -1, and the -1 branch below *clears* the selection — which
-    /// is indistinguishable from success whenever nothing was selected to begin with.
     pub fn set_selected(&self, id: Option<&str>) {
         let state = &*self.0;
         let outline = &state.views.outline;
@@ -689,10 +535,7 @@ impl NativeSidebar {
         self.0.shared.selected_id()
     }
 
-    /// Called when the *user* changes the selection.
-    ///
-    /// Dispatch is deferred, never synchronous: a selection notification can fire while GPUI
-    /// already holds its `App` borrow, and a synchronous update then drops the event permanently.
+    /// Called when the *user* changes the selection, deferred to the next `App` update.
     pub fn on_select(
         &self,
         handler: impl Fn(&Option<SharedString>, &mut Window, &mut App) + 'static,
@@ -700,23 +543,17 @@ impl NativeSidebar {
         *self.0.shared.on_select.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Called when the user drags a row to a new place, once the outline view has already moved
-    /// it. The host applies the same move to its own data; the next [`NativeSidebar::update`]
-    /// then diffs to nothing. A host that ignores it puts the row back on the next update, which
-    /// is the right answer if the host's order is the truth.
-    ///
-    /// Does nothing unless the sidebar was installed with [`SidebarOptions::reorderable`].
+    /// Called after the user drags a row, and only with [`SidebarOptions::reorderable`].
     pub fn on_reorder(&self, handler: impl Fn(&SidebarMove, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_reorder.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Called with the row's id when the user clicks its eject affordance. The sidebar unmounts
-    /// nothing and does not remove the row: what ejecting means is the host's to decide.
+    /// Called with the row's id when the user clicks its eject affordance; unmounts nothing.
     pub fn on_eject(&self, handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Collapse or expand with AppKit's own animation — the toolbar item's own code path.
+    /// Collapse or expand with AppKit's own animation.
     pub fn toggle(&self) {
         unsafe { self.0.views.split.toggleSidebar(None) };
     }
@@ -731,10 +568,6 @@ impl NativeSidebar {
         self.0.views.sidebar_item.isCollapsed()
     }
 
-    /// Change the row metrics class after install.
-    ///
-    /// `NSTableCellView` reads `rowSizeStyle` when it lays out, and pooled cells were laid out
-    /// under the old one, so the rows have to be rebuilt for the new metrics to reach them.
     pub fn set_row_size(&self, size: SidebarRowSize) {
         let state = &*self.0;
         let outline = &state.views.outline;
@@ -762,7 +595,6 @@ impl NativeSidebar {
         }
     }
 
-    /// Move the divider. AppKit clamps to the item's min and max thickness.
     pub fn set_thickness(&self, thickness: Pixels) {
         let split = self.0.views.split.splitView();
         split.setPosition_ofDividerAtIndex(thickness.to_f64(), 0);
@@ -777,8 +609,6 @@ impl NativeSidebar {
         self.0.pane_shared.clone().align(&self.0.views.pane);
     }
 
-    /// Attach or detach the unified toolbar. Detaching it drops the pane's top safe-area inset,
-    /// so [`SidebarMetrics::top`] changes with it.
     pub fn set_toolbar(&self, visible: bool) {
         let Some(window) = self.window_frame_window() else {
             return;
@@ -796,7 +626,6 @@ impl NativeSidebar {
             .is_some_and(|w| w.toolbar().is_some())
     }
 
-    /// Whether later insertions auto-expand their group. Turning it on expands what is there now.
     pub fn set_expand_groups(&self, expand: bool) {
         self.0.shared.expand_groups.set(expand);
         if expand {
@@ -808,8 +637,7 @@ impl NativeSidebar {
         self.0.shared.expand_groups.get()
     }
 
-    /// Retint the window-spanning backdrop. A sidebar installed with `backdrop: None` has no view
-    /// to retint and ignores this.
+    /// Retint the window-spanning backdrop; a sidebar installed with `backdrop: None` ignores this.
     pub fn set_backdrop(&self, material: Material) {
         if let Some(view) = self.0.views.backdrop.as_ref() {
             view.setMaterial(RawMaterial::from(material).appkit());
@@ -855,23 +683,19 @@ impl NativeSidebar {
         self.0.views.scroll.reflectScrolledClipView(&clip);
     }
 
-    /// The [`SidebarMetrics`] global's value, readable synchronously without an `App`.
     pub fn metrics(&self) -> SidebarMetrics {
         self.0.pane_shared.metrics.get()
     }
 
-    /// How many times the pane has re-aligned GPUI's view.
     pub fn align_count(&self) -> u64 {
         self.0.pane_shared.align_count.get()
     }
 
-    /// Times the alignment found GPUI's frame changed by someone other than itself and repaired
-    /// it. Non-zero means a second writer exists.
+    /// Times the alignment found GPUI's frame changed by someone else and repaired it.
     pub fn frame_corrections(&self) -> u64 {
         self.0.pane_shared.corrections.get()
     }
 
-    /// Cumulative AppKit mutations issued by this sidebar.
     pub fn appkit_writes(&self) -> u64 {
         self.0.shared.writes.get()
     }
@@ -920,8 +744,7 @@ impl NativeSidebar {
             divider_thickness: views.split.splitView().dividerThickness(),
             rows: outline.numberOfRows(),
             backdrop_material: views.backdrop.as_ref().map_or(-1, |v| v.material().0),
-            // The window, not our retained toolbar: the shell keeps one built even while it is
-            // detached, so only the window knows whether one is attached.
+            // The window's toolbar, not the retained one: only it knows if one is attached.
             toolbar_items: outline
                 .window()
                 .and_then(|w| w.toolbar())
@@ -931,8 +754,7 @@ impl NativeSidebar {
         }
     }
 
-    /// Height of the screen whose bottom-left is Cocoa's global origin — the constant that flips
-    /// a Cocoa frame into the top-left-origin space `CGEventPost` uses.
+    /// Height of the screen whose bottom-left is Cocoa's global origin.
     pub fn screen_height(&self) -> f64 {
         let mtm = MainThreadMarker::new()
             .expect("a NativeSidebar is !Send, so it is only reachable on gpui's main thread");
@@ -941,13 +763,10 @@ impl NativeSidebar {
             .map_or(0., |screen| screen.frame().size.height)
     }
 
-    /// The hosting `NSWindow`, for callers that need to attach a child window to it.
     pub fn window_frame_window(&self) -> Option<Retained<NSWindow>> {
         self.0.pane_shared.gpui.window()
     }
 
-    /// A synthetic click into a non-key window is swallowed by `acceptsFirstMouse:` returning NO,
-    /// which is indistinguishable from having no target.
     pub fn window_is_key(&self) -> bool {
         self.window_frame_window().is_some_and(|w| w.isKeyWindow())
     }
@@ -963,7 +782,6 @@ impl NativeSidebar {
             .map_or(NSRect::ZERO, |w| w.frame())
     }
 
-    /// Direct subviews of the split view. Two, however many times [`NativeSidebar::install`] runs.
     pub fn split_subview_count(&self) -> usize {
         self.0.views.split.splitView().subviews().count()
     }
@@ -991,8 +809,7 @@ impl NativeSidebar {
         })
     }
 
-    /// The centre of a row in GPUI-logical points from the content view's top-left — the space
-    /// GPUI's own mouse events use. `None` for a row that is not currently laid out.
+    /// The centre of a row in GPUI-logical points from the content view's top-left.
     pub fn row_point(&self, row: isize) -> Option<NSPoint> {
         let outline = &self.0.views.outline;
         if row < 0 || row >= outline.numberOfRows() {
@@ -1008,8 +825,6 @@ impl NativeSidebar {
         ))
     }
 
-    /// Make GPUI's view first responder again. Installing the shell, and any click in the
-    /// sidebar, moves it away.
     pub fn focus_content(&self) {
         let gpui = &self.0.pane_shared.gpui;
         if let Some(window) = gpui.window() {
@@ -1039,13 +854,10 @@ impl PaneShared {
         self.align_count.set(self.align_count.get() + 1);
 
         let cv_size = content_view.frame().size;
-        // The pane's own `frame.origin.x` reads 0 while it sits a sidebar's width in; converting
-        // is mandatory or the alignment silently collapses to the broken arm.
+        // The pane's own `frame.origin.x` reads 0 while it sits a sidebar's width in.
         let pane_in_cv = pane.convertRect_toView(pane.bounds(), Some(&content_view));
         let safe = pane.safeAreaInsets();
 
-        // gpui reads its logical size from contentView.frame(), its drawable from its own frame,
-        // and mouse points unconverted — hence contentView's size at a pane-cancelling origin.
         let wanted = match self.align {
             PaneAlign::WindowAligned => NSRect::new(
                 NSPoint::new(-pane_in_cv.origin.x, -pane_in_cv.origin.y),
@@ -1083,8 +895,6 @@ impl PaneShared {
         self.metrics.set(metrics);
         if self.published.get() != metrics {
             self.published.set(metrics);
-            // Deferred: this runs inside an AppKit layout pass, which can happen while GPUI holds
-            // its borrow. The refresh is what re-lays-out GPUI on every collapse-animation frame.
             self.cx
                 .borrow()
                 .spawn(async move |cx| {
@@ -1097,16 +907,6 @@ impl PaneShared {
         }
     }
 
-    /// Put every [`crate::Layer::Below`] container in this pane into GPUI's coordinate space.
-    ///
-    /// `gpui_frame` is the pane-cancelling frame, so this is the only thing that lines a below
-    /// container up with GPUI's own view; one that misses it keeps its pane-local origin and
-    /// everything hosted in it draws a sidebar's width to the right.
-    ///
-    /// Scanned every time rather than cached against the pane's subview **count**, because a
-    /// count is not a set: one container added and another removed between two passes leaves it
-    /// unchanged, and a container created while it happens to be unchanged is never picked up at
-    /// all. The scan is a handful of `isKindOfClass` calls beside work this function already does.
     fn sync_below(&self, pane: &NSView, gpui_frame: NSRect) {
         for view in pane.subviews().iter() {
             if view.isKindOfClass(Container::class()) && !rects_equal(view.frame(), gpui_frame) {
@@ -1117,11 +917,7 @@ impl PaneShared {
 }
 
 define_class!(
-    /// The content split item's view: clips GPUI's oversized child to the pane, re-aligns it on
-    /// every geometry change, and paints the window background under it. All four geometry
-    /// overrides are needed — `setFrame:` is *not* implemented in terms of
-    /// `setFrameSize:`/`setFrameOrigin:` and is how `NSSplitView` positions its panes, `layout`
-    /// covers the collapse animation, `setFrameOrigin:` the divider drag.
+    /// Clips GPUI's oversized child to the pane and re-aligns it on every geometry change.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarContentPane"]
@@ -1147,24 +943,13 @@ define_class!(
             self.ivars().clone().align(self);
         }
 
+        // setFrame: is not implemented in terms of setFrameSize:/setFrameOrigin:; all four matter.
         #[unsafe(method(setFrame:))]
         fn set_frame(&self, frame: NSRect) {
             let _: () = unsafe { msg_send![super(self), setFrame: frame] };
             self.ivars().clone().align(self);
         }
 
-        /// The window background, for the whole content side including its own toolbar band.
-        ///
-        /// This pane runs the full height of the window and is inset from the band only by its
-        /// `safeAreaInsets`, so GPUI lays out below the band while the pane spans it. Nothing else
-        /// can paint there: GPUI content stops at the inset, and the window's own
-        /// `backgroundColor` is inert while a window-spanning backdrop covers it — writing it from
-        /// clear to an opaque `windowBackgroundColor` left the capture byte-identical.
-        ///
-        /// The fill is beneath every subview, so a [`crate::Layer::Below`] view keeps compositing
-        /// over it. An `NSColor` and not a cached value: it re-resolves in whatever appearance is
-        /// current, and AppKit redisplays a layer-backed view on an appearance change by itself,
-        /// so no invalidation is wired here.
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, dirty: NSRect) {
             tokens::WINDOW_BACKGROUND.ns_color().setFill();
@@ -1191,8 +976,6 @@ struct CellIvars {
 }
 
 impl CellIvars {
-    /// The one thing on a row's trailing edge. Exclusive on purpose: a volume has an eject and a
-    /// mailbox has a count, and no Mac sidebar puts both on one row.
     fn trailing(&self) -> Option<Retained<NSView>> {
         let visible = |view: &NSView| !view.isHidden();
         if let Some(eject) = self.eject.borrow().clone().filter(|v| visible(v)) {
@@ -1204,10 +987,6 @@ impl CellIvars {
 }
 
 define_class!(
-    /// A source-list row. `NSTableCellView` lays out its `textField` and `imageView` outlets from
-    /// `rowSizeStyle`, so `super`'s layout is what puts the icon and the label where the system
-    /// wants them — matching Finder to the point. This override only adds the trailing accessory,
-    /// which `NSTableCellView` has no outlet for and therefore never places.
     #[unsafe(super(NSTableCellView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarCell"]
@@ -1219,11 +998,7 @@ define_class!(
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
 
-            // The image view is deliberately never hidden. An SF Symbol the running macOS does
-            // not know leaves `image` nil, and hiding the view then collapses AppKit's reserved
-            // icon box and pulls that one row's label left of every sibling's. Nil draws nothing
-            // on its own, so the row loses its glyph and keeps its alignment.
-
+            // Never hide the image view: that collapses AppKit's icon box and shifts the label.
             let Some(trailing) = self.ivars().trailing() else {
                 return;
             };
@@ -1249,8 +1024,7 @@ define_class!(
     }
 );
 
-/// `NSTableView` keeps one recycling queue per identifier, so splitting rows by shape is how a
-/// recycled cell avoids being restructured on every reuse.
+// `NSTableView` keeps one recycling queue per identifier, so rows are split by shape.
 const ID_GROUP: &str = "NGSidebarGroupRow";
 const ID_ICON: &str = "NGSidebarIconRow";
 const ID_PLAIN: &str = "NGSidebarPlainRow";
@@ -1262,8 +1036,6 @@ fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
     field
 }
 
-/// Point size that renders `eject`'s ink at Finder's measured 9.5 x 9.5pt. The `.fill` variant
-/// comes out 9.5 x 9.0 at the same size, so the outline is the one Finder draws.
 const EJECT_POINTS: f64 = 10.0;
 
 fn make_cell(
@@ -1285,16 +1057,12 @@ fn make_cell(
 
     if with_icon {
         let icon = NSImageView::new(mtm);
-        // No colour is set: a template symbol takes `labelColor` from the image view, and
-        // `NSTableCellView` flips that to the emphasized colour under a selection pill.
         icon.setImageScaling(NSImageScaling::ScaleProportionallyDown);
         icon.setImageAlignment(NSImageAlignment::AlignCenter);
         cell.addSubview(&icon);
         unsafe { cell.setImageView(Some(&icon)) };
     }
 
-    // There is no system token for a source-list count badge — `NSItemBadge` is documented for
-    // `NSToolbarItem` only — so it is a plain label in the system's small font.
     let badge = label(mtm, "");
     badge.setAlignment(NSTextAlignment::Right);
     badge.setFont(Some(&NSFont::systemFontOfSize(
@@ -1323,10 +1091,6 @@ fn make_cell(
         })
         .as_deref(),
     );
-    // Finder's eject ink measures 94 peak against its row labels' 244 — a ratio of 0.385, and the
-    // tiers over that background resolve to 220 / 152 / 83 / 49, i.e. 1.00 / 0.69 / 0.38 / 0.22.
-    // The ratio is the statistic to compare, not the absolute: it is taken inside one capture, so
-    // it survives the colour space the capture was written in.
     eject.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
     eject.setHidden(true);
     unsafe {
@@ -1339,18 +1103,8 @@ fn make_cell(
     cell
 }
 
-/// A [`SidebarIcon::SystemResource`] as a template image sized for a `points`-tall icon box.
-///
-/// The image is built to hold the representations of **one point size**, because in this bundle a
-/// point size and a pixel size are different questions: `SidebarAirDrop`'s 16pt@2x rep and its
-/// 32pt@1x rep are both 32 pixels square and are *different drawings* — three arcs against four,
-/// scoring 0.35 against each other where two reps of one drawing score 0.89. Gather by pixels and
-/// a 32pt image ends up carrying both, leaving the drawing to whichever rep the scale factor
-/// happens to select; nothing in a build or a screenshot diff would say so. Handing the whole
-/// eight-rep image straight to an image view has the same defect for the same reason.
 fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSImage>> {
     thread_local! {
-        /// The reps are shared with the bundle's own image, so an entry costs a handle, not pixels.
         static TEMPLATES: RefCell<HashMap<(SharedString, u32), Option<Retained<NSImage>>>> =
             RefCell::new(HashMap::new());
     }
@@ -1363,7 +1117,6 @@ fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSIm
     built
 }
 
-/// Nearest available representation, in points, ties to the smaller.
 fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> Option<f64> {
     available.into_iter().fold(None, |held, candidate| {
         let better = held.is_none_or(|held: f64| {
@@ -1374,12 +1127,7 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
     })
 }
 
-/// Load a [`CORE_TYPES_BUNDLE`] resource as a template image, taking the representations of the
-/// point size nearest `points`.
-///
-/// Public because the same artwork is the right answer outside a sidebar row — a toolbar item for
-/// AirDrop has the same problem and the same solution. See [`SidebarIcon::SystemResource`] for
-/// when to reach for this instead of a symbol.
+/// A [`CORE_TYPES_BUNDLE`] resource as a template image, at the representation nearest `points`.
 pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
     build_core_types_template(resource, points.to_f64())
 }
@@ -1391,14 +1139,12 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
     let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(chosen, chosen));
     for rep in reps.iter() {
-        // Both scales of the chosen point size, so moving the window to another display still
-        // finds a rep and does not fall back to resampling the one that is left.
+        // One point size only: 16pt@2x and 32pt@1x are both 32px but are different drawings.
         if rep.size().width == chosen {
             image.addRepresentation(&rep);
         }
     }
-    // The bundle's images come through with `isTemplate` false, so nothing would tint them and a
-    // black glyph is invisible in dark mode.
+    // The bundle's images arrive with `isTemplate` false, so nothing would tint them.
     image.setTemplate(true);
     Some(image)
 }
@@ -1445,8 +1191,6 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     cell.setNeedsLayout(true);
 }
 
-/// A free function because `#[unsafe(method_id(..))]` wraps the body's tail expression, so an
-/// early `return None` inside the delegate method does not typecheck.
 fn row_view(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
@@ -1478,12 +1222,6 @@ fn row_view(
     Some(unsafe { Retained::cast_unchecked::<NSView>(cell) })
 }
 
-/// The bodies both source classes share.
-///
-/// Free functions rather than an inheritance chain: `objc2`'s `set_ivars` fills **one** class's
-/// slot, so a subclass that declares its own ivars leaves the superclass's unset and every
-/// inherited method reading it panics on the first callback. Two siblings over one set of bodies
-/// has no such contract to get wrong.
 mod source {
     use super::*;
 
@@ -1550,7 +1288,6 @@ mod source {
         let Some(handler) = shared.on_select.borrow().clone() else {
             return;
         };
-        // Read the id now, not in the task: the row may be gone by the time it runs.
         let id = shared.selected_id();
         let shared = shared.clone();
         shared
@@ -1586,10 +1323,6 @@ mod source {
     }
 }
 
-/// Everything a source class does, so the two of them differ only by the drag methods.
-///
-/// A macro because `define_class!` parses its own body and cannot have another macro expanded
-/// inside it, so sharing the eight shared methods means generating the whole class.
 macro_rules! outline_source {
     ($(#[$meta:meta])* $class:ident, $name:literal, $($drag:tt)*) => {
 define_class!(
@@ -1603,8 +1336,6 @@ define_class!(
         unsafe impl NSObjectProtocol for $class {}
 
         impl $class {
-            /// `setTarget:` is weak, and this object outlives every cell because the sidebar
-            /// retains it, so the buttons can point straight here without a second sink.
             #[unsafe(method(ngSidebarEject:))]
             fn eject_clicked(&self, sender: &NSView) {
                 source::eject_clicked(self.ivars(), sender)
@@ -1669,8 +1400,6 @@ define_class!(
 
 outline_source!(OutlineSource, "NGSidebarSource",);
 
-/// The pasteboard type a sidebar row travels under. Private on purpose: a row key means nothing
-/// outside the sidebar that issued it, and a public type would invite other views to accept one.
 const ROW_PASTEBOARD_TYPE: &str = "com.native-gpui.sidebar-row";
 
 fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
@@ -1680,12 +1409,6 @@ fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
     text.to_string().parse().ok()
 }
 
-/// Resolve AppKit's proposal into a gap between two siblings, as `(parent, child index)`.
-///
-/// AppKit proposes a drop *onto* whichever row the pointer is over for most of that row's height,
-/// and a sidebar never accepts one — so without this the insertion line would exist only in the
-/// couple of points between rows and blink out everywhere else. A drop onto a group header lands
-/// at the top of that group, which is the only reading of it that means anything.
 fn drop_target(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
@@ -1711,8 +1434,6 @@ fn drop_target(
     Some((parent, at + usize::from(below)))
 }
 
-/// Free functions for the same reason [`row_view`] is one: the method macros wrap a body's tail
-/// expression, so an early `return` inside one does not typecheck against the wrapped type.
 fn row_pasteboard_item(
     shared: &Rc<Shared>,
     item: &AnyObject,
@@ -1747,8 +1468,6 @@ fn validate_row_drop(
     let Some((parent, at)) = drop_target(shared, outline, info, item, index) else {
         return NSDragOperation::empty();
     };
-    // Siblings only. Finder refuses a Favorite dropped into Locations, and a sidebar whose groups
-    // mean different kinds of thing has nothing sensible to do with one.
     if shared.model.borrow().parent_key(source) != parent {
         return NSDragOperation::empty();
     }
@@ -1785,8 +1504,7 @@ fn accept_row_drop(
             None => return false,
         }
     };
-    // The drop index counts the row itself; both the model move and AppKit's count the list with
-    // the row already lifted out, so a downward move loses one.
+    // The drop index counts the row itself; both moves count the list with the row lifted out.
     let to = (index as usize).saturating_sub(usize::from(index as usize > from));
     if to == from {
         return true;
@@ -1815,7 +1533,6 @@ fn accept_row_drop(
             index: to,
         }
     };
-    // Deferred for the same reason a selection is: GPUI may already hold its `App` borrow.
     shared
         .cx
         .borrow()
@@ -1827,17 +1544,7 @@ fn accept_row_drop(
 }
 
 outline_source!(
-    /// [`OutlineSource`] plus row dragging.
-    ///
-    /// A second class rather than a flag on the one class, because AppKit reads
-    /// `respondsToSelector:` and never asks what the method would have returned: defining
-    /// `outlineView:pasteboardWriterForItem:` at all is what moves the selection commit from
-    /// mouse-down to mouse-up. A `nil` return does not opt back out.
-    ///
-    /// A sibling and not a subclass. `objc2` fills exactly one class's ivar slot at `set_ivars`,
-    /// so a subclass carrying its own leaves the superclass's uninitialised, and the first
-    /// inherited callback panics reading it — invisible to every build and to `cargo test`,
-    /// because it takes launching the thing.
+/// Separate class: defining `pasteboardWriterForItem:` at all moves selection commit to mouse-up.
     ReorderSource,
     "NGSidebarReorderSource",
     #[unsafe(method_id(outlineView:pasteboardWriterForItem:))]
@@ -1873,8 +1580,6 @@ outline_source!(
 );
 
 define_class!(
-    /// Legitimises the system sidebar-toggle item. The item itself is still inserted explicitly:
-    /// vending it from `toolbarDefaultItemIdentifiers:` alone yields a toolbar with zero items.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarToolbarDelegate"]
@@ -1897,14 +1602,11 @@ define_class!(
 
 enum Plan {
     Nothing,
-    /// First push, or a recovery: nothing to diff against.
     Reload,
     Content(Vec<u64>),
     Structural {
         content: Vec<u64>,
-        /// Each parent (`None` = the virtual root) with the child list the **old** model had.
-        /// Asking the outline view instead routes back through the data source, which already
-        /// answers from the new model, so every structural change would produce zero deltas.
+        /// The child list the *old* model had; the data source already answers from the new one.
         parents: Vec<(Option<u64>, Vec<u64>)>,
     },
 }
@@ -1945,8 +1647,6 @@ fn plan_diff(old: &Model, new: &Model) -> Plan {
     }
 
     if structural {
-        // The virtual root plus every node that kept its parent. A node whose parent changed is a
-        // remove and an insert seen by those two parents.
         let mut parents = vec![(None, old.children_keys(None))];
         parents.extend(
             old.preorder()
@@ -2010,8 +1710,6 @@ fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
             expand_groups(state);
         }
 
-        // A row count that disagrees with the model means the index sets were wrong, and a reload
-        // plus an explicit state restore is the only correct recovery.
         let expected = expected_rows(state);
         if outline.numberOfRows() != expected {
             outline.reloadData();
@@ -2026,8 +1724,6 @@ fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
 
     for key in content {
         let item = shared.item(key);
-        // With reloadChildren NO this redraws exactly that row and touches neither selection,
-        // expansion nor scroll offset.
         unsafe { outline.reloadItem(Some(&item)) };
         diff.reloaded_items += 1;
     }
@@ -2038,7 +1734,6 @@ fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
     diff
 }
 
-/// Remove, then reorder, then insert — each against the already-swapped model.
 fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usize, usize, usize) {
     let outline = &state.views.outline;
     let shared = &state.shared;
@@ -2075,7 +1770,6 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
         }
     }
 
-    // Order the survivors before inserting, so insertion indices are the final ones.
     let survivors: Vec<u64> = wanted
         .iter()
         .copied()
@@ -2124,7 +1818,6 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
     (inserted, removed, moved)
 }
 
-/// Expand `key`'s ancestors, outermost first, so the item has a row.
 fn reveal(state: &SidebarState, key: u64) {
     let outline = &state.views.outline;
     let mut ancestors = Vec::new();
@@ -2167,7 +1860,6 @@ fn expand_groups(state: &SidebarState) {
     }
 }
 
-/// Rows AppKit should be showing: the model walked with AppKit's own expansion answers.
 fn expected_rows(state: &SidebarState) -> NSInteger {
     let outline = &state.views.outline;
     let model = state.shared.model.borrow();
@@ -2279,7 +1971,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         expand_groups: Cell::new(options.expand_groups),
         outline: RefCell::new(None),
     });
-    // Two classes, one of which merely *has* the drag methods. See [`ReorderSource`].
     let (source, data_source, delegate) = match options.reorderable {
         true => {
             let this = ReorderSource::new(mtm, shared.clone());
@@ -2308,25 +1999,20 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         NSTableColumn::alloc(mtm),
         &NSString::from_str("NGSidebarColumn"),
     );
-    // Both directions fail visibly: at `NSTableColumn`'s 100pt default a single-column outline
-    // view never widens and truncates labels that would fit, while seeding the sidebar's thickness
-    // overshoots because `.sourceList` adds 16pt of inset per side and scrolls the badge off.
-    // Seeded small, the scroll view grows the table to its clip view and the column follows.
+    // Seeded narrow: the scroll view grows the last column out to its clip view.
     column.setMinWidth(40.);
     column.setWidth(40.);
     column.setMaxWidth(4000.);
     column.setResizingMask(NSTableColumnResizingOptions::AutoresizingMask);
     outline.addTableColumn(&column);
-    // Uniform autoresizing would not do: it only redistributes on a frame *change*, and a column
-    // seeded narrower than the clip view produces no change to redistribute.
+    // LastColumnOnly, not Uniform: uniform redistributes only on a frame change, and there is none.
     outline.setColumnAutoresizingStyle(
         NSTableViewColumnAutoresizingStyle::LastColumnOnlyAutoresizingStyle,
     );
     unsafe { outline.setOutlineTableColumn(Some(&column)) };
     outline.setHeaderView(None);
     outline.setStyle(NSTableViewStyle::SourceList);
-    // After `.sourceList`, never before: setting that style overwrites `rowHeight`,
-    // `intercellSpacing` and `indentationPerLevel` with its own source-list seeds.
+    // After `.sourceList`, never before: that style overwrites `rowHeight` and the indentation.
     outline.setRowSizeStyle(options.row_size.appkit());
     outline.setFloatsGroupRows(false);
     unsafe {
@@ -2337,8 +2023,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         outline.registerForDraggedTypes(&NSArray::from_slice(&[&*NSString::from_str(
             ROW_PASTEBOARD_TYPE,
         )]));
-        // Local only: a row key is meaningless to another process, and offering `Move` outside
-        // the app would let a drag land somewhere that cannot answer for it.
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::empty(), false);
     }
@@ -2347,7 +2031,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), strip);
     scroll.setDocumentView(Some(&outline));
     scroll.setHasVerticalScroller(true);
-    // Mandatory: an opaque scroll view would paint over the sidebar's material.
+    // An opaque scroll view would paint over the sidebar's material.
     scroll.setDrawsBackground(false);
     scroll.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -2355,8 +2039,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
 
     let sidebar_vc = NSViewController::init(NSViewController::alloc(mtm));
     sidebar_vc.setView(&scroll);
-    // `behavior` is read-only, so this factory is the only way to get `Sidebar` — and with it the
-    // material, full-height layout, traffic-light inset, collapse animation and spring loading.
+    // `behavior` is read-only, so this factory is the only way to get `Sidebar`.
     let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar_vc);
     sidebar_item.setMinimumThickness(options.min_thickness.to_f64());
     sidebar_item.setMaximumThickness(options.max_thickness.to_f64());
@@ -2397,9 +2080,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     split.addSplitViewItem(&sidebar_item);
     split.addSplitViewItem(&content_item);
 
-    // Built whether or not it starts attached: `NSWindow.toolbar` is the only place a toolbar
-    // lives, so a sidebar that never made one could never honour a later
-    // [`NativeSidebar::set_toolbar`].
     let toolbar_delegate: Retained<SidebarToolbarDelegate> =
         unsafe { msg_send![SidebarToolbarDelegate::alloc(mtm), init] };
     let toolbar = NSToolbar::initWithIdentifier(
@@ -2407,9 +2087,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         &NSString::from_str("NGSidebarToolbar"),
     );
     toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
-    // A fresh NSToolbar defaults to icon *and* label — the pre-unified look, 14pt taller.
     toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
-    // `toggleSidebar:` walks the responder chain to the split controller, so no target wiring.
     unsafe {
         toolbar.insertItemWithItemIdentifier_atIndex(NSToolbarToggleSidebarItemIdentifier, 0)
     };
@@ -2421,8 +2099,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
     ns_window.setTitlebarAppearsTransparent(true);
 
-    // Collected before `setContentViewController:` replaces the old content view and orphans the
-    // host's below-containers, which are direct subviews of it.
+    // Collected before `setContentViewController:` orphans the host's below-containers.
     let orphans: Vec<Retained<NSView>> = if options.adopt_below_layer {
         old_content
             .subviews()
@@ -2436,8 +2113,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
 
     gpui.removeFromSuperview();
     match options.align {
-        // GPUI's view arrives sized to the old content view by autoresizing. Inside the pane its
-        // frame is computed, so autoresizing is a competing writer and must go.
         PaneAlign::WindowAligned => gpui.setAutoresizingMask(NSAutoresizingMaskOptions::empty()),
         PaneAlign::FillPane => gpui.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
@@ -2451,16 +2126,12 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         let view = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), host.bounds());
         view.setMaterial(RawMaterial::from(material).appkit());
         view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        // Pinned Active, not the default: a backdrop that flattens the moment the window stops
-        // being key would take the whole window with it.
+        // Pinned Active: otherwise the backdrop flattens the moment the window stops being key.
         view.setState(NSVisualEffectState::Active);
         view.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
-        // `NSSplitViewController`'s view is a plain container holding only the `NSSplitView`, so a
-        // sibling below that spans the window — under both panes and the titlebar strip, clipped
-        // by the window's rounded corners — and is not read as an arranged pane.
         let first = host.subviews().firstObject();
         host.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, first.as_deref());
         view
@@ -2480,8 +2151,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         split.view().layoutSubtreeIfNeeded();
     }
 
-    // A toolbar, FullSizeContentView and a content view controller each move and resize the
-    // window, so the content rect has to be put back.
+    // A toolbar, FullSizeContentView and a content view controller each resize the window.
     ns_window.setContentSize(content_size);
     split.view().layoutSubtreeIfNeeded();
     pane_shared.align(&pane);
@@ -2526,15 +2196,10 @@ impl ReorderSource {
 mod tests {
     use super::*;
 
-    /// The eight `SidebarAirDrop` reps as the bundle ships them: 16/18/24/32 points, each at both
-    /// scales.
     const AIRDROP_REP_POINTS: [f64; 8] = [16., 16., 18., 18., 24., 24., 32., 32.];
 
     #[test]
     fn a_medium_icon_box_resolves_to_the_three_arc_airdrop_rep() {
-        // A Medium box is 19pt and the reps are 16/18/24/32, so the box picks the drawing. 30
-        // resolving up to 32 is the arm that matters: 32 is the four-arc AirDrop, and it must be
-        // reachable when something really is that big rather than clamped away.
         assert_eq!(
             nearest_rep_points(
                 AIRDROP_REP_POINTS,

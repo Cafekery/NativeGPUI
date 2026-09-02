@@ -1,9 +1,10 @@
+//! Conversion between `NSColor` and gpui's `Hsla`.
+
 use gpui::{Hsla, Rgba};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSColorSpace};
 
-/// It must be `colorWithSRGBRed:` — `Hsla` is sRGB-relative and `colorWithRed:` is *device* RGB,
-/// which on a P3 display is a different colour from the same three numbers.
+// `colorWithSRGBRed:`, not `colorWithRed:`, which is device RGB.
 pub fn to_nscolor(color: Hsla) -> Retained<NSColor> {
     let rgba = Rgba::from(color);
     NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -14,18 +15,7 @@ pub fn to_nscolor(color: Hsla) -> Retained<NSColor> {
     )
 }
 
-/// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion. Reads the
-/// ambient drawing appearance, which matches one appearance and silently contradicts the other,
-/// so for a semantic colour use `SystemColor::try_resolve` instead.
-///
-/// That `try_resolve` genuinely answers per appearance rather than reading the ambient one twice
-/// is checked by the storybook's tokens page, which lists the rows where
-/// `try_resolve(Light) != try_resolve(Dark)`. It is the only live control on this, so a pass that
-/// removes it leaves nothing behind that can fail.
-///
-/// The `Option` must not be collapsed to a default: `redComponent` and friends are undefined
-/// outside an RGB colour space, so the conversion is mandatory, and it returns nil for pattern
-/// colours — which would hand the caller a black indistinguishable from a deliberate one.
+// `colorUsingColorSpace:` is nil for pattern colours, whose components are undefined.
 pub fn from_nscolor(color: &NSColor) -> Option<Hsla> {
     let srgb = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
     Some(Hsla::from(Rgba {

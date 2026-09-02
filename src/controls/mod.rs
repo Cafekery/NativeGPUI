@@ -1,7 +1,5 @@
-//! Hosted AppKit controls. Put these in your GPUI layout.
-//!
-//! Each `paint` does the same three things: derive the pool key from GPUI's element identity,
-//! [`crate::NativeHost::place`] the view, then push only the properties that changed.
+//! Hosted AppKit controls: ordinary GPUI elements that place a pooled view into their bounds and
+//! push only the properties that changed.
 
 mod button;
 mod label;
@@ -12,6 +10,9 @@ mod slider;
 mod small;
 mod switch;
 mod text_field;
+
+use gpui::{Length, Style, px, relative, size};
+use objc2_foundation::NSSize;
 
 pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
@@ -37,3 +38,19 @@ pub use switch::{NativeSwitch, native_switch};
 pub use text_field::{
     NativeTextField, native_search_field, native_secure_field, native_text_field,
 };
+
+/// An axis AppKit reports as 0 is free, so layout fills it.
+pub(crate) fn axis(reported: f64) -> Length {
+    if reported > 0. {
+        px(reported as f32).into()
+    } else {
+        relative(1.).into()
+    }
+}
+
+/// A style sized by a control's `fittingSize`.
+pub(crate) fn fitted(fitting: NSSize) -> Style {
+    let mut style = Style::default();
+    style.size = size(axis(fitting.width), axis(fitting.height));
+    style
+}

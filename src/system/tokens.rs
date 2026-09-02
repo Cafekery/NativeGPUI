@@ -1,30 +1,4 @@
-//! The system's own colours, fonts, symbols and file-type icons, for the parts GPUI draws itself.
-//!
-//! Hosted controls get their pixels from macOS for free; the labels, separators and panel
-//! backgrounds GPUI draws around them do not, and a hex value typed there is wrong the moment the
-//! user changes appearance or accent.
-//!
-//! ```no_run
-//! # use gpui::{App, div, prelude::*};
-//! # use native_gpui::tokens::{self, SystemColor, system_color, system_font};
-//! # fn setup(cx: &mut App) {
-//! tokens::init(cx); // once, at startup
-//! # }
-//! # fn ui() -> impl IntoElement {
-//! div()
-//!     .bg(system_color(SystemColor::WindowBackground))
-//!     .text_color(system_color(SystemColor::Label))
-//!     .font(system_font(gpui::FontWeight::NORMAL))
-//! # }
-//! ```
-//!
-//! An `NSColor` is a recipe, not a value: reading its components without first installing a
-//! drawing appearance silently returns the ambient one, so every read here goes through
-//! [`NSAppearance::performAsCurrentDrawingAppearance`].
-//!
-//! [`init`] republishes the [`SystemTheme`] global on every system change; observe it to re-render.
-//! Colour correctness does not depend on it — [`system_color`] keys its cache by effective
-//! appearance on every call — but accent and display changes only propagate with it.
+//! The system's own colours, fonts, symbols and file-type icons, for the parts gpui draws itself.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -59,7 +33,6 @@ use objc2_foundation::{
 use crate::bridge::host::ControlSize;
 use crate::system::color::from_nscolor;
 
-/// Which of the two colour worlds a value should be resolved in.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Appearance {
     Light,
@@ -79,9 +52,7 @@ impl Appearance {
             .expect("the two base appearances always resolve")
     }
 
-    /// Collapse any appearance onto one of the two worlds, via
-    /// `bestMatchFromAppearancesWithNames`: a name-string compare files
-    /// `accessibilityHighContrastDarkAqua` as light.
+    /// Collapse any appearance onto one of the two worlds.
     pub fn of(appearance: &NSAppearance) -> Appearance {
         let names = NSArray::from_slice(&[
             Appearance::Light.ns_name().as_ref(),
@@ -90,8 +61,7 @@ impl Appearance {
         match appearance.bestMatchFromAppearancesWithNames(&names) {
             Some(name) if &*name == unsafe { NSAppearanceNameDarkAqua } => Appearance::Dark,
             Some(_) => Appearance::Light,
-            // An appearance Apple has not shipped yet: `allowsVibrancy` is true for every dark and
-            // vibrant one, false for plain aqua.
+            // For an appearance Apple has not shipped yet: only dark and vibrant ones vibrate.
             None if appearance.allowsVibrancy() => Appearance::Dark,
             None => Appearance::Light,
         }
@@ -99,15 +69,11 @@ impl Appearance {
 }
 
 thread_local! {
-    /// Aqua and dark aqua are process-wide singletons, so a pointer compare hits on nearly every
-    /// call and the `NSArray`-allocating match runs once.
     static APPEARANCE_MEMO: Cell<(*const NSAppearance, Appearance)> =
         const { Cell::new((ptr::null(), Appearance::Light)) };
 }
 
-/// This process's current effective appearance, honouring a [`set_app_appearance`] override.
 pub fn current_appearance() -> Appearance {
-    // Off the main thread there is no NSApp to ask; every caller here is a GPUI render path.
     let Some(mtm) = MainThreadMarker::new() else {
         return Appearance::Light;
     };
@@ -124,8 +90,7 @@ pub fn current_appearance() -> Appearance {
     })
 }
 
-/// Force this process's appearance, or `None` to follow the system again, through the same KVO a
-/// real system flip drives.
+/// Force this process's appearance, or `None` to follow the system again.
 pub fn set_app_appearance(appearance: Option<Appearance>) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -139,8 +104,7 @@ type ColorFn = fn() -> Retained<NSColor>;
 
 macro_rules! system_colors {
     ($(($variant:ident, $objc:ident)),* $(,)?) => {
-        /// A semantic macOS colour: a role, not a value. Resolve with [`system_color`] (cached,
-        /// current appearance) or [`SystemColor::try_resolve`] (uncached, explicit appearance).
+        /// A semantic macOS colour: a role, not a value.
         #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
         #[non_exhaustive]
         pub enum SystemColor {
@@ -148,10 +112,8 @@ macro_rules! system_colors {
         }
 
         impl SystemColor {
-            /// Every colour this module exposes, in a stable order.
             pub const ALL: &'static [SystemColor] = &[$(SystemColor::$variant),*];
 
-            /// The AppKit selector this colour comes from.
             pub const fn objc_name(self) -> &'static str {
                 match self {
                     $(SystemColor::$variant => stringify!($objc)),*
@@ -168,7 +130,6 @@ macro_rules! system_colors {
 }
 
 system_colors![
-    // text
     (Label, labelColor),
     (SecondaryLabel, secondaryLabelColor),
     (TertiaryLabel, tertiaryLabelColor),
@@ -177,7 +138,6 @@ system_colors![
     (Text, textColor),
     (PlaceholderText, placeholderTextColor),
     (HeaderText, headerTextColor),
-    // text fields and selection
     (TextBackground, textBackgroundColor),
     (SelectedText, selectedTextColor),
     (SelectedTextBackground, selectedTextBackgroundColor),
@@ -186,11 +146,9 @@ system_colors![
         unemphasizedSelectedTextBackgroundColor
     ),
     (TextInsertionPoint, textInsertionPointColor),
-    // surfaces
     (WindowBackground, windowBackgroundColor),
     (UnderPageBackground, underPageBackgroundColor),
     (ControlBackground, controlBackgroundColor),
-    // controls
     (Control, controlColor),
     (ControlText, controlTextColor),
     (DisabledControlText, disabledControlTextColor),
@@ -200,13 +158,11 @@ system_colors![
         AlternateSelectedControlText,
         alternateSelectedControlTextColor
     ),
-    // lists and tables
     (SelectedContentBackground, selectedContentBackgroundColor),
     (
         UnemphasizedSelectedContentBackground,
         unemphasizedSelectedContentBackgroundColor
     ),
-    // lines and emphasis
     (Separator, separatorColor),
     (Grid, gridColor),
     (Link, linkColor),
@@ -214,13 +170,11 @@ system_colors![
     (KeyboardFocusIndicator, keyboardFocusIndicatorColor),
     (FindHighlight, findHighlightColor),
     (Shadow, shadowColor),
-    // fills
     (SystemFill, systemFillColor),
     (SecondarySystemFill, secondarySystemFillColor),
     (TertiarySystemFill, tertiarySystemFillColor),
     (QuaternarySystemFill, quaternarySystemFillColor),
     (QuinarySystemFill, quinarySystemFillColor),
-    // palette
     (SystemRed, systemRedColor),
     (SystemOrange, systemOrangeColor),
     (SystemYellow, systemYellowColor),
@@ -237,25 +191,17 @@ system_colors![
 ];
 
 impl SystemColor {
-    /// The live `NSColor` for handing a semantic colour back to AppKit, where `Hsla` would lose the
-    /// recipe.
     pub fn ns_color(self) -> Retained<NSColor> {
         (self.getter())()
     }
 
     /// Resolve for an explicit appearance, uncached.
-    ///
-    /// `None` when sRGB conversion refuses, as it still does for pattern colours
-    /// (`NSPatternColor`): `redComponent` off one throws or yields a plausible-looking black, so
-    /// the `Option` has to stay. [`refused`] says which ones.
     pub fn try_resolve(self, appearance: Appearance) -> Option<Hsla> {
         let getter = self.getter();
         with_appearance(appearance, || from_nscolor(&getter()))
     }
 }
 
-/// Run `f` with `appearance` installed as the current drawing appearance. Panics if the block never
-/// ran, which would silently degrade a two-appearance comparison into two identical reads.
 fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
     let slot: RefCell<Option<T>> = RefCell::new(None);
     let block = StackBlock::new(|| *slot.borrow_mut() = Some(f()));
@@ -267,19 +213,11 @@ fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
 }
 
 /// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion.
-///
-/// Reads the **ambient** drawing appearance, which matches one appearance and silently
-/// contradicts the other, so for a semantic colour reach for [`SystemColor::try_resolve`].
-///
-/// A one-line pass-through deliberately, and the only public door onto the crate's single
-/// conversion — the function behind it is crate-private. Every caller is in `examples/`, so a
-/// caller search restricted to `src/` reports this unused and deleting it stops the tree
-/// compiling.
 pub fn srgb(color: &NSColor) -> Option<Hsla> {
     from_nscolor(color)
 }
 
-/// `labelColor`'s value, so a colour that refuses sRGB conversion degrades to readable text.
+// `labelColor`'s own value, so a colour that refuses conversion degrades to readable text.
 fn refusal_fallback(appearance: Appearance) -> Hsla {
     let luminance = match appearance {
         Appearance::Light => 0.0,
@@ -294,8 +232,7 @@ fn refusal_fallback(appearance: Appearance) -> Hsla {
     .into()
 }
 
-/// Which colours refuse sRGB conversion under `appearance` — none, as of macOS 26. Assert it is
-/// empty at startup to turn `refusal_fallback`'s substitution into a tripwire.
+/// Which colours refuse sRGB conversion under `appearance`.
 pub fn refused(appearance: Appearance) -> Vec<SystemColor> {
     SystemColor::ALL
         .iter()
@@ -304,10 +241,8 @@ pub fn refused(appearance: Appearance) -> Vec<SystemColor> {
         .collect()
 }
 
-/// Bumped by every observer in [`init`], and by [`set_app_appearance`] through KVO.
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// The live token generation. [`CacheStats::generation`] is the one the cache is holding.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }
@@ -316,28 +251,19 @@ pub fn generation() -> u64 {
 struct Cache {
     generation: u64,
     palettes: [Option<Vec<Option<Hsla>>>; 2],
-    /// Max backing scale across all displays, so a symbol survives a move to a Retina one.
     scale: Option<f32>,
     symbols: HashMap<SymbolKey, Option<Symbol>>,
-    /// Outlives the generation, unlike `symbols`: a file icon is fixed artwork keyed by its own
-    /// scale, so nothing a token observer watches can change one.
     file_icons: HashMap<FileIconKey, Option<Symbol>>,
     palette_resolves: u64,
     symbol_rasters: u64,
     file_icon_rasters: u64,
 }
 
-/// Counters, not gauges. The palette cache is keyed by appearance, so only re-entering an
-/// appearance distinguishes a live cache from a stale one.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct CacheStats {
-    /// One `performAsCurrentDrawingAppearance` pass per appearance per generation.
     pub palette_resolves: u64,
-    /// Including the ones that came back `None`.
     pub symbol_rasters: u64,
-    /// Never reset, because [`file_icon`] survives a generation bump.
     pub file_icon_rasters: u64,
-    /// Lags [`generation`] until the next token read.
     pub generation: u64,
 }
 
@@ -365,20 +291,12 @@ fn with_cache<R>(f: impl FnOnce(&mut Cache) -> R) -> R {
             cache.generation = generation;
             cache.palettes = [None, None];
             cache.scale = None;
-            // `file_icons` deliberately survives: appearance, accent and display changes cannot
-            // alter fixed artwork, and its key already carries the backing scale.
             cache.symbols.clear();
         }
         f(&mut cache)
     })
 }
 
-/// A semantic colour for this process's current appearance. The first call for an appearance
-/// resolves all of [`SystemColor::ALL`] in one pass; every later call is an array index.
-///
-/// A [`Layer::Below`](crate::Layer::Below) `NSVisualEffectView` only shows through where GPUI
-/// painted nothing, so an opaque `.bg(system_color(..))` over a material silently replaces the blur
-/// with an approximation of it — paint nothing, or below alpha 1.
 pub fn system_color(color: SystemColor) -> Hsla {
     let appearance = current_appearance();
     with_cache(|cache| {
@@ -399,35 +317,13 @@ pub fn system_color(color: SystemColor) -> Hsla {
     })
 }
 
-/// The user's accent colour. Shorthand for [`SystemColor::ControlAccent`].
 pub fn accent() -> Hsla {
     system_color(SystemColor::ControlAccent)
 }
 
-/// **The** window background: the one colour every opaque surface of a window is painted with —
-/// the toolbar band, the content pane behind it, and whatever an app draws in the body.
-///
-/// One value, because two are visible as a step. A window's toolbar band and its body are the
-/// same surface interrupted by a strip of chrome, and anything that resolves them differently
-/// draws a line across the window where no line exists. The one deliberate exception is a
-/// sidebar, which is vibrancy over this and not a colour at all; see
-/// [`SidebarOptions::backdrop`](crate::sidebar::SidebarOptions::backdrop).
-///
-/// It has to be an opaque colour and not a material. A material's value tracks whatever it
-/// samples: `UnderWindowBackground` over a flat grey 29 reads 38 and over grey 60 reads 44, while
-/// `windowBackgroundColor` reads 30 over both. The window-spanning backdrop samples *behind the
-/// window*, so what it tracks is the desktop — a band on that and a body on a colour cannot be
-/// reconciled by any constant, because only one of them moves. Two cheap confirmations that a
-/// surface is the first kind: it is state-dependent, shifting when the window stops being key
-/// (43 to 55 in dark), and a colour is not.
-///
-/// Do not try to re-measure any of that from a window-scoped screen capture. It composites over
-/// nothing behind the window, so a behind-window material reports its own flat tint however
-/// colourful the desktop is, and the null reads as "not sampling".
+/// The one background colour every opaque surface of a window resolves to.
 pub const WINDOW_BACKGROUND: SystemColor = SystemColor::WindowBackground;
 
-/// [`WINDOW_BACKGROUND`] for this process's current appearance. `WINDOW_BACKGROUND.ns_color()` is
-/// the same token for a caller handing it back to AppKit.
 pub fn window_background() -> Hsla {
     system_color(WINDOW_BACKGROUND)
 }
@@ -446,9 +342,6 @@ fn display_scale() -> f32 {
     })
 }
 
-/// The system's visual state, republished as a GPUI global whenever it changes; observe it with
-/// `cx.observe_global::<SystemTheme>(..)`. `generation` increments on every observed change,
-/// including ones that leave `appearance` and `accent` untouched.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct SystemTheme {
     pub appearance: Appearance,
@@ -466,8 +359,7 @@ fn snapshot() -> SystemTheme {
     }
 }
 
-/// All of them, because they do not overlap cleanly: an accent-only change posts
-/// `AppleColorPreferencesChanged` and leaves `effectiveAppearance` alone, so the KVO never sees it.
+// An accent-only change posts `AppleColorPreferencesChanged` and never reaches the KVO.
 const DISTRIBUTED_NOTIFICATIONS: &[&str] = &[
     "AppleColorPreferencesChangedNotification",
     "AppleInterfaceThemeChangedNotification",
@@ -481,8 +373,6 @@ const LOCAL_NOTIFICATIONS: &[&str] = &[
 ];
 
 define_class!(
-    /// KVO sink for `NSApp.effectiveAppearance` — the only observer that catches an app-local
-    /// [`set_app_appearance`].
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGThemeObserver"]
@@ -509,13 +399,10 @@ struct ThemeObserverIvars {
     cx: AsyncApp,
 }
 
-/// Invalidate every cache and republish [`SystemTheme`].
-///
-/// `set_global` is deferred through `spawn` because a GPUI-sourced appearance change arrives while
-/// GPUI still holds its `App` borrow, and a synchronous update there drops the event.
 fn bump(cx: &AsyncApp) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
     APPEARANCE_MEMO.with(|memo| memo.set((ptr::null(), Appearance::Light)));
+    // Deferred: a gpui-sourced appearance change arrives while gpui still holds its `App` borrow.
     let cx2 = cx.clone();
     cx.spawn(async move |_| {
         let _ = cx2.update(|app| app.set_global(snapshot()));
@@ -536,8 +423,7 @@ thread_local! {
 pub fn init(cx: &mut App) {
     cx.set_global(snapshot());
 
-    let already = OBSERVERS.with(|slot| slot.borrow().is_some());
-    if already {
+    if OBSERVERS.with(|slot| slot.borrow().is_some()) {
         return;
     }
     let Some(mtm) = MainThreadMarker::new() else {
@@ -590,25 +476,15 @@ pub fn init(cx: &mut App) {
     });
 }
 
-/// The family string that reaches the real system face through GPUI's text system.
-///
-/// GPUI resolves the right face but does not apply SF's optical-size (`opsz`) axis, which CoreText
-/// applies whenever you ask `NSFont` for a size: about 2.6% narrow at 13pt, exact around 16pt,
-/// wider above. Measure at the size you ship with [`advance_delta`].
 pub const fn system_font_family() -> &'static str {
     ".AppleSystemUIFont"
 }
 
-/// The name `SF Pro Text`, whether or not this machine has it. Prefer [`text_font_family`].
 pub const fn text_font_family_name() -> &'static str {
     "SF Pro Text"
 }
 
-/// `SF Pro Text` **if it is actually installed**, else `None` — a developer download rather than
-/// part of a stock macOS install.
-///
-/// A manual stand-in for the optical-size axis GPUI does not apply: closer to AppKit up to about
-/// 14pt, further away above. Falling back to [`system_font_family`] keeps forward compatibility.
+/// `SF Pro Text` if it is actually installed — a developer download, not part of stock macOS.
 pub fn text_font_family(cx: &App) -> Option<&'static str> {
     let text_system = cx.text_system();
     let resolve = |family: &str| {
@@ -616,8 +492,7 @@ pub fn text_font_family(cx: &App) -> Option<&'static str> {
         font.family = family.to_string().into();
         text_system.resolve_font(&font)
     };
-    // GPUI resolves an unknown family to a silent fallback rather than failing, so asking whether
-    // the name resolves proves nothing. Two nonexistent families pin the fallback id.
+    // gpui resolves an unknown family to a silent fallback, so two nonexistent names pin its id.
     let fallback = resolve("NG-No-Such-Family-9x7");
     if fallback != resolve("NG-Also-Not-Installed-4b2") {
         return None;
@@ -625,32 +500,23 @@ pub fn text_font_family(cx: &App) -> Option<&'static str> {
     (resolve(text_font_family_name()) != fallback).then(text_font_family_name)
 }
 
-/// `NSFont.systemFontSize`, read from the system rather than assumed.
 pub fn system_font_size() -> Pixels {
     px(NSFont::systemFontSize() as f32)
 }
 
-/// `NSFont.smallSystemFontSize`.
 pub fn small_system_font_size() -> Pixels {
     px(NSFont::smallSystemFontSize() as f32)
 }
 
-/// The font size that belongs to a [`ControlSize`], for a GPUI label beside a control sized the
-/// same way.
-///
-/// AppKit answers with only three distinct values, 13pt for `Regular`, `Large` and `ExtraLarge`
-/// alike — the system's answer, not a stub. Hardcoding 15 or 17 puts the label out of step.
+/// The font size that belongs to a [`ControlSize`].
 pub fn system_font_size_for(size: ControlSize) -> Pixels {
     px(NSFont::systemFontSizeForControlSize(size.into()) as f32)
 }
 
-/// `NSFont.labelFontSize`, for chart and axis labels — not a control's own label, which is
-/// [`system_font_size_for`].
 pub fn label_font_size() -> Pixels {
     px(NSFont::labelFontSize() as f32)
 }
 
-/// A GPUI [`Font`] in the system face at the given weight.
 pub fn system_font(weight: FontWeight) -> Font {
     Font {
         family: system_font_family().into(),
@@ -661,31 +527,13 @@ pub fn system_font(weight: FontWeight) -> Font {
     }
 }
 
-/// The OpenType tag that turns SF's proportional figures into tabular ones. `monospacedDigit`
-/// would name the AppKit call rather than the thing being asked for.
-const TABULAR_FIGURES: &str = "tnum";
-
-/// [`system_font`] with tabular figures, for a column of numbers that must not shift as its digits
-/// change — a date column, a size column, a clock.
-///
-/// The same face and weight, not a monospaced one: only the digits change width. In SF at 14pt the
-/// proportional `1` advances 6.34pt against `4`'s 8.86pt, so `11:11 AM` renders 6.97pt narrower
-/// than `10:00 AM` and every row of a date column starts somewhere different. With this the two
-/// are identical, and each digit advances 8.67pt — the same number AppKit's own
-/// `monospacedDigitSystemFont(ofSize: 14, weight: .regular)` produces.
-///
-/// Verified by `examples/tabular_figures.rs`, which the close-out gate runs: GPUI applies the
-/// feature through a `CTFontDescriptor`, so a toolchain that stopped honouring it would leave this
-/// silently returning a proportional font.
 pub fn system_font_tabular(weight: FontWeight) -> Font {
     Font {
-        features: FontFeatures(Arc::new(vec![(TABULAR_FIGURES.to_string(), 1)])),
+        features: FontFeatures(Arc::new(vec![("tnum".to_string(), 1)])),
         ..system_font(weight)
     }
 }
 
-/// GPUI's nine weights mapped onto AppKit's, by nearest ordinal: SF Pro's `usWeightClass` values
-/// are 100..900 in exactly these steps and [`FontWeight`] is the same CSS scale.
 pub fn ns_font_weight(weight: FontWeight) -> NSFontWeight {
     let table: [(f32, NSFontWeight); 9] = unsafe {
         [
@@ -707,8 +555,6 @@ pub fn ns_font_weight(weight: FontWeight) -> NSFontWeight {
         .expect("weight table is never empty")
 }
 
-/// AppKit's own metrics for the system font, in points. Use these to align a GPUI label's baseline
-/// with a hosted control's; GPUI's own come from a face without the optical-size axis applied.
 #[derive(Clone, PartialEq, Debug)]
 pub struct FontMetrics {
     pub ascent: f32,
@@ -716,7 +562,6 @@ pub struct FontMetrics {
     pub leading: f32,
     pub cap_height: f32,
     pub x_height: f32,
-    /// The face AppKit actually resolved, e.g. `.AppleSystemUIFontDemi` for semibold.
     pub resolved_name: String,
 }
 
@@ -732,8 +577,6 @@ pub fn system_font_metrics(size: Pixels, weight: FontWeight) -> FontMetrics {
     }
 }
 
-/// The `NSFont` behind a GPUI family string, `None` for a family AppKit does not have.
-/// [`system_font_family`] routes through `systemFont(ofSize:weight:)` so the `opsz` axis applies.
 pub fn ns_font(family: &str, size: Pixels, weight: FontWeight) -> Option<Retained<NSFont>> {
     let points = f32::from(size) as f64;
     if family == system_font_family() {
@@ -746,15 +589,6 @@ pub fn ns_font(family: &str, size: Pixels, weight: FontWeight) -> Option<Retaine
     }
 }
 
-/// Typographic width of `text` in `font`, kerning and ligatures off.
-///
-/// `NSAttributedString.size()` does not reliably shape an OpenType feature, so these widths are
-/// only trustworthy for a font whose metrics are in the face itself. Asked about
-/// `monospacedDigitSystemFont(14)` it answers 63.44 for ten `1`s and 88.59 for ten `4`s — the
-/// proportional advances — while `CTLine` shapes both at 86.68; and whether it takes the shaping
-/// path at all turns on the string, since it *does* return the tabular width for
-/// `11:11 AM`. On every font without a feature the two agree exactly: 0.000000 across 22 strings
-/// at four sizes, trailing and leading spaces included.
 fn typeset_width(font: &NSFont, text: &str) -> f64 {
     let zero = NSNumber::new_i32(0);
     let font_obj: &AnyObject = font.as_ref();
@@ -778,9 +612,6 @@ fn typeset_width(font: &NSFont, text: &str) -> f64 {
     attributed.size().width
 }
 
-/// AppKit's own width for a whole string, in points, kerning and ligatures off. Do not measure a
-/// font carrying an OpenType feature with this — see [`system_font_tabular`], and use GPUI's own
-/// `shape_line` for those.
 pub fn appkit_string_width(
     family: &str,
     size: Pixels,
@@ -790,11 +621,7 @@ pub fn appkit_string_width(
     Some(typeset_width(&*ns_font(family, size, weight)?, text) as f32)
 }
 
-/// AppKit's advance width for one character, in points.
-///
-/// Differential — `width(ch ch) - width(ch)` — to cancel the string's side bearings. The direct
-/// route, `NSFont.glyphWithName`, takes a **glyph name** rather than a character: it answers for
-/// `'x'` and returns glyph 0 for `'0'` and `' '`, silently dropping every digit and space.
+// Differential — `width(ch ch) - width(ch)` — to cancel the string's own side bearings.
 pub fn appkit_advance(family: &str, size: Pixels, weight: FontWeight, ch: char) -> Option<f32> {
     let font = ns_font(family, size, weight)?;
     Some(
@@ -802,8 +629,6 @@ pub fn appkit_advance(family: &str, size: Pixels, weight: FontWeight, ch: char) 
     )
 }
 
-/// GPUI's advance for `ch` in `family`, in pixels. The other arm of [`advance_delta`], exposed
-/// separately because a surprising delta is only diagnosable by reading each side on its own.
 pub fn gpui_advance(
     cx: &App,
     family: &str,
@@ -818,9 +643,7 @@ pub fn gpui_advance(
     Some(f32::from(text_system.advance(id, size, ch).ok()?.width))
 }
 
-/// How far GPUI's advance for `ch` is from AppKit's, in points. Positive means GPUI is wider.
-///
-/// Run a named family as a control: if that disagrees too, the two instruments are incomparable.
+/// How far gpui's advance for `ch` is from AppKit's, in points; positive means gpui is wider.
 pub fn advance_delta(
     cx: &App,
     family: &str,
@@ -834,16 +657,12 @@ pub fn advance_delta(
 /// How a symbol's layers get their colour.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SymbolColor {
-    /// `labelColor`, hierarchically — what an `NSImageView` does with a template symbol.
     Label,
-    /// One colour, with AppKit deriving reduced-intensity secondary and tertiary layers from it.
     Hierarchical(SystemColor),
-    /// One colour per layer, in order. Layers past the end of the list keep the last colour.
+    /// One colour per layer, in order; layers past the end of the list keep the last colour.
     Palette(Vec<SystemColor>),
-    /// The symbol's own multicolour artwork where it has one, monochrome where it does not.
     Multicolor,
-    /// No colour configuration at all, for symbols that ship their own fixed artwork. A template
-    /// symbol comes out **black**, which is invisible in dark mode.
+    /// No colour configuration at all: a template symbol comes out black.
     Raw,
 }
 
@@ -874,20 +693,16 @@ impl SymbolColor {
     }
 }
 
-/// A rasterised system image, ready to hand to GPUI: an SF Symbol from [`sf_symbol`] or a file
-/// type's own artwork from [`file_icon`]. One type for both, so a list row that shows either can
-/// hold one field.
+/// A rasterised system image, ready to hand to gpui.
 #[derive(Clone)]
 pub struct Symbol {
     pub image: Arc<RenderImage>,
-    /// Logical size in points; the buffer is `scale` times this, and laying the image out at
-    /// anything else resamples it.
+    /// Logical size in points; the buffer is `scale` times this.
     pub size: Size<Pixels>,
     pub scale: f32,
 }
 
 impl Symbol {
-    /// The symbol as a correctly-sized GPUI element.
     pub fn img(&self) -> Img {
         img(self.image.clone())
             .w(self.size.width)
@@ -898,23 +713,18 @@ impl Symbol {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct SymbolKey {
     name: String,
-    /// `Pixels` is `f32`, which is not `Hash`. Bits are exact for a cache key.
     size: u32,
     weight: u32,
     color: SymbolColor,
     appearance: Appearance,
 }
 
-/// Render an SF Symbol for GPUI, in `labelColor` at the current appearance. `None` if the system
-/// has no symbol by that name: a placeholder glyph would hide a name macOS 26 has and an older
-/// release does not.
+/// Render an SF Symbol for gpui, in `labelColor` at the current appearance.
 pub fn sf_symbol(name: &str, size: Pixels, weight: FontWeight) -> Option<Symbol> {
     sf_symbol_colored(name, size, weight, &SymbolColor::Label)
 }
 
-/// [`sf_symbol`] with an explicit colour configuration. Cached by every input including appearance
-/// and dropped on any system change: a semantic tint resolves at raster time, so the same symbol
-/// is a different image under the other appearance.
+/// [`sf_symbol`] with an explicit colour configuration.
 pub fn sf_symbol_colored(
     name: &str,
     size: Pixels,
@@ -969,8 +779,7 @@ fn rasterize_symbol(
     let w = ((points.width * scale as f64).round() as usize).max(1);
     let h = ((points.height * scale as f64).round() as usize).max(1);
 
-    // A semantic tint resolves at raster time, so outside the drawing appearance a `labelColor`
-    // symbol picks up the ambient one and comes out black on a dark panel.
+    // A semantic tint resolves at raster time, picking up the ambient appearance if none is set.
     let rgba = with_appearance(appearance, || draw(&image, points, w, h))?;
 
     Some(Symbol {
@@ -983,11 +792,9 @@ fn rasterize_symbol(
     })
 }
 
-/// Which system icon to fetch. Every variant is a *type* lookup — there is deliberately no
-/// path-taking form, so no icon here depends on a file existing or on reading one.
+/// Which system icon to fetch.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum FileType<'a> {
-    /// The blue folder, via `public.folder`.
     Folder,
     /// A filename extension without the dot, e.g. `"zip"`.
     Extension(&'a str),
@@ -996,7 +803,6 @@ pub enum FileType<'a> {
 }
 
 impl<'a> FileType<'a> {
-    /// `(is_extension, text)` — the two things the lookup actually varies on.
     fn tag(self) -> (bool, &'a str) {
         match self {
             FileType::Folder => (false, "public.folder"),
@@ -1008,40 +814,13 @@ impl<'a> FileType<'a> {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FileIconKey {
-    /// Distinguishes [`FileType::Extension`] from [`FileType::Uti`], which can spell the same
-    /// string and mean different types.
     extension: bool,
     text: String,
-    /// `Pixels` is `f32`, which is not `Hash`. Bits are exact for a cache key.
     size: u32,
-    /// Part of the key rather than something a generation bump clears: a display change alters
-    /// only the buffer resolution, and keying it means the old raster stays valid if the user
-    /// moves the window back.
     scale: u32,
 }
 
-/// The system's own artwork for a file type, rasterised for GPUI: the blue folder, the orange
-/// `.zip`, the document sheet with a type badge. `None` if `UTType` cannot resolve the type at all
-/// — a placeholder would be indistinguishable from a real generic-document icon.
-///
-/// Cached by type, requested size and backing scale, and — unlike [`sf_symbol`] — **not** by
-/// appearance: the four artwork sets measured here are byte-identical under aqua and dark aqua,
-/// where the same comparison on a `labelColor` symbol moves every antialiased pixel. Nothing a
-/// token observer watches can change one, so a generation bump leaves the cache standing. The one
-/// thing that would invalidate an entry is the Launch Services type database changing under the
-/// process — an app installed while it runs, claiming an extension — and this crate does not
-/// observe that.
-///
-/// One lookup plus raster costs around 42µs, nearly all of it the raster, so a list re-requesting
-/// per row per frame would spend more on icons than on everything else it draws.
-///
-/// ```no_run
-/// # use native_gpui::tokens::{FileType, file_icon};
-/// # use gpui::px;
-/// # fn row() -> Option<gpui::Img> {
-/// Some(file_icon(FileType::Extension("zip"), px(32.))?.img())
-/// # }
-/// ```
+/// The system's own artwork for a file type, rasterised for gpui.
 pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
     let (extension, text) = kind.tag();
     let scale = display_scale();
@@ -1062,22 +841,11 @@ pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
     })
 }
 
-/// The folder icon at `size`. Shorthand for [`FileType::Folder`], and the only folder form there
-/// is: a per-folder custom icon would need a path.
 pub fn folder_icon(size: Pixels) -> Option<Symbol> {
     file_icon(FileType::Folder, size)
 }
 
-/// `UTType` for an extension or a uniform type identifier, `None` if the class is missing or the
-/// identifier is not declared.
-///
-/// `typeWithFilenameExtension:` is the obvious call for an extension and it is the wrong one. For
-/// `icon` and `iconset` it answers a *dynamic* `dyn.ah62…` type, whose icon is the blank document
-/// sheet, while `typesWithTag:tagClass:conformingToType:` finds the declared
-/// `com.apple.iconcomposer.icon` in the same process. It also disagrees on `app`, answering the
-/// legacy single-file `com.apple.application-file` where the tag search leads with
-/// `com.apple.application-bundle`. So the first declared match wins, and the direct call is only
-/// the fallback for an extension nothing claims.
+// `typeWithFilenameExtension:` answers a dynamic type for `iconset` and the legacy one for `app`.
 fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
     let class = AnyClass::get(c"UTType")?;
     let text = NSString::from_str(text);
@@ -1108,18 +876,11 @@ fn rasterize_file_icon(extension: bool, text: &str, size: Pixels, scale: f32) ->
         unsafe { msg_send![&*workspace, iconForContentType: &*kind] };
     let image = image?;
 
-    // `iconForContentType:` reports 32x32 points however much it holds — 32 representations up to
-    // 2048px — so its own `size()` is no guide and the requested size is what to draw into.
-    // `drawInRect:` then picks a representation by **destination pixels**, not by the point rect:
-    // 32pt into a 2x buffer and 64pt into a 1x buffer come out byte-identical. The rungs are
-    // 16, 18, 24, 32, 36, 48, 64, 128, 256, 512, 1024 and 2048 pixels, so 32pt at 2x lands
-    // exactly on 64 and a size off the ladder resamples.
+    // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
     let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);
     let w = ((points.width * scale as f64).round() as usize).max(1);
     let h = ((points.height * scale as f64).round() as usize).max(1);
 
-    // No drawing appearance, unlike a symbol: this is fixed artwork, and installing one was
-    // measured to change nothing.
     let rgba = draw(&image, points, w, h)?;
 
     Some(Symbol {
@@ -1136,10 +897,6 @@ fn size_of_points(points: NSSize) -> Size<Pixels> {
     size(px(points.width as f32), px(points.height as f32))
 }
 
-/// Draw an `NSImage` into a fresh premultiplied RGBA bitmap.
-///
-/// The rep's *size* is in points while its buffer is in pixels; that mismatch is what gives the 2x
-/// transform, and without it the glyph rasterises into the top-left quarter.
 fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
     let rep = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
@@ -1157,10 +914,10 @@ fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> 
             32,
         )
     }?;
+    // The rep's size is in points while its buffer is in pixels; that mismatch is the 2x transform.
     rep.setSize(points);
 
-    // A bitmap rep with no current graphics context accepts `drawInRect` and silently produces an
-    // all-zero buffer.
+    // A bitmap rep with no current graphics context accepts `drawInRect` and produces zeroes.
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
@@ -1182,12 +939,7 @@ fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> 
     Some(out)
 }
 
-/// AppKit's premultiplied RGBA to the straight-alpha BGRA gpui's `RenderImage` expects: swap R/B
-/// **and** divide out alpha.
-///
-/// Swapping and stopping there is the trap: interiors are byte-identical (dividing by `a = 255` is
-/// the identity), so only antialiased edges differ, reading as a dark fringe around every glyph —
-/// and a black template symbol cannot show it at all.
+// gpui's `RenderImage` wants straight-alpha BGRA, so swap R/B *and* divide out alpha.
 fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
     for px in out.chunks_exact_mut(4) {
@@ -1206,12 +958,6 @@ fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// Dominant hue in degrees over the opaque pixels of a **BGRA** buffer, and the share of them
-    /// within 30 degrees of it. `None` when the artwork carries no colour, which is the answer for
-    /// every plain document sheet and is what makes a blue or orange verdict falsifiable.
-    ///
-    /// Reading the same buffer as RGBA would swap the verdicts — a folder would report orange —
-    /// so a correct hue here also witnesses the channel order [`to_bgra_straight`] writes.
     fn dominant_hue(bgra: &[u8]) -> (Option<f32>, f32) {
         let mut bins = [0usize; 36];
         let mut achromatic = 0usize;
@@ -1278,8 +1024,6 @@ mod tests {
         assert!(share > 0.8, "zip orange covers only {share}");
     }
 
-    /// The control for the two above: the same metric on artwork that carries no hue must answer
-    /// `None`, or a blue and an orange verdict prove nothing about the raster.
     #[test]
     fn a_plain_document_icon_reports_no_hue() {
         let (hue, achromatic) = hue_of(FileType::Uti("public.plain-text"));
@@ -1287,8 +1031,6 @@ mod tests {
         assert!(achromatic > 0.9, "only {achromatic} of it was achromatic");
     }
 
-    /// Guards the tag search in [`ut_type`]. Simplifying it to the one obvious call still compiles,
-    /// still returns an icon, and silently answers with the legacy single-file application type.
     #[test]
     fn an_extension_takes_the_declared_type_not_the_direct_lookup() {
         let ours = ut_type(true, "app").expect("app is declared");
@@ -1333,14 +1075,12 @@ mod tests {
         assert_eq!(after_two, after_one, "the second call must not");
         assert!(Arc::ptr_eq(&first.image, &second.image), "same raster");
 
-        // A generation bump drops symbols; file icons are fixed artwork and stay.
         GENERATION.fetch_add(1, Ordering::AcqRel);
         let third = folder_icon(px(28.)).expect("folder");
         assert_eq!(cache_stats().file_icon_rasters, after_two);
         assert!(Arc::ptr_eq(&first.image, &third.image));
     }
 
-    /// A different size is a different raster, so the size really is part of the key.
     #[test]
     fn a_different_size_is_a_different_entry() {
         let small = folder_icon(px(16.)).expect("folder");
@@ -1356,8 +1096,6 @@ mod tests {
         );
     }
 
-    /// The straight-alpha conversion has to have done something, or the anchored fact it protects
-    /// is untested on this path: a file icon's antialiased rim is where it shows.
     #[test]
     fn un_premultiplying_changed_the_rim() {
         let icon = folder_icon(px(32.)).expect("folder");
@@ -1370,7 +1108,6 @@ mod tests {
             partial > 100,
             "only {partial} antialiased pixels to convert"
         );
-        // Straight alpha lets a channel exceed its own alpha; premultiplied never can.
         let over = bytes
             .chunks_exact(4)
             .filter(|p| p[3] > 0 && p[3] < 255 && p[..3].iter().any(|c| *c > p[3]))

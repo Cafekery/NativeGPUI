@@ -1,13 +1,9 @@
 //! `NSTextField`, `NSSecureTextField` and `NSSearchField`.
 
 use std::cell::RefCell;
-use std::panic::Location;
 use std::rc::Rc;
 
-use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, SharedString, Style, Window, px, relative,
-};
+use gpui::{App, ElementId, SharedString, Style, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadOnly, Message, define_class, msg_send};
@@ -19,38 +15,25 @@ use objc2_foundation::{MainThreadMarker, NSNotification, NSNumber, NSObject, NSS
 
 use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{
-    Layer, NativeDispatch, NativeHandler, NativeHost, NativeValue, Target, ValueKind, element_key,
+    Layer, NativeDispatch, NativeHandler, NativeValue, Slot, Target, ValueKind, hosted_element,
     wire,
 };
+use crate::controls::fitted;
 
-/// Salts the element key into a second tag, so Return and per-keystroke change reach different
-/// [`NativeHost::on_event_channel`] entries while both retire with the one pooled view.
+/// Salts the element key into a second tag, so Return and per-keystroke change are separate
+/// channels on one pooled view.
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 
-/// `text` is the value you own; wire [`NativeTextField::on_change`] to keep it.
-///
-/// ⌘A/⌘C/⌘V/⌘X/⌘Z reach a hosted field only after [`crate::install_menus`]. macOS takes those key
-/// equivalents from the main menu and a GPUI app installs none, so the chord is offered to the
-/// view hierarchy, declined, offered to an absent menu bar, and dropped. GPUI's own view does see
-/// `performKeyEquivalent:` first, but it declines every chord its keymap does not bind.
-///
-/// Arrows and forward-delete need no opt-in: the host adopts the window's key path when it places
-/// a view. Without that, GPUI answers every characterless key through its input context, which
-/// resolves to the focused field editor and hands it `insertText:` with the legacy ASCII spelling
-/// — ← as U+001C, → as U+001D, forward-delete as U+007F — so `moveLeft:` never ran.
-///
-/// Home and End do not move the caret, here or in an unhosted field: the editor answers them with
-/// `scrollToBeginningOfDocument:`/`scrollToEndOfDocument:`, which leave the insertion point alone.
+/// `text` is the value you own; wire `on_change` to keep it. ⌘A/⌘C/⌘V/⌘X/⌘Z reach a hosted field
+/// only after [`crate::install_menus`].
 pub fn native_text_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Plain, text)
 }
 
-/// Bullets, and the system's secure input path.
 pub fn native_secure_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Secure, text)
 }
 
-/// Magnifier and cancel button included.
 pub fn native_search_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Search, text)
 }
@@ -113,29 +96,52 @@ impl NativeTextField {
         self
     }
 
-    /// Every keystroke, including IME commits, paste, dictation and the emoji picker.
+    /// Every keystroke, including IME commits, paste and dictation.
     pub fn on_change(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Text(text) = value {
-                handler(&text, window, cx);
-            }
-        }));
+        self.on_change = Some(text_handler(handler));
         self
     }
 
-    /// Return only — losing focus does not submit. A search field's cancel button is AppKit's
-    /// own exception: it clears the text and sends the action, so both handlers fire with `""`.
+    /// Return only. A search field's cancel button clears the text and fires both handlers with
+    /// `""`.
     pub fn on_submit(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
-        self.on_submit = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Text(text) = value {
-                handler(&text, window, cx);
-            }
-        }));
+        self.on_submit = Some(text_handler(handler));
         self
     }
 
-    /// Everything that is identical across the three classes, applied through `NSTextField`.
-    fn sync(&mut self, field: &NSTextField, host: &NativeHost, key: u64) {
+    fn layout(&self) -> Style {
+        let kind = self.kind;
+        fitted(fitting_size(kind.class(), |mtm| kind.fitting(mtm)))
+    }
+
+    fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
+        let submit = slot.key ^ SUBMIT_CHANNEL;
+        // Each class is its own `V`, so a field that changes kind is rebuilt by the host.
+        let field: Retained<NSTextField> = match self.kind {
+            Kind::Plain => slot.place(Layer::Above, |mtm, target| {
+                let field = NSTextField::new(mtm);
+                configure(&field, target, submit);
+                field
+            }),
+            Kind::Secure => slot
+                .place(Layer::Above, |mtm, target| {
+                    let field = NSSecureTextField::new(mtm);
+                    configure(&field, target, submit);
+                    field
+                })
+                .into_super(),
+            Kind::Search => slot
+                .place(Layer::Above, |mtm, target| {
+                    let field = NSSearchField::new(mtm);
+                    // Action on Return, not on every pause in typing.
+                    field.setSendsWholeSearchString(true);
+                    field.setSendsSearchStringImmediately(false);
+                    configure(&field, target, submit);
+                    field
+                })
+                .into_super(),
+        };
+
         if field.isEnabled() != self.enabled {
             field.setEnabled(self.enabled);
         }
@@ -147,18 +153,16 @@ impl NativeTextField {
         if !matches {
             field.setPlaceholderString(Some(&NSString::from_str(want_placeholder)));
         }
-
-        // Events are a frame late, so `self.text` is stale for a frame or two after every
-        // keystroke: writing it back then would delete what the user typed in between.
+        // Events are a frame late, so `self.text` is stale for a frame or two after a keystroke;
+        // writing it back then would delete what the user typed in between.
         let want_text: &str = &self.text;
-        if pending(field) == 0 && field.stringValue().to_string() != want_text {
+        if pending(&field) == 0 && field.stringValue().to_string() != want_text {
             field.setStringValue(&NSString::from_str(want_text));
         }
 
         let acked = field.retain();
         let user = self.on_change.take();
-        host.on_change(
-            key,
+        slot.on_change(
             ValueKind::Text,
             Some(Rc::new(move |value, window, cx| {
                 set_pending(&acked, pending(&acked) - 1);
@@ -167,23 +171,31 @@ impl NativeTextField {
                 }
             })),
         );
-        let submit = self.on_submit.take().map(|handler| -> NativeDispatch {
+        let submit_handler = self.on_submit.take().map(|handler| -> NativeDispatch {
             Rc::new(move |value, window, cx| {
                 if let Ok(value) = value.downcast::<NativeValue>() {
                     handler(*value, window, cx);
                 }
             })
         });
-        host.on_event_channel(key, key ^ SUBMIT_CHANNEL, ValueKind::Text.reader(), submit);
+        slot.host
+            .on_event_channel(slot.key, submit, ValueKind::Text.reader(), submit_handler);
     }
 }
 
-/// One-time setup shared by all three classes. `submit` is the tag the native action carries;
-/// the delegate substitutes the change key on top of it per keystroke.
+hosted_element!(NativeTextField);
+
+fn text_handler(handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> NativeHandler {
+    Rc::new(move |value, window, cx| {
+        if let NativeValue::Text(text) = value {
+            handler(&text, window, cx);
+        }
+    })
+}
+
 fn configure(field: &NSTextField, target: &Target, submit: u64) {
     field.setUsesSingleLineMode(true);
     if let Some(cell) = field.cell() {
-        // Submit means Return, not "the user tabbed away".
         cell.setSendsActionOnEndEditing(false);
     }
     wire(field, target, submit);
@@ -191,111 +203,9 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
     unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
 }
 
-impl Element for NativeTextField {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let kind = self.kind;
-        let fitting = fitting_size(kind.class(), |mtm| kind.fitting(mtm));
-        let mut style = Style::default();
-        // A zero axis from `fittingSize` means AppKit declares that axis free; all three classes
-        // currently report no intrinsic width, so the caller's layout drives it.
-        style.size.width = if fitting.width > 0. {
-            px(fitting.width as f32).into()
-        } else {
-            relative(1.).into()
-        };
-        style.size.height = px(fitting.height as f32).into();
-        (window.request_layout(style, [], cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut Window,
-        _: &mut App,
-    ) {
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let key = element_key(id);
-        let submit = key ^ SUBMIT_CHANNEL;
-        let mask = window.content_mask().bounds;
-        let host = NativeHost::get(window, cx);
-
-        // Each class is its own `V`, so a field that changes kind under one element id is
-        // rebuilt by the host rather than reinterpreted.
-        match self.kind {
-            Kind::Plain => {
-                let field = host.place(key, Layer::Above, bounds, mask, |mtm, target| {
-                    let field = NSTextField::new(mtm);
-                    configure(&field, target, submit);
-                    field
-                });
-                self.sync(&field, &host, key);
-            }
-            Kind::Secure => {
-                let field = host.place(key, Layer::Above, bounds, mask, |mtm, target| {
-                    let field = NSSecureTextField::new(mtm);
-                    configure(&field, target, submit);
-                    field
-                });
-                self.sync(&field, &host, key);
-            }
-            Kind::Search => {
-                let field = host.place(key, Layer::Above, bounds, mask, |mtm, target| {
-                    let field = NSSearchField::new(mtm);
-                    // Action on Return, not on every pause in typing — that is `on_change`'s job.
-                    field.setSendsWholeSearchString(true);
-                    field.setSendsSearchStringImmediately(false);
-                    configure(&field, target, submit);
-                    field
-                });
-                self.sync(&field, &host, key);
-            }
-        }
-    }
-}
-
-impl IntoElement for NativeTextField {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 define_class!(
-    /// One delegate for every hosted field in the process: `NSTextField` sends its target/action
-    /// on Return only, so per-keystroke change has to come from `controlTextDidChange:`. The
-    /// notification names the control, so no per-field state is needed.
+    /// One delegate for every hosted field: `NSTextField` fires its action on Return only, so
+    /// per-keystroke change comes from `controlTextDidChange:`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGFieldDelegate"]
@@ -315,13 +225,10 @@ define_class!(
             let (Some(action), Some(target)) = (control.action(), control.target()) else {
                 return;
             };
-
             if let Some(field) = control.downcast_ref::<NSTextField>() {
                 set_pending(field, pending(field) + 1);
             }
-
-            // The host dispatches on the sender's tag and reads the value synchronously, so
-            // borrowing the tag for one send is enough to reach the change entry.
+            // The host dispatches on the sender's tag, so borrow it for one send.
             let submit = control.tag();
             control.setTag(submit ^ SUBMIT_CHANNEL as isize);
             let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
@@ -344,9 +251,7 @@ fn shared_delegate(mtm: MainThreadMarker) -> Retained<FieldDelegate> {
     })
 }
 
-/// Edits dispatched to GPUI that GPUI has not applied yet — nonzero means the field owns its own
-/// text and `paint` must not touch `stringValue`. Kept in the cell's `representedObject` so its
-/// lifetime is exactly the field's.
+/// Edits dispatched to GPUI that GPUI has not applied yet, kept in the cell's `representedObject`.
 fn pending(field: &NSTextField) -> isize {
     field
         .cell()

@@ -1,4 +1,4 @@
-//! Vibrancy and macOS 26 liquid glass. Put these behind or over your GPUI layout.
+//! Vibrancy and macOS 26 liquid glass.
 
 #[cfg(feature = "private-api")]
 mod custom_glass;

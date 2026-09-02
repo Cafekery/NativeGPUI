@@ -1,4 +1,4 @@
-//! The whole ObjC surface this crate needs: how to reach GPUI's view, and one container class.
+//! The ObjC surface the crate needs: reaching GPUI's view, and one container class.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,17 +11,11 @@ use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
-use objc2_quartz_core::CALayer;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 define_class!(
-    /// A flipped, event-transparent container.
-    ///
-    /// Flipped so an AppKit subview frame is GPUI's coordinate space verbatim — logical points from
-    /// the top-left of the content view — which is why the crate holds no coordinate math.
-    ///
-    /// `hitTest:` declines its own area so mouse events no real control claimed reach GPUI. An
-    /// optimisation, not a requirement: the responder chain would carry them there anyway.
+    /// A flipped container, so subview frames are GPUI's top-left coordinates verbatim, that
+    /// declines mouse points landing on nothing but itself.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGContainer"]
@@ -52,7 +46,6 @@ impl Container {
         this
     }
 
-    /// Track the parent's size, so a window resize needs no bookkeeping from us.
     pub fn autoresize(&self) {
         self.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
@@ -61,8 +54,7 @@ impl Container {
     }
 }
 
-/// The `NSView` GPUI renders its Metal content into. Its superview is the window's content view,
-/// which is where [`crate::Layer::Below`] views are inserted.
+/// The `NSView` GPUI renders into. Its superview is the window's content view.
 pub fn gpui_view(window: &Window) -> Retained<NSView> {
     let handle = HasWindowHandle::window_handle(window)
         .expect("gpui's macOS window always exposes an AppKit window handle");
@@ -80,44 +72,8 @@ pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {
     )
 }
 
-/// The `CAMetalLayer` GPUI presents its scene through.
-///
-/// Identified by asking which layer answers `maximumDrawableCount` rather than by assuming a
-/// class name or a position in the tree: GPUI builds its view class at runtime and the property is
-/// the one thing only a Metal layer has.
-pub fn metal_layer(view: &NSView) -> Option<Retained<CALayer>> {
-    let layer = view.layer()?;
-    let responds: bool =
-        unsafe { msg_send![&*layer, respondsToSelector: sel!(maximumDrawableCount)] };
-    responds.then_some(layer)
-}
-
-/// How many frames GPUI's *presented* Metal content trails the `CATransaction` that carried the
-/// same frame's layout, as a count of frames.
-///
-/// `presentDrawable:` hands the surface to Core Animation asynchronously, so a frame is displayed
-/// only once the drawables already queued ahead of it have been, and `CAMetalLayer` lets
-/// `maximumDrawableCount` of them be in flight. GPUI draws one frame per display refresh and
-/// blocks in `nextDrawable`, so the queue sits full and the trail is `maximumDrawableCount - 1`
-/// refreshes — measured as exactly 2 at the default count of 3 and exactly 1 at 2, the same
-/// integer at every scroll velocity.
-///
-/// A layer that is not GPUI's Metal layer trails by nothing, which is also the honest answer for a
-/// window whose scene is not presented through one.
-pub fn presentation_lag(view: &NSView) -> usize {
-    let Some(layer) = metal_layer(view) else {
-        return 0;
-    };
-    let count: usize = unsafe { msg_send![&*layer, maximumDrawableCount] };
-    count.saturating_sub(1)
-}
-
-/// Give keyboard focus back to GPUI.
-///
-/// AppKit's first responder and GPUI's focus system are independent: a hosted `NSTextField` keeps
-/// first responder after a click elsewhere, so keystrokes stay in its field editor while GPUI's
-/// `FocusHandle` reports focused. [`crate::native_root`] calls this on any mouse-down GPUI sees,
-/// which by construction is one no hosted view claimed.
+/// Give keyboard focus back to GPUI. AppKit's first responder and GPUI's focus are independent:
+/// a hosted field keeps first responder after a click elsewhere.
 pub fn focus_gpui(window: &Window) {
     let view = gpui_view(window);
     if let Some(ns_window) = view.window() {
@@ -125,31 +81,12 @@ pub fn focus_gpui(window: &Window) {
     }
 }
 
-/// The runtime subclass [`adopt_key_path`] installs. `ClassBuilder` rather than `define_class!`
-/// because GPUI's view class is itself built at runtime: no superclass to name at compile time.
 const KEY_PATH_CLASS: &CStr = c"NGKeyPathView";
 
-/// Stop GPUI's view from swallowing keys that belong to a hosted AppKit control.
-///
-/// GPUI overrides `performKeyEquivalent:` and `keyDown:`; both have to behave like a plain
-/// `NSView`'s whenever GPUI is not the first responder.
-///
-/// * AppKit walks `performKeyEquivalent:` **before** the first responder is sent `keyDown:`. GPUI
-///   answers it for every keystroke it has no character for — every true function key — by handing
-///   the event to the *active* input context, which is the hosted field editor's, so the editor is
-///   sent `insertText:` with the function key's legacy ASCII spelling (← inserts U+001C,
-///   forward-delete U+007F, Home U+0001, End U+0004) and the walk reports handled, so `moveLeft:`
-///   never runs. GPUI's override also never calls `super`, so the walk never descends into hosted
-///   views and a hosted default button never sees its Return.
-/// * Space-activates-the-focused-control and arrow-adjusts-it are `NSWindow`'s `keyDown:` fallback,
-///   reached only once the focused control declines the key and the chain carries it to the window.
-///   GPUI's `keyDown:` is a dead end, so the event dies one link short of the responder that would
-///   have acted. The same `NSSwitch` toggles on Space in the content view and does nothing inside
-///   GPUI's view, with `acceptsFirstResponder`, `canBecomeKeyView` and its rect in the window
-///   identical either way.
-///
-/// Installed on GPUI's own view instance per window, so GPUI's class is untouched and a window
-/// with no hosted controls keeps GPUI's behaviour exactly. Idempotent.
+/// Subclass GPUI's view instance so `performKeyEquivalent:` and `keyDown:` behave like a plain
+/// `NSView`'s while a hosted control is first responder. GPUI's overrides otherwise swallow
+/// function keys into the field editor as legacy ASCII and dead-end the keys `NSWindow` would
+/// have used to activate the focused control.
 pub fn adopt_key_path(view: &NSView) {
     let current = view.class();
     if current.name() == KEY_PATH_CLASS {
@@ -173,12 +110,9 @@ pub fn adopt_key_path(view: &NSView) {
             builder.register()
         }
     };
-    // Adds no instance variables, so GPUI's own ivar still resolves at the same offset.
     unsafe { AnyObject::set_class(&*(view as *const NSView).cast::<AnyObject>(), subclass) };
 }
 
-/// GPUI's own implementation of `selector`, reached via the subclass's superclass because
-/// `msg_send![super(..)]` needs a superclass known at compile time.
 fn gpui_imp(selector: Sel) -> Imp {
     AnyClass::get(KEY_PATH_CLASS)
         .and_then(AnyClass::superclass)
@@ -187,8 +121,6 @@ fn gpui_imp(selector: Sel) -> Imp {
         .implementation()
 }
 
-/// What a view that overrode none of this would do: descend into the subviews for a key
-/// equivalent, and pass a key down to the next responder.
 fn plain_imp(selector: Sel) -> Imp {
     NSView::class()
         .instance_method(selector)
@@ -239,12 +171,8 @@ pub fn rects_equal(a: NSRect, b: NSRect) -> bool {
         && a.size.height == b.size.height
 }
 
-/// A control's own preferred size, asked of AppKit once and cached.
-///
-/// A returned axis of `0.0` is AppKit reporting that axis **free** — a progress bar reports
-/// `(0.0, 20.0)`, an `NSLevelIndicator` in the rating style `(60.0, 12.0)`. Branch on
-/// `size.width > 0.` rather than deciding per class which axis GPUI drives, so a future macOS
-/// changing its mind stays handled.
+/// A control's preferred size, asked of AppKit once per class and cached. A `0.0` axis is AppKit
+/// declaring that axis free.
 pub fn fitting_size(
     class: &'static str,
     measure: impl FnOnce(MainThreadMarker) -> NSSize,
@@ -252,9 +180,8 @@ pub fn fitting_size(
     fitting_size_keyed(class, 0, measure)
 }
 
-/// [`fitting_size`] for controls whose preferred size depends on their own properties — an
-/// `NSLevelIndicator`'s width is a function of its range, so a per-class cache would freeze the
-/// first range's answer. `key` is any hash of the inputs the measurement depends on.
+/// [`fitting_size`] for controls whose preferred size depends on their own properties; `key`
+/// hashes those inputs.
 pub fn fitting_size_keyed(
     class: &'static str,
     key: u64,
@@ -287,15 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn to_rect_is_the_identity_because_the_containers_are_flipped() {
-        let r = to_rect(bounds(12., 34., 56., 78.));
-        assert_eq!((r.origin.x, r.origin.y), (12., 34.));
-        assert_eq!((r.size.width, r.size.height), (56., 78.));
-    }
-
-    #[test]
     fn to_rect_preserves_fractions() {
-        // Rounding here would misalign a hosted view against the GPUI row it belongs to.
         let r = to_rect(bounds(430.5, 201.25, 120.5, 32.75));
         assert_eq!((r.origin.x, r.origin.y), (430.5, 201.25));
         assert_eq!((r.size.width, r.size.height), (120.5, 32.75));

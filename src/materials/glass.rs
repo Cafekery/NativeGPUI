@@ -1,8 +1,4 @@
 //! macOS 26 liquid glass: `NSGlassEffectView`, batched by `NSGlassEffectContainerView`.
-//!
-//! Ordering decides which side of the glass GPUI lands on. [`crate::Layer::Above`] puts the
-//! panel over GPUI's Metal view, so GPUI content is frosted by it; [`crate::Layer::Below`] puts
-//! it under, so GPUI composites over it and a GPUI label on glass stays sharp.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,15 +22,9 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 #[cfg(feature = "private-api")]
 use super::glass_private::{GlassInteractionState, GlassSubvariant, GlassVariant, Private};
 use crate::bridge::appkit::{Container, rects_equal};
-use crate::bridge::host::{Layer, NativeHost, element_key};
+use crate::bridge::host::{Layer, NativeHost, Slot, element_key, hosted_element};
 use crate::system::color::to_nscolor;
 
-// No `hitTest:` override on the panel, and the obvious one cannot work: `NSGlassEffectView`
-// builds private subviews, so `super`'s `hitTest:` returns one of *those* and [`Container`]'s
-// "null if the hit is me" shape never fires. Unneeded anyway: AppKit walks unhandled mouse
-// events up to GPUI. The container is a different story — see [`Batch`].
-
-/// [`to_nscolor`] memoized: the tint diff runs every frame, and tints come from a palette.
 fn tint_color(color: Hsla) -> Retained<NSColor> {
     thread_local! {
         static CACHE: RefCell<HashMap<u32, Retained<NSColor>>> = RefCell::new(HashMap::new());
@@ -52,11 +42,8 @@ fn tint_color(color: Hsla) -> Retained<NSColor> {
     })
 }
 
-/// The `NSGlassEffectContainerView`s whose GPUI children are painting right now, innermost last.
-///
-/// GPUI paints depth-first on the main thread in one synchronous pass, so a stack pushed by a
-/// container's `paint` and truncated after it is exactly scoped to that subtree — which is how
-/// a [`Glass`] finds its container without either element knowing about the other.
+/// The containers whose children are painting right now, innermost last; a panel joins the
+/// innermost one.
 struct OpenContainer {
     content: Retained<NSView>,
     layer: Layer,
@@ -66,17 +53,8 @@ thread_local! {
     static OPEN: RefCell<Vec<OpenContainer>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A panel of macOS 26 liquid glass, frosting the GPUI content painted beneath it. It fills the
-/// box you give it (`div().w(px(220.)).h(px(120.)).child(glass("card"))`) and draws nothing
-/// itself — every pixel is AppKit's.
-///
-/// Glass samples whatever is beneath it, so over an unpainted region of an opaque window it has
-/// nothing to sample and collapses to a flat fill. A flat GPUI background is enough; genuinely
-/// nothing is not.
-///
-/// Everything GPUI paints in this rect is frosted, text included; for a crisp GPUI label *on*
-/// glass use [`Glass::frosting_desktop`]. Mouse events pass through to GPUI and to any hosted
-/// control ordered above the panel.
+/// A panel of liquid glass filling the box it is given. Over an unpainted region of an opaque
+/// window it has nothing to sample and collapses to a flat fill.
 pub fn glass(id: impl Into<ElementId>) -> Glass {
     Glass {
         id: id.into(),
@@ -100,16 +78,14 @@ pub struct Glass {
 }
 
 impl Glass {
-    /// Frost the GPUI content painted beneath this panel. The default, stated at the call site.
+    /// Frost the GPUI content painted beneath the panel (the default).
     pub fn frosting_gpui(mut self) -> Self {
         self.layer = Layer::Above;
         self
     }
 
-    /// Frost the desktop behind the window instead, putting the panel *under* GPUI's Metal view
-    /// so GPUI paints crisply on top of it. Needs a non-opaque window
-    /// ([`crate::window_options`]) and a rect your scene leaves transparent — an opaque `bg()`
-    /// anywhere in it hides the glass. A panel here can never receive input.
+    /// Frost the desktop instead, under GPUI's view: needs a non-opaque window and a rect the
+    /// scene leaves transparent, and can never receive input.
     pub fn frosting_desktop(mut self) -> Self {
         self.layer = Layer::Below;
         self
@@ -120,124 +96,29 @@ impl Glass {
         self
     }
 
-    /// Tint the glass and its resolved backdrop toward a colour. Alpha is the strength: at 1.0
-    /// no frost is left, so start around 0.3. macOS drops the chroma entirely while the window
-    /// is not key, leaving only the luminance shift, and no property pins that.
+    /// Alpha is the strength; macOS drops the chroma while the window is not key.
     pub fn tint(mut self, color: impl Into<Hsla>) -> Self {
         self.tint = Some(color.into());
         self
     }
 
-    /// `NSGlassEffectViewStyle::Clear`, which tints rather than blurs — most of the backdrop's
-    /// structure survives it. For imagery you want to stay legible, never for a lighter frost.
+    /// `NSGlassEffectViewStyle::Clear`: tints rather than blurs.
     pub fn clear(mut self, clear: bool) -> Self {
         self.clear = clear;
         self
     }
-}
 
-#[cfg(feature = "private-api")]
-impl Glass {
-    /// Draw an internal recipe instead of letting `style` pick one. Overrides [`Glass::clear`].
-    pub fn variant(mut self, variant: GlassVariant) -> Self {
-        self.private.variant = Some(variant);
-        self
-    }
-
-    /// Refine the variant. Nothing is sent unless [`GlassVariant::accepts`] the pairing, so ask
-    /// before offering it as a control.
-    pub fn subvariant(mut self, subvariant: GlassSubvariant) -> Self {
-        self.private.subvariant = subvariant;
-        self
-    }
-
-    pub fn interaction_state(mut self, state: GlassInteractionState) -> Self {
-        self.private.interaction = state;
-        self
-    }
-
-    /// Recede the glass so something in front of it reads more clearly.
-    pub fn subdued(mut self, subdued: bool) -> Self {
-        self.private.subdued = subdued;
-        self
-    }
-
-    /// Lay a darkening scrim into the glass.
-    pub fn scrim(mut self, scrim: bool) -> Self {
-        self.private.scrim = scrim;
-        self
-    }
-
-    /// Refract this panel's own content rather than its backdrop.
-    pub fn content_lensing(mut self, lensing: bool) -> Self {
-        self.private.lensing = lensing;
-        self
-    }
-}
-
-pub(crate) fn glass_style(clear: bool) -> NSGlassEffectViewStyle {
-    if clear {
-        NSGlassEffectViewStyle::Clear
-    } else {
-        NSGlassEffectViewStyle::Regular
-    }
-}
-
-impl Element for Glass {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let style = Style {
+    fn layout(&self) -> Style {
+        Style {
             size: Size {
                 width: relative(1.).into(),
                 height: relative(1.).into(),
             },
             ..Default::default()
-        };
-        (window.request_layout(style, [], cx), ())
+        }
     }
 
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut Window,
-        _: &mut App,
-    ) {
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let key = element_key(id);
-        let mask = window.content_mask().bounds;
-        let host = NativeHost::get(window, cx);
-
-        // A member takes its container's ordering; across GPUI's content it could not batch.
+    fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
         let container = OPEN.with(|open| {
             open.borrow()
                 .last()
@@ -245,12 +126,11 @@ impl Element for Glass {
         });
         let layer = container.as_ref().map_or(self.layer, |&(_, layer)| layer);
         let parent = container.as_ref().map(|(content, _)| &**content);
-
-        // Parentage is set at creation only: `commit` re-adds every slot to its layer container
-        // whenever placement order moves, so a later reparent is silently undone.
-        let view = host.place_in(key, layer, parent, bounds, mask, |mtm, _| {
-            NSGlassEffectView::new(mtm)
-        });
+        let view = slot
+            .host
+            .place_in(slot.key, layer, parent, slot.bounds, slot.mask, |mtm, _| {
+                NSGlassEffectView::new(mtm)
+            });
 
         #[cfg(not(feature = "private-api"))]
         {
@@ -274,26 +154,54 @@ impl Element for Glass {
     }
 }
 
-impl IntoElement for Glass {
-    type Element = Self;
+hosted_element!(Glass);
 
-    fn into_element(self) -> Self {
+#[cfg(feature = "private-api")]
+impl Glass {
+    /// Overrides [`Glass::clear`].
+    pub fn variant(mut self, variant: GlassVariant) -> Self {
+        self.private.variant = Some(variant);
+        self
+    }
+
+    /// Sent only where [`GlassVariant::accepts`] the pairing.
+    pub fn subvariant(mut self, subvariant: GlassSubvariant) -> Self {
+        self.private.subvariant = subvariant;
+        self
+    }
+
+    pub fn interaction_state(mut self, state: GlassInteractionState) -> Self {
+        self.private.interaction = state;
+        self
+    }
+
+    pub fn subdued(mut self, subdued: bool) -> Self {
+        self.private.subdued = subdued;
+        self
+    }
+
+    pub fn scrim(mut self, scrim: bool) -> Self {
+        self.private.scrim = scrim;
+        self
+    }
+
+    pub fn content_lensing(mut self, lensing: bool) -> Self {
+        self.private.lensing = lensing;
         self
     }
 }
 
+pub(crate) fn glass_style(clear: bool) -> NSGlassEffectViewStyle {
+    if clear {
+        NSGlassEffectViewStyle::Clear
+    } else {
+        NSGlassEffectViewStyle::Regular
+    }
+}
+
 define_class!(
-    /// `NSGlassEffectContainerView`, made to claim a click only where a member is.
-    ///
-    /// Stock, it returns **self** from `hitTest:` for every point inside its bounds — member or
-    /// not, and even though its `contentView` is a [`Container`] that declines its own area
-    /// exactly. Since the container spans the window and `commit` stacks by paint order, one
-    /// [`glass_container`] would otherwise make every control painted before it unclickable.
-    ///
-    /// So ask the `contentView`, which is the only `hitTest:` in here this crate wrote. Asking
-    /// `super` and rejecting self is *not* the same thing: it happens to work only because the
-    /// container's own private full-bounds subview declines, where the panel's equivalent claims
-    /// — which is the note at the top of this file, and the same bet one class over.
+    /// `NSGlassEffectContainerView` that claims a click only where a member is: stock, it answers
+    /// `hitTest:` with itself across its whole bounds.
     #[unsafe(super(NSGlassEffectContainerView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGGlassContainer"]
@@ -302,13 +210,9 @@ define_class!(
     impl Batch {
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
-            // No content view means no members, so nothing here is ours. Never `super` on this
-            // path: with `setContentView:` unrun the container claims its whole bounds.
             let Some(content) = self.contentView() else {
                 return ptr::null_mut();
             };
-            // `hitTest:` is given the point in *our* superview's space; `contentView` wants it in
-            // ours.
             let local = match unsafe { self.superview() } {
                 Some(parent) => self.convertPoint_fromView(point, Some(&parent)),
                 None => point,
@@ -324,16 +228,8 @@ impl Batch {
     }
 }
 
-/// Batches the [`glass`] panels in its subtree into one glass render pass. Wrap any screen with
-/// more than a handful of them.
-///
-/// Panels find their container automatically and inherit its ordering. Being inside the
-/// container's `contentView` is what does the batching — a container view merely present in the
-/// hierarchy buys nothing.
-///
-/// The container draws nothing and spans the whole window, so a member's frame means the same
-/// thing inside it as outside. For layout it behaves as `div().size_full().flex()`; put an
-/// ordinary `div` inside for gaps and direction.
+/// Batches the [`glass`] panels in its subtree into one render pass. Spans the whole window and
+/// lays out like `div().size_full().flex()`.
 pub fn glass_container(id: impl Into<ElementId>) -> GlassContainer {
     GlassContainer {
         id: id.into(),
@@ -351,21 +247,17 @@ pub struct GlassContainer {
 }
 
 impl GlassContainer {
-    /// Members frost the GPUI content painted beneath them. The default; see [`glass`].
     pub fn frosting_gpui(mut self) -> Self {
         self.layer = Layer::Above;
         self
     }
 
-    /// Members frost the desktop and GPUI paints crisply over them. The requirements on
-    /// [`Glass::frosting_desktop`] apply to every member.
     pub fn frosting_desktop(mut self) -> Self {
         self.layer = Layer::Below;
         self
     }
 
-    /// How close two members must be before macOS merges them into one blob of glass. Zero, the
-    /// default, batches without merging.
+    /// How close two members must be before macOS merges them into one blob.
     pub fn spacing(mut self, spacing: Pixels) -> Self {
         self.spacing = Some(spacing);
         self
@@ -448,16 +340,12 @@ impl Element for GlassContainer {
             origin: point(px(0.), px(0.)),
             size: window.viewport_size(),
         };
-
         let view = host.place(key, self.layer, viewport, viewport, |mtm, _| {
             let view = Batch::new(mtm);
-            // Flipped, so a member's frame is GPUI's coordinate space verbatim.
             let content = Container::new(mtm, NSRect::ZERO, false);
             view.setContentView(Some(content.as_ref()));
             view
         });
-        // Nullable, and re-read from a pooled view whose `setContentView:` ran only on creation.
-        // Members already degrade to standalone panels, so never panic in a consumer's paint.
         let content = view.contentView();
         if let Some(content) = &content {
             let fill = NSRect::new(
@@ -475,7 +363,6 @@ impl Element for GlassContainer {
             }
         }
 
-        // Truncate rather than pop: a child that failed to pop cannot leak into a sibling.
         let depth = OPEN.with(|open| {
             let mut open = open.borrow_mut();
             let depth = open.len();

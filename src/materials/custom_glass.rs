@@ -1,23 +1,13 @@
-//! Liquid glass assembled from the layers macOS composes privately for `NSGlassEffectView`, so
-//! every input is the caller's to set.
-//!
-//! A `CABackdropLayer` samples what is behind it, a signed-distance-field layer renders the
-//! shape, and the `glassBackground` filter reads that field to refract, blur and shade the
-//! sample. [`GlassRecipe`] is that filter's whole live input set.
-//!
-//! None of it is public API, so every class is resolved at runtime and a missing one degrades to
-//! a stock `NSGlassEffectView`. `NATIVE_GPUI_NO_PRIVATE_GLASS` forces that fallback without a
-//! rebuild.
+//! Liquid glass assembled from the private layers `NSGlassEffectView` composes: a
+//! `CABackdropLayer` sampling what is behind it, a signed-distance-field layer for the shape, and
+//! the `glassBackground` filter. Every class is resolved at runtime; a missing one degrades to a
+//! stock `NSGlassEffectView`, and `NATIVE_GPUI_NO_PRIVATE_GLASS` forces that fallback.
 
 use std::cell::Cell;
 use std::ffi::CStr;
-use std::panic::Location;
 use std::sync::LazyLock;
 
-use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Point, Size, Style, Window, point, relative,
-};
+use gpui::{App, ElementId, Hsla, Pixels, Point, Size, Style, Window, point, relative};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
@@ -27,12 +17,10 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CALayer, CATransaction, kCACornerCurveContinuous};
 
-use crate::bridge::host::{Layer, NativeHost, element_key};
+use crate::bridge::host::{Layer, Slot, hosted_element};
 use crate::system::color::to_nscolor;
 
-/// Inputs the `glassBackground` filter declares and `NSGlassEffectView` writes that this crate
-/// does not expose, because sweeping each one min to max against [`GlassRecipe::regular`] moved
-/// nothing on macOS 26.5. Kept so a later OS can be re-checked against the list.
+/// Filter inputs that move nothing on macOS 26.5, kept so a later OS can be re-checked.
 pub const INERT_INPUTS: [&str; 8] = [
     "inputBlurOpacity3",
     "inputBlurOpacity4",
@@ -44,33 +32,21 @@ pub const INERT_INPUTS: [&str; 8] = [
     "inputShadowDistanceOffset",
 ];
 
-/// Every input of the private glass filter that moves a pixel, plus the three geometry values
-/// that shape the field it reads. Build from a preset and override:
-///
-/// ```ignore
-/// GlassRecipe { blur_radius: 24., face_saturation: 2.5, ..GlassRecipe::clear() }
-/// ```
-///
-/// Nothing clamps: the filter renders whatever it is handed, so a value far outside what the
-/// system ships is garbage rather than an error, and the presets are the calibrated end of the
-/// range. A `None` fill means that matrix takes no fill colour, which is not a clear one.
+/// Every live input of the private glass filter plus the geometry of the field it reads. Nothing
+/// clamps; the presets are the calibrated end of the range. A `None` fill means no fill colour.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct GlassRecipe {
     pub corner_radius: f32,
-    /// Pulls the field's shading gradient from circular toward the shape's own aspect ratio.
     pub ovalization: f32,
-    /// How far outside its own bounds the backdrop samples, which is what lets refraction bend
-    /// content in from beyond the edge.
+    /// How far outside its bounds the backdrop samples.
     pub margin_width: f32,
-    /// How far the backdrop downsamples before the filter reads it. Lower is blurrier and
-    /// cheaper: the stock regular style uses 0.25, clear uses 0.5.
+    /// How far the backdrop downsamples before the filter reads it.
     pub backdrop_scale: f32,
 
     pub blur_radius: f32,
     pub blur_opacity0: f32,
     pub blur_opacity1: f32,
     pub blur_opacity2: f32,
-    /// The two blur taps whose distance is live; taps 0, 1 and 4 are in [`INERT_INPUTS`].
     pub blur_distance2: f32,
     pub blur_distance3: f32,
 
@@ -78,7 +54,7 @@ pub struct GlassRecipe {
     pub inner_refraction_height: f32,
     pub outer_refraction_amount: f32,
     pub outer_refraction_height: f32,
-    /// Gates both refraction distances: at zero they do nothing.
+    /// Gates both refraction distances.
     pub refraction_opacity: f32,
     pub refraction_distance0: f32,
     pub refraction_distance1: f32,
@@ -89,7 +65,7 @@ pub struct GlassRecipe {
     pub face_saturation: f32,
     pub face_fill: Option<Hsla>,
 
-    /// Gates every other bleed input the same way.
+    /// Gates every other bleed input.
     pub bleed_opacity: f32,
     pub bleed_amount: f32,
     pub bleed_height: f32,
@@ -108,7 +84,7 @@ pub struct GlassRecipe {
     pub shadow_height: f32,
     pub shadow_blur_radius: f32,
     pub shadow_opacity: f32,
-    /// The dominant one on an SDR display, and separately live from [`Self::shadow_opacity`].
+    /// The dominant one on an SDR display.
     pub shadow_opacity_sdr: f32,
     pub shadow_vibrancy: f32,
     pub shadow_white: f32,
@@ -131,10 +107,7 @@ impl Default for GlassRecipe {
 }
 
 impl GlassRecipe {
-    /// What a stock `NSGlassEffectView` writes into its own filter in a dark appearance, read
-    /// back off the live object — and it must be read off a **key** window: a non-key stock view
-    /// writes a structurally different recipe, with bleed, refraction, shadow and tone switched
-    /// off rather than reduced.
+    /// What a stock `NSGlassEffectView` in a key window writes into its filter, dark appearance.
     pub fn regular() -> Self {
         Self {
             corner_radius: 0.,
@@ -190,9 +163,7 @@ impl GlassRecipe {
         }
     }
 
-    /// [`GlassRecipe::regular`] as the same view writes it in a light appearance. A stock view
-    /// swaps these when its effective appearance changes; a recipe is a fixed design, so pick the
-    /// one your window is.
+    /// [`GlassRecipe::regular`] in a light appearance.
     pub fn regular_light() -> Self {
         Self {
             face_white: 1.03,
@@ -210,8 +181,7 @@ impl GlassRecipe {
         }
     }
 
-    /// The clear style: tints rather than blurs, so most of the backdrop's structure survives.
-    /// The same in both appearances, unlike [`GlassRecipe::regular`].
+    /// The clear style: tints rather than blurs; the same in both appearances.
     pub fn clear() -> Self {
         Self {
             ovalization: 0.,
@@ -242,8 +212,7 @@ impl GlassRecipe {
         }
     }
 
-    /// A soft droplet: no blur, deep refraction over a hundred points of edge, its own shadow.
-    /// The far end of the space from the stock styles.
+    /// A soft droplet: no blur, deep refraction, its own shadow.
     pub fn blob() -> Self {
         Self {
             corner_radius: 300.,
@@ -277,13 +246,7 @@ fn grey(level: f32, alpha: f32) -> Hsla {
     }
 }
 
-/// Whether the whole private recipe path resolved: the three layer classes **and** `CAFilter`.
-///
-/// False does not mean nothing works. `Body::new` gates only on the three layer classes, so if
-/// `CAFilter` alone were missing this reports false while the layer path still runs and still
-/// honours `corner_radius`, `ovalization`, `margin_width` and `backdrop_scale` — only the filter
-/// inputs are lost. It is a stock `NSGlassEffectView` honouring nothing but `corner_radius` only
-/// when a layer class is missing too.
+/// Whether the three layer classes and `CAFilter` all resolved.
 pub fn custom_glass_available() -> bool {
     private_class(c"CABackdropLayer").is_some()
         && private_class(c"CASDFLayer").is_some()
@@ -291,10 +254,7 @@ pub fn custom_glass_available() -> bool {
         && private_class(c"CAFilter").is_some()
 }
 
-/// A panel of liquid glass built from [`GlassRecipe`] rather than one of the two styles
-/// `NSGlassEffectView` offers. It fills the box you give it and draws nothing itself, and
-/// everything true of [`glass`](super::glass) is true here: it samples what is beneath it, and on
-/// [`Layer::Above`] it frosts GPUI's own content, text included.
+/// A panel of liquid glass drawn from a [`GlassRecipe`], filling the box it is given.
 pub fn custom_glass(id: impl Into<ElementId>) -> CustomGlass {
     CustomGlass {
         id: id.into(),
@@ -312,14 +272,11 @@ pub struct CustomGlass {
 }
 
 impl CustomGlass {
-    /// Frost the GPUI content painted beneath this panel. The default, stated at the call site.
     pub fn frosting_gpui(mut self) -> Self {
         self.layer = Layer::Above;
         self
     }
 
-    /// Frost the desktop behind the window instead. Needs a non-opaque window
-    /// ([`crate::window_options`]) and a rect the GPUI scene leaves transparent.
     pub fn frosting_desktop(mut self) -> Self {
         self.layer = Layer::Below;
         self
@@ -330,90 +287,34 @@ impl CustomGlass {
         self
     }
 
-    /// Overrides the recipe's own radius, in either order. Held separately because writing it into
-    /// the recipe let a later `recipe()` discard it silently.
+    /// Overrides the recipe's radius, in either order.
     pub fn corner_radius(mut self, radius: Pixels) -> Self {
         self.radius = Some(radius.to_f64() as f32);
         self
     }
 
-    fn resolved(&self) -> GlassRecipe {
-        let mut recipe = self.recipe;
-        if let Some(radius) = self.radius {
-            recipe.corner_radius = radius;
-        }
-        recipe
-    }
-}
-
-impl Element for CustomGlass {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let style = Style {
+    fn layout(&self) -> Style {
+        Style {
             size: Size {
                 width: relative(1.).into(),
                 height: relative(1.).into(),
             },
             ..Default::default()
-        };
-        (window.request_layout(style, [], cx), ())
+        }
     }
 
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut Window,
-        _: &mut App,
-    ) {
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let key = element_key(id);
-        let mask = window.content_mask().bounds;
-        let host = NativeHost::get(window, cx);
-        let view = host.place(key, self.layer, bounds, mask, |mtm, _| {
-            CustomGlassView::new(mtm)
-        });
+    fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
+        let view = slot.place(self.layer, |mtm, _| CustomGlassView::new(mtm));
+        let mut recipe = self.recipe;
+        if let Some(radius) = self.radius {
+            recipe.corner_radius = radius;
+        }
         view.fit();
-        view.apply(&self.resolved());
+        view.apply(&recipe);
     }
 }
 
-impl IntoElement for CustomGlass {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
+hosted_element!(CustomGlass);
 
 enum Body {
     Layers {
@@ -431,8 +332,6 @@ struct GlassIvars {
     size: Cell<NSSize>,
 }
 
-// The pool sets geometry with `setFrame:`, which AppKit does not implement in terms of
-// `setFrameSize:`, so the layers are fitted from `paint` rather than from an override.
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
@@ -441,7 +340,7 @@ define_class!(
     struct CustomGlassView;
 );
 
-/// The filter reads the field by layer name, so the name is part of the contract between them.
+/// The filter reads the field by layer name.
 fn field_name() -> &'static NSString {
     ns_string!("ngGlassField")
 }
@@ -456,7 +355,6 @@ impl CustomGlassView {
         let this = Self::alloc(mtm).set_ivars(ivars);
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         this.setWantsLayer(true);
-
         let root = this.layer().expect("wantsLayer was just set");
         match &this.ivars().body {
             Body::Layers { backdrop, .. } => root.addSublayer(backdrop),
@@ -472,7 +370,6 @@ impl CustomGlassView {
             return;
         }
         ivars.applied.set(Some(*recipe));
-
         without_animation(|| match &ivars.body {
             Body::Layers {
                 backdrop, element, ..
@@ -485,6 +382,7 @@ impl CustomGlassView {
                 );
                 set_number(&**backdrop, ns_string!("marginWidth"), recipe.margin_width);
                 set_number(&**backdrop, ns_string!("scale"), recipe.backdrop_scale);
+                // `CAFilter` ignores writes after its first commit, so a change ships a new one.
                 let filter = build_filter(recipe);
                 let filters = filter.map(|filter| NSArray::from_retained_slice(&[filter]));
                 unsafe { backdrop.setFilters(filters.as_deref()) };
@@ -494,6 +392,8 @@ impl CustomGlassView {
         });
     }
 
+    /// Called from `paint`: the pool sets geometry with `setFrame:`, which does not reach
+    /// `setFrameSize:`.
     fn fit(&self) {
         let ivars = self.ivars();
         let size = self.bounds().size;
@@ -501,7 +401,6 @@ impl CustomGlassView {
             return;
         }
         ivars.size.set(size);
-
         let frame = NSRect::new(NSPoint::ZERO, size);
         without_animation(|| match &ivars.body {
             Body::Layers {
@@ -529,12 +428,10 @@ impl Body {
             set_bool(&*backdrop, ns_string!("allowsFilteredLuma"), true);
             field.setName(Some(field_name()));
             element.setCornerCurve(unsafe { kCACornerCurveContinuous });
-
-            // Attaching the output effect is what makes the field render at all.
+            // The output effect is what makes the field render at all.
             if let Some(effect) = private_instance(c"CASDFOutputEffect") {
                 set_object(&*field, ns_string!("effect"), Some(&*effect));
             }
-
             field.addSublayer(&element);
             backdrop.addSublayer(&field);
             return Self::Layers {
@@ -543,7 +440,6 @@ impl Body {
                 element,
             };
         }
-        // Public API, so outside the gate: the kill switch must reach this path, not disable it.
         match AnyClass::get(c"NSGlassEffectView") {
             Some(_) => Self::Stock(NSGlassEffectView::new(mtm)),
             None => Self::Absent,
@@ -551,18 +447,6 @@ impl Body {
     }
 }
 
-/// How close this gets, measured once on macOS 26.5 against a **keyed** stock `NSGlassEffectView`
-/// and not re-measured since: mean per-channel difference 2.49/255, against a 0.0000 noise floor
-/// taken between two captures of the stock view itself. Every filter input this writes is
-/// byte-identical to the stock view's own; the residual is two passes it does not build, a
-/// `vibrantColorMatrix` layer and the specular rim. Re-check it after changing this function —
-/// nothing in the test suite will notice if it stops being true.
-///
-/// Keyed matters: a stock view writes a structurally different recipe when its window is not key,
-/// so the same comparison against an unfocused window read 16.0 rather than 2.49.
-///
-/// `CAFilter` bakes its inputs when the transaction commits and silently ignores writes after
-/// that, so a changed recipe ships a whole new filter rather than mutating the live one.
 fn build_filter(recipe: &GlassRecipe) -> Option<Retained<AnyObject>> {
     let class = private_class(c"CAFilter")?;
     let filter: Option<Retained<AnyObject>> =
@@ -706,7 +590,6 @@ fn build_filter(recipe: &GlassRecipe) -> Option<Retained<AnyObject>> {
     Some(filter)
 }
 
-/// The runtime kill switch, for shipping a build that must not reach for private API.
 static PRIVATE_API: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("NATIVE_GPUI_NO_PRIVATE_GLASS").is_none());
 
@@ -749,7 +632,6 @@ fn set_fill(object: &impl Message, key: &NSString, color: Option<Hsla>) {
     let Some(color) = color else {
         return set_object(object, key, None::<&AnyObject>);
     };
-    // The CGColor is owned by the NSColor, which must outlive the write that retains it.
     let owner = to_nscolor(color);
     let cg: *mut AnyObject = unsafe { msg_send![&*owner, CGColor] };
     set_object(object, key, unsafe { cg.as_ref() });
