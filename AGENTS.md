@@ -33,7 +33,7 @@ Keeping a hosted view on the same frame as the GPUI row it sits on takes two cha
 * Materials are key-dependent; the crate pins them `Active`.
 * Long lists must use `uniform_list`, so only visible rows place a view.
 * Under `appears_transparent` the content rect is the frame: inset chrome by `frame.height - contentLayoutRect.height`.
-* GPUI content over a blur of GPUI content needs a second window: one Metal layer is either under a material or over it. The Finder demo's preview pane is a borderless, non-activating child window whose `Layer::Below` material samples the parent.
+* GPUI content over a blur of GPUI content needs a second window: one Metal layer is either under a material or over it. The Finder demo's preview pane is a `glass` frosting the rows in the main window, and a borderless, non-activating, transparent child window over it carries only the card.
 * Cursor rects and GPUI's cursor styles apply only in the key window. A window that can never be key (the pane's child panel) gets its `cursor_region` cursor from the chrome host's own `mouseMoved:`.
 * GPUI's Metal layer carries CA's width/height-sizable autoresizing mask. AppKit already sizes a layer-backed view's layer from the view, so the mask only matters when the view does not fill its superview, and then CA adds the superview's resize delta a second time (old + 2x delta) and every frame displays scaled. The sidebar pane clears the mask when it adopts the view.
 

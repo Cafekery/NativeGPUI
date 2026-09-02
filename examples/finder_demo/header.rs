@@ -5,7 +5,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{Blending, Layer, Material, material, native_label, native_rule};
+use native_gpui::{Blending, Layer, Material, glass, material, native_label, native_rule};
 
 use crate::FinderDemo;
 use crate::data::Column;
@@ -103,30 +103,17 @@ fn overlay(fill: Hsla) -> Div {
         .bg(fill)
 }
 
-/// The pane's material continued up under the toolbar, where the pane window cannot reach, with
-/// the pane's outer hairline carried up to the window's corner.
-pub(crate) fn pane_cap(width: Pixels, top: Pixels) -> AnyElement {
+/// The pane's surface: Finder's own, a regular glass frosting the rows, run up under the toolbar
+/// and down to the window's corner; its rim is the hairline Finder shows on those edges. The pane
+/// window over it carries only the card.
+pub(crate) fn pane_surface(width: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
         .right_0()
+        .bottom_0()
         .w(width)
-        .h(top)
-        .child(
-            material("ng.finder.pane.cap", Material::Sidebar)
-                .layer(Layer::Above)
-                .blending(Blending::WithinWindow)
-                .size_full(),
-        )
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .bottom_0()
-                .w(px(1.))
-                .child(native_rule("ng.finder.pane.cap.edge")),
-        )
+        .child(glass("ng.finder.pane").frosting_gpui())
         .into_any_element()
 }
 
