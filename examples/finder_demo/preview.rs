@@ -13,6 +13,7 @@ use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowSt
 use objc2_foundation::NSRect;
 
 use crate::data::{Face, Line, Row};
+use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
 use crate::toolbar::BAR_H;
 use crate::ui::{TAGS, artwork, tag_dot};
@@ -226,6 +227,7 @@ impl FinderDemo {
         self.list_focused = self.focus.is_focused(window);
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
+        self.fit_name_column();
 
         if !self.preview_shown() {
             if let Some(pane) = self.preview_window.take() {
@@ -272,6 +274,32 @@ impl FinderDemo {
                 cx.defer(move |cx| open_preview_window(finder, parent, frame, cx));
             }
         }
+    }
+
+    /// Finder's Name column takes up whatever the window gives or takes: it fills the list at
+    /// first, shrinks to its minimum as the list narrows, and only grows again once the columns
+    /// fit beside the pane once more.
+    fn fit_name_column(&mut self) {
+        let span = self.list_room
+            - if self.preview_shown() {
+                self.preview_w
+            } else {
+                0.
+            };
+        let fixed = self.list_content_w() - self.name_w;
+        if self.list_span.is_nan() {
+            self.name_w = (span - fixed).max(NAME_MIN_W);
+        } else if span != self.list_span {
+            let delta = span - self.list_span;
+            let overflow = (self.list_content_w() - self.list_span).max(0.);
+            let change = if delta < 0. {
+                delta
+            } else {
+                (delta - overflow).max(0.)
+            };
+            self.name_w = (self.name_w + change).max(NAME_MIN_W);
+        }
+        self.list_span = span;
     }
 
     pub(crate) fn info_card(

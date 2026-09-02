@@ -18,12 +18,12 @@ use std::env;
 
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, relative, size,
+    Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
+    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
-use native_gpui::{install_menus, native_root, window_options};
+use native_gpui::{install_menus, native_root, system_corner_radius, window_options};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -75,6 +75,9 @@ pub(crate) struct FinderDemo {
     /// What the pane window reads to lay itself out: the list's focus and the room beside the sidebar.
     pub(crate) list_focused: bool,
     pub(crate) list_room: f32,
+    /// The width the list had beside the pane at the last layout, so a change can be given to
+    /// the Name column, as Finder's autoresizing gives it.
+    pub(crate) list_span: f32,
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
     pub(crate) icon_size: f64,
@@ -117,6 +120,7 @@ impl FinderDemo {
             preview_expanded: false,
             list_focused: false,
             list_room: 0.,
+            list_span: f32::NAN,
             path_bar_shown: false,
             status_bar_shown: false,
             icon_size: 64.,
@@ -441,7 +445,7 @@ impl FinderDemo {
     }
 
     /// The list's own width: its columns never shrink to fit, so the visible strip scrolls over them.
-    fn list_content_w(&self) -> f32 {
+    pub(crate) fn list_content_w(&self) -> f32 {
         self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
     }
 
@@ -451,6 +455,7 @@ impl FinderDemo {
         headers: Option<AnyElement>,
         palette: &Palette,
         metrics: SidebarMetrics,
+        corner: Pixels,
     ) -> AnyElement {
         let top = metrics.top;
         let banded = headers.is_some();
@@ -468,14 +473,16 @@ impl FinderDemo {
             .when(!banded && self.view != ICON_VIEW, |column| {
                 column.border_t_1().border_color(palette.separator)
             });
-        // The list starts under the sidebar and scrolls sideways beneath it and the pane; the pane's
-        // width is padded on so the last column can be scrolled clear of it.
+        // The list starts under the sidebar and, as Finder's, stops at the pane until its columns
+        // no longer fit; only then does it run on beneath the pane and scroll sideways, the pane's
+        // width padded on so the last column can be scrolled clear of it.
         let pane = if self.preview_shown() {
             self.preview_w
         } else {
             0.
         };
-        let width = metrics.left + px(self.list_content_w() + pane);
+        let band = (self.list_room - pane).max(self.list_content_w());
+        let width = metrics.left + px(band + pane);
         if banded {
             surface = surface.child(
                 axis_locked(
@@ -491,6 +498,8 @@ impl FinderDemo {
                         .w(width)
                         .min_w(relative(1.))
                         .pl(metrics.left)
+                        .pr(px(pane))
+                        .pr(px(pane))
                         .flex()
                         .flex_col()
                         .child(body),
@@ -508,7 +517,7 @@ impl FinderDemo {
             .when(banded, |column| {
                 column.child(band_glass(metrics.left, px(pane), top))
             })
-            .when(banded && pane > 0., |column| column.child(pane_surface(px(pane))))
+            .when(banded && pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             // A second scroller on the same handle, so the header clamps exactly as the rows do.
             .children(headers.map(|headers| {
                 axis_locked(
@@ -573,6 +582,7 @@ impl Render for FinderDemo {
         self.sync_preview_window(window, cx);
 
         let metrics = self.metrics();
+        let corner = system_corner_radius(window);
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
@@ -616,7 +626,7 @@ impl Render for FinderDemo {
                                 .flex()
                                 .overflow_hidden()
                                 .when(!list_view, |row| row.pl(metrics.left))
-                                .child(self.list_column(body, headers, &palette, metrics)),
+                                .child(self.list_column(body, headers, &palette, metrics, corner)),
                         )
                         .when(self.path_bar_shown, |c| {
                             c.child(div().flex_none().pl(metrics.left).child(path_bar))
@@ -653,7 +663,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(160.), px(120.)),
-                    size: size(px(1026.), px(772.)),
+                    size: size(px(1200.), px(772.)),
                 })),
                 ..window_options()
             },
