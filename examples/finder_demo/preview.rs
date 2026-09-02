@@ -61,14 +61,20 @@ pub(crate) struct PreviewWindow {
 
 pub(crate) struct PreviewPane {
     finder: Entity<FinderDemo>,
+    /// The window's corner radius, which the pane's outer edge follows.
+    corner: f32,
     /// The pane's right edge in screen points while the grip is held.
     drag: Option<f32>,
 }
 
 impl PreviewPane {
-    fn new(finder: Entity<FinderDemo>, cx: &mut Context<Self>) -> Self {
+    fn new(finder: Entity<FinderDemo>, corner: f32, cx: &mut Context<Self>) -> Self {
         cx.observe(&finder, |_, _, cx| cx.notify()).detach();
-        Self { finder, drag: None }
+        Self {
+            finder,
+            corner,
+            drag: None,
+        }
     }
 
     fn resize_start(&mut self, _: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
@@ -140,10 +146,15 @@ impl Render for PreviewPane {
                     // The child window is never key, so a material following its active state
                     // would stay flat; unlike Finder's, this pane does not grey out when the
                     // window is not key.
+                    // Hairlines on the edges that meet the list and the window's outer edge,
+                    // the last one following the window's rounded corner, as Finder's pane has.
                     material("finder.preview", Material::Sidebar)
                         .size_full()
                         .relative()
                         .border_l_1()
+                        .border_b_1()
+                        .border_r_1()
+                        .rounded_br(px(self.corner))
                         .border_color(palette.separator)
                         .child(card)
                         .child(cursor_region(
@@ -193,7 +204,7 @@ fn open_preview_window(
                     })),
                     ..window_options()
                 },
-                |_, cx| cx.new(|cx| PreviewPane::new(pane_finder, cx)),
+                |_, cx| cx.new(|cx| PreviewPane::new(pane_finder, corner as f32, cx)),
             )
             .ok()?;
         let window = handle
