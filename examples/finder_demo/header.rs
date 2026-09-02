@@ -103,7 +103,8 @@ fn overlay(fill: Hsla) -> Div {
         .bg(fill)
 }
 
-/// The pane's material continued up under the toolbar, where the pane window cannot reach.
+/// The pane's material continued up under the toolbar, where the pane window cannot reach, with
+/// the pane's outer hairline carried up to the window's corner.
 pub(crate) fn pane_cap(width: Pixels, top: Pixels) -> AnyElement {
     div()
         .absolute()
@@ -116,6 +117,15 @@ pub(crate) fn pane_cap(width: Pixels, top: Pixels) -> AnyElement {
                 .layer(Layer::Above)
                 .blending(Blending::WithinWindow)
                 .size_full(),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .bottom_0()
+                .w(px(1.))
+                .child(native_rule("ng.finder.pane.cap.edge")),
         )
         .into_any_element()
 }
