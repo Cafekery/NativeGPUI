@@ -12,7 +12,7 @@ No Swift, no build script, no C shim: GPUI's window vends its `NSView` through `
 
 | doc | for |
 |---|---|
-| [docs/how-it-works.md](docs/how-it-works.md) | the view tree, one frame start to finish, identity, events, focus, layers, and what the vendored gpui changes |
+| [docs/how-it-works.md](docs/how-it-works.md) | the view tree, one frame start to finish, identity, events, focus, layers, and the gpui pin |
 | [docs/adding-a-component.md](docs/adding-a-component.md) | hosting a new AppKit control, walked through with the switch |
 | [docs/testing-and-tools.md](docs/testing-and-tools.md) | the gate, the scripts, capture rules, environment knobs, frame-rate measurement |
 | [AGENTS.md](AGENTS.md) | the invariants and house rules |
@@ -23,10 +23,10 @@ No Swift, no build script, no C shim: GPUI's window vends its `NSView` through `
 
 `Layer::Above` is a subview of GPUI's Metal view and takes input; `Layer::Below` is a sibling beneath it, so GPUI composites over it and nothing there can receive input.
 
-GPUI is vendored at `vendor/gpui` through `[patch.crates-io]`, with its Metal renderer presenting inside the Core Animation transaction so hosted views and GPUI content reach the screen in the same frame, and drawing input-driven frames inside the input event so a 125 Hz trackpad never straddles the 120 Hz display tick.
+GPUI is a git dependency on its upstream repository at one pinned revision, and `[patch]` in `Cargo.toml` replaces the macOS platform crate `gpui_macos` with a fork built from that same revision. An app builds its `Application` through `gpui_platform::application()`, with `gpui_platform`'s `font-kit` feature on.
 
 ```rust
-use gpui::{App, Application, Context, Render, Window, div, prelude::*};
+use gpui::{App, Context, Render, Window, div, prelude::*};
 use native_gpui::{install_menus, native_root, native_switch, window_options};
 
 struct Root {
@@ -45,7 +45,7 @@ impl Render for Root {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         install_menus(cx);
         cx.open_window(window_options(), |_, cx| cx.new(|_| Root { on: false }))
             .unwrap();
@@ -106,4 +106,4 @@ cargo run --release --example finder_demo
 ./scripts/check.sh
 ```
 
-Requires macOS 26 or later.
+Requires macOS 26 or later and rustc 1.97 or later.

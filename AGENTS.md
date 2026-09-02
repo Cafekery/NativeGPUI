@@ -16,11 +16,13 @@ A window is two surfaces, never three: the sidebar pane is vibrancy (`SidebarOpt
 
 `Layer::Above` is a subview of GPUI's Metal view: it draws over GPUI content and takes input. `Layer::Below` is a sibling beneath it: GPUI composites over it and it can never receive input; it needs the non-opaque window `window_options()` gives.
 
+## One gpui
+
+`gpui` is a git dependency on its upstream repository at one revision; `[patch]` swaps `gpui_macos` for a fork built from that same revision. Never a crates.io `gpui`, never a vendored copy, never two revisions: `cargo tree -i gpui` shows one `gpui`. Apps build their `Application` with `gpui_platform::application()` and `gpui_platform`'s `font-kit` feature on; `MacPlatform::new` asserts the main thread.
+
 ## Presentation
 
-GPUI is vendored at `vendor/gpui` (`[patch.crates-io]`) with its Metal renderer presenting inside the Core Animation transaction and flushing it at the end of every frame. That is what keeps a hosted AppKit view on the same frame as the GPUI row it sits on while scrolling; without it GPUI's frame reached the screen 0–2 refreshes after the transaction depending on how backed up its drawable queue was, and no constant could compensate.
-
-The same patch draws the frame an input event dirtied inside that event instead of waiting for the display link. The trackpad reports at 125 Hz against a 120 Hz display, so a frame that only draws at the tick alternates between carrying zero and two events whenever the two clocks cross, which reads as a stall followed by a double step. A tick within 8 ms of an input frame presents nothing new. The patch also drops a lock GPUI held across `resignKeyWindow`, which re-enters the same handler and deadlocked.
+Keeping a hosted view on the same frame as the GPUI row it sits on takes two changes to gpui: presenting the drawable inside the Core Animation transaction and flushing it every frame, and drawing the frame an input event dirtied inside that event rather than at the display-link tick (the trackpad reports at 125 Hz against a 120 Hz display; a frame drawn only at the tick alternates between zero and two events whenever the clocks cross). Neither is in gpui at the current pin. They belong upstream or in the platform forks, never in this crate; until they land, hosted views trail their rows by 0–2 refreshes while scrolling.
 
 ## Platform facts
 

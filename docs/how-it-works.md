@@ -27,7 +27,7 @@ NSWindow
 2. **Layout.** A hosted element's `request_layout` asks AppKit for the control's `fittingSize` (cached per class by `fitting_size`) and reserves that box in GPUI's layout. No view exists yet.
 3. **Paint.** `paint` receives a `Slot` (pool key, host, bounds, clip mask) and calls `slot.place(layer, |mtm, target| ...)`. The host looks the key up in the window's pool: on first sight it runs the closure to create the view; every time it diff-writes the clip frame, the view frame and the hidden flag. The element then pushes only the properties that changed (`if switch.state() != wanted { switch.setState(wanted) }`) and registers its handler.
 4. **Commit.** `native_root` paints last and calls `NativeHost::commit`: views that were not placed this frame are removed, subviews are restacked to paint order if the order changed, and the key view loop is rewritten.
-5. **Present.** GPUI encodes its Metal frame. The vendored gpui presents the drawable inside the same Core Animation transaction and flushes it, so the AppKit frame changes from step 3 and the Metal frame reach the screen in the same refresh.
+5. **Present.** GPUI encodes its Metal frame and presents the drawable; the AppKit frame changes from step 3 go out with the run loop's Core Animation transaction. See [The gpui pin](#the-gpui-pin) for what this crate used to change here.
 
 Everything an element does is per frame and idempotent: there is no "create" phase to get wrong, and a component is one `layout` plus one `paint`.
 
@@ -84,12 +84,13 @@ Popovers, sheets and the share picker are their own `NSWindow`s. `native_anchor(
 
 `tokens::init(cx)` snapshots the system's colours and fonts into a `SystemTheme` global and republishes it when the appearance or accent changes. `system_color`, `system_font`, `sf_symbol` and `file_icon` are the accessors; every value is rasterised or resolved by macOS, never approximated.
 
-## The vendored gpui
+## The gpui pin
 
-`vendor/gpui` is gpui 0.2.2 with three changes, applied through `[patch.crates-io]`. See the diff with `diff -ru ~/.cargo/registry/src/*/gpui-0.2.2/src vendor/gpui/src`.
+`gpui` and `gpui_platform` are git dependencies on gpui's upstream repository at one revision, and `[patch]` replaces `gpui_macos` with a fork whose sources are that same revision plus its own patches (currently: accepting browser, promise and image drags). The two `rev`s in `Cargo.toml` belong together: moving one without the other yields two `gpui`s that do not unify, and `cargo tree -i gpui` must show exactly one.
 
-1. **Present inside the transaction.** The Metal layer has `presentsWithTransaction`, and each frame is `commit`, `waitUntilScheduled`, `present`, followed by `[CATransaction flush]`. Without it GPUI's frame reached the screen 0–2 refreshes after the AppKit changes made alongside it, depending on how backed up its drawable queue was, and hosted views visibly trailed the rows they sit on.
-2. **Input-driven frames.** The frame an input event dirties is drawn inside that event, not at the next display-link tick. The trackpad reports at 125 Hz against a 120 Hz display; a frame that only draws at the tick alternates between carrying zero and two scroll events whenever the two clocks cross, which reads as a stall followed by a double step. A tick within 8 ms of an input frame presents nothing new.
-3. **A deadlock.** GPUI held its window lock across `resignKeyWindow`, which re-enters the same handler.
+Earlier revisions of this crate carried gpui 0.2.2 in `vendor/gpui` with three changes. One, a deadlock across `resignKeyWindow`, is upstream now. The other two are not carried at this pin; they touch `gpui` itself, the renderer and `gpui_macos`, so they belong upstream or in the platform forks rather than here:
 
-To move to a newer gpui: copy the release into `vendor/gpui`, reapply the diff, and run `scripts/check.sh`.
+1. **Present inside the transaction.** The Metal layer had `presentsWithTransaction` on for every frame, `commit`, `waitUntilScheduled`, `present`, then `[CATransaction flush]`, so a hosted view and the GPUI row it sits on reached the screen in the same refresh. Upstream enables it only for the frames it draws on activation and from `displayLayer:`.
+2. **Input-driven frames.** The frame an input event dirtied was drawn inside that event rather than at the next display-link tick, so a 125 Hz trackpad never straddled the 120 Hz tick. Upstream draws at the tick.
+
+To move to a newer gpui: roll the `gpui_macos` fork first, then set both `rev`s here to the revisions it names, `cargo update`, and run `scripts/check.sh`.
