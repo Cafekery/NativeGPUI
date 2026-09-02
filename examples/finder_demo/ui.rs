@@ -1,19 +1,11 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
-//!
-//! Owns [`artwork`] and [`glyph`] (a row's icon, real or symbol), [`small_glyph`] (the little
-//! chevrons and sort arrows) and [`tag_dot`], plus the `TAGS` list all four of the views and the
-//! Action menu index into.
-//!
-//! Deliberately not here: colour resolution (that is `palette`), layout constants (those live with
-//! the view that measured them), and anything that touches `FinderDemo` state.
 
 use gpui::{AnyElement, FontWeight, div, prelude::*, px};
+
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
 
 use crate::data::{Face, Row};
 
-/// Finder's tag colours, in its own order. Seven, ending in Gray: it is the last dot in the strip
-/// the Action menu shows, and a six-dot strip is visibly one short of Finder's.
 pub(crate) const TAGS: &[(&str, SystemColor)] = &[
     ("Red", SystemColor::SystemRed),
     ("Orange", SystemColor::SystemOrange),
@@ -24,18 +16,6 @@ pub(crate) const TAGS: &[(&str, SystemColor)] = &[
     ("Gray", SystemColor::SystemGray),
 ];
 
-/// A row's icon: the system's own artwork for the row's type, falling back to the face's SF
-/// symbol for the props that have no file type behind them. Both the list and the icon view draw
-/// through here, so one row cannot show real artwork in one view and a symbol in the other.
-///
-/// 32pt at a 2x backing scale lands on the 64px representation the artwork actually ships, so the
-/// icon is crisp rather than resampled — asking for a size off that ladder is what makes one look
-/// soft. The size is the same for every row on purpose: the cache is keyed by it, and varying it
-/// per row would turn a hit into a 42µs raster.
-///
-/// The box is square whichever path answers. A symbol needs the wider slot [`glyph`] gives it, and
-/// handing that slot back to a caller that asked for `size` shifts the icon off the column the
-/// artwork rows line up on.
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
     let art = row
         .artwork
@@ -86,4 +66,10 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .flex_none()
         .bg(system_color(TAGS[index].1))
         .into_any_element()
+}
+
+/// A scroll container that ignores the other axis; nested with a list, each axis then has one owner.
+pub(crate) fn axis_locked<E: Styled>(mut element: E) -> E {
+    element.style().restrict_scroll_to_axis = Some(true);
+    element
 }

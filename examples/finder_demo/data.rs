@@ -1,12 +1,4 @@
 //! The invented filesystem, and the system formatters that turn it into strings.
-//!
-//! Owns `DIRS` and `APPS` — the whole fictional tree, written out as literals — the `Face` a row
-//! wears, the [`ago`] stamp arithmetic that keeps some rows landing on today, and the `Row`,
-//! `Folder` and `Line` the rest of the demo reads. [`build_store`] is the only thing that runs the
-//! tables through `NSDateFormatter` and `NSByteCountFormatter`, once, at startup.
-//!
-//! Deliberately not here: anything that draws. No module in this file knows what a row looks like,
-//! only what it is. Layout constants live with the view that measures them.
 
 use std::collections::HashMap;
 
@@ -19,12 +11,6 @@ use objc2_foundation::{
 
 use self::Face as F;
 
-// ---------------------------------------------------------------------------------------------
-// The invented filesystem
-// ---------------------------------------------------------------------------------------------
-
-/// What a row is, which decides its icon, its Kind column and — where no real artwork exists for
-/// the type — the tint of the symbol standing in for it.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Face {
     Folder,
@@ -88,10 +74,6 @@ impl Face {
         }
     }
 
-    /// The type whose own artwork the system draws for this row, or `None` to fall back to
-    /// [`Face::symbol`]. Keyed on the face and not only on the extension because Finder hides the
-    /// `.app` of a bundle and a folder has no extension at all, yet both have real icons; the
-    /// faces that answer `None` are props with no file type behind them.
     fn artwork(self, extension: Option<&'static str>) -> Option<FileType<'static>> {
         match self {
             F::Folder => Some(FileType::Folder),
@@ -101,8 +83,6 @@ impl Face {
         }
     }
 
-    /// Hierarchical rather than one flat colour: a symbol with a secondary layer keeps it, which is
-    /// what stops a tinted glyph looking like a silhouette.
     pub(crate) fn tint(self) -> SymbolColor {
         let color = match self {
             F::Folder => SystemColor::SystemBlue,
@@ -125,17 +105,14 @@ impl Face {
     }
 }
 
-/// `name`, face, modified as `yyyymmddhhmm` or an [`ago`] offset, size in bytes, the directory this
-/// row opens (`""` when it opens nothing). Folder sizes are ignored: Finder shows `--`.
+/// `name`, face, modified as `yyyymmddhhmm` or an [`ago`] offset, size in bytes, the folder this
+/// row opens (`""` when it opens nothing).
 pub(crate) type Src = (&'static str, Face, u64, u64, &'static str);
 
-/// Above every `yyyymmddhhmm` literal, which is twelve digits, so a relative stamp cannot collide
-/// with a real one.
 pub(crate) const RELATIVE: u64 = 1_000_000_000_000;
 
-/// A stamp meaning `days` calendar days before launch at `hour:minute`. A frozen literal can never
-/// be today, so without this the list would never show the `Today` and `Yesterday` tiers that are
-/// two thirds of what Finder's date column does.
+/// A stamp meaning `days` calendar days before launch at `hour:minute`, so rows keep landing on
+/// Finder's `Today` and `Yesterday` tiers as a frozen literal never could.
 pub(crate) const fn ago(days: u64, hour: u64, minute: u64) -> u64 {
     RELATIVE + days * 10_000 + hour * 100 + minute
 }
@@ -644,8 +621,6 @@ pub(crate) const DIRS: &[Dir] = &[
     ),
 ];
 
-/// Applications are generated rather than written out: a long directory is what makes
-/// `uniform_list` worth using, and forty hand-typed rows say nothing forty generated ones do not.
 pub(crate) const APPS: &[&str] = &[
     "App Store",
     "Automator",
@@ -694,15 +669,7 @@ pub(crate) const APPS: &[&str] = &[
 
 pub(crate) const AVAILABLE_BYTES: i64 = 218_420_000_000;
 
-// ---------------------------------------------------------------------------------------------
-// System formatting
-// ---------------------------------------------------------------------------------------------
-
 /// `(year, month, day, hour, minute)` for a stamp, an [`ago`] offset resolved against `today`.
-///
-/// A relative day is left deliberately out of range — `day - 1` on the 1st of a month comes out
-/// zero, and three days before the 2nd of January comes out negative. `NSCalendar` normalises both
-/// into the previous month or year, which is why this does no carrying of its own.
 pub(crate) fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64, i64, i64) {
     if stamp >= RELATIVE {
         let offset = (stamp - RELATIVE) as i64;
@@ -726,12 +693,6 @@ pub(crate) fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64,
 }
 
 /// The date a stamp names, in the user's own calendar and timezone, `back` calendar days earlier.
-///
-/// Built from components rather than from an epoch offset: the relative stamps have to land on a
-/// calendar day, and a day is not 86,400 seconds long twice a year. `back` is subtracted from the
-/// day component and left out of range on purpose, for the same reason [`stamp_parts`] leaves a
-/// relative day out of range — the 3rd minus 40 days is day −37 of that month, and NSCalendar
-/// resolves it into the right month and year.
 pub(crate) fn stamp_date(
     calendar: &NSCalendar,
     today: (i64, i64, i64),
@@ -739,6 +700,7 @@ pub(crate) fn stamp_date(
     back: i64,
 ) -> Option<objc2::rc::Retained<NSDate>> {
     let (year, month, day, hour, minute) = stamp_parts(stamp, today);
+    // The day is left out of range on purpose: `NSCalendar` carries it into the right month.
     let parts = NSDateComponents::new();
     parts.setYear(year as isize);
     parts.setMonth(month as isize);
@@ -757,10 +719,6 @@ pub(crate) fn byte_string(bytes: u64) -> String {
     .to_string()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Model
-// ---------------------------------------------------------------------------------------------
-
 #[derive(Clone)]
 pub(crate) struct Row {
     pub(crate) name: SharedString,
@@ -768,18 +726,11 @@ pub(crate) struct Row {
     pub(crate) stamp: u64,
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
-    /// Finder's preview shows Created above Modified, so a row needs a second date. Back-dated
-    /// from the same stamp rather than stored separately: a file is created before it is modified,
-    /// and the demo's dates are all relative to launch.
     pub(crate) created: SharedString,
-    /// Only the faces that have them. Finder's Information rows are driven by the metadata the
-    /// item actually carries, so a movie shows Dimensions and Duration and a folder shows neither.
     pub(crate) dimensions: Option<SharedString>,
     pub(crate) duration: Option<SharedString>,
     pub(crate) face: Face,
     pub(crate) opens: Option<&'static str>,
-    /// Resolved once at build time: a lookup plus raster is cached, but deciding *which* type to
-    /// ask for from a name and a face is this file's own work and does not need repeating per frame.
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
@@ -790,7 +741,6 @@ pub(crate) struct Folder {
     pub(crate) rows: Vec<Row>,
 }
 
-/// One visible line: a row plus where it sits in the disclosure tree.
 #[derive(Clone)]
 pub(crate) struct Line {
     pub(crate) key: SharedString,
@@ -807,18 +757,11 @@ pub(crate) enum Column {
 }
 
 pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
-    // Short date + short time with relative formatting on, which is the combination that produces
-    // Finder's own three tiers — `Today, 4:34 AM`, `Yesterday, 7:47 AM`, `8/26/26, 9:14 PM` —
-    // including the narrow no-break space before the meridiem, which a hand-written format string
-    // gets wrong by about 2pt a row. Medium date style would join with " at " instead of ", ".
     let formatter = NSDateFormatter::new();
     formatter.setDateStyle(NSDateFormatterStyle::ShortStyle);
     formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
     formatter.setDoesRelativeDateFormatting(true);
 
-    // The user's own calendar and timezone, not GMT: `Today` has to mean their today, and the
-    // switch is a calendar-day boundary rather than a count of hours — a file touched eight hours
-    // ago reads `Yesterday` once midnight has passed.
     let calendar = NSCalendar::currentCalendar();
     let now = NSDate::date();
     let fields = NSCalendarUnit::Year | NSCalendarUnit::Month | NSCalendarUnit::Day;
@@ -829,8 +772,6 @@ pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
         parts.day() as i64,
     );
 
-    // Deterministic in the byte count, so a row's dimensions and duration never move between
-    // frames or runs the way a random draw would.
     const FRAMES: [(u32, u32); 6] = [
         (1920, 1080),
         (3840, 2160),
@@ -852,7 +793,6 @@ pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
             created: text(1 + (bytes % 407) as i64).into(),
             dimensions: matches!(face, F::Image | F::Movie).then(|| {
                 let (w, h) = FRAMES[(bytes % FRAMES.len() as u64) as usize];
-                // The multiplication sign, not an x: it is what Finder writes.
                 SharedString::from(format!("{w} × {h}"))
             }),
             duration: matches!(face, F::Movie | F::Audio).then(|| {

@@ -1,10 +1,3 @@
-//! The gallery view: one large preview above a strip of thumbnails.
-//!
-//! Owns `FinderDemo::gallery_body`.
-//!
-//! Deliberately not here: the info pane beside it, which is `preview`, and the tile metrics of the
-//! icon view, which this arrangement does not use.
-
 use gpui::{AnyElement, ClickEvent, div, prelude::*, px};
 
 use crate::FinderDemo;
@@ -29,10 +22,6 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .overflow_hidden()
-            // The hero is the item itself, not the inspector: `main` already renders the trailing
-            // preview pane in gallery view, so showing `info_card` here put the same name, kind
-            // and metadata on screen twice. Finder's gallery is a large preview centred on the
-            // stage with the inspector beside it.
             .child(
                 div()
                     .flex_1()
@@ -58,9 +47,6 @@ impl FinderDemo {
                         let is_selected = selected.as_ref() == Some(&line.key);
                         let this = this.clone();
                         let clicked = line.clone();
-                        // 64pt, not the 42 that was here: the artwork ships representations at
-                        // 16/32/64/128pt and a size between two of them is resampled, which shows
-                        // up as a soft thumbnail long before anyone thinks to blame the size.
                         let mut cell = div()
                             .id(("ng.finder.frame", index))
                             .w(px(72.))

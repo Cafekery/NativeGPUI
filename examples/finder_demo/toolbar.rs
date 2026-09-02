@@ -1,12 +1,3 @@
-//! The unified toolbar, and the two bars that frame the file list.
-//!
-//! Owns `FinderDemo::install_toolbar` and the item identifiers, the two glyphs no SF Symbol name
-//! reaches, the properties that have to be written onto `NSToolbarItem`s after AppKit builds them,
-//! the Group and Action menus, and `FinderDemo::path_bar` / `FinderDemo::status_bar`.
-//!
-//! Deliberately not here: the sidebar, which is a split-view item rather than a toolbar item, and
-//! the window chrome, which `main` configures.
-
 use block2::RcBlock;
 use gpui::{AnyElement, SharedString, Window, div, prelude::*, px};
 use native_gpui::sidebar::system_template;
@@ -25,9 +16,6 @@ use crate::palette::Palette;
 use crate::ui::{TAGS, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
 
-/// Finder's Sort By / Group By list, read out of its own View menu. `None` for the four Finder
-/// offers that this listing has no column for — the row is still drawn, because a menu missing four
-/// of eight rows does not look like Finder's.
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
     (Some(Column::Kind), "Kind"),
@@ -38,40 +26,18 @@ pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Size), "Size"),
 ];
 
-/// Finder's toolbar band is 52pt and AppKit owns it: the height comes from the unified toolbar
-/// style, and the GPUI tree below it is inset by `SidebarMetrics::top` rather than by a constant.
-/// Every capsule in it is a stadium 36pt tall at y 8…44 with a radius of half its height — none of
-/// which is written down here, because `NSToolbarItem` draws all of it.
-///
-/// What is written down is the Group item's grid glyph, which no symbol name reaches. It is a
-/// hand-drawn approximation, measured off a window capture rather than guessed, and it is not
-/// claimed to be the real artwork.
-///
-/// AirDrop no longer needs one: the system ships that artwork and the sidebar knows where.
-/// The ink is 18pt across, and an `NSToolbarItem`'s width is its image's width plus a constant
-/// 24pt of padding — measured, by building the item at 20 and reading back 44 — so Finder's 45pt
-/// AirDrop item means a 21pt image box with the artwork centred in it rather than filling it.
 pub(crate) const AIRDROP_ART: f32 = 18.;
 pub(crate) const AIRDROP_BOX: f64 = 21.;
-/// The Group item's grid: an 18pt-wide stack of a rule, three 5pt square outlines, a rule, and
-/// three more squares, with no rule under the bottom row. `y` is measured down from the ink top,
-/// which is what the capture gives. The chevron beside it is `NSMenuToolbarItem`'s own indicator.
 pub(crate) const GRID_W: f64 = 18.;
 pub(crate) const GRID_H: f64 = 17.5;
 pub(crate) const GRID_RULE_H: f64 = 1.5;
 pub(crate) const GRID_CELL: f64 = 5.;
 pub(crate) const GRID_GAP: f64 = 1.5;
-/// Rule, gap, square row, gap, rule — the four y offsets the capture reads at 17.0, 20.0, 26.5
-/// and 29.5 against an ink top of 17.0.
 pub(crate) const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
-/// The image box the 18pt grid is centred in. Finder's Group item is 58pt against 54 for an 18pt
-/// image, and item width tracks image width one for one, so the box is 22.
 pub(crate) const GRID_BOX_W: f64 = 22.;
 
 pub(crate) const BAR_H: f32 = 26.;
 
-/// Toolbar item identifiers. Named because two of them are matched again after `set_toolbar` to
-/// write drawn artwork onto the items AppKit built.
 pub(crate) const NAV_ID: &str = "ng.finder.nav";
 pub(crate) const AIRDROP_ID: &str = "ng.finder.airdrop";
 pub(crate) const VIEW_ID: &str = "ng.finder.view";
@@ -81,31 +47,16 @@ pub(crate) const TAG_ID: &str = "ng.finder.tag";
 pub(crate) const ACTION_ID: &str = "ng.finder.action";
 pub(crate) const SEARCH_ID: &str = "ng.finder.search";
 
-/// What the view-mode capsule collapses to when the search field takes the room: Finder's popup
-/// reads **as List**, so the segment labels are the View menu's own wording rather than the one-word
-/// names a segmented control would carry.
 pub(crate) const VIEW_LABELS: &[&str] = &["as Icons", "as List", "as Columns", "as Gallery"];
-/// The glyph per view mode. Gallery is `squares.below.rectangle`, which beat every other candidate
-/// 0.987 to under 0.775 — the obvious `square.grid.3x1.below.line.grid.1x2` did not place.
 pub(crate) const VIEW_SYMBOLS: &[&str] = &[
     "square.grid.2x2",
     "list.bullet",
     "rectangle.split.3x1",
     "squares.below.rectangle",
 ];
-/// What the search field widens to on focus. `NSSearchToolbarItem` adds 8pt of item padding to
-/// this, and it is the *item* width that drives the reflow: at 242 the item came out 250 against
-/// Finder's 248 and every group left of it moved 205pt instead of 203.
 pub(crate) const SEARCH_W: f32 = 240.;
-/// Path-bar crumb icon, unchanged from when the bar drew symbols here.
 const CRUMB_ICON: f32 = 13.;
 
-/// A path-bar crumb's icon, at the size the bar has always drawn it.
-///
-/// Real artwork, not a symbol: the root crumb is a volume and the rest are folders, and the system
-/// draws those as two different pictures — `public.volume` renders 378 distinct colours against
-/// `public.folder`'s 124 — so a folder glyph at the root is wrong rather than merely generic. The
-/// fallback keeps the row's alignment if a lookup ever fails, which it does not on this build.
 fn crumb_icon(volume: bool) -> AnyElement {
     let (kind, face) = match volume {
         true => (FileType::Uti("public.volume"), F::Volume),
@@ -125,42 +76,19 @@ fn crumb_icon(volume: bool) -> AnyElement {
         .into_any_element()
 }
 
-// ---------------------------------------------------------------------------------------------
-// The toolbar glyphs no symbol name reaches
-// ---------------------------------------------------------------------------------------------
-
-/// Finder's AirDrop glyph, the system's own.
-///
-/// There is no `airdrop` SF Symbol to ask for: `NSImage(systemSymbolName:)` returns nil for
-/// `airdrop`, `airdrop.circle` and `airdrop.square`, and the name is absent from every one of the
-/// shipped catalogue's four tables, so no restriction is being worked around. The artwork exists
-/// anyway, as a monochrome template in the system's `CoreTypes` bundle, and scores 0.892 against a
-/// capture of Finder's own sidebar row where the closest public symbol manages 0.597.
-///
-/// **What is verified and what is not.** The 0.892 is against the *sidebar* row. Nobody has
-/// captured Finder's *toolbar* AirDrop button, so that it draws this same artwork is an assumption
-/// — a reasonable one, since the ink measures 18pt across in both places, but an assumption.
-///
-/// Centred in a 21pt box rather than filling one: the artwork ships at fixed point sizes and 18 is
-/// the one that lands, so the box carries the slack instead of the glyph carrying a resample.
-///
-/// Template, so AppKit tints it exactly as it tints a symbol: enabled, disabled, and inside a
-/// pressed capsule are all the system's decisions rather than a colour written down here.
 pub(crate) fn airdrop_glyph() -> Option<Retained<NSImage>> {
     let art = system_template("SidebarAirDrop", px(AIRDROP_ART))?;
-    let box_size = AIRDROP_BOX;
+    // `RcBlock`, never `StackBlock`: the image re-runs the handler on every appearance change.
     let handler = RcBlock::new(move |_: NSRect| -> Bool {
-        let inset = ((box_size - f64::from(AIRDROP_ART)) / 2.).round();
+        let inset = ((AIRDROP_BOX - f64::from(AIRDROP_ART)) / 2.).round();
         art.drawInRect(NSRect::new(
             NSPoint::new(inset, inset),
             NSSize::new(AIRDROP_ART.into(), AIRDROP_ART.into()),
         ));
         Bool::YES
     });
-    // `RcBlock`, never `StackBlock`: the image keeps the handler and re-runs it on every appearance
-    // change, so a block living on this frame is a use-after-free the first time dark mode flips.
     let image = NSImage::imageWithSize_flipped_drawingHandler(
-        NSSize::new(box_size, box_size),
+        NSSize::new(AIRDROP_BOX, AIRDROP_BOX),
         false,
         &handler,
     );
@@ -168,13 +96,6 @@ pub(crate) fn airdrop_glyph() -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-/// The Group item's grid glyph, hand-drawn. **Not a match, and not claimed as one.**
-///
-/// The closest public symbol scores 0.65, far too weak to substitute, so this reproduces the
-/// captured geometry: an 18pt rule, a row of three 5pt square outlines, a second rule, a second
-/// row, and no rule underneath.
-///
-/// Drawn in a flipped context so the offsets read top-down, the way the capture measures them.
 pub(crate) fn group_glyph() -> Retained<NSImage> {
     let handler = RcBlock::new(move |_: NSRect| -> Bool {
         let inset = (GRID_BOX_W - GRID_W) / 2.;
@@ -189,8 +110,6 @@ pub(crate) fn group_glyph() -> Retained<NSImage> {
         for y in [GRID_ROWS[1], GRID_ROWS[3]] {
             for column in 0..3 {
                 let x = inset + column as f64 * (GRID_CELL + GRID_GAP);
-                // Inset by half the line width, so the *outer* edge of the stroke lands on the
-                // 5pt cell the capture measures rather than 0.5pt outside it.
                 let cell = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
                     NSRect::new(
                         NSPoint::new(x + 0.5, y + 0.5),
@@ -214,66 +133,32 @@ pub(crate) fn group_glyph() -> Retained<NSImage> {
     image
 }
 
-/// Everything a `ToolbarItem` cannot say, said directly to the items AppKit has just built.
-///
-/// Four things live here, and each is a property of one `NSToolbarItem` rather than of the item
-/// list, so none of them is expressible in a `ToolbarItem` spec:
-///
-/// **The two images no symbol name reaches.** `ToolbarItem` names its image by SF Symbol, which is
-/// the right shape for eleven of Finder's thirteen glyphs and cannot express the other two at all
-/// — one because the catalogue has no `airdrop`, the other because nothing public comes near the
-/// grouping grid. Rather than give up the real `NSToolbarItem` subclasses — and with them the
-/// capsule, the grey selection pill and the search reflow, which is the entire point — those two
-/// items are built with a name that resolves to nothing and the image is written on afterwards.
-/// A failed override therefore shows an empty capsule, which reads as deliberate, instead of a
-/// confidently wrong glyph — and `airdrop_glyph` can fail, because it loads a system resource
-/// rather than drawing one.
-///
-/// **`navigational`.** Without it AppKit lays the whole item run out *after* the window title,
-/// which put back/forward at x 471 against Finder's 196 and left 279pt of empty band in front of
-/// it. Marking the group navigational moves it into the leading section ahead of the title, which
-/// is exactly Finder's order: back/forward, then the path, then everything else.
-///
-/// **`showsIndicator`.** Finder's Action item is 41pt — the same width as Share — and carries no
-/// chevron; the Group item does. `NSMenuToolbarItem` shows one by default, and it cost 13pt.
-///
-/// **`autoenablesItems`.** Automatic validation asks the target for `validateMenuItem:`, and where
-/// there is none it enables any row whose target merely responds to the action — which every row
-/// here does. Leave it on and `MenuEntry::disabled` is a silent no-op, so Finder's greyed
-/// *New Folder with Selection* comes up live. Nested menus do not inherit the flag either, but
-/// `sync_menu` already turns it off on every submenu it builds.
-pub(crate) fn finish_toolbar_items(window: &Window) -> usize {
+/// Properties written onto the `NSToolbarItem`s after AppKit has built them.
+pub(crate) fn finish_toolbar_items(window: &Window) {
     let Some(toolbar) = chrome_host(window).window().and_then(|w| w.toolbar()) else {
-        return 0;
+        return;
     };
-    let mut done = 0;
     for item in toolbar.items().iter() {
         let id = item.itemIdentifier().to_string();
         match id.as_str() {
+            // Without this AppKit lays the item run out after the window title.
             NAV_ID => item.setNavigational(true),
             AIRDROP_ID => {
                 if let Some(image) = airdrop_glyph() {
                     item.setImage(Some(&image));
-                    done += 1;
                 }
             }
-            GROUP_ID => {
-                item.setImage(Some(&group_glyph()));
-                done += 1;
-            }
+            GROUP_ID => item.setImage(Some(&group_glyph())),
             _ => {}
         }
         if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
+            // `MenuEntry::disabled` is a no-op while automatic validation is on.
             menu.menu().setAutoenablesItems(false);
             menu.setShowsIndicator(id == GROUP_ID);
         }
     }
-    done
 }
 
-/// The Group item's menu: Finder's grouping choices, in the wording and order its own View menu
-/// uses. Decorative — the demo does not group — so the checked row is the sort the list is already
-/// on, which is the state the menu would be reporting if it worked.
 pub(crate) fn group_menu(sort: Column, ascending: bool) -> Vec<MenuEntry> {
     let mut entries = vec![
         MenuEntry::item("None").checked(true),
@@ -288,12 +173,6 @@ pub(crate) fn group_menu(sort: Column, ascending: bool) -> Vec<MenuEntry> {
     entries
 }
 
-/// The `…` (Action) menu. Rows, symbols and separator placement are Finder's shape; the wording is
-/// read out of Finder's own File and View menus rather than invented.
-///
-/// **Its row list is not measured.** The metrics report never opened this menu, so the *order* and
-/// the *sectioning* here are reconstructed rather than captured — unlike the toolbar geometry, which
-/// is. Nothing in it does anything, which is the intent: this is a shape, not a feature.
 pub(crate) fn action_menu() -> Vec<MenuEntry> {
     let swatches = MenuView::swatches(TAGS.iter().map(|(_, color)| system_color(*color)));
     vec![
@@ -337,17 +216,6 @@ pub(crate) fn action_menu() -> Vec<MenuEntry> {
 }
 
 impl FinderDemo {
-    /// Finder's whole chrome, in one 52pt band: back/forward, the path title, AirDrop, the view
-    /// picker, Group, Share + Tags + Action sharing a capsule, and the search field.
-    ///
-    /// Every one of them is a real `NSToolbarItem` subclass, which is what buys the glass capsules,
-    /// the neutral grey selection pill and the reflow that shoves four groups 203pt left when the
-    /// search field opens. None of that is drawn here; describing it in GPUI is what the two-row
-    /// version of this demo did, and it is why it did not look like Finder.
-    ///
-    /// The 8pt gaps Finder shows between its trailing clusters are `ToolbarItem::space()`; the
-    /// items *inside* a cluster are adjacent, and macOS 26 merges adjacent plain items into one
-    /// capsule on its own — which is where Share, Tags and Action's shared 110pt capsule comes from.
     pub(crate) fn install_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar.is_none() {
             return;
@@ -368,7 +236,6 @@ impl FinderDemo {
                     NAV_ID,
                     "Back/Forward",
                     [
-                        // `chevron.backward`/`.forward` render identically — they are aliases.
                         ToolbarSegment::new("chevron.left", "Back"),
                         ToolbarSegment::new("chevron.right", "Forward"),
                     ],
@@ -380,14 +247,7 @@ impl FinderDemo {
                     nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
                         .ok();
                 }),
-                // Where AppKit draws the window title. Finder's ink starts 8pt after the
-                // back/forward item and does not move when the string changes, so it is
-                // left-aligned in this region rather than centred in it.
                 ToolbarItem::flexible_space(),
-                // Wired, not decorative: without a handler `NSToolbarItem` validates itself
-                // disabled and draws the glyph dimmed, which is not what Finder shows. Finder's
-                // AirDrop shares the selection; this listing's AirDrop is a sidebar location, so
-                // the item goes there — the same thing clicking that row does.
                 ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop").on_click(move |window, cx| {
                     airdrop
                         .update(cx, |this: &mut Self, cx| this.go("airdrop", window, cx))
@@ -402,10 +262,7 @@ impl FinderDemo {
                         .map(|(symbol, label)| ToolbarSegment::new(*symbol, *label)),
                     self.view,
                 )
-                // Automatic, not Expanded: the capsule has to collapse into a labelled popup when
-                // the search field opens, or the 99pt it should give up never appears and AppKit
-                // sweeps Share, Tags and Action into an overflow menu instead of shifting them
-                // 203pt left. That reflow is the whole reason these are real toolbar items.
+                // Automatic, not Expanded: the capsule has to collapse when the search field opens.
                 .group_width(ToolbarGroupWidth::Automatic)
                 .on_select(move |index, _, cx| {
                     view.update(cx, |this: &mut Self, cx| {
@@ -441,38 +298,14 @@ impl FinderDemo {
                     }),
             ],
         );
-        // Two of Finder's glyphs have no symbol name, and a menu row cannot be greyed while
-        // automatic validation is on, so both are settled on the built items.
         finish_toolbar_items(window);
         if let Some(ns_window) = chrome_host(window).window() {
-            // GPUI hides the title whenever the titlebar is transparent, and `window_options()`
-            // always is. Finder puts the folder name in the toolbar, and with `Unified` that is what
-            // a visible title *is*, so put it back.
+            // GPUI hides the title whenever the titlebar is transparent, which `window_options` is.
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
-            // `window_options()`'s transparent titlebar is kept, and that is the whole point: it
-            // is what lets the sidebar's material, the content pane's background and the preview
-            // pane's surface each run to the window's top edge, with the toolbar's capsules
-            // floating over them. Turning it off gets AppKit to draw a toolbar backdrop, and the
-            // backdrop stops at the content split item's bounds — so the band lands on top of the
-            // preview pane as a step 38 units tall at y 52, and brings a 1pt rim at y 51 across
-            // the whole content pane. Neither is removable while the backdrop is there:
-            // `NSTitlebarSeparatorStyle::None` written on the window *and* on every
-            // `NSSplitViewItem` reads back as None on all three and leaves the rim at 50 against
-            // a 29 band, unchanged, so the rim belongs to the backdrop and not to the separator.
-            //
-            // It is a trade and the losing side is measurable: with no backdrop to sample,
-            // `NSToolbarItem`'s glass inverts over the content side — a capsule that reads 38
-            // against a 29 band with the backdrop reads 27 against a 30 one without it, and its
-            // top rim 56 instead of 69, so a raised stadium reads as an outline. AppKit gives a
-            // real `NSScrollView` a scroll-edge surface under the toolbar that the glass samples
-            // instead; a GPUI list has none, and nothing this side of one restores the lift —
-            // the capsules over the preview pane's own material read 39 against 66, still down.
         }
         self.toolbar = true;
     }
 
-    /// What the share picker is offered. Text, because the listing is invented and there is no file
-    /// behind a row to hand over.
     pub(crate) fn share_items(&self) -> Vec<String> {
         let names: Vec<String> = self
             .lines(false)
@@ -563,9 +396,6 @@ impl FinderDemo {
                     .justify_end()
                     .when(slider, |row| {
                         row.child(
-                            // Quantised in the handler rather than with `snap_to_ticks`: Finder's
-                            // zoom slider draws no tick marks, and every distinct size rasterises
-                            // its own set of symbols.
                             div().w(px(96.)).child(
                                 native_slider("ng.finder.zoom", self.icon_size)
                                     .range(32., 128.)
