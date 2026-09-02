@@ -46,4 +46,4 @@ required-features = ["private-api"]
 lto = "thin"
 
 [patch."https://github.com/zed-industries/zed"]
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "77977f20bc917c4440ebc29ef7a0d65dfd9111db" }
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "c859079d8438e320163ff1a31ca15def1a0cd693" }
