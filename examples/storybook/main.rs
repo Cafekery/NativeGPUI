@@ -439,6 +439,12 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
