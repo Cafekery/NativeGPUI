@@ -1,8 +1,8 @@
 //! The small controls, each beside a GPUI-painted mirror of its own value.
 
 use gpui::{
-    App, Application, Bounds, Context, Hsla, Render, Window, WindowBounds, div, hsla, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, Hsla, Render, Window, WindowBounds, div, hsla, point, prelude::*, px,
+    rgb, size,
 };
 use native_gpui::{
     ColorWellStyle, DateElements, DatePickerStyle, native_color_well, native_date_picker,
@@ -179,7 +179,7 @@ impl Render for Small {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

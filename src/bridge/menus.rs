@@ -149,6 +149,7 @@ fn reserve_gpui_menu_slot(cx: &mut App) {
     cx.set_menus(vec![Menu {
         name: "".into(),
         items: vec![MenuItem::action("", Unhandled)],
+        disabled: false,
     }]);
 }
 
@@ -455,7 +456,7 @@ define_class!(
             self.ivars()
                 .cx
                 .spawn(async move |cx: &mut AsyncApp| {
-                    let _ = cx.update(|cx| cx.dispatch_action(&*action));
+                    cx.update(|cx| cx.dispatch_action(&*action));
                 })
                 .detach();
         }

@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Application, AsyncApp, Bounds, Context, FocusHandle, MouseDownEvent, Render,
-    SharedString, Window, WindowBounds, WindowHandle, div, point, prelude::*, px, rgb, size,
+    App, AppContext, AsyncApp, Bounds, Context, FocusHandle, MouseDownEvent, Render, SharedString,
+    Window, WindowBounds, WindowHandle, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     native_button, native_root, native_slider, native_switch, native_text_field, window_options,
@@ -459,7 +459,7 @@ impl Suite {
     /// `click at` is a no-op, and cliclick cannot press a letter with a modifier held.
     async fn deliver(&mut self, cx: &mut AsyncApp, key: &str, body: &str, tool: &str) -> Sent {
         if !self.window_is_key() {
-            cx.update(|cx| cx.activate(true)).ok();
+            cx.update(|cx| cx.activate(true));
             sleep(cx, Duration::from_millis(300)).await;
         }
         let key_window_before = self.window_is_key();
@@ -840,7 +840,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let Some(controls) = controls else {
         fs::write(dir.join("results.tsv"), "fatal\tno hosted views found\n").ok();
         fs::write(dir.join("done"), "1").ok();
-        cx.update(|cx| cx.quit()).ok();
+        cx.update(|cx| cx.quit());
         return;
     };
 
@@ -1449,14 +1449,14 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
 
     fs::write(dir.join("done"), "1").ok();
     sleep(cx, Duration::from_millis(120)).await;
-    cx.update(|cx| cx.quit()).ok();
+    cx.update(|cx| cx.quit());
 }
 
 fn main() {
     let dir = PathBuf::from(std::env::var("KEYS_DIR").unwrap_or_else(|_| "/tmp/ng-keys".into()));
     fs::create_dir_all(&dir).ok();
 
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         if std::env::var("KEYS_MENUS").as_deref() != Ok("0") {
             native_gpui::install_menus(cx);
         }

@@ -1,8 +1,7 @@
 //! The button family: checkbox, radio, push button, segmented control.
 
 use gpui::{
-    App, Application, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,
-    rgb, size,
+    App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     CheckState, TrackingMode, native_button, native_checkbox, native_radio, native_root,
@@ -136,7 +135,7 @@ impl Render for Buttons {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

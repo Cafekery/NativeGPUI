@@ -1,8 +1,8 @@
 //! The transient surfaces: an `NSPopover` on a GPUI anchor, an `NSWindow` sheet, the share picker.
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, MouseDownEvent, Render, Window, WindowBounds,
-    div, point, prelude::*, px, rgb, size,
+    App, Bounds, Context, MouseButton, MouseDownEvent, Render, Window, WindowBounds, div, point,
+    prelude::*, px, rgb, size,
 };
 use native_gpui::surfaces::{
     NativePopover, NativeSheet, PopoverOptions, ShareItem, SharePicker, SharePickerEvent,
@@ -291,7 +291,7 @@ impl Render for Surfaces {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

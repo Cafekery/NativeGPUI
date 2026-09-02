@@ -215,7 +215,7 @@ impl FinderDemo {
                 .collect::<Vec<_>>()
         })
         .flex_1()
-        .track_scroll(self.scroll.clone());
+        .track_scroll(&self.scroll);
 
         div()
             .flex_1()

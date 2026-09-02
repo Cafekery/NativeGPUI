@@ -1,8 +1,8 @@
 //! The three hosted text controls: plain, secure and search.
 
 use gpui::{
-    App, Application, Bounds, Context, Render, SharedString, Window, WindowBounds, div, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, Render, SharedString, Window, WindowBounds, div, point, prelude::*, px,
+    rgb, size,
 };
 use native_gpui::{
     install_menus, native_root, native_search_field, native_secure_field, native_text_field,
@@ -89,7 +89,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         install_menus(cx);
         cx.open_window(
             gpui::WindowOptions {

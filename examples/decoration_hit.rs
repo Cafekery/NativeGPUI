@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, Context, Render, Window, WindowBounds, div, point,
-    prelude::*, px, size,
+    App, AsyncApp, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::SystemColor;
 use native_gpui::{
@@ -264,7 +263,7 @@ fn report(window: &Window) {
 }
 
 fn main() -> ExitCode {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let window = cx
             .open_window(
                 gpui::WindowOptions {

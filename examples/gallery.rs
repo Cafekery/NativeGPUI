@@ -4,9 +4,8 @@
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Hsla, Render, SharedString,
-    UniformListScrollHandle, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
-    uniform_list,
+    AnyElement, App, Bounds, Context, Hsla, Render, SharedString, UniformListScrollHandle, Window,
+    WindowBounds, div, point, prelude::*, px, rgb, size, uniform_list,
 };
 
 use native_gpui::tokens::{SystemColor, system_color};
@@ -182,7 +181,7 @@ impl Gallery {
                 .collect::<Vec<_>>()
         })
         .flex_1()
-        .track_scroll(self.scroll.clone())
+        .track_scroll(&self.scroll)
     }
 }
 
@@ -240,7 +239,7 @@ fn main() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(400);
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
             gpui::WindowOptions {
