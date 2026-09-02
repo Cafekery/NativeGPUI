@@ -32,6 +32,7 @@ The same patch draws the frame an input event dirtied inside that event instead 
 * Long lists must use `uniform_list`, so only visible rows place a view.
 * Under `appears_transparent` the content rect is the frame: inset chrome by `frame.height - contentLayoutRect.height`.
 * GPUI content over a blur of GPUI content needs a second window: one Metal layer is either under a material or over it. The Finder demo's preview pane is a borderless, non-activating child window whose `Layer::Below` material samples the parent.
+* Cursor rects and GPUI's cursor styles apply only in the key window. A window that can never be key (the pane's child panel) gets its `cursor_region` cursor from the chrome host's own `mouseMoved:`.
 
 ## Verifying
 

@@ -89,6 +89,8 @@ struct ChromeIvars {
     claims: RefCell<Vec<Claim>>,
     corner: Cell<Corner>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// A cursor this host set itself because its window is not key.
+    forced: Cell<bool>,
     toolbar: RefCell<Option<Retained<NSToolbar>>>,
     toolbar_delegate: RefCell<Option<Retained<ToolbarDelegate>>>,
     toolbar_installed: RefCell<Option<(ToolbarStyle, Vec<String>)>>,
@@ -131,6 +133,44 @@ define_class!(
             }
         }
 
+        // Cursor rects and gpui's own cursor styles both apply only in the key window, and AppKit
+        // puts the arrow back after every move in a window that is not key. A window that can never
+        // be key, such as a child panel, sets its cursor a turn later, after that reset.
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, _: &NSEvent) {
+            if self.window().is_some_and(|window| window.isKeyWindow()) {
+                return;
+            }
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: sel!(ngApplyCursor),
+                    withObject: std::ptr::null::<AnyObject>(),
+                    afterDelay: 0.0,
+                ];
+            }
+        }
+
+        #[unsafe(method(ngApplyCursor))]
+        fn apply_cursor(&self) {
+            let Some(window) = self.window() else {
+                return;
+            };
+            let local = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+            match self.claim_at(local) {
+                Some(claim) => {
+                    claim.cursor.ns().set();
+                    self.ivars().forced.set(true);
+                }
+                None => self.release_cursor(),
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _: &NSEvent) {
+            self.release_cursor();
+        }
+
         // One rect per claim: `cursorUpdate:` alone cannot switch between adjacent regions.
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
@@ -152,6 +192,7 @@ impl ChromeHost {
             claims: RefCell::new(Vec::new()),
             corner: Cell::new(corner),
             tracking: RefCell::new(None),
+            forced: Cell::new(false),
             toolbar: RefCell::new(None),
             toolbar_delegate: RefCell::new(None),
             toolbar_installed: RefCell::new(None),
@@ -163,6 +204,12 @@ impl ChromeHost {
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
         this
+    }
+
+    fn release_cursor(&self) {
+        if self.ivars().forced.replace(false) {
+            NSCursor::arrowCursor().set();
+        }
     }
 
     fn claim_at(&self, point: NSPoint) -> Option<Claim> {
@@ -191,6 +238,8 @@ impl ChromeHost {
                 self.bounds(),
                 NSTrackingAreaOptions::InVisibleRect
                     | NSTrackingAreaOptions::CursorUpdate
+                    | NSTrackingAreaOptions::MouseMoved
+                    | NSTrackingAreaOptions::MouseEnteredAndExited
                     | NSTrackingAreaOptions::ActiveAlways,
                 Some(self.as_ref()),
                 None,
