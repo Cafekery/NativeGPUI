@@ -865,8 +865,18 @@ impl PaneShared {
             ),
             PaneAlign::FillPane => pane.bounds(),
         };
-        // Diffing intent alone is only valid while nothing else writes the frame, so the frame is
-        // read back too — cheap because an `NSView` frame round-trips bit-exactly.
+        // The split view's item wrapper clips, and so would hide the part of GPUI's view that
+        // sits under the floating sidebar; unclipped, the sidebar's glass blurs it, as Finder's.
+        if self.align == PaneAlign::WindowAligned {
+            for view in [Some(pane.retain()), unsafe { pane.superview() }]
+                .into_iter()
+                .flatten()
+            {
+                if view.clipsToBounds() {
+                    view.setClipsToBounds(false);
+                }
+            }
+        }
         let as_intended = rects_equal(self.intended_gpui.get(), wanted);
         let in_place = rects_equal(self.gpui.frame(), wanted);
         if !as_intended || !in_place {
