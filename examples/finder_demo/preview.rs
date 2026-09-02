@@ -118,6 +118,12 @@ impl Render for PreviewPane {
                 // AppKit sends the drag to the window the grip was pressed in, and the pointer
                 // leaves that window as soon as the pane grows, so no hitbox is ever under it.
                 .child(canvas(|_, _, _| (), move |_, _, window, _| {
+                    // A non-activating panel: a click here must still bring the app forward.
+                    window.on_mouse_event(|_: &MouseDownEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture {
+                            cx.activate(true);
+                        }
+                    });
                     let moved = pane.clone();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble {
