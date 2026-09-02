@@ -17,7 +17,7 @@ default = []
 private-api = []
 
 [dependencies]
-gpui = "0.2.2"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "d56dca8084e88c06df35a44ee103f41d21d06e10" }
 image = "0.25"
 raw-window-handle = "0.6"
 
@@ -28,6 +28,9 @@ objc2-app-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-quartz-core = "0.3.2"
+
+[dev-dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d56dca8084e88c06df35a44ee103f41d21d06e10", features = ["font-kit"] }
 
 [[example]]
 name = "custom_glass"
@@ -42,5 +45,5 @@ required-features = ["private-api"]
 [profile.release]
 lto = "thin"
 
-[patch.crates-io]
-gpui = { path = "vendor/gpui" }
+[patch."https://github.com/zed-industries/zed"]
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "77977f20bc917c4440ebc29ef7a0d65dfd9111db" }

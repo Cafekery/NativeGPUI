@@ -7,8 +7,8 @@ use std::io::Write;
 use std::ptr::NonNull;
 
 use gpui::{
-    App, Application, Bounds, Context, MouseButton, Render, Size, Window, WindowBounds, div, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, MouseButton, Render, Size, Window, WindowBounds, div, point, prelude::*,
+    px, rgb, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_item};
 use native_gpui::window_chrome::{
@@ -783,7 +783,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
             gpui::WindowOptions {

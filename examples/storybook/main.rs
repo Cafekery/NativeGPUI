@@ -5,8 +5,8 @@ mod pages;
 mod ui;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Render, SharedString, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Render, SharedString, Window, WindowBounds, WindowHandle,
+    WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_group, sidebar_item};
 use native_gpui::tokens::{SystemColor, system_color};
@@ -436,7 +436,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
         cx.open_window(

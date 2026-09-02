@@ -1,8 +1,7 @@
 //! Real `NSPopUpButton`s and `NSMenu`s driving GPUI state: pop-up, pull-down and context menus.
 
 use gpui::{
-    App, Application, Bounds, Context, Hsla, Render, Window, WindowBounds, div, point, prelude::*,
-    px, rgb, size,
+    App, Bounds, Context, Hsla, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     MenuEntry, MenuOrigin, native_context_menu, native_popup, native_root, window_options,
@@ -165,7 +164,7 @@ impl Render for Menus {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

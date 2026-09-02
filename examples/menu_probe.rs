@@ -10,8 +10,8 @@ use std::ptr::NonNull;
 
 use block2::RcBlock;
 use gpui::{
-    App, Application, Bounds, Context, Hsla, Modifiers, Render, Window, WindowBounds, div, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, Hsla, Modifiers, Render, Window, WindowBounds, div, point, prelude::*,
+    px, rgb, size,
 };
 use native_gpui::{
     MenuEntry, MenuOrigin, MenuView, native_context_menu, native_popup, native_root, window_options,
@@ -537,7 +537,7 @@ fn main() {
         .unwrap_or(20);
 
     if env::var("NG_ARM").as_deref() == Ok("popup") {
-        Application::new().run(move |cx: &mut App| {
+        gpui_platform::application().run(move |cx: &mut App| {
             cx.open_window(
                 gpui::WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -554,7 +554,7 @@ fn main() {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(1500))
                     .await;
-                let _ = cx.update(|_| {
+                cx.update(|_| {
                     let mtm = MainThreadMarker::new().expect("main thread");
                     report_popup_tick(mtm, 40);
                 });
@@ -569,7 +569,7 @@ fn main() {
         });
         return;
     }
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -594,7 +594,7 @@ fn main() {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(1200))
                 .await;
-            let _ = cx.update(|_| {
+            cx.update(|_| {
                 let mtm = MainThreadMarker::new().expect("main thread");
                 let number = NSApplication::sharedApplication(mtm)
                     .windows()

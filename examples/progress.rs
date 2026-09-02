@@ -3,8 +3,7 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Application, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,
-    rgb, size,
+    App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     ControlSize, LevelStyle, native_level, native_progress, native_root, native_spinner,
@@ -97,7 +96,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

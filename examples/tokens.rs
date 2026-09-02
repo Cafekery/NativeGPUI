@@ -4,8 +4,8 @@ use std::ptr;
 use std::sync::Arc;
 
 use gpui::{
-    App, Application, Bounds, Context, Hsla, MouseButton, Render, RenderImage, Rgba, Window,
-    WindowBounds, WindowOptions, div, img, point, prelude::*, px, size,
+    App, Bounds, Context, Hsla, MouseButton, Render, RenderImage, Rgba, Window, WindowBounds,
+    WindowOptions, div, img, point, prelude::*, px, size,
 };
 use image::{Frame, RgbaImage};
 use native_gpui::tokens::{
@@ -463,7 +463,7 @@ impl Render for Tokens {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
             WindowOptions {

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, Application, AsyncApp, Bounds, Context, KeyBinding, Keystroke, Render, Window,
+    App, AppContext, AsyncApp, Bounds, Context, KeyBinding, Keystroke, Render, Window,
     WindowBounds, WindowHandle, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus, window_options};
@@ -726,7 +726,7 @@ fn app_menus() {
 
 fn main() -> ExitCode {
     let arm = env::var("NG_ARM").unwrap_or_else(|_| "table".into());
-    Application::new().run(move |cx: &mut App| {
+    gpui_platform::application().run(move |cx: &mut App| {
         if arm != "noquit" && env::var("NG_MENUS").as_deref() != Ok("0") {
             install_menus(cx);
         }
@@ -794,7 +794,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     let expected = env::var("NG_EXPECT_NAME").ok();
     let name = expected.clone().unwrap_or_else(|| process.clone());
 
-    let window = cx.update(|cx| ns_window(cx, handle)).ok().flatten();
+    let window = cx.update(|cx| ns_window(cx, handle));
     let Some(window) = window else {
         verdict("window", false, "no NSWindow behind the gpui window");
         return;
@@ -893,13 +893,11 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
         }
         "order" => {
             order(cx, &window, false).await;
-            let bound = cx
-                .update(|cx| {
-                    cx.bind_keys([KeyBinding::new("cmd-m", FromKeymap, None)]);
-                    cx.all_bindings_for_input(&[Keystroke::parse("cmd-m").unwrap()])
-                        .len()
-                })
-                .unwrap_or(0);
+            let bound = cx.update(|cx| {
+                cx.bind_keys([KeyBinding::new("cmd-m", FromKeymap, None)]);
+                cx.all_bindings_for_input(&[Keystroke::parse("cmd-m").unwrap()])
+                    .len()
+            });
             verdict(
                 "order.binding_registered",
                 bound == 1,

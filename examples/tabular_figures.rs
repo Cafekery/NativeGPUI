@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use gpui::{
-    App, Application, AsyncApp, Bounds, Context, Font, FontFeatures, FontWeight, Pixels, Render,
-    TextRun, Window, WindowBounds, div, hsla, point, prelude::*, px, size,
+    App, AsyncApp, Bounds, Context, Font, FontFeatures, FontWeight, Pixels, Render, TextRun,
+    Window, WindowBounds, div, hsla, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{system_font, system_font_tabular};
 use native_gpui::window_options;
@@ -160,7 +160,7 @@ impl Render for Probe {
 }
 
 fn main() -> ExitCode {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let window = cx
             .open_window(
                 gpui::WindowOptions {

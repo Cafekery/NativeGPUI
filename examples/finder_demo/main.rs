@@ -17,9 +17,9 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 
 use gpui::{
-    AnyElement, App, Application, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent,
-    MouseButton, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
-    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
+    AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
+    ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window, WindowBounds,
+    WindowOptions, actions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
@@ -601,7 +601,7 @@ impl Render for FinderDemo {
                         .on_key_down(cx.listener(Self::on_key))
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, window, _| window.focus(&this.focus)),
+                            cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
                         )
                         .size_full()
                         .flex()
@@ -626,7 +626,7 @@ impl Render for FinderDemo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
@@ -635,7 +635,7 @@ fn main() {
             KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
         ]);
         // The preview pane is a child window; the app ends with the Finder window, not the pane.
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if !cx
                 .windows()
                 .iter()

@@ -3,8 +3,8 @@
 use std::env;
 
 use gpui::{
-    App, Application, Bounds, Context, Render, SharedString, Window, WindowBounds, WindowOptions,
-    div, point, prelude::*, px, rgb, size,
+    App, Bounds, Context, Render, SharedString, Window, WindowBounds, WindowOptions, div, point,
+    prelude::*, px, rgb, size,
 };
 use native_gpui::sidebar::{
     NativeSidebar, SidebarItem, SidebarMetrics, SidebarOptions, sidebar_group, sidebar_item,
@@ -169,7 +169,7 @@ impl Render for Demo {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
             WindowOptions {
