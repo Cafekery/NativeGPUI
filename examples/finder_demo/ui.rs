@@ -1,6 +1,6 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
 
-use gpui::{AnyElement, FontWeight, div, prelude::*, px};
+use gpui::{AnyElement, FontWeight, Hsla, div, prelude::*, px};
 
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
 
@@ -56,6 +56,20 @@ pub(crate) fn small_glyph(name: &str, size: f32, color: SystemColor) -> Option<A
         &SymbolColor::Hierarchical(color),
     )
     .map(|symbol| symbol.img().into_any_element())
+}
+
+/// Finder's tag pill over a selection: the tag's colour washed under its name.
+pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
+    let (name, color) = TAGS[index];
+    let mut wash = system_color(color);
+    wash.a = 0.55;
+    div()
+        .px(px(6.))
+        .rounded(px(4.))
+        .bg(wash)
+        .text_color(text)
+        .child(name)
+        .into_any_element()
 }
 
 pub(crate) fn tag_dot(index: usize) -> AnyElement {

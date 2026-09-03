@@ -12,14 +12,16 @@ mod sidebar;
 mod toolbar;
 mod ui;
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
     Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
@@ -70,6 +72,8 @@ pub(crate) struct FinderDemo {
     pub(crate) anchor: Option<SharedString>,
     /// The row whose name is being edited in place.
     pub(crate) renaming: Option<SharedString>,
+    /// The stacked icons of the last multi-selection the pane drew: its keys, side, image.
+    pub(crate) stack: RefCell<Option<(Vec<SharedString>, u32, Arc<RenderImage>)>>,
     /// Letters typed to select by name, and when the last one came.
     typed: String,
     typed_at: Option<Instant>,
@@ -120,6 +124,7 @@ impl FinderDemo {
             cursor: None,
             anchor: None,
             renaming: None,
+            stack: RefCell::new(None),
             typed: String::new(),
             typed_at: None,
             tags: HashMap::new(),

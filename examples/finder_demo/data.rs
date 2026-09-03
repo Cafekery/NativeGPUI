@@ -712,6 +712,16 @@ pub(crate) fn stamp_date(
     calendar.dateFromComponents(&parts)
 }
 
+/// A day alone, `Mar 19, 2022`, as Finder dates a range over a selection.
+pub(crate) fn day_string(seconds: f64) -> String {
+    let formatter = NSDateFormatter::new();
+    formatter.setDateStyle(NSDateFormatterStyle::MediumStyle);
+    formatter.setTimeStyle(NSDateFormatterStyle::NoStyle);
+    formatter
+        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+        .to_string()
+}
+
 pub(crate) fn byte_string(bytes: u64) -> String {
     NSByteCountFormatter::stringFromByteCount_countStyle(
         bytes as i64,
@@ -728,6 +738,9 @@ pub(crate) struct Row {
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
     pub(crate) created: SharedString,
+    /// The same two moments as seconds since the reference date, for ranges over a selection.
+    pub(crate) modified_at: f64,
+    pub(crate) created_at: f64,
     pub(crate) dimensions: Option<SharedString>,
     pub(crate) duration: Option<SharedString>,
     pub(crate) face: Face,
@@ -788,10 +801,17 @@ pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
                 .map(|date| formatter.stringFromDate(&date).to_string())
                 .unwrap_or_default()
         };
+        let seconds = |back: i64| {
+            stamp_date(&calendar, today, stamp, back)
+                .map_or(0., |date| date.timeIntervalSinceReferenceDate())
+        };
+        let created_back = 1 + (bytes % 407) as i64;
         Row {
             name: name.into(),
             modified: text(0).into(),
-            created: text(1 + (bytes % 407) as i64).into(),
+            created: text(created_back).into(),
+            modified_at: seconds(0),
+            created_at: seconds(created_back),
             dimensions: matches!(face, F::Image | F::Movie).then(|| {
                 let (w, h) = FRAMES[(bytes % FRAMES.len() as u64) as usize];
                 SharedString::from(format!("{w} × {h}"))

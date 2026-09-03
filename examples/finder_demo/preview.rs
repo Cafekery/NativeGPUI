@@ -1,9 +1,15 @@
+use std::sync::Arc;
+
 use gpui::{
     AnyElement, App, Bounds, Context, DispatchPhase, Entity, FontWeight, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, SharedString, Window, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, canvas, div, point, prelude::*, px, size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, RenderImage, SharedString, Window,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, img, point, prelude::*, px,
+    size,
 };
-use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored, system_color};
+use image::{Frame, RgbaImage};
+use native_gpui::tokens::{
+    self, Symbol, SymbolColor, SystemColor, sf_symbol_colored, system_color,
+};
 use native_gpui::{
     Cursor, chrome_host, cursor_region, native_root, native_screen_rect, window_options,
 };
@@ -12,12 +18,12 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
-use crate::data::{Face, Line, Row};
+use crate::data::{Face, Line, Row, byte_string, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
 use crate::toolbar::BAR_H;
-use crate::ui::{TAGS, artwork, tag_dot};
-use crate::{FinderDemo, ns_window};
+use crate::ui::{TAGS, artwork, tag_dot, tag_pill};
+use crate::{FinderDemo, LIST_VIEW, ns_window};
 
 pub(crate) const PREVIEW_W: f32 = 366.;
 
@@ -309,17 +315,143 @@ impl FinderDemo {
         content: f32,
         finder: &Entity<FinderDemo>,
     ) -> AnyElement {
-        let Some(line) = line else {
-            return div().into_any_element();
+        let card = if self.selected.len() > 1 {
+            self.many_card(content)
+        } else {
+            let Some(line) = line else {
+                return div().into_any_element();
+            };
+            let row = &line.row;
+            Card {
+                hero: hero(row, content),
+                title: row.name.clone(),
+                subtitle: kind_line(row),
+                rows: info_rows(row, self.preview_expanded),
+                show_more: row.dimensions.is_some() || row.duration.is_some(),
+                tags: self.tags.get(&line.key).copied().into_iter().collect(),
+                many: false,
+                actions: actions(row.face),
+            }
         };
-        let row = &line.row;
+        self.card_element(card, palette, content, finder)
+    }
+
+    /// Finder's card for a selection of several: their icons in a stack, a count, the kinds and
+    /// the size together, each date as the span from the earliest to the latest, and every tag.
+    fn many_card(&self, content: f32) -> Card {
+        let lines: Vec<Line> = self
+            .lines(self.view == LIST_VIEW)
+            .into_iter()
+            .filter(|line| self.selected.contains(&line.key))
+            .collect();
+        let folders = lines
+            .iter()
+            .filter(|line| line.row.face == Face::Folder)
+            .count();
+        let files = lines.len() - folders;
+        let bytes: u64 = lines.iter().map(|line| self.total_bytes(&line.row)).sum();
+        let kinds = match (files, folders) {
+            (0, n) => format!("{n} folders"),
+            (n, 0) => format!("{n} documents"),
+            (f, d) => format!("{f} documents, {d} folders"),
+        };
+        let span = |at: fn(&Row) -> f64| {
+            let lo = lines
+                .iter()
+                .map(|line| at(&line.row))
+                .fold(f64::MAX, f64::min);
+            let hi = lines
+                .iter()
+                .map(|line| at(&line.row))
+                .fold(f64::MIN, f64::max);
+            let (lo, hi) = (day_string(lo), day_string(hi));
+            SharedString::from(if lo == hi {
+                lo
+            } else {
+                format!("{lo} – {hi}")
+            })
+        };
+        let mut tags: Vec<usize> = lines
+            .iter()
+            .filter_map(|line| self.tags.get(&line.key).copied())
+            .collect();
+        tags.sort_unstable();
+        tags.dedup();
+        Card {
+            hero: self.stack_hero(&lines, content),
+            title: format!("{} items", lines.len()).into(),
+            subtitle: format!("{kinds} - {}", byte_string(bytes)).into(),
+            rows: vec![
+                ("Created", span(|row| row.created_at)),
+                ("Modified", span(|row| row.modified_at)),
+            ],
+            show_more: false,
+            tags,
+            many: true,
+            actions: &[("ellipsis.circle", "More…")],
+        }
+    }
+
+    /// A folder weighs what it holds.
+    fn total_bytes(&self, row: &Row) -> u64 {
+        match row.opens.and_then(|id| self.store.get(id)) {
+            Some(folder) => folder.rows.iter().map(|row| self.total_bytes(row)).sum(),
+            None => row.bytes,
+        }
+    }
+
+    /// The first three selected items' icons, fanned as Finder stacks them, drawn once per
+    /// selection and kept.
+    fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
+        let icons: Vec<Symbol> = lines
+            .iter()
+            .take(3)
+            .filter_map(|line| line.row.artwork)
+            .filter_map(|kind| tokens::file_icon(kind, px(content * STACK_ICON)))
+            .collect();
+        let keys: Vec<SharedString> = lines.iter().take(3).map(|line| line.key.clone()).collect();
+        let side = icons
+            .first()
+            .map(|icon| (content * icon.scale).round() as u32)
+            .unwrap_or_default();
+        let cached = self
+            .stack
+            .borrow()
+            .as_ref()
+            .filter(|(k, s, _)| *k == keys && *s == side)
+            .map(|(_, _, image)| image.clone());
+        let image = cached.or_else(|| {
+            let image = stack_image(&icons, side)?;
+            *self.stack.borrow_mut() = Some((keys, side, image.clone()));
+            Some(image)
+        });
+        let art = match image {
+            Some(image) => img(image).w(px(content)).h(px(content)).into_any_element(),
+            None => artwork(&lines[0].row, content),
+        };
+        div()
+            .w(px(content))
+            .h(px(content))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(art)
+            .into_any_element()
+    }
+
+    fn card_element(
+        &self,
+        card: Card,
+        palette: &Palette,
+        content: f32,
+        finder: &Entity<FinderDemo>,
+    ) -> AnyElement {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
         let hairline = system_color(SystemColor::QuaternarySystemFill);
-        let rows = info_rows(row, self.preview_expanded);
-        let media = row.dimensions.is_some() || row.duration.is_some();
 
-        let card = div()
+        let top = div()
             .size_full()
             .flex()
             .flex_col()
@@ -335,7 +467,7 @@ impl FinderDemo {
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
-                    .child(hero(row, content)),
+                    .child(card.hero),
             );
 
         let mut lower = div()
@@ -352,7 +484,7 @@ impl FinderDemo {
                     .overflow_hidden()
                     .text_ellipsis()
                     .whitespace_nowrap()
-                    .child(row.name.clone()),
+                    .child(card.title),
             )
             .child(
                 div()
@@ -360,7 +492,7 @@ impl FinderDemo {
                     .line_height(px(LINE_H))
                     .text_size(body)
                     .text_color(palette.secondary)
-                    .child(kind_line(row)),
+                    .child(card.subtitle),
             )
             .child(
                 div()
@@ -373,7 +505,7 @@ impl FinderDemo {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(palette.label)
                     .child("Information")
-                    .when(media, |heading| {
+                    .when(card.show_more, |heading| {
                         heading.child(
                             div()
                                 .line_height(px(SMALL_H))
@@ -399,7 +531,7 @@ impl FinderDemo {
             );
 
         let mut block = div().mt(px(GAP_HEAD_ROWS)).flex().flex_col();
-        for (index, (label, value)) in rows.iter().enumerate() {
+        for (index, (label, value)) in card.rows.iter().enumerate() {
             if index > 0 {
                 block = block.child(
                     div()
@@ -430,31 +562,31 @@ impl FinderDemo {
                 .child("Tags"),
         );
 
-        lower = match self.tags.get(&line.key) {
-            Some(tag) => lower.child(
-                div()
-                    .mt(px(GAP_TAGS_ADD))
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .line_height(px(LINE_H))
-                    .text_size(body)
-                    .child(tag_dot(*tag))
-                    .child(div().text_color(palette.label).child(TAGS[*tag].0)),
-            ),
-            None => lower.child(
-                div()
-                    .mt(px(GAP_TAGS_ADD))
-                    .line_height(px(LINE_H))
-                    .text_size(body)
-                    .text_color(palette.tertiary)
-                    .child("Add Tags…"),
-            ),
-        };
+        let tags = div()
+            .mt(px(GAP_TAGS_ADD))
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .line_height(px(LINE_H))
+            .text_size(body);
+        lower = lower.child(match (card.many, card.tags.first()) {
+            (false, Some(tag)) => tags
+                .child(tag_dot(*tag))
+                .child(div().text_color(palette.label).child(TAGS[*tag].0)),
+            (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
+            (true, _) => tags
+                .children(card.tags.iter().map(|tag| tag_pill(*tag, palette.label)))
+                .child(
+                    div()
+                        .ml(px(3.))
+                        .text_color(system_color(SystemColor::Link))
+                        .child("Add Tag"),
+                ),
+        });
 
-        let actions = actions(row.face);
+        let actions = card.actions;
         let slot = ACTION_SLOT_W.min(content / actions.len() as f32);
-        card.child(lower)
+        top.child(lower)
             .child(div().flex_1())
             .child(
                 div()
@@ -490,6 +622,87 @@ impl FinderDemo {
             )
             .into_any_element()
     }
+}
+
+/// What the pane's card shows, whichever way it was gathered.
+struct Card {
+    hero: AnyElement,
+    title: SharedString,
+    subtitle: SharedString,
+    rows: Vec<(&'static str, SharedString)>,
+    show_more: bool,
+    tags: Vec<usize>,
+    /// Several items: tags as pills and `Add Tag`, not one tag's dot and `Add Tags…`.
+    many: bool,
+    actions: &'static [(&'static str, &'static str)],
+}
+
+/// Each icon's size as a share of the hero square.
+const STACK_ICON: f32 = 0.62;
+
+/// Back to front: degrees of tilt, offset in shares of the square, scale. Finder fans a
+/// selection's icons this way.
+const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
+    (-10., 0.03, -0.025, 0.9),
+    (7., -0.025, 0., 0.95),
+    (-3., 0., 0.02, 1.),
+];
+
+/// The icons composed into one square image, `side` device pixels across, the first icon in
+/// front. Straight-alpha BGRA in and out, which is what the workspace icons come as.
+fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
+    if icons.is_empty() {
+        return None;
+    }
+    let layers = &STACK_LAYERS[3 - icons.len().min(3)..];
+    let mut canvas = vec![0f32; (side * side * 4) as usize];
+    let centre = side as f32 / 2.;
+    for (icon, (degrees, dx, dy, zoom)) in icons.iter().take(3).rev().zip(layers) {
+        let (w, h) = {
+            let size = icon.image.size(0);
+            (size.width.0 as usize, size.height.0 as usize)
+        };
+        let src = icon.image.as_bytes(0)?;
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let (cx, cy) = (centre + dx * side as f32, centre + dy * side as f32);
+        for y in 0..side {
+            for x in 0..side {
+                let (px_, py) = (x as f32 - cx, y as f32 - cy);
+                let u = (px_ * cos + py * sin) / zoom + w as f32 / 2.;
+                let v = (-px_ * sin + py * cos) / zoom + h as f32 / 2.;
+                if u < 0. || v < 0. || u >= (w - 1) as f32 || v >= (h - 1) as f32 {
+                    continue;
+                }
+                let (x0, y0) = (u as usize, v as usize);
+                let (fx, fy) = (u - x0 as f32, v - y0 as f32);
+                let at = |x: usize, y: usize, c: usize| src[(y * w + x) * 4 + c] as f32;
+                let mut s = [0f32; 4];
+                for (c, slot) in s.iter_mut().enumerate() {
+                    *slot = at(x0, y0, c) * (1. - fx) * (1. - fy)
+                        + at(x0 + 1, y0, c) * fx * (1. - fy)
+                        + at(x0, y0 + 1, c) * (1. - fx) * fy
+                        + at(x0 + 1, y0 + 1, c) * fx * fy;
+                }
+                let a = s[3] / 255.;
+                if a <= 0. {
+                    continue;
+                }
+                let d = &mut canvas[((y * side + x) * 4) as usize..][..4];
+                let da = d[3] / 255.;
+                let out = a + da * (1. - a);
+                for c in 0..3 {
+                    d[c] = (s[c] * a + d[c] * da * (1. - a)) / out;
+                }
+                d[3] = out * 255.;
+            }
+        }
+    }
+    let bytes: Vec<u8> = canvas
+        .iter()
+        .map(|v| v.round().clamp(0., 255.) as u8)
+        .collect();
+    let raster = RgbaImage::from_raw(side, side, bytes)?;
+    Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
 fn hero(row: &Row, content: f32) -> AnyElement {
