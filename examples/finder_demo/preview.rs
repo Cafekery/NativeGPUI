@@ -22,8 +22,8 @@ use crate::data::{Face, Line, Row, byte_string, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
 use crate::toolbar::BAR_H;
-use crate::ui::{TAGS, artwork, tag_dot, tag_pill};
-use crate::{FinderDemo, LIST_VIEW, ns_window};
+use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill};
+use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 pub(crate) const PREVIEW_W: f32 = 366.;
 
@@ -53,6 +53,12 @@ const GAP_ICON_LABEL: f32 = 10.5;
 const BOTTOM_INSET: f32 = 16.;
 const GAP_TOP: f32 = 45.;
 const GAP_SQUARE_TEXT: f32 = 62.;
+/// The gallery card's header, measured on Finder's: a 48-point icon 26 down, the name 10 beside
+/// it, the rows 14 below.
+const HEADER_ICON: f32 = 48.;
+const GAP_HEADER: f32 = 26.;
+const GAP_HEADER_ICON: f32 = 10.;
+const GAP_HEADER_HEAD: f32 = 14.;
 
 const ACTION_SLOT_W: f32 = 75.5;
 const ACTION_ICON_SIZE: f32 = 15.;
@@ -327,7 +333,11 @@ impl FinderDemo {
             };
             let row = &line.row;
             Card {
-                hero: hero(row, content),
+                hero: if self.view == GALLERY_VIEW {
+                    artwork(row, HEADER_ICON)
+                } else {
+                    hero(row, content)
+                },
                 title: row.name.clone(),
                 subtitle: kind_line(row),
                 rows: info_rows(row, self.preview_expanded),
@@ -381,8 +391,13 @@ impl FinderDemo {
             .collect();
         tags.sort_unstable();
         tags.dedup();
+        let side = if self.view == GALLERY_VIEW {
+            HEADER_ICON
+        } else {
+            content
+        };
         Card {
-            hero: self.stack_hero(&lines, content),
+            hero: self.stack_hero(&lines, side),
             title: format!("{} items", lines.len()).into(),
             subtitle: format!("{kinds} - {}", byte_string(bytes)).into(),
             rows: vec![
@@ -406,7 +421,7 @@ impl FinderDemo {
 
     /// The first three selected items' icons, fanned as Finder stacks them, drawn once per
     /// selection and kept.
-    fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
+    pub(crate) fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
         let icons: Vec<Symbol> = lines
             .iter()
             .take(3)
@@ -454,15 +469,60 @@ impl FinderDemo {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
         let hairline = system_color(SystemColor::QuaternarySystemFill);
+        // In gallery view Finder renames in the card's title, there being no label to edit.
+        let editing = (self.view == GALLERY_VIEW && !card.many)
+            .then(|| self.cursor_line())
+            .flatten()
+            .filter(|line| self.renaming.as_ref() == Some(&line.key));
+        let title: AnyElement = match editing {
+            Some(line) => rename_field(&line, 0, finder.downgrade()).into_any_element(),
+            None => card.title.into_any_element(),
+        };
 
-        let top = div()
+        let name = div()
+            .line_height(px(NAME_H))
+            .text_size(px(NAME_SIZE))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette.label)
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .child(title);
+        let kind = div()
+            .mt(px(GAP_NAME_KIND))
+            .line_height(px(LINE_H))
+            .text_size(body)
+            .text_color(palette.secondary)
+            .child(card.subtitle);
+
+        let mut top = div()
             .size_full()
             .flex()
             .flex_col()
             .px(px(INSET))
-            .pb(px(BOTTOM_INSET))
-            .child(div().h(px(GAP_TOP)).flex_none())
-            .child(
+            .pb(px(BOTTOM_INSET));
+        let mut lower = div().flex_none().flex().flex_col();
+        if self.view == GALLERY_VIEW {
+            // Finder's gallery card is headed by a small icon beside the name, not a hero.
+            top = top.child(div().h(px(GAP_HEADER)).flex_none()).child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(GAP_HEADER_ICON))
+                    .child(card.hero)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(name)
+                            .child(kind),
+                    ),
+            );
+            lower = lower.mt(px(GAP_HEADER_HEAD - GAP_KIND_HEAD));
+        } else {
+            top = top.child(div().h(px(GAP_TOP)).flex_none()).child(
                 div()
                     .w(px(content))
                     .h(px(content))
@@ -473,66 +533,43 @@ impl FinderDemo {
                     .overflow_hidden()
                     .child(card.hero),
             );
-
-        let mut lower = div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .mt(px(GAP_SQUARE_TEXT))
-            .child(
-                div()
-                    .line_height(px(NAME_H))
-                    .text_size(px(NAME_SIZE))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(palette.label)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .child(card.title),
-            )
-            .child(
-                div()
-                    .mt(px(GAP_NAME_KIND))
-                    .line_height(px(LINE_H))
-                    .text_size(body)
-                    .text_color(palette.secondary)
-                    .child(card.subtitle),
-            )
-            .child(
-                div()
-                    .mt(px(GAP_KIND_HEAD))
-                    .flex()
-                    .items_baseline()
-                    .justify_between()
-                    .line_height(px(LINE_H))
-                    .text_size(body)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(palette.label)
-                    .child("Information")
-                    .when(card.show_more, |heading| {
-                        heading.child(
-                            div()
-                                .line_height(px(SMALL_H))
-                                .text_size(small)
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(system_color(SystemColor::Link))
-                                .on_mouse_down(MouseButton::Left, {
-                                    let finder = finder.clone();
-                                    move |_: &MouseDownEvent, _, cx| {
-                                        finder.update(cx, |this, cx| {
-                                            this.preview_expanded = !this.preview_expanded;
-                                            cx.notify();
-                                        })
-                                    }
-                                })
-                                .child(if self.preview_expanded {
-                                    "Show Less"
-                                } else {
-                                    "Show More"
-                                }),
-                        )
-                    }),
-            );
+            lower = lower.mt(px(GAP_SQUARE_TEXT)).child(name).child(kind);
+        }
+        lower = lower.child(
+            div()
+                .mt(px(GAP_KIND_HEAD))
+                .flex()
+                .items_baseline()
+                .justify_between()
+                .line_height(px(LINE_H))
+                .text_size(body)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette.label)
+                .child("Information")
+                .when(card.show_more, |heading| {
+                    heading.child(
+                        div()
+                            .line_height(px(SMALL_H))
+                            .text_size(small)
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(system_color(SystemColor::Link))
+                            .on_mouse_down(MouseButton::Left, {
+                                let finder = finder.clone();
+                                move |_: &MouseDownEvent, _, cx| {
+                                    finder.update(cx, |this, cx| {
+                                        this.preview_expanded = !this.preview_expanded;
+                                        cx.notify();
+                                    })
+                                }
+                            })
+                            .child(if self.preview_expanded {
+                                "Show Less"
+                            } else {
+                                "Show More"
+                            }),
+                    )
+                }),
+        );
 
         let mut block = div().mt(px(GAP_HEAD_ROWS)).flex().flex_col();
         for (index, (label, value)) in card.rows.iter().enumerate() {
@@ -550,6 +587,7 @@ impl FinderDemo {
                 div()
                     .flex()
                     .justify_between()
+                    .gap(px(8.))
                     .line_height(px(LINE_H))
                     .text_size(body)
                     .child(div().text_color(palette.secondary).child(*label))
@@ -587,7 +625,6 @@ impl FinderDemo {
                         .child("Add Tag"),
                 ),
         });
-                    .gap(px(8.))
 
         let actions = card.actions;
         let slot = ACTION_SLOT_W.min(content / actions.len() as f32);
