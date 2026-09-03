@@ -30,6 +30,7 @@ Each probe is an example under `examples/` with its verdict and exit code in the
 | `winlist.sh [pid]` | the window server's view of what is on screen: number, owner pid, layer, geometry, owner, title. The only reliable "is it really up / really gone" |
 | `lockguard.sh` | exits 90 if the display is locked or asleep. Run it before and after anything that produces a number; a 90 voids the numbers |
 | `keys.sh` | the keyboard suite: real keystrokes through System Events into a bundled window, results read back from AppKit |
+| `perf.sh` | frame cadence: the bundled Finder demo under a 125 Hz synthetic trackpad train and a right-edge resize drag, unique on-screen frames per second read back from the window server, with minimums |
 | `menubar.sh` | reads the menu bar back out of a second process through Accessibility |
 | `surface.sh` | the public-surface arms, see above |
 | `uidiff.py a.png [b.png]` | structure (rows, columns, edges) out of window captures |
