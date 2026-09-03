@@ -79,7 +79,8 @@ impl Face {
             F::Folder => Some(FileType::Folder),
             F::Program => Some(FileType::Extension("app")),
             F::Volume | F::Device => None,
-            _ => extension.map(FileType::Extension),
+            // A name without an extension gets Finder's generic document icon, not a symbol.
+            _ => Some(extension.map_or(FileType::Uti("public.data"), FileType::Extension)),
         }
     }
 
