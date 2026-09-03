@@ -1,10 +1,12 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
 
-use gpui::{AnyElement, FontWeight, Hsla, div, prelude::*, px};
+use gpui::{AnyElement, FontWeight, Hsla, WeakEntity, Window, div, prelude::*, px};
 
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
+use native_gpui::{focus_gpui, native_text_field};
 
-use crate::data::{Face, Row};
+use crate::data::{Face, Line, Row};
+use crate::{FinderDemo, ns_window};
 
 pub(crate) const TAGS: &[(&str, SystemColor)] = &[
     ("Red", SystemColor::SystemRed),
@@ -80,6 +82,52 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .flex_none()
         .bg(system_color(TAGS[index].1))
         .into_any_element()
+}
+
+/// The name edited in place: Finder selects the stem, Return commits, Escape leaves it, and
+/// either way the view takes the keyboard back.
+pub(crate) fn rename_field(
+    line: &Line,
+    at: usize,
+    this: WeakEntity<FinderDemo>,
+) -> impl IntoElement {
+    let name = line.row.name.clone();
+    let dot = name.rfind('.').filter(|&dot| dot > 0).unwrap_or(name.len());
+    let stem = name[..dot].chars().count();
+    let key = line.key.clone();
+    let leave = this.clone();
+    native_text_field(("ng.finder.rename", at), &name)
+        .stretch()
+        .editing(0..stem)
+        .on_submit(move |text, window, cx| {
+            let text = text.clone();
+            this.update(cx, |this: &mut FinderDemo, cx| {
+                this.rename(&key, &text);
+                this.renaming = None;
+                focus_gpui(window);
+                key_to_parent(window);
+                cx.notify();
+            })
+            .ok();
+        })
+        .on_cancel(move |_, window, cx| {
+            leave
+                .update(cx, |this: &mut FinderDemo, cx| {
+                    this.renaming = None;
+                    focus_gpui(window);
+                    key_to_parent(window);
+                    cx.notify();
+                })
+                .ok();
+        })
+}
+
+/// A field in the pane's child panel takes key from the window it hangs off; hand it back once
+/// the edit ends. A field in the main window itself has no parent to hand it to.
+fn key_to_parent(window: &Window) {
+    if let Some(parent) = ns_window(window).and_then(|panel| panel.parentWindow()) {
+        parent.makeKeyWindow();
+    }
 }
 
 /// A scroll container that ignores the other axis; nested with a list, each axis then has one owner.
