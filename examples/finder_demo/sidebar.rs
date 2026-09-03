@@ -115,9 +115,9 @@ impl FinderDemo {
         let Some(sidebar) = &self.sidebar else {
             return;
         };
-        let here = self.here();
-        let known = self.sidebar_rows.iter().any(|rows| rows.contains(&here));
-        sidebar.set_selected(known.then_some(here));
+        let target = self.target();
+        let known = self.sidebar_rows.iter().any(|rows| rows.contains(&target));
+        sidebar.set_selected(known.then_some(target));
     }
 
     pub(crate) fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {

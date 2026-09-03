@@ -185,7 +185,31 @@ impl FinderDemo {
     }
 
     pub(crate) fn retitle(&self, window: &mut Window) {
-        let title = self.folder().map_or_else(
+        let title = self.store.get(self.target()).map_or_else(
+    /// The folder the window is about: in column view the selected folder, or the selected
+    /// file's, as Finder titles it; elsewhere the folder shown.
+    pub(crate) fn target(&self) -> &'static str {
+        let here = self.here();
+        if self.view != COLUMN_VIEW {
+            return here;
+        }
+        let Some((holder, name)) = self.cursor.as_ref().and_then(|key| key.rsplit_once('/')) else {
+            return here;
+        };
+        let Some((holder, folder)) = self.store.get_key_value(holder) else {
+            return here;
+        };
+        if self.selected.len() > 1 {
+            return holder;
+        }
+        folder
+            .rows
+            .iter()
+            .find(|row| row.name == name)
+            .and_then(|row| row.opens)
+            .unwrap_or(holder)
+    }
+
             || String::from("Finder"),
             |folder| match folder.crumbs.split_first() {
                 Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
@@ -239,6 +263,11 @@ impl FinderDemo {
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.here();
         let Some(parent) = self.folder().and_then(|folder| folder.parent) else {
+        if self.view == COLUMN_VIEW {
+            self.column_up();
+            self.column_arrived(window, cx);
+            return;
+        }
             return;
         };
         self.go(parent, window, cx);
@@ -266,6 +295,10 @@ impl FinderDemo {
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let folders: Vec<&'static str> = self
             .lines(self.view == LIST_VIEW)
+        // In the browser a selected folder is already open beside its row: Finder's ⌘↓ does nothing.
+        if self.view == COLUMN_VIEW {
+            return;
+        }
             .iter()
             .filter(|line| self.selected.contains(&line.key))
             .filter_map(|line| line.row.opens)
@@ -382,7 +415,7 @@ impl FinderDemo {
         }
         self.typed.push_str(&typed.to_lowercase());
         self.typed_at = Some(now);
-        let lines = self.lines(self.view == LIST_VIEW);
+        let lines = self.focused_lines();
         let mut by_name: Vec<&Line> = lines.iter().collect();
         by_name.sort_by_key(|line| line.row.name.to_lowercase());
         let pick = by_name
@@ -391,7 +424,7 @@ impl FinderDemo {
             .or(by_name.last())
             .map(|line| (*line).clone());
         if let Some(line) = pick {
-            self.pick(&line, false, false);
+            self.pick_in(&lines, &line, false, false);
             self.reveal(&line.key);
         }
     }
@@ -488,18 +521,23 @@ impl FinderDemo {
     pub(crate) fn pick(&mut self, line: &Line, extend: bool, toggle: bool) {
         if toggle {
             if !self.selected.remove(&line.key) {
+        let lines = self.lines(self.view == LIST_VIEW);
+        self.pick_in(&lines, line, extend, toggle);
+    }
+
+    /// Select `line` among `lines`: toggled, extended to from the anchor, or alone.
+    pub(crate) fn pick_in(&mut self, lines: &[Line], line: &Line, extend: bool, toggle: bool) {
                 self.selected.insert(line.key.clone());
             }
             self.anchor = Some(line.key.clone());
         } else if extend {
-            let lines = self.lines(self.view == LIST_VIEW);
             let anchor = self
                 .anchor
                 .as_ref()
                 .or(self.cursor.as_ref())
-                .and_then(|key| self.line_at(&lines, key))
+                .and_then(|key| self.line_at(lines, key))
                 .unwrap_or(0);
-            if let Some(target) = self.line_at(&lines, &line.key) {
+            if let Some(target) = self.line_at(lines, &line.key) {
                 let (lo, hi) = (anchor.min(target), anchor.max(target));
                 self.selected = lines[lo..=hi].iter().map(|line| line.key.clone()).collect();
             }
@@ -543,13 +581,13 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let tree = self.view == LIST_VIEW;
-        let lines = self.lines(tree);
+        let lines = self.focused_lines();
         if lines.is_empty() {
             return;
         }
-        if self.view == COLUMN_VIEW && self.column_key(event.keystroke.key.as_str(), modifiers, cx)
+        if self.view == COLUMN_VIEW
+            && self.column_key(event.keystroke.key.as_str(), modifiers, window, cx)
         {
-            cx.notify();
             return;
         }
         let current = self
@@ -601,7 +639,8 @@ impl FinderDemo {
                     cx.notify();
                 }
             }
-            "tab" => {
+            // Tab walks the names everywhere but the browser, where Finder gives it nothing.
+            "tab" if self.view != COLUMN_VIEW => {
                 self.tab(modifiers.shift);
                 cx.notify();
             }
@@ -644,7 +683,7 @@ impl FinderDemo {
 
     pub(crate) fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.selected = self
-            .lines(self.view == LIST_VIEW)
+            .focused_lines()
             .iter()
             .map(|line| line.key.clone())
             .collect();
@@ -653,7 +692,7 @@ impl FinderDemo {
 
     pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, cx: &mut Context<Self>) {
         let names: Vec<String> = self
-            .lines(self.view == LIST_VIEW)
+            .focused_lines()
             .iter()
             .filter(|line| self.selected.contains(&line.key))
             .map(|line| line.row.name.to_string())
@@ -677,6 +716,9 @@ impl FinderDemo {
     pub(crate) fn cursor_line(&self) -> Option<Line> {
         let lines = self.lines(self.view == LIST_VIEW);
         self.cursor
+        if self.view == COLUMN_VIEW {
+            self.column_arrived(window, cx);
+        }
             .as_ref()
             .and_then(|key| lines.iter().find(|line| &line.key == key))
             .cloned()
