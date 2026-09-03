@@ -87,6 +87,7 @@ Single-component demos: `button`, `glass`, `keys`, `material`, `menu`, `menu_bar
 | `check.sh` | the gate: both feature configs, formatting, unit tests, the probes, rustdoc under `-D warnings`, the public surface, zero warnings. Must print `== VERDICT: PASS` |
 | `bundle.sh <example> [features]` | assembles an ad-hoc-signed `.app` in `dist/`; required before key-window work |
 | `keys.sh` | keyboard suite driven by real System Events keystrokes |
+| `perf.sh` | on-screen frame cadence of the Finder demo under a scroll train and a resize drag, read from the window server |
 | `menubar.sh` | reads the menu bar back out of a second process via Accessibility |
 | `surface.sh` | the public surface, four type-check arms |
 | `winlist.sh [pid]` | window-server census, six tab-separated fields |

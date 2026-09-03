@@ -33,6 +33,7 @@ step 'z-order holds paint order'    cargo run --release --example z_order
 step 'glass container declines'     cargo run --release --example glass_hit
 step 'decorations decline'          cargo run --release --example decoration_hit
 step 'tabular figures apply'        cargo run --release --example tabular_figures
+step 'frame cadence holds'          ./scripts/perf.sh
 
 own_docs() {
   touch src/lib.rs
