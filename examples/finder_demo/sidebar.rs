@@ -158,6 +158,7 @@ impl FinderDemo {
         self.sidebar_follow();
         self.retitle(window);
         window.focus(&self.focus, cx);
+        self.warm_icons(cx);
     }
 
     fn reorder(&mut self, moved: &SidebarMove) {
