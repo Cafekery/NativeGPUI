@@ -34,6 +34,8 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 const GRIP_W: f32 = 6.;
 
 pub(crate) const INSET: f32 = 10.;
+/// The parent's resize edge, left uncovered by the card window.
+const RESIZE_EDGE: f32 = 6.;
 
 const NAME_SIZE: f32 = 15.;
 
@@ -251,14 +253,16 @@ impl FinderDemo {
             .filter(|shown| **shown)
             .count() as f32
             * BAR_H;
+        // The card window stops short of the window's right and bottom edges: those are the
+        // parent's resize edges, and a child window over them would take the drag.
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
                 metrics.top,
             ),
             size: size(
-                px(self.preview_w),
-                viewport.height - metrics.top - metrics.bottom - px(bars),
+                px(self.preview_w - RESIZE_EDGE),
+                viewport.height - metrics.top - metrics.bottom - px(bars + RESIZE_EDGE),
             ),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
