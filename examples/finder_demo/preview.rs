@@ -33,7 +33,7 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 
 const GRIP_W: f32 = 6.;
 
-const INSET: f32 = 10.;
+pub(crate) const INSET: f32 = 10.;
 
 const NAME_SIZE: f32 = 15.;
 

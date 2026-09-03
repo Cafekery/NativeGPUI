@@ -25,7 +25,7 @@ use gpui::{
     Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
-use native_gpui::tokens::{self, SystemTheme};
+use native_gpui::tokens::{self, FileType, SystemTheme};
 use native_gpui::{install_menus, native_root, system_corner_radius, window_options};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
@@ -38,9 +38,9 @@ use crate::header::{
     pane_surface,
 };
 use crate::icon::{Grid, cell};
-use crate::list::ROW_H;
+use crate::list::{ICON_SIZE, ROW_H};
 use crate::palette::Palette;
-use crate::preview::{LIST_MIN_W, PREVIEW_W, PreviewWindow};
+use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::ui::{TAGS, axis_locked};
 
 pub(crate) const ICON_VIEW: usize = 0;
@@ -149,6 +149,31 @@ impl FinderDemo {
             frames: 0,
             quit_at: env::var("NG_QUIT").ok().and_then(|v| v.parse().ok()),
         }
+    }
+
+    /// Rasterise every icon the store can show, one kind per turn once the window is up, so
+    /// entering a folder never spends its first frame drawing icons: a fresh kind costs about
+    /// 5 ms of the 8 ms a 120 Hz frame has.
+    pub(crate) fn warm_icons(&self, cx: &mut Context<Self>) {
+        let mut kinds: Vec<FileType<'static>> = self
+            .store
+            .values()
+            .flat_map(|folder| folder.rows.iter().filter_map(|row| row.artwork))
+            .collect();
+        kinds.sort_by_key(|kind| format!("{kind:?}"));
+        kinds.dedup();
+        let sizes = [ICON_SIZE, PREVIEW_W - 1. - 2. * INSET];
+        cx.spawn(async move |_, cx| {
+            for kind in kinds {
+                cx.background_executor()
+                    .timer(Duration::from_millis(4))
+                    .await;
+                for size in sizes {
+                    tokens::file_icon(kind, px(size));
+                }
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn here(&self) -> &'static str {
