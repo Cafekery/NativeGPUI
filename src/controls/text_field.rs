@@ -3,15 +3,17 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, SharedString, Style, Window};
+use gpui::{App, ElementId, SharedString, Style, Window, relative};
 use objc2::rc::Retained;
-use objc2::runtime::{NSObjectProtocol, ProtocolObject};
-use objc2::{MainThreadOnly, Message, define_class, msg_send};
+use objc2::runtime::{Bool, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
-    NSSecureTextField, NSTextField, NSTextFieldDelegate,
+    NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
 };
-use objc2_foundation::{MainThreadMarker, NSNotification, NSNumber, NSObject, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
+};
 
 use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{
@@ -23,6 +25,7 @@ use crate::controls::fitted;
 /// Salts the element key into a second tag, so Return and per-keystroke change are separate
 /// channels on one pooled view.
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
+const CANCEL_CHANNEL: u64 = 0x6a09_e667_f3bc_c908;
 
 /// `text` is the value you own; wire `on_change` to keep it. ⌘A/⌘C/⌘V/⌘X/⌘Z reach a hosted field
 /// only after [`crate::install_menus`].
@@ -69,8 +72,12 @@ pub struct NativeTextField {
     text: SharedString,
     placeholder: SharedString,
     enabled: bool,
+    stretch: bool,
+    /// Take the keyboard on appearing, selecting these characters.
+    editing: Option<std::ops::Range<usize>>,
     on_change: Option<NativeHandler>,
     on_submit: Option<NativeHandler>,
+    on_cancel: Option<NativeHandler>,
 }
 
 impl NativeTextField {
@@ -81,8 +88,11 @@ impl NativeTextField {
             text: SharedString::from(text.to_owned()),
             placeholder: SharedString::default(),
             enabled: true,
+            stretch: false,
+            editing: None,
             on_change: None,
             on_submit: None,
+            on_cancel: None,
         }
     }
 
@@ -109,9 +119,32 @@ impl NativeTextField {
         self
     }
 
+    /// Escape while editing; the text is whatever was typed so far.
+    pub fn on_cancel(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
+        self.on_cancel = Some(text_handler(handler));
+        self
+    }
+
+    /// Fill the box's width rather than the field's own fitting width.
+    pub fn stretch(mut self) -> Self {
+        self.stretch = true;
+        self
+    }
+
+    /// Become first responder on appearing, with these characters selected, as a field that
+    /// renames in place does.
+    pub fn editing(mut self, selected: std::ops::Range<usize>) -> Self {
+        self.editing = Some(selected);
+        self
+    }
+
     fn layout(&self) -> Style {
         let kind = self.kind;
-        fitted(fitting_size(kind.class(), |mtm| kind.fitting(mtm)))
+        let mut style = fitted(fitting_size(kind.class(), |mtm| kind.fitting(mtm)));
+        if self.stretch {
+            style.size.width = relative(1.).into();
+        }
+        style
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -171,15 +204,36 @@ impl NativeTextField {
                 }
             })),
         );
-        let submit_handler = self.on_submit.take().map(|handler| -> NativeDispatch {
+        let dispatch = |handler: NativeHandler| -> NativeDispatch {
             Rc::new(move |value, window, cx| {
                 if let Ok(value) = value.downcast::<NativeValue>() {
                     handler(*value, window, cx);
                 }
             })
-        });
+        };
+        let submit_handler = self.on_submit.take().map(dispatch);
         slot.host
             .on_event_channel(slot.key, submit, ValueKind::Text.reader(), submit_handler);
+        let cancel_handler = self.on_cancel.take().map(dispatch);
+        slot.host.on_event_channel(
+            slot.key,
+            slot.key ^ CANCEL_CHANNEL,
+            ValueKind::Text.reader(),
+            cancel_handler,
+        );
+
+        if let Some(selected) = &self.editing {
+            if field.currentEditor().is_none() {
+                if let Some(window) = field.window() {
+                    window.makeFirstResponder(Some(&field));
+                }
+                if let Some(editor) = field.currentEditor() {
+                    let start = selected.start.min(want_text.chars().count());
+                    let len = selected.end.saturating_sub(selected.start);
+                    editor.setSelectedRange(NSRange::new(start, len));
+                }
+            }
+        }
     }
 }
 
@@ -233,6 +287,22 @@ define_class!(
             control.setTag(submit ^ SUBMIT_CHANNEL as isize);
             let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
             control.setTag(submit);
+        }
+
+        /// Escape reaches the field editor as `cancelOperation:`; sent on as the cancel channel.
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, control: &NSControl, _: &NSTextView, selector: Sel) -> Bool {
+            if selector != sel!(cancelOperation:) {
+                return Bool::NO;
+            }
+            let (Some(action), Some(target)) = (control.action(), control.target()) else {
+                return Bool::NO;
+            };
+            let submit = control.tag();
+            control.setTag(submit ^ SUBMIT_CHANNEL as isize ^ CANCEL_CHANNEL as isize);
+            let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
+            control.setTag(submit);
+            Bool::YES
         }
     }
 
