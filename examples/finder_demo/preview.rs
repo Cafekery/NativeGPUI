@@ -344,7 +344,7 @@ impl FinderDemo {
     /// the size together, each date as the span from the earliest to the latest, and every tag.
     fn many_card(&self, content: f32) -> Card {
         let lines: Vec<Line> = self
-            .lines(self.view == LIST_VIEW)
+            .focused_lines()
             .into_iter()
             .filter(|line| self.selected.contains(&line.key))
             .collect();
@@ -587,6 +587,7 @@ impl FinderDemo {
                         .child("Add Tag"),
                 ),
         });
+                    .gap(px(8.))
 
         let actions = card.actions;
         let slot = ACTION_SLOT_W.min(content / actions.len() as f32);
