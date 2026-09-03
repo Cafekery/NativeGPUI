@@ -94,6 +94,7 @@ pub(crate) struct FinderDemo {
     pub(crate) icon_size: f64,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
+    pub(crate) strip: ScrollHandle,
     pub(crate) column_scroll: ScrollHandle,
     pub(crate) column_depth: usize,
     pub(crate) icons: Grid,
@@ -141,6 +142,7 @@ impl FinderDemo {
             icon_size: 64.,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
+            strip: ScrollHandle::new(),
             column_scroll: ScrollHandle::new(),
             column_depth: 0,
             icons: Grid::default(),
@@ -637,6 +639,29 @@ impl FinderDemo {
                 self.icons.scroll_to_end(key == "end");
                 cx.notify();
             }
+            // The gallery is one strip: Left and Right walk it, Shift extends, Up and Down are
+            // nothing, Home and End only scroll it.
+            key @ ("left" | "right") if self.view == GALLERY_VIEW => {
+                let next = match current {
+                    Some(index) if key == "left" => index.saturating_sub(1),
+                    Some(index) => (index + 1).min(lines.len() - 1),
+                    None => 0,
+                };
+                let line = lines[next].clone();
+                self.pick(&line, modifiers.shift, false);
+                self.strip_reveal(next);
+                cx.notify();
+            }
+            "up" | "down" if self.view == GALLERY_VIEW => {}
+            "home" | "end" if self.view == GALLERY_VIEW => {
+                let x = if key == "end" {
+                    -self.strip.max_offset().x
+                } else {
+                    px(0.)
+                };
+                self.strip.set_offset(point(x, px(0.)));
+                cx.notify();
+            }
             key @ ("up" | "down") => {
                 let step: isize = if key == "up" { -1 } else { 1 };
                 let next = match current {
@@ -920,7 +945,7 @@ impl Render for FinderDemo {
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
             COLUMN_VIEW => self.column_body(&palette, cx),
-            GALLERY_VIEW => self.gallery_body(&palette, cx),
+            GALLERY_VIEW => self.gallery_body(&palette, window, cx),
             _ => self.list_body(&palette, cx),
         };
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
