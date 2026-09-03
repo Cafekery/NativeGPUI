@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use gpui::{AnyElement, ClickEvent, FontWeight, SharedString, div, prelude::*, px, uniform_list};
 use native_gpui::tokens::{self, SystemColor};
+use native_gpui::{focus_gpui, native_text_field};
 
 use crate::FinderDemo;
 use crate::data::Column;
@@ -34,6 +35,7 @@ impl FinderDemo {
     pub(crate) fn list_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let lines = self.lines(true);
         let this = cx.entity().downgrade();
+        let renaming = self.renaming.clone();
         let selected: HashSet<SharedString> = self.selected.clone();
         let tags = self.tags.clone();
         let expanded = self.expanded.clone();
@@ -152,13 +154,47 @@ impl FinderDemo {
                                 .child(twist),
                         )
                         .child(artwork(&line.row, ICON_SIZE))
-                        .child(
+                        .child(if renaming.as_ref() == Some(&line.key) {
+                            // Finder selects the name up to its extension; Return commits, Escape
+                            // leaves it, and either way the list takes the keyboard back.
+                            let name = line.row.name.clone();
+                            let stem = name.rfind('.').filter(|&dot| dot > 0).unwrap_or(name.len());
+                            let stem = name[..stem].chars().count();
+                            let key = line.key.clone();
+                            let commit = this.clone();
+                            let leave = this.clone();
+                            div().ml(px(LABEL_X - ICON_X - ICON_SIZE)).flex_1().child(
+                                native_text_field(("ng.finder.rename", at), &name)
+                                    .stretch()
+                                    .editing(0..stem)
+                                    .on_submit(move |text, window, cx| {
+                                        let text = text.clone();
+                                        commit
+                                            .update(cx, |this: &mut FinderDemo, cx| {
+                                                this.rename(&key, &text);
+                                                this.renaming = None;
+                                                focus_gpui(window);
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    })
+                                    .on_cancel(move |_, window, cx| {
+                                        leave
+                                            .update(cx, |this: &mut FinderDemo, cx| {
+                                                this.renaming = None;
+                                                focus_gpui(window);
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    }),
+                            )
+                        } else {
                             div()
                                 .ml(px(LABEL_X - ICON_X - ICON_SIZE))
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(line.row.name.clone()),
-                        );
+                                .child(line.row.name.clone())
+                        });
                     if let Some(tag) = tags.get(&line.key) {
                         name = name.child(div().ml(px(6.)).child(tag_dot(*tag)));
                     }

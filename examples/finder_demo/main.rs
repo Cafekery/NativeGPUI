@@ -15,11 +15,12 @@ mod ui;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
-    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
+    Pixels, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
+    Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, SystemTheme};
@@ -35,6 +36,7 @@ use crate::header::{
     pane_surface,
 };
 use crate::icon::{Grid, cell};
+use crate::list::ROW_H;
 use crate::palette::Palette;
 use crate::preview::{LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::ui::{TAGS, axis_locked};
@@ -46,7 +48,7 @@ pub(crate) const GALLERY_VIEW: usize = 3;
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
-actions!(finder_demo, [SelectAll, CopyNames]);
+actions!(finder_demo, [SelectAll, CopyNames, Back, Forward]);
 
 pub(crate) struct FinderDemo {
     pub(crate) store: HashMap<&'static str, Folder>,
@@ -66,6 +68,11 @@ pub(crate) struct FinderDemo {
     pub(crate) selected: HashSet<SharedString>,
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
+    /// The row whose name is being edited in place.
+    pub(crate) renaming: Option<SharedString>,
+    /// Letters typed to select by name, and when the last one came.
+    typed: String,
+    typed_at: Option<Instant>,
     pub(crate) tags: HashMap<SharedString, usize>,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
@@ -93,13 +100,13 @@ pub(crate) struct FinderDemo {
 }
 
 impl FinderDemo {
-    pub(crate) fn new(cx: &mut App) -> Self {
+    pub(crate) fn new(start: &'static str, cx: &mut App) -> Self {
         Self {
             store: build_store(),
             sidebar: None,
             sidebar_rows: crate::sidebar::default_rows(),
             toolbar: false,
-            history: vec!["documents"],
+            history: vec![start],
             at: 0,
             view: LIST_VIEW,
             sort: Column::Name,
@@ -112,6 +119,9 @@ impl FinderDemo {
             selected: HashSet::new(),
             cursor: None,
             anchor: None,
+            renaming: None,
+            typed: String::new(),
+            typed_at: None,
             tags: HashMap::new(),
             preview: true,
             preview_w: PREVIEW_W,
@@ -195,9 +205,201 @@ impl FinderDemo {
         }
     }
 
+    /// To the enclosing folder, with the folder just left selected, as Finder leaves it.
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(parent) = self.folder().and_then(|folder| folder.parent) {
-            self.go(parent, window, cx);
+        let from = self.here();
+        let Some(parent) = self.folder().and_then(|folder| folder.parent) else {
+            return;
+        };
+        self.go(parent, window, cx);
+        let left = self
+            .lines(self.view == LIST_VIEW)
+            .into_iter()
+            .find(|line| line.row.opens == Some(from));
+        if let Some(line) = left {
+            self.pick(&line, false, false);
+            self.reveal(&line.key);
+        }
+    }
+
+    /// Scroll the list so this row shows.
+    pub(crate) fn reveal(&mut self, key: &SharedString) {
+        let lines = self.lines(self.view == LIST_VIEW);
+        if let Some(index) = self.line_at(&lines, key) {
+            self.scroll
+                .scroll_to_item(index + self.list_inset().0, ScrollStrategy::Center);
+        }
+    }
+
+    /// Cmd-Down and Cmd-O: the first selected folder opens here, every further one in a window
+    /// of its own, as Finder opens them.
+    fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let folders: Vec<&'static str> = self
+            .lines(self.view == LIST_VIEW)
+            .iter()
+            .filter(|line| self.selected.contains(&line.key))
+            .filter_map(|line| line.row.opens)
+            .collect();
+        let mut folders = folders.into_iter();
+        if let Some(first) = folders.next() {
+            self.go(first, window, cx);
+        }
+        for (extra, id) in folders.enumerate() {
+            open_finder_window(id, extra + 1, cx);
+        }
+    }
+
+    /// Right and Left on the selection: expand or collapse every selected folder, all the way
+    /// down with Option; Left on a child with nothing to collapse selects its parent.
+    fn disclose_selected(&mut self, open: bool, deep: bool) {
+        let lines = self.lines(true);
+        let keys: Vec<SharedString> = if self.selected.is_empty() {
+            self.cursor.iter().cloned().collect()
+        } else {
+            lines
+                .iter()
+                .filter(|line| self.selected.contains(&line.key))
+                .map(|line| line.key.clone())
+                .collect()
+        };
+        let folders: Vec<(SharedString, &'static str)> = lines
+            .iter()
+            .filter(|line| keys.contains(&line.key))
+            .filter_map(|line| line.row.opens.map(|into| (line.key.clone(), into)))
+            .collect();
+        let expandable = folders
+            .iter()
+            .filter(|(key, _)| self.expanded.contains(key) != open)
+            .count();
+        if expandable > 0 {
+            for (key, into) in folders {
+                if deep {
+                    self.disclose_tree(&key, into, open);
+                } else {
+                    self.disclose(&key, open);
+                }
+            }
+            return;
+        }
+        if open || keys.len() != 1 {
+            return;
+        }
+        let Some(index) = self.line_at(&lines, &keys[0]) else {
+            return;
+        };
+        let depth = lines[index].depth;
+        if depth == 0 {
+            return;
+        }
+        if let Some(parent) = lines[..index].iter().rev().find(|line| line.depth < depth) {
+            let parent = parent.clone();
+            self.pick(&parent, false, false);
+            self.reveal(&parent.key);
+        }
+    }
+
+    fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
+        self.disclose(key, open);
+        let Some(folder) = self.store.get(into) else {
+            return;
+        };
+        let children: Vec<(SharedString, &'static str)> = folder
+            .rows
+            .iter()
+            .filter_map(|row| {
+                row.opens
+                    .map(|deeper| (SharedString::from(format!("{into}/{}", row.name)), deeper))
+            })
+            .collect();
+        for (key, deeper) in children {
+            self.disclose_tree(&key, deeper, open);
+        }
+    }
+
+    /// Tab and Shift-Tab: the next or previous row by name, round the ends.
+    fn tab(&mut self, backwards: bool) {
+        let lines = self.lines(self.view == LIST_VIEW);
+        if lines.is_empty() {
+            return;
+        }
+        let mut by_name: Vec<usize> = (0..lines.len()).collect();
+        by_name.sort_by_key(|&index| lines[index].row.name.to_lowercase());
+        let at = self
+            .cursor
+            .as_ref()
+            .and_then(|key| self.line_at(&lines, key))
+            .and_then(|index| by_name.iter().position(|&i| i == index));
+        let next = match (at, backwards) {
+            (Some(at), false) => (at + 1) % by_name.len(),
+            (Some(at), true) => (at + by_name.len() - 1) % by_name.len(),
+            (None, false) => 0,
+            (None, true) => by_name.len() - 1,
+        };
+        let line = lines[by_name[next]].clone();
+        self.pick(&line, false, false);
+        self.reveal(&line.key);
+    }
+
+    /// Letters typed within a second of each other select the first row, by name, at or after
+    /// what was typed; past every name, the last.
+    fn type_select(&mut self, typed: &str) {
+        let now = Instant::now();
+        if self
+            .typed_at
+            .is_some_and(|at| now.duration_since(at) > Duration::from_secs(1))
+        {
+            self.typed.clear();
+        }
+        self.typed.push_str(&typed.to_lowercase());
+        self.typed_at = Some(now);
+        let lines = self.lines(self.view == LIST_VIEW);
+        let mut by_name: Vec<&Line> = lines.iter().collect();
+        by_name.sort_by_key(|line| line.row.name.to_lowercase());
+        let pick = by_name
+            .iter()
+            .find(|line| line.row.name.to_lowercase() >= self.typed)
+            .or(by_name.last())
+            .map(|line| (*line).clone());
+        if let Some(line) = pick {
+            self.pick(&line, false, false);
+            self.reveal(&line.key);
+        }
+    }
+
+    /// Return: edit the name in place. Committing renames the row and follows it under its new
+    /// key wherever the old one was held.
+    pub(crate) fn rename(&mut self, key: &SharedString, name: &str) {
+        let Some((folder, old)) = key.rsplit_once('/') else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() || name == old {
+            return;
+        }
+        let (folder, old) = (folder.to_owned(), old.to_owned());
+        let Some(row) = self
+            .store
+            .get_mut(folder.as_str())
+            .and_then(|f| f.rows.iter_mut().find(|row| row.name.as_ref() == old))
+        else {
+            return;
+        };
+        row.name = SharedString::from(name.to_owned());
+        let new_key = SharedString::from(format!("{folder}/{name}"));
+        let follow = |set: &mut HashSet<SharedString>| {
+            if set.remove(key) {
+                set.insert(new_key.clone());
+            }
+        };
+        follow(&mut self.selected);
+        follow(&mut self.expanded);
+        if let Some(tag) = self.tags.remove(key) {
+            self.tags.insert(new_key.clone(), tag);
+        }
+        for slot in [&mut self.cursor, &mut self.anchor] {
+            if slot.as_ref() == Some(key) {
+                *slot = Some(new_key.clone());
+            }
         }
     }
 
@@ -325,14 +527,10 @@ impl FinderDemo {
             .as_ref()
             .and_then(|key| self.line_at(&lines, key));
 
-        match event.keystroke.key.as_str() {
-            key @ ("up" | "down") if modifiers.platform => {
-                if key == "up" {
-                    self.up(window, cx);
-                } else if let Some(line) = current.map(|index| lines[index].clone()) {
-                    self.open(&line, window, cx);
-                }
-            }
+        let key = event.keystroke.key.as_str();
+        match key {
+            "up" if modifiers.platform => self.up(window, cx),
+            "down" | "o" if modifiers.platform => self.open_selected(window, cx),
             key @ ("up" | "down" | "left" | "right") if self.view == ICON_VIEW => {
                 let step: isize = match key {
                     "up" => -(self.columns(window) as isize),
@@ -360,26 +558,58 @@ impl FinderDemo {
                 } as usize;
                 let line = lines[next].clone();
                 self.pick(&line, modifiers.shift, false);
-                self.scroll
-                    .scroll_to_item(next + self.list_inset().0, ScrollStrategy::Center);
+                self.reveal(&line.key);
                 cx.notify();
             }
-            key @ ("right" | "left") => {
-                let open = key == "right";
-                if let Some(line) = current.map(|index| lines[index].clone()) {
-                    if line.row.opens.is_some() {
-                        self.disclose(&line.key, open);
-                        cx.notify();
-                    }
-                }
+            key @ ("right" | "left") if tree => {
+                self.disclose_selected(key == "right", modifiers.alt);
+                cx.notify();
             }
             "enter" => {
                 if let Some(line) = current.map(|index| lines[index].clone()) {
-                    self.open(&line, window, cx);
+                    self.renaming = Some(line.key);
+                    cx.notify();
+                }
+            }
+            "tab" => {
+                self.tab(modifiers.shift);
+                cx.notify();
+            }
+            "home" | "end" | "pageup" | "pagedown" if tree => {
+                let (pads, _) = self.list_inset();
+                let last = pads + lines.len() - 1;
+                let page = (f32::from(window.viewport_size().height) / ROW_H) as usize;
+                let top = self.scroll.0.borrow().base_handle.logical_scroll_top().0;
+                let (index, strategy) = match key {
+                    "home" => (0, ScrollStrategy::Top),
+                    "end" => (last, ScrollStrategy::Top),
+                    "pageup" => (top.saturating_sub(page), ScrollStrategy::Top),
+                    _ => ((top + page).min(last), ScrollStrategy::Top),
+                };
+                self.scroll.scroll_to_item(index, strategy);
+                cx.notify();
+            }
+            _ if !modifiers.platform && !modifiers.control && !modifiers.alt => {
+                if let Some(typed) = event
+                    .keystroke
+                    .key_char
+                    .as_deref()
+                    .filter(|typed| typed.chars().all(|c| !c.is_control()))
+                {
+                    self.type_select(typed);
+                    cx.notify();
                 }
             }
             _ => {}
         }
+    }
+
+    pub(crate) fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
+        self.step(false, window, cx);
+    }
+
+    pub(crate) fn forward(&mut self, _: &Forward, window: &mut Window, cx: &mut Context<Self>) {
+        self.step(true, window, cx);
     }
 
     pub(crate) fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -613,6 +843,8 @@ impl Render for FinderDemo {
                         .key_context(LIST_CONTEXT)
                         .on_action(cx.listener(Self::select_all))
                         .on_action(cx.listener(Self::copy_names))
+                        .on_action(cx.listener(Self::back))
+                        .on_action(cx.listener(Self::forward))
                         .on_key_down(cx.listener(Self::on_key))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -648,6 +880,8 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-a", SelectAll, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-[", Back, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-]", Forward, Some(LIST_CONTEXT)),
         ]);
         // The preview pane is a child window; the app ends with the Finder window, not the pane.
         cx.on_window_closed(|cx, _| {
@@ -660,23 +894,29 @@ fn main() {
             }
         })
         .detach();
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: point(px(160.), px(120.)),
-                    size: size(px(1200.), px(772.)),
-                })),
-                ..window_options()
-            },
-            |_, cx| {
-                cx.new(|cx| {
-                    cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
-                        .detach();
-                    FinderDemo::new(cx)
-                })
-            },
-        )
-        .expect("the Finder window opens");
+        open_finder_window("documents", 0, cx);
         cx.activate(true);
     });
+}
+
+/// A Finder window at `start`, the `extra`th one stepped down and right of the first.
+fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
+    let step = px(extra as f32 * 30.);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(160.) + step, px(120.) + step),
+                size: size(px(1200.), px(772.)),
+            })),
+            ..window_options()
+        },
+        |_, cx| {
+            cx.new(|cx| {
+                cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
+                    .detach();
+                FinderDemo::new(start, cx)
+            })
+        },
+    )
+    .expect("the Finder window opens");
 }
