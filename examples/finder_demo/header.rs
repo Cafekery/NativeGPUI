@@ -334,7 +334,6 @@ impl FinderDemo {
             self.ascending,
         )
         .id(("ng.finder.header", slot))
-        .active(move |style| style.bg(wash))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             if this.sort == column {
                 this.ascending = !this.ascending;
