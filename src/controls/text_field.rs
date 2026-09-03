@@ -225,6 +225,10 @@ impl NativeTextField {
         if let Some(selected) = &self.editing {
             if field.currentEditor().is_none() {
                 if let Some(window) = field.window() {
+                    // A field in a panel that is not key edits nothing: take key first.
+                    if !window.isKeyWindow() && window.canBecomeKeyWindow() {
+                        window.makeKeyWindow();
+                    }
                     window.makeFirstResponder(Some(&field));
                 }
                 if let Some(editor) = field.currentEditor() {
