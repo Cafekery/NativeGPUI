@@ -2,13 +2,12 @@ use std::collections::HashSet;
 
 use gpui::{AnyElement, ClickEvent, FontWeight, SharedString, div, prelude::*, px, uniform_list};
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{focus_gpui, native_text_field};
 
 use crate::FinderDemo;
 use crate::data::Column;
 use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
 use crate::palette::Palette;
-use crate::ui::{artwork, axis_locked, small_glyph, tag_dot};
+use crate::ui::{artwork, axis_locked, rename_field, small_glyph, tag_dot};
 
 pub(crate) const ICON_SIZE: f32 = 32.;
 pub(crate) const ROW_H: f32 = ICON_SIZE + 4.;
@@ -155,39 +154,10 @@ impl FinderDemo {
                         )
                         .child(artwork(&line.row, ICON_SIZE))
                         .child(if renaming.as_ref() == Some(&line.key) {
-                            // Finder selects the name up to its extension; Return commits, Escape
-                            // leaves it, and either way the list takes the keyboard back.
-                            let name = line.row.name.clone();
-                            let stem = name.rfind('.').filter(|&dot| dot > 0).unwrap_or(name.len());
-                            let stem = name[..stem].chars().count();
-                            let key = line.key.clone();
-                            let commit = this.clone();
-                            let leave = this.clone();
-                            div().ml(px(LABEL_X - ICON_X - ICON_SIZE)).flex_1().child(
-                                native_text_field(("ng.finder.rename", at), &name)
-                                    .stretch()
-                                    .editing(0..stem)
-                                    .on_submit(move |text, window, cx| {
-                                        let text = text.clone();
-                                        commit
-                                            .update(cx, |this: &mut FinderDemo, cx| {
-                                                this.rename(&key, &text);
-                                                this.renaming = None;
-                                                focus_gpui(window);
-                                                cx.notify();
-                                            })
-                                            .ok();
-                                    })
-                                    .on_cancel(move |_, window, cx| {
-                                        leave
-                                            .update(cx, |this: &mut FinderDemo, cx| {
-                                                this.renaming = None;
-                                                focus_gpui(window);
-                                                cx.notify();
-                                            })
-                                            .ok();
-                                    }),
-                            )
+                            div()
+                                .ml(px(LABEL_X - ICON_X - ICON_SIZE))
+                                .flex_1()
+                                .child(rename_field(&line, at, this.clone()))
                         } else {
                             div()
                                 .ml(px(LABEL_X - ICON_X - ICON_SIZE))
