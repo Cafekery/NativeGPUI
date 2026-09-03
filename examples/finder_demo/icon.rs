@@ -13,7 +13,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use crate::FinderDemo;
 use crate::data::Line;
 use crate::palette::Palette;
-use crate::ui::{artwork, tag_dot};
+use crate::ui::{artwork, rename_field, tag_dot};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -84,22 +84,44 @@ impl Grid {
         self.dragging = None;
     }
 
-    pub(crate) fn reveal(&self, key: &SharedString, index: usize, columns: usize, icon: f32) {
+    /// Scroll so this tile shows whole, sideways too when the pane covers it: `visible` is the
+    /// width left of the pane.
+    pub(crate) fn reveal(
+        &self,
+        key: &SharedString,
+        index: usize,
+        columns: usize,
+        icon: f32,
+        visible: f32,
+    ) {
         let cell = cell(icon);
         let at = self.at(key, index, columns, cell);
-        let view = self.scroll.bounds().size.height;
+        let view = f32::from(self.scroll.bounds().size.height);
         let offset = self.scroll.offset();
-        let top = f32::from(at.y);
-        let bottom = top + cell;
-        let seen = -f32::from(offset.y);
-        let next = if top < seen {
-            top
-        } else if bottom > seen + f32::from(view) {
-            bottom - f32::from(view)
-        } else {
-            return;
+        let into_view = |start: f32, extent: f32, seen: f32| {
+            if start < seen {
+                start
+            } else if start + cell > seen + extent {
+                start + cell - extent
+            } else {
+                seen
+            }
         };
-        self.scroll.set_offset(point(offset.x, px(-next.max(0.))));
+        let x = into_view(f32::from(at.x), visible, -f32::from(offset.x));
+        let y = into_view(f32::from(at.y), view, -f32::from(offset.y));
+        self.scroll
+            .set_offset(point(px(-x.max(0.)), px(-y.max(0.))));
+    }
+
+    /// Home and End: to the top or the bottom, the selection untouched.
+    pub(crate) fn scroll_to_end(&self, end: bool) {
+        let x = self.scroll.offset().x;
+        let y = if end {
+            self.scroll.max_offset().y
+        } else {
+            px(0.)
+        };
+        self.scroll.set_offset(point(x, -y));
     }
 }
 
@@ -117,11 +139,18 @@ struct Ghost {
 
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        tile(&self.line, self.size, self.look, true, self.tag).opacity(GHOST_ALPHA)
+        tile(&self.line, self.size, self.look, true, self.tag, None).opacity(GHOST_ALPHA)
     }
 }
 
-fn tile(line: &Line, size: f32, look: Look, selected: bool, tag: Option<usize>) -> Div {
+fn tile(
+    line: &Line,
+    size: f32,
+    look: Look,
+    selected: bool,
+    tag: Option<usize>,
+    editor: Option<AnyElement>,
+) -> Div {
     let cell = cell(size);
     let mut icon = div()
         .w(px(size))
@@ -145,21 +174,28 @@ fn tile(line: &Line, size: f32, look: Look, selected: bool, tag: Option<usize>) 
     }
 
     let room = cell - 2. * LABEL_INSET - if tag.is_some() { 12. } else { 0. };
-    let caption = div()
-        .px(px(4.))
-        .max_w(px(room))
-        .rounded(px(LABEL_RADIUS))
-        .text_size(px(LABEL_FONT))
-        .line_height(px(LABEL_LINE))
-        .line_clamp(LABEL_LINES)
-        .text_align(TextAlign::Center)
-        .text_color(if selected {
-            look.selection_text
-        } else {
-            look.label
-        })
-        .when(selected, |pill| pill.bg(look.selection))
-        .child(elide(&line.row.name, room - 8.));
+    let caption = match editor {
+        // Finder's field hugs the name rather than spanning the cell.
+        Some(editor) => {
+            let fit = line.row.name.chars().count() as f32 * LABEL_FONT * 0.58 + 24.;
+            div().w(px(fit.min(room))).child(editor)
+        }
+        None => div()
+            .px(px(4.))
+            .max_w(px(room))
+            .rounded(px(LABEL_RADIUS))
+            .text_size(px(LABEL_FONT))
+            .line_height(px(LABEL_LINE))
+            .line_clamp(LABEL_LINES)
+            .text_align(TextAlign::Center)
+            .text_color(if selected {
+                look.selection_text
+            } else {
+                look.label
+            })
+            .when(selected, |pill| pill.bg(look.selection))
+            .child(elide(&line.row.name, room - 8.)),
+    };
 
     div()
         .w(px(cell))
@@ -229,14 +265,18 @@ impl FinderDemo {
             .map(|(_, at)| f32::from(at.y) + cell)
             .fold(cell, f32::max);
 
+        // The grid runs on beneath the pane, the pane's width padded on so the last column can
+        // be scrolled clear of it.
+        let width = GRID_X + columns as f32 * cell + self.pane_w();
         let mut canvas = div()
             .id("ng.finder.icons")
             .flex_1()
             .relative()
+            .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&scroll)
-            // The only child in flow: the tiles are absolute and contribute no scrollable height.
-            .child(div().w_full().h(px(height)).flex_none());
+            // The only child in flow: the tiles are absolute and contribute no scrollable size.
+            .child(div().w(px(width)).h(px(height)).flex_none());
 
         for (index, line) in lines.iter().enumerate() {
             let at = layout[index].1;
@@ -244,6 +284,8 @@ impl FinderDemo {
             let tag = self.tags.get(&line.key).copied();
             let held = dragging.as_ref() == Some(&line.key);
             let grab = Rc::new(Cell::new(point(px(0.), px(0.))));
+            let editor = (self.renaming.as_ref() == Some(&line.key))
+                .then(|| rename_field(line, index, this.clone()).into_any_element());
 
             let mut slot = div()
                 .id(("ng.finder.tile", index))
@@ -252,7 +294,7 @@ impl FinderDemo {
                 .top(at.y)
                 .w(px(cell))
                 .h(px(cell))
-                .child(tile(line, size, look, is_selected, tag))
+                .child(tile(line, size, look, is_selected, tag, editor))
                 .when(held, |tile| tile.opacity(SOURCE_ALPHA));
 
             slot = slot.on_drag(
