@@ -184,8 +184,6 @@ impl FinderDemo {
         self.store.get(self.here())
     }
 
-    pub(crate) fn retitle(&self, window: &mut Window) {
-        let title = self.store.get(self.target()).map_or_else(
     /// The folder the window is about: in column view the selected folder, or the selected
     /// file's, as Finder titles it; elsewhere the folder shown.
     pub(crate) fn target(&self) -> &'static str {
@@ -210,6 +208,8 @@ impl FinderDemo {
             .unwrap_or(holder)
     }
 
+    pub(crate) fn retitle(&self, window: &mut Window) {
+        let title = self.store.get(self.target()).map_or_else(
             || String::from("Finder"),
             |folder| match folder.crumbs.split_first() {
                 Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
@@ -261,13 +261,13 @@ impl FinderDemo {
 
     /// To the enclosing folder, with the folder just left selected, as Finder leaves it.
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from = self.here();
-        let Some(parent) = self.folder().and_then(|folder| folder.parent) else {
         if self.view == COLUMN_VIEW {
             self.column_up();
             self.column_arrived(window, cx);
             return;
         }
+        let from = self.here();
+        let Some(parent) = self.folder().and_then(|folder| folder.parent) else {
             return;
         };
         self.go(parent, window, cx);
@@ -293,12 +293,12 @@ impl FinderDemo {
     /// Cmd-Down and Cmd-O: the first selected folder opens here, every further one in a window
     /// of its own, as Finder opens them.
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let folders: Vec<&'static str> = self
-            .lines(self.view == LIST_VIEW)
         // In the browser a selected folder is already open beside its row: Finder's ⌘↓ does nothing.
         if self.view == COLUMN_VIEW {
             return;
         }
+        let folders: Vec<&'static str> = self
+            .lines(self.view == LIST_VIEW)
             .iter()
             .filter(|line| self.selected.contains(&line.key))
             .filter_map(|line| line.row.opens)
@@ -519,14 +519,14 @@ impl FinderDemo {
     }
 
     pub(crate) fn pick(&mut self, line: &Line, extend: bool, toggle: bool) {
-        if toggle {
-            if !self.selected.remove(&line.key) {
         let lines = self.lines(self.view == LIST_VIEW);
         self.pick_in(&lines, line, extend, toggle);
     }
 
     /// Select `line` among `lines`: toggled, extended to from the anchor, or alone.
     pub(crate) fn pick_in(&mut self, lines: &[Line], line: &Line, extend: bool, toggle: bool) {
+        if toggle {
+            if !self.selected.remove(&line.key) {
                 self.selected.insert(line.key.clone());
             }
             self.anchor = Some(line.key.clone());
@@ -600,21 +600,41 @@ impl FinderDemo {
             "up" if modifiers.platform => self.up(window, cx),
             "down" | "o" if modifiers.platform => self.open_selected(window, cx),
             key @ ("up" | "down" | "left" | "right") if self.view == ICON_VIEW => {
-                let step: isize = match key {
-                    "up" => -(self.columns(window) as isize),
-                    "down" => self.columns(window) as isize,
-                    "left" => -1,
-                    _ => 1,
-                };
+                // Finder's grid moves by place: nothing wraps at a row's ends, and a step into
+                // a shorter row or past the top stays put.
+                let columns = self.columns(window);
                 let next = match current {
-                    Some(index) => (index as isize + step).clamp(0, lines.len() as isize - 1),
-                    None if step > 0 => 0,
-                    None => lines.len() as isize - 1,
-                } as usize;
+                    Some(index) => match key {
+                        "up" if index >= columns => index - columns,
+                        "down" if index + columns < lines.len() => index + columns,
+                        "left" if index % columns > 0 => index - 1,
+                        "right" if index % columns + 1 < columns && index + 1 < lines.len() => {
+                            index + 1
+                        }
+                        _ => index,
+                    },
+                    None if matches!(key, "down" | "right") => 0,
+                    None => lines.len() - 1,
+                };
                 let line = lines[next].clone();
-                self.pick(&line, modifiers.shift, false);
-                self.icons
-                    .reveal(&line.key, next, self.columns(window), self.icon_size as f32);
+                if modifiers.shift {
+                    // Shift-arrow adds the tile it lands on; the grid keeps no range.
+                    self.selected.insert(line.key.clone());
+                    self.cursor = Some(line.key.clone());
+                } else {
+                    self.pick(&line, false, false);
+                }
+                self.icons.reveal(
+                    &line.key,
+                    next,
+                    columns,
+                    self.icon_size as f32,
+                    self.list_room - self.pane_w(),
+                );
+                cx.notify();
+            }
+            "home" | "end" if self.view == ICON_VIEW => {
+                self.icons.scroll_to_end(key == "end");
                 cx.notify();
             }
             key @ ("up" | "down") => {
@@ -671,6 +691,9 @@ impl FinderDemo {
             }
             _ => {}
         }
+        if self.view == COLUMN_VIEW {
+            self.column_arrived(window, cx);
+        }
     }
 
     pub(crate) fn back(&mut self, _: &Back, window: &mut Window, cx: &mut Context<Self>) {
@@ -716,9 +739,6 @@ impl FinderDemo {
     pub(crate) fn cursor_line(&self) -> Option<Line> {
         let lines = self.lines(self.view == LIST_VIEW);
         self.cursor
-        if self.view == COLUMN_VIEW {
-            self.column_arrived(window, cx);
-        }
             .as_ref()
             .and_then(|key| lines.iter().find(|line| &line.key == key))
             .cloned()
@@ -778,11 +798,7 @@ impl FinderDemo {
         // The list starts under the sidebar and, as Finder's, stops at the pane until its columns
         // no longer fit; only then does it run on beneath the pane and scroll sideways, the pane's
         // width padded on so the last column can be scrolled clear of it.
-        let pane = if self.preview_shown() {
-            self.preview_w
-        } else {
-            0.
-        };
+        let pane = self.pane_w();
         let band = (self.list_room - pane).max(self.list_content_w());
         let width = metrics.left + px(band + pane);
         if banded {
@@ -818,7 +834,7 @@ impl FinderDemo {
             .when(banded, |column| {
                 column.child(band_glass(px(pane), top))
             })
-            .when(banded && pane > 0., |column| column.child(pane_surface(px(pane), corner)))
+            .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             // A second scroller on the same handle, so the header clamps exactly as the rows do.
             // It ends at the pane, as Finder's does even while the rows run beneath, and is the
             // pane's width shorter so the two scroll the same distance.
@@ -846,12 +862,22 @@ impl FinderDemo {
             .into_any_element()
     }
 
+    /// The pane's width while it shows, else nothing.
+    pub(crate) fn pane_w(&self) -> f32 {
+        if self.preview_shown() {
+            self.preview_w
+        } else {
+            0.
+        }
+    }
+
+    /// Tiles per row: Finder fills the whole width beside the sidebar, pane included, and
+    /// scrolls the grid sideways to show a tile the pane covers.
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right)
-            - if self.preview { self.preview_w } else { 0. }
             - 24.;
         let tile = cell(self.icon_size as f32);
         ((avail / tile).floor() as usize).max(1)
