@@ -14,17 +14,17 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition,
-    NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSFont,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSFont,
     NSFontWeightRegular, NSImage, NSImageAlignment, NSImageScaling, NSImageSymbolConfiguration,
     NSImageView, NSLineBreakMode, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate,
-    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardWriting, NSScreen, NSScrollView,
-    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle,
-    NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment, NSTextField, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier,
-    NSUserInterfaceItemIdentification, NSView, NSViewController, NSVisualEffectBlendingMode,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardWriting, NSResponder, NSScreen,
+    NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
+    NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment,
+    NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification, NSView,
+    NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
+    NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
@@ -924,6 +924,28 @@ impl PaneShared {
                 view.setFrame(gpui_frame);
             }
         }
+    }
+}
+
+define_class!(
+    /// Finder's sidebar never takes the keyboard: a click selects and the content keeps focus, so
+    /// the selected row wears the source list's quiet pill, not the accent one of a focused table.
+    #[unsafe(super(NSOutlineView, NSTableView, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarOutline"]
+    struct SidebarOutline;
+
+    impl SidebarOutline {
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            false
+        }
+    }
+);
+
+impl SidebarOutline {
+    fn init_with_frame(this: objc2::rc::Allocated<Self>, frame: NSRect) -> Retained<Self> {
+        unsafe { msg_send![this, initWithFrame: frame] }
     }
 }
 
@@ -2005,7 +2027,10 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         NSPoint::ZERO,
         NSSize::new(options.thickness.to_f64(), content_size.height),
     );
-    let outline = NSOutlineView::initWithFrame(NSOutlineView::alloc(mtm), strip);
+    let outline: Retained<NSOutlineView> = Retained::into_super(SidebarOutline::init_with_frame(
+        SidebarOutline::alloc(mtm),
+        strip,
+    ));
     let column = NSTableColumn::initWithIdentifier(
         NSTableColumn::alloc(mtm),
         &NSString::from_str("NGSidebarColumn"),
