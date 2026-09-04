@@ -42,6 +42,7 @@ pub struct MenuCommand {
     title: String,
     chord: Option<String>,
     action: Option<Box<dyn Action>>,
+    rows: Vec<MenuCommand>,
 }
 
 impl MenuCommand {
@@ -50,6 +51,17 @@ impl MenuCommand {
             title: title.into(),
             chord: None,
             action: Some(Box::new(action)),
+            rows: Vec::new(),
+        }
+    }
+
+    /// A row that opens a menu of its own instead of dispatching.
+    pub fn submenu(title: impl Into<String>, rows: impl IntoIterator<Item = MenuCommand>) -> Self {
+        Self {
+            title: title.into(),
+            chord: None,
+            action: None,
+            rows: rows.into_iter().collect(),
         }
     }
 
@@ -58,6 +70,7 @@ impl MenuCommand {
             title: String::new(),
             chord: None,
             action: None,
+            rows: Vec::new(),
         }
     }
 
@@ -340,8 +353,17 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     bar.insertItem_atIndex(&host, before);
 }
 
+/// Put rows at the top of one of the standard menus, above what it already carries.
+pub fn prepend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
+    rows_into(section, commands, true);
+}
+
 /// Put rows inside one of the standard menus.
 pub fn extend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
+    rows_into(section, commands, false);
+}
+
+fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>, first: bool) {
     let Some((mtm, bar)) = bar() else {
         return;
     };
@@ -352,10 +374,10 @@ pub fn extend_menu(section: MenuSection, commands: impl IntoIterator<Item = Menu
     else {
         return;
     };
-    let mut at = if section == MenuSection::App {
-        2
-    } else {
-        menu.numberOfItems()
+    let mut at = match (first, section) {
+        (_, MenuSection::App) => 2,
+        (true, _) => 0,
+        (false, _) => menu.numberOfItems(),
     };
     for command in commands {
         add_command(mtm, &menu, at, command);
@@ -378,6 +400,16 @@ fn index_of(bar: &NSMenu, title: &str) -> Option<isize> {
 
 fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCommand) {
     let row = match command.action {
+        None if !command.rows.is_empty() => {
+            let host = NSMenuItem::new(mtm);
+            host.setTitle(&NSString::from_str(&command.title));
+            let inner = menu(mtm, &command.title);
+            for row in command.rows {
+                add_command(mtm, &inner, inner.numberOfItems(), row);
+            }
+            host.setSubmenu(Some(&inner));
+            host
+        }
         None => NSMenuItem::separatorItem(mtm),
         Some(action) => {
             let (key, mask) = command
