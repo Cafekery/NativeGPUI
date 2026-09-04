@@ -1,6 +1,6 @@
 //! The menu bar Finder carries, read off the real one: the same rows, order and key equivalents.
 
-use gpui::{App, Context, Div, InteractiveElement, actions};
+use gpui::{App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, prepend_menu};
 
 use crate::data::Column;
@@ -25,6 +25,12 @@ actions!(
         GoDownloads,
         GoHome,
         GoToFolder,
+        GoRecent0,
+        GoRecent1,
+        GoRecent2,
+        GoRecent3,
+        GoRecent4,
+        ClearRecents,
         NewFolder,
         NewFolderWithSelection,
         NewWindow,
@@ -114,26 +120,58 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::separator(),
         ],
     );
-    add_menu(
-        "Go",
-        [
-            MenuCommand::new("Back", Back).key("cmd-["),
-            MenuCommand::new("Forward", Forward).key("cmd-]"),
-            MenuCommand::new("Enclosing Folder", Up).key("cmd-up"),
-            MenuCommand::separator(),
-            MenuCommand::new("Documents", GoDocuments).key("cmd-shift-o"),
-            MenuCommand::new("Desktop", GoDesktop).key("cmd-shift-d"),
-            MenuCommand::new("Downloads", GoDownloads).key("cmd-alt-l"),
-            MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
-            MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
-            MenuCommand::separator(),
-            MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
-        ],
-    );
+    add_menu("Go", go_rows(&[]));
+}
+
+/// Finder's Go menu, with the folders the window has been through under Recent Folders.
+pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
+    let recent_rows: Vec<MenuCommand> = recents
+        .iter()
+        .take(5)
+        .enumerate()
+        .map(|(index, (_, title))| match index {
+            0 => MenuCommand::new(title.clone(), GoRecent0),
+            1 => MenuCommand::new(title.clone(), GoRecent1),
+            2 => MenuCommand::new(title.clone(), GoRecent2),
+            3 => MenuCommand::new(title.clone(), GoRecent3),
+            _ => MenuCommand::new(title.clone(), GoRecent4),
+        })
+        .collect();
+    let mut recent_rows = recent_rows;
+    if !recent_rows.is_empty() {
+        recent_rows.push(MenuCommand::separator());
+    }
+    recent_rows.push(MenuCommand::new("Clear Menu", ClearRecents));
+    let mut rows = go_head();
+    rows.push(MenuCommand::submenu("Recent Folders", recent_rows));
+    rows
+}
+
+fn go_head() -> Vec<MenuCommand> {
+    vec![
+        MenuCommand::new("Back", Back).key("cmd-["),
+        MenuCommand::new("Forward", Forward).key("cmd-]"),
+        MenuCommand::new("Enclosing Folder", Up).key("cmd-up"),
+        MenuCommand::separator(),
+        MenuCommand::new("Documents", GoDocuments).key("cmd-shift-o"),
+        MenuCommand::new("Desktop", GoDesktop).key("cmd-shift-d"),
+        MenuCommand::new("Downloads", GoDownloads).key("cmd-alt-l"),
+        MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
+        MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
+        MenuCommand::separator(),
+        MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
+        MenuCommand::separator(),
+    ]
 }
 
 /// One handler per row: everything the bar dispatches, in the order the menus list it.
 impl FinderDemo {
+    fn go_recent(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.recents.get(index).map(|(id, _)| *id) {
+            self.go(id, window, cx);
+        }
+    }
+
     pub(crate) fn menu_bar_actions(&mut self, element: Div, cx: &mut Context<Self>) -> Div {
         element
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
@@ -247,6 +285,25 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &GoApplications, window, cx| {
                 this.go("applications", window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoRecent0, window, cx| {
+                this.go_recent(0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoRecent1, window, cx| {
+                this.go_recent(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoRecent2, window, cx| {
+                this.go_recent(2, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoRecent3, window, cx| {
+                this.go_recent(3, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoRecent4, window, cx| {
+                this.go_recent(4, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearRecents, _, _| {
+                this.recents.clear();
+                native_gpui::set_menu("Go", go_rows(&this.recents));
             }))
             .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
                 this.go_sheet = Some(this.crumb_path());

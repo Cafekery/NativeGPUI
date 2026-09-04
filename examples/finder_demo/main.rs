@@ -94,6 +94,8 @@ pub(crate) struct FinderDemo {
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
+    /// The folders this window has been through, newest first, for the Go menu.
+    pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
     pub(crate) go_sheet: Option<String>,
     pub(crate) quick_look: bool,
@@ -146,6 +148,7 @@ impl FinderDemo {
             path_bar_shown: true,
             status_bar_shown: false,
             show_hidden: false,
+            recents: Vec::new(),
             go_sheet: None,
             quick_look: false,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
@@ -263,6 +266,18 @@ impl FinderDemo {
         chain
     }
 
+    /// Keep the Go menu's Recent Folders in step with where the window has been.
+    fn remember_recent(&mut self, id: &'static str) {
+        let Some(folder) = self.store.get(id) else {
+            return;
+        };
+        let title = folder.title.to_string();
+        self.recents.retain(|(seen, _)| *seen != id);
+        self.recents.insert(0, (id, title));
+        self.recents.truncate(10);
+        native_gpui::set_menu("Go", commands::go_rows(&self.recents));
+    }
+
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         if self.here() == id {
             return;
@@ -270,6 +285,7 @@ impl FinderDemo {
         self.history.truncate(self.at + 1);
         self.history.push(id);
         self.at = self.history.len() - 1;
+        self.remember_recent(id);
         self.arrive(window, cx);
     }
 
