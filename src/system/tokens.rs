@@ -800,33 +800,33 @@ pub enum FileType<'a> {
     Extension(&'a str),
     /// A uniform type identifier, e.g. `"public.plain-text"`.
     Uti(&'a str),
+    /// This file's own icon, e.g. a volume's drive artwork, which its type alone does not give.
+    Path(&'a str),
 }
 
-impl<'a> FileType<'a> {
-    fn tag(self) -> (bool, &'a str) {
+impl FileType<'_> {
+    fn tag(self) -> String {
         match self {
-            FileType::Folder => (false, "public.folder"),
-            FileType::Uti(uti) => (false, uti),
-            FileType::Extension(extension) => (true, extension),
+            FileType::Folder => "uti:public.folder".into(),
+            FileType::Uti(uti) => format!("uti:{uti}"),
+            FileType::Extension(extension) => format!("ext:{extension}"),
+            FileType::Path(path) => format!("path:{path}"),
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FileIconKey {
-    extension: bool,
-    text: String,
+    tag: String,
     size: u32,
     scale: u32,
 }
 
 /// The system's own artwork for a file type, rasterised for gpui.
 pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
-    let (extension, text) = kind.tag();
     let scale = display_scale();
     let key = FileIconKey {
-        extension,
-        text: text.to_string(),
+        tag: kind.tag(),
         size: f32::from(size).to_bits(),
         scale: scale.to_bits(),
     };
@@ -834,7 +834,7 @@ pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
         Some(hit) => hit.clone(),
         None => {
             cache.file_icon_rasters += 1;
-            let icon = rasterize_file_icon(extension, text, size, scale);
+            let icon = rasterize_file_icon(kind, size, scale);
             cache.file_icons.insert(key, icon.clone());
             icon
         }
@@ -869,11 +869,26 @@ fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
     unsafe { msg_send![class, typeWithFilenameExtension: &*text] }
 }
 
-fn rasterize_file_icon(extension: bool, text: &str, size: Pixels, scale: f32) -> Option<Symbol> {
-    let kind = ut_type(extension, text)?;
+fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<Symbol> {
     let workspace = NSWorkspace::sharedWorkspace();
-    let image: Option<Retained<NSImage>> =
-        unsafe { msg_send![&*workspace, iconForContentType: &*kind] };
+    let image: Option<Retained<NSImage>> = match kind {
+        FileType::Path(path) => {
+            let path = NSString::from_str(path);
+            unsafe { msg_send![&*workspace, iconForFile: &*path] }
+        }
+        FileType::Folder => {
+            let content = ut_type(false, "public.folder")?;
+            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
+        }
+        FileType::Uti(uti) => {
+            let content = ut_type(false, uti)?;
+            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
+        }
+        FileType::Extension(extension) => {
+            let content = ut_type(true, extension)?;
+            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
+        }
+    };
     let image = image?;
 
     // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
