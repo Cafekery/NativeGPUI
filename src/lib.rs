@@ -36,7 +36,7 @@ pub use bridge::host::{
     Target, ValueKind, element_key, wire,
 };
 pub use bridge::menus::{
-    MenuCommand, MenuSection, add_menu, extend_menu, install_menus, prepend_menu,
+    MenuCommand, MenuSection, add_menu, extend_menu, install_menus, prepend_menu, set_menu,
 };
 pub use bridge::root::{NativeRoot, native_root, window_options};
 pub use chrome::sidebar::*;
