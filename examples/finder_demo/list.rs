@@ -7,7 +7,7 @@ use crate::FinderDemo;
 use crate::data::Column;
 use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
 use crate::palette::Palette;
-use crate::ui::{artwork, axis_locked, rename_field, small_glyph, tag_dot};
+use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
 
 pub(crate) const ICON_SIZE: f32 = 32.;
 pub(crate) const ROW_H: f32 = ICON_SIZE + 4.;
@@ -198,14 +198,7 @@ impl FinderDemo {
                     }
                     row.child(div().w(px(PANE_INSET)).flex_none()).on_click(
                         move |event: &ClickEvent, window, cx| {
-                            let (extend, toggle, twice) = match event {
-                                ClickEvent::Mouse(mouse) => (
-                                    mouse.up.modifiers.shift,
-                                    mouse.up.modifiers.platform,
-                                    mouse.up.click_count >= 2,
-                                ),
-                                _ => (false, false, false),
-                            };
+                            let (extend, toggle, twice) = click_kind(event);
                             let line = clicked.clone();
                             this.update(cx, |this: &mut FinderDemo, cx| {
                                 this.pick(&line, extend, toggle);

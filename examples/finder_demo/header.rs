@@ -103,11 +103,8 @@ fn overlay(fill: Hsla) -> Div {
         .bg(fill)
 }
 
-/// The pane's surface: Finder's own, a regular glass frosting the rows, run up under the toolbar
-/// and down to the window's corner; its rim is the hairline Finder shows on those edges. Only its
-/// right corners round, with the window's; the glass starts a radius left of the pane so its left
-/// corners fall outside the clip, and a rule draws the straight edge against the list. The pane
-/// window over it carries only the card.
+/// The pane's glass, frosting the rows. Only its window-side corners round: the glass starts a
+/// radius left of the pane so its left corners fall outside the clip, with a rule for that edge.
 pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
     div()
         .absolute()
@@ -141,9 +138,8 @@ pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// The glass over the toolbar band and the column-header band, as one material spanning both,
-/// from the window's edge: it runs on under the floating sidebar, as Finder's does, so the
-/// sidebar's gutters and corners show frosted band rather than the rows behind it.
+/// One material over the toolbar and column-header bands, from the window's edge, so it runs on
+/// under the floating sidebar and its gutters and corners frost the rows.
 pub(crate) fn band_glass(right: Pixels, top: Pixels) -> AnyElement {
     div()
         .absolute()
