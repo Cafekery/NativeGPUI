@@ -1,6 +1,6 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
 
-use gpui::{AnyElement, FontWeight, Hsla, WeakEntity, Window, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, FontWeight, Hsla, WeakEntity, Window, div, prelude::*, px};
 
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
 use native_gpui::{focus_gpui, native_text_field};
@@ -60,7 +60,6 @@ pub(crate) fn small_glyph(name: &str, size: f32, color: SystemColor) -> Option<A
     .map(|symbol| symbol.img().into_any_element())
 }
 
-/// Finder's tag pill over a selection: the tag's colour washed under its name.
 pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
     let (name, color) = TAGS[index];
     let mut wash = system_color(color);
@@ -84,8 +83,18 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .into_any_element()
 }
 
-/// The name edited in place: Finder selects the stem, Return commits, Escape leaves it, and
-/// either way the view takes the keyboard back.
+/// `(extend, toggle, twice)`: Shift, Cmd and a double click.
+pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
+    match event {
+        ClickEvent::Mouse(mouse) => (
+            mouse.up.modifiers.shift,
+            mouse.up.modifiers.platform,
+            mouse.up.click_count >= 2,
+        ),
+        _ => (false, false, false),
+    }
+}
+
 pub(crate) fn rename_field(
     line: &Line,
     at: usize,
@@ -122,8 +131,7 @@ pub(crate) fn rename_field(
         })
 }
 
-/// A field in the pane's child panel takes key from the window it hangs off; hand it back once
-/// the edit ends. A field in the main window itself has no parent to hand it to.
+/// Hand key back to the main window after a field in the pane's panel took it.
 fn key_to_parent(window: &Window) {
     if let Some(parent) = ns_window(window).and_then(|panel| panel.parentWindow()) {
         parent.makeKeyWindow();

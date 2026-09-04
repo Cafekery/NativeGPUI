@@ -266,7 +266,7 @@ impl FinderDemo {
                 .group_width(ToolbarGroupWidth::Automatic)
                 .on_select(move |index, _, cx| {
                     view.update(cx, |this: &mut Self, cx| {
-                        this.view = index;
+                        this.set_view(index);
                         cx.notify();
                     })
                     .ok();

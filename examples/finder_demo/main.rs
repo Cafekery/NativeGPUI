@@ -70,11 +70,9 @@ pub(crate) struct FinderDemo {
     pub(crate) selected: HashSet<SharedString>,
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
-    /// The row whose name is being edited in place.
     pub(crate) renaming: Option<SharedString>,
-    /// The stacked icons of the last multi-selection the pane drew: its keys, side, image.
+    /// Keys, side in pixels, image.
     pub(crate) stack: RefCell<Option<(Vec<SharedString>, u32, Arc<RenderImage>)>>,
-    /// Letters typed to select by name, and when the last one came.
     typed: String,
     typed_at: Option<Instant>,
     pub(crate) tags: HashMap<SharedString, usize>,
@@ -83,11 +81,9 @@ pub(crate) struct FinderDemo {
     pub(crate) preview_window: Option<PreviewWindow>,
     pub(crate) preview_opening: bool,
     pub(crate) preview_expanded: bool,
-    /// What the pane window reads to lay itself out: the list's focus and the room beside the sidebar.
     pub(crate) list_focused: bool,
     pub(crate) list_room: f32,
-    /// The width the list had beside the pane at the last layout, so a change can be given to
-    /// the Name column, as Finder's autoresizing gives it.
+    /// The list's width beside the pane at the last layout; what it gains or loses goes to Name.
     pub(crate) list_span: f32,
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
@@ -153,9 +149,7 @@ impl FinderDemo {
         }
     }
 
-    /// Rasterise every icon the store can show, one kind per turn once the window is up, so
-    /// entering a folder never spends its first frame drawing icons: a fresh kind costs about
-    /// 5 ms of the 8 ms a 120 Hz frame has.
+    /// Rasterise every icon kind up front, one per turn, so no folder pays for it in a frame.
     pub(crate) fn warm_icons(&self, cx: &mut Context<Self>) {
         let mut kinds: Vec<FileType<'static>> = self
             .store
@@ -186,8 +180,6 @@ impl FinderDemo {
         self.store.get(self.here())
     }
 
-    /// The folder the window is about: in column view the selected folder, or the selected
-    /// file's, as Finder titles it; elsewhere the folder shown.
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
         if self.view != COLUMN_VIEW {
@@ -250,9 +242,27 @@ impl FinderDemo {
         self.anchor = None;
         self.query.clear();
         self.icons.forget();
+        self.settle();
         self.retitle(window);
         self.sidebar_follow();
         cx.notify();
+    }
+
+    pub(crate) fn set_view(&mut self, view: usize) {
+        self.view = view;
+        self.settle();
+    }
+
+    fn settle(&mut self) {
+        match self.view {
+            GALLERY_VIEW if self.cursor_line().is_none() => {
+                if let Some(first) = self.lines(false).first().cloned() {
+                    self.pick(&first, false, false);
+                }
+            }
+            COLUMN_VIEW if self.cursor.is_none() => self.column_seed(),
+            _ => {}
+        }
     }
 
     pub(crate) fn open(&mut self, line: &Line, window: &mut Window, cx: &mut Context<Self>) {
@@ -261,7 +271,6 @@ impl FinderDemo {
         }
     }
 
-    /// To the enclosing folder, with the folder just left selected, as Finder leaves it.
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view == COLUMN_VIEW {
             self.column_up();
@@ -283,7 +292,6 @@ impl FinderDemo {
         }
     }
 
-    /// Scroll the list so this row shows.
     pub(crate) fn reveal(&mut self, key: &SharedString) {
         let lines = self.lines(self.view == LIST_VIEW);
         if let Some(index) = self.line_at(&lines, key) {
@@ -292,10 +300,7 @@ impl FinderDemo {
         }
     }
 
-    /// Cmd-Down and Cmd-O: the first selected folder opens here, every further one in a window
-    /// of its own, as Finder opens them.
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // In the browser a selected folder is already open beside its row: Finder's ⌘↓ does nothing.
         if self.view == COLUMN_VIEW {
             return;
         }
@@ -314,8 +319,6 @@ impl FinderDemo {
         }
     }
 
-    /// Right and Left on the selection: expand or collapse every selected folder, all the way
-    /// down with Option; Left on a child with nothing to collapse selects its parent.
     fn disclose_selected(&mut self, open: bool, deep: bool) {
         let lines = self.lines(true);
         let keys: Vec<SharedString> = if self.selected.is_empty() {
@@ -381,7 +384,6 @@ impl FinderDemo {
         }
     }
 
-    /// Tab and Shift-Tab: the next or previous row by name, round the ends.
     fn tab(&mut self, backwards: bool) {
         let lines = self.lines(self.view == LIST_VIEW);
         if lines.is_empty() {
@@ -405,8 +407,6 @@ impl FinderDemo {
         self.reveal(&line.key);
     }
 
-    /// Letters typed within a second of each other select the first row, by name, at or after
-    /// what was typed; past every name, the last.
     fn type_select(&mut self, typed: &str) {
         let now = Instant::now();
         if self
@@ -431,8 +431,6 @@ impl FinderDemo {
         }
     }
 
-    /// Return: edit the name in place. Committing renames the row and follows it under its new
-    /// key wherever the old one was held.
     pub(crate) fn rename(&mut self, key: &SharedString, name: &str) {
         let Some((folder, old)) = key.rsplit_once('/') else {
             return;
@@ -525,7 +523,6 @@ impl FinderDemo {
         self.pick_in(&lines, line, extend, toggle);
     }
 
-    /// Select `line` among `lines`: toggled, extended to from the anchor, or alone.
     pub(crate) fn pick_in(&mut self, lines: &[Line], line: &Line, extend: bool, toggle: bool) {
         if toggle {
             if !self.selected.remove(&line.key) {
@@ -582,13 +579,10 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         let modifiers = event.keystroke.modifiers;
-        let tree = self.view == LIST_VIEW;
+        let key = event.keystroke.key.as_str();
         let lines = self.focused_lines();
-        if lines.is_empty() {
-            return;
-        }
-        if self.view == COLUMN_VIEW
-            && self.column_key(event.keystroke.key.as_str(), modifiers, window, cx)
+        if lines.is_empty()
+            || (self.view == COLUMN_VIEW && self.column_key(key, modifiers, window, cx))
         {
             return;
         }
@@ -596,61 +590,44 @@ impl FinderDemo {
             .cursor
             .as_ref()
             .and_then(|key| self.line_at(&lines, key));
-
-        let key = event.keystroke.key.as_str();
+        let last = lines.len() - 1;
+        let tree = self.view == LIST_VIEW;
         match key {
             "up" if modifiers.platform => self.up(window, cx),
             "down" | "o" if modifiers.platform => self.open_selected(window, cx),
-            key @ ("up" | "down" | "left" | "right") if self.view == ICON_VIEW => {
-                // Finder's grid moves by place: nothing wraps at a row's ends, and a step into
-                // a shorter row or past the top stays put.
+            "up" | "down" | "left" | "right" if self.view == ICON_VIEW => {
                 let columns = self.columns(window);
                 let next = match current {
-                    Some(index) => match key {
-                        "up" if index >= columns => index - columns,
-                        "down" if index + columns < lines.len() => index + columns,
-                        "left" if index % columns > 0 => index - 1,
-                        "right" if index % columns + 1 < columns && index + 1 < lines.len() => {
-                            index + 1
-                        }
-                        _ => index,
+                    Some(at) => match key {
+                        "up" if at >= columns => at - columns,
+                        "down" if at + columns <= last => at + columns,
+                        "left" if at % columns > 0 => at - 1,
+                        "right" if at % columns + 1 < columns && at < last => at + 1,
+                        _ => at,
                     },
                     None if matches!(key, "down" | "right") => 0,
-                    None => lines.len() - 1,
+                    None => last,
                 };
-                let line = lines[next].clone();
+                let line = &lines[next];
                 if modifiers.shift {
-                    // Shift-arrow adds the tile it lands on; the grid keeps no range.
                     self.selected.insert(line.key.clone());
                     self.cursor = Some(line.key.clone());
                 } else {
-                    self.pick(&line, false, false);
+                    self.pick(line, false, false);
                 }
-                self.icons.reveal(
-                    &line.key,
-                    next,
-                    columns,
-                    self.icon_size as f32,
-                    self.list_room - self.pane_w(),
-                );
-                cx.notify();
+                let visible = self.list_room - self.pane_w();
+                self.icons
+                    .reveal(&line.key, next, columns, self.icon_size as f32, visible);
             }
-            "home" | "end" if self.view == ICON_VIEW => {
-                self.icons.scroll_to_end(key == "end");
-                cx.notify();
-            }
-            // The gallery is one strip: Left and Right walk it, Shift extends, Up and Down are
-            // nothing, Home and End only scroll it.
-            key @ ("left" | "right") if self.view == GALLERY_VIEW => {
+            "home" | "end" if self.view == ICON_VIEW => self.icons.scroll_to_end(key == "end"),
+            "left" | "right" if self.view == GALLERY_VIEW => {
                 let next = match current {
-                    Some(index) if key == "left" => index.saturating_sub(1),
-                    Some(index) => (index + 1).min(lines.len() - 1),
+                    Some(at) if key == "left" => at.saturating_sub(1),
+                    Some(at) => (at + 1).min(last),
                     None => 0,
                 };
-                let line = lines[next].clone();
-                self.pick(&line, modifiers.shift, false);
+                self.pick(&lines[next], modifiers.shift, false);
                 self.strip_reveal(next);
-                cx.notify();
             }
             "up" | "down" if self.view == GALLERY_VIEW => {}
             "home" | "end" if self.view == GALLERY_VIEW => {
@@ -660,64 +637,49 @@ impl FinderDemo {
                     px(0.)
                 };
                 self.strip.set_offset(point(x, px(0.)));
-                cx.notify();
             }
-            key @ ("up" | "down") => {
-                let step: isize = if key == "up" { -1 } else { 1 };
+            "up" | "down" => {
                 let next = match current {
-                    Some(index) => (index as isize + step).clamp(0, lines.len() as isize - 1),
-                    None if step > 0 => 0,
-                    None => lines.len() as isize - 1,
-                } as usize;
-                let line = lines[next].clone();
-                self.pick(&line, modifiers.shift, false);
-                self.reveal(&line.key);
-                cx.notify();
+                    Some(at) if key == "up" => at.saturating_sub(1),
+                    Some(at) => (at + 1).min(last),
+                    None if key == "down" => 0,
+                    None => last,
+                };
+                self.pick(&lines[next], modifiers.shift, false);
+                self.reveal(&lines[next].key);
             }
-            key @ ("right" | "left") if tree => {
-                self.disclose_selected(key == "right", modifiers.alt);
-                cx.notify();
-            }
-            "enter" => {
-                if let Some(line) = current.map(|index| lines[index].clone()) {
-                    self.renaming = Some(line.key);
-                    cx.notify();
-                }
-            }
-            // Tab walks the names everywhere but the browser, where Finder gives it nothing.
-            "tab" if self.view != COLUMN_VIEW => {
-                self.tab(modifiers.shift);
-                cx.notify();
-            }
+            "right" | "left" if tree => self.disclose_selected(key == "right", modifiers.alt),
+            "enter" => self.renaming = current.map(|at| lines[at].key.clone()),
+            "tab" if self.view != COLUMN_VIEW => self.tab(modifiers.shift),
             "home" | "end" | "pageup" | "pagedown" if tree => {
                 let (pads, _) = self.list_inset();
-                let last = pads + lines.len() - 1;
                 let page = (f32::from(window.viewport_size().height) / ROW_H) as usize;
                 let top = self.scroll.0.borrow().base_handle.logical_scroll_top().0;
-                let (index, strategy) = match key {
-                    "home" => (0, ScrollStrategy::Top),
-                    "end" => (last, ScrollStrategy::Top),
-                    "pageup" => (top.saturating_sub(page), ScrollStrategy::Top),
-                    _ => ((top + page).min(last), ScrollStrategy::Top),
+                let index = match key {
+                    "home" => 0,
+                    "end" => pads + last,
+                    "pageup" => top.saturating_sub(page),
+                    _ => (top + page).min(pads + last),
                 };
-                self.scroll.scroll_to_item(index, strategy);
-                cx.notify();
+                self.scroll.scroll_to_item(index, ScrollStrategy::Top);
             }
             _ if !modifiers.platform && !modifiers.control && !modifiers.alt => {
-                if let Some(typed) = event
+                let Some(typed) = event
                     .keystroke
                     .key_char
                     .as_deref()
                     .filter(|typed| typed.chars().all(|c| !c.is_control()))
-                {
-                    self.type_select(typed);
-                    cx.notify();
-                }
+                else {
+                    return;
+                };
+                self.type_select(typed);
             }
-            _ => {}
+            _ => return,
         }
         if self.view == COLUMN_VIEW {
             self.column_arrived(window, cx);
+        } else {
+            cx.notify();
         }
     }
 
@@ -791,7 +753,6 @@ impl FinderDemo {
         });
     }
 
-    /// The list's own width: its columns never shrink to fit, so the visible strip scrolls over them.
     pub(crate) fn list_content_w(&self) -> f32 {
         self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
     }
@@ -820,9 +781,7 @@ impl FinderDemo {
             .when(!banded && self.view != ICON_VIEW, |column| {
                 column.border_t_1().border_color(palette.separator)
             });
-        // The list starts under the sidebar and, as Finder's, stops at the pane until its columns
-        // no longer fit; only then does it run on beneath the pane and scroll sideways, the pane's
-        // width padded on so the last column can be scrolled clear of it.
+        // The list stops at the pane until its columns no longer fit, then runs on beneath it.
         let pane = self.pane_w();
         let band = (self.list_room - pane).max(self.list_content_w());
         let width = metrics.left + px(band + pane);
@@ -860,9 +819,8 @@ impl FinderDemo {
                 column.child(band_glass(px(pane), top))
             })
             .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
-            // A second scroller on the same handle, so the header clamps exactly as the rows do.
-            // It ends at the pane, as Finder's does even while the rows run beneath, and is the
-            // pane's width shorter so the two scroll the same distance.
+            // A second scroller on the same handle, the pane's width shorter, so header and rows
+            // clamp and scroll alike.
             .children(headers.map(|headers| {
                 axis_locked(
                     div()
@@ -887,7 +845,6 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// The pane's width while it shows, else nothing.
     pub(crate) fn pane_w(&self) -> f32 {
         if self.preview_shown() {
             self.preview_w
@@ -896,8 +853,7 @@ impl FinderDemo {
         }
     }
 
-    /// Tiles per row: Finder fills the whole width beside the sidebar, pane included, and
-    /// scrolls the grid sideways to show a tile the pane covers.
+    /// Tiles per row: the width beside the sidebar, pane included, since the grid scrolls under it.
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)
@@ -1022,7 +978,6 @@ fn main() {
     });
 }
 
-/// A Finder window at `start`, the `extra`th one stepped down and right of the first.
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
     let step = px(extra as f32 * 30.);
     cx.open_window(

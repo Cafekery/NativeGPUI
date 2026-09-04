@@ -13,7 +13,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use crate::FinderDemo;
 use crate::data::Line;
 use crate::palette::Palette;
-use crate::ui::{artwork, rename_field, tag_dot};
+use crate::ui::{artwork, click_kind, rename_field, tag_dot};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -53,7 +53,6 @@ impl Look {
 }
 
 #[derive(Default)]
-/// Where each icon-view item sits, and the drag in flight.
 pub(crate) struct Grid {
     placed: HashMap<SharedString, Point<Pixels>>,
     dragging: Option<SharedString>,
@@ -84,8 +83,7 @@ impl Grid {
         self.dragging = None;
     }
 
-    /// Scroll so this tile shows whole, sideways too when the pane covers it: `visible` is the
-    /// width left of the pane.
+    /// Scroll the tile whole into `visible`, the width left of the pane.
     pub(crate) fn reveal(
         &self,
         key: &SharedString,
@@ -113,7 +111,6 @@ impl Grid {
             .set_offset(point(px(-x.max(0.)), px(-y.max(0.))));
     }
 
-    /// Home and End: to the top or the bottom, the selection untouched.
     pub(crate) fn scroll_to_end(&self, end: bool) {
         let x = self.scroll.offset().x;
         let y = if end {
@@ -175,7 +172,6 @@ fn tile(
 
     let room = cell - 2. * LABEL_INSET - if tag.is_some() { 12. } else { 0. };
     let caption = match editor {
-        // Finder's field hugs the name rather than spanning the cell.
         Some(editor) => {
             let fit = line.row.name.chars().count() as f32 * LABEL_FONT * 0.58 + 24.;
             div().w(px(fit.min(room))).child(editor)
@@ -265,8 +261,7 @@ impl FinderDemo {
             .map(|(_, at)| f32::from(at.y) + cell)
             .fold(cell, f32::max);
 
-        // The grid runs on beneath the pane, the pane's width padded on so the last column can
-        // be scrolled clear of it.
+        // The grid runs on beneath the pane, padded by its width so the last column clears it.
         let width = GRID_X + columns as f32 * cell + self.pane_w();
         let mut canvas = div()
             .id("ng.finder.icons")
@@ -342,14 +337,7 @@ impl FinderDemo {
             let clicked = line.clone();
             let this_click = this.clone();
             canvas = canvas.child(slot.on_click(move |event: &ClickEvent, window, cx| {
-                let (extend, toggle, twice) = match event {
-                    ClickEvent::Mouse(mouse) => (
-                        mouse.up.modifiers.shift,
-                        mouse.up.modifiers.platform,
-                        mouse.up.click_count >= 2,
-                    ),
-                    _ => (false, false, false),
-                };
+                let (extend, toggle, twice) = click_kind(event);
                 let line = clicked.clone();
                 this_click
                     .update(cx, |this: &mut FinderDemo, cx| {

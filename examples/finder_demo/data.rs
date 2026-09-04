@@ -79,7 +79,6 @@ impl Face {
             F::Folder => Some(FileType::Folder),
             F::Program => Some(FileType::Extension("app")),
             F::Volume | F::Device => None,
-            // A name without an extension gets Finder's generic document icon, not a symbol.
             _ => Some(extension.map_or(FileType::Uti("public.data"), FileType::Extension)),
         }
     }
@@ -112,8 +111,7 @@ pub(crate) type Src = (&'static str, Face, u64, u64, &'static str);
 
 pub(crate) const RELATIVE: u64 = 1_000_000_000_000;
 
-/// A stamp meaning `days` calendar days before launch at `hour:minute`, so rows keep landing on
-/// Finder's `Today` and `Yesterday` tiers as a frozen literal never could.
+/// `days` calendar days before launch at `hour:minute`, so rows keep landing on `Today`.
 pub(crate) const fn ago(days: u64, hour: u64, minute: u64) -> u64 {
     RELATIVE + days * 10_000 + hour * 100 + minute
 }
@@ -693,7 +691,6 @@ pub(crate) fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64,
     )
 }
 
-/// The date a stamp names, in the user's own calendar and timezone, `back` calendar days earlier.
 pub(crate) fn stamp_date(
     calendar: &NSCalendar,
     today: (i64, i64, i64),
@@ -712,7 +709,6 @@ pub(crate) fn stamp_date(
     calendar.dateFromComponents(&parts)
 }
 
-/// A day alone, `Mar 19, 2022`, as Finder dates a range over a selection.
 pub(crate) fn day_string(seconds: f64) -> String {
     let formatter = NSDateFormatter::new();
     formatter.setDateStyle(NSDateFormatterStyle::MediumStyle);
@@ -738,7 +734,6 @@ pub(crate) struct Row {
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
     pub(crate) created: SharedString,
-    /// The same two moments as seconds since the reference date, for ranges over a selection.
     pub(crate) modified_at: f64,
     pub(crate) created_at: f64,
     pub(crate) dimensions: Option<SharedString>,

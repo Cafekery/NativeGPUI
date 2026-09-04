@@ -53,8 +53,6 @@ const GAP_ICON_LABEL: f32 = 10.5;
 const BOTTOM_INSET: f32 = 16.;
 const GAP_TOP: f32 = 45.;
 const GAP_SQUARE_TEXT: f32 = 62.;
-/// The gallery card's header, measured on Finder's: a 48-point icon 26 down, the name 10 beside
-/// it, the rows 14 below.
 const HEADER_ICON: f32 = 48.;
 const GAP_HEADER: f32 = 26.;
 const GAP_HEADER_ICON: f32 = 10.;
@@ -63,9 +61,8 @@ const GAP_HEADER_HEAD: f32 = 14.;
 const ACTION_SLOT_W: f32 = 75.5;
 const ACTION_ICON_SIZE: f32 = 15.;
 
-/// The pane is a borderless child window laid over the list. A material in its own window samples
-/// the rows behind it, and GPUI still paints the card over that material; in one window a blur of
-/// GPUI content and GPUI content over the blur cannot both come out of the one Metal layer.
+/// A borderless child window over the list: one Metal layer cannot both blur GPUI content and
+/// paint GPUI content over that blur, so the card needs a window of its own.
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
@@ -234,7 +231,6 @@ fn open_preview_window(
 }
 
 impl FinderDemo {
-    /// Keep the pane window over the list column, or close it when the pane is hidden.
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
         let metrics = self.metrics();
         let viewport = window.viewport_size();
@@ -292,9 +288,7 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's Name column takes up whatever the window gives or takes: it fills the list at
-    /// first, shrinks to its minimum as the list narrows, and only grows again once the columns
-    /// fit beside the pane once more.
+    /// The Name column takes whatever width the window gives or takes, down to its minimum.
     fn fit_name_column(&mut self) {
         let span = self.list_room
             - if self.preview_shown() {
@@ -350,8 +344,6 @@ impl FinderDemo {
         self.card_element(card, palette, content, finder)
     }
 
-    /// Finder's card for a selection of several: their icons in a stack, a count, the kinds and
-    /// the size together, each date as the span from the earliest to the latest, and every tag.
     fn many_card(&self, content: f32) -> Card {
         let lines: Vec<Line> = self
             .focused_lines()
@@ -411,7 +403,6 @@ impl FinderDemo {
         }
     }
 
-    /// A folder weighs what it holds.
     fn total_bytes(&self, row: &Row) -> u64 {
         match row.opens.and_then(|id| self.store.get(id)) {
             Some(folder) => folder.rows.iter().map(|row| self.total_bytes(row)).sum(),
@@ -419,8 +410,6 @@ impl FinderDemo {
         }
     }
 
-    /// The first three selected items' icons, fanned as Finder stacks them, drawn once per
-    /// selection and kept.
     pub(crate) fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
         let icons: Vec<Symbol> = lines
             .iter()
@@ -469,7 +458,7 @@ impl FinderDemo {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
         let hairline = system_color(SystemColor::QuaternarySystemFill);
-        // In gallery view Finder renames in the card's title, there being no label to edit.
+        // Gallery view renames in the card's title, there being no label to edit.
         let editing = (self.view == GALLERY_VIEW && !card.many)
             .then(|| self.cursor_line())
             .flatten()
@@ -503,7 +492,6 @@ impl FinderDemo {
             .pb(px(BOTTOM_INSET));
         let mut lower = div().flex_none().flex().flex_col();
         if self.view == GALLERY_VIEW {
-            // Finder's gallery card is headed by a small icon beside the name, not a hero.
             top = top.child(div().h(px(GAP_HEADER)).flex_none()).child(
                 div()
                     .flex()
@@ -666,7 +654,6 @@ impl FinderDemo {
     }
 }
 
-/// What the pane's card shows, whichever way it was gathered.
 struct Card {
     hero: AnyElement,
     title: SharedString,
@@ -674,24 +661,21 @@ struct Card {
     rows: Vec<(&'static str, SharedString)>,
     show_more: bool,
     tags: Vec<usize>,
-    /// Several items: tags as pills and `Add Tag`, not one tag's dot and `Add Tags…`.
     many: bool,
     actions: &'static [(&'static str, &'static str)],
 }
 
-/// Each icon's size as a share of the hero square.
 const STACK_ICON: f32 = 0.62;
 
-/// Back to front: degrees of tilt, offset in shares of the square, scale. Finder fans a
-/// selection's icons this way.
+/// Back to front: tilt in degrees, x and y offsets in shares of the square, scale.
 const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
     (-10., 0.03, -0.025, 0.9),
     (7., -0.025, 0., 0.95),
     (-3., 0., 0.02, 1.),
 ];
 
-/// The icons composed into one square image, `side` device pixels across, the first icon in
-/// front. Straight-alpha BGRA in and out, which is what the workspace icons come as.
+/// The icons fanned into one square image, `side` device pixels across, the first in front.
+/// Straight-alpha BGRA in and out, as the workspace icons come.
 fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     if icons.is_empty() {
         return None;
