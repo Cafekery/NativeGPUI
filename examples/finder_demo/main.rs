@@ -1,6 +1,7 @@
 //! A Finder front end: real macOS chrome, an invented filesystem, `NG_QUIT=<frames>` to exit.
 
 mod column;
+mod commands;
 mod data;
 mod gallery;
 mod header;
@@ -24,7 +25,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
     Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
-    Window, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, relative, size,
+    Window, WindowBounds, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, FileType, SystemTheme};
@@ -36,6 +37,7 @@ use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::commands::{Back, CopyNames, Forward, SelectAll};
 use crate::data::{Column, Folder, Line, Row, build_store};
 use crate::header::{
     ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
@@ -54,8 +56,6 @@ pub(crate) const COLUMN_VIEW: usize = 2;
 pub(crate) const GALLERY_VIEW: usize = 3;
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
-
-actions!(finder_demo, [SelectAll, CopyNames, Back, Forward]);
 
 pub(crate) struct FinderDemo {
     pub(crate) store: HashMap<&'static str, Folder>,
@@ -92,6 +92,7 @@ pub(crate) struct FinderDemo {
     pub(crate) list_span: f32,
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
+    pub(crate) show_hidden: bool,
     pub(crate) icon_size: f64,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
@@ -140,6 +141,7 @@ impl FinderDemo {
             list_span: f32::NAN,
             path_bar_shown: true,
             status_bar_shown: false,
+            show_hidden: false,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
@@ -207,15 +209,24 @@ impl FinderDemo {
             .unwrap_or(holder)
     }
 
-    pub(crate) fn retitle(&self, window: &mut Window) {
-        let title = self.store.get(self.target()).map_or_else(
+    pub(crate) fn crumb_path(&self) -> String {
+        self.store.get(self.target()).map_or_else(
             || String::from("Finder"),
             |folder| match folder.crumbs.split_first() {
                 Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
                 _ => folder.title.to_string(),
             },
-        );
-        window.set_window_title(&title);
+        )
+    }
+
+    pub(crate) fn retitle(&self, window: &mut Window) {
+        window.set_window_title(&self.crumb_path());
+    }
+
+    pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_view(view);
+        self.retitle(window);
+        cx.notify();
     }
 
     /// The folder each breadcrumb stands for, root first.
@@ -381,7 +392,7 @@ impl FinderDemo {
         }
     }
 
-    fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
+    pub(crate) fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
         self.disclose(key, open);
         let Some(folder) = self.store.get(into) else {
             return;
@@ -511,6 +522,7 @@ impl FinderDemo {
         let mut rows: Vec<&Row> = folder
             .rows
             .iter()
+            .filter(|row| self.show_hidden || !row.name.starts_with('.'))
             .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query))
             .collect();
         rows.sort_by(|a, b| self.order(a, b));
@@ -954,6 +966,7 @@ impl Render for FinderDemo {
                         .on_action(cx.listener(Self::copy_names))
                         .on_action(cx.listener(Self::back))
                         .on_action(cx.listener(Self::forward))
+                        .map(|element| self.menu_bar_actions(element, cx))
                         .on_key_down(cx.listener(Self::on_key))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -989,6 +1002,7 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
+        commands::install(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
         cx.bind_keys([
             KeyBinding::new("cmd-a", SelectAll, Some(LIST_CONTEXT)),
