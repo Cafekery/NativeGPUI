@@ -194,8 +194,9 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &OpenInNewWindow, window, cx| {
                 this.run_menu(Act::OpenWindow, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &GetInfo, window, cx| {
-                this.run_menu(Act::Inspector, window, cx);
+            .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, cx));
             }))
             .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
                 this.run_menu(Act::Inspector, window, cx);
