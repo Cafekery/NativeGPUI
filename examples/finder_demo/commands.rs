@@ -16,6 +16,7 @@ actions!(
         CopyPath,
         DeselectAll,
         Duplicate,
+        DuplicateExactly,
         Forward,
         GetInfo,
         GoApplications,
@@ -43,6 +44,7 @@ actions!(
         ToggleSidebar,
         ToggleStatusBar,
         Trash,
+        DeleteImmediately,
         Up,
         ViewColumns,
         ViewGallery,
@@ -66,9 +68,15 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::new("Show Inspector", ShowInspector).key("cmd-alt-i"),
             MenuCommand::new("Rename", RenameSelection),
             MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
+            MenuCommand::new("Duplicate Exactly", DuplicateExactly)
+                .key("cmd-alt-d")
+                .option_alternate(),
             MenuCommand::new("Quick Look", QuickLook).key("cmd-y"),
             MenuCommand::separator(),
             MenuCommand::new("Move to Trash", Trash).key("cmd-backspace"),
+            MenuCommand::new("Delete Immediately…", DeleteImmediately)
+                .key("cmd-alt-backspace")
+                .option_alternate(),
             MenuCommand::separator(),
         ],
     );
@@ -134,8 +142,9 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
                 this.run_menu(Act::NewFolder, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &NewFolderWithSelection, window, cx| {
-                this.run_menu(Act::NewFolder, window, cx);
+            .on_action(cx.listener(|this, _: &NewFolderWithSelection, _, cx| {
+                this.new_folder_with_selection();
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
                 this.run_menu(Act::Open, window, cx);
@@ -154,6 +163,12 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &Duplicate, window, cx| {
                 this.run_menu(Act::Duplicate, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateExactly, window, cx| {
+                this.run_menu(Act::Duplicate, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DeleteImmediately, window, cx| {
+                this.run_menu(Act::Trash, window, cx);
             }))
             .on_action(cx.listener(|this, _: &Trash, window, cx| {
                 this.run_menu(Act::Trash, window, cx);

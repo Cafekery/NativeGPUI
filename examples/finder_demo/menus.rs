@@ -20,6 +20,7 @@ const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Col
 pub(crate) enum Act {
     Nothing,
     Swatch,
+    NewFolderWith,
     NewFolder,
     Inspector,
     Sort(Column),
@@ -95,8 +96,8 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let mut menu = Menu::default();
     if many {
         menu.item(
-            MenuEntry::item(format!("New Folder with Selection ({chosen} Items)")).disabled(),
-            Act::Nothing,
+            MenuEntry::item(format!("New Folder with Selection ({chosen} Items)")),
+            Act::NewFolderWith,
         );
     }
     if folder {
@@ -166,7 +167,10 @@ impl FinderDemo {
                 Some(tag) => self.tag_selection(tag),
                 None => return,
             },
-            Act::NewFolder => self.new_folder(),
+            Act::NewFolder => {
+                self.new_folder();
+            }
+            Act::NewFolderWith => self.new_folder_with_selection(),
             Act::Inspector => self.preview = true,
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),
@@ -180,15 +184,17 @@ impl FinderDemo {
         cx.notify();
     }
 
-    fn new_folder(&mut self) {
+    pub(crate) fn new_folder(&mut self) -> Option<SharedString> {
+        self.make_folder("untitled folder")
+    }
+
+    fn make_folder(&mut self, stem: &str) -> Option<SharedString> {
         let here = self.target();
-        let Some(folder) = self.store.get(here) else {
-            return;
-        };
-        let mut name = String::from("untitled folder");
+        let folder = self.store.get(here)?;
+        let mut name = String::from(stem);
         let mut copy = 2;
         while folder.rows.iter().any(|row| row.name.as_ref() == name) {
-            name = format!("untitled folder {copy}");
+            name = format!("{stem} {copy}");
             copy += 1;
         }
         let title: &'static str = Box::leak(name.clone().into_boxed_str());
@@ -219,7 +225,43 @@ impl FinderDemo {
         self.selected = HashSet::from([key.clone()]);
         self.cursor = Some(key.clone());
         self.anchor = Some(key.clone());
-        self.renaming = Some(key);
+        self.renaming = Some(key.clone());
+        Some(key)
+    }
+
+    /// Finder's ⌃⌘N: the chosen rows move into a folder made for them.
+    pub(crate) fn new_folder_with_selection(&mut self) {
+        let here = self.target();
+        let chosen = self.selected.clone();
+        if chosen.is_empty() {
+            return;
+        }
+        let Some(key) = self.make_folder("New Folder With Items") else {
+            return;
+        };
+        let into: &'static str = match self.store.get(here).and_then(|folder| {
+            folder
+                .rows
+                .iter()
+                .find(|row| SharedString::from(format!("{here}/{}", row.name)) == key)
+                .and_then(|row| row.opens)
+        }) {
+            Some(into) => into,
+            None => return,
+        };
+        let moved: Vec<Row> = match self.store.get_mut(here) {
+            Some(folder) => {
+                let (moved, kept) = folder.rows.drain(..).partition(|row| {
+                    chosen.contains(&SharedString::from(format!("{here}/{}", row.name)))
+                });
+                folder.rows = kept;
+                moved
+            }
+            None => return,
+        };
+        if let Some(folder) = self.store.get_mut(into) {
+            folder.rows = moved;
+        }
     }
 
     fn duplicate_selection(&mut self) {
