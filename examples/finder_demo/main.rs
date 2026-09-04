@@ -833,6 +833,8 @@ impl FinderDemo {
                     .bottom_0()
                     .left_0()
                     .right(px(pane))
+                    // Only the list view reaches here unshifted; the others are already inset.
+                    .when(banded, |bar_row| bar_row.pl(metrics.left))
                     .child(bar)
             }))
             // A second scroller on the same handle, the pane's width shorter, so header and rows
@@ -912,9 +914,7 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self
-            .path_bar_shown
-            .then(|| self.path_bar(&palette, metrics));
+        let path_bar = self.path_bar_shown.then(|| self.path_bar(&palette, window));
         let status_bar = self.status_bar(&palette, cx);
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),

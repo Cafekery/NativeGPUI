@@ -1,6 +1,5 @@
 use block2::RcBlock;
-use gpui::{AnyElement, FontWeight, SharedString, Window, div, prelude::*, px};
-use native_gpui::sidebar::SidebarMetrics;
+use gpui::{AnyElement, FontWeight, SharedString, TextRun, Window, div, hsla, prelude::*, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
@@ -39,6 +38,7 @@ pub(crate) const GRID_BOX_W: f64 = 22.;
 
 pub(crate) const BAR_H: f32 = 26.;
 pub(crate) const PATH_H: f32 = 28.;
+const CHEVRON_W: f32 = 8.;
 const CRUMB_INSET: f32 = 16.;
 const CRUMB_GAP: f32 = 5.;
 
@@ -325,14 +325,15 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn path_bar(&self, palette: &Palette, metrics: SidebarMetrics) -> AnyElement {
+    pub(crate) fn path_bar(&self, palette: &Palette, window: &Window) -> AnyElement {
         let crumbs: &[&str] = self.folder().map_or(&[], |folder| folder.crumbs);
+        let named = self.crumb_labels(crumbs, window);
         let mut trail = div()
             .size_full()
             .flex()
             .items_center()
             .gap(px(CRUMB_GAP))
-            .pl(metrics.left + px(CRUMB_INSET))
+            .pl(px(CRUMB_INSET))
             .pr(px(CRUMB_INSET))
             .text_size(tokens::small_system_font_size())
             .text_color(palette.secondary);
@@ -353,9 +354,12 @@ impl FinderDemo {
                 div()
                     .flex()
                     .items_center()
+                    .min_w(px(CRUMB_ICON))
                     .gap(px(CRUMB_GAP))
                     .child(crumb_icon(index == 0 && crumbs.len() > 1))
-                    .child(*crumb),
+                    .when(named[index], |crumb_row| {
+                        crumb_row.child(div().min_w(px(0.)).text_ellipsis().child(*crumb))
+                    }),
             );
         }
 
@@ -375,6 +379,52 @@ impl FinderDemo {
             )
             .child(trail)
             .into_any_element()
+    }
+
+    /// Which crumbs keep their name: Finder drops them from the left, leaving bare icons, until
+    /// the trail fits, and truncates the last name only when it is the one left over.
+    fn crumb_labels(&self, crumbs: &[&str], window: &Window) -> Vec<bool> {
+        let mut named = vec![true; crumbs.len()];
+        let font = tokens::system_font(FontWeight::NORMAL);
+        let size = tokens::small_system_font_size();
+        let run = TextRun {
+            len: 0,
+            font,
+            color: hsla(0., 0., 0., 1.),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let width = |text: &str| {
+            let mut run = run.clone();
+            run.len = text.len();
+            f32::from(
+                window
+                    .text_system()
+                    .shape_line(SharedString::from(text.to_string()), size, &[run], None)
+                    .width,
+            )
+        };
+        let labels: Vec<f32> = crumbs.iter().map(|crumb| width(crumb)).collect();
+        let room = self.list_room - self.pane_w() - 2. * CRUMB_INSET;
+        let trail = |named: &[bool]| {
+            let icons = crumbs.len() as f32 * (CRUMB_ICON + CRUMB_GAP);
+            let chevrons = (crumbs.len().saturating_sub(1)) as f32 * (CHEVRON_W + CRUMB_GAP + 1.);
+            let names: f32 = labels
+                .iter()
+                .zip(named)
+                .filter(|(_, keep)| **keep)
+                .map(|(width, _)| width + CRUMB_GAP)
+                .sum();
+            icons + chevrons + names
+        };
+        for index in 0..named.len().saturating_sub(1) {
+            if trail(&named) <= room {
+                break;
+            }
+            named[index] = false;
+        }
+        named
     }
 
     pub(crate) fn status_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
