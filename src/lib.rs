@@ -35,7 +35,9 @@ pub use bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeHost, NativeRead, NativeValue, Slot,
     Target, ValueKind, element_key, wire,
 };
-pub use bridge::menus::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus};
+pub use bridge::menus::{
+    MenuCommand, MenuSection, add_menu, extend_menu, install_menus, prepend_menu,
+};
 pub use bridge::root::{NativeRoot, native_root, window_options};
 pub use chrome::sidebar::*;
 pub use chrome::window_chrome::*;
