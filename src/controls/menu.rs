@@ -17,8 +17,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSImage,
-    NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition, NSView,
+    NSBox, NSBoxType, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
+    NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
@@ -145,6 +145,43 @@ pub struct MenuView {
     build: Rc<dyn Fn(MainThreadMarker) -> Retained<NSView>>,
 }
 
+struct SwatchIvars {
+    count: usize,
+    pick: Rc<dyn Fn(usize)>,
+}
+
+define_class!(
+    /// Finder's tag row: the dots pick, then the menu closes as if the row itself was chosen.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSwatchRow"]
+    #[ivars = SwatchIvars]
+    struct SwatchRow;
+
+    impl SwatchRow {
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            let point = self.convertPoint_fromView(event.locationInWindow(), None);
+            let step = SWATCH_DIAMETER + SWATCH_GAP;
+            let index = ((point.x - SWATCH_INSET).max(0.) / step) as usize;
+            if index >= self.ivars().count {
+                return;
+            }
+            (self.ivars().pick)(index);
+            let Some(item) = self.enclosingMenuItem() else {
+                return;
+            };
+            if let (Some(target), Some(action)) = (item.target(), item.action()) {
+                let _: () =
+                    unsafe { msg_send![&*target, performSelector: action, withObject: &*item] };
+            }
+            if let Some(menu) = unsafe { item.menu() } {
+                menu.cancelTracking();
+            }
+        }
+    }
+);
+
 impl MenuView {
     /// `size` is applied after `build`; a zero-frame view row is present, pickable and invisible.
     pub fn new(
@@ -162,6 +199,23 @@ impl MenuView {
             size,
             build: Rc::new(build),
         }
+    }
+
+    /// A strip of round colour swatches at Finder's tag metrics, reporting the dot that was hit.
+    pub fn swatches_picking(
+        colors: impl IntoIterator<Item = Hsla>,
+        pick: impl Fn(usize) + 'static,
+    ) -> Self {
+        let colors: Vec<Hsla> = colors.into_iter().collect();
+        let mut hasher = DefaultHasher::new();
+        colors.hash(&mut hasher);
+        let width = swatch_row_width(colors.len());
+        let pick: Rc<dyn Fn(usize)> = Rc::new(pick);
+        Self::new(
+            hasher.finish(),
+            size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
+            move |mtm| swatch_row_picking(mtm, &colors, pick.clone()),
+        )
     }
 
     /// A strip of round colour swatches at Finder's tag metrics.
@@ -212,6 +266,23 @@ fn swatch_row_width(count: usize) -> f64 {
         n => n as f64 * SWATCH_DIAMETER + (n - 1) as f64 * SWATCH_GAP,
     };
     SWATCH_INSET * 2. + dots
+}
+
+fn swatch_row_picking(
+    mtm: MainThreadMarker,
+    colors: &[Hsla],
+    pick: Rc<dyn Fn(usize)>,
+) -> Retained<NSView> {
+    let row = swatch_row(mtm, colors);
+    let host = SwatchRow::alloc(mtm).set_ivars(SwatchIvars {
+        count: colors.len(),
+        pick,
+    });
+    let host: Retained<SwatchRow> = unsafe { msg_send![super(host), initWithFrame: row.frame()] };
+    for view in row.subviews().iter() {
+        host.addSubview(&view);
+    }
+    Retained::into_super(host)
 }
 
 fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla]) -> Retained<NSView> {
