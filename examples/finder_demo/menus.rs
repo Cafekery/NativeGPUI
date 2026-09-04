@@ -23,6 +23,7 @@ pub(crate) enum Act {
     NewFolderWith,
     Groups,
     ViewOptions,
+    GetInfo,
     NewFolder,
     Inspector,
     Sort(Column),
@@ -115,7 +116,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
     menu.separator();
-    menu.item(MenuEntry::item("Get Info"), Act::Inspector);
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
     menu.item(
         MenuEntry::item(if many { "Rename…" } else { "Rename" }),
         Act::Rename,
@@ -179,6 +180,10 @@ impl FinderDemo {
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
             Act::Inspector => self.preview = true,
+            Act::GetInfo => {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, cx));
+            }
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),
             Act::OpenWindow => self.open_in_window(window, cx),

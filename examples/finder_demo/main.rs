@@ -6,6 +6,7 @@ mod data;
 mod gallery;
 mod header;
 mod icon;
+mod info;
 mod list;
 mod menus;
 mod options;
