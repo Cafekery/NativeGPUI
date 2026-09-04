@@ -29,8 +29,8 @@ use crate::bridge::host::{
 use crate::controls::fitted;
 use crate::system::color::to_nscolor;
 
-/// One row of a native menu. A separator occupies an index as it does in `NSMenu`. Submenu rows
-/// and view rows are never reported.
+/// One row of a native menu. A separator occupies an index as it does in `NSMenu`; view rows are
+/// never reported.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum MenuEntry {
     Item {
@@ -97,8 +97,8 @@ impl MenuEntry {
         self
     }
 
-    /// Nests a real `NSMenu` under this row. Its rows carry no action, so a pick inside it reports
-    /// nothing rather than an index into the outer list.
+    /// Nests a real `NSMenu` under this row. Its rows report like any other, by their depth-first
+    /// position in the whole tree.
     pub fn submenu(mut self, entries: impl IntoIterator<Item = MenuEntry>) -> Self {
         if let Self::Item { submenu, .. } = &mut self {
             *submenu = entries.into_iter().collect();
@@ -257,12 +257,23 @@ fn nsstring_is(text: &NSString, want: &str) -> bool {
 }
 
 /// Brings `menu` in line with `entries` in place: `removeAllItems` would close an open menu.
-/// Each item's tag is its index; `action` goes on exactly the rows that can report one.
+/// Each item's tag is its depth-first position, submenu rows included; `action` goes on exactly
+/// the rows that can report one.
 pub(crate) fn sync_menu(
     mtm: MainThreadMarker,
     menu: &NSMenu,
     entries: &[MenuEntry],
     action: Option<(&AnyObject, Sel)>,
+) {
+    sync_level(mtm, menu, entries, action, &mut 0);
+}
+
+fn sync_level(
+    mtm: MainThreadMarker,
+    menu: &NSMenu,
+    entries: &[MenuEntry],
+    action: Option<(&AnyObject, Sel)>,
+    next: &mut isize,
 ) {
     let want = entries.len() as isize;
     while menu.numberOfItems() > want {
@@ -282,8 +293,10 @@ pub(crate) fn sync_menu(
         }
 
         let item = menu.itemAtIndex(index).expect("row exists by now");
-        if item.tag() != index {
-            item.setTag(index);
+        let tag = *next;
+        *next += 1;
+        if item.tag() != tag {
+            item.setTag(tag);
         }
 
         let MenuEntry::Item {
@@ -355,12 +368,18 @@ pub(crate) fn sync_menu(
                 }
             }
         } else {
-            sync_submenu(mtm, &item, submenu);
+            sync_submenu(mtm, &item, submenu, action, next);
         }
     }
 }
 
-fn sync_submenu(mtm: MainThreadMarker, item: &NSMenuItem, entries: &[MenuEntry]) {
+fn sync_submenu(
+    mtm: MainThreadMarker,
+    item: &NSMenuItem,
+    entries: &[MenuEntry],
+    action: Option<(&AnyObject, Sel)>,
+    next: &mut isize,
+) {
     let sub = match item.submenu() {
         Some(sub) => sub,
         None => {
@@ -378,7 +397,7 @@ fn sync_submenu(mtm: MainThreadMarker, item: &NSMenuItem, entries: &[MenuEntry])
     if sub.autoenablesItems() {
         sub.setAutoenablesItems(false);
     }
-    sync_menu(mtm, &sub, entries, None);
+    sync_level(mtm, &sub, entries, action, next);
 }
 
 fn sync_view(mtm: MainThreadMarker, item: &NSMenuItem, view: &MenuView) {
@@ -645,7 +664,7 @@ impl NativeContextMenu {
         self
     }
 
-    /// The chosen row's index into the entries, separators counted.
+    /// The chosen row's depth-first index into the entries, separators and submenu rows counted.
     pub fn on_select(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(move |index, window, cx| {
             handler(&index, window, cx)
