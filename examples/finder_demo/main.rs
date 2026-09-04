@@ -6,6 +6,7 @@ mod gallery;
 mod header;
 mod icon;
 mod list;
+mod menus;
 mod palette;
 mod prefs;
 mod preview;
@@ -956,8 +957,13 @@ impl Render for FinderDemo {
                                 .flex()
                                 .overflow_hidden()
                                 .when(!list_view, |row| row.pl(metrics.left))
-                                .child(self.list_column(
-                                    body, headers, path_bar, &palette, metrics, corner,
+                                .child(menus::attach(
+                                    "ng.finder.background",
+                                    menus::background(self),
+                                    cx.entity().downgrade(),
+                                    self.list_column(
+                                        body, headers, path_bar, &palette, metrics, corner,
+                                    ),
                                 )),
                         )
                         .when(self.status_bar_shown, |c| {

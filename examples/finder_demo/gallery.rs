@@ -4,6 +4,7 @@ use gpui::{AnyElement, ClickEvent, Window, div, point, prelude::*, px};
 
 use crate::FinderDemo;
 use crate::data::Line;
+use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, click_kind};
 
@@ -54,8 +55,9 @@ impl FinderDemo {
             .children(lines.into_iter().enumerate().map(|(index, line)| {
                 let is_selected = self.selected.contains(&line.key);
                 let this = this.clone();
+                let this_menu = this.clone();
                 let clicked = line.clone();
-                div()
+                let cell = div()
                     .id(("ng.finder.frame", index))
                     .w(px(STRIP_CELL))
                     .h(px(STRIP_CELL))
@@ -77,7 +79,8 @@ impl FinderDemo {
                             cx.notify();
                         })
                         .ok();
-                    })
+                    });
+                row_menu(("ng.finder.strip.menu", index), &line, this_menu, cell, cx)
             }));
 
         div()

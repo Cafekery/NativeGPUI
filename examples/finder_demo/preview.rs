@@ -285,7 +285,7 @@ impl FinderDemo {
     }
 
     /// The Name column takes whatever width the window gives or takes, down to its minimum.
-    fn fit_name_column(&mut self) {
+    pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room
             - if self.preview_shown() {
                 self.preview_w

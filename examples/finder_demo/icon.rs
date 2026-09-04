@@ -12,6 +12,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::FinderDemo;
 use crate::data::Line;
+use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, click_kind, rename_field, tag_dot};
 
@@ -336,7 +337,7 @@ impl FinderDemo {
 
             let clicked = line.clone();
             let this_click = this.clone();
-            canvas = canvas.child(slot.on_click(move |event: &ClickEvent, window, cx| {
+            let tile = slot.on_click(move |event: &ClickEvent, window, cx| {
                 let (extend, toggle, twice) = click_kind(event);
                 let line = clicked.clone();
                 this_click
@@ -348,7 +349,14 @@ impl FinderDemo {
                         cx.notify();
                     })
                     .ok();
-            }));
+            });
+            canvas = canvas.child(row_menu(
+                ("ng.finder.tile.menu", index),
+                &line,
+                this.clone(),
+                tile,
+                cx,
+            ));
         }
 
         let dropped = layout.clone();
