@@ -1004,6 +1004,7 @@ impl ContentPane {
 }
 
 struct CellIvars {
+    group: bool,
     badge: RefCell<Option<Retained<NSTextField>>>,
     eject: RefCell<Option<Retained<NSButton>>>,
 }
@@ -1030,6 +1031,19 @@ define_class!(
         #[unsafe(method(layout))]
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
+
+            // AppKit restyles a group row's label as it displays, so both the drop and the
+            // colour have to be re-applied after its own layout, not once at build time.
+            if self.ivars().group {
+                if let Some(title) = unsafe { self.textField() } {
+                    let frame = title.frame();
+                    title.setFrameOrigin(NSPoint::new(
+                        frame.origin.x,
+                        frame.origin.y - GROUP_BASELINE_DROP,
+                    ));
+                    title.setTextColor(Some(&NSColor::tertiaryLabelColor()));
+                }
+            }
 
             // Never hide the image view: that collapses AppKit's icon box and shifts the label.
             let Some(trailing) = self.ivars().trailing() else {
@@ -1070,6 +1084,8 @@ fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 }
 
 const EJECT_POINTS: f64 = 10.0;
+/// Finder sets its section headers on the row's baseline, where AppKit centres them.
+const GROUP_BASELINE_DROP: f64 = 2.0;
 
 fn make_cell(
     mtm: MainThreadMarker,
@@ -1078,6 +1094,7 @@ fn make_cell(
     target: &AnyObject,
 ) -> Retained<SidebarCell> {
     let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
+        group: identifier == ID_GROUP,
         badge: RefCell::new(None),
         eject: RefCell::new(None),
     });
@@ -1111,7 +1128,7 @@ fn make_cell(
     eject.setImagePosition(NSCellImagePosition::ImageOnly);
     eject.setImage(
         NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("eject"),
+            &NSString::from_str("eject.fill"),
             Some(&NSString::from_str("Eject")),
         )
         .and_then(|image| {
@@ -1124,7 +1141,7 @@ fn make_cell(
         })
         .as_deref(),
     );
-    eject.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
+    eject.setContentTintColor(Some(&NSColor::quaternaryLabelColor()));
     eject.setHidden(true);
     unsafe {
         eject.setTarget(Some(target));
