@@ -353,9 +353,9 @@ impl FinderDemo {
             canvas = canvas.child(row_menu(
                 ("ng.finder.tile.menu", index),
                 &line,
+                &self.selected,
                 this.clone(),
                 tile,
-                cx,
             ));
         }
 

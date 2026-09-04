@@ -236,9 +236,9 @@ impl FinderDemo {
                 row_menu(
                     ("ng.finder.column.menu", index * 512 + row),
                     &line,
+                    &self.selected,
                     this_menu,
                     cell,
-                    cx,
                 )
             }))
             .into_any_element()

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use gpui::{App, ClipboardItem, Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
+use gpui::{ClipboardItem, Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
 use native_gpui::tokens::system_color;
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
@@ -52,15 +52,11 @@ pub(crate) fn attach(
 pub(crate) fn row_menu(
     id: impl Into<ElementId>,
     line: &Line,
+    selected: &HashSet<SharedString>,
     this: WeakEntity<FinderDemo>,
     child: impl IntoElement,
-    cx: &App,
 ) -> NativeContextMenu {
-    let menu = this
-        .upgrade()
-        .map(|demo| item(demo.read(cx), line))
-        .unwrap_or_default();
-    attach(id, menu, this, child)
+    attach(id, item(selected, line), this, child)
 }
 
 /// A right-click on empty space.
@@ -84,9 +80,9 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
 }
 
 /// A right-click on a row: Finder names the row, or counts the selection when the row is in it.
-pub(crate) fn item(demo: &FinderDemo, line: &Line) -> Menu {
-    let chosen = demo.selected.len();
-    let many = chosen > 1 && demo.selected.contains(&line.key);
+pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
+    let chosen = selected.len();
+    let many = chosen > 1 && selected.contains(&line.key);
     let folder = line.row.opens.is_some();
     let mut menu = Menu::default();
     if many {

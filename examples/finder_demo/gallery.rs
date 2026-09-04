@@ -80,7 +80,13 @@ impl FinderDemo {
                         })
                         .ok();
                     });
-                row_menu(("ng.finder.strip.menu", index), &line, this_menu, cell, cx)
+                row_menu(
+                    ("ng.finder.strip.menu", index),
+                    &line,
+                    &self.selected,
+                    this_menu,
+                    cell,
+                )
             }));
 
         div()
