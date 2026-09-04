@@ -17,7 +17,7 @@ for tool in ngtrain2 npcap2; do
   src=.wip/tools/perf/$tool.swift
   [ "$tools/$tool" -nt "$src" ] || swiftc -O -suppress-warnings -o "$tools/$tool" "$src" || exit 1
 done
-[ -x /tmp/ngdrag ] || swiftc -O -suppress-warnings -o /tmp/ngdrag .wip/tools/perf/ngdrag.swift || exit 1
+[ "$tools/ngdrag" -nt scripts/ngdrag.swift ] || swiftc -O -suppress-warnings -o "$tools/ngdrag" scripts/ngdrag.swift || exit 1
 
 launch() { # <app> <process name> [env...]
   local app=$1 name=$2 before pid; shift 2
@@ -77,7 +77,7 @@ win=$(window_of "$pid"); wid=${win%%	*}; IFS=, read -r wx wy ww wh <<<"${win#*	}
 cap=/tmp/ng-perf-resize.txt; rm -f "$cap"
 NPCAP_HZ=120 "$tools/npcap2" "$wid" 3 "$cap" 0 0 $(((ww + 200) * 2)) $((wh * 2)) 0 0 1200 80 >/dev/null 2>&1 &
 cappid=$!; sleep 0.8
-/tmp/ngdrag "$wid" $((wx + ww - 2)) $((wy + 20)) $((wx + ww + 198)) $((wy + 20)) 120 10 >/dev/null 2>&1
+"$tools/ngdrag" $((wx + ww - 2)) $((wy + 20)) $((wx + ww + 198)) $((wy + 20)) 120 10 >/dev/null 2>&1
 wait $cappid; kill "$pid" 2>/dev/null
 probe resize "$(unique_fps "$cap" 0.9 1.9)" "${FPS_MIN_RESIZE:-60}"
 
