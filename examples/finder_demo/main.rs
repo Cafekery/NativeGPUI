@@ -44,6 +44,7 @@ use crate::icon::{Grid, cell};
 use crate::list::{ICON_SIZE, ROW_H};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
+use crate::toolbar::PATH_H;
 use crate::ui::{TAGS, axis_locked};
 
 pub(crate) const ICON_VIEW: usize = 0;
@@ -765,18 +766,21 @@ impl FinderDemo {
         &self,
         body: AnyElement,
         headers: Option<AnyElement>,
+        path_bar: Option<AnyElement>,
         palette: &Palette,
         metrics: SidebarMetrics,
         corner: Pixels,
     ) -> AnyElement {
         let top = metrics.top;
+        // The path bar takes height from the list, not from the pane, which runs to the corner.
+        let foot = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
         let opaque = matches!(self.view, ICON_VIEW | LIST_VIEW | COLUMN_VIEW);
         let mut surface = div()
             .absolute()
             .left_0()
             .right_0()
-            .bottom_0()
+            .bottom(px(foot))
             .top(if banded { px(0.) } else { top })
             .flex()
             .flex_col()
@@ -823,6 +827,14 @@ impl FinderDemo {
                 column.child(band_glass(px(pane), top))
             })
             .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
+            .children(path_bar.map(|bar| {
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right(px(pane))
+                    .child(bar)
+            }))
             // A second scroller on the same handle, the pane's width shorter, so header and rows
             // clamp and scroll alike.
             .children(headers.map(|headers| {
@@ -900,7 +912,9 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self.path_bar(&palette, metrics, px(self.pane_w()));
+        let path_bar = self
+            .path_bar_shown
+            .then(|| self.path_bar(&palette, metrics));
         let status_bar = self.status_bar(&palette, cx);
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
@@ -942,9 +956,10 @@ impl Render for FinderDemo {
                                 .flex()
                                 .overflow_hidden()
                                 .when(!list_view, |row| row.pl(metrics.left))
-                                .child(self.list_column(body, headers, &palette, metrics, corner)),
+                                .child(self.list_column(
+                                    body, headers, path_bar, &palette, metrics, corner,
+                                )),
                         )
-                        .when(self.path_bar_shown, |c| c.child(path_bar))
                         .when(self.status_bar_shown, |c| {
                             c.child(div().flex_none().pl(metrics.left).child(status_bar))
                         }),
