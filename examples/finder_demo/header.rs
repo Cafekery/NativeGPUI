@@ -192,7 +192,9 @@ fn cell_body(id: impl Into<ElementId>, column: Column, sorted: bool, ascending: 
         } else {
             "chevron.down"
         };
-        if let Some(glyph) = small_glyph(arrow, 9., SystemColor::SecondaryLabel) {
+        if let Some(glyph) =
+            small_glyph(arrow, 9., FontWeight::SEMIBOLD, SystemColor::SecondaryLabel)
+        {
             body = body.child(
                 div()
                     .absolute()

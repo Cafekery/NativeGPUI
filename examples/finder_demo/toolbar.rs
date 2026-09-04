@@ -1,10 +1,11 @@
 use block2::RcBlock;
-use gpui::{AnyElement, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, FontWeight, Pixels, SharedString, Window, div, prelude::*, px};
+use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::sidebar::system_template;
 use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
     MenuEntry, MenuView, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection,
-    ToolbarStyle, chrome_host, native_slider, set_toolbar,
+    ToolbarStyle, chrome_host, native_rule, native_slider, set_toolbar,
 };
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
@@ -37,6 +38,9 @@ pub(crate) const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
 pub(crate) const GRID_BOX_W: f64 = 22.;
 
 pub(crate) const BAR_H: f32 = 26.;
+pub(crate) const PATH_H: f32 = 28.;
+const CRUMB_INSET: f32 = 16.;
+const CRUMB_GAP: f32 = 5.;
 
 pub(crate) const NAV_ID: &str = "ng.finder.nav";
 pub(crate) const AIRDROP_ID: &str = "ng.finder.airdrop";
@@ -58,8 +62,9 @@ pub(crate) const SEARCH_W: f32 = 240.;
 const CRUMB_ICON: f32 = 13.;
 
 fn crumb_icon(volume: bool) -> AnyElement {
+    // The boot disk's own artwork, which `public.volume` does not carry: that type draws a folder.
     let (kind, face) = match volume {
-        true => (FileType::Uti("public.volume"), F::Volume),
+        true => (FileType::Path("/"), F::Volume),
         false => (FileType::Folder, F::Folder),
     };
     let art = file_icon(kind, px(CRUMB_ICON))
@@ -320,42 +325,63 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn path_bar(&self, palette: &Palette) -> AnyElement {
+    pub(crate) fn path_bar(
+        &self,
+        palette: &Palette,
+        metrics: SidebarMetrics,
+        pane: Pixels,
+    ) -> AnyElement {
         let crumbs: &[&str] = self.folder().map_or(&[], |folder| folder.crumbs);
-        let last = crumbs.len().saturating_sub(1);
-        let mut bar = div()
-            .h(px(BAR_H))
-            .flex_none()
+        let mut trail = div()
+            .size_full()
             .flex()
             .items_center()
-            .gap(px(4.))
-            .px(px(14.))
-            .border_t_1()
-            .border_color(palette.separator)
-            .text_size(tokens::small_system_font_size());
+            .gap(px(CRUMB_GAP))
+            .pl(metrics.left + px(CRUMB_INSET))
+            .pr(px(CRUMB_INSET))
+            .text_size(tokens::small_system_font_size())
+            .text_color(palette.secondary);
 
         for (index, crumb) in crumbs.iter().enumerate() {
             if index > 0 {
-                if let Some(chevron) = small_glyph("chevron.right", 7., SystemColor::TertiaryLabel)
-                {
-                    bar = bar.child(chevron);
+                if let Some(chevron) = small_glyph(
+                    "chevron.right",
+                    7.,
+                    FontWeight::SEMIBOLD,
+                    SystemColor::SecondaryLabel,
+                ) {
+                    // Finder leaves a point more after a chevron than before it.
+                    trail = trail.child(div().flex_none().mr(px(1.)).child(chevron));
                 }
             }
-            bar = bar.child(
+            trail = trail.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(3.))
-                    .text_color(if index == last {
-                        palette.label
-                    } else {
-                        palette.secondary
-                    })
+                    .gap(px(CRUMB_GAP))
                     .child(crumb_icon(index == 0 && crumbs.len() > 1))
                     .child(*crumb),
             );
         }
-        bar.into_any_element()
+
+        div()
+            .h(px(PATH_H))
+            .flex_none()
+            .relative()
+            // The bar ends at the preview pane, the way the rows and the column header do.
+            .mr(pane)
+            .bg(palette.surface)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(1.))
+                    .child(native_rule("ng.finder.path.hairline")),
+            )
+            .child(trail)
+            .into_any_element()
     }
 
     pub(crate) fn status_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -401,6 +427,7 @@ impl FinderDemo {
                                     .range(32., 128.)
                                     .on_change(cx.listener(|this, value: &f64, _, cx| {
                                         this.icon_size = (value / 8.).round() * 8.;
+                                        crate::prefs::set_icon_size(this.icon_size as f32);
                                         cx.notify();
                                     })),
                             ),

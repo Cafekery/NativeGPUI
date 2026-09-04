@@ -50,14 +50,14 @@ pub(crate) fn glyph(face: Face, size: f32) -> AnyElement {
     slot.into_any_element()
 }
 
-pub(crate) fn small_glyph(name: &str, size: f32, color: SystemColor) -> Option<AnyElement> {
-    sf_symbol_colored(
-        name,
-        px(size),
-        FontWeight::SEMIBOLD,
-        &SymbolColor::Hierarchical(color),
-    )
-    .map(|symbol| symbol.img().into_any_element())
+pub(crate) fn small_glyph(
+    name: &str,
+    size: f32,
+    weight: FontWeight,
+    color: SystemColor,
+) -> Option<AnyElement> {
+    sf_symbol_colored(name, px(size), weight, &SymbolColor::Hierarchical(color))
+        .map(|symbol| symbol.img().into_any_element())
 }
 
 pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
