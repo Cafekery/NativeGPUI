@@ -1,5 +1,5 @@
 use block2::RcBlock;
-use gpui::{AnyElement, FontWeight, Pixels, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, FontWeight, SharedString, Window, div, prelude::*, px};
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::sidebar::system_template;
 use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
@@ -325,12 +325,7 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn path_bar(
-        &self,
-        palette: &Palette,
-        metrics: SidebarMetrics,
-        pane: Pixels,
-    ) -> AnyElement {
+    pub(crate) fn path_bar(&self, palette: &Palette, metrics: SidebarMetrics) -> AnyElement {
         let crumbs: &[&str] = self.folder().map_or(&[], |folder| folder.crumbs);
         let mut trail = div()
             .size_full()
@@ -368,8 +363,6 @@ impl FinderDemo {
             .h(px(PATH_H))
             .flex_none()
             .relative()
-            // The bar ends at the preview pane, the way the rows and the column header do.
-            .mr(pane)
             .bg(palette.surface)
             .child(
                 div()

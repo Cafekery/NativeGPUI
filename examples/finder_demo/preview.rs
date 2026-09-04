@@ -21,7 +21,6 @@ use objc2_foundation::NSRect;
 use crate::data::{Face, Line, Row, byte_string, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::toolbar::{BAR_H, PATH_H};
 use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
@@ -251,10 +250,9 @@ impl FinderDemo {
             return;
         }
 
-        let bars = if self.path_bar_shown { PATH_H } else { 0. }
-            + if self.status_bar_shown { BAR_H } else { 0. };
         // The card window stops short of the window's right and bottom edges: those are the
-        // parent's resize edges, and a child window over them would take the drag.
+        // parent's resize edges, and a child window over them would take the drag. The bars at the
+        // bottom end at the pane, so they take no height from it.
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
@@ -262,7 +260,7 @@ impl FinderDemo {
             ),
             size: size(
                 px(self.preview_w - RESIZE_EDGE),
-                viewport.height - metrics.top - metrics.bottom - px(bars + RESIZE_EDGE),
+                viewport.height - metrics.top - metrics.bottom - px(RESIZE_EDGE),
             ),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
