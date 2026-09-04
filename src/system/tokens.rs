@@ -846,6 +846,11 @@ pub fn folder_icon(size: Pixels) -> Option<Symbol> {
 }
 
 // `typeWithFilenameExtension:` answers a dynamic type for `iconset` and the legacy one for `app`.
+// `UTType` only answers `AnyClass::get` once its framework is in the process, and nothing else
+// here loads it on macOS 26.
+#[link(name = "UniformTypeIdentifiers", kind = "framework")]
+unsafe extern "C" {}
+
 fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
     let class = AnyClass::get(c"UTType")?;
     let text = NSString::from_str(text);
