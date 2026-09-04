@@ -134,6 +134,8 @@ pub(crate) const DIRS: &[Dir] = &[
         "home",
         &["Macintosh HD", "Users", "avery", "Documents"],
         &[
+            (".DS_Store", F::Text, 202608141731, 6148, ""),
+            (".localized", F::Text, 202601190904, 0, ""),
             ("Invoices", F::Folder, 202607281412, 0, "invoices"),
             ("Projects", F::Folder, ago(0, 4, 34), 0, "projects"),
             ("Tax 2025", F::Folder, 202601190904, 0, "tax"),
