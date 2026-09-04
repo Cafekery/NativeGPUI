@@ -103,6 +103,7 @@ pub(crate) struct FinderDemo {
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
     pub(crate) grouped: bool,
+    spring: Option<(&'static str, Instant)>,
     /// The folders this window has been through, newest first, for the Go menu.
     pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
@@ -158,6 +159,7 @@ impl FinderDemo {
             status_bar_shown: false,
             show_hidden: false,
             grouped: false,
+            spring: None,
             recents: Vec::new(),
             go_sheet: None,
             quick_look: false,
@@ -367,6 +369,63 @@ impl FinderDemo {
             self.pick(&line, false, false);
             self.reveal(&line.key);
         }
+    }
+
+    /// Finder's spring-loading: a folder held under a drag opens on its own.
+    pub(crate) fn hover_folder(
+        &mut self,
+        into: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let now = Instant::now();
+        match self.spring {
+            Some((key, since)) if key == into => {
+                if now.duration_since(since) > Duration::from_millis(700) {
+                    self.spring = None;
+                    self.go(into, window, cx);
+                }
+            }
+            _ => self.spring = Some((into, now)),
+        }
+    }
+
+    /// The rows a drag carries: the whole selection when the grabbed row is in it.
+    pub(crate) fn drag_keys(&self, grabbed: &SharedString) -> Vec<SharedString> {
+        match self.selected.contains(grabbed) {
+            true => self.selected.iter().cloned().collect(),
+            false => vec![grabbed.clone()],
+        }
+    }
+
+    /// Finder's drop: the dragged rows leave the folder they were in and land in `into`.
+    pub(crate) fn drop_into(&mut self, into: &'static str, keys: &[SharedString], copy: bool) {
+        let here = self.target();
+        if into == here {
+            return;
+        }
+        let taken: Vec<Row> = match self.store.get_mut(here) {
+            Some(folder) => {
+                let (taken, kept): (Vec<Row>, Vec<Row>) = folder.rows.drain(..).partition(|row| {
+                    keys.contains(&SharedString::from(format!("{here}/{}", row.name)))
+                });
+                if !copy {
+                    folder.rows = kept;
+                } else {
+                    let mut back = kept;
+                    back.extend(taken.iter().cloned());
+                    folder.rows = back;
+                    folder.rows.sort_by(|a, b| a.name.cmp(&b.name));
+                }
+                taken
+            }
+            None => return,
+        };
+        if let Some(folder) = self.store.get_mut(into) {
+            folder.rows.extend(taken);
+        }
+        self.selected.clear();
+        self.cursor = None;
     }
 
     /// The rows a grouped list draws, with Finder's band headers between them.

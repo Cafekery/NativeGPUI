@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, FontWeight, Hsla, SharedString, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, SharedString, Window, div,
+    prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::data::Column;
-use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
+use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
@@ -54,6 +55,7 @@ impl FinderDemo {
 
         let (pads, lift) = self.list_inset();
         let slots = self.slots(&lines);
+        let drag_keys: HashSet<SharedString> = self.selected.clone();
 
         let list = uniform_list("ng.finder.list", pads + slots.len(), move |range, _, _| {
             range
@@ -231,6 +233,46 @@ impl FinderDemo {
                             .ok();
                         }
                     });
+                    let row = {
+                        let keys = drag_keys.clone();
+                        let key = line.key.clone();
+                        let name = line.row.name.clone();
+                        row.on_drag(RowDrag { key: key.clone() }, move |grab, _, _, cx| {
+                            let _ = (grab, &keys, &name);
+                            cx.new(|_| DragGhost)
+                        })
+                    };
+                    let row = match line.row.opens {
+                        Some(into) => row
+                            .drag_over::<RowDrag>(move |style, _, _, _| style.bg(selection))
+                            .on_drop({
+                                let this = this.clone();
+                                move |grab: &RowDrag, window: &mut Window, cx| {
+                                    let key = grab.key.clone();
+                                    // Finder copies instead of moving while Option is held.
+                                    let copy = window.modifiers().alt;
+                                    this.update(cx, |demo: &mut FinderDemo, cx| {
+                                        let keys = demo.drag_keys(&key);
+                                        demo.drop_into(into, &keys, copy);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                }
+                            })
+                            .on_drag_move({
+                                let this = this.clone();
+                                move |event: &DragMoveEvent<RowDrag>, window: &mut Window, cx| {
+                                    if !event.bounds.contains(&event.event.position) {
+                                        return;
+                                    }
+                                    this.update(cx, |demo: &mut FinderDemo, cx| {
+                                        demo.hover_folder(into, window, cx);
+                                    })
+                                    .ok();
+                                }
+                            }),
+                        None => row,
+                    };
                     row_menu(("ng.finder.row.menu", at), &line, &selected, this, row)
                         .into_any_element()
                 })
@@ -265,4 +307,10 @@ fn band(title: SharedString, colour: Hsla, name_w: f32) -> Div {
                 .font_weight(FontWeight::BOLD)
                 .child(title),
         )
+}
+
+/// What a row drag carries: the row the pointer grabbed, standing for the whole selection.
+#[derive(Clone)]
+pub(crate) struct RowDrag {
+    pub(crate) key: SharedString,
 }
