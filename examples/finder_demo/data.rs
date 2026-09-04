@@ -1,6 +1,7 @@
 //! The invented filesystem, and the system formatters that turn it into strings.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use gpui::SharedString;
 use native_gpui::tokens::{FileType, SymbolColor, SystemColor};
@@ -29,6 +30,44 @@ pub(crate) enum Face {
     Disk,
     Program,
     Web,
+}
+
+/// Apps carry their own artwork too, so a stand-in named after a real one borrows it.
+fn app_art(name: &str) -> FileType<'static> {
+    let path: &'static str = Box::leak(format!("/Applications/{name}.app").into_boxed_str());
+    match std::path::Path::new(path).exists() {
+        true => FileType::Path(path),
+        false => FileType::Extension("app"),
+    }
+}
+
+/// The standard locations carry their own artwork, so the demo's stand-ins borrow the real ones.
+fn folder_art(name: &str) -> FileType<'static> {
+    static PLACES: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    let places = PLACES.get_or_init(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+        let mine =
+            |leaf: &str| -> &'static str { Box::leak(format!("{home}/{leaf}").into_boxed_str()) };
+        HashMap::from([
+            ("Applications", "/Applications"),
+            ("Library", "/Library"),
+            ("System", "/System"),
+            ("Users", "/Users"),
+            ("Shared", "/Users/Shared"),
+            ("Desktop", mine("Desktop")),
+            ("Documents", mine("Documents")),
+            ("Downloads", mine("Downloads")),
+            ("Movies", mine("Movies")),
+            ("Music", mine("Music")),
+            ("Pictures", mine("Pictures")),
+            ("Public", mine("Public")),
+            ("Developer", mine("Developer")),
+        ])
+    });
+    match places.get(name) {
+        Some(path) => FileType::Path(path),
+        None => FileType::Folder,
+    }
 }
 
 impl Face {
@@ -819,7 +858,7 @@ impl Row {
             duration: None,
             face: Face::Folder,
             opens: Some(opens),
-            artwork: Face::Folder.artwork(None),
+            artwork: Some(folder_art(&name)),
         }
     }
 }
@@ -905,7 +944,11 @@ pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
             bytes,
             face,
             opens: (!opens.is_empty()).then_some(opens),
-            artwork: face.artwork(name.rsplit_once('.').map(|(_, tail)| tail)),
+            artwork: match face {
+                F::Folder => Some(folder_art(name)),
+                F::Program => Some(app_art(name)),
+                _ => face.artwork(name.rsplit_once('.').map(|(_, tail)| tail)),
+            },
         }
     };
 
