@@ -51,7 +51,7 @@ impl FinderDemo {
 
         let (pads, lift) = self.list_inset();
 
-        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, cx| {
+        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, _| {
             range
                 .map(|index| {
                     let Some(at) = index.checked_sub(pads) else {
@@ -128,9 +128,14 @@ impl FinderDemo {
                             if let Some(glyph) = small_glyph(arrow, 9., FontWeight::BOLD, color) {
                                 slot = slot.child(glyph);
                             }
-                            slot = slot.on_click(move |_: &ClickEvent, _, cx| {
+                            let into = line.row.opens;
+                            slot = slot.on_click(move |event: &ClickEvent, _, cx| {
                                 this.update(cx, |this: &mut FinderDemo, cx| {
-                                    this.disclose(&key, !open);
+                                    // Finder opens the whole subtree when Option is down.
+                                    match (event.modifiers().alt, into) {
+                                        (true, Some(into)) => this.disclose_tree(&key, into, !open),
+                                        _ => this.disclose(&key, !open),
+                                    }
                                     cx.notify();
                                 })
                                 .ok();
@@ -216,7 +221,8 @@ impl FinderDemo {
                             .ok();
                         }
                     });
-                    row_menu(("ng.finder.row.menu", at), &line, this, row, cx).into_any_element()
+                    row_menu(("ng.finder.row.menu", at), &line, &selected, this, row)
+                        .into_any_element()
                 })
                 .collect::<Vec<_>>()
         })
