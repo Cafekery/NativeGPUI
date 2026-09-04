@@ -43,6 +43,7 @@ pub struct MenuCommand {
     chord: Option<String>,
     action: Option<Box<dyn Action>>,
     rows: Vec<MenuCommand>,
+    alternate: bool,
 }
 
 impl MenuCommand {
@@ -52,7 +53,14 @@ impl MenuCommand {
             chord: None,
             action: Some(Box::new(action)),
             rows: Vec::new(),
+            alternate: false,
         }
+    }
+
+    /// The row the one above it becomes while Option is held, as Finder swaps Duplicate.
+    pub fn option_alternate(mut self) -> Self {
+        self.alternate = true;
+        self
     }
 
     /// A row that opens a menu of its own instead of dispatching.
@@ -62,6 +70,7 @@ impl MenuCommand {
             chord: None,
             action: None,
             rows: rows.into_iter().collect(),
+            alternate: false,
         }
     }
 
@@ -71,6 +80,7 @@ impl MenuCommand {
             chord: None,
             action: None,
             rows: Vec::new(),
+            alternate: false,
         }
     }
 
@@ -436,6 +446,9 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             row
         }
     };
+    if command.alternate {
+        row.setAlternate(true);
+    }
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
 }
 
