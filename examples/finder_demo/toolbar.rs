@@ -1,5 +1,8 @@
 use block2::RcBlock;
-use gpui::{AnyElement, FontWeight, SharedString, TextRun, Window, div, hsla, prelude::*, px};
+use gpui::{
+    AnyElement, ClickEvent, Context, FontWeight, SharedString, TextRun, Window, div, hsla,
+    prelude::*, px,
+};
 use native_gpui::sidebar::system_template;
 use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
@@ -13,7 +16,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::data::{AVAILABLE_BYTES, Column, Face as F, byte_string};
 use crate::palette::Palette;
-use crate::ui::{TAGS, glyph, small_glyph};
+use crate::ui::{TAGS, click_kind, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
@@ -325,8 +328,14 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn path_bar(&self, palette: &Palette, window: &Window) -> AnyElement {
+    pub(crate) fn path_bar(
+        &self,
+        palette: &Palette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let crumbs: &[&str] = self.folder().map_or(&[], |folder| folder.crumbs);
+        let chain = self.crumb_ids();
         let named = self.crumb_labels(crumbs, window);
         let mut trail = div()
             .size_full()
@@ -350,8 +359,13 @@ impl FinderDemo {
                     trail = trail.child(div().flex_none().mr(px(1.)).child(chevron));
                 }
             }
+            // The fixture starts at the home folder, so the crumbs above it lead nowhere.
+            let target = index
+                .checked_sub(crumbs.len() - chain.len())
+                .and_then(|step| chain.get(step).copied());
             trail = trail.child(
                 div()
+                    .id(("ng.finder.crumb", index))
                     .flex()
                     .items_center()
                     .min_w(px(CRUMB_ICON))
@@ -359,6 +373,16 @@ impl FinderDemo {
                     .child(crumb_icon(index == 0 && crumbs.len() > 1))
                     .when(named[index], |crumb_row| {
                         crumb_row.child(div().min_w(px(0.)).text_ellipsis().child(*crumb))
+                    })
+                    .when_some(target, |crumb_row, id| {
+                        // Finder's path bar walks on the second click, not the first.
+                        crumb_row.on_click(cx.listener(
+                            move |this, event: &ClickEvent, window, cx| {
+                                if click_kind(event).2 {
+                                    this.go(id, window, cx);
+                                }
+                            },
+                        ))
                     }),
             );
         }

@@ -218,6 +218,15 @@ impl FinderDemo {
         window.set_window_title(&title);
     }
 
+    /// The folder each breadcrumb stands for, root first.
+    pub(crate) fn crumb_ids(&self) -> Vec<&'static str> {
+        let mut chain = vec![self.here()];
+        while let Some(parent) = self.store.get(chain[0]).and_then(|folder| folder.parent) {
+            chain.insert(0, parent);
+        }
+        chain
+    }
+
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         if self.here() == id {
             return;
@@ -915,7 +924,9 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self.path_bar_shown.then(|| self.path_bar(&palette, window));
+        let path_bar = self
+            .path_bar_shown
+            .then(|| self.path_bar(&palette, window, cx));
         let status_bar = self.status_bar(&palette, cx);
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
