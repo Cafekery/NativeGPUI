@@ -21,6 +21,7 @@ pub(crate) enum Act {
     Nothing,
     Swatch,
     NewFolderWith,
+    Groups,
     NewFolder,
     Inspector,
     Sort(Column),
@@ -75,7 +76,10 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Show Inspector"), Act::Inspector);
     menu.separator();
-    menu.item(MenuEntry::item("Use Groups").disabled(), Act::Nothing);
+    menu.item(
+        MenuEntry::item("Use Groups").checked(demo.grouped),
+        Act::Groups,
+    );
     menu.submenu("Sort By", sort_rows(demo));
     if demo.view == ICON_VIEW {
         menu.item(MenuEntry::item("Clean Up"), Act::Sort(Column::Name));
@@ -171,6 +175,7 @@ impl FinderDemo {
                 self.new_folder();
             }
             Act::NewFolderWith => self.new_folder_with_selection(),
+            Act::Groups => self.grouped = !self.grouped,
             Act::Inspector => self.preview = true,
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),

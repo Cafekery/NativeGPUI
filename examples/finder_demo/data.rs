@@ -6,7 +6,7 @@ use gpui::SharedString;
 use native_gpui::tokens::{FileType, SymbolColor, SystemColor};
 use objc2_foundation::{
     NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCalendar, NSCalendarUnit, NSDate,
-    NSDateComponents, NSDateFormatter, NSDateFormatterStyle,
+    NSDateComponents, NSDateFormatter, NSDateFormatterStyle, NSString,
 };
 
 use self::Face as F;
@@ -709,6 +709,64 @@ pub(crate) fn stamp_date(
     parts.setMinute(minute as isize);
     parts.setSecond(0);
     calendar.dateFromComponents(&parts)
+}
+
+/// The band Finder files a row under while Use Groups is on.
+pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {
+    match sort {
+        Column::Name => match row.name.chars().next() {
+            Some(first) if first.is_ascii_digit() => "0 \u{2013} 9".into(),
+            Some(first) => SharedString::from(first.to_uppercase().to_string()),
+            None => "\u{2014}".into(),
+        },
+        Column::Kind => plural(row.face.kind()),
+        Column::Size if row.face == Face::Folder => "Folders".into(),
+        Column::Size => match row.bytes {
+            0 => "Zero KB".into(),
+            bytes if bytes < 1_000_000 => "Under 1 MB".into(),
+            bytes if bytes < 10_000_000 => "1 MB to 10 MB".into(),
+            bytes if bytes < 100_000_000 => "10 MB to 100 MB".into(),
+            bytes if bytes < 1_000_000_000 => "100 MB to 1 GB".into(),
+            _ => "Over 1 GB".into(),
+        },
+        Column::Modified => match days_ago(row.modified_at) {
+            0 => "Today".into(),
+            1 => "Yesterday".into(),
+            2..=7 => "Previous 7 Days".into(),
+            8..=30 => "Previous 30 Days".into(),
+            _ => month_string(row.modified_at),
+        },
+    }
+}
+
+fn plural(kind: &str) -> SharedString {
+    match kind.ends_with('s') {
+        true => SharedString::from(kind.to_string()),
+        false => SharedString::from(format!("{kind}s")),
+    }
+}
+
+fn days_ago(seconds: f64) -> i64 {
+    let now = NSDate::date().timeIntervalSinceReferenceDate();
+    let calendar = NSCalendar::currentCalendar();
+    let then = NSDate::dateWithTimeIntervalSinceReferenceDate(seconds);
+    let start_of = |date: &NSDate| {
+        calendar
+            .startOfDayForDate(date)
+            .timeIntervalSinceReferenceDate()
+    };
+    let gap = start_of(&NSDate::dateWithTimeIntervalSinceReferenceDate(now)) - start_of(&then);
+    (gap / 86_400.0).round() as i64
+}
+
+fn month_string(seconds: f64) -> SharedString {
+    let formatter = NSDateFormatter::new();
+    formatter.setDateFormat(Some(&NSString::from_str("LLLL yyyy")));
+    SharedString::from(
+        formatter
+            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+            .to_string(),
+    )
 }
 
 pub(crate) fn day_string(seconds: f64) -> String {
