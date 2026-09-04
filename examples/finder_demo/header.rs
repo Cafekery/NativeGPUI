@@ -9,6 +9,7 @@ use native_gpui::{Blending, Layer, Material, glass, material, native_label, nati
 
 use crate::FinderDemo;
 use crate::data::Column;
+use crate::menus;
 use crate::palette::Palette;
 use crate::ui::small_glyph;
 
@@ -37,6 +38,18 @@ const PRESS_ALPHA: f32 = 0.31;
 pub(crate) struct ColumnSpec {
     pub(crate) column: Column,
     pub(crate) width: f32,
+}
+
+impl ColumnSpec {
+    pub(crate) fn of(column: Column) -> Self {
+        let width = match column {
+            Column::Name => NAME_MIN_W,
+            Column::Modified => COL_MODIFIED,
+            Column::Size => COL_SIZE,
+            Column::Kind => COL_KIND,
+        };
+        Self { column, width }
+    }
 }
 
 pub(crate) fn default_columns() -> Vec<ColumnSpec> {
@@ -364,8 +377,17 @@ impl FinderDemo {
                     .child(native_rule(("ng.finder.header.sep", slot))),
             );
         }
+        let with_menu = |cell: AnyElement| {
+            menus::attach(
+                ("ng.finder.header.menu", slot),
+                menus::header(self),
+                cx.entity().downgrade(),
+                cell,
+            )
+            .into_any_element()
+        };
         match index {
-            None => cell.into_any_element(),
+            None => with_menu(cell.into_any_element()),
             Some(_) => cell
                 .on_drag(HeaderGrab::Column(column), {
                     let this = cx.entity().downgrade();
@@ -381,7 +403,7 @@ impl FinderDemo {
                         cx.new(|_| DragGhost)
                     }
                 })
-                .into_any_element(),
+                .map(|cell| with_menu(cell.into_any_element())),
         }
     }
 

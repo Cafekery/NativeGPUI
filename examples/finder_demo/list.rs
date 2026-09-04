@@ -6,6 +6,7 @@ use native_gpui::tokens::{self, SystemColor};
 use crate::FinderDemo;
 use crate::data::Column;
 use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
+use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
 
@@ -50,11 +51,15 @@ impl FinderDemo {
 
         let (pads, lift) = self.list_inset();
 
-        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, _| {
+        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, cx| {
             range
                 .map(|index| {
                     let Some(at) = index.checked_sub(pads) else {
-                        return div().id(("ng.finder.pad", index)).h(px(ROW_H)).w_full();
+                        return div()
+                            .id(("ng.finder.pad", index))
+                            .h(px(ROW_H))
+                            .w_full()
+                            .into_any_element();
                     };
                     let line = lines[at].clone();
                     let is_selected = selected.contains(&line.key);
@@ -196,7 +201,8 @@ impl FinderDemo {
                             Column::Name => cell,
                         });
                     }
-                    row.child(div().w(px(PANE_INSET)).flex_none()).on_click(
+                    let row = row.child(div().w(px(PANE_INSET)).flex_none()).on_click({
+                        let this = this.clone();
                         move |event: &ClickEvent, window, cx| {
                             let (extend, toggle, twice) = click_kind(event);
                             let line = clicked.clone();
@@ -208,8 +214,9 @@ impl FinderDemo {
                                 cx.notify();
                             })
                             .ok();
-                        },
-                    )
+                        }
+                    });
+                    row_menu(("ng.finder.row.menu", at), &line, this, row, cx).into_any_element()
                 })
                 .collect::<Vec<_>>()
         })

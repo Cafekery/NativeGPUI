@@ -7,6 +7,7 @@ use gpui::{
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
 use crate::data::Line;
+use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, click_kind, rename_field, small_glyph};
 use crate::{COLUMN_VIEW, FinderDemo, LIST_VIEW};
@@ -164,6 +165,7 @@ impl FinderDemo {
                 let joins_above = row > 0 && picked[row - 1];
                 let joins_below = picked.get(row + 1) == Some(&true);
                 let this = this.clone();
+                let this_menu = this.clone();
                 let clicked = line.clone();
                 let name = div()
                     .ml(px(LABEL_X - ICON_X - ICON))
@@ -218,7 +220,7 @@ impl FinderDemo {
                             .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
                     );
                 }
-                cell.on_click(move |event: &ClickEvent, window, cx| {
+                let cell = cell.on_click(move |event: &ClickEvent, window, cx| {
                     let (extend, toggle, twice) = click_kind(event);
                     let line = clicked.clone();
                     this.update(cx, |this: &mut FinderDemo, cx| {
@@ -230,7 +232,14 @@ impl FinderDemo {
                         this.column_arrived(window, cx);
                     })
                     .ok();
-                })
+                });
+                row_menu(
+                    ("ng.finder.column.menu", index * 512 + row),
+                    &line,
+                    this_menu,
+                    cell,
+                    cx,
+                )
             }))
             .into_any_element()
     }

@@ -743,6 +743,27 @@ pub(crate) struct Row {
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
+impl Row {
+    /// A folder the demo just made: no bytes, no date of its own until something lands in it.
+    pub(crate) fn folder(name: &'static str, opens: &'static str) -> Self {
+        Self {
+            name: name.into(),
+            modified: "--".into(),
+            stamp: 0,
+            size: "--".into(),
+            bytes: 0,
+            created: "--".into(),
+            modified_at: 0.,
+            created_at: 0.,
+            dimensions: None,
+            duration: None,
+            face: Face::Folder,
+            opens: Some(opens),
+            artwork: Face::Folder.artwork(None),
+        }
+    }
+}
+
 pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,
