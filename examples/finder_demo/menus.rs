@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use std::cell::Cell;
+
 use gpui::{ClipboardItem, Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
 use native_gpui::tokens::system_color;
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
@@ -17,6 +19,7 @@ const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Col
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Act {
     Nothing,
+    Swatch,
     NewFolder,
     Inspector,
     Sort(Column),
@@ -57,6 +60,11 @@ pub(crate) fn row_menu(
     child: impl IntoElement,
 ) -> NativeContextMenu {
     attach(id, item(selected, line), this, child)
+}
+
+thread_local! {
+    /// Which dot the tag row was clicked on, read once the row reports its pick.
+    static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// A right-click on empty space.
@@ -126,9 +134,13 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Share…").disabled(), Act::Nothing);
     menu.separator();
-    menu.view(MenuView::swatches(
-        TAGS.iter().map(|(_, color)| system_color(*color)),
-    ));
+    menu.view(
+        MenuView::swatches_picking(
+            TAGS.iter().map(|(_, color)| system_color(*color)),
+            |index| SWATCH.with(|cell| cell.set(Some(index))),
+        ),
+        Act::Swatch,
+    );
     menu.item(MenuEntry::item("Tags…").disabled(), Act::Nothing);
     menu
 }
@@ -150,6 +162,10 @@ impl FinderDemo {
     pub(crate) fn run_menu(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         match act {
             Act::Nothing => return,
+            Act::Swatch => match SWATCH.with(|cell| cell.take()) {
+                Some(tag) => self.tag_selection(tag),
+                None => return,
+            },
             Act::NewFolder => self.new_folder(),
             Act::Inspector => self.preview = true,
             Act::Sort(column) => self.sort_by(column),
@@ -352,8 +368,8 @@ impl Menu {
         self.item(MenuEntry::separator(), Act::Nothing);
     }
 
-    fn view(&mut self, view: MenuView) {
-        self.item(MenuEntry::view(view), Act::Nothing);
+    fn view(&mut self, view: MenuView, act: Act) {
+        self.item(MenuEntry::view(view), act);
     }
 
     fn submenu(&mut self, title: &str, rows: Vec<(MenuEntry, Act)>) {

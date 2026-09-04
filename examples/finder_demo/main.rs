@@ -227,6 +227,13 @@ impl FinderDemo {
         })
     }
 
+    /// Finder's tag dots: the pick colours every chosen row.
+    pub(crate) fn tag_selection(&mut self, tag: usize) {
+        for key in self.selected.clone() {
+            self.tags.insert(key, tag);
+        }
+    }
+
     pub(crate) fn crumb_path(&self) -> String {
         self.store.get(self.target()).map_or_else(
             || String::from("Finder"),

@@ -91,10 +91,10 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::submenu(
                 "Sort By",
                 [
-                    MenuCommand::new("Name", SortByName),
-                    MenuCommand::new("Kind", SortByKind),
-                    MenuCommand::new("Date Modified", SortByModified),
-                    MenuCommand::new("Size", SortBySize),
+                    MenuCommand::new("Name", SortByName).key("cmd-ctrl-1"),
+                    MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-2"),
+                    MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-3"),
+                    MenuCommand::new("Size", SortBySize).key("cmd-ctrl-5"),
                 ],
             ),
             MenuCommand::new("Clean Up", CleanUp),
