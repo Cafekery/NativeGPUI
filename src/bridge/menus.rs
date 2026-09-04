@@ -363,6 +363,23 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     bar.insertItem_atIndex(&host, before);
 }
 
+/// Refill a menu the app added, so its rows can follow state.
+pub fn set_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
+    let Some((mtm, bar)) = bar() else {
+        return;
+    };
+    let Some(host) = index_of(&bar, title).map(|at| bar.itemAtIndex(at)) else {
+        return;
+    };
+    let Some(submenu) = host.and_then(|item| item.submenu()) else {
+        return;
+    };
+    submenu.removeAllItems();
+    for command in commands {
+        add_command(mtm, &submenu, submenu.numberOfItems(), command);
+    }
+}
+
 /// Put rows at the top of one of the standard menus, above what it already carries.
 pub fn prepend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
     rows_into(section, commands, true);
