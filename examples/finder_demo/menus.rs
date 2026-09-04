@@ -22,6 +22,7 @@ pub(crate) enum Act {
     Swatch,
     NewFolderWith,
     Groups,
+    ViewOptions,
     NewFolder,
     Inspector,
     Sort(Column),
@@ -85,10 +86,7 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
         menu.item(MenuEntry::item("Clean Up"), Act::Sort(Column::Name));
         menu.submenu("Clean Up By", sort_rows(demo));
     }
-    menu.item(
-        MenuEntry::item("Show View Options").disabled(),
-        Act::Nothing,
-    );
+    menu.item(MenuEntry::item("Show View Options"), Act::ViewOptions);
     menu
 }
 
@@ -176,6 +174,10 @@ impl FinderDemo {
             }
             Act::NewFolderWith => self.new_folder_with_selection(),
             Act::Groups => self.grouped = !self.grouped,
+            Act::ViewOptions => {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::options::open(&demo, cx));
+            }
             Act::Inspector => self.preview = true,
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),
@@ -352,7 +354,7 @@ impl FinderDemo {
         }
     }
 
-    fn sort_by(&mut self, column: Column) {
+    pub(crate) fn sort_by(&mut self, column: Column) {
         if self.sort == column {
             self.ascending = !self.ascending;
         } else {

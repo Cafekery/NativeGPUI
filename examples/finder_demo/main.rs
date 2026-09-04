@@ -8,6 +8,7 @@ mod header;
 mod icon;
 mod list;
 mod menus;
+mod options;
 mod overlay;
 mod palette;
 mod prefs;
