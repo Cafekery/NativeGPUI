@@ -6,7 +6,7 @@ use gpui::{
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
-use crate::data::Line;
+use crate::data::{Face, Line};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, click_kind, rename_field, small_glyph};
@@ -87,7 +87,11 @@ impl FinderDemo {
                 },
             })
             .collect();
-        match row.opens.filter(|_| self.selected.len() == 1) {
+        let alone = self.selected.len() <= 1;
+        match row.opens.filter(|_| alone).or(match row.face {
+            Face::Folder if alone => Some(""),
+            _ => None,
+        }) {
             Some(into) => {
                 chain.push(Rung {
                     folder: into,
@@ -244,43 +248,51 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    fn ruled(&self, column: AnyElement, last: bool) -> AnyElement {
+    /// Finder rules every column, the last one included.
+    fn ruled(&self, column: AnyElement, grow: bool) -> AnyElement {
         div()
-            .flex_none()
+            .map(|wrap| match grow {
+                true => wrap.flex_1(),
+                false => wrap.flex_none(),
+            })
             .flex()
             .child(column)
-            .when(!last, |wrap| {
-                wrap.child(div().w(px(1.)).flex_none().bg(divider()))
-            })
+            .child(div().w(px(1.)).flex_none().bg(divider()))
             .into_any_element()
     }
 
     fn preview_column(&self, line: &Line, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("ng.finder.column.preview")
-            .w(px(PREVIEW_W - 1.))
-            .flex_none()
+            .min_w(px(PREVIEW_W - 1.))
+            .flex_1()
             .flex()
             .flex_col()
-            .child(self.info_card(
-                Some(line),
-                palette,
-                PREVIEW_W - 1. - 2. * PREVIEW_INSET,
-                &cx.entity(),
-            ))
+            .items_center()
+            .child(
+                div()
+                    .w(px(PREVIEW_W - 1.))
+                    .flex()
+                    .flex_col()
+                    .child(self.info_card(
+                        Some(line),
+                        palette,
+                        PREVIEW_W - 1. - 2. * PREVIEW_INSET,
+                        &cx.entity(),
+                    )),
+            )
             .into_any_element()
     }
 
     pub(crate) fn column_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let (chain, leaf) = self.column_chain();
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
-        let last = chain.len() - 1;
         let mut columns: Vec<AnyElement> = chain
             .iter()
             .enumerate()
             .map(|(index, rung)| {
                 let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
-                self.ruled(column, index == last && leaf.is_none())
+                self.ruled(column, false)
             })
             .collect();
         if let Some(leaf) = &leaf {
