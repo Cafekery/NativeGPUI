@@ -1391,6 +1391,15 @@ pub struct WindowFlags {
     pub appearance: Option<tokens::Appearance>,
 }
 
+/// Restore this window's frame from the one AppKit saved under `name`, and keep saving it there
+/// as the window moves and resizes.
+pub fn remember_frame(window: &Window, name: &str) {
+    let ns_window = ns_window_of(window);
+    let name = NSString::from_str(name);
+    ns_window.setFrameUsingName(&name);
+    ns_window.setFrameAutosaveName(&name);
+}
+
 pub fn window_flags(window: &Window) -> WindowFlags {
     let ns_window = ns_window_of(window);
     let style = ns_window.styleMask();

@@ -7,6 +7,7 @@ mod header;
 mod icon;
 mod list;
 mod palette;
+mod prefs;
 mod preview;
 mod sidebar;
 mod toolbar;
@@ -26,7 +27,9 @@ use gpui::{
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, FileType, SystemTheme};
-use native_gpui::{install_menus, native_root, system_corner_radius, window_options};
+use native_gpui::{
+    install_menus, native_root, remember_frame, system_corner_radius, window_options,
+};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -109,7 +112,7 @@ impl FinderDemo {
             toolbar: false,
             history: vec![start],
             at: 0,
-            view: LIST_VIEW,
+            view: prefs::view().unwrap_or(LIST_VIEW),
             sort: Column::Name,
             ascending: true,
             list_columns: default_columns(),
@@ -126,7 +129,7 @@ impl FinderDemo {
             typed_at: None,
             tags: HashMap::new(),
             preview: true,
-            preview_w: PREVIEW_W,
+            preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
             preview_window: None,
             preview_opening: false,
             preview_expanded: false,
@@ -135,7 +138,7 @@ impl FinderDemo {
             list_span: f32::NAN,
             path_bar_shown: false,
             status_bar_shown: false,
-            icon_size: 64.,
+            icon_size: prefs::icon_size().unwrap_or(64.) as f64,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
@@ -250,6 +253,7 @@ impl FinderDemo {
 
     pub(crate) fn set_view(&mut self, view: usize) {
         self.view = view;
+        prefs::set_view(view);
         self.settle();
     }
 
@@ -988,7 +992,10 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
             })),
             ..window_options()
         },
-        |_, cx| {
+        |window, cx| {
+            if extra == 0 {
+                remember_frame(window, "ng.finder.window");
+            }
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
