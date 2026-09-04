@@ -12,6 +12,7 @@ actions!(
     [
         Back,
         CleanUp,
+        UseGroups,
         CopyNames,
         CopyPath,
         DeselectAll,
@@ -111,6 +112,7 @@ pub(crate) fn install(_cx: &mut App) {
                     MenuCommand::new("Size", SortBySize).key("cmd-ctrl-5"),
                 ],
             ),
+            MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
             MenuCommand::new("Clean Up", CleanUp),
             MenuCommand::separator(),
             MenuCommand::new("Show Preview", TogglePreview).key("cmd-shift-p"),
@@ -242,6 +244,10 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &SortBySize, window, cx| {
                 this.run_menu(Act::Sort(Column::Size), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &UseGroups, _, cx| {
+                this.grouped = !this.grouped;
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &CleanUp, window, cx| {
                 this.run_menu(Act::Sort(this.sort), window, cx);

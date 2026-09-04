@@ -39,7 +39,7 @@ use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::commands::{Back, CopyNames, Forward, SelectAll};
-use crate::data::{Column, Folder, Line, Row, build_store};
+use crate::data::{Column, Folder, Line, Row, build_store, group_of};
 use crate::header::{
     ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
     pane_surface,
@@ -50,6 +50,12 @@ use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
 use crate::ui::{TAGS, axis_locked};
+
+/// What a grouped list draws: Finder's band header, or the row at that index.
+pub(crate) enum Slot {
+    Header(SharedString),
+    Row(usize),
+}
 
 pub(crate) const ICON_VIEW: usize = 0;
 pub(crate) const LIST_VIEW: usize = 1;
@@ -94,6 +100,7 @@ pub(crate) struct FinderDemo {
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
+    pub(crate) grouped: bool,
     /// The folders this window has been through, newest first, for the Go menu.
     pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
@@ -148,6 +155,7 @@ impl FinderDemo {
             path_bar_shown: true,
             status_bar_shown: false,
             show_hidden: false,
+            grouped: false,
             recents: Vec::new(),
             go_sheet: None,
             quick_look: false,
@@ -359,11 +367,38 @@ impl FinderDemo {
         }
     }
 
+    /// The rows a grouped list draws, with Finder's band headers between them.
+    pub(crate) fn slots(&self, lines: &[Line]) -> Vec<Slot> {
+        if !self.grouped {
+            return (0..lines.len()).map(Slot::Row).collect();
+        }
+        let mut band: Option<SharedString> = None;
+        let mut out = Vec::with_capacity(lines.len() + 4);
+        for (index, line) in lines.iter().enumerate() {
+            let here = group_of(&line.row, self.sort);
+            if band.as_ref() != Some(&here) {
+                out.push(Slot::Header(here.clone()));
+                band = Some(here);
+            }
+            out.push(Slot::Row(index));
+        }
+        out
+    }
+
+    fn slot_of(&self, lines: &[Line], index: usize) -> usize {
+        self.slots(lines)
+            .iter()
+            .position(|slot| matches!(slot, Slot::Row(at) if *at == index))
+            .unwrap_or(index)
+    }
+
     pub(crate) fn reveal(&mut self, key: &SharedString) {
         let lines = self.lines(self.view == LIST_VIEW);
         if let Some(index) = self.line_at(&lines, key) {
-            self.scroll
-                .scroll_to_item(index + self.list_inset().0, ScrollStrategy::Center);
+            self.scroll.scroll_to_item(
+                self.slot_of(&lines, index) + self.list_inset().0,
+                ScrollStrategy::Center,
+            );
         }
     }
 

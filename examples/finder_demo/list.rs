@@ -1,16 +1,19 @@
 use std::collections::HashSet;
 
-use gpui::{AnyElement, ClickEvent, FontWeight, SharedString, div, prelude::*, px, uniform_list};
+use gpui::{
+    AnyElement, ClickEvent, Div, FontWeight, Hsla, SharedString, div, prelude::*, px, uniform_list,
+};
 use native_gpui::tokens::{self, SystemColor};
 
-use crate::FinderDemo;
 use crate::data::Column;
 use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
+use crate::{FinderDemo, Slot};
 
 pub(crate) const ICON_SIZE: f32 = 32.;
+const BAND_INSET: f32 = 8.;
 pub(crate) const ROW_H: f32 = ICON_SIZE + 4.;
 pub(crate) const ICON_X: f32 = 26.;
 pub(crate) const LABEL_X: f32 = ICON_X + ICON_SIZE + 6.;
@@ -50,16 +53,23 @@ impl FinderDemo {
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
 
         let (pads, lift) = self.list_inset();
+        let slots = self.slots(&lines);
 
-        let list = uniform_list("ng.finder.list", pads + lines.len(), move |range, _, _| {
+        let list = uniform_list("ng.finder.list", pads + slots.len(), move |range, _, _| {
             range
                 .map(|index| {
-                    let Some(at) = index.checked_sub(pads) else {
+                    let Some(slot) = index.checked_sub(pads).map(|at| &slots[at]) else {
                         return div()
                             .id(("ng.finder.pad", index))
                             .h(px(ROW_H))
                             .w_full()
                             .into_any_element();
+                    };
+                    let at = match slot {
+                        Slot::Header(title) => {
+                            return band(title.clone(), secondary, name_w).into_any_element();
+                        }
+                        Slot::Row(at) => *at,
                     };
                     let line = lines[at].clone();
                     let is_selected = selected.contains(&line.key);
@@ -237,4 +247,22 @@ impl FinderDemo {
             .child(axis_locked(list))
             .into_any_element()
     }
+}
+
+/// Finder's group header: the band's name over the rows it holds.
+fn band(title: SharedString, colour: Hsla, name_w: f32) -> Div {
+    div()
+        .h(px(ROW_H))
+        .w(px(name_w))
+        .flex()
+        .items_end()
+        .pb(px(2.))
+        .pl(px(BAND_INSET))
+        .child(
+            div()
+                .text_color(colour)
+                .text_size(tokens::small_system_font_size())
+                .font_weight(FontWeight::BOLD)
+                .child(title),
+        )
 }
