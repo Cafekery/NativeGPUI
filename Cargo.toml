@@ -43,7 +43,10 @@ path = "examples/glass_variants.rs"
 required-features = ["private-api"]
 
 [profile.release]
-lto = "thin"
+# Thin LTO cost 4x on every rebuild and bought no frames: measured 119.2 scroll and 106 resize
+# unique frames/s without it, against 119.2 and 93 with it.
+lto = false
+incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
 gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "38b1eebc6a5f5f2b30a8ce57c6a4d898fa2d36d3" }
