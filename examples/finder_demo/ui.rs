@@ -3,7 +3,7 @@
 use gpui::{AnyElement, ClickEvent, FontWeight, Hsla, WeakEntity, Window, div, prelude::*, px};
 
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
-use native_gpui::{focus_gpui, native_text_field};
+pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
 use crate::data::{Face, Line, Row};
 use crate::{FinderDemo, ns_window};
@@ -132,7 +132,7 @@ pub(crate) fn rename_field(
 }
 
 /// Hand key back to the main window after a field in the pane's panel took it.
-fn key_to_parent(window: &Window) {
+pub(crate) fn key_to_parent(window: &Window) {
     if let Some(parent) = ns_window(window).and_then(|panel| panel.parentWindow()) {
         parent.makeKeyWindow();
     }

@@ -8,6 +8,7 @@ mod header;
 mod icon;
 mod list;
 mod menus;
+mod overlay;
 mod palette;
 mod prefs;
 mod preview;
@@ -93,6 +94,9 @@ pub(crate) struct FinderDemo {
     pub(crate) path_bar_shown: bool,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
+    /// The path typed into Finder's Go to Folder sheet, while it is open.
+    pub(crate) go_sheet: Option<String>,
+    pub(crate) quick_look: bool,
     pub(crate) icon_size: f64,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
@@ -142,6 +146,8 @@ impl FinderDemo {
             path_bar_shown: true,
             status_bar_shown: false,
             show_hidden: false,
+            go_sheet: None,
+            quick_look: false,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
@@ -207,6 +213,18 @@ impl FinderDemo {
             .find(|row| row.name == name)
             .and_then(|row| row.opens)
             .unwrap_or(holder)
+    }
+
+    /// The folder whose path reads like `text`, however the user typed the separators.
+    pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
+        let want = text.trim().trim_end_matches('/').to_lowercase();
+        self.store.iter().find_map(|(id, folder)| {
+            let path = match folder.crumbs.split_first() {
+                Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
+                _ => "/".to_string(),
+            };
+            (path.to_lowercase() == want).then_some(*id)
+        })
     }
 
     pub(crate) fn crumb_path(&self) -> String {
@@ -607,6 +625,17 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        // Quick Look eats the keys Finder gives it: space toggles, escape leaves.
+        if self.quick_look && matches!(key, "escape" | "space") {
+            self.quick_look = false;
+            cx.notify();
+            return;
+        }
+        if key == "space" && self.cursor_line().is_some() {
+            self.quick_look = true;
+            cx.notify();
+            return;
+        }
         let lines = self.focused_lines();
         if lines.is_empty()
             || (self.view == COLUMN_VIEW && self.column_key(key, modifiers, window, cx))
@@ -949,9 +978,15 @@ impl Render for FinderDemo {
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
 
         let list_view = self.view == LIST_VIEW;
+        let sheet = self
+            .go_sheet
+            .clone()
+            .map(|text| self.go_sheet(&text, &palette, window, cx));
+        let quick_look = self.quick_look.then(|| self.quick_look_panel(&palette));
         native_root(
             div()
                 .size_full()
+                .relative()
                 .font_family(family)
                 .text_size(tokens::system_font_size())
                 .flex()
@@ -992,7 +1027,9 @@ impl Render for FinderDemo {
                         )
                         .when(self.status_bar_shown, |c| {
                             c.child(div().flex_none().pl(metrics.left).child(status_bar))
-                        }),
+                        })
+                        .children(sheet)
+                        .children(quick_look),
                 ),
         )
     }
