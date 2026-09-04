@@ -23,10 +23,12 @@ actions!(
         GoDocuments,
         GoDownloads,
         GoHome,
+        GoToFolder,
         NewFolder,
         NewFolderWithSelection,
         NewWindow,
         OpenSelection,
+        QuickLook,
         OpenInNewWindow,
         RenameSelection,
         SelectAll,
@@ -64,6 +66,7 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::new("Show Inspector", ShowInspector).key("cmd-alt-i"),
             MenuCommand::new("Rename", RenameSelection),
             MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
+            MenuCommand::new("Quick Look", QuickLook).key("cmd-y"),
             MenuCommand::separator(),
             MenuCommand::new("Move to Trash", Trash).key("cmd-backspace"),
             MenuCommand::separator(),
@@ -115,6 +118,8 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::new("Downloads", GoDownloads).key("cmd-alt-l"),
             MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
             MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
+            MenuCommand::separator(),
+            MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
         ],
     );
 }
@@ -227,6 +232,14 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &GoApplications, window, cx| {
                 this.go("applications", window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
+                this.go_sheet = Some(this.crumb_path());
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &QuickLook, _, cx| {
+                this.quick_look = !this.quick_look && this.cursor_line().is_some();
+                cx.notify();
             }))
     }
 }
