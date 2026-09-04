@@ -21,7 +21,7 @@ use objc2_foundation::NSRect;
 use crate::data::{Face, Line, Row, byte_string, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::toolbar::BAR_H;
+use crate::toolbar::{BAR_H, PATH_H};
 use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
@@ -105,6 +105,7 @@ impl PreviewPane {
         self.finder.update(cx, |this, cx| {
             if width != this.preview_w {
                 this.preview_w = width;
+                crate::prefs::set_pane_width(width);
                 cx.notify();
             }
         });
@@ -250,11 +251,8 @@ impl FinderDemo {
             return;
         }
 
-        let bars = [self.path_bar_shown, self.status_bar_shown]
-            .iter()
-            .filter(|shown| **shown)
-            .count() as f32
-            * BAR_H;
+        let bars = if self.path_bar_shown { PATH_H } else { 0. }
+            + if self.status_bar_shown { BAR_H } else { 0. };
         // The card window stops short of the window's right and bottom edges: those are the
         // parent's resize edges, and a child window over them would take the drag.
         let bounds = Bounds {

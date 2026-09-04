@@ -1,7 +1,8 @@
 //! The column (browser) view.
 
 use gpui::{
-    AnyElement, ClickEvent, Hsla, Modifiers, SharedString, Window, div, opaque_grey, prelude::*, px,
+    AnyElement, ClickEvent, FontWeight, Hsla, Modifiers, SharedString, Window, div, opaque_grey,
+    prelude::*, px,
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
@@ -213,7 +214,7 @@ impl FinderDemo {
                         SystemColor::SecondaryLabel
                     };
                     cell = cell.children(
-                        small_glyph("chevron.right", CHEVRON, color)
+                        small_glyph("chevron.right", CHEVRON, FontWeight::SEMIBOLD, color)
                             .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
                     );
                 }

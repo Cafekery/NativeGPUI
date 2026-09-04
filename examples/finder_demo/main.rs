@@ -136,7 +136,7 @@ impl FinderDemo {
             list_focused: false,
             list_room: 0.,
             list_span: f32::NAN,
-            path_bar_shown: false,
+            path_bar_shown: true,
             status_bar_shown: false,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
             scroll: UniformListScrollHandle::new(),
@@ -900,7 +900,7 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self.path_bar(&palette);
+        let path_bar = self.path_bar(&palette, metrics, px(self.pane_w()));
         let status_bar = self.status_bar(&palette, cx);
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
@@ -944,9 +944,7 @@ impl Render for FinderDemo {
                                 .when(!list_view, |row| row.pl(metrics.left))
                                 .child(self.list_column(body, headers, &palette, metrics, corner)),
                         )
-                        .when(self.path_bar_shown, |c| {
-                            c.child(div().flex_none().pl(metrics.left).child(path_bar))
-                        })
+                        .when(self.path_bar_shown, |c| c.child(path_bar))
                         .when(self.status_bar_shown, |c| {
                             c.child(div().flex_none().pl(metrics.left).child(status_bar))
                         }),

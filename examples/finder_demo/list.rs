@@ -120,7 +120,7 @@ impl FinderDemo {
                             } else {
                                 SystemColor::SecondaryLabel
                             };
-                            if let Some(glyph) = small_glyph(arrow, 9., color) {
+                            if let Some(glyph) = small_glyph(arrow, 9., FontWeight::BOLD, color) {
                                 slot = slot.child(glyph);
                             }
                             slot = slot.on_click(move |_: &ClickEvent, _, cx| {
