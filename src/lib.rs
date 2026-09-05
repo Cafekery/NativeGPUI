@@ -28,6 +28,7 @@ mod system;
 
 pub mod controls;
 pub mod materials;
+pub mod quicklook;
 pub mod surfaces;
 
 pub use bridge::appkit::{fitting_size, fitting_size_keyed, focus_gpui};
@@ -45,6 +46,7 @@ pub use chrome::window_chrome::*;
 pub use chrome::{sidebar, window_chrome};
 pub use controls::*;
 pub use materials::*;
+pub use quicklook::*;
 pub use surfaces::*;
 pub use system::thumbnails;
 pub use system::tokens;
