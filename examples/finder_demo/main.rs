@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
     Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
-    Window, WindowBounds, WindowOptions, div, point, prelude::*, px, relative, size,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, FileType, SystemTheme};
@@ -1187,7 +1187,7 @@ fn main() {
     });
 }
 
-fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
+fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {
     let step = px(extra as f32 * 30.);
     cx.open_window(
         WindowOptions {
@@ -1195,12 +1195,14 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
                 origin: point(px(160.) + step, px(120.) + step),
                 size: size(px(1200.), px(772.)),
             })),
+            tabbing_identifier: Some("ng.finder".into()),
             ..window_options()
         },
         |window, cx| {
             if extra == 0 {
                 remember_frame(window, "ng.finder.window");
             }
+            native_gpui::window_tabs(window, commands::NewTab, cx);
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
@@ -1208,5 +1210,5 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) {
             })
         },
     )
-    .expect("the Finder window opens");
+    .expect("the Finder window opens")
 }
