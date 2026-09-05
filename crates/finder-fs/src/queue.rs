@@ -14,6 +14,12 @@ use crate::ops::{self, Conflict, Done, Op};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct JobId(u64);
 
+impl JobId {
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug)]
 pub enum Event {
     Started(JobId),
