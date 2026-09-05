@@ -3,20 +3,22 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Style, Window};
+use gpui::{App, ElementId, Style, Window, px};
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSControlStateValue, NSControlStateValueMixed, NSControlStateValueOff,
-    NSControlStateValueOn, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSBezelStyle, NSButton, NSControlSize, NSControlStateValue, NSControlStateValueMixed,
+    NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle, NSSegmentSwitchTracking,
+    NSSegmentedControl,
 };
 use objc2_foundation::{MainThreadMarker, NSSize, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
-    Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
+    ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
 use crate::controls::fitted;
+use crate::system::tokens::SystemColor;
 
 /// A fitting size cached per content, since a title moves it.
 fn measured(
@@ -406,12 +408,45 @@ impl TrackingMode {
     }
 }
 
+/// `NSSegmentStyle`; `Automatic` lets AppKit pick from context, the way [`ButtonBezel::Automatic`]
+/// does for a button.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum SegmentStyle {
+    #[default]
+    Automatic,
+    Rounded,
+    RoundRect,
+    TexturedSquare,
+    SmallSquare,
+    Separated,
+    TexturedRounded,
+    Capsule,
+}
+
+impl SegmentStyle {
+    fn to_native(self) -> NSSegmentStyle {
+        match self {
+            Self::Automatic => NSSegmentStyle::Automatic,
+            Self::Rounded => NSSegmentStyle::Rounded,
+            Self::RoundRect => NSSegmentStyle::RoundRect,
+            Self::TexturedSquare => NSSegmentStyle::TexturedSquare,
+            Self::SmallSquare => NSSegmentStyle::SmallSquare,
+            Self::Separated => NSSegmentStyle::Separated,
+            Self::TexturedRounded => NSSegmentStyle::TexturedRounded,
+            Self::Capsule => NSSegmentStyle::Capsule,
+        }
+    }
+}
+
 pub fn native_segmented(id: impl Into<ElementId>, selected: usize) -> NativeSegmented {
     NativeSegmented {
         id: id.into(),
         selected,
         segments: Vec::new(),
         tracking: TrackingMode::SelectOne,
+        style: SegmentStyle::default(),
+        control_size: ControlSize::default(),
+        selected_bezel: None,
         enabled: true,
         on_change: None,
     }
@@ -422,6 +457,9 @@ pub struct NativeSegmented {
     selected: usize,
     segments: Vec<String>,
     tracking: TrackingMode,
+    style: SegmentStyle,
+    control_size: ControlSize,
+    selected_bezel: Option<SystemColor>,
     enabled: bool,
     on_change: Option<NativeHandler>,
 }
@@ -434,6 +472,23 @@ impl NativeSegmented {
 
     pub fn tracking_mode(mut self, tracking: TrackingMode) -> Self {
         self.tracking = tracking;
+        self
+    }
+
+    pub fn style(mut self, style: SegmentStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
+        self
+    }
+
+    /// Overrides the selected segment's fill, a quiet tint in place of the accent colour — the
+    /// way Finder's own search-scope segments read.
+    pub fn selected_bezel_color(mut self, color: SystemColor) -> Self {
+        self.selected_bezel = Some(color);
         self
     }
 
@@ -457,17 +512,29 @@ impl NativeSegmented {
 
     fn layout(&self) -> Style {
         let segments = self.segments.clone();
-        measured("NSSegmentedControl", &segments, |mtm| {
-            let control = NSSegmentedControl::new(mtm);
-            control.setSegmentCount(segments.len() as isize);
-            for (i, label) in segments.iter().enumerate() {
-                control.setLabel_forSegment(&NSString::from_str(label), i as isize);
-            }
-            control.fittingSize()
-        })
+        let (style, control_size) = (self.style, self.control_size);
+        measured(
+            "NSSegmentedControl",
+            (&segments, style, control_size),
+            |mtm| {
+                let control = NSSegmentedControl::new(mtm);
+                control.setSegmentCount(segments.len() as isize);
+                for (i, label) in segments.iter().enumerate() {
+                    control.setLabel_forSegment(&NSString::from_str(label), i as isize);
+                }
+                control.setSegmentStyle(style.to_native());
+                control.setControlSize(NSControlSize::from(control_size));
+                control.fittingSize()
+            },
+        )
     }
 
-    fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
+    fn paint(&mut self, mut slot: Slot, window: &mut Window, _: &mut App) {
+        // A fractional origin blurs the capsule's stroke and the label under it.
+        let scale = window.scale_factor();
+        let snap = |v: gpui::Pixels| px((f32::from(v) * scale).round() / scale);
+        slot.bounds.origin.x = snap(slot.bounds.origin.x);
+        slot.bounds.origin.y = snap(slot.bounds.origin.y);
         let control = slot.place(Layer::Above, |mtm, target| {
             let control = NSSegmentedControl::new(mtm);
             wire(&control, target, slot.key);
@@ -482,6 +549,23 @@ impl NativeSegmented {
             if current.as_deref() != Some(label.as_str()) {
                 control.setLabel_forSegment(&NSString::from_str(label), i as isize);
             }
+        }
+        let style = self.style.to_native();
+        if control.segmentStyle() != style {
+            control.setSegmentStyle(style);
+        }
+        let control_size = NSControlSize::from(self.control_size);
+        if control.controlSize() != control_size {
+            control.setControlSize(control_size);
+        }
+        let bezel = self.selected_bezel.map(SystemColor::ns_color);
+        let same_bezel = match (control.selectedSegmentBezelColor(), &bezel) {
+            (Some(have), Some(want)) => have.isEqual(Some(&**want)),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_bezel {
+            control.setSelectedSegmentBezelColor(bezel.as_deref());
         }
         let tracking = self.tracking.to_native();
         if control.trackingMode() != tracking {
