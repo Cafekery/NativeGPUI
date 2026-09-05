@@ -18,10 +18,10 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
-use crate::data::{Face, Line, Row, byte_string, day_string};
+use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill};
+use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill, thumb_art};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 pub(crate) const PREVIEW_W: f32 = 366.;
@@ -399,9 +399,12 @@ impl FinderDemo {
         }
     }
 
+    /// A folder weighs what the index says it weighs; a file weighs itself.
     fn total_bytes(&self, row: &Row) -> u64 {
-        match row.opens.and_then(|id| self.store.get(id)) {
-            Some(folder) => folder.rows.iter().map(|row| self.total_bytes(row)).sum(),
+        match row.opens {
+            Some(id) => crate::index()
+                .folder_size(std::path::Path::new(id))
+                .unwrap_or(row.bytes),
             None => row.bytes,
         }
     }
@@ -738,7 +741,7 @@ fn hero(row: &Row, content: f32) -> AnyElement {
             .justify_center()
             .rounded(px(6.))
             .bg(system_color(SystemColor::TertiarySystemFill))
-            .child(artwork(row, (content / 3.).min(96.)))
+            .child(thumb_art(row, (content * 9. / 16.).floor()))
             .into_any_element();
     }
     artwork(row, content)
@@ -746,8 +749,8 @@ fn hero(row: &Row, content: f32) -> AnyElement {
 
 fn kind_line(row: &Row) -> SharedString {
     match row.size.as_ref() {
-        "--" => row.face.kind().into(),
-        size => format!("{} - {size}", row.face.kind()).into(),
+        "--" => row.kind.clone(),
+        size => format!("{} - {size}", row.kind).into(),
     }
 }
 
@@ -755,14 +758,14 @@ fn info_rows(row: &Row, expanded: bool) -> Vec<(&'static str, SharedString)> {
     let media = row.dimensions.is_some() || row.duration.is_some();
     let mut rows = Vec::with_capacity(6);
     if media {
-        rows.push(("Created", row.created.clone()));
+        rows.push(("Created", date_text(row.created_at)));
     }
-    rows.push(("Modified", row.modified.clone()));
+    rows.push(("Modified", date_text(row.modified_at)));
     if media {
         rows.extend(row.dimensions.clone().map(|value| ("Dimensions", value)));
         rows.extend(row.duration.clone().map(|value| ("Duration", value)));
         if expanded {
-            rows.push(("Kind", row.face.kind().into()));
+            rows.push(("Kind", row.kind.clone()));
             rows.push(("Size", row.size.clone()));
         }
     } else {

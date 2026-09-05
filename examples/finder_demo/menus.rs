@@ -1,17 +1,18 @@
 //! Finder's contextual menus, read off the real one: which rows each context shows, in what order.
 
-use std::collections::HashSet;
-
 use std::cell::Cell;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
-use gpui::{ClipboardItem, Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
+use finder_fs::ops::{Conflict, Op};
+use gpui::{Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
 use native_gpui::tokens::system_color;
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
-use crate::data::{Column, Folder, Line, Row};
+use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
 use crate::ui::TAGS;
-use crate::{FinderDemo, ICON_VIEW, open_finder_window};
+use crate::{After, FinderDemo, ICON_VIEW, open_finder_window};
 
 const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];
@@ -167,13 +168,11 @@ impl FinderDemo {
         match act {
             Act::Nothing => return,
             Act::Swatch => match SWATCH.with(|cell| cell.take()) {
-                Some(tag) => self.tag_selection(tag),
+                Some(tag) => self.tag_selection(tag, cx),
                 None => return,
             },
-            Act::NewFolder => {
-                self.new_folder();
-            }
-            Act::NewFolderWith => self.new_folder_with_selection(),
+            Act::NewFolder => self.new_folder(cx),
+            Act::NewFolderWith => self.new_folder_with_selection(cx),
             Act::Groups => self.grouped = !self.grouped,
             Act::ViewOptions => {
                 let demo = cx.entity();
@@ -187,152 +186,97 @@ impl FinderDemo {
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),
             Act::OpenWindow => self.open_in_window(window, cx),
-            Act::Trash => self.trash_selection(),
+            Act::Trash => self.trash_selection(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
-            Act::Duplicate => self.duplicate_selection(),
-            Act::Copy => self.copy_selection(cx),
+            Act::Duplicate => self.duplicate_selection(cx),
+            Act::Copy => self.copy_selection(),
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();
     }
 
-    pub(crate) fn new_folder(&mut self) -> Option<SharedString> {
-        self.make_folder("untitled folder")
-    }
-
-    fn make_folder(&mut self, stem: &str) -> Option<SharedString> {
-        let here = self.target();
-        let folder = self.store.get(here)?;
-        let mut name = String::from(stem);
-        let mut copy = 2;
-        while folder.rows.iter().any(|row| row.name.as_ref() == name) {
-            name = format!("{stem} {copy}");
-            copy += 1;
-        }
-        let title: &'static str = Box::leak(name.clone().into_boxed_str());
-        let id: &'static str = Box::leak(format!("{here}/{title}").into_boxed_str());
-        let crumbs: &'static [&'static str] = Box::leak(
-            folder
-                .crumbs
-                .iter()
-                .copied()
-                .chain([title])
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let row = Row::folder(title, id);
-        let key = SharedString::from(format!("{here}/{title}"));
-        self.store.insert(
-            id,
-            Folder {
-                title,
-                parent: Some(here),
-                crumbs,
-                rows: Vec::new(),
-            },
-        );
-        if let Some(folder) = self.store.get_mut(here) {
-            folder.rows.push(row);
-        }
-        self.selected = HashSet::from([key.clone()]);
-        self.cursor = Some(key.clone());
-        self.anchor = Some(key.clone());
-        self.renaming = Some(key.clone());
-        Some(key)
+    /// Finder's New Folder: `untitled folder` in the folder on screen, named as it lands.
+    pub(crate) fn new_folder(&mut self, cx: &mut Context<Self>) {
+        self.make_folder("untitled folder", Vec::new(), cx);
     }
 
     /// Finder's ⌃⌘N: the chosen rows move into a folder made for them.
-    pub(crate) fn new_folder_with_selection(&mut self) {
-        let here = self.target();
-        let chosen = self.selected.clone();
+    pub(crate) fn new_folder_with_selection(&mut self, cx: &mut Context<Self>) {
+        let chosen = self.paths();
         if chosen.is_empty() {
             return;
         }
-        let Some(key) = self.make_folder("New Folder With Items") else {
+        self.make_folder("New Folder With Items", chosen, cx);
+    }
+
+    fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let op = Op::NewFolder {
+            into: PathBuf::from(self.target()),
+            name: stem.to_owned(),
+        };
+        if with.is_empty() {
+            self.run_op(op, After::Rename, cx);
             return;
-        };
-        let into: &'static str = match self.store.get(here).and_then(|folder| {
-            folder
-                .rows
-                .iter()
-                .find(|row| SharedString::from(format!("{here}/{}", row.name)) == key)
-                .and_then(|row| row.opens)
-        }) {
-            Some(into) => into,
-            None => return,
-        };
-        let moved: Vec<Row> = match self.store.get_mut(here) {
-            Some(folder) => {
-                let (moved, kept) = folder.rows.drain(..).partition(|row| {
-                    chosen.contains(&SharedString::from(format!("{here}/{}", row.name)))
-                });
-                folder.rows = kept;
-                moved
-            }
-            None => return,
-        };
-        if let Some(folder) = self.store.get_mut(into) {
-            folder.rows = moved;
+        }
+        cx.spawn(async move |this, cx| {
+            let made = cx
+                .background_executor()
+                .spawn(async move { finder_fs::ops::perform(op, Conflict::KeepBoth, |_| {}) })
+                .await;
+            let Some(folder) = made.ok().and_then(|done| done.results.first().cloned()) else {
+                return;
+            };
+            this.update(cx, |this: &mut FinderDemo, cx| {
+                this.run_op(
+                    Op::Move {
+                        items: with,
+                        into: folder,
+                    },
+                    After::Nothing,
+                    cx,
+                );
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The chosen rows, as the paths an operation takes.
+    pub(crate) fn paths(&self) -> Vec<PathBuf> {
+        self.focused_lines()
+            .iter()
+            .filter(|line| self.selected.contains(&line.key))
+            .map(|line| PathBuf::from(line.key.as_ref()))
+            .collect()
+    }
+
+    fn duplicate_selection(&mut self, cx: &mut Context<Self>) {
+        let items = self.paths();
+        if !items.is_empty() {
+            self.run_op(Op::Duplicate(items), After::Select, cx);
         }
     }
 
-    fn duplicate_selection(&mut self) {
-        let here = self.target();
-        let Some(folder) = self.store.get_mut(here) else {
+    pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
+        let items = self.paths();
+        if items.is_empty() {
             return;
-        };
-        let copies: Vec<Row> = folder
-            .rows
-            .iter()
-            .filter(|row| {
-                self.selected
-                    .contains(&SharedString::from(format!("{here}/{}", row.name)))
-            })
-            .map(|row| {
-                let mut copy = row.clone();
-                copy.name = SharedString::from(match row.name.rsplit_once('.') {
-                    Some((stem, ext)) if !stem.is_empty() => format!("{stem} copy.{ext}"),
-                    _ => format!("{} copy", row.name),
-                });
-                copy
-            })
-            .collect();
-        if copies.is_empty() {
-            return;
-        }
-        let keys: Vec<SharedString> = copies
-            .iter()
-            .map(|row| SharedString::from(format!("{here}/{}", row.name)))
-            .collect();
-        folder.rows.extend(copies);
-        self.selected = keys.iter().cloned().collect();
-        self.cursor = keys.last().cloned();
-        self.anchor = self.cursor.clone();
-    }
-
-    fn trash_selection(&mut self) {
-        let here = self.target();
-        let gone: HashSet<SharedString> = self.selected.clone();
-        if let Some(folder) = self.store.get_mut(here) {
-            folder
-                .rows
-                .retain(|row| !gone.contains(&SharedString::from(format!("{here}/{}", row.name))));
         }
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
+        self.run_op(Op::Trash(items), After::Nothing, cx);
     }
 
-    fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        let names: Vec<String> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.row.name.to_string())
-            .collect();
-        if !names.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(names.join("\n")));
+    pub(crate) fn delete_selection(&mut self, cx: &mut Context<Self>) {
+        let items = self.paths();
+        if items.is_empty() {
+            return;
         }
+        self.selected.clear();
+        self.cursor = None;
+        self.anchor = None;
+        self.run_op(Op::DeleteImmediately(items), After::Nothing, cx);
     }
 
     fn open_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -366,6 +310,7 @@ impl FinderDemo {
             self.sort = column;
             self.ascending = true;
         }
+        self.resort();
     }
 
     fn toggle_column(&mut self, column: Column) {

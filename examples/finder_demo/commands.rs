@@ -1,9 +1,10 @@
 //! The menu bar Finder carries, read off the real one: the same rows, order and key equivalents.
 
+use finder_fs::volumes::{self, Standard};
 use gpui::{App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, prepend_menu};
 
-use crate::data::Column;
+use crate::data::{Column, intern_path};
 use crate::menus::Act;
 use crate::{COLUMN_VIEW, FinderDemo, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 
@@ -179,6 +180,12 @@ impl FinderDemo {
         }
     }
 
+    fn go_place(&mut self, which: Standard, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = volumes::standard(which) {
+            self.go(intern_path(&path), window, cx);
+        }
+    }
+
     pub(crate) fn menu_bar_actions(&mut self, element: Div, cx: &mut Context<Self>) -> Div {
         element
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
@@ -197,7 +204,7 @@ impl FinderDemo {
                 this.run_menu(Act::NewFolder, window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewFolderWithSelection, _, cx| {
-                this.new_folder_with_selection();
+                this.new_folder_with_selection(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
@@ -222,8 +229,9 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &DuplicateExactly, window, cx| {
                 this.run_menu(Act::Duplicate, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &DeleteImmediately, window, cx| {
-                this.run_menu(Act::Trash, window, cx);
+            .on_action(cx.listener(|this, _: &DeleteImmediately, _, cx| {
+                this.delete_selection(cx);
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Trash, window, cx| {
                 this.run_menu(Act::Trash, window, cx);
@@ -297,19 +305,19 @@ impl FinderDemo {
                 this.up(window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoDocuments, window, cx| {
-                this.go("documents", window, cx);
+                this.go_place(Standard::Documents, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoDesktop, window, cx| {
-                this.go("desktop", window, cx);
+                this.go_place(Standard::Desktop, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoDownloads, window, cx| {
-                this.go("downloads", window, cx);
+                this.go_place(Standard::Downloads, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoHome, window, cx| {
-                this.go("home", window, cx);
+                this.go_place(Standard::Home, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoApplications, window, cx| {
-                this.go("applications", window, cx);
+                this.go_place(Standard::Applications, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoRecent0, window, cx| {
                 this.go_recent(0, window, cx);

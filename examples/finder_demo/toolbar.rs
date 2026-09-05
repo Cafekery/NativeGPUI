@@ -14,7 +14,7 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-use crate::data::{AVAILABLE_BYTES, Column, Face as F, byte_string};
+use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::palette::Palette;
 use crate::ui::{TAGS, click_kind, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
@@ -230,7 +230,6 @@ impl FinderDemo {
         }
         let this = cx.entity().downgrade();
         let nav = this.clone();
-        let airdrop = this.clone();
         let view = this.clone();
         let tag = this.clone();
         let query = this.clone();
@@ -256,11 +255,7 @@ impl FinderDemo {
                         .ok();
                 }),
                 ToolbarItem::flexible_space(),
-                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop").on_click(move |window, cx| {
-                    airdrop
-                        .update(cx, |this: &mut Self, cx| this.go("airdrop", window, cx))
-                        .ok();
-                }),
+                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop"),
                 ToolbarItem::group(
                     VIEW_ID,
                     "View",
@@ -285,7 +280,7 @@ impl FinderDemo {
                 ToolbarItem::share(SHARE_ID, "Share", self.share_items()),
                 ToolbarItem::symbol(TAG_ID, "tag", "Edit Tags").on_click(move |_, cx| {
                     tag.update(cx, |this: &mut Self, cx| {
-                        this.cycle_tag();
+                        this.cycle_tag(cx);
                         cx.notify();
                     })
                     .ok();
@@ -298,10 +293,7 @@ impl FinderDemo {
                     .on_change(move |text, _, cx| {
                         let text = text.to_string();
                         query
-                            .update(cx, |this: &mut Self, cx| {
-                                this.query = text;
-                                cx.notify();
-                            })
+                            .update(cx, |this: &mut Self, cx| this.search(text, cx))
                             .ok();
                     }),
             ],
@@ -334,7 +326,8 @@ impl FinderDemo {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let crumbs: &[&str] = self.folder().map_or(&[], |folder| folder.crumbs);
+        let here = self.folders.get(self.target());
+        let crumbs: &[&str] = here.map_or(&[][..], |folder| folder.crumbs.as_slice());
         let chain = self.crumb_ids();
         let named = self.crumb_labels(crumbs, window);
         let mut trail = div()
@@ -370,7 +363,7 @@ impl FinderDemo {
                     .items_center()
                     .min_w(px(CRUMB_ICON))
                     .gap(px(CRUMB_GAP))
-                    .child(crumb_icon(index == 0 && crumbs.len() > 1))
+                    .child(crumb_icon(index == 0))
                     .when(named[index], |crumb_row| {
                         crumb_row.child(div().min_w(px(0.)).text_ellipsis().child(*crumb))
                     })
@@ -454,7 +447,7 @@ impl FinderDemo {
     pub(crate) fn status_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let count = self.lines(false).len();
         let chosen = self.selected.len();
-        let available = byte_string(AVAILABLE_BYTES as u64);
+        let available = byte_string(available_bytes(self.here()));
         let text = if chosen > 0 {
             format!("{chosen} of {count} selected, {available} available")
         } else {

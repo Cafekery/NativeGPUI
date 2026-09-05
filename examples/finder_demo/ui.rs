@@ -1,9 +1,21 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
 
-use gpui::{AnyElement, ClickEvent, FontWeight, Hsla, WeakEntity, Window, div, prelude::*, px};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use gpui::{
+    AnyElement, ClickEvent, FontWeight, Hsla, SharedString, WeakEntity, Window, div, img,
+    prelude::*, px,
+};
+
+use native_gpui::thumbnails;
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSScreen;
 
 use crate::data::{Face, Line, Row};
 use crate::{FinderDemo, ns_window};
@@ -17,6 +29,74 @@ pub(crate) const TAGS: &[(&str, SystemColor)] = &[
     ("Purple", SystemColor::SystemPurple),
     ("Gray", SystemColor::SystemGray),
 ];
+
+/// The demo's tag colours are Finder's, in Finder's order; these are Finder's colour indices.
+const TAG_COLORS: [u8; 7] = [6, 7, 5, 2, 4, 3, 1];
+
+/// One of the demo's tags as Finder stores it.
+pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
+    finder_fs::tags::Tag {
+        name: TAGS[index].0.to_string(),
+        color: TAG_COLORS[index],
+    }
+}
+
+/// Thumbnails land on a background queue; the count tells a window when to draw again.
+static LANDED: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn thumbnails_landed() -> usize {
+    LANDED.load(Ordering::Relaxed)
+}
+
+fn screen_scale() -> f32 {
+    static SCALE: OnceLock<f32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return 2.;
+        };
+        NSScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.backingScaleFactor() as f32)
+            .fold(1., f32::max)
+    })
+}
+
+/// Finder's picture of a file where Quick Look has one, and its type's icon until that arrives.
+pub(crate) fn thumb_art(row: &Row, size: f32) -> AnyElement {
+    if !matches!(row.face, Face::Image | Face::Movie | Face::Pdf) {
+        return artwork(row, size);
+    }
+    let path = Path::new(row.path.as_ref());
+    let scale = screen_scale();
+    let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale) else {
+        ask(row, size, scale);
+        return artwork(row, size);
+    };
+    div()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(img(image).max_w(px(size)).max_h(px(size)))
+        .into_any_element()
+}
+
+/// One request per file, size and moment: the module coalesces the work already in flight, but a
+/// waiter a frame would pile up behind it.
+fn ask(row: &Row, size: f32, scale: f32) {
+    thread_local! {
+        static ASKED: RefCell<HashSet<(SharedString, u32, i64)>> = RefCell::new(HashSet::new());
+    }
+    let key = (row.path.clone(), size as u32, row.modified_at as i64);
+    if ASKED.with(|asked| !asked.borrow_mut().insert(key)) {
+        return;
+    }
+    thumbnails::thumbnail(Path::new(row.path.as_ref()), px(size), scale, |_| {
+        LANDED.fetch_add(1, Ordering::Relaxed);
+    });
+}
 
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
     let art = row
@@ -111,7 +191,7 @@ pub(crate) fn rename_field(
         .on_submit(move |text, window, cx| {
             let text = text.clone();
             this.update(cx, |this: &mut FinderDemo, cx| {
-                this.rename(&key, &text);
+                this.rename(&key, &text, cx);
                 this.renaming = None;
                 focus_gpui(window);
                 key_to_parent(window);

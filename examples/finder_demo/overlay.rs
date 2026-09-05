@@ -132,7 +132,7 @@ impl FinderDemo {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(tokens::system_color(SystemColor::SecondaryLabel))
-                                    .child(line.row.face.kind()),
+                                    .child(line.row.kind.clone()),
                             ),
                     ),
             )
