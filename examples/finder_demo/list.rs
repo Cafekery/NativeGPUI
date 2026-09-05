@@ -77,6 +77,8 @@ impl FinderDemo {
         let name_w = self.name_w;
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
         let row_tip = self.row_tip.clone();
+        // Finder's search results show a path where the Kind column sits.
+        let searching = self.searching();
 
         let (pads, lift) = self.list_inset();
         let scale = self.scale;
@@ -249,7 +251,11 @@ impl FinderDemo {
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(line.row.kind.clone()),
+                                .child(if searching {
+                                    crate::data::enclosing_name(&line.key)
+                                } else {
+                                    line.row.kind.clone()
+                                }),
                             // `list_columns` never holds Name; this only keeps the match exhaustive.
                             Column::Name => cell,
                         });

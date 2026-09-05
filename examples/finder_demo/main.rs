@@ -1082,21 +1082,26 @@ impl FinderDemo {
     pub(crate) fn lines(&self, tree: bool) -> Vec<Line> {
         let mut out = Vec::new();
         self.collect(self.here(), 0, tree, &mut out);
-        if self.searching() {
-            let shown: HashSet<&str> = out.iter().map(|line| line.key.as_ref()).collect();
-            let found: Vec<Line> = self
-                .hits
-                .iter()
-                .filter(|row| !shown.contains(row.path.as_ref()))
-                .map(|row| Line {
-                    key: row.path.clone(),
-                    row: row.clone(),
-                    depth: 0,
-                })
-                .collect();
-            out.extend(found);
+        if !self.searching() {
+            return out;
         }
-        out
+        // The index's hits are already ranked best first; anything only the folder listing
+        // still knows about (too new for the index) trails behind, unranked.
+        let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
+        let mut merged: Vec<Line> = self
+            .hits
+            .iter()
+            .map(|row| Line {
+                key: row.path.clone(),
+                row: row.clone(),
+                depth: 0,
+            })
+            .collect();
+        merged.extend(
+            out.into_iter()
+                .filter(|line| !ranked.contains(line.key.as_ref())),
+        );
+        merged
     }
 
     pub(crate) fn collect(&self, id: &'static str, depth: usize, tree: bool, out: &mut Vec<Line>) {
