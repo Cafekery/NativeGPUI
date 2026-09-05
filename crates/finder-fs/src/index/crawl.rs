@@ -82,6 +82,8 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
     }
 }
 
+static TRACE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 pub fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
 }
@@ -89,6 +91,17 @@ pub fn home() -> PathBuf {
 impl Crawl {
     fn run(self: &Arc<Self>) {
         while let Some(task) = self.next() {
+            if std::env::var_os("NG_CRAWL_TRACE").is_some() {
+                let ms = TRACE_START
+                    .get_or_init(std::time::Instant::now)
+                    .elapsed()
+                    .as_millis();
+                eprintln!(
+                    "crawl {ms} {} {}",
+                    if task.weigh { "W" } else { "L" },
+                    task.path.display()
+                );
+            }
             match task.weigh {
                 true => self.weigh(task),
                 false => self.list(task),
@@ -276,7 +289,13 @@ impl Crawl {
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
-    if is_symlink(path) || elsewhere(path) || guarded(path) || private(path, home) {
+    if is_symlink(path)
+        || elsewhere(path)
+        || guarded(path)
+        || private(path, home)
+        || sandboxed(path, home)
+        || simulator(path)
+    {
         return Class::Seal;
     }
     if entry.package || weigh_only(path, home) {
@@ -305,14 +324,36 @@ fn guarded(path: &Path) -> bool {
     })
 }
 
-/// The folders macOS asks the user about on first access. A walk into them at launch would put
-/// three prompts up at once, so they are only crawled as roots, once the app has been let in.
+/// The folders macOS asks the user about on first access: Desktop, Documents, Downloads, and the
+/// media homes whose Music/TV/Photos folders sit behind the media-library prompt. A walk into
+/// them at launch stacks prompts, so they are crawled only as roots, once the app has been let in.
+/// An iOS Simulator device: a UUID-named folder holding `device.plist`. Its `data` is a whole
+/// iOS home, hundreds of thousands of entries deep, with Photos and Music library layouts that
+/// macOS guards behind the media-library prompt; wherever Xcode keeps it, it is not the user's.
+fn simulator(path: &Path) -> bool {
+    let name = path.file_name().unwrap_or_default().as_bytes();
+    let uuid_shaped = name.len() == 36
+        && name.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    uuid_shaped && path.join("device.plist").is_file()
+}
+
+/// `~/Library`: other apps' state, which macOS guards as "data from other apps". Walking it
+/// raises the media-library prompt (Music's AppleMediaServices, iTunesCloud and AMP folders sit
+/// right under it) and a blocked-access notice for every sandboxed app. Finder hides it anyway;
+/// a visit lists it like any folder.
+fn sandboxed(path: &Path, home: &Path) -> bool {
+    !home.as_os_str().is_empty() && path == home.join("Library")
+}
+
 fn private(path: &Path, home: &Path) -> bool {
     !home.as_os_str().is_empty()
         && path.parent() == Some(home)
         && matches!(
             path.file_name().unwrap_or_default().as_bytes(),
-            b"Desktop" | b"Documents" | b"Downloads"
+            b"Desktop" | b"Documents" | b"Downloads" | b"Pictures" | b"Music" | b"Movies"
         )
 }
 
@@ -320,7 +361,7 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-/// Volume metadata, caches and the trash: their bytes count, their contents are not indexed.
+/// Volume metadata and the trash: their bytes count, their contents are not indexed.
 fn weigh_only(path: &Path, home: &Path) -> bool {
     let name = path.file_name().unwrap_or_default();
     if matches!(
@@ -329,8 +370,7 @@ fn weigh_only(path: &Path, home: &Path) -> bool {
     ) {
         return true;
     }
-    !home.as_os_str().is_empty()
-        && (path == home.join("Library/Caches") || path == home.join(".Trash"))
+    !home.as_os_str().is_empty() && path == home.join(".Trash")
 }
 
 /// Not this tree: the firmlinked volume roots (`/System/Volumes/Data` is `/` again), devices,
