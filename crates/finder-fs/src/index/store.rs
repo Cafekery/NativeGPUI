@@ -1,0 +1,558 @@
+//! The arena the index answers from: one fixed-size node per entry, names interned once, a
+//! directory's children a linked list in listing order.
+
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::entry::{Entry, EntryKind};
+
+pub const NONE: u32 = u32::MAX;
+pub const ROOT: u32 = 0;
+
+pub const KIND: u8 = 0b11;
+pub const HIDDEN: u8 = 1 << 2;
+pub const PACKAGE: u8 = 1 << 3;
+pub const DELETED: u8 = 1 << 4;
+
+pub const LISTED: u8 = 1 << 0;
+pub const VISITED: u8 = 1 << 1;
+pub const COMPLETE: u8 = 1 << 2;
+
+const MAX_DEPTH: usize = 255;
+/// Doubling a vector of millions of entries costs more resident memory than the index itself.
+const CHUNK: usize = 1 << 19;
+
+fn reserve<T>(items: &mut Vec<T>, more: usize) {
+    if items.len() + more > items.capacity() {
+        items.reserve_exact(CHUNK.max(more));
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Node {
+    pub size: u64,
+    pub file_id: u64,
+    pub parent: u32,
+    pub first_child: u32,
+    pub next_sibling: u32,
+    pub modified: u32,
+    pub created: u32,
+    pub added: u32,
+    pub flags: u8,
+    pub state: u8,
+    pub depth: u8,
+    pub pad: u8,
+}
+
+const _: () = assert!(std::mem::size_of::<Node>() == 48);
+
+impl Node {
+    pub fn kind(&self) -> EntryKind {
+        match self.flags & KIND {
+            0 => EntryKind::File,
+            1 => EntryKind::Directory,
+            2 => EntryKind::Symlink,
+            _ => EntryKind::Other,
+        }
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.flags & KIND == 1
+    }
+
+    pub fn deleted(&self) -> bool {
+        self.flags & DELETED != 0
+    }
+}
+
+fn kind_bits(kind: EntryKind) -> u8 {
+    match kind {
+        EntryKind::File => 0,
+        EntryKind::Directory => 1,
+        EntryKind::Symlink => 2,
+        EntryKind::Other => 3,
+    }
+}
+
+pub fn secs(t: SystemTime) -> u32 {
+    t.duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs().min(u32::MAX as u64) as u32)
+}
+
+pub fn time(s: u32) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(s as u64)
+}
+
+/// The number of intern tables. Growing one costs a shard of a rehash, not a whole one.
+const SHARDS: usize = 64;
+
+/// Every distinct name once, with a letter set per name so a search can reject most of them
+/// without looking at their bytes.
+#[derive(Default)]
+pub struct Names {
+    pub blob: Vec<u8>,
+    pub ends: Vec<u32>,
+    mask: Vec<u32>,
+    tables: Vec<Vec<u32>>,
+    counts: Vec<u32>,
+}
+
+fn hash(bytes: &[u8]) -> u32 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h = (h ^ b as u64).wrapping_mul(0x1000_0000_01b3);
+    }
+    (h ^ (h >> 32)) as u32
+}
+
+pub fn letters(bytes: &[u8]) -> u32 {
+    let mut m = 0;
+    for &b in bytes {
+        m |= match b | 0x20 {
+            c @ b'a'..=b'z' => 1 << (c - b'a'),
+            b'0'..=b'9' if b.is_ascii_digit() => 1 << 26,
+            _ => 1 << 27,
+        };
+    }
+    m
+}
+
+impl Names {
+    pub fn with_blob(blob: Vec<u8>, ends: Vec<u32>) -> Names {
+        Names {
+            blob,
+            ends,
+            ..Names::default()
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub fn bytes(&self, id: u32) -> &[u8] {
+        let id = id as usize;
+        let start = if id == 0 {
+            0
+        } else {
+            self.ends[id - 1] as usize
+        };
+        &self.blob[start..self.ends[id] as usize]
+    }
+
+    pub fn masks(&self) -> &[u32] {
+        &self.mask
+    }
+
+    pub fn intern(&mut self, name: &str) -> u32 {
+        let bytes = name.as_bytes();
+        let hash = hash(bytes);
+        let shard = hash as usize % SHARDS;
+        if self.tables.is_empty() {
+            self.tables = vec![Vec::new(); SHARDS];
+            self.counts = vec![0; SHARDS];
+        }
+        if (self.counts[shard] as usize + 1) * 4 > self.tables[shard].len() * 3 {
+            self.grow(shard);
+        }
+        let slot = self.slot(shard, hash, bytes);
+        if self.tables[shard][slot] != NONE {
+            return self.tables[shard][slot];
+        }
+        let id = self.ends.len() as u32;
+        reserve(&mut self.blob, bytes.len());
+        reserve(&mut self.ends, 1);
+        reserve(&mut self.mask, 1);
+        self.blob.extend_from_slice(bytes);
+        self.ends.push(self.blob.len() as u32);
+        self.mask.push(letters(bytes));
+        self.tables[shard][slot] = id;
+        self.counts[shard] += 1;
+        id
+    }
+
+    fn slot(&self, shard: usize, hash: u32, bytes: &[u8]) -> usize {
+        let table = &self.tables[shard];
+        let mask = table.len() - 1;
+        let mut at = (hash >> 8) as usize & mask;
+        while table[at] != NONE && self.bytes(table[at]) != bytes {
+            at = (at + 1) & mask;
+        }
+        at
+    }
+
+    fn grow(&mut self, shard: usize) {
+        let size = ((self.counts[shard] as usize + 1) * 2)
+            .next_power_of_two()
+            .max(64);
+        let old = std::mem::take(&mut self.tables[shard]);
+        let live = old
+            .into_iter()
+            .filter(|&id| id != NONE)
+            .map(|id| (hash(self.bytes(id)), id));
+        self.tables[shard] = self.place(live, size);
+    }
+
+    fn place(&self, ids: impl Iterator<Item = (u32, u32)>, size: usize) -> Vec<u32> {
+        let mut table = vec![NONE; size];
+        let mask = size - 1;
+        for (hash, id) in ids {
+            let mut at = (hash >> 8) as usize & mask;
+            while table[at] != NONE {
+                at = (at + 1) & mask;
+            }
+            table[at] = id;
+        }
+        table
+    }
+
+    /// Rebuilds what the snapshot does not carry: the letter sets and the intern tables.
+    pub fn reindex(&mut self) {
+        self.mask = (0..self.ends.len() as u32)
+            .map(|id| letters(self.bytes(id)))
+            .collect();
+        let hashes: Vec<u32> = (0..self.ends.len() as u32)
+            .map(|id| hash(self.bytes(id)))
+            .collect();
+        self.counts = vec![0; SHARDS];
+        for &hash in &hashes {
+            self.counts[hash as usize % SHARDS] += 1;
+        }
+        self.tables = self
+            .counts
+            .iter()
+            .map(|&count| vec![NONE; ((count as usize + 1) * 2).next_power_of_two().max(64)])
+            .collect();
+        for (id, &hash) in hashes.iter().enumerate() {
+            let table = &mut self.tables[hash as usize % SHARDS];
+            let mask = table.len() - 1;
+            let mut at = (hash >> 8) as usize & mask;
+            while table[at] != NONE {
+                at = (at + 1) & mask;
+            }
+            table[at] = id as u32;
+        }
+    }
+}
+
+pub struct Relist {
+    dir: u32,
+    old: HashMap<u32, u32>,
+    ids: Vec<u32>,
+}
+
+pub struct Tree {
+    pub nodes: Vec<Node>,
+    pub name_of: Vec<u32>,
+    pub names: Names,
+    pub dirs: u64,
+    pub files: u64,
+    pub bytes: u64,
+    pub crawled_at: Option<SystemTime>,
+    pub event_id: u64,
+}
+
+impl Default for Tree {
+    fn default() -> Tree {
+        let mut names = Names::default();
+        let root = names.intern("");
+        Tree {
+            nodes: vec![Node {
+                size: 0,
+                file_id: 0,
+                parent: NONE,
+                first_child: NONE,
+                next_sibling: NONE,
+                modified: 0,
+                created: 0,
+                added: 0,
+                flags: 1,
+                state: 0,
+                depth: 0,
+                pad: 0,
+            }],
+            name_of: vec![root],
+            names,
+            dirs: 0,
+            files: 0,
+            bytes: 0,
+            crawled_at: None,
+            event_id: 0,
+        }
+    }
+}
+
+impl Tree {
+    /// The node for an absolute path, if the index has one.
+    pub fn find(&self, path: &Path) -> Option<u32> {
+        let mut cur = ROOT;
+        for part in path.components() {
+            match part {
+                Component::RootDir => cur = ROOT,
+                Component::CurDir => {}
+                Component::Normal(name) => cur = self.child(cur, name.as_bytes())?,
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    pub fn child(&self, dir: u32, name: &[u8]) -> Option<u32> {
+        self.children(dir)
+            .find(|&id| self.names.bytes(self.name_of[id as usize]) == name)
+    }
+
+    pub fn children(&self, dir: u32) -> impl Iterator<Item = u32> + '_ {
+        let mut cur = self.nodes[dir as usize].first_child;
+        let mut left = self.nodes.len();
+        std::iter::from_fn(move || {
+            while cur != NONE && left > 0 {
+                let id = cur;
+                left -= 1;
+                cur = self.nodes[id as usize].next_sibling;
+                if !self.nodes[id as usize].deleted() {
+                    return Some(id);
+                }
+            }
+            None
+        })
+    }
+
+    /// The node for `path`, creating the directories on the way as unvisited stubs.
+    pub fn ensure(&mut self, path: &Path) -> u32 {
+        let mut cur = ROOT;
+        for part in path.components() {
+            let Component::Normal(name) = part else {
+                continue;
+            };
+            let Some(name) = name.to_str() else {
+                return cur;
+            };
+            match self.child(cur, name.as_bytes()) {
+                Some(id) => cur = id,
+                None => {
+                    let id = self.push(cur, name, None, false);
+                    self.nodes[id as usize].next_sibling = self.nodes[cur as usize].first_child;
+                    self.nodes[cur as usize].first_child = id;
+                    cur = id;
+                }
+            }
+        }
+        cur
+    }
+
+    fn push(&mut self, parent: u32, name: &str, entry: Option<&Entry>, sealed: bool) -> u32 {
+        let name = self.names.intern(name);
+        let id = self.nodes.len() as u32;
+        reserve(&mut self.nodes, 1);
+        reserve(&mut self.name_of, 1);
+        let depth = self.nodes[parent as usize].depth.saturating_add(1);
+        let node = Node {
+            size: 0,
+            file_id: 0,
+            parent,
+            first_child: NONE,
+            next_sibling: NONE,
+            modified: 0,
+            created: 0,
+            added: 0,
+            flags: 1,
+            state: 0,
+            depth,
+            pad: 0,
+        };
+        self.nodes.push(node);
+        self.name_of.push(name);
+        if let Some(entry) = entry {
+            self.write(id, entry, sealed);
+        }
+        id
+    }
+
+    fn write(&mut self, id: u32, entry: &Entry, sealed: bool) {
+        let was_dir = self.nodes[id as usize].is_dir();
+        let node = &mut self.nodes[id as usize];
+        node.flags = kind_bits(entry.kind)
+            | if entry.hidden { HIDDEN } else { 0 }
+            | if entry.package { PACKAGE } else { 0 };
+        node.modified = secs(entry.modified);
+        node.created = secs(entry.created);
+        node.added = entry.added.map_or(0, secs);
+        node.file_id = entry.file_id;
+        if !node.is_dir() {
+            node.size = entry.size;
+        }
+        if sealed {
+            node.state |= VISITED;
+        }
+        if was_dir && !self.nodes[id as usize].is_dir() {
+            let kids: Vec<u32> = self.children(id).collect();
+            self.nodes[id as usize].first_child = NONE;
+            for kid in kids {
+                self.tombstone(kid);
+            }
+        }
+    }
+
+    pub fn tombstone(&mut self, id: u32) {
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            self.nodes[id as usize].flags |= DELETED;
+            let mut cur = self.nodes[id as usize].first_child;
+            let mut left = self.nodes.len();
+            while cur != NONE && left > 0 {
+                stack.push(cur);
+                left -= 1;
+                cur = self.nodes[cur as usize].next_sibling;
+            }
+        }
+    }
+
+    /// A directory's children rewritten in batches: the old list stays whole for readers until
+    /// [`Tree::end_relist`] swaps in the new one.
+    pub fn start_relist(&self, dir: u32) -> Relist {
+        Relist {
+            dir,
+            old: self
+                .children(dir)
+                .map(|id| (self.name_of[id as usize], id))
+                .collect(),
+            ids: Vec::new(),
+        }
+    }
+
+    /// `sealed[i]` marks a child the crawl will not list: a package, a skip, a symlink.
+    pub fn relist(&mut self, state: &mut Relist, entries: &[Entry], sealed: &[bool]) {
+        for (i, entry) in entries.iter().enumerate() {
+            let name = self.names.intern(&entry.name);
+            let id = match state.old.remove(&name) {
+                Some(id) => {
+                    self.write(id, entry, sealed[i]);
+                    id
+                }
+                None => self.push(state.dir, &entry.name, Some(entry), sealed[i]),
+            };
+            state.ids.push(id);
+        }
+    }
+
+    pub fn end_relist(&mut self, state: Relist) -> Vec<u32> {
+        let Relist { dir, old, ids } = state;
+        for pair in ids.windows(2) {
+            self.nodes[pair[0] as usize].next_sibling = pair[1];
+        }
+        if let Some(&last) = ids.last() {
+            self.nodes[last as usize].next_sibling = NONE;
+        }
+        self.nodes[dir as usize].first_child = ids.first().copied().unwrap_or(NONE);
+        for id in old.into_values() {
+            self.tombstone(id);
+        }
+        self.nodes[dir as usize].state |= LISTED | VISITED;
+        ids
+    }
+
+    pub fn add_size(&mut self, id: u32, bytes: u64) {
+        self.nodes[id as usize].size += bytes;
+    }
+
+    /// Folds every subtree's bytes into its directory and marks the subtrees the crawl finished.
+    /// A child's index is always above its parent's, so one reverse pass is a bottom-up walk.
+    pub fn recompute(&mut self) {
+        for node in &mut self.nodes {
+            if node.is_dir() && node.flags & PACKAGE == 0 {
+                node.size = 0;
+            }
+            match node.is_dir() && node.state & VISITED == 0 {
+                true => node.state &= !COMPLETE,
+                false => node.state |= COMPLETE,
+            }
+        }
+        let (mut dirs, mut files) = (0, 0);
+        for id in (1..self.nodes.len()).rev() {
+            let node = self.nodes[id];
+            if node.deleted() {
+                continue;
+            }
+            match node.is_dir() && node.flags & PACKAGE == 0 {
+                true => dirs += 1,
+                false => files += 1,
+            }
+            let parent = node.parent as usize;
+            if parent >= self.nodes.len() {
+                continue;
+            }
+            self.nodes[parent].size += node.size;
+            if node.state & COMPLETE == 0 {
+                self.nodes[parent].state &= !COMPLETE;
+            }
+        }
+        self.dirs = dirs;
+        self.files = files;
+        self.bytes = self.nodes[ROOT as usize].size;
+    }
+
+    /// Adds `delta` to every directory above `id`, for a change already applied below.
+    pub fn propagate(&mut self, id: u32, delta: i64) {
+        let mut cur = self.nodes[id as usize].parent;
+        for _ in 0..MAX_DEPTH {
+            if cur == NONE {
+                break;
+            }
+            let node = &mut self.nodes[cur as usize];
+            node.size = node.size.saturating_add_signed(delta);
+            cur = node.parent;
+        }
+        self.bytes = self.nodes[ROOT as usize].size;
+    }
+
+    pub fn entry(&self, id: u32) -> Entry {
+        let node = self.nodes[id as usize];
+        Entry {
+            name: String::from_utf8_lossy(self.names.bytes(self.name_of[id as usize])).into_owned(),
+            kind: node.kind(),
+            size: node.size,
+            modified: time(node.modified),
+            created: time(node.created),
+            added: (node.added != 0).then(|| time(node.added)),
+            hidden: node.flags & HIDDEN != 0,
+            package: node.flags & PACKAGE != 0,
+            file_id: node.file_id,
+        }
+    }
+
+    pub fn path(&self, id: u32) -> PathBuf {
+        let mut parts = Vec::new();
+        let mut cur = id;
+        for _ in 0..MAX_DEPTH {
+            if cur == ROOT || cur == NONE {
+                break;
+            }
+            parts.push(self.names.bytes(self.name_of[cur as usize]));
+            cur = self.nodes[cur as usize].parent;
+        }
+        let mut path = PathBuf::from("/");
+        for part in parts.iter().rev() {
+            path.push(OsStr::from_bytes(part));
+        }
+        path
+    }
+
+    pub fn is_under(&self, id: u32, root: u32) -> bool {
+        let mut cur = id;
+        for _ in 0..MAX_DEPTH {
+            if cur == root {
+                return true;
+            }
+            if cur == NONE || cur == ROOT {
+                return false;
+            }
+            cur = self.nodes[cur as usize].parent;
+        }
+        false
+    }
+}
