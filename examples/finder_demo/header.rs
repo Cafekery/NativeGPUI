@@ -5,13 +5,14 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{Blending, Layer, Material, glass, material, native_label, native_rule};
+use native_gpui::{
+    Blending, Layer, Material, glass, material, native_label, native_rule, native_symbol,
+};
 
 use crate::FinderDemo;
 use crate::data::Column;
 use crate::menus;
 use crate::palette::Palette;
-use crate::ui::small_glyph;
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -26,7 +27,8 @@ pub(crate) const SEP_TOP: f32 = 4.;
 pub(crate) const SEP_H: f32 = 19.;
 pub(crate) const CELL_PAD: f32 = 7.;
 pub(crate) const CELL_TRAIL: f32 = 6.;
-pub(crate) const SORT_INSET: f32 = 7.5;
+pub(crate) const SORT_INSET: f32 = 5.;
+const SORT_TOP: f32 = 10.;
 
 pub(crate) const NAME_MIN_W: f32 = 168.;
 const COL_MIN_W: f32 = 10.;
@@ -170,7 +172,13 @@ pub(crate) fn band_glass(right: Pixels, top: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-fn cell_body(id: impl Into<ElementId>, column: Column, sorted: bool, ascending: bool) -> Div {
+fn cell_body(
+    id: impl Into<ElementId>,
+    sort_id: impl Into<ElementId>,
+    column: Column,
+    sorted: bool,
+    ascending: bool,
+) -> Div {
     let inset = if matches!(column, Column::Name) {
         HEADER_LABEL_X
     } else {
@@ -200,25 +208,22 @@ fn cell_body(id: impl Into<ElementId>, column: Column, sorted: bool, ascending: 
         .child(div().w(px(inset)).flex_none())
         .child(label);
     if sorted {
+        // Hosted: a GPUI glyph would sit under the band's material.
         let arrow = if ascending {
             "chevron.up"
         } else {
             "chevron.down"
         };
-        if let Some(glyph) =
-            small_glyph(arrow, 9., FontWeight::SEMIBOLD, SystemColor::SecondaryLabel)
-        {
-            body = body.child(
-                div()
-                    .absolute()
-                    .right(px(SORT_INSET))
-                    .top_0()
-                    .bottom_0()
-                    .flex()
-                    .items_center()
-                    .child(glyph),
-            );
-        }
+        body = body.child(
+            div()
+                .absolute()
+                .right(px(SORT_INSET))
+                .top(px(SORT_TOP))
+                .child(
+                    native_symbol(sort_id, arrow, 9., FontWeight::MEDIUM)
+                        .tint(SystemColor::HeaderText),
+                ),
+        );
     }
     body
 }
@@ -305,6 +310,7 @@ impl FinderDemo {
                     .child(overlay(wash))
                     .child(cell_body(
                         "ng.finder.header.carried",
+                        "ng.finder.header.carried.sort",
                         column,
                         self.sort == column,
                         self.ascending,
@@ -340,6 +346,7 @@ impl FinderDemo {
         let slot = index.map_or(0, |index| index + 1);
         let mut cell = cell_body(
             ("ng.finder.header.label", slot),
+            ("ng.finder.header.sort", slot),
             column,
             self.sort == column,
             self.ascending,

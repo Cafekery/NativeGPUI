@@ -2,6 +2,7 @@
 //! push only the properties that changed.
 
 mod button;
+mod image;
 mod label;
 pub(crate) mod menu;
 mod progress;
@@ -18,6 +19,7 @@ pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
     TrackingMode, native_button, native_checkbox, native_radio, native_segmented,
 };
+pub use image::{NativeImage, native_image, native_symbol};
 pub use label::{LabelAlign, NativeLabel, native_label};
 pub use menu::{
     MenuEntry, MenuOrigin, MenuView, NativeContextMenu, NativePopup, native_context_menu,
