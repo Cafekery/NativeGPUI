@@ -845,6 +845,42 @@ pub fn folder_icon(size: Pixels) -> Option<Symbol> {
     file_icon(FileType::Folder, size)
 }
 
+unsafe extern "C" {
+    fn getxattr(
+        path: *const std::os::raw::c_char,
+        name: *const std::os::raw::c_char,
+        value: *mut std::os::raw::c_void,
+        size: usize,
+        position: u32,
+        options: i32,
+    ) -> isize;
+}
+
+// FinderInfo's `finderFlags` sit at byte 8, big-endian; `kHasCustomIcon` is bit 0x0400 of it,
+// the same offset for files, folders and (as `kExtFinderInfo`) volumes.
+const HAS_CUSTOM_ICON: u16 = 0x0400;
+
+/// Whether `path` carries its own Finder icon (an app's own artwork aside — that comes from its
+/// bundle, not this bit). Cheap: one `getxattr`, no icon work.
+pub fn has_custom_icon(path: &std::path::Path) -> bool {
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    let name = c"com.apple.FinderInfo";
+    let mut info = [0u8; 32];
+    let read = unsafe {
+        getxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            info.as_mut_ptr().cast(),
+            info.len(),
+            0,
+            0,
+        )
+    };
+    read >= 10 && u16::from_be_bytes([info[8], info[9]]) & HAS_CUSTOM_ICON != 0
+}
+
 // `typeWithFilenameExtension:` answers a dynamic type for `iconset` and the legacy one for `app`.
 // `UTType` only answers `AnyClass::get` once its framework is in the process, and nothing else
 // here loads it on macOS 26.
@@ -917,7 +953,7 @@ fn size_of_points(points: NSSize) -> Size<Pixels> {
     size(px(points.width as f32), px(points.height as f32))
 }
 
-fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
+pub(crate) fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
     let rep = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(),
@@ -960,7 +996,7 @@ fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> 
 }
 
 // gpui's `RenderImage` wants straight-alpha BGRA, so swap R/B *and* divide out alpha.
-fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
+pub(crate) fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
     for px in out.chunks_exact_mut(4) {
         px.swap(0, 2);
@@ -1113,6 +1149,37 @@ mod tests {
         assert_eq!(
             u32::from(large.image.size(0).width),
             (64.0 * large.scale) as u32
+        );
+    }
+
+    #[test]
+    fn twenty_thousand_extension_lookups_stay_cache_hits() {
+        const EXTENSIONS: [&str; 30] = [
+            "zip", "png", "jpg", "gif", "mp4", "mov", "pdf", "txt", "rtf", "html", "css", "js",
+            "json", "xml", "csv", "rs", "py", "c", "h", "cpp", "swift", "m", "plist", "app", "dmg",
+            "pkg", "mp3", "wav", "aiff", "tiff",
+        ];
+        for ext in EXTENSIONS {
+            file_icon(FileType::Extension(ext), px(16.)).expect("declared extension");
+        }
+        let before = cache_stats().file_icon_rasters;
+        let start = std::time::Instant::now();
+        for i in 0..20_000usize {
+            file_icon(
+                FileType::Extension(EXTENSIONS[i % EXTENSIONS.len()]),
+                px(16.),
+            );
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(
+            cache_stats().file_icon_rasters,
+            before,
+            "warmed-up extensions must never raster again"
+        );
+        eprintln!(
+            "20000 file_icon(Extension, 16pt) lookups after warm-up: {:?} total, {:?} each",
+            elapsed,
+            elapsed / 20_000
         );
     }
 
