@@ -276,7 +276,7 @@ impl Crawl {
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
-    if is_symlink(path) || elsewhere(path) {
+    if is_symlink(path) || elsewhere(path) || guarded(path) || private(path, home) {
         return Class::Seal;
     }
     if entry.package || weigh_only(path, home) {
@@ -288,6 +288,32 @@ fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
 /// Whether the crawl will leave this child's contents out of the index.
 pub fn sealed(path: &Path, entry: &Entry, home: &Path) -> bool {
     entry.kind == EntryKind::Directory && class_of(path, entry, home) != Class::Descend
+}
+
+/// Opening a photo or media library's package puts a privacy prompt on the user's screen; Finder
+/// is entitled to look inside, this crawl is not, so it does not even weigh them.
+fn guarded(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        matches!(
+            extension.as_bytes(),
+            b"photoslibrary"
+                | b"aplibrary"
+                | b"migratedphotolibrary"
+                | b"musiclibrary"
+                | b"tvlibrary"
+        )
+    })
+}
+
+/// The folders macOS asks the user about on first access. A walk into them at launch would put
+/// three prompts up at once, so they are only crawled as roots, once the app has been let in.
+fn private(path: &Path, home: &Path) -> bool {
+    !home.as_os_str().is_empty()
+        && path.parent() == Some(home)
+        && matches!(
+            path.file_name().unwrap_or_default().as_bytes(),
+            b"Desktop" | b"Documents" | b"Downloads"
+        )
 }
 
 fn is_symlink(path: &Path) -> bool {
