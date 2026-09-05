@@ -35,7 +35,7 @@ pub enum Layer {
     Below,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ControlSize {
     Mini,
     Small,

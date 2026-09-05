@@ -17,7 +17,7 @@ use objc2_foundation::NSSize;
 
 pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
-    TrackingMode, native_button, native_checkbox, native_radio, native_segmented,
+    SegmentStyle, TrackingMode, native_button, native_checkbox, native_radio, native_segmented,
 };
 pub use image::{NativeImage, native_image, native_symbol};
 pub use label::{LabelAlign, NativeLabel, native_label};
