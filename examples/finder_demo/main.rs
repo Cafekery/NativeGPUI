@@ -115,6 +115,9 @@ pub(crate) struct FinderDemo {
     pub(crate) strip: ScrollHandle,
     pub(crate) column_scroll: ScrollHandle,
     pub(crate) column_depth: usize,
+    /// What each browser column has been dragged to, root first.
+    pub(crate) column_widths: Vec<f32>,
+    pub(crate) column_grab: Option<(usize, f32)>,
     pub(crate) icons: Grid,
     pub(crate) window_min_w: f32,
     pub(crate) focus: FocusHandle,
@@ -169,6 +172,8 @@ impl FinderDemo {
             strip: ScrollHandle::new(),
             column_scroll: ScrollHandle::new(),
             column_depth: 0,
+            column_widths: Vec::new(),
+            column_grab: None,
             icons: Grid::default(),
             window_min_w: f32::NAN,
             focus: cx.focus_handle(),
