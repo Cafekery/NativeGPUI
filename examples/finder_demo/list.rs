@@ -6,12 +6,27 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor};
 
-use crate::data::{Column, date_text};
+use crate::data::{Column, Line, date_text};
 use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
+use crate::ui::{art_at, axis_locked, click_kind, rename_field, row_art, small_glyph, tag_dot};
 use crate::{FinderDemo, Slot};
+
+/// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
+pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
+    match column {
+        Column::Name => line.row.name.clone(),
+        Column::Modified => date_text(line.row.modified_at),
+        Column::Size => line.row.size.clone(),
+        Column::Kind => line.row.kind.clone(),
+    }
+}
+
+/// The Name column's leading room before its text: the twist, the indent, the icon, the gap.
+pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
+    ICON_X + line.depth as f32 * INDENT + icon + LABEL_GAP
+}
 
 /// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
 pub(crate) const ICON_SIZE: f32 = 32.;
@@ -46,7 +61,10 @@ impl FinderDemo {
         let lines = self.lines(true);
         let this = cx.entity().downgrade();
         let renaming = self.renaming.clone();
+        let cursor = self.cursor.clone();
+        let ql_icon = self.ql_icon.clone();
         let selected: HashSet<SharedString> = self.selected.clone();
+        let cut = self.cut.clone();
         let tags = self.tags.clone();
         let expanded = self.expanded.clone();
         let label = palette.label;
@@ -58,8 +76,10 @@ impl FinderDemo {
         let columns = self.list_columns.clone();
         let name_w = self.name_w;
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
+        let row_tip = self.row_tip.clone();
 
         let (pads, lift) = self.list_inset();
+        let scale = self.scale;
         let icon = self.list_icon_now();
         let row_h = row_h(icon);
         let slots = self.slots(&lines);
@@ -103,7 +123,9 @@ impl FinderDemo {
                         .items_center()
                         .font_family(tokens::system_font_family())
                         .text_size(px(ROW_FONT))
-                        .text_color(text);
+                        .text_color(text)
+                        // Finder's own cut styling: the row dims until pasted or the mark clears.
+                        .when(cut.contains(&line.key), |row| row.opacity(0.5));
                     let fill = if is_selected {
                         Some(selection)
                     } else if at % 2 == 1 {
@@ -183,7 +205,11 @@ impl FinderDemo {
                                 .justify_end()
                                 .child(twist),
                         )
-                        .child(artwork(&line.row, icon))
+                        .child(art_at(
+                            row_art(&line.row, icon, scale, true),
+                            icon,
+                            (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
+                        ))
                         .child(if renaming.as_ref() == Some(&line.key) {
                             div().ml(px(LABEL_GAP)).flex_1().child(rename_field(
                                 &line,
@@ -280,8 +306,32 @@ impl FinderDemo {
                                     })
                                     .ok();
                                 }
+                            })
+                            .on_hover({
+                                let this = this.clone();
+                                let key = line.key.clone();
+                                move |hovered: &bool, _, cx| {
+                                    let key = key.clone();
+                                    this.update(cx, |demo: &mut FinderDemo, cx| {
+                                        demo.hover_row(*hovered, key, cx);
+                                    })
+                                    .ok();
+                                }
                             }),
                         None => row,
+                    };
+                    let row = if row_tip.as_deref() == Some(line.key.as_ref()) {
+                        match line.row.opens.and_then(crate::hover_tip::folder_summary) {
+                            Some(text) => row.child(crate::hover_tip::row_tooltip(
+                                text,
+                                name_prefix(&line, icon) - LABEL_GAP - icon / 2.,
+                                row_h + 6.,
+                                label,
+                            )),
+                            None => row,
+                        }
+                    } else {
+                        row
                     };
                     row_menu(("ng.finder.row.menu", at), &line, &selected, this, row)
                         .into_any_element()
@@ -299,7 +349,38 @@ impl FinderDemo {
             .child(axis_locked(list))
             .into_any_element()
     }
+
+    /// The type-select fallback's pill, bottom-right of the list, while a filter is live.
+    pub(crate) fn type_filter_pill(
+        &self,
+        palette: &Palette,
+        right: f32,
+        bottom: f32,
+    ) -> Option<AnyElement> {
+        let text = self.type_filter.clone()?;
+        Some(
+            div()
+                .absolute()
+                .right(px(right + PILL_INSET))
+                .bottom(px(bottom + PILL_INSET))
+                .px(px(PILL_PAD_X))
+                .py(px(PILL_PAD_Y))
+                .rounded(px(PILL_RADIUS))
+                .bg(tokens::system_color(SystemColor::QuaternarySystemFill))
+                .font_family(tokens::system_font_family())
+                .text_size(px(PILL_FONT))
+                .text_color(palette.secondary)
+                .child(text)
+                .into_any_element(),
+        )
+    }
 }
+
+const PILL_INSET: f32 = 10.;
+const PILL_PAD_X: f32 = 8.;
+const PILL_PAD_Y: f32 = 3.;
+const PILL_FONT: f32 = 11.;
+const PILL_RADIUS: f32 = 6.;
 
 /// Finder's group header: the band's name over the rows it holds.
 fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {

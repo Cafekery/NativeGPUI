@@ -8,7 +8,7 @@ use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::window_options;
 
 use crate::data::{Line, byte_string, day_string};
-use crate::ui::artwork;
+use crate::ui::row_art;
 
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
@@ -66,8 +66,9 @@ impl Info {
 }
 
 impl Render for Info {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let row = &self.line.row;
+        let scale = window.scale_factor();
         let size_text: SharedString = match row.opens {
             Some(_) => "--".into(),
             None => byte_string(row.bytes).into(),
@@ -86,7 +87,7 @@ impl Render for Info {
                     .flex()
                     .items_start()
                     .gap(px(8.))
-                    .child(artwork(row, 32.))
+                    .child(row_art(row, 32., scale, true))
                     .child(
                         div()
                             .flex_1()

@@ -21,7 +21,7 @@ use objc2_foundation::NSRect;
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::ui::{TAGS, artwork, rename_field, tag_dot, tag_pill, thumb_art};
+use crate::ui::{TAGS, artwork, rename_field, row_art, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 pub(crate) const PREVIEW_W: f32 = 366.;
@@ -324,9 +324,9 @@ impl FinderDemo {
             let row = &line.row;
             Card {
                 hero: if self.view == GALLERY_VIEW {
-                    artwork(row, HEADER_ICON)
+                    row_art(row, HEADER_ICON, self.scale, true)
                 } else {
-                    hero(row, content)
+                    hero(row, content, self.scale)
                 },
                 title: row.name.clone(),
                 subtitle: kind_line(row),
@@ -410,6 +410,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
+        // A selection whose rows have left the listing (a folder read still in flight) has no hero.
+        let Some(first) = lines.first() else {
+            return div().w(px(content)).h(px(content)).into_any_element();
+        };
         let icons: Vec<Symbol> = lines
             .iter()
             .take(3)
@@ -434,7 +438,7 @@ impl FinderDemo {
         });
         let art = match image {
             Some(image) => img(image).w(px(content)).h(px(content)).into_any_element(),
-            None => artwork(&lines[0].row, content),
+            None => artwork(&first.row, content),
         };
         div()
             .w(px(content))
@@ -730,7 +734,7 @@ fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-fn hero(row: &Row, content: f32) -> AnyElement {
+fn hero(row: &Row, content: f32, scale: f32) -> AnyElement {
     if matches!(row.face, Face::Movie | Face::Image) {
         return div()
             .w(px(content))
@@ -741,10 +745,10 @@ fn hero(row: &Row, content: f32) -> AnyElement {
             .justify_center()
             .rounded(px(6.))
             .bg(system_color(SystemColor::TertiarySystemFill))
-            .child(thumb_art(row, (content * 9. / 16.).floor()))
+            .child(row_art(row, (content * 9. / 16.).floor(), scale, true))
             .into_any_element();
     }
-    artwork(row, content)
+    row_art(row, content, scale, true)
 }
 
 fn kind_line(row: &Row) -> SharedString {

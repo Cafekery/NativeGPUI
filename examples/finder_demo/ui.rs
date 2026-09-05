@@ -1,21 +1,20 @@
 //! Drawing helpers every view shares, and the tag colours they draw with.
 
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, ClickEvent, FontWeight, Hsla, SharedString, WeakEntity, Window, div, img,
-    prelude::*, px,
+    AnyElement, Bounds, ClickEvent, FontWeight, Hsla, Pixels, RenderImage, SharedString,
+    WeakEntity, Window, div, img, prelude::*, px,
 };
 
 use native_gpui::thumbnails;
 use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
-use objc2::MainThreadMarker;
-use objc2_app_kit::NSScreen;
 
 use crate::data::{Face, Line, Row};
 use crate::{FinderDemo, ns_window};
@@ -41,37 +40,121 @@ pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
     }
 }
 
-/// Thumbnails land on a background queue; the count tells a window when to draw again.
-static LANDED: AtomicUsize = AtomicUsize::new(0);
+/// The kinds Quick Look draws a real page or picture for; every other type keeps its icon.
+const RENDERABLE: &[&str] = &[
+    "pdf", "png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp", "mov", "mp4",
+    "m4v", "key", "pages", "numbers",
+];
 
-pub(crate) fn thumbnails_landed() -> usize {
-    LANDED.load(Ordering::Relaxed)
+/// A file, its pixel side: what one thumbnail is.
+type Thumb = (SharedString, u32);
+
+thread_local! {
+    /// What the generator has delivered, so a row asks once and draws from here every frame after.
+    static THUMBS: RefCell<HashMap<Thumb, Arc<RenderImage>>> = RefCell::new(HashMap::new());
+    /// Every thumbnail asked for, so a row on screen for a hundred frames asks once.
+    static ASKED: RefCell<HashSet<Thumb>> = RefCell::new(HashSet::new());
+    /// The rows drawn since the last sweep: the ones whose generation is still worth running.
+    static DRAWN: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
+    /// Frames drawn, and when and after how many frames the last sweep ran.
+    static FRAMES: Cell<u64> = const { Cell::new(0) };
+    static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
 }
 
-fn screen_scale() -> f32 {
-    static SCALE: OnceLock<f32> = OnceLock::new();
-    *SCALE.get_or_init(|| {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return 2.;
-        };
-        NSScreen::screens(mtm)
+/// Thumbnails land on a background queue; the window drains them on its next tick.
+static DELIVERED: AtomicUsize = AtomicUsize::new(0);
+static LANDED: Mutex<Vec<(Thumb, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
+
+const SWEEP: Duration = Duration::from_millis(250);
+
+pub(crate) fn thumbnails_landed() -> usize {
+    DELIVERED.load(Ordering::Relaxed)
+}
+
+/// Move what the generator delivered into the map the rows draw from. Main thread only.
+pub(crate) fn collect_thumbnails() {
+    let landed = std::mem::take(&mut *LANDED.lock().unwrap());
+    for (key, image) in landed {
+        match image {
+            Some(image) => {
+                THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
+            }
+            // A cancelled generation asks again the next time the row is on screen.
+            None => ASKED.with(|asked| {
+                asked.borrow_mut().remove(&key);
+            }),
+        }
+    }
+}
+
+/// A window finished a frame: what it drew is what the next sweep keeps.
+pub(crate) fn frame_drawn() {
+    FRAMES.with(|frames| frames.set(frames.get() + 1));
+}
+
+/// Drop the generations queued for rows that have scrolled away. A window that has not drawn
+/// since the last sweep says nothing about what is on screen, so it does not sweep.
+pub(crate) fn sweep_thumbnails() {
+    let now = Instant::now();
+    let frames = FRAMES.with(|frames| frames.get());
+    let (swept_at, swept_after) = SWEPT.with(|swept| swept.get());
+    if frames == swept_after || swept_at.is_some_and(|at| now.duration_since(at) < SWEEP) {
+        return;
+    }
+    SWEPT.with(|swept| swept.set((Some(now), frames)));
+    let drawn: Vec<PathBuf> = DRAWN.with(|drawn| {
+        drawn
+            .borrow_mut()
+            .drain()
+            .map(|path| PathBuf::from(path.as_ref()))
+            .collect()
+    });
+    thumbnails::cancel_thumbnails_outside(&drawn);
+}
+
+/// Whether Quick Look has a rendered page or picture for this row, rather than a type icon.
+fn renderable(row: &Row) -> bool {
+    if row.opens.is_some() {
+        return false;
+    }
+    if matches!(
+        row.face,
+        Face::Image | Face::Movie | Face::Pdf | Face::Slides | Face::Pages | Face::Sheet
+    ) {
+        return true;
+    }
+    row.name.rsplit_once('.').is_some_and(|(_, extension)| {
+        RENDERABLE
             .iter()
-            .map(|screen| screen.backingScaleFactor() as f32)
-            .fold(1., f32::max)
+            .any(|kind| extension.eq_ignore_ascii_case(kind))
     })
 }
 
-/// Finder's picture of a file where Quick Look has one, and its type's icon until that arrives.
-pub(crate) fn thumb_art(row: &Row, size: f32) -> AnyElement {
-    if !matches!(row.face, Face::Image | Face::Movie | Face::Pdf) {
+/// Finder's row icon: the file's own rendered thumbnail at this size where Quick Look draws one,
+/// its type's icon until that lands. Only a row on screen asks for one.
+pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyElement {
+    if !renderable(row) {
         return artwork(row, size);
     }
-    let path = Path::new(row.path.as_ref());
-    let scale = screen_scale();
-    let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale) else {
-        ask(row, size, scale);
+    let key = (row.path.clone(), (size * scale).round().max(1.) as u32);
+    if let Some(image) = THUMBS.with(|thumbs| thumbs.borrow().get(&key).cloned()) {
+        return picture(image, size);
+    }
+    // Everything below costs a `stat` or a lock, so a row off screen or already waiting stops here.
+    if !visible || ASKED.with(|asked| asked.borrow().contains(&key)) {
         return artwork(row, size);
-    };
+    }
+    DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
+    let path = Path::new(row.path.as_ref());
+    if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale) {
+        THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
+        return picture(image, size);
+    }
+    ask(path, key, size, scale);
+    artwork(row, size)
+}
+
+fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
     div()
         .w(px(size))
         .h(px(size))
@@ -83,19 +166,41 @@ pub(crate) fn thumb_art(row: &Row, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// One request per file, size and moment: the module coalesces the work already in flight, but a
-/// waiter a frame would pile up behind it.
-fn ask(row: &Row, size: f32, scale: f32) {
-    thread_local! {
-        static ASKED: RefCell<HashSet<(SharedString, u32, i64)>> = RefCell::new(HashSet::new());
-    }
-    let key = (row.path.clone(), size as u32, row.modified_at as i64);
-    if ASKED.with(|asked| !asked.borrow_mut().insert(key)) {
+/// One request per file and size: the module coalesces the work already in flight, but a waiter
+/// a frame would pile up behind it.
+fn ask(path: &Path, key: Thumb, size: f32, scale: f32) {
+    if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
         return;
     }
-    thumbnails::thumbnail(Path::new(row.path.as_ref()), px(size), scale, |_| {
-        LANDED.fetch_add(1, Ordering::Relaxed);
+    thumbnails::thumbnail(path, px(size), scale, move |image| {
+        LANDED.lock().unwrap().push((key, image));
+        DELIVERED.fetch_add(1, Ordering::Relaxed);
     });
+}
+
+/// Where an icon landed on screen, for the Quick Look panel to zoom out of and back into.
+pub(crate) type Anchor = std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
+
+/// `art` as drawn, recording where it lands when its row is the one Quick Look would open.
+pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyElement {
+    let Some(anchor) = anchor else {
+        return art;
+    };
+    div()
+        .relative()
+        .flex_none()
+        .w(px(size))
+        .h(px(size))
+        .child(art)
+        .child(
+            gpui::canvas(
+                move |bounds, _, _| anchor.set(Some(bounds)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .into_any_element()
 }
 
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
