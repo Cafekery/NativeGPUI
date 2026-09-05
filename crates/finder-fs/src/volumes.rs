@@ -101,7 +101,10 @@ pub fn mounted() -> Vec<Volume> {
         .iter()
         .filter_map(|url| volume_at(url, &keys))
         .collect();
-    if let Some(boot) = volumes.iter().position(|v| v.path == PathBuf::from("/")) {
+    if let Some(boot) = volumes
+        .iter()
+        .position(|v| v.path.as_path() == std::path::Path::new("/"))
+    {
         volumes.swap(0, boot);
     }
     volumes

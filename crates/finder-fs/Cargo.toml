@@ -15,7 +15,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFArray", "CFRunLoop", "CFString"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFArray", "CFLocale", "CFRunLoop", "CFString"] }
 objc2-core-services = { version = "0.3.2", default-features = false, features = ["FSEvents"] }
 objc2-foundation = "0.3.2"
 objc2-uniform-type-identifiers = "0.3.2"
