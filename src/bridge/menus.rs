@@ -123,6 +123,10 @@ fn ctrl() -> NSEventModifierFlags {
     CMD | NSEventModifierFlags::Control
 }
 
+fn ctrl_shift() -> NSEventModifierFlags {
+    NSEventModifierFlags::Control | NSEventModifierFlags::Shift
+}
+
 fn menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
     NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title))
 }
@@ -254,6 +258,8 @@ pub fn install_menus(cx: &mut App) {
     );
 
     let file = section(mtm, &bar, "File");
+    // Live only for windows that opted into tabs (`window_tabs`); AppKit validates it.
+    item(mtm, &file, "New Tab", sel!(newWindowForTab:), "t", CMD);
     item(mtm, &file, "Close", sel!(performClose:), "w", CMD);
 
     let edit = section(mtm, &bar, "Edit");
@@ -296,6 +302,23 @@ pub fn install_menus(cx: &mut App) {
     item(
         mtm,
         &view,
+        "Show Tab Bar",
+        sel!(toggleTabBar:),
+        "t",
+        shift(),
+    );
+    item(
+        mtm,
+        &view,
+        "Show All Tabs",
+        sel!(toggleTabOverview:),
+        "\\",
+        shift(),
+    );
+    separator(mtm, &view);
+    item(
+        mtm,
+        &view,
         "Show Sidebar",
         sel!(toggleSidebar:),
         "s",
@@ -321,6 +344,39 @@ pub fn install_menus(cx: &mut App) {
         CMD,
     );
     item(mtm, &window, "Zoom", sel!(performZoom:), "", NONE);
+    separator(mtm, &window);
+    item(
+        mtm,
+        &window,
+        "Show Previous Tab",
+        sel!(selectPreviousTab:),
+        "\u{19}",
+        ctrl_shift(),
+    );
+    item(
+        mtm,
+        &window,
+        "Show Next Tab",
+        sel!(selectNextTab:),
+        "\t",
+        NSEventModifierFlags::Control,
+    );
+    item(
+        mtm,
+        &window,
+        "Move Tab to New Window",
+        sel!(moveTabToNewWindow:),
+        "",
+        NONE,
+    );
+    item(
+        mtm,
+        &window,
+        "Merge All Windows",
+        sel!(mergeAllWindows:),
+        "",
+        NONE,
+    );
     separator(mtm, &window);
     item(
         mtm,
