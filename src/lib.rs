@@ -46,4 +46,5 @@ pub use chrome::{sidebar, window_chrome};
 pub use controls::*;
 pub use materials::*;
 pub use surfaces::*;
+pub use system::thumbnails;
 pub use system::tokens;
