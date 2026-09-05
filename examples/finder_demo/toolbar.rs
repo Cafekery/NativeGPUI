@@ -53,6 +53,7 @@ pub(crate) const SHARE_ID: &str = "ng.finder.share";
 pub(crate) const TAG_ID: &str = "ng.finder.tag";
 pub(crate) const ACTION_ID: &str = "ng.finder.action";
 pub(crate) const SEARCH_ID: &str = "ng.finder.search";
+pub(crate) const JOBS_ID: &str = "ng.finder.jobs";
 
 pub(crate) const VIEW_LABELS: &[&str] = &["as Icons", "as List", "as Columns", "as Gallery"];
 pub(crate) const VIEW_SYMBOLS: &[&str] = &[
@@ -63,6 +64,11 @@ pub(crate) const VIEW_SYMBOLS: &[&str] = &[
 ];
 pub(crate) const SEARCH_W: f32 = 240.;
 const CRUMB_ICON: f32 = 13.;
+
+/// Whether a path-bar click landed with ⌥ down, Finder's own "power user version" idiom.
+fn is_alt_click(event: &ClickEvent) -> bool {
+    matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
+}
 
 fn crumb_icon(volume: bool) -> AnyElement {
     // The boot disk's own artwork, which `public.volume` does not carry: that type draws a folder.
@@ -233,6 +239,7 @@ impl FinderDemo {
         let view = this.clone();
         let tag = this.clone();
         let query = this.clone();
+        let jobs = this.clone();
 
         set_toolbar(
             window,
@@ -277,6 +284,15 @@ impl FinderDemo {
                 ToolbarItem::space(),
                 ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.ascending)),
                 ToolbarItem::space(),
+                ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress").on_click(
+                    move |_, cx| {
+                        jobs.update(cx, |this: &mut Self, cx| {
+                            this.jobs_open = !this.jobs_open;
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                ),
                 ToolbarItem::share(SHARE_ID, "Share", self.share_items()),
                 ToolbarItem::symbol(TAG_ID, "tag", "Edit Tags").on_click(move |_, cx| {
                     tag.update(cx, |this: &mut Self, cx| {
@@ -368,10 +384,15 @@ impl FinderDemo {
                         crumb_row.child(div().min_w(px(0.)).text_ellipsis().child(*crumb))
                     })
                     .when_some(target, |crumb_row, id| {
-                        // Finder's path bar walks on the second click, not the first.
+                        // Finder's path bar walks on the second click, not the first; ⌥-click
+                        // copies the crumb's path instead of walking it, like ⌥⌘C on a selection.
                         crumb_row.on_click(cx.listener(
                             move |this, event: &ClickEvent, window, cx| {
-                                if click_kind(event).2 {
+                                if is_alt_click(event) {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        id.to_string(),
+                                    ));
+                                } else if click_kind(event).2 {
                                     this.go(id, window, cx);
                                 }
                             },

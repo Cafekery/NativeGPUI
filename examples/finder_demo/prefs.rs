@@ -3,6 +3,8 @@
 
 use objc2_foundation::{NSString, NSUserDefaults};
 
+use crate::data::Column;
+
 const VIEW: &str = "ng.finder.view";
 const PANE: &str = "ng.finder.pane";
 const ICON: &str = "ng.finder.icon";
@@ -62,4 +64,31 @@ pub(crate) fn strip_icon() -> Option<f32> {
 
 pub(crate) fn set_strip_icon(size: f32) {
     write(STRIP_ICON, size as f64);
+}
+
+fn column_key(column: Column) -> &'static str {
+    match column {
+        Column::Name => "ng.finder.col.name",
+        Column::Modified => "ng.finder.col.modified",
+        Column::Size => "ng.finder.col.size",
+        Column::Kind => "ng.finder.col.kind",
+    }
+}
+
+/// The list view's per-folder column width, `None` for a folder that has never been resized.
+pub(crate) fn list_column_width(folder: &str, column: Column) -> Option<f32> {
+    read(&format!("{}.{folder}", column_key(column))).map(|v| v as f32)
+}
+
+pub(crate) fn set_list_column_width(folder: &str, column: Column, width: f32) {
+    write(&format!("{}.{folder}", column_key(column)), width as f64);
+}
+
+/// The column (browser) view's per-folder column width.
+pub(crate) fn column_view_width(folder: &str) -> Option<f32> {
+    read(&format!("ng.finder.col.browser.{folder}")).map(|v| v as f32)
+}
+
+pub(crate) fn set_column_view_width(folder: &str, width: f32) {
+    write(&format!("ng.finder.col.browser.{folder}"), width as f64);
 }
