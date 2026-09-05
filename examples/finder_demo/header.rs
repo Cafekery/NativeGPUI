@@ -156,15 +156,15 @@ pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// One material over the toolbar and column-header bands, from the window's edge, so it runs on
-/// under the floating sidebar and its gutters and corners frost the rows.
-pub(crate) fn band_glass(right: Pixels, top: Pixels) -> AnyElement {
+/// One material over the toolbar, scope and column-header bands, from the window's edge, so it
+/// runs on under the floating sidebar and its gutters and corners frost the rows.
+pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
         .left_0()
         .right(right)
-        .h(top + px(HEADER_H))
+        .h(height)
         .child(
             material("ng.finder.band", Material::Header)
                 .layer(Layer::Above)

@@ -17,6 +17,7 @@ mod overlay;
 mod palette;
 mod prefs;
 mod preview;
+mod scope;
 mod sidebar;
 mod toolbar;
 mod ui;
@@ -108,6 +109,8 @@ pub(crate) struct FinderDemo {
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
+    /// Finder's scope bar: `scope::THIS_MAC` or `scope::THIS_FOLDER`.
+    pub(crate) scope: usize,
     pub(crate) expanded: HashSet<SharedString>,
     pub(crate) selected: HashSet<SharedString>,
     pub(crate) cursor: Option<SharedString>,
@@ -263,6 +266,7 @@ impl FinderDemo {
             name_w: NAME_MIN_W,
             header_drag: None,
             query: String::new(),
+            scope: prefs::search_scope().unwrap_or(scope::THIS_FOLDER),
             expanded: HashSet::new(),
             selected: HashSet::new(),
             cursor: None,
@@ -644,13 +648,21 @@ impl FinderDemo {
     /// what it knows about the rest of the subtree.
     pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
         self.query = text;
+        self.run_search(cx);
+    }
+
+    /// Re-runs the current query, for a fresh scope or a fresh folder.
+    fn run_search(&mut self, cx: &mut Context<Self>) {
         self.hits.clear();
         let query = self.query.trim().to_string();
         cx.notify();
         if query.is_empty() {
             return;
         }
-        let under = PathBuf::from(self.here());
+        let under = match self.scope {
+            scope::THIS_MAC => None,
+            _ => Some(PathBuf::from(self.here())),
+        };
         let wanted = query.clone();
         cx.spawn(async move |this, cx| {
             let hits = cx
@@ -658,7 +670,7 @@ impl FinderDemo {
                 .spawn(async move {
                     let index = index();
                     index
-                        .search(&query, Some(&under), 200)
+                        .search(&query, under.as_deref(), 200)
                         .iter()
                         .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
                         .collect::<Vec<_>>()
@@ -673,6 +685,16 @@ impl FinderDemo {
             .ok();
         })
         .detach();
+    }
+
+    /// Finder's scope bar: which segment is picked, per folder for the session, everywhere after.
+    pub(crate) fn set_scope(&mut self, scope: usize, cx: &mut Context<Self>) {
+        if self.scope == scope {
+            return;
+        }
+        self.scope = scope;
+        prefs::set_search_scope(scope);
+        self.run_search(cx);
     }
 
     /// Every file operation runs through the queue; a move or copy that would collide with an
@@ -1557,8 +1579,14 @@ impl FinderDemo {
         palette: &Palette,
         metrics: SidebarMetrics,
         corner: Pixels,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
-        let top = metrics.top;
+        // The scope bar lives in the same hosted band as the toolbar and column header: it grows
+        // the content's top inset the way `list_inset` grows the list's.
+        let scope_h = if self.searching() { scope::SCOPE_H } else { 0. };
+        let scope_row = (scope_h > 0.).then(|| self.scope_row(cx));
+        let above = metrics.top;
+        let top = above + px(scope_h);
         // The path bar takes height from the list, not from the pane, which runs to the corner.
         let foot = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
@@ -1610,9 +1638,20 @@ impl FinderDemo {
             .overflow_hidden()
             .child(surface)
             // A Layer::Above material blurs only what is painted before it: rows, glass, header.
-            .when(banded, |column| {
-                column.child(band_glass(px(pane), top))
+            .when(banded || scope_h > 0., |column| {
+                let height = top + if banded { px(HEADER_H) } else { px(0.) };
+                column.child(band_glass(px(pane), height))
             })
+            .children(scope_row.map(|row| {
+                div()
+                    .absolute()
+                    .top(above)
+                    .left_0()
+                    .right(px(pane))
+                    .h(px(scope_h))
+                    .pl(metrics.left)
+                    .child(row)
+            }))
             .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             .children(path_bar.map(|bar| {
                 div()
@@ -1787,7 +1826,7 @@ impl Render for FinderDemo {
                                     menus::background(self),
                                     cx.entity().downgrade(),
                                     self.list_column(
-                                        body, headers, path_bar, &palette, metrics, corner,
+                                        body, headers, path_bar, &palette, metrics, corner, cx,
                                     ),
                                 )),
                         )
