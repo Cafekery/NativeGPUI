@@ -6,6 +6,9 @@ description = "Real AppKit controls, materials and macOS 26 liquid glass hosted 
 license = "MIT"
 publish = false
 
+[workspace]
+members = ["crates/*"]
+
 [lib]
 name = "native_gpui"
 path = "src/lib.rs"
@@ -30,6 +33,7 @@ objc2-foundation = "0.3.2"
 objc2-quartz-core = "0.3.2"
 
 [dev-dependencies]
+finder-fs = { path = "crates/finder-fs" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d56dca8084e88c06df35a44ee103f41d21d06e10", features = ["font-kit"] }
 
 [[example]]

@@ -1534,6 +1534,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
+name = "finder-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3067,6 +3076,7 @@ name = "native-gpui"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
+ "finder-fs",
  "gpui",
  "gpui_platform",
  "image",
