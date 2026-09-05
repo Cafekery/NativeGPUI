@@ -1,7 +1,8 @@
 //! The column (browser) view.
 
 use gpui::{
-    AnyElement, ClickEvent, FontWeight, Hsla, Modifiers, SharedString, Window, div, opaque_grey,
+    AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Window, canvas, div, opaque_grey,
     prelude::*, px,
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
@@ -24,6 +25,8 @@ const CHEVRON: f32 = 7.;
 const PILL_INSET: f32 = 10.;
 const PILL_RADIUS: f32 = 7.;
 const TOP_GAP: f32 = 6.;
+const GRIP_W: f32 = 7.;
+const COL_MIN: f32 = 100.;
 
 struct Rung {
     folder: &'static str,
@@ -158,7 +161,7 @@ impl FinderDemo {
 
         div()
             .id(("ng.finder.column", index))
-            .w(px(COL_W - 1.))
+            .w(px(self.column_width(index) - GRIP_W))
             .flex_none()
             .flex()
             .flex_col()
@@ -249,7 +252,51 @@ impl FinderDemo {
     }
 
     /// Finder rules every column, the last one included.
-    fn ruled(&self, column: AnyElement, grow: bool) -> AnyElement {
+    fn on_column_grip(&mut self, x: f32, cx: &mut Context<Self>) {
+        let Some((index, origin)) = self.column_grab else {
+            return;
+        };
+        while self.column_widths.len() <= index {
+            self.column_widths.push(COL_W);
+        }
+        self.column_widths[index] = (self.column_width(index) + x - origin).max(COL_MIN);
+        self.column_grab = Some((index, x));
+        cx.notify();
+    }
+
+    /// What a browser column has been dragged to, or Finder's default.
+    pub(crate) fn column_width(&self, index: usize) -> f32 {
+        self.column_widths.get(index).copied().unwrap_or(COL_W)
+    }
+
+    fn ruled(
+        &self,
+        column: AnyElement,
+        grow: bool,
+        grab: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rule = div()
+            .h_full()
+            .flex_none()
+            .flex()
+            .justify_center()
+            .child(div().w(px(1.)).h_full().bg(divider()));
+        let rule = match grab {
+            None => rule.w(px(1.)).into_any_element(),
+            Some(index) => rule
+                .id(("ng.finder.column.grip", index))
+                .w(px(GRIP_W))
+                .cursor_ew_resize()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.column_grab = Some((index, f32::from(event.position.x)));
+                        cx.notify();
+                    }),
+                )
+                .into_any_element(),
+        };
         div()
             .map(|wrap| match grow {
                 true => wrap.flex_1(),
@@ -257,7 +304,7 @@ impl FinderDemo {
             })
             .flex()
             .child(column)
-            .child(div().w(px(1.)).flex_none().bg(divider()))
+            .child(rule)
             .into_any_element()
     }
 
@@ -292,11 +339,11 @@ impl FinderDemo {
             .enumerate()
             .map(|(index, rung)| {
                 let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
-                self.ruled(column, false)
+                self.ruled(column, false, Some(index), cx)
             })
             .collect();
         if let Some(leaf) = &leaf {
-            columns.push(self.ruled(self.preview_column(leaf, palette, cx), true));
+            columns.push(self.ruled(self.preview_column(leaf, palette, cx), true, None, cx));
         }
 
         let depth = columns.len();
@@ -305,10 +352,31 @@ impl FinderDemo {
             self.column_scroll.scroll_to_item(depth - 1);
         }
 
+        let this = cx.entity();
         div()
             .id("ng.finder.columns")
             .flex_1()
             .flex()
+            .child(canvas(
+                |_, _, _| (),
+                move |_, _, window, _| {
+                    // Window-level, like the pane's grip: the pointer leaves the divider as the
+                    // column grows, so a hitbox under it would drop the drag.
+                    let moved = this.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            moved.update(cx, |demo, cx| {
+                                demo.on_column_grip(f32::from(event.position.x), cx);
+                            });
+                        }
+                    });
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            this.update(cx, |demo, _| demo.column_grab = None);
+                        }
+                    });
+                },
+            ))
             .overflow_x_scroll()
             .track_scroll(&self.column_scroll)
             .children(columns)
