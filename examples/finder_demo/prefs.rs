@@ -6,6 +6,7 @@ use objc2_foundation::{NSString, NSUserDefaults};
 use crate::data::Column;
 
 const VIEW: &str = "ng.finder.view";
+const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const ICON: &str = "ng.finder.icon";
 const LIST_ICON: &str = "ng.finder.list.icon";
@@ -32,6 +33,14 @@ pub(crate) fn view() -> Option<usize> {
 
 pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
+}
+
+pub(crate) fn search_scope() -> Option<usize> {
+    read(SCOPE).map(|v| v as usize)
+}
+
+pub(crate) fn set_search_scope(scope: usize) {
+    write(SCOPE, scope as f64);
 }
 
 pub(crate) fn pane_width() -> Option<f32> {

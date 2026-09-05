@@ -10,6 +10,7 @@ use crate::data::{Column, Line, date_text};
 use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
+use crate::scope::SCOPE_H;
 use crate::ui::{art_at, axis_locked, click_kind, rename_field, row_art, small_glyph, tag_dot};
 use crate::{FinderDemo, Slot};
 
@@ -51,7 +52,8 @@ impl FinderDemo {
     /// The list's top content inset: `(blank leading rows, how far the list frame is lifted)`.
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         // Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
-        let inset = f32::from(self.metrics().top) + HEADER_H + LIST_TOP_GAP;
+        let scope_h = if self.searching() { SCOPE_H } else { 0. };
+        let inset = f32::from(self.metrics().top) + scope_h + HEADER_H + LIST_TOP_GAP;
         let row_h = self.row_h();
         let rows = (inset / row_h).ceil() as usize;
         (rows, rows as f32 * row_h - inset)
