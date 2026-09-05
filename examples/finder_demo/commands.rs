@@ -15,6 +15,9 @@ actions!(
         CleanUp,
         UseGroups,
         ShowViewOptions,
+        Cut,
+        Paste,
+        MoveHere,
         CopyNames,
         CopyPath,
         DeselectAll,
@@ -36,6 +39,7 @@ actions!(
         ClearRecents,
         NewFolder,
         NewFolderWithSelection,
+        NewTextFile,
         NewTab,
         NewWindow,
         OpenSelection,
@@ -71,6 +75,7 @@ pub(crate) fn install(_cx: &mut App) {
         [
             MenuCommand::new("New Finder Window", NewWindow).key("cmd-n"),
             MenuCommand::new("New Folder", NewFolder).key("cmd-shift-n"),
+            MenuCommand::new("New Text File", NewTextFile),
             MenuCommand::new("New Folder with Selection", NewFolderWithSelection).key("cmd-ctrl-n"),
             MenuCommand::separator(),
             MenuCommand::new("Open", OpenSelection).key("cmd-o"),
@@ -96,6 +101,7 @@ pub(crate) fn install(_cx: &mut App) {
         MenuSection::Edit,
         [
             MenuCommand::separator(),
+            MenuCommand::new("Move Item Here", MoveHere).key("cmd-alt-v"),
             MenuCommand::new("Copy as Pathname", CopyPath).key("cmd-alt-c"),
             MenuCommand::new("Deselect All", DeselectAll).key("cmd-alt-a"),
         ],
@@ -206,6 +212,19 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &NewFolderWithSelection, _, cx| {
                 this.new_folder_with_selection(cx);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &NewTextFile, _, cx| {
+                this.new_file(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Cut, _, cx| {
+                this.cut_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                this.paste(false, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveHere, _, cx| {
+                this.paste(true, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
                 this.run_menu(Act::Open, window, cx);
@@ -342,9 +361,8 @@ impl FinderDemo {
                 this.go_sheet = Some(this.crumb_path());
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &QuickLook, _, cx| {
-                this.quick_look = !this.quick_look && this.cursor_line().is_some();
-                cx.notify();
+            .on_action(cx.listener(|this, _: &QuickLook, window, cx| {
+                this.toggle_quick_look(window, cx);
             }))
     }
 }

@@ -1,15 +1,14 @@
 //! Finder's two overlays: the Go to Folder sheet and Quick Look.
 
 use gpui::{AnyElement, Context, FontWeight, WeakEntity, Window, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor};
+use native_gpui::tokens;
 use native_gpui::{Material, material, system_corner_radius};
 
 use crate::FinderDemo;
 use crate::palette::Palette;
-use crate::ui::{artwork, focus_gpui, key_to_parent, native_text_field};
+use crate::ui::{focus_gpui, key_to_parent, native_text_field};
 
 const SHEET_W: f32 = 520.;
-const HERO: f32 = 128.;
 
 impl FinderDemo {
     /// Finder's ⇧⌘G sheet: a path field that walks the window when it resolves.
@@ -84,56 +83,6 @@ impl FinderDemo {
                                     .child("Go to the folder:"),
                             )
                             .child(div().h(px(24.)).child(field)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Finder's Quick Look panel, centred over the window.
-    pub(crate) fn quick_look_panel(&self, palette: &Palette) -> AnyElement {
-        let Some(line) = self.cursor_line() else {
-            return div().into_any_element();
-        };
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .relative()
-                    .w(px(360.))
-                    .rounded(px(12.))
-                    .overflow_hidden()
-                    .child(
-                        material("ng.finder.ql.glass", Material::Popover)
-                            .absolute()
-                            .inset_0(),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .p(px(24.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(12.))
-                            .font_family(tokens::system_font_family())
-                            .text_color(palette.label)
-                            .child(artwork(&line.row, HERO))
-                            .child(
-                                div()
-                                    .text_size(px(15.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(line.row.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(tokens::system_color(SystemColor::SecondaryLabel))
-                                    .child(line.row.kind.clone()),
-                            ),
                     ),
             )
             .into_any_element()

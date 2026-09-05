@@ -14,7 +14,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{click_kind, rename_field, tag_dot, thumb_art};
+use crate::ui::{Anchor, art_at, click_kind, rename_field, row_art, tag_dot};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -131,23 +131,31 @@ struct TileDrag {
 struct Ghost {
     line: Line,
     size: f32,
+    scale: f32,
     look: Look,
     tag: Option<usize>,
 }
 
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        tile(&self.line, self.size, self.look, true, self.tag, None).opacity(GHOST_ALPHA)
+        tile(
+            &self.line, self.size, self.scale, self.look, true, self.tag, None, true, None,
+        )
+        .opacity(GHOST_ALPHA)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tile(
     line: &Line,
     size: f32,
+    scale: f32,
     look: Look,
     selected: bool,
     tag: Option<usize>,
     editor: Option<AnyElement>,
+    visible: bool,
+    anchor: Option<Anchor>,
 ) -> Div {
     let cell = cell(size);
     let mut icon = div()
@@ -202,7 +210,11 @@ fn tile(
         .items_center()
         .pt(px(ICON_TOP))
         .gap(px(ICON_LABEL_GAP))
-        .child(icon.child(thumb_art(&line.row, size)))
+        .child(icon.child(art_at(
+            row_art(&line.row, size, scale, visible),
+            size,
+            anchor,
+        )))
         .child(
             div()
                 .flex()
@@ -241,6 +253,7 @@ impl FinderDemo {
         let lines = self.lines(false);
         let columns = self.columns(window);
         let size = self.icon_size as f32;
+        let scale = self.scale;
         let cell = cell(size);
         let look = Look::new(palette);
         let this = cx.entity().downgrade();
@@ -274,8 +287,13 @@ impl FinderDemo {
             // The only child in flow: the tiles are absolute and contribute no scrollable size.
             .child(div().w(px(width)).h(px(height)).flex_none());
 
+        // A tile a cell outside the viewport still asks, so a short scroll finds it drawn.
+        let top = -f32::from(self.icons.scroll.offset().y);
+        let room = f32::from(window.viewport_size().height);
         for (index, line) in lines.iter().enumerate() {
             let at = layout[index].1;
+            let y = f32::from(at.y);
+            let on_screen = y + 2. * cell > top && y < top + room + cell;
             let is_selected = self.selected.contains(&line.key);
             let tag = self.tags.get(&line.key).copied();
             let held = dragging.as_ref() == Some(&line.key);
@@ -290,7 +308,17 @@ impl FinderDemo {
                 .top(at.y)
                 .w(px(cell))
                 .h(px(cell))
-                .child(tile(line, size, look, is_selected, tag, editor))
+                .child(tile(
+                    line,
+                    size,
+                    scale,
+                    look,
+                    is_selected,
+                    tag,
+                    editor,
+                    on_screen,
+                    (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
+                ))
                 .when(held, |tile| tile.opacity(SOURCE_ALPHA));
 
             slot = slot.on_drag(
@@ -311,6 +339,7 @@ impl FinderDemo {
                         cx.new(|_| Ghost {
                             line: line.clone(),
                             size,
+                            scale,
                             look,
                             tag,
                         })

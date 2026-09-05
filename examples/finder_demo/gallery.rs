@@ -11,7 +11,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{click_kind, thumb_art};
+use crate::ui::{art_at, click_kind, row_art};
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
@@ -74,9 +74,20 @@ impl FinderDemo {
             - f32::from(self.metrics().top)
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).clamp(64., HERO_MAX);
+        let scale = self.scale;
         let hero = match chosen.as_slice() {
-            [] => self.cursor_line().map(|line| thumb_art(&line.row, size)),
-            [one] => Some(thumb_art(&one.row, size)),
+            [] => self.cursor_line().map(|line| {
+                art_at(
+                    row_art(&line.row, size, scale, true),
+                    size,
+                    Some(self.ql_icon.clone()),
+                )
+            }),
+            [one] => Some(art_at(
+                row_art(&one.row, size, scale, true),
+                size,
+                Some(self.ql_icon.clone()),
+            )),
             many => Some(self.stack_hero(many, size)),
         };
 
@@ -97,6 +108,8 @@ impl FinderDemo {
             .overflow_x_scroll()
             .track_scroll(&self.strip)
             .children(lines.into_iter().enumerate().map(|(index, line)| {
+                let start = strip.start(index) + f32::from(self.strip.offset().x);
+                let on_screen = start + 2. * strip.cell > 0. && start < room_w + strip.cell;
                 let is_selected = self.selected.contains(&line.key);
                 let this = this.clone();
                 let this_menu = this.clone();
@@ -112,7 +125,7 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(thumb_art(&line.row, strip.icon))
+                    .child(row_art(&line.row, strip.icon, scale, on_screen))
                     .on_hover(move |hovered: &bool, _, cx| {
                         this_hover
                             .update(cx, |this: &mut FinderDemo, cx| {

@@ -2,15 +2,16 @@
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Window, canvas, div, opaque_grey,
-    prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, TextRun, Window,
+    canvas, div, hsla, opaque_grey, prelude::*, px,
 };
-use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
+use native_gpui::tokens::{self, Appearance, SystemColor, current_appearance, system_color};
 
 use crate::data::{Face, Line};
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{artwork, click_kind, rename_field, small_glyph};
+use crate::prefs;
+use crate::ui::{art_at, click_kind, rename_field, row_art, small_glyph};
 use crate::{COLUMN_VIEW, FinderDemo, LIST_VIEW};
 
 const ROW_H: f32 = 24.;
@@ -138,6 +139,20 @@ impl FinderDemo {
     ) -> AnyElement {
         let folder = rung.folder;
         let lines = self.column_listing(folder);
+        let scale = self.scale;
+        let handle = self.column_scrolls.get(index).cloned();
+        // Until the column has painted once its rows have no bounds, so none of them is on screen.
+        let seen = match &handle {
+            Some(handle) if handle.bounds_for_item(0).is_some() => {
+                handle.top_item()..handle.bottom_item() + 1
+            }
+            _ => {
+                if !lines.is_empty() {
+                    self.column_settling.replace(true);
+                }
+                0..0
+            }
+        };
         let picked: Vec<bool> = lines
             .iter()
             .map(|line| {
@@ -150,6 +165,8 @@ impl FinderDemo {
             .collect();
         let this = cx.entity().downgrade();
         let renaming = self.renaming.clone();
+        let cursor = self.cursor.clone();
+        let ql_icon = self.ql_icon.clone();
         let (fill, selection_text) = if emphasized {
             (palette.selection, palette.selection_text)
         } else {
@@ -161,12 +178,13 @@ impl FinderDemo {
 
         div()
             .id(("ng.finder.column", index))
-            .w(px(self.column_width(index) - GRIP_W))
+            .w(px(self.column_width(folder) - GRIP_W))
             .flex_none()
             .flex()
             .flex_col()
             .pt(px(TOP_GAP))
             .overflow_y_scroll()
+            .when_some(handle, |column, handle| column.track_scroll(&handle))
             .children(lines.into_iter().enumerate().map(|(row, line)| {
                 let is_selected = picked[row];
                 let joins_above = row > 0 && picked[row - 1];
@@ -208,7 +226,11 @@ impl FinderDemo {
                                 .bg(fill),
                         )
                     })
-                    .child(artwork(&line.row, ICON))
+                    .child(art_at(
+                        row_art(&line.row, ICON, scale, seen.contains(&row)),
+                        ICON,
+                        (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
+                    ))
                     .child(if renaming.as_ref() == Some(&line.key) {
                         name.child(rename_field(&line, row, this.clone()))
                     } else {
@@ -253,27 +275,57 @@ impl FinderDemo {
 
     /// Finder rules every column, the last one included.
     fn on_column_grip(&mut self, x: f32, cx: &mut Context<Self>) {
-        let Some((index, origin)) = self.column_grab else {
+        let Some((folder, origin)) = self.column_grab else {
             return;
         };
-        while self.column_widths.len() <= index {
-            self.column_widths.push(COL_W);
-        }
-        self.column_widths[index] = (self.column_width(index) + x - origin).max(COL_MIN);
-        self.column_grab = Some((index, x));
+        let width = (self.column_width(folder) + x - origin).max(COL_MIN);
+        self.column_widths.insert(folder, width);
+        self.column_grab = Some((folder, x));
         cx.notify();
     }
 
-    /// What a browser column has been dragged to, or Finder's default.
-    pub(crate) fn column_width(&self, index: usize) -> f32 {
-        self.column_widths.get(index).copied().unwrap_or(COL_W)
+    /// What this folder's browser column has been dragged to, this folder's saved width, or
+    /// Finder's default.
+    pub(crate) fn column_width(&self, folder: &'static str) -> f32 {
+        self.column_widths
+            .get(folder)
+            .copied()
+            .unwrap_or_else(|| prefs::column_view_width(folder).unwrap_or(COL_W))
+    }
+
+    /// Fits a browser column to its longest currently-loaded name, the standard divider gesture.
+    fn fit_browser_column(&mut self, folder: &'static str, window: &Window) {
+        let lines = self.column_listing(folder);
+        let run = TextRun {
+            len: 0,
+            font: tokens::system_font(FontWeight::NORMAL),
+            color: hsla(0., 0., 0., 1.),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let size = px(ROW_H - 8.);
+        let widest = lines.iter().fold(0_f32, |widest, line| {
+            let mut run = run.clone();
+            run.len = line.row.name.len();
+            let text_w = f32::from(
+                window
+                    .text_system()
+                    .shape_line(line.row.name.clone(), size, &[run], None)
+                    .width,
+            );
+            widest.max(text_w)
+        });
+        let width = (LABEL_X + widest + PREVIEW_INSET).max(COL_MIN);
+        self.column_widths.insert(folder, width);
+        prefs::set_column_view_width(folder, width);
     }
 
     fn ruled(
         &self,
         column: AnyElement,
         grow: bool,
-        grab: Option<usize>,
+        grab: Option<(usize, &'static str)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rule = div()
@@ -284,14 +336,21 @@ impl FinderDemo {
             .child(div().w(px(1.)).h_full().bg(divider()));
         let rule = match grab {
             None => rule.w(px(1.)).into_any_element(),
-            Some(index) => rule
+            Some((index, folder)) => rule
                 .id(("ng.finder.column.grip", index))
                 .w(px(GRIP_W))
                 .cursor_ew_resize()
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    let (_, _, twice) = click_kind(event);
+                    if twice {
+                        this.fit_browser_column(folder, window);
+                        cx.notify();
+                    }
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        this.column_grab = Some((index, f32::from(event.position.x)));
+                        this.column_grab = Some((folder, f32::from(event.position.x)));
                         cx.notify();
                     }),
                 )
@@ -333,13 +392,16 @@ impl FinderDemo {
 
     pub(crate) fn column_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let (chain, leaf) = self.column_chain();
+        while self.column_scrolls.len() < chain.len() {
+            self.column_scrolls.push(ScrollHandle::new());
+        }
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
         let mut columns: Vec<AnyElement> = chain
             .iter()
             .enumerate()
             .map(|(index, rung)| {
                 let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
-                self.ruled(column, false, Some(index), cx)
+                self.ruled(column, false, Some((index, rung.folder)), cx)
             })
             .collect();
         if let Some(leaf) = &leaf {
@@ -372,7 +434,11 @@ impl FinderDemo {
                     });
                     window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {
-                            this.update(cx, |demo, _| demo.column_grab = None);
+                            this.update(cx, |demo, _| {
+                                if let Some((folder, _)) = demo.column_grab.take() {
+                                    prefs::set_column_view_width(folder, demo.column_width(folder));
+                                }
+                            });
                         }
                     });
                 },

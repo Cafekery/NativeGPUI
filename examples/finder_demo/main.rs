@@ -1,10 +1,13 @@
 //! A Finder front end: real macOS chrome over the real file system, `NG_QUIT=<frames>` to exit.
 
+mod clipboard;
 mod column;
 mod commands;
+mod conflicts;
 mod data;
 mod gallery;
 mod header;
+mod hover_tip;
 mod icon;
 mod info;
 mod list;
@@ -28,17 +31,20 @@ use std::time::{Duration, Instant};
 
 use finder_fs::index::Index;
 use finder_fs::ops::{Conflict, Op};
+use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
-use finder_fs::{ops, tags, volumes};
+use finder_fs::{tags, volumes};
 use gpui::{
-    AnyElement, App, Bounds, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, Pixels,
-    RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
-    WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, relative, size,
+    AnyElement, App, Bounds, FocusHandle, KeyBinding, KeyDownEvent, Keystroke, Modifiers,
+    MouseButton, Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString,
+    UniformListScrollHandle, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
+    prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, FileType, SystemTheme};
 use native_gpui::{
-    install_menus, native_root, remember_frame, system_corner_radius, window_options,
+    QuickLookKey, install_menus, native_root, quick_look, quick_look_close, quick_look_update,
+    quick_look_visible, remember_frame, system_corner_radius, window_options,
 };
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -57,7 +63,7 @@ use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
-use crate::ui::{TAGS, axis_locked};
+use crate::ui::{Anchor, TAGS, axis_locked};
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {
@@ -107,10 +113,19 @@ pub(crate) struct FinderDemo {
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
     pub(crate) renaming: Option<SharedString>,
+    /// ⌘X's mark: these rows dim until a paste moves them or the mark clears.
+    pub(crate) cut: HashSet<SharedString>,
     /// Keys, side in pixels, image.
     pub(crate) stack: RefCell<Option<(Vec<SharedString>, u32, Arc<RenderImage>)>>,
     typed: String,
     typed_at: Option<Instant>,
+    /// Set once a typed prefix matches no row's start; the substring filter it fell back to.
+    pub(crate) type_filter: Option<String>,
+    /// Whether type-select found a match earlier in the run typing `type_filter` reached.
+    type_filter_seen_match: bool,
+    /// A folder row under the pointer, and since when, for the size tooltip's delay.
+    row_hover: Option<(SharedString, Instant)>,
+    pub(crate) row_tip: Option<SharedString>,
     pub(crate) tags: HashMap<SharedString, usize>,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
@@ -130,7 +145,9 @@ pub(crate) struct FinderDemo {
     pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
     pub(crate) go_sheet: Option<String>,
-    pub(crate) quick_look: bool,
+    /// The cursor row's icon, as last drawn: the Quick Look panel zooms out of it.
+    pub(crate) ql_icon: Anchor,
+    ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
     pub(crate) icon_size: f64,
     pub(crate) list_icon: f32,
     /// `(from, to, started)` while the list's icons grow or shrink between the two sizes.
@@ -143,10 +160,16 @@ pub(crate) struct FinderDemo {
     pub(crate) strip: ScrollHandle,
     pub(crate) column_scroll: ScrollHandle,
     pub(crate) column_depth: usize,
-    /// What each browser column has been dragged to, root first.
-    pub(crate) column_widths: Vec<f32>,
-    pub(crate) column_grab: Option<(usize, f32)>,
+    /// What each browser column has been dragged to this session, keyed by the folder it lists.
+    pub(crate) column_widths: HashMap<&'static str, f32>,
+    /// One per browser column, so a column knows which of its rows are on screen.
+    pub(crate) column_scrolls: Vec<ScrollHandle>,
+    /// A column has painted rows whose bounds it does not know yet: draw once more.
+    pub(crate) column_settling: RefCell<bool>,
+    pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
+    /// The pixels a point buys on this window's screen, for the thumbnails it asks for.
+    pub(crate) scale: f32,
     pub(crate) window_min_w: f32,
     /// FSEvents for the folders on screen; a change re-reads what it names.
     watcher: Watcher,
@@ -160,6 +183,16 @@ pub(crate) struct FinderDemo {
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
     pub(crate) quit_at: Option<u64>,
+    /// Every move/copy/trash/etc. runs through here, one at a time, off the main thread.
+    pub(crate) queue: Queue,
+    pub(crate) journal: Journal,
+    /// The pending queue events a background thread is handing this window since the last frame.
+    queue_events: Arc<Mutex<Vec<queue::Event>>>,
+    /// The conflict sheet, while one of the queue's operations has a name collision to resolve.
+    pub(crate) conflict: Option<conflicts::Sheet>,
+    /// The queue's jobs, for the toolbar's progress popover.
+    pub(crate) jobs: Vec<conflicts::JobRow>,
+    pub(crate) jobs_open: bool,
 }
 
 impl FinderDemo {
@@ -179,6 +212,8 @@ impl FinderDemo {
                         .spawn(async { data::refresh_volumes() })
                         .detach();
                 }
+                crate::ui::collect_thumbnails();
+                crate::ui::sweep_thumbnails();
                 let landed = crate::ui::thumbnails_landed();
                 let drawn = std::mem::replace(&mut seen, landed) != landed;
                 if this
@@ -195,7 +230,25 @@ impl FinderDemo {
             }
         })
         .detach();
-        Self {
+        let queue_events: Arc<Mutex<Vec<queue::Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let queue_sink = queue_events.clone();
+        let queue = Queue::new(move |event| queue_sink.lock().unwrap().push(event));
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                if this
+                    .update(cx, |this, cx| {
+                        let events = std::mem::take(&mut *this.queue_events.lock().unwrap());
+                        this.handle_queue_events(events, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let mut this = Self {
             folders: Folders::default(),
             sidebar: None,
             sidebar_rows: sidebar::default_rows(&groups),
@@ -215,9 +268,14 @@ impl FinderDemo {
             cursor: None,
             anchor: None,
             renaming: None,
+            cut: HashSet::new(),
             stack: RefCell::new(None),
             typed: String::new(),
             typed_at: None,
+            type_filter: None,
+            type_filter_seen_match: false,
+            row_hover: None,
+            row_tip: None,
             tags: HashMap::new(),
             preview: true,
             preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
@@ -234,7 +292,8 @@ impl FinderDemo {
             spring: None,
             recents: Vec::new(),
             go_sheet: None,
-            quick_look: false,
+            ql_icon: Anchor::default(),
+            ql_shown: None,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
             list_icon: prefs::list_icon().unwrap_or(ICON_SIZE),
             list_zoom: None,
@@ -246,9 +305,12 @@ impl FinderDemo {
             strip: ScrollHandle::new(),
             column_scroll: ScrollHandle::new(),
             column_depth: 0,
-            column_widths: Vec::new(),
+            column_widths: HashMap::new(),
+            column_scrolls: Vec::new(),
+            column_settling: RefCell::new(false),
             column_grab: None,
             icons: Grid::default(),
+            scale: 2.,
             window_min_w: f32::NAN,
             watcher: Watcher::new(move |dirs| sink.lock().unwrap().extend(dirs)),
             watching: HashSet::new(),
@@ -258,7 +320,15 @@ impl FinderDemo {
             focus: cx.focus_handle(),
             frames: 0,
             quit_at: env::var("NG_QUIT").ok().and_then(|v| v.parse().ok()),
-        }
+            queue,
+            journal: Journal::new(),
+            queue_events,
+            conflict: None,
+            jobs: Vec::new(),
+            jobs_open: false,
+        };
+        this.load_column_widths();
+        this
     }
 
     /// Rasterise the artwork every folder wears up front, so no frame pays for it.
@@ -410,6 +480,10 @@ impl FinderDemo {
         self.query.clear();
         self.hits.clear();
         self.icons.forget();
+        self.clear_type_filter();
+        self.row_hover = None;
+        self.row_tip = None;
+        self.load_column_widths();
         self.read_folder(self.here(), cx);
         self.settle();
         self.retitle(window);
@@ -423,6 +497,10 @@ impl FinderDemo {
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
+        if self.column_settling.replace(false) {
+            cx.notify();
+        }
+        crate::ui::frame_drawn();
         self.follow();
     }
 
@@ -597,25 +675,22 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Every file operation goes the same way: off the main thread, then the folders it touched
-    /// are read again and what it made is selected.
+    /// Every file operation runs through the queue; a move or copy that would collide with an
+    /// existing name shows Finder's conflict sheet first.
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
-        let touched = touched(&op);
-        cx.spawn(async move |this, cx| {
-            let done = cx
-                .background_executor()
-                .spawn(async move { ops::perform(op, Conflict::KeepBoth, |_| {}) })
-                .await;
-            this.update(cx, |this, cx| match done {
-                Ok(done) => this.settled(touched, done.results, after, cx),
-                Err(error) => this.complain(&error.to_string()),
-            })
-            .ok();
-        })
-        .detach();
+        match conflicts::split(op, after) {
+            conflicts::Split::Clean(op) => self.submit_op(op, Conflict::KeepBoth, after, cx),
+            conflicts::Split::Conflicted { clean, sheet } => {
+                if let Some(clean) = clean {
+                    self.submit_op(clean, Conflict::KeepBoth, After::Nothing, cx);
+                }
+                self.conflict = Some(sheet);
+                cx.notify();
+            }
+        }
     }
 
-    fn settled(
+    pub(crate) fn settled(
         &mut self,
         touched: Vec<PathBuf>,
         results: Vec<PathBuf>,
@@ -894,28 +969,94 @@ impl FinderDemo {
         self.reveal(&line.key);
     }
 
-    fn type_select(&mut self, typed: &str) {
+    /// Finder's type-select: jump to the first row starting with what is typed. When nothing
+    /// starts with it, fall back to filtering rather than Finder's beep-and-do-nothing.
+    fn type_select(&mut self, typed: &str, cx: &mut Context<Self>) {
         let now = Instant::now();
         if self
             .typed_at
             .is_some_and(|at| now.duration_since(at) > Duration::from_secs(1))
         {
             self.typed.clear();
+            self.type_filter = None;
+            self.type_filter_seen_match = false;
         }
         self.typed.push_str(&typed.to_lowercase());
         self.typed_at = Some(now);
         let lines = self.focused_lines();
-        let mut by_name: Vec<&Line> = lines.iter().collect();
-        by_name.sort_by_key(|line| line.row.name.to_lowercase());
-        let pick = by_name
+        let prefix = lines
             .iter()
-            .find(|line| line.row.name.to_lowercase() >= self.typed)
-            .or(by_name.last())
-            .map(|line| (*line).clone());
-        if let Some(line) = pick {
-            self.pick_in(&lines, &line, false, false);
-            self.reveal(&line.key);
+            .find(|line| line.row.name.to_lowercase().starts_with(&self.typed))
+            .cloned();
+        match prefix {
+            Some(line) => {
+                self.type_filter = None;
+                self.type_filter_seen_match = true;
+                self.pick_in(&lines, &line, false, false);
+                self.reveal(&line.key);
+            }
+            None => {
+                self.type_filter = Some(self.typed.clone());
+                if self.type_filter_seen_match {
+                    self.schedule_filter_clear(cx);
+                }
+            }
         }
+    }
+
+    fn clear_type_filter(&mut self) {
+        self.typed.clear();
+        self.typed_at = None;
+        self.type_filter = None;
+        self.type_filter_seen_match = false;
+    }
+
+    /// Finder's type-select timeout: once a match existed, an idle spell clears the fallback
+    /// filter on its own; a run that never matched anything waits for Escape or navigation.
+    fn schedule_filter_clear(&mut self, cx: &mut Context<Self>) {
+        let since = self.typed_at;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.typed_at == since {
+                    this.clear_type_filter();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Finder's hover delay before a row's tooltip shows.
+    pub(crate) fn hover_row(&mut self, hovered: bool, key: SharedString, cx: &mut Context<Self>) {
+        if !hovered {
+            if self.row_hover.as_ref().map(|(at, _)| at) == Some(&key) {
+                self.row_hover = None;
+            }
+            if self.row_tip.as_ref() == Some(&key) {
+                self.row_tip = None;
+                cx.notify();
+            }
+            return;
+        }
+        let since = Instant::now();
+        self.row_hover = Some((key.clone(), since));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::hover_tip::ROW_TIP_DELAY)
+                .await;
+            this.update(cx, |this, cx| {
+                if this.row_hover.as_ref() == Some(&(key.clone(), since)) {
+                    this.row_tip = Some(key);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The rename lands on disk; the row comes back with the folder's next read.
@@ -963,11 +1104,13 @@ impl FinderDemo {
             return;
         };
         let query = self.query.trim().to_lowercase();
+        let type_filter = self.type_filter.as_deref().unwrap_or("");
         let rows = folder
             .rows
             .iter()
             .filter(|row| self.show_hidden || !row.hidden)
-            .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query));
+            .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query))
+            .filter(|row| type_filter.is_empty() || row.name.to_lowercase().contains(type_filter));
 
         for row in rows {
             let open = tree && self.expanded.contains(&row.path);
@@ -1047,15 +1190,21 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
-        // Quick Look eats the keys Finder gives it: space toggles, escape leaves.
-        if self.quick_look && matches!(key, "escape" | "space") {
-            self.quick_look = false;
+        if key == "escape" && quick_look_visible() {
+            quick_look_close();
+            return;
+        }
+        if key == "escape" && self.type_filter.is_some() {
+            self.clear_type_filter();
             cx.notify();
             return;
         }
+        if key == "escape" && !self.cut.is_empty() {
+            self.clear_cut(cx);
+            return;
+        }
         if key == "space" && self.cursor_line().is_some() {
-            self.quick_look = true;
-            cx.notify();
+            self.toggle_quick_look(window, cx);
             return;
         }
         let lines = self.focused_lines();
@@ -1150,7 +1299,7 @@ impl FinderDemo {
                 else {
                     return;
                 };
-                self.type_select(typed);
+                self.type_select(typed, cx);
             }
             _ => return,
         }
@@ -1178,12 +1327,14 @@ impl FinderDemo {
         cx.notify();
     }
 
-    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, _: &mut Context<Self>) {
-        self.copy_selection();
+    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selection(cx);
     }
 
     /// Finder's ⌘C: the names as text and the files as file URLs, so a paste in Finder lands them.
-    pub(crate) fn copy_selection(&self) {
+    /// A copy also clears any pending ⌘X mark, Finder's own convention.
+    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        self.clear_cut(cx);
         let keys: Vec<SharedString> = self
             .focused_lines()
             .iter()
@@ -1277,6 +1428,94 @@ impl FinderDemo {
             .as_ref()
             .and_then(|key| lines.iter().find(|line| &line.key == key))
             .cloned()
+    }
+
+    /// Space: the system Quick Look panel over the selection, zooming out of the cursor's icon.
+    pub(crate) fn toggle_quick_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if quick_look_visible() {
+            quick_look_close();
+            return;
+        }
+        let Some((items, current)) = self.quick_look_items() else {
+            return;
+        };
+        let source = self.ql_icon.get();
+        self.ql_shown = self.cursor.clone().map(|key| (key, source));
+        let entity = cx.entity().downgrade();
+        let handle = gpui::Window::window_handle(window);
+        let app = cx.to_async();
+        quick_look(window, items, current, source, move |key| {
+            let entity = entity.clone();
+            let mut app = app.clone();
+            let _ = app.update_window(handle, |_, window, cx| {
+                if let Some(entity) = entity.upgrade() {
+                    entity.update(cx, |this, cx| this.quick_look_key(key, window, cx));
+                }
+            });
+        });
+    }
+
+    /// Finder previews the whole selection with the cursor's item showing, or just the cursor.
+    fn quick_look_items(&self) -> Option<(Vec<PathBuf>, usize)> {
+        let cursor = self.cursor.clone()?;
+        let lines = self.lines(self.view == LIST_VIEW);
+        let mut items: Vec<&Line> = lines
+            .iter()
+            .filter(|line| self.selected.contains(&line.key))
+            .collect();
+        if !items.iter().any(|line| line.key == cursor) {
+            items = lines.iter().filter(|line| line.key == cursor).collect();
+        }
+        let current = items.iter().position(|line| line.key == cursor)?;
+        let paths = items
+            .iter()
+            .map(|line| PathBuf::from(line.row.path.as_ref()))
+            .collect();
+        Some((paths, current))
+    }
+
+    /// The panel follows the selection while it is up.
+    fn sync_quick_look(&mut self, window: &Window) {
+        if !quick_look_visible() {
+            self.ql_shown = None;
+            return;
+        }
+        let Some(cursor) = self.cursor.clone() else {
+            return;
+        };
+        let source = self.ql_icon.get();
+        if self
+            .ql_shown
+            .as_ref()
+            .is_some_and(|(key, at)| *key == cursor && *at == source)
+        {
+            return;
+        }
+        let Some((items, current)) = self.quick_look_items() else {
+            return;
+        };
+        quick_look_update(window, items, current, source);
+        self.ql_shown = Some((cursor, source));
+    }
+
+    /// The panel's arrow keys move the selection the way the same keys do in the window.
+    fn quick_look_key(&mut self, key: QuickLookKey, window: &mut Window, cx: &mut Context<Self>) {
+        let key = match key {
+            QuickLookKey::Up => "up",
+            QuickLookKey::Down => "down",
+            QuickLookKey::Left => "left",
+            QuickLookKey::Right => "right",
+        };
+        let event = KeyDownEvent {
+            keystroke: Keystroke {
+                key: key.into(),
+                modifiers: Modifiers::default(),
+                key_char: None,
+            },
+            is_held: false,
+            prefer_character_input: false,
+        };
+        self.on_key(&event, window, cx);
     }
 
     fn sync_window_min(&mut self, window: &Window) {
@@ -1403,6 +1642,11 @@ impl FinderDemo {
                         .child(headers),
                 )
             }))
+            .children(
+                (self.view == LIST_VIEW)
+                    .then(|| self.type_filter_pill(palette, pane, foot))
+                    .flatten(),
+            )
             .into_any_element()
     }
 
@@ -1445,6 +1689,7 @@ impl Render for FinderDemo {
         if self.host.is_none() {
             self.host = ns_window(window);
         }
+        self.scale = window.scale_factor();
         self.frames += 1;
         if let Some(limit) = self.quit_at {
             window.request_animation_frame();
@@ -1484,8 +1729,13 @@ impl Render for FinderDemo {
             .go_sheet
             .clone()
             .map(|text| self.go_sheet(&text, &palette, window, cx));
-        let quick_look = self.quick_look.then(|| self.quick_look_panel(&palette));
+        let conflict_sheet = self
+            .conflict
+            .is_some()
+            .then(|| self.conflict_sheet(&palette, cx));
+        let jobs_popover = self.jobs_open.then(|| self.jobs_popover(&palette, cx));
         self.pump(cx);
+        self.sync_quick_look(window);
         native_root(
             div()
                 .size_full()
@@ -1507,10 +1757,16 @@ impl Render for FinderDemo {
                         .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(true, cx)))
                         .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(false, cx)))
                         .map(|element| self.menu_bar_actions(element, cx))
+                        .map(|element| self.wire_undo_redo(element, cx))
                         .on_key_down(cx.listener(Self::on_key))
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)),
+                            cx.listener(|this, _, window, cx| {
+                                // The native sidebar is an NSView; a click here takes AppKit first
+                                // responder back to the GPUI view so bare keys reach on_key.
+                                native_gpui::focus_gpui(window);
+                                window.focus(&this.focus, cx);
+                            }),
                         )
                         .size_full()
                         .flex()
@@ -1534,7 +1790,8 @@ impl Render for FinderDemo {
                             status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
                         )
                         .children(sheet)
-                        .children(quick_look),
+                        .children(conflict_sheet)
+                        .children(jobs_popover),
                 ),
         )
     }
@@ -1544,11 +1801,15 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
+        conflicts::install_undo_redo(cx);
         commands::install(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
         cx.bind_keys([
             KeyBinding::new("cmd-a", SelectAll, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-x", commands::Cut, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-v", commands::Paste, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-alt-v", commands::MoveHere, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-[", Back, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-]", Forward, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
@@ -1601,6 +1862,31 @@ fn crawl(cx: &mut App) {
     executor
         .spawn(async move { index().crawl(roots, |_| {}) })
         .detach();
+    // Desktop, Documents and Downloads each cost a permission prompt, so the walk leaves them out;
+    // once it is over, the ones this app has been let into (listed by a visit) join the index.
+    let launched = std::time::SystemTime::now();
+    let follow = cx.background_executor().clone();
+    cx.background_executor()
+        .spawn(async move {
+            let mut joined: HashSet<PathBuf> = HashSet::new();
+            loop {
+                follow.timer(Duration::from_secs(20)).await;
+                let index = index();
+                if !index.stats().crawled_at.is_some_and(|at| at > launched) {
+                    continue;
+                }
+                let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
+                    .iter()
+                    .map(|name| home().join(name))
+                    .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
+                    .collect();
+                if !granted.is_empty() {
+                    joined.extend(granted.iter().cloned());
+                    index.crawl(granted, |_| {});
+                }
+            }
+        })
+        .detach();
     let ticker = cx.background_executor().clone();
     cx.background_executor()
         .spawn(async move {
@@ -1622,7 +1908,7 @@ pub(crate) enum After {
 }
 
 /// The folders an operation changes, which are read again once it lands.
-fn touched(op: &Op) -> Vec<PathBuf> {
+pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
     let parents = |items: &[PathBuf]| {
         items
             .iter()
