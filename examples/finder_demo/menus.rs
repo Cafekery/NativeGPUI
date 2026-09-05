@@ -9,6 +9,7 @@ use gpui::{Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
 use native_gpui::tokens::system_color;
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
+use crate::clipboard::can_paste;
 use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
 use crate::ui::TAGS;
@@ -34,6 +35,10 @@ pub(crate) enum Act {
     Rename,
     Duplicate,
     Copy,
+    Cut,
+    Paste,
+    NewFile,
+    OpenTerminal(&'static str),
     Toggle(Column),
 }
 
@@ -76,7 +81,12 @@ thread_local! {
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("New Folder"), Act::NewFolder);
+    menu.item(MenuEntry::item("New Text File"), Act::NewFile);
     menu.separator();
+    if can_paste() {
+        menu.item(MenuEntry::item("Paste Item"), Act::Paste);
+        menu.separator();
+    }
     menu.item(MenuEntry::item("Show Inspector"), Act::Inspector);
     menu.separator();
     menu.item(
@@ -89,6 +99,11 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
         menu.submenu("Clean Up By", sort_rows(demo));
     }
     menu.item(MenuEntry::item("Show View Options"), Act::ViewOptions);
+    menu.separator();
+    menu.item(
+        MenuEntry::item("Open in Terminal"),
+        Act::OpenTerminal(demo.target()),
+    );
     menu
 }
 
@@ -114,6 +129,9 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Open"), Act::Open);
         menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing);
     }
+    if let Some(path) = line.row.opens {
+        menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(path));
+    }
     menu.separator();
     menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
     menu.separator();
@@ -131,11 +149,21 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.item(MenuEntry::item("Quick Look").disabled(), Act::Nothing);
     menu.item(
         MenuEntry::item(match many {
+            true => format!("Cut {chosen} Items"),
+            false => "Cut".to_string(),
+        }),
+        Act::Cut,
+    );
+    menu.item(
+        MenuEntry::item(match many {
             true => format!("Copy {chosen} Items"),
             false => "Copy".to_string(),
         }),
         Act::Copy,
     );
+    if can_paste() {
+        menu.item(MenuEntry::item("Paste Item"), Act::Paste);
+    }
     menu.separator();
     menu.item(MenuEntry::item("Share…").disabled(), Act::Nothing);
     menu.separator();
@@ -189,7 +217,11 @@ impl FinderDemo {
             Act::Trash => self.trash_selection(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
             Act::Duplicate => self.duplicate_selection(cx),
-            Act::Copy => self.copy_selection(),
+            Act::Copy => self.copy_selection(cx),
+            Act::Cut => self.cut_selection(cx),
+            Act::Paste => self.paste(false, cx),
+            Act::NewFile => self.new_file(cx),
+            Act::OpenTerminal(path) => open_terminal(path),
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();
@@ -207,6 +239,15 @@ impl FinderDemo {
             return;
         }
         self.make_folder("New Folder With Items", chosen, cx);
+    }
+
+    /// File ▸ New Text File: `untitled.txt` in the folder on screen, named as it lands.
+    pub(crate) fn new_file(&mut self, cx: &mut Context<Self>) {
+        let op = Op::NewFile {
+            into: PathBuf::from(self.target()),
+            name: "untitled.txt".to_owned(),
+        };
+        self.run_op(op, After::Rename, cx);
     }
 
     fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -322,6 +363,16 @@ impl FinderDemo {
         }
         self.fit_name_column();
     }
+}
+
+/// The folder context menu's Open in Terminal: the user's `TERM_PROGRAM`, if a GUI launch
+/// happens to carry one, otherwise Terminal.app.
+fn open_terminal(path: &str) {
+    let app = std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "Terminal".to_owned());
+    let _ = std::process::Command::new("open")
+        .args(["-a", &app])
+        .arg(path)
+        .spawn();
 }
 
 fn plural(title: &str, many: bool) -> String {

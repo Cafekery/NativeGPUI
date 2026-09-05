@@ -2,7 +2,7 @@
 
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Pixels, Render,
-    Window, div, prelude::*, px,
+    TextRun, Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{
@@ -11,8 +11,11 @@ use native_gpui::{
 
 use crate::FinderDemo;
 use crate::data::Column;
+use crate::list::{ROW_FONT, column_text, name_prefix};
 use crate::menus;
 use crate::palette::Palette;
+use crate::prefs;
+use crate::ui::click_kind;
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -231,6 +234,9 @@ fn cell_body(
 impl FinderDemo {
     pub(crate) fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         if self.header_drag.is_some() && !cx.has_active_drag() {
+            if matches!(self.header_drag, Some(HeaderDrag::Resize { .. })) {
+                self.persist_column_widths();
+            }
             self.header_drag = None;
         }
         let carried = match self.header_drag {
@@ -277,6 +283,12 @@ impl FinderDemo {
                     .left(px(boundary - DIVIDER_LEAD))
                     .w(px(DIVIDER_GRAB))
                     .cursor_ew_resize()
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        let (_, _, twice) = click_kind(event);
+                        if twice {
+                            this.fit_list_column(index, window, cx);
+                        }
+                    }))
                     .on_drag(HeaderGrab::Divider(index), {
                         let this = cx.entity().downgrade();
                         move |grab: &HeaderGrab, _, window, cx| {
@@ -500,6 +512,7 @@ impl FinderDemo {
                 width,
             }) => {
                 let next = (width + x - origin).max(self.resized_column(index).1);
+                let grown = next - width;
                 match index {
                     0 => self.name_w = next,
                     index => {
@@ -508,9 +521,81 @@ impl FinderDemo {
                         }
                     }
                 }
+                // Option holds the divider after it still, borrowing the growth from its neighbour
+                // instead of letting every column past it slide.
+                if event.event.modifiers.alt {
+                    if let Some(neighbour) = self.list_columns.get_mut(index) {
+                        neighbour.width = (neighbour.width - grown).max(COL_MIN_W);
+                    }
+                }
                 cx.notify();
             }
             None => {}
         }
+    }
+
+    fn persist_column_widths(&self) {
+        let here = self.here();
+        prefs::set_list_column_width(here, Column::Name, self.name_w);
+        for spec in &self.list_columns {
+            prefs::set_list_column_width(here, spec.column, spec.width);
+        }
+    }
+
+    /// Loads this folder's saved widths, or the built-in default for any column it never resized.
+    pub(crate) fn load_column_widths(&mut self) {
+        let here = self.here();
+        self.name_w = prefs::list_column_width(here, Column::Name).unwrap_or(NAME_MIN_W);
+        for spec in &mut self.list_columns {
+            spec.width = prefs::list_column_width(here, spec.column)
+                .unwrap_or_else(|| ColumnSpec::of(spec.column).width);
+        }
+    }
+
+    /// Finder's own gesture: fit a column to its widest currently-loaded cell, standard padding.
+    fn fit_list_column(&mut self, index: usize, window: &Window, cx: &mut Context<Self>) {
+        let column = match index {
+            0 => Column::Name,
+            index => self.list_columns[index - 1].column,
+        };
+        let lines = self.focused_lines();
+        let icon = self.list_icon_now();
+        let run = TextRun {
+            len: 0,
+            font: tokens::system_font(FontWeight::NORMAL),
+            color: hsla(0., 0., 0., 1.),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let size = px(ROW_FONT);
+        let widest = lines.iter().fold(0_f32, |widest, line| {
+            let text = column_text(column, line);
+            let mut run = run.clone();
+            run.len = text.len();
+            let text_w = f32::from(
+                window
+                    .text_system()
+                    .shape_line(text, size, &[run], None)
+                    .width,
+            );
+            let total = if column == Column::Name {
+                name_prefix(line, icon) + text_w + CELL_PAD
+            } else {
+                text_w + CELL_PAD + CELL_TRAIL
+            };
+            widest.max(total)
+        });
+        let fitted = widest.max(self.resized_column(index).1);
+        match index {
+            0 => self.name_w = fitted,
+            index => {
+                if let Some(spec) = self.list_columns.get_mut(index - 1) {
+                    spec.width = fitted;
+                }
+            }
+        }
+        prefs::set_list_column_width(self.here(), column, fitted);
+        cx.notify();
     }
 }
