@@ -1,22 +1,33 @@
-//! The invented filesystem, and the system formatters that turn it into strings.
+//! The real file system as the demo sees it: interned absolute paths for ids, cached listings, and
+//! the system formatters that turn entries into rows.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use finder_fs::entry::{Entry, EntryKind};
+use finder_fs::index::Index;
+use finder_fs::{kind, volumes};
 use gpui::SharedString;
-use native_gpui::tokens::{FileType, SymbolColor, SystemColor};
+use native_gpui::tokens::{FileType, SymbolColor, SystemColor, has_custom_icon};
+use objc2::rc::Retained;
+use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{
-    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCalendar, NSCalendarUnit, NSDate,
-    NSDateComponents, NSDateFormatter, NSDateFormatterStyle, NSString,
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCalendar, NSDate, NSDateFormatter,
+    NSDateFormatterStyle, NSFileManager, NSString,
 };
 
 use self::Face as F;
+
+/// How many listings stay in memory behind the one on screen.
+const CACHED: usize = 64;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Face {
     Folder,
     Volume,
-    Device,
     Pdf,
     Text,
     Code,
@@ -32,50 +43,11 @@ pub(crate) enum Face {
     Web,
 }
 
-/// Apps carry their own artwork too, so a stand-in named after a real one borrows it.
-fn app_art(name: &str) -> FileType<'static> {
-    let path: &'static str = Box::leak(format!("/Applications/{name}.app").into_boxed_str());
-    match std::path::Path::new(path).exists() {
-        true => FileType::Path(path),
-        false => FileType::Extension("app"),
-    }
-}
-
-/// The standard locations carry their own artwork, so the demo's stand-ins borrow the real ones.
-fn folder_art(name: &str) -> FileType<'static> {
-    static PLACES: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    let places = PLACES.get_or_init(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-        let mine =
-            |leaf: &str| -> &'static str { Box::leak(format!("{home}/{leaf}").into_boxed_str()) };
-        HashMap::from([
-            ("Applications", "/Applications"),
-            ("Library", "/Library"),
-            ("System", "/System"),
-            ("Users", "/Users"),
-            ("Shared", "/Users/Shared"),
-            ("Desktop", mine("Desktop")),
-            ("Documents", mine("Documents")),
-            ("Downloads", mine("Downloads")),
-            ("Movies", mine("Movies")),
-            ("Music", mine("Music")),
-            ("Pictures", mine("Pictures")),
-            ("Public", mine("Public")),
-            ("Developer", mine("Developer")),
-        ])
-    });
-    match places.get(name) {
-        Some(path) => FileType::Path(path),
-        None => FileType::Folder,
-    }
-}
-
 impl Face {
     pub(crate) fn symbol(self) -> &'static str {
         match self {
             F::Folder => "folder.fill",
             F::Volume => "internaldrive.fill",
-            F::Device => "laptopcomputer",
             F::Pdf => "doc.richtext.fill",
             F::Text => "doc.text.fill",
             F::Code => "chevron.left.forwardslash.chevron.right",
@@ -92,40 +64,10 @@ impl Face {
         }
     }
 
-    pub(crate) fn kind(self) -> &'static str {
-        match self {
-            F::Folder => "Folder",
-            F::Volume => "Volume",
-            F::Device => "Computer",
-            F::Pdf => "PDF Document",
-            F::Text => "Plain Text",
-            F::Code => "Source Text",
-            F::Sheet => "Numbers Spreadsheet",
-            F::Pages => "Pages Document",
-            F::Slides => "Keynote Presentation",
-            F::Image => "PNG image",
-            F::Movie => "QuickTime Movie",
-            F::Audio => "Audio File",
-            F::Archive => "ZIP archive",
-            F::Disk => "Disk Image",
-            F::Program => "Application",
-            F::Web => "Web Internet Location",
-        }
-    }
-
-    fn artwork(self, extension: Option<&'static str>) -> Option<FileType<'static>> {
-        match self {
-            F::Folder => Some(FileType::Folder),
-            F::Program => Some(FileType::Extension("app")),
-            F::Volume | F::Device => None,
-            _ => Some(extension.map_or(FileType::Uti("public.data"), FileType::Extension)),
-        }
-    }
-
     pub(crate) fn tint(self) -> SymbolColor {
         let color = match self {
             F::Folder => SystemColor::SystemBlue,
-            F::Volume | F::Device => SystemColor::SystemGray,
+            F::Volume => SystemColor::SystemGray,
             F::Pdf => SystemColor::SystemRed,
             F::Text => SystemColor::SecondaryLabel,
             F::Code => SystemColor::SystemGreen,
@@ -144,610 +86,217 @@ impl Face {
     }
 }
 
-/// `name`, face, modified as `yyyymmddhhmm` or an [`ago`] offset, size in bytes, the folder this
-/// row opens (`""` when it opens nothing).
-pub(crate) type Src = (&'static str, Face, u64, u64, &'static str);
-
-pub(crate) const RELATIVE: u64 = 1_000_000_000_000;
-
-/// `days` calendar days before launch at `hour:minute`, so rows keep landing on `Today`.
-pub(crate) const fn ago(days: u64, hour: u64, minute: u64) -> u64 {
-    RELATIVE + days * 10_000 + hour * 100 + minute
-}
-
-/// `id`, display name, parent id (`""` at the root), breadcrumbs, contents.
-pub(crate) type Dir = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static [&'static str],
-    &'static [Src],
-);
-
-pub(crate) const HOME: &[&str] = &["Macintosh HD", "Users", "avery"];
-
-pub(crate) const DIRS: &[Dir] = &[
-    (
-        "documents",
-        "Documents",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Documents"],
-        &[
-            (".DS_Store", F::Text, 202608141731, 6148, ""),
-            (".localized", F::Text, 202601190904, 0, ""),
-            ("Invoices", F::Folder, 202607281412, 0, "invoices"),
-            ("Projects", F::Folder, ago(0, 4, 34), 0, "projects"),
-            ("Tax 2025", F::Folder, 202601190904, 0, "tax"),
-            ("Annual Report.pdf", F::Pdf, 202608141731, 8_412_770, ""),
-            ("Cabin Lease.pdf", F::Pdf, 202605221459, 462_112, ""),
-            (
-                "Field Recording.mov",
-                F::Movie,
-                ago(1, 7, 47),
-                148_220_410,
-                "",
-            ),
-            ("Kickoff Notes.md", F::Text, ago(1, 22, 11), 11_402, ""),
-            ("Onboarding.pdf", F::Pdf, 202604111005, 2_118_004, ""),
-            ("Passport Scan.png", F::Image, 202602280811, 3_940_112, ""),
-            ("Reading List.md", F::Text, 202608262114, 4_118, ""),
-            ("Receipts.zip", F::Archive, 202608241819, 41_004_882, ""),
-            ("Ventura.dmg", F::Disk, 202603160931, 812_004_118, ""),
-        ],
-    ),
-    (
-        "projects",
-        "Projects",
-        "documents",
-        &["Macintosh HD", "Users", "avery", "Documents", "Projects"],
-        &[
-            ("src", F::Folder, 202608301041, 0, "src"),
-            ("Cargo.toml", F::Text, 202608301037, 1_812, ""),
-            ("LICENSE", F::Text, 202606010900, 1_074, ""),
-            ("README.md", F::Text, 202608291955, 9_140, ""),
-            ("architecture.png", F::Image, 202608221420, 1_240_991, ""),
-            ("demo.mov", F::Movie, 202608280003, 148_220_410, ""),
-            ("notes.txt", F::Text, 202608300822, 2_204, ""),
-            ("release.zip", F::Archive, 202608241819, 41_004_882, ""),
-        ],
-    ),
-    (
-        "src",
-        "src",
-        "projects",
-        &[
-            "Macintosh HD",
-            "Users",
-            "avery",
-            "Documents",
-            "Projects",
-            "src",
-        ],
-        &[
-            ("bridge.rs", F::Code, 202608301041, 28_114, ""),
-            ("chrome.rs", F::Code, 202608300940, 41_882, ""),
-            ("controls.rs", F::Code, 202608291711, 33_004, ""),
-            ("lib.rs", F::Code, 202608301040, 3_218, ""),
-            ("materials.rs", F::Code, 202608261512, 19_774, ""),
-            ("surfaces.rs", F::Code, 202608281033, 24_512, ""),
-            ("tokens.rs", F::Code, 202608300911, 35_302, ""),
-        ],
-    ),
-    (
-        "invoices",
-        "Invoices",
-        "documents",
-        &["Macintosh HD", "Users", "avery", "Documents", "Invoices"],
-        &[
-            ("2026-04 Northwind.pdf", F::Pdf, 202604301601, 184_220, ""),
-            ("2026-05 Northwind.pdf", F::Pdf, 202605311559, 187_004, ""),
-            ("2026-06 Aldermoor.pdf", F::Pdf, 202606301712, 201_882, ""),
-            ("2026-07 Aldermoor.pdf", F::Pdf, 202607281412, 199_140, ""),
-            ("Rates.numbers", F::Sheet, 202601121030, 88_004, ""),
-        ],
-    ),
-    (
-        "tax",
-        "Tax 2025",
-        "documents",
-        &["Macintosh HD", "Users", "avery", "Documents", "Tax 2025"],
-        &[
-            ("Return 2025.pdf", F::Pdf, 202601190904, 1_412_004, ""),
-            ("Receipts.zip", F::Archive, 202601180822, 62_004_118, ""),
-            ("Summary.numbers", F::Sheet, 202601171540, 140_882, ""),
-            ("Correspondence.pdf", F::Pdf, 202512201105, 604_112, ""),
-        ],
-    ),
-    (
-        "desktop",
-        "Desktop",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Desktop"],
-        &[
-            ("Screenshots", F::Folder, 202608301122, 0, "screenshots"),
-            ("Agenda.pages", F::Pages, 202608300901, 214_004, ""),
-            ("Colour Study.png", F::Image, 202608291402, 6_204_118, ""),
-            ("Aldermoor Brief.webloc", F::Web, 202608241033, 412, ""),
-            ("scratch.txt", F::Text, 202608301105, 812, ""),
-            ("Send To Print.pdf", F::Pdf, 202608281455, 3_204_002, ""),
-        ],
-    ),
-    (
-        "screenshots",
-        "Screenshots",
-        "desktop",
-        &["Macintosh HD", "Users", "avery", "Desktop", "Screenshots"],
-        &[
-            (
-                "Screenshot 2026-08-30 at 11.22.04.png",
-                F::Image,
-                202608301122,
-                2_884_112,
-                "",
-            ),
-            (
-                "Screenshot 2026-08-30 at 09.14.51.png",
-                F::Image,
-                202608300914,
-                3_112_884,
-                "",
-            ),
-            (
-                "Screenshot 2026-08-29 at 18.02.19.png",
-                F::Image,
-                202608291802,
-                1_998_004,
-                "",
-            ),
-            (
-                "Screenshot 2026-08-28 at 08.41.02.png",
-                F::Image,
-                202608280841,
-                2_204_881,
-                "",
-            ),
-            (
-                "Screenshot 2026-08-27 at 22.10.44.png",
-                F::Image,
-                202608272210,
-                4_118_002,
-                "",
-            ),
-        ],
-    ),
-    (
-        "downloads",
-        "Downloads",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Downloads"],
-        &[
-            ("Fonts", F::Folder, 202608261019, 0, "fonts"),
-            (
-                "Aperture Lab.dmg",
-                F::Archive,
-                202608301004,
-                412_004_118,
-                "",
-            ),
-            ("Bank Statement.pdf", F::Pdf, 202608291204, 288_004, ""),
-            ("Cassette.mp3", F::Audio, 202608271911, 8_812_004, ""),
-            (
-                "Field Recording.wav",
-                F::Audio,
-                202608261441,
-                148_220_884,
-                "",
-            ),
-            (
-                "Invoice Template.pages",
-                F::Pages,
-                202608251102,
-                402_118,
-                "",
-            ),
-            ("Iris Trailer.mov", F::Movie, 202608242202, 884_112_004, ""),
-            ("Lecture Notes.pdf", F::Pdf, 202608231015, 1_204_882, ""),
-            ("Mixdown.wav", F::Audio, 202608221844, 62_004_118, ""),
-            ("Sample Set.zip", F::Archive, 202608211533, 214_882_004, ""),
-            ("Slides.key", F::Slides, 202608201209, 41_004_112, ""),
-            ("Theme.zip", F::Archive, 202608190940, 1_884_002, ""),
-            ("Wallpaper 6K.png", F::Image, 202608182201, 38_112_004, ""),
-            ("dataset.csv", F::Text, 202608171104, 24_884_112, ""),
-            ("firmware.bin", F::Archive, 202608160812, 8_204_118, ""),
-            ("receipt.pdf", F::Pdf, 202608151633, 94_004, ""),
-        ],
-    ),
-    (
-        "fonts",
-        "Fonts",
-        "downloads",
-        &["Macintosh HD", "Users", "avery", "Downloads", "Fonts"],
-        &[
-            ("Chartwell.zip", F::Archive, 202608261019, 4_118_882, ""),
-            ("Duplet.zip", F::Archive, 202608240944, 6_204_112, ""),
-            ("Ginto Nord.zip", F::Archive, 202608221530, 3_884_004, ""),
-            ("Signifier.zip", F::Archive, 202608201122, 5_112_118, ""),
-        ],
-    ),
-    (
-        "pictures",
-        "Pictures",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Pictures"],
-        &[
-            ("Wallpapers", F::Folder, 202608141200, 0, "wallpapers"),
-            (
-                "Photos Library.photoslibrary",
-                F::Program,
-                202608301201,
-                84_112_004_118,
-                "",
-            ),
-            ("Contact Sheet.pdf", F::Pdf, 202607190944, 12_204_882, ""),
-            (
-                "Harbour at Dusk.png",
-                F::Image,
-                202606221911,
-                18_884_004,
-                "",
-            ),
-            ("Studio Test 04.png", F::Image, 202605301433, 22_112_884, ""),
-        ],
-    ),
-    (
-        "wallpapers",
-        "Wallpapers",
-        "pictures",
-        &["Macintosh HD", "Users", "avery", "Pictures", "Wallpapers"],
-        &[
-            ("Basalt.png", F::Image, 202608141200, 14_884_112, ""),
-            ("Dune 6K.png", F::Image, 202607281033, 28_004_118, ""),
-            ("Fjord.png", F::Image, 202606110912, 19_882_004, ""),
-            ("Sodium.png", F::Image, 202605021455, 16_112_884, ""),
-        ],
-    ),
-    (
-        "home",
-        "avery",
-        "users",
-        HOME,
-        &[
-            ("Applications", F::Folder, 202608120901, 0, "applications"),
-            ("Desktop", F::Folder, 202608301122, 0, "desktop"),
-            ("Documents", F::Folder, 202608301037, 0, "documents"),
-            ("Downloads", F::Folder, 202608301004, 0, "downloads"),
-            ("Movies", F::Folder, 202607141911, 0, "movies"),
-            ("Music", F::Folder, 202606221044, 0, "music"),
-            ("Pictures", F::Folder, 202608301201, 0, "pictures"),
-            ("Public", F::Folder, 202601010900, 0, "public"),
-        ],
-    ),
-    (
-        "movies",
-        "Movies",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Movies"],
-        &[
-            ("Iris Trailer.mov", F::Movie, 202607141911, 884_112_004, ""),
-            ("Kitchen Test.mov", F::Movie, 202606301422, 214_882_118, ""),
-            (
-                "Timelapse 01.mov",
-                F::Movie,
-                202605281033,
-                1_204_882_004,
-                "",
-            ),
-        ],
-    ),
-    (
-        "music",
-        "Music",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Music"],
-        &[
-            ("Cassette.mp3", F::Audio, 202606221044, 8_812_004, ""),
-            ("Mixdown.wav", F::Audio, 202605191833, 62_004_118, ""),
-            ("Sketch 04.mp3", F::Audio, 202604220911, 4_118_882, ""),
-        ],
-    ),
-    (
-        "public",
-        "Public",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Public"],
-        &[
-            ("Drop Box", F::Folder, 202601010900, 0, ""),
-            ("Shared Notes.txt", F::Text, 202602141422, 2_118, ""),
-        ],
-    ),
-    (
-        "users",
-        "Users",
-        "hd",
-        &["Macintosh HD", "Users"],
-        &[
-            ("avery", F::Folder, 202608301037, 0, "home"),
-            ("Shared", F::Folder, 202601010900, 0, ""),
-        ],
-    ),
-    (
-        "applications",
-        "Applications",
-        "hd",
-        &["Macintosh HD", "Applications"],
-        &[],
-    ),
-    (
-        "hd",
-        "Macintosh HD",
-        "",
-        &["Macintosh HD"],
-        &[
-            ("Applications", F::Folder, 202608120901, 0, "applications"),
-            ("Library", F::Folder, 202608290844, 0, "library"),
-            ("System", F::Folder, 202607010900, 0, "system"),
-            ("Users", F::Folder, 202608301037, 0, "users"),
-        ],
-    ),
-    (
-        "library",
-        "Library",
-        "hd",
-        &["Macintosh HD", "Library"],
-        &[
-            ("Application Support", F::Folder, 202608290844, 0, ""),
-            ("Fonts", F::Folder, 202607221011, 0, ""),
-            ("Preferences", F::Folder, 202608301102, 0, ""),
-            ("Scripts", F::Folder, 202604180933, 0, ""),
-        ],
-    ),
-    (
-        "system",
-        "System",
-        "hd",
-        &["Macintosh HD", "System"],
-        &[
-            ("Applications", F::Folder, 202607010900, 0, ""),
-            ("Library", F::Folder, 202607010900, 0, ""),
-            ("Volumes", F::Folder, 202607010900, 0, ""),
-        ],
-    ),
-    (
-        "recents",
-        "Recents",
-        "",
-        &["Recents"],
-        &[
-            ("bridge.rs", F::Code, 202608301041, 28_114, ""),
-            ("Cargo.toml", F::Text, 202608301037, 1_812, ""),
-            ("scratch.txt", F::Text, 202608301105, 812, ""),
-            (
-                "Screenshot 2026-08-30 at 11.22.04.png",
-                F::Image,
-                202608301122,
-                2_884_112,
-                "",
-            ),
-            (
-                "Aperture Lab.dmg",
-                F::Archive,
-                202608301004,
-                412_004_118,
-                "",
-            ),
-            ("Agenda.pages", F::Pages, 202608300901, 214_004, ""),
-            ("README.md", F::Text, 202608291955, 9_140, ""),
-            ("Meeting Notes.txt", F::Text, 202608291642, 11_402, ""),
-        ],
-    ),
-    (
-        "airdrop",
-        "AirDrop",
-        "",
-        &["AirDrop"],
-        &[
-            ("Avery's iPhone", F::Device, 202608301200, 0, ""),
-            ("Studio Display", F::Device, 202608301200, 0, ""),
-            ("Wren's MacBook Air", F::Device, 202608301200, 0, ""),
-        ],
-    ),
-    (
-        "icloud",
-        "iCloud Drive",
-        "",
-        &["iCloud Drive"],
-        &[
-            ("Documents", F::Folder, 202608301037, 0, "documents"),
-            ("Desktop", F::Folder, 202608301122, 0, "desktop"),
-            ("Keynote", F::Folder, 202607041122, 0, ""),
-            ("Numbers", F::Folder, 202608070912, 0, ""),
-            ("Pages", F::Folder, 202605221459, 0, ""),
-            ("Shortcuts", F::Folder, 202603110844, 0, ""),
-            (
-                "Archive 2025.zip",
-                F::Archive,
-                202601020911,
-                2_884_112_004,
-                "",
-            ),
-        ],
-    ),
-    (
-        "shared",
-        "Shared",
-        "",
-        &["Shared"],
-        &[
-            ("Aldermoor Brief.pdf", F::Pdf, 202608221533, 4_118_882, ""),
-            ("Northwind Assets", F::Folder, 202608191044, 0, ""),
-            ("Rates.numbers", F::Sheet, 202601121030, 88_004, ""),
-        ],
-    ),
-    (
-        "timemachine",
-        "Time Machine",
-        "",
-        &["Time Machine"],
-        &[
-            ("Backups 2026-08-30", F::Volume, 202608300400, 0, ""),
-            ("Backups 2026-08-29", F::Volume, 202608290400, 0, ""),
-            ("Backups 2026-08-28", F::Volume, 202608280400, 0, ""),
-            ("Backups 2026-08-24", F::Volume, 202608240400, 0, ""),
-        ],
-    ),
-    (
-        "network",
-        "Network",
-        "",
-        &["Network"],
-        &[
-            ("aldermoor-nas", F::Device, 202608301200, 0, ""),
-            ("studio-mini", F::Device, 202608301200, 0, ""),
-        ],
-    ),
-    (
-        "developer",
-        "Developer",
-        "home",
-        &["Macintosh HD", "Users", "avery", "Developer"],
-        &[
-            ("Aldermoor", F::Folder, ago(0, 9, 12), 0, "projects"),
-            ("Northwind", F::Folder, 202608221420, 0, ""),
-            ("Scratch", F::Folder, 202607091044, 0, ""),
-            ("bootstrap.sh", F::Code, 202606141902, 3_118, ""),
-            ("toolchain.toml", F::Text, 202605301155, 812, ""),
-        ],
-    ),
-    (
-        "bakery",
-        "Bakery",
-        "",
-        &["Bakery"],
-        &[
-            ("Downloads", F::Folder, ago(1, 18, 3), 0, "downloads-bakery"),
-            ("Masters", F::Folder, 202608180944, 0, ""),
-            ("Renders", F::Folder, 202608291502, 0, ""),
-            ("Iris Trailer.mov", F::Movie, 202608242202, 884_112_004, ""),
-            ("Session 04.wav", F::Audio, 202608261441, 148_220_884, ""),
-        ],
-    ),
-    (
-        "downloads-bakery",
-        "Downloads",
-        "bakery",
-        &["Bakery", "Downloads"],
-        &[
-            ("Chartwell.zip", F::Archive, 202608261019, 4_118_882, ""),
-            ("Plate Set 12.zip", F::Archive, 202608201122, 88_204_118, ""),
-            ("Reference.pdf", F::Pdf, 202608141731, 8_412_770, ""),
-        ],
-    ),
-    (
-        "trash",
-        "Trash",
-        "",
-        &["Trash"],
-        &[
-            ("Old Mixdown.wav", F::Audio, 202608221844, 62_004_118, ""),
-            (
-                "Screenshot 2026-08-02 at 09.14.22.png",
-                F::Image,
-                202608020914,
-                1_884_002,
-                "",
-            ),
-            ("draft.md", F::Text, 202607301613, 2_204, ""),
-        ],
-    ),
+/// The face a type wears, by what its uniform type identifier conforms to, most specific first.
+const FACES: &[(&str, Face)] = &[
+    ("public.folder", F::Folder),
+    ("public.volume", F::Volume),
+    ("com.apple.application", F::Program),
+    ("com.adobe.pdf", F::Pdf),
+    ("public.image", F::Image),
+    ("public.movie", F::Movie),
+    ("public.audio", F::Audio),
+    ("public.archive", F::Archive),
+    ("public.disk-image", F::Disk),
+    ("public.spreadsheet", F::Sheet),
+    ("public.presentation", F::Slides),
+    ("com.apple.iwork.pages.pages", F::Pages),
+    ("public.source-code", F::Code),
+    ("public.html", F::Web),
+    ("public.text", F::Text),
 ];
 
-pub(crate) const APPS: &[&str] = &[
-    "App Store",
-    "Automator",
-    "Books",
-    "Calculator",
-    "Calendar",
-    "Chess",
-    "Clock",
-    "Contacts",
-    "Dictionary",
-    "FaceTime",
-    "Find My",
-    "Font Book",
-    "Freeform",
-    "GarageBand",
-    "Home",
-    "Image Capture",
-    "Journal",
-    "Keynote",
-    "Mail",
-    "Maps",
-    "Messages",
-    "Mission Control",
-    "Music",
-    "News",
-    "Notes",
-    "Numbers",
-    "Pages",
-    "Passwords",
-    "Photo Booth",
-    "Photos",
-    "Podcasts",
-    "Preview",
-    "QuickTime Player",
-    "Reminders",
-    "Safari",
-    "Shortcuts",
-    "Stickies",
-    "Stocks",
-    "TextEdit",
-    "Time Machine",
-    "TV",
-    "Voice Memos",
-    "Weather",
-];
-
-pub(crate) const AVAILABLE_BYTES: i64 = 218_420_000_000;
-
-/// `(year, month, day, hour, minute)` for a stamp, an [`ago`] offset resolved against `today`.
-pub(crate) fn stamp_parts(stamp: u64, today: (i64, i64, i64)) -> (i64, i64, i64, i64, i64) {
-    if stamp >= RELATIVE {
-        let offset = (stamp - RELATIVE) as i64;
-        let (year, month, day) = today;
-        return (
-            year,
-            month,
-            day - offset / 10_000,
-            offset / 100 % 100,
-            offset % 100,
-        );
+// `NSWorkspace` is the only type conformance AppKit exposes; `UTType` is in a framework this
+// example does not link. The lookup is LaunchServices', not AppKit state: fine off the main thread.
+#[allow(deprecated)]
+fn face_of(uti: &str) -> Face {
+    static SEEN: OnceLock<RwLock<HashMap<String, Face>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(face) = seen.read().unwrap().get(uti) {
+        return *face;
     }
-    let stamp = stamp as i64;
-    (
-        stamp / 100_000_000,
-        stamp / 1_000_000 % 100,
-        stamp / 10_000 % 100,
-        stamp / 100 % 100,
-        stamp % 100,
-    )
+    let workspace = NSWorkspace::sharedWorkspace();
+    let mine = NSString::from_str(uti);
+    let face = FACES
+        .iter()
+        .find(|(parent, _)| workspace.type_conformsToType(&mine, &NSString::from_str(parent)))
+        .map_or(F::Text, |(_, face)| *face);
+    seen.write().unwrap().insert(uti.to_owned(), face);
+    face
 }
 
-pub(crate) fn stamp_date(
-    calendar: &NSCalendar,
-    today: (i64, i64, i64),
-    stamp: u64,
-    back: i64,
-) -> Option<objc2::rc::Retained<NSDate>> {
-    let (year, month, day, hour, minute) = stamp_parts(stamp, today);
-    // The day is left out of range on purpose: `NSCalendar` carries it into the right month.
-    let parts = NSDateComponents::new();
-    parts.setYear(year as isize);
-    parts.setMonth(month as isize);
-    parts.setDay((day - back) as isize);
-    parts.setHour(hour as isize);
-    parts.setMinute(minute as isize);
-    parts.setSecond(0);
-    calendar.dateFromComponents(&parts)
+/// Every id the demo carries is one of these: an absolute path that lives as long as the app.
+pub(crate) fn intern(text: &str) -> &'static str {
+    static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut pool = POOL.get_or_init(Default::default).lock().unwrap();
+    if let Some(known) = pool.get(text) {
+        return known;
+    }
+    let kept: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    pool.insert(kept);
+    kept
+}
+
+pub(crate) fn intern_path(path: &Path) -> &'static str {
+    intern(&path.to_string_lossy())
+}
+
+/// `dir/name`, with the root's single separator.
+pub(crate) fn join(dir: &str, name: &str) -> String {
+    match dir {
+        "/" => format!("/{name}"),
+        _ => format!("{dir}/{name}"),
+    }
+}
+
+/// The folder a row's key names, and the row's name inside it.
+pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
+    let (dir, name) = key.rsplit_once('/')?;
+    Some((intern(if dir.is_empty() { "/" } else { dir }), name))
+}
+
+/// Every mounted volume: mount point, name, and the bytes it has free.
+fn volumes_seen() -> &'static RwLock<Vec<(String, &'static str, u64)>> {
+    static SEEN: OnceLock<RwLock<Vec<(String, &'static str, u64)>>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// Re-reads the mounted volumes. Enumerating them costs milliseconds, so nothing on a frame's
+/// path may call it: the path bar, the sidebar and the status bar read this snapshot.
+pub(crate) fn refresh_volumes() {
+    let mounted = volumes::mounted()
+        .iter()
+        .map(|volume| {
+            (
+                volume.path.to_string_lossy().into_owned(),
+                intern(&volume.name),
+                volume.available,
+            )
+        })
+        .collect();
+    *volumes_seen().write().unwrap() = mounted;
+}
+
+fn boot_name() -> &'static str {
+    static NAME: OnceLock<&'static str> = OnceLock::new();
+    NAME.get_or_init(|| {
+        let name = NSFileManager::defaultManager()
+            .displayNameAtPath(&NSString::from_str("/"))
+            .to_string();
+        intern(&name)
+    })
+}
+
+/// The mount point `path` sits on, and that volume's name.
+fn volume_of(path: &str) -> (&'static str, &'static str) {
+    let under =
+        |mount: &str| mount == "/" || path == mount || path.starts_with(&format!("{mount}/"));
+    volumes_seen()
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|(mount, ..)| under(mount))
+        .max_by_key(|(mount, ..)| mount.len())
+        .map(|(mount, name, _)| (intern(mount), *name))
+        .unwrap_or(("/", boot_name()))
+}
+
+/// The volumes' mount points, root first, for the sidebar's Locations.
+pub(crate) fn volume_roots() -> Vec<&'static str> {
+    volumes_seen()
+        .read()
+        .unwrap()
+        .iter()
+        .map(|(mount, ..)| intern(mount))
+        .collect()
+}
+
+/// The bytes free on the volume `id` sits on, as of the last [`refresh_volumes`].
+pub(crate) fn available_bytes(id: &str) -> u64 {
+    let (mount, _) = volume_of(id);
+    volumes_seen()
+        .read()
+        .unwrap()
+        .iter()
+        .find(|(seen, ..)| seen == mount)
+        .map_or(0, |(.., available)| *available)
+}
+
+/// The folders whose artwork is their own, so they draw as Finder draws them.
+fn special() -> &'static HashSet<String> {
+    static PLACES: OnceLock<HashSet<String>> = OnceLock::new();
+    PLACES.get_or_init(|| {
+        use finder_fs::volumes::Standard::*;
+        let mut places: HashSet<String> = [
+            Home,
+            Desktop,
+            Documents,
+            Downloads,
+            Applications,
+            Movies,
+            Music,
+            Pictures,
+            Trash,
+        ]
+        .into_iter()
+        .filter_map(volumes::standard)
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+        let home = volumes::standard(Home).unwrap_or_default();
+        for leaf in ["Public", "Library", "Developer", "Sites", "Applications"] {
+            places.insert(home.join(leaf).to_string_lossy().into_owned());
+        }
+        for path in [
+            "/",
+            "/Library",
+            "/System",
+            "/Users",
+            "/Users/Shared",
+            "/Volumes",
+        ] {
+            places.insert(path.to_string());
+        }
+        places
+    })
+}
+
+const UNIX_TO_REFERENCE: f64 = 978_307_200.;
+
+fn reference_seconds(at: SystemTime) -> f64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(0., |since| since.as_secs_f64() - UNIX_TO_REFERENCE)
+}
+
+/// Finder's date column, formatted once a minute and shared by every row in it: `NSDateFormatter`
+/// costs tens of microseconds a call, which 20 000 rows cannot pay.
+pub(crate) fn date_text(seconds: f64) -> SharedString {
+    thread_local! {
+        static FORMATTER: Retained<NSDateFormatter> = {
+            let formatter = NSDateFormatter::new();
+            formatter.setDateStyle(NSDateFormatterStyle::ShortStyle);
+            formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
+            formatter.setDoesRelativeDateFormatting(true);
+            formatter
+        };
+        static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
+    }
+    if seconds == 0. {
+        return "--".into();
+    }
+    let minute = (seconds / 60.).floor() as i64;
+    SEEN.with(|seen| {
+        if let Some(text) = seen.borrow().get(&minute) {
+            return text.clone();
+        }
+        let text = FORMATTER.with(|formatter| {
+            SharedString::from(
+                formatter
+                    .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+                    .to_string(),
+            )
+        });
+        seen.borrow_mut().insert(minute, text.clone());
+        text
+    })
 }
 
 /// The band Finder files a row under while Use Groups is on.
@@ -758,7 +307,7 @@ pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {
             Some(first) => SharedString::from(first.to_uppercase().to_string()),
             None => "\u{2014}".into(),
         },
-        Column::Kind => plural(row.face.kind()),
+        Column::Kind => plural(&row.kind),
         Column::Size if row.face == Face::Folder => "Folders".into(),
         Column::Size => match row.bytes {
             0 => "Zero KB".into(),
@@ -818,62 +367,127 @@ pub(crate) fn day_string(seconds: f64) -> String {
 }
 
 pub(crate) fn byte_string(bytes: u64) -> String {
-    NSByteCountFormatter::stringFromByteCount_countStyle(
-        bytes as i64,
-        NSByteCountFormatterCountStyle::File,
-    )
-    .to_string()
+    thread_local! {
+        static FORMATTER: Retained<NSByteCountFormatter> = {
+            let formatter = NSByteCountFormatter::new();
+            formatter.setCountStyle(NSByteCountFormatterCountStyle::File);
+            formatter
+        };
+    }
+    FORMATTER.with(|formatter| formatter.stringFromByteCount(bytes as i64).to_string())
 }
 
 #[derive(Clone)]
 pub(crate) struct Row {
     pub(crate) name: SharedString,
-    pub(crate) modified: SharedString,
-    pub(crate) stamp: u64,
+    /// The file's absolute path: the row's identity everywhere the demo names it.
+    pub(crate) path: SharedString,
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
-    pub(crate) created: SharedString,
     pub(crate) modified_at: f64,
     pub(crate) created_at: f64,
+    /// Finder's localized kind, e.g. `PDF document`.
+    pub(crate) kind: SharedString,
     pub(crate) dimensions: Option<SharedString>,
     pub(crate) duration: Option<SharedString>,
     pub(crate) face: Face,
+    pub(crate) hidden: bool,
+    /// The folder this row opens: a directory the user can walk into, never a package.
     pub(crate) opens: Option<&'static str>,
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
-impl Row {
-    /// A folder the demo just made: no bytes, no date of its own until something lands in it.
-    pub(crate) fn folder(name: &'static str, opens: &'static str) -> Self {
-        Self {
-            name: name.into(),
-            modified: "--".into(),
-            stamp: 0,
-            size: "--".into(),
-            bytes: 0,
-            created: "--".into(),
-            modified_at: 0.,
-            created_at: 0.,
-            dimensions: None,
-            duration: None,
-            face: Face::Folder,
-            opens: Some(opens),
-            artwork: Some(folder_art(&name)),
-        }
+fn artwork_of(entry: &Entry, path: &str, uti: &str) -> Option<FileType<'static>> {
+    if entry.package {
+        return Some(FileType::Path(intern(path)));
     }
+    if entry.kind == EntryKind::Directory {
+        if special().contains(path) || has_custom_icon(Path::new(path)) {
+            return Some(FileType::Path(intern(path)));
+        }
+        return Some(FileType::Folder);
+    }
+    Some(match entry.extension() {
+        Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
+        None => FileType::Uti(intern(uti)),
+    })
+}
+
+fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
+    let path = join(dir, &entry.name);
+    let kind = match entry.kind {
+        EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
+        _ => kind::kind_of_path(Path::new(&path)),
+    };
+    // A package is a directory too: its bytes are the index's to know, not the listing's.
+    let directory = entry.kind == EntryKind::Directory;
+    let bytes = match directory {
+        true => index.folder_size(Path::new(&path)).unwrap_or(0),
+        false => entry.size,
+    };
+    Row {
+        name: entry.name.clone().into(),
+        size: match directory && bytes == 0 {
+            true => "--".into(),
+            false => byte_string(bytes).into(),
+        },
+        bytes,
+        modified_at: reference_seconds(entry.modified),
+        created_at: reference_seconds(entry.created),
+        kind: kind.label.to_string().into(),
+        dimensions: None,
+        duration: None,
+        face: face_of(&kind.uti),
+        hidden: entry.hidden,
+        opens: entry.is_dir().then(|| intern(&path)),
+        artwork: artwork_of(entry, &path, &kind.uti),
+        path: path.into(),
+    }
+}
+
+/// One directory's entries as rows. Runs off the main thread, so nothing here may touch a view.
+pub(crate) fn rows_of(dir: &'static str, entries: &[Entry], index: &Index) -> Vec<Arc<Row>> {
+    entries
+        .iter()
+        .map(|entry| Arc::new(row_of(dir, entry, index)))
+        .collect()
+}
+
+/// One row for a file the index found somewhere else on the disk.
+pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
+    let dir = path.parent().map_or("/", intern_path);
+    Arc::new(row_of(dir, entry, index))
 }
 
 pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,
-    pub(crate) crumbs: &'static [&'static str],
-    pub(crate) rows: Vec<Row>,
+    /// Finder's path bar: the volume's name, then every folder down to this one.
+    pub(crate) crumbs: Vec<&'static str>,
+    pub(crate) rows: Vec<Arc<Row>>,
+    /// Rows are still arriving from the disk.
+    pub(crate) loading: bool,
+}
+
+/// The folder at `id`, named and placed the way Finder names and places it, with no rows yet.
+pub(crate) fn folder_of(id: &'static str) -> Folder {
+    let (mount, volume) = volume_of(id);
+    let rest = id.strip_prefix(mount.trim_end_matches('/')).unwrap_or("");
+    let mut crumbs = vec![volume];
+    crumbs.extend(rest.split('/').filter(|part| !part.is_empty()).map(intern));
+    Folder {
+        title: crumbs.last().copied().unwrap_or(volume),
+        parent: Path::new(id).parent().map(intern_path),
+        crumbs,
+        rows: Vec::new(),
+        loading: true,
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct Line {
     pub(crate) key: SharedString,
-    pub(crate) row: Row,
+    pub(crate) row: Arc<Row>,
     pub(crate) depth: usize,
 }
 
@@ -885,103 +499,78 @@ pub(crate) enum Column {
     Kind,
 }
 
-pub(crate) fn build_store() -> HashMap<&'static str, Folder> {
-    let formatter = NSDateFormatter::new();
-    formatter.setDateStyle(NSDateFormatterStyle::ShortStyle);
-    formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
-    formatter.setDoesRelativeDateFormatting(true);
+/// The listings the demo has read, newest last, with the misses a render wants read next.
+#[derive(Default)]
+pub(crate) struct Folders {
+    cache: HashMap<&'static str, Folder>,
+    order: Vec<&'static str>,
+    reading: HashSet<&'static str>,
+    wanted: RefCell<Vec<&'static str>>,
+}
 
-    let calendar = NSCalendar::currentCalendar();
-    let now = NSDate::date();
-    let fields = NSCalendarUnit::Year | NSCalendarUnit::Month | NSCalendarUnit::Day;
-    let parts = calendar.components_fromDate(fields, &now);
-    let today = (
-        parts.year() as i64,
-        parts.month() as i64,
-        parts.day() as i64,
-    );
-
-    const FRAMES: [(u32, u32); 6] = [
-        (1920, 1080),
-        (3840, 2160),
-        (1280, 720),
-        (2560, 1440),
-        (6016, 3384),
-        (1170, 2532),
-    ];
-    let row = |src: &Src| {
-        let (name, face, stamp, bytes, opens) = *src;
-        let text = |back: i64| {
-            stamp_date(&calendar, today, stamp, back)
-                .map(|date| formatter.stringFromDate(&date).to_string())
-                .unwrap_or_default()
-        };
-        let seconds = |back: i64| {
-            stamp_date(&calendar, today, stamp, back)
-                .map_or(0., |date| date.timeIntervalSinceReferenceDate())
-        };
-        let created_back = 1 + (bytes % 407) as i64;
-        Row {
-            name: name.into(),
-            modified: text(0).into(),
-            created: text(created_back).into(),
-            modified_at: seconds(0),
-            created_at: seconds(created_back),
-            dimensions: matches!(face, F::Image | F::Movie).then(|| {
-                let (w, h) = FRAMES[(bytes % FRAMES.len() as u64) as usize];
-                SharedString::from(format!("{w} × {h}"))
-            }),
-            duration: matches!(face, F::Movie | F::Audio).then(|| {
-                let seconds = 7 + bytes % 5_393;
-                SharedString::from(format!("{}:{:02}", seconds / 60, seconds % 60))
-            }),
-            stamp,
-            size: if face == F::Folder || face == F::Volume || face == F::Device {
-                "--".into()
-            } else {
-                byte_string(bytes).into()
-            },
-            bytes,
-            face,
-            opens: (!opens.is_empty()).then_some(opens),
-            artwork: match face {
-                F::Folder => Some(folder_art(name)),
-                F::Program => Some(app_art(name)),
-                _ => face.artwork(name.rsplit_once('.').map(|(_, tail)| tail)),
-            },
+impl Folders {
+    /// The cached listing. A miss asks for a read at the next pump and draws nothing until it lands.
+    pub(crate) fn get(&self, id: &'static str) -> Option<&Folder> {
+        if let Some(folder) = self.cache.get(id) {
+            return Some(folder);
         }
-    };
-
-    let mut store: HashMap<&'static str, Folder> = DIRS
-        .iter()
-        .map(|(id, title, parent, crumbs, items)| {
-            (
-                *id,
-                Folder {
-                    title,
-                    parent: (!parent.is_empty()).then_some(*parent),
-                    crumbs,
-                    rows: items.iter().map(row).collect(),
-                },
-            )
-        })
-        .collect();
-
-    if let Some(apps) = store.get_mut("applications") {
-        apps.rows = APPS
-            .iter()
-            .enumerate()
-            .map(|(index, name)| {
-                let index = index as u64;
-                let stamp = 202601010000
-                    + (index % 8 + 1) * 1_000_000
-                    + (index % 27 + 1) * 10_000
-                    + (index % 11 + 8) * 100
-                    + index * 7 % 60;
-                let bytes = 14_000_000 + index * 9_300_517 % 1_400_000_000;
-                row(&(name, F::Program, stamp, bytes, ""))
-            })
-            .collect();
+        if id.starts_with('/') && !self.reading.contains(id) {
+            let mut wanted = self.wanted.borrow_mut();
+            if !wanted.contains(&id) {
+                wanted.push(id);
+            }
+        }
+        None
     }
-    store
+
+    pub(crate) fn get_mut(&mut self, id: &'static str) -> Option<&mut Folder> {
+        self.cache.get_mut(id)
+    }
+
+    /// Whether the listing is in memory, without asking for it.
+    pub(crate) fn has(&self, id: &'static str) -> bool {
+        self.cache.contains_key(id)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub(crate) fn take_wanted(&mut self) -> Vec<&'static str> {
+        self.wanted.take()
+    }
+
+    /// Claims a read of `id`, unless one is already running.
+    pub(crate) fn start(&mut self, id: &'static str) -> bool {
+        self.reading.insert(id)
+    }
+
+    pub(crate) fn finish(&mut self, id: &'static str) {
+        self.reading.remove(id);
+        if let Some(folder) = self.cache.get_mut(id) {
+            folder.loading = false;
+        }
+    }
+
+    /// Rows from a read: the first batch stands in for whatever was there, the rest add to it.
+    pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) {
+        let folder = self.cache.entry(id).or_insert_with(|| {
+            self.order.push(id);
+            folder_of(id)
+        });
+        if replace {
+            folder.rows.clear();
+        }
+        folder.rows.extend(rows);
+        while self.order.len() > CACHED {
+            let oldest = self.order.remove(0);
+            if oldest != id && !self.reading.contains(oldest) {
+                self.cache.remove(oldest);
+            }
+        }
+    }
+
+    pub(crate) fn cached(&self) -> Vec<&'static str> {
+        self.order.clone()
+    }
 }

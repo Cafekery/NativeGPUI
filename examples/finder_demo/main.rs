@@ -1,4 +1,4 @@
-//! A Finder front end: real macOS chrome, an invented filesystem, `NG_QUIT=<frames>` to exit.
+//! A Finder front end: real macOS chrome over the real file system, `NG_QUIT=<frames>` to exit.
 
 mod column;
 mod commands;
@@ -22,13 +22,18 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use finder_fs::index::Index;
+use finder_fs::ops::{Conflict, Op};
+use finder_fs::watch::Watcher;
+use finder_fs::{ops, tags, volumes};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, FocusHandle, KeyBinding, KeyDownEvent, MouseButton,
-    Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, relative, size,
+    AnyElement, App, Bounds, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, Pixels,
+    RenderImage, ScrollHandle, ScrollStrategy, SharedString, UniformListScrollHandle, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, relative, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens::{self, FileType, SystemTheme};
@@ -36,12 +41,13 @@ use native_gpui::{
     install_menus, native_root, remember_frame, system_corner_radius, window_options,
 };
 use objc2::rc::Retained;
-use objc2_app_kit::{NSView, NSWindow};
-use objc2_foundation::NSSize;
+use objc2::runtime::ProtocolObject;
+use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSView, NSWindow};
+use objc2_foundation::{NSArray, NSSize, NSString, NSURL};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::commands::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
-use crate::data::{Column, Folder, Line, Row, build_store, group_of};
+use crate::data::{Column, Folder, Folders, Line, Row, group_of, intern, intern_path, split_key};
 use crate::header::{
     ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
     pane_surface,
@@ -65,14 +71,26 @@ pub(crate) const COLUMN_VIEW: usize = 2;
 pub(crate) const GALLERY_VIEW: usize = 3;
 
 const LIST_ZOOM_SECS: f32 = 0.2;
+/// Rows per batch while a folder is read, how often the view takes delivery, and how often the
+/// index writes its snapshot.
+const BATCH: usize = 512;
+const POLL: Duration = Duration::from_millis(5);
+const TICK: Duration = Duration::from_millis(120);
+/// Ticks between volume snapshots, so the status bar's free space stays roughly current.
+const VOLUMES_EVERY: u64 = 40;
+thread_local! {
+    static START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+const SAVE_EVERY: Duration = Duration::from_secs(180);
 const ICON_STOPS: [f32; 9] = [16., 24., 32., 48., 64., 96., 128., 256., 512.];
 const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
 pub(crate) struct FinderDemo {
-    pub(crate) store: HashMap<&'static str, Folder>,
+    pub(crate) folders: Folders,
     pub(crate) sidebar: Option<NativeSidebar>,
+    pub(crate) sidebar_groups: Vec<sidebar::Group>,
     pub(crate) sidebar_rows: Vec<Vec<&'static str>>,
     pub(crate) toolbar: bool,
     pub(crate) history: Vec<&'static str>,
@@ -130,17 +148,58 @@ pub(crate) struct FinderDemo {
     pub(crate) column_grab: Option<(usize, f32)>,
     pub(crate) icons: Grid,
     pub(crate) window_min_w: f32,
+    /// FSEvents for the folders on screen; a change re-reads what it names.
+    watcher: Watcher,
+    watching: HashSet<&'static str>,
+    /// What the index found elsewhere for the search field.
+    hits: Vec<Arc<Row>>,
+    /// A row an operation made, to scroll to as soon as its folder is read again.
+    reveal_next: Option<SharedString>,
+    /// The window an error sheet hangs on.
+    host: Option<Retained<NSWindow>>,
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
     pub(crate) quit_at: Option<u64>,
 }
 
 impl FinderDemo {
-    pub(crate) fn new(start: &'static str, cx: &mut App) -> Self {
+    pub(crate) fn new(start: &'static str, cx: &mut Context<Self>) -> Self {
+        let groups = sidebar::groups();
+        let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = changes.clone();
+        cx.spawn(async move |this, cx| {
+            let mut seen = 0;
+            let mut ticks = 0u64;
+            loop {
+                cx.background_executor().timer(TICK).await;
+                let changed = std::mem::take(&mut *changes.lock().unwrap());
+                ticks += 1;
+                if ticks % VOLUMES_EVERY == 0 {
+                    cx.background_executor()
+                        .spawn(async { data::refresh_volumes() })
+                        .detach();
+                }
+                let landed = crate::ui::thumbnails_landed();
+                let drawn = std::mem::replace(&mut seen, landed) != landed;
+                if this
+                    .update(cx, |this, cx| {
+                        this.changed(changed, cx);
+                        if drawn {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
-            store: build_store(),
+            folders: Folders::default(),
             sidebar: None,
-            sidebar_rows: crate::sidebar::default_rows(),
+            sidebar_rows: sidebar::default_rows(&groups),
+            sidebar_groups: groups,
             toolbar: false,
             history: vec![start],
             at: 0,
@@ -191,21 +250,24 @@ impl FinderDemo {
             column_grab: None,
             icons: Grid::default(),
             window_min_w: f32::NAN,
+            watcher: Watcher::new(move |dirs| sink.lock().unwrap().extend(dirs)),
+            watching: HashSet::new(),
+            hits: Vec::new(),
+            reveal_next: None,
+            host: None,
             focus: cx.focus_handle(),
             frames: 0,
             quit_at: env::var("NG_QUIT").ok().and_then(|v| v.parse().ok()),
         }
     }
 
-    /// Rasterise every icon kind up front, one per turn, so no folder pays for it in a frame.
+    /// Rasterise the artwork every folder wears up front, so no frame pays for it.
     pub(crate) fn warm_icons(&self, cx: &mut Context<Self>) {
-        let mut kinds: Vec<FileType<'static>> = self
-            .store
-            .values()
-            .flat_map(|folder| folder.rows.iter().filter_map(|row| row.artwork))
-            .collect();
-        kinds.sort_by_key(|kind| format!("{kind:?}"));
-        kinds.dedup();
+        let kinds = [
+            FileType::Folder,
+            FileType::Path("/"),
+            FileType::Extension("app"),
+        ];
         let sizes = [ICON_SMALL, ICON_SIZE, PREVIEW_W - 1. - 2. * INSET];
         cx.spawn(async move |_, cx| {
             for kind in kinds {
@@ -225,58 +287,61 @@ impl FinderDemo {
     }
 
     pub(crate) fn folder(&self) -> Option<&Folder> {
-        self.store.get(self.here())
+        self.folders.get(self.here())
     }
 
+    /// The folder an operation lands in: where the cursor points in the browser or a search hit,
+    /// otherwise the folder on screen.
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
+        let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
+            return here;
+        };
+        if self.searching() {
+            return holder;
+        }
         if self.view != COLUMN_VIEW {
             return here;
         }
-        let Some((holder, name)) = self.cursor.as_ref().and_then(|key| key.rsplit_once('/')) else {
-            return here;
-        };
-        let Some((holder, folder)) = self.store.get_key_value(holder) else {
-            return here;
-        };
         if self.selected.len() > 1 {
             return holder;
         }
-        folder
-            .rows
-            .iter()
-            .find(|row| row.name == name)
+        self.folders
+            .get(holder)
+            .and_then(|folder| folder.rows.iter().find(|row| row.name == name))
             .and_then(|row| row.opens)
             .unwrap_or(holder)
     }
 
-    /// The folder whose path reads like `text`, however the user typed the separators.
-    pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
-        let want = text.trim().trim_end_matches('/').to_lowercase();
-        self.store.iter().find_map(|(id, folder)| {
-            let path = match folder.crumbs.split_first() {
-                Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
-                _ => "/".to_string(),
-            };
-            (path.to_lowercase() == want).then_some(*id)
-        })
+    pub(crate) fn searching(&self) -> bool {
+        !self.query.trim().is_empty() && !self.hits.is_empty()
     }
 
-    /// Finder's tag dots: the pick colours every chosen row.
-    pub(crate) fn tag_selection(&mut self, tag: usize) {
+    /// The folder `text` names, absolute or under `~`, if it is one.
+    pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
+        let text = text.trim();
+        let full = match text.strip_prefix('~') {
+            Some(rest) => format!("{}{rest}", home().to_string_lossy()),
+            None => text.to_string(),
+        };
+        let trimmed = full.trim_end_matches('/');
+        let path = Path::new(match trimmed.is_empty() {
+            true => "/",
+            false => trimmed,
+        });
+        path.is_dir().then(|| intern_path(path))
+    }
+
+    /// Finder's tag dots: the pick colours every chosen row, and the files carry the tag.
+    pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         for key in self.selected.clone() {
-            self.tags.insert(key, tag);
+            self.tags.insert(key.clone(), tag);
+            write_tag(&key, Some(tag), cx);
         }
     }
 
     pub(crate) fn crumb_path(&self) -> String {
-        self.store.get(self.target()).map_or_else(
-            || String::from("Finder"),
-            |folder| match folder.crumbs.split_first() {
-                Some((_volume, rest)) if !rest.is_empty() => format!("/{}", rest.join("/")),
-                _ => folder.title.to_string(),
-            },
-        )
+        self.target().to_string()
     }
 
     pub(crate) fn retitle(&self, window: &mut Window) {
@@ -289,21 +354,25 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// The folder each breadcrumb stands for, root first.
+    /// The folder each breadcrumb stands for, the volume first.
     pub(crate) fn crumb_ids(&self) -> Vec<&'static str> {
-        let mut chain = vec![self.here()];
-        while let Some(parent) = self.store.get(chain[0]).and_then(|folder| folder.parent) {
-            chain.insert(0, parent);
+        let deep = self
+            .folders
+            .get(self.target())
+            .map_or(1, |folder| folder.crumbs.len());
+        let mut chain = Vec::with_capacity(deep);
+        let mut at = Some(Path::new(self.target()));
+        while let Some(path) = at.filter(|_| chain.len() < deep) {
+            chain.push(intern_path(path));
+            at = path.parent();
         }
+        chain.reverse();
         chain
     }
 
     /// Keep the Go menu's Recent Folders in step with where the window has been.
     fn remember_recent(&mut self, id: &'static str) {
-        let Some(folder) = self.store.get(id) else {
-            return;
-        };
-        let title = folder.title.to_string();
+        let title = crate::data::folder_of(id).title.to_string();
         self.recents.retain(|(seen, _)| *seen != id);
         self.recents.insert(0, (id, title));
         self.recents.truncate(10);
@@ -339,11 +408,255 @@ impl FinderDemo {
         self.cursor = None;
         self.anchor = None;
         self.query.clear();
+        self.hits.clear();
         self.icons.forget();
+        self.read_folder(self.here(), cx);
         self.settle();
         self.retitle(window);
         self.sidebar_follow();
         cx.notify();
+    }
+
+    /// Start a read for every folder the last frame asked for and did not have, and keep the
+    /// watcher pointed at what is on screen.
+    fn pump(&mut self, cx: &mut Context<Self>) {
+        for id in self.folders.take_wanted() {
+            self.read_folder(id, cx);
+        }
+        self.follow();
+    }
+
+    /// Reads `id` off the main thread, handing rows over as they arrive: the index's copy first
+    /// when it has one, then the disk's, which replaces it.
+    fn read_folder(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        if !id.starts_with('/') || !self.folders.start(id) {
+            return;
+        }
+        if !self.folders.has(id) {
+            self.folders.deliver(id, Vec::new(), true);
+        }
+        let mail = Arc::new(Mutex::new(Mail::default()));
+        let filling = mail.clone();
+        let read = cx.background_executor().spawn(async move {
+            let dir = Path::new(id);
+            let index = index();
+            if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
+                let rows = data::rows_of(id, &known, index);
+                filling.lock().unwrap().batches.push((rows, true));
+            }
+            let post = |rows: Vec<Arc<Row>>| {
+                let mut mail = filling.lock().unwrap();
+                let replace = !mail.listed;
+                mail.listed = true;
+                mail.batches.push((rows, replace));
+            };
+            let read = finder_fs::list::list_dir_batched(dir, BATCH, |entries| {
+                post(data::rows_of(id, &entries, index))
+            });
+            let mut mail = filling.lock().unwrap();
+            if read.is_ok() && !mail.listed {
+                mail.batches.push((Vec::new(), true));
+            }
+            mail.done = true;
+        });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let (batches, done) = {
+                    let mut mail = mail.lock().unwrap();
+                    (std::mem::take(&mut mail.batches), mail.done)
+                };
+                let alive = this
+                    .update(cx, |this, cx| this.deliver(id, batches, done, cx))
+                    .is_ok();
+                if done || !alive {
+                    break;
+                }
+            }
+            read.await;
+        })
+        .detach();
+    }
+
+    fn deliver(
+        &mut self,
+        id: &'static str,
+        batches: Vec<(Vec<Arc<Row>>, bool)>,
+        done: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let landed = !batches.is_empty();
+        for (rows, replace) in batches {
+            self.folders.deliver(id, rows, replace);
+        }
+        if landed {
+            self.sort_folder(id);
+        }
+        if done {
+            self.folders.finish(id);
+        }
+        if let Some(key) = self.reveal_next.clone() {
+            if self
+                .folders
+                .get(id)
+                .is_some_and(|folder| folder.rows.iter().any(|row| row.path == key))
+            {
+                self.reveal_next = None;
+                self.reveal(&key);
+            }
+        }
+        if landed || done {
+            cx.notify();
+        }
+    }
+
+    fn sort_folder(&mut self, id: &'static str) {
+        let (sort, ascending) = (self.sort, self.ascending);
+        if let Some(folder) = self.folders.get_mut(id) {
+            folder.rows.sort_by(|a, b| order(sort, ascending, a, b));
+        }
+    }
+
+    pub(crate) fn resort(&mut self) {
+        for id in self.folders.cached() {
+            self.sort_folder(id);
+        }
+    }
+
+    /// Watch what is on screen and nothing else: the folder, the disclosed subfolders, the
+    /// browser's chain.
+    fn follow(&mut self) {
+        let mut wanted: HashSet<&'static str> = HashSet::from([self.here(), self.target()]);
+        wanted.extend(self.expanded.iter().map(|key| intern(key)));
+        if self.view == COLUMN_VIEW {
+            wanted.extend(self.crumb_ids());
+        }
+        for id in &wanted {
+            if self.watching.insert(id) {
+                self.watcher.watch(Path::new(id));
+            }
+        }
+        let watcher = &self.watcher;
+        self.watching.retain(|id| {
+            let keep = wanted.contains(id);
+            if !keep {
+                watcher.unwatch(Path::new(id));
+            }
+            keep
+        });
+    }
+
+    /// The watcher's report: re-read what changed and is on screen, and tell the index.
+    fn changed(&mut self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if dirs.is_empty() {
+            return;
+        }
+        for dir in &dirs {
+            let id = intern_path(dir);
+            if self.folders.has(id) {
+                self.read_folder(id, cx);
+            }
+        }
+        cx.background_executor()
+            .spawn(async move { index().note_changed(&dirs) })
+            .detach();
+    }
+
+    /// Finder's search field: this folder's rows filter as they always have, and the index adds
+    /// what it knows about the rest of the subtree.
+    pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
+        self.query = text;
+        self.hits.clear();
+        let query = self.query.trim().to_string();
+        cx.notify();
+        if query.is_empty() {
+            return;
+        }
+        let under = PathBuf::from(self.here());
+        let wanted = query.clone();
+        cx.spawn(async move |this, cx| {
+            let hits = cx
+                .background_executor()
+                .spawn(async move {
+                    let index = index();
+                    index
+                        .search(&query, Some(&under), 200)
+                        .iter()
+                        .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.query.trim() == wanted {
+                    this.hits = hits;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Every file operation goes the same way: off the main thread, then the folders it touched
+    /// are read again and what it made is selected.
+    pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
+        let touched = touched(&op);
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move { ops::perform(op, Conflict::KeepBoth, |_| {}) })
+                .await;
+            this.update(cx, |this, cx| match done {
+                Ok(done) => this.settled(touched, done.results, after, cx),
+                Err(error) => this.complain(&error.to_string()),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn settled(
+        &mut self,
+        touched: Vec<PathBuf>,
+        results: Vec<PathBuf>,
+        after: After,
+        cx: &mut Context<Self>,
+    ) {
+        let landed = results.iter().filter_map(|path| path.parent());
+        for dir in touched.iter().map(PathBuf::as_path).chain(landed) {
+            let id = intern_path(dir);
+            self.read_folder(id, cx);
+        }
+        if after == After::Nothing {
+            return;
+        }
+        let keys: Vec<SharedString> = results
+            .iter()
+            .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
+            .collect();
+        self.selected = keys.iter().cloned().collect();
+        self.cursor = keys.last().cloned();
+        self.anchor = self.cursor.clone();
+        self.reveal_next = self.cursor.clone();
+        if after == After::Rename {
+            self.renaming = self.cursor.clone();
+        }
+        cx.notify();
+    }
+
+    /// Finder's error sheet: what the file system said, on the window it happened in.
+    pub(crate) fn complain(&self, text: &str) {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let alert = objc2_app_kit::NSAlert::new(mtm);
+        alert.setMessageText(&objc2_foundation::NSString::from_str(text));
+        match &self.host {
+            Some(window) => alert.beginSheetModalForWindow_completionHandler(window, None),
+            None => {
+                alert.runModal();
+            }
+        }
     }
 
     pub(crate) fn set_view(&mut self, view: usize) {
@@ -418,34 +731,28 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's drop: the dragged rows leave the folder they were in and land in `into`.
-    pub(crate) fn drop_into(&mut self, into: &'static str, keys: &[SharedString], copy: bool) {
-        let here = self.target();
-        if into == here {
+    /// Finder's drop: the dragged rows move into `into`, or copy there while Option is held.
+    pub(crate) fn drop_into(
+        &mut self,
+        into: &'static str,
+        keys: &[SharedString],
+        copy: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let items: Vec<PathBuf> = keys
+            .iter()
+            .map(|key| PathBuf::from(key.as_ref()))
+            .filter(|path| path.parent() != Some(Path::new(into)))
+            .collect();
+        if items.is_empty() {
             return;
         }
-        let taken: Vec<Row> = match self.store.get_mut(here) {
-            Some(folder) => {
-                let (taken, kept): (Vec<Row>, Vec<Row>) = folder.rows.drain(..).partition(|row| {
-                    keys.contains(&SharedString::from(format!("{here}/{}", row.name)))
-                });
-                if !copy {
-                    folder.rows = kept;
-                } else {
-                    let mut back = kept;
-                    back.extend(taken.iter().cloned());
-                    folder.rows = back;
-                    folder.rows.sort_by(|a, b| a.name.cmp(&b.name));
-                }
-                taken
-            }
-            None => return,
+        let into = PathBuf::from(into);
+        let op = match copy {
+            true => Op::Copy { items, into },
+            false => Op::Move { items, into },
         };
-        if let Some(folder) = self.store.get_mut(into) {
-            folder.rows.extend(taken);
-        }
-        self.selected.clear();
-        self.cursor = None;
+        self.run_op(op, After::Select, cx);
     }
 
     /// The rows a grouped list draws, with Finder's band headers between them.
@@ -551,16 +858,13 @@ impl FinderDemo {
 
     pub(crate) fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
         self.disclose(key, open);
-        let Some(folder) = self.store.get(into) else {
+        let Some(folder) = self.folders.get(into) else {
             return;
         };
         let children: Vec<(SharedString, &'static str)> = folder
             .rows
             .iter()
-            .filter_map(|row| {
-                row.opens
-                    .map(|deeper| (SharedString::from(format!("{into}/{}", row.name)), deeper))
-            })
+            .filter_map(|row| row.opens.map(|deeper| (row.path.clone(), deeper)))
             .collect();
         for (key, deeper) in children {
             self.disclose_tree(&key, deeper, open);
@@ -614,81 +918,61 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn rename(&mut self, key: &SharedString, name: &str) {
-        let Some((folder, old)) = key.rsplit_once('/') else {
+    /// The rename lands on disk; the row comes back with the folder's next read.
+    pub(crate) fn rename(&mut self, key: &SharedString, name: &str, cx: &mut Context<Self>) {
+        let Some((_, old)) = split_key(key) else {
             return;
         };
         let name = name.trim();
         if name.is_empty() || name == old {
             return;
         }
-        let (folder, old) = (folder.to_owned(), old.to_owned());
-        let Some(row) = self
-            .store
-            .get_mut(folder.as_str())
-            .and_then(|f| f.rows.iter_mut().find(|row| row.name.as_ref() == old))
-        else {
-            return;
-        };
-        row.name = SharedString::from(name.to_owned());
-        let new_key = SharedString::from(format!("{folder}/{name}"));
-        let follow = |set: &mut HashSet<SharedString>| {
-            if set.remove(key) {
-                set.insert(new_key.clone());
-            }
-        };
-        follow(&mut self.selected);
-        follow(&mut self.expanded);
-        if let Some(tag) = self.tags.remove(key) {
-            self.tags.insert(new_key.clone(), tag);
-        }
-        for slot in [&mut self.cursor, &mut self.anchor] {
-            if slot.as_ref() == Some(key) {
-                *slot = Some(new_key.clone());
-            }
-        }
-    }
-
-    pub(crate) fn order(&self, a: &Row, b: &Row) -> Ordering {
-        let by = match self.sort {
-            Column::Name => Ordering::Equal,
-            Column::Modified => a.stamp.cmp(&b.stamp),
-            Column::Size => a.bytes.cmp(&b.bytes),
-            Column::Kind => a.face.kind().cmp(b.face.kind()),
-        };
-        let by = by.then_with(|| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        if self.ascending { by } else { by.reverse() }
+        self.tags.remove(key);
+        self.run_op(
+            Op::Rename {
+                path: PathBuf::from(key.as_ref()),
+                name: name.to_owned(),
+            },
+            After::Select,
+            cx,
+        );
     }
 
     pub(crate) fn lines(&self, tree: bool) -> Vec<Line> {
         let mut out = Vec::new();
         self.collect(self.here(), 0, tree, &mut out);
+        if self.searching() {
+            let shown: HashSet<&str> = out.iter().map(|line| line.key.as_ref()).collect();
+            let found: Vec<Line> = self
+                .hits
+                .iter()
+                .filter(|row| !shown.contains(row.path.as_ref()))
+                .map(|row| Line {
+                    key: row.path.clone(),
+                    row: row.clone(),
+                    depth: 0,
+                })
+                .collect();
+            out.extend(found);
+        }
         out
     }
 
     pub(crate) fn collect(&self, id: &'static str, depth: usize, tree: bool, out: &mut Vec<Line>) {
-        let Some(folder) = self.store.get(id) else {
+        let Some(folder) = self.folders.get(id) else {
             return;
         };
         let query = self.query.trim().to_lowercase();
-        let mut rows: Vec<&Row> = folder
+        let rows = folder
             .rows
             .iter()
-            .filter(|row| self.show_hidden || !row.name.starts_with('.'))
-            .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query))
-            .collect();
-        rows.sort_by(|a, b| self.order(a, b));
+            .filter(|row| self.show_hidden || !row.hidden)
+            .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query));
 
         for row in rows {
-            let key = SharedString::from(format!("{id}/{}", row.name));
-            let open = tree && self.expanded.contains(&key);
+            let open = tree && self.expanded.contains(&row.path);
             out.push(Line {
-                key,
+                key: row.path.clone(),
                 row: row.clone(),
                 depth,
             });
@@ -732,19 +1016,18 @@ impl FinderDemo {
         self.cursor = Some(line.key.clone());
     }
 
-    pub(crate) fn cycle_tag(&mut self) {
+    pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
         for key in self.selected.clone() {
-            match self.tags.get(&key).copied() {
-                Some(index) if index + 1 >= TAGS.len() => {
-                    self.tags.remove(&key);
-                }
-                Some(index) => {
-                    self.tags.insert(key, index + 1);
-                }
-                None => {
-                    self.tags.insert(key, 0);
-                }
-            }
+            let next = match self.tags.get(&key).copied() {
+                Some(index) if index + 1 >= TAGS.len() => None,
+                Some(index) => Some(index + 1),
+                None => Some(0),
+            };
+            match next {
+                Some(index) => self.tags.insert(key.clone(), index),
+                None => self.tags.remove(&key),
+            };
+            write_tag(&key, next, cx);
         }
     }
 
@@ -895,16 +1178,34 @@ impl FinderDemo {
         cx.notify();
     }
 
-    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, cx: &mut Context<Self>) {
-        let names: Vec<String> = self
+    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, _: &mut Context<Self>) {
+        self.copy_selection();
+    }
+
+    /// Finder's ⌘C: the names as text and the files as file URLs, so a paste in Finder lands them.
+    pub(crate) fn copy_selection(&self) {
+        let keys: Vec<SharedString> = self
             .focused_lines()
             .iter()
             .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.row.name.to_string())
+            .map(|line| line.key.clone())
             .collect();
-        if !names.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(names.join("\n")));
+        if keys.is_empty() {
+            return;
         }
+        let names: Vec<&str> = keys
+            .iter()
+            .filter_map(|key| split_key(key).map(|(_, name)| name))
+            .collect();
+        let text = NSString::from_str(&names.join("\n"));
+        let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+            vec![ProtocolObject::from_retained(text)];
+        items.extend(keys.iter().map(|key| {
+            ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key)))
+        }));
+        let board = NSPasteboard::generalPasteboard();
+        board.clearContents();
+        board.writeObjects(&NSArray::from_retained_slice(&items));
     }
 
     pub(crate) fn metrics(&self) -> SidebarMetrics {
@@ -1141,6 +1442,9 @@ impl Render for FinderDemo {
         if !self.toolbar {
             self.install_toolbar(window, cx);
         }
+        if self.host.is_none() {
+            self.host = ns_window(window);
+        }
         self.frames += 1;
         if let Some(limit) = self.quit_at {
             window.request_animation_frame();
@@ -1166,7 +1470,7 @@ impl Render for FinderDemo {
         let path_bar = self
             .path_bar_shown
             .then(|| self.path_bar(&palette, window, cx));
-        let status_bar = self.status_bar(&palette, cx);
+        let status_bar = self.status_bar_shown.then(|| self.status_bar(&palette, cx));
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
             COLUMN_VIEW => self.column_body(&palette, cx),
@@ -1181,6 +1485,7 @@ impl Render for FinderDemo {
             .clone()
             .map(|text| self.go_sheet(&text, &palette, window, cx));
         let quick_look = self.quick_look.then(|| self.quick_look_panel(&palette));
+        self.pump(cx);
         native_root(
             div()
                 .size_full()
@@ -1225,9 +1530,9 @@ impl Render for FinderDemo {
                                     ),
                                 )),
                         )
-                        .when(self.status_bar_shown, |c| {
-                            c.child(div().flex_none().pl(metrics.left).child(status_bar))
-                        })
+                        .children(
+                            status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
+                        )
                         .children(sheet)
                         .children(quick_look),
                 ),
@@ -1261,9 +1566,118 @@ fn main() {
             }
         })
         .detach();
-        open_finder_window("documents", 0, cx);
+        data::refresh_volumes();
+        open_finder_window(intern_path(&home()), 0, cx);
+        crawl(cx);
         cx.activate(true);
     });
+}
+
+/// The user's home folder, where the demo opens.
+fn home() -> PathBuf {
+    volumes::standard(volumes::Standard::Home).unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// The whole-Mac index, opened once for the app and shared by every window.
+pub(crate) fn index() -> &'static Arc<Index> {
+    static INDEX: OnceLock<Arc<Index>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let store = home().join("Library/Application Support/FinderDemo");
+        std::fs::create_dir_all(&store).ok();
+        Index::open(&store.join("index.bin"))
+    })
+}
+
+/// The index crawls from launch and saves as it goes, so the next launch starts warm.
+fn crawl(cx: &mut App) {
+    let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
+    roots.extend(
+        volumes::mounted()
+            .into_iter()
+            .map(|volume| volume.path)
+            .filter(|path| path != Path::new("/")),
+    );
+    let executor = cx.background_executor().clone();
+    executor
+        .spawn(async move { index().crawl(roots, |_| {}) })
+        .detach();
+    let ticker = cx.background_executor().clone();
+    cx.background_executor()
+        .spawn(async move {
+            loop {
+                ticker.timer(SAVE_EVERY).await;
+                index().save();
+            }
+        })
+        .detach();
+    cx.on_app_quit(|_| async { index().save() }).detach();
+}
+
+/// What a finished operation leaves behind it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum After {
+    Nothing,
+    Select,
+    Rename,
+}
+
+/// The folders an operation changes, which are read again once it lands.
+fn touched(op: &Op) -> Vec<PathBuf> {
+    let parents = |items: &[PathBuf]| {
+        items
+            .iter()
+            .filter_map(|item| item.parent().map(PathBuf::from))
+            .collect::<Vec<_>>()
+    };
+    match op {
+        Op::Move { items, into } | Op::Copy { items, into } => {
+            let mut dirs = parents(items);
+            dirs.push(into.clone());
+            dirs
+        }
+        Op::Trash(items) | Op::DeleteImmediately(items) | Op::Duplicate(items) => parents(items),
+        Op::Rename { path, .. } => parents(std::slice::from_ref(path)),
+        Op::NewFolder { into, .. } | Op::NewFile { into, .. } => vec![into.clone()],
+    }
+}
+
+/// The rows arriving from one directory read, and whether they replace what is on screen.
+#[derive(Default)]
+struct Mail {
+    batches: Vec<(Vec<Arc<Row>>, bool)>,
+    listed: bool,
+    done: bool,
+}
+
+fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
+    let by = match sort {
+        Column::Name => Ordering::Equal,
+        Column::Modified => a.modified_at.total_cmp(&b.modified_at),
+        Column::Size => a.bytes.cmp(&b.bytes),
+        Column::Kind => a.kind.cmp(&b.kind),
+    };
+    let by = by
+        .then_with(|| nocase(&a.name, &b.name))
+        .then_with(|| a.name.cmp(&b.name));
+    if ascending { by } else { by.reverse() }
+}
+
+/// Case-insensitive, without the allocation per comparison that sorting 20 000 names would pay.
+fn nocase(a: &str, b: &str) -> Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
+}
+
+/// One row's Finder tag, written where Finder reads it.
+fn write_tag(key: &SharedString, tag: Option<usize>, cx: &mut Context<FinderDemo>) {
+    let path = PathBuf::from(key.as_ref());
+    let wanted: Vec<tags::Tag> = tag.map(crate::ui::finder_tag).into_iter().collect();
+    cx.background_executor()
+        .spawn(async move {
+            tags::set(&path, &wanted).ok();
+        })
+        .detach();
 }
 
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {

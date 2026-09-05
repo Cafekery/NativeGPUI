@@ -52,21 +52,21 @@ impl FinderDemo {
             )
         };
         let Some((cursor, holder, row)) = self.cursor.clone().and_then(|cursor| {
-            let (holder, name) = cursor.rsplit_once('/')?;
-            let (id, folder) = self.store.get_key_value(holder)?;
+            let (holder, name) = crate::data::split_key(&cursor)?;
+            let folder = self.folders.get(holder)?;
             let row = folder.rows.iter().find(|row| row.name == name)?.clone();
-            Some((cursor, *id, row))
+            Some((cursor, holder, row))
         }) else {
             return root();
         };
 
         let mut up = vec![holder];
         while let Some(parent) = self
-            .store
+            .folders
             .get(up[up.len() - 1])
             .and_then(|folder| folder.parent)
         {
-            if up.len() > self.store.len() {
+            if up.len() > self.folders.len() {
                 return root();
             }
             up.push(parent);
@@ -79,12 +79,12 @@ impl FinderDemo {
             .map(|(index, &folder)| Rung {
                 folder,
                 selected: match up.get(index + 1) {
-                    Some(next) => self.store.get(folder).and_then(|listing| {
+                    Some(next) => self.folders.get(folder).and_then(|listing| {
                         listing
                             .rows
                             .iter()
                             .find(|row| row.opens == Some(*next))
-                            .map(|row| format!("{folder}/{}", row.name).into())
+                            .map(|row| row.path.clone())
                     }),
                     None => Some(cursor.clone()),
                 },
@@ -115,7 +115,7 @@ impl FinderDemo {
 
     pub(crate) fn column_seed(&mut self) {
         let here = self.here();
-        let Some(parent) = self.store.get(here).and_then(|folder| folder.parent) else {
+        let Some(parent) = self.folders.get(here).and_then(|folder| folder.parent) else {
             return;
         };
         let listing = self.column_listing(parent);

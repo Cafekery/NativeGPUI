@@ -14,7 +14,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{artwork, click_kind, rename_field, tag_dot};
+use crate::ui::{click_kind, rename_field, tag_dot, thumb_art};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -202,7 +202,7 @@ fn tile(
         .items_center()
         .pt(px(ICON_TOP))
         .gap(px(ICON_LABEL_GAP))
-        .child(icon.child(artwork(&line.row, size)))
+        .child(icon.child(thumb_art(&line.row, size)))
         .child(
             div()
                 .flex()

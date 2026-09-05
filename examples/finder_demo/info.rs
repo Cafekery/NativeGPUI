@@ -133,7 +133,7 @@ impl Render for Info {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(Self::field("Kind", row.face.kind().into()))
+                    .child(Self::field("Kind", row.kind.clone()))
                     .child(Self::field("Size", size_text))
                     .child(Self::field("Where", self.where_.clone()))
                     .child(Self::field("Created", day_string(row.created_at).into()))

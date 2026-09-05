@@ -11,7 +11,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{artwork, click_kind};
+use crate::ui::{click_kind, thumb_art};
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
@@ -75,8 +75,8 @@ impl FinderDemo {
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).clamp(64., HERO_MAX);
         let hero = match chosen.as_slice() {
-            [] => self.cursor_line().map(|line| artwork(&line.row, size)),
-            [one] => Some(artwork(&one.row, size)),
+            [] => self.cursor_line().map(|line| thumb_art(&line.row, size)),
+            [one] => Some(thumb_art(&one.row, size)),
             many => Some(self.stack_hero(many, size)),
         };
 
@@ -112,7 +112,7 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(artwork(&line.row, strip.icon))
+                    .child(thumb_art(&line.row, strip.icon))
                     .on_hover(move |hovered: &bool, _, cx| {
                         this_hover
                             .update(cx, |this: &mut FinderDemo, cx| {

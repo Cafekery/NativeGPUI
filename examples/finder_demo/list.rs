@@ -6,7 +6,7 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor};
 
-use crate::data::Column;
+use crate::data::{Column, date_text};
 use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
@@ -217,13 +217,13 @@ impl FinderDemo {
                                 .font(dates.clone())
                                 .whitespace_nowrap()
                                 .overflow_hidden()
-                                .child(line.row.modified.clone()),
+                                .child(date_text(line.row.modified_at)),
                             Column::Kind => cell
                                 .pl(px(CELL_PAD))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(line.row.face.kind()),
+                                .child(line.row.kind.clone()),
                             // `list_columns` never holds Name; this only keeps the match exhaustive.
                             Column::Name => cell,
                         });
@@ -263,7 +263,7 @@ impl FinderDemo {
                                     let copy = window.modifiers().alt;
                                     this.update(cx, |demo: &mut FinderDemo, cx| {
                                         let keys = demo.drag_keys(&key);
-                                        demo.drop_into(into, &keys, copy);
+                                        demo.drop_into(into, &keys, copy, cx);
                                         cx.notify();
                                     })
                                     .ok();
