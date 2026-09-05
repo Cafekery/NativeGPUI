@@ -13,12 +13,17 @@ use crate::palette::Palette;
 use crate::ui::{artwork, axis_locked, click_kind, rename_field, small_glyph, tag_dot};
 use crate::{FinderDemo, Slot};
 
+/// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
 pub(crate) const ICON_SIZE: f32 = 32.;
+pub(crate) const ICON_SMALL: f32 = 16.;
 const BAND_INSET: f32 = 8.;
-pub(crate) const ROW_H: f32 = ICON_SIZE + 4.;
 pub(crate) const ICON_X: f32 = 26.;
-pub(crate) const LABEL_X: f32 = ICON_X + ICON_SIZE + 6.;
+const LABEL_GAP: f32 = 6.;
 pub(crate) const TWIST_W: f32 = 15.;
+
+pub(crate) fn row_h(icon: f32) -> f32 {
+    icon + 4.
+}
 
 pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
 
@@ -32,8 +37,9 @@ impl FinderDemo {
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         // Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
         let inset = f32::from(self.metrics().top) + HEADER_H + LIST_TOP_GAP;
-        let rows = (inset / ROW_H).ceil() as usize;
-        (rows, rows as f32 * ROW_H - inset)
+        let row_h = self.row_h();
+        let rows = (inset / row_h).ceil() as usize;
+        (rows, rows as f32 * row_h - inset)
     }
 
     pub(crate) fn list_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -54,6 +60,8 @@ impl FinderDemo {
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
 
         let (pads, lift) = self.list_inset();
+        let icon = self.list_icon_now();
+        let row_h = row_h(icon);
         let slots = self.slots(&lines);
         let drag_keys: HashSet<SharedString> = self.selected.clone();
 
@@ -63,13 +71,14 @@ impl FinderDemo {
                     let Some(slot) = index.checked_sub(pads).map(|at| &slots[at]) else {
                         return div()
                             .id(("ng.finder.pad", index))
-                            .h(px(ROW_H))
+                            .h(px(row_h))
                             .w_full()
                             .into_any_element();
                     };
                     let at = match slot {
                         Slot::Header(title) => {
-                            return band(title.clone(), secondary, name_w).into_any_element();
+                            return band(title.clone(), secondary, name_w, row_h)
+                                .into_any_element();
                         }
                         Slot::Row(at) => *at,
                     };
@@ -88,7 +97,7 @@ impl FinderDemo {
                     let mut row = div()
                         .id(("ng.finder.row", at))
                         .w_full()
-                        .h(px(ROW_H))
+                        .h(px(row_h))
                         .relative()
                         .flex()
                         .items_center()
@@ -174,15 +183,16 @@ impl FinderDemo {
                                 .justify_end()
                                 .child(twist),
                         )
-                        .child(artwork(&line.row, ICON_SIZE))
+                        .child(artwork(&line.row, icon))
                         .child(if renaming.as_ref() == Some(&line.key) {
-                            div()
-                                .ml(px(LABEL_X - ICON_X - ICON_SIZE))
-                                .flex_1()
-                                .child(rename_field(&line, at, this.clone()))
+                            div().ml(px(LABEL_GAP)).flex_1().child(rename_field(
+                                &line,
+                                at,
+                                this.clone(),
+                            ))
                         } else {
                             div()
-                                .ml(px(LABEL_X - ICON_X - ICON_SIZE))
+                                .ml(px(LABEL_GAP))
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .child(line.row.name.clone())
@@ -292,9 +302,9 @@ impl FinderDemo {
 }
 
 /// Finder's group header: the band's name over the rows it holds.
-fn band(title: SharedString, colour: Hsla, name_w: f32) -> Div {
+fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {
     div()
-        .h(px(ROW_H))
+        .h(px(row_h))
         .w(px(name_w))
         .flex()
         .items_end()

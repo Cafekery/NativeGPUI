@@ -6,6 +6,8 @@ use objc2_foundation::{NSString, NSUserDefaults};
 const VIEW: &str = "ng.finder.view";
 const PANE: &str = "ng.finder.pane";
 const ICON: &str = "ng.finder.icon";
+const LIST_ICON: &str = "ng.finder.list.icon";
+const STRIP_ICON: &str = "ng.finder.strip.icon";
 
 fn defaults() -> objc2::rc::Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -44,4 +46,20 @@ pub(crate) fn icon_size() -> Option<f32> {
 
 pub(crate) fn set_icon_size(size: f32) {
     write(ICON, size as f64);
+}
+
+pub(crate) fn list_icon() -> Option<f32> {
+    read(LIST_ICON).map(|v| v as f32)
+}
+
+pub(crate) fn set_list_icon(size: f32) {
+    write(LIST_ICON, size as f64);
+}
+
+pub(crate) fn strip_icon() -> Option<f32> {
+    read(STRIP_ICON).map(|v| v as f32)
+}
+
+pub(crate) fn set_strip_icon(size: f32) {
+    write(STRIP_ICON, size as f64);
 }
