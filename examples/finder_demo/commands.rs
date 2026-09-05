@@ -59,6 +59,8 @@ actions!(
         ViewGallery,
         ViewIcons,
         ViewList,
+        ZoomIn,
+        ZoomOut,
     ]
 );
 

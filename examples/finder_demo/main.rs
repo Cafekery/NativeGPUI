@@ -40,14 +40,14 @@ use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::commands::{Back, CopyNames, Forward, SelectAll};
+use crate::commands::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 use crate::data::{Column, Folder, Line, Row, build_store, group_of};
 use crate::header::{
     ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
     pane_surface,
 };
 use crate::icon::{Grid, cell};
-use crate::list::{ICON_SIZE, ROW_H};
+use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
@@ -63,6 +63,10 @@ pub(crate) const ICON_VIEW: usize = 0;
 pub(crate) const LIST_VIEW: usize = 1;
 pub(crate) const COLUMN_VIEW: usize = 2;
 pub(crate) const GALLERY_VIEW: usize = 3;
+
+const LIST_ZOOM_SECS: f32 = 0.2;
+const ICON_STOPS: [f32; 9] = [16., 24., 32., 48., 64., 96., 128., 256., 512.];
+const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
@@ -110,6 +114,12 @@ pub(crate) struct FinderDemo {
     pub(crate) go_sheet: Option<String>,
     pub(crate) quick_look: bool,
     pub(crate) icon_size: f64,
+    pub(crate) list_icon: f32,
+    /// `(from, to, started)` while the list's icons grow or shrink between the two sizes.
+    pub(crate) list_zoom: Option<(f32, f32, Instant)>,
+    pub(crate) strip_icon: f32,
+    pub(crate) strip_hover: Option<(usize, Instant)>,
+    pub(crate) strip_tip: Option<usize>,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -167,6 +177,11 @@ impl FinderDemo {
             go_sheet: None,
             quick_look: false,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
+            list_icon: prefs::list_icon().unwrap_or(ICON_SIZE),
+            list_zoom: None,
+            strip_icon: prefs::strip_icon().unwrap_or(48.),
+            strip_hover: None,
+            strip_tip: None,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
@@ -191,7 +206,7 @@ impl FinderDemo {
             .collect();
         kinds.sort_by_key(|kind| format!("{kind:?}"));
         kinds.dedup();
-        let sizes = [ICON_SIZE, PREVIEW_W - 1. - 2. * INSET];
+        let sizes = [ICON_SMALL, ICON_SIZE, PREVIEW_W - 1. - 2. * INSET];
         cx.spawn(async move |_, cx| {
             for kind in kinds {
                 cx.background_executor()
@@ -833,7 +848,7 @@ impl FinderDemo {
             "tab" if self.view != COLUMN_VIEW => self.tab(modifiers.shift),
             "home" | "end" | "pageup" | "pagedown" if tree => {
                 let (pads, _) = self.list_inset();
-                let page = (f32::from(window.viewport_size().height) / ROW_H) as usize;
+                let page = (f32::from(window.viewport_size().height) / self.row_h()) as usize;
                 let top = self.scroll.0.borrow().base_handle.logical_scroll_top().0;
                 let index = match key {
                     "home" => 0,
@@ -901,6 +916,58 @@ impl FinderDemo {
 
     pub(crate) fn preview_shown(&self) -> bool {
         self.preview && self.view != COLUMN_VIEW
+    }
+
+    /// The list's icon size this frame, mid-flight while a zoom animates.
+    pub(crate) fn list_icon_now(&self) -> f32 {
+        match self.list_zoom {
+            Some((from, to, started)) => {
+                let t = (started.elapsed().as_secs_f32() / LIST_ZOOM_SECS).min(1.);
+                from + (to - from) * gpui::ease_in_out(t)
+            }
+            None => self.list_icon,
+        }
+    }
+
+    pub(crate) fn row_h(&self) -> f32 {
+        row_h(self.list_icon_now())
+    }
+
+    /// ⌘= and ⌘-: Finder toggles the list's icons, steps the icon view through its slider stops
+    /// and the gallery strip through three, and leaves column view alone.
+    pub(crate) fn zoom(&mut self, larger: bool, cx: &mut Context<Self>) {
+        fn step(stops: &[f32], from: f32, larger: bool) -> Option<f32> {
+            if larger {
+                stops.iter().copied().find(|stop| *stop > from + 0.5)
+            } else {
+                stops.iter().rev().copied().find(|stop| *stop < from - 0.5)
+            }
+        }
+        match self.view {
+            LIST_VIEW => {
+                let to = if larger { ICON_SIZE } else { ICON_SMALL };
+                if to != self.list_icon {
+                    let from = self.list_icon_now();
+                    self.list_icon = to;
+                    self.list_zoom = Some((from, to, Instant::now()));
+                    prefs::set_list_icon(to);
+                }
+            }
+            ICON_VIEW => {
+                if let Some(size) = step(&ICON_STOPS, self.icon_size as f32, larger) {
+                    self.icon_size = size as f64;
+                    prefs::set_icon_size(size);
+                }
+            }
+            GALLERY_VIEW => {
+                if let Some(size) = step(&STRIP_STOPS, self.strip_icon, larger) {
+                    self.strip_icon = size;
+                    prefs::set_strip_icon(size);
+                }
+            }
+            _ => return,
+        }
+        cx.notify();
     }
 
     pub(crate) fn cursor_line(&self) -> Option<Line> {
@@ -1083,6 +1150,13 @@ impl Render for FinderDemo {
         }
         self.sync_window_min(window);
         self.sync_preview_window(window, cx);
+        if let Some((_, _, started)) = self.list_zoom {
+            if started.elapsed().as_secs_f32() >= LIST_ZOOM_SECS {
+                self.list_zoom = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
 
         let metrics = self.metrics();
         let corner = system_corner_radius(window);
@@ -1125,6 +1199,8 @@ impl Render for FinderDemo {
                         .on_action(cx.listener(Self::copy_names))
                         .on_action(cx.listener(Self::back))
                         .on_action(cx.listener(Self::forward))
+                        .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(true, cx)))
+                        .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(false, cx)))
                         .map(|element| self.menu_bar_actions(element, cx))
                         .on_key_down(cx.listener(Self::on_key))
                         .on_mouse_down(
@@ -1170,6 +1246,9 @@ fn main() {
             KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-[", Back, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-]", Forward, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-shift-=", ZoomIn, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
         ]);
         // The preview pane is a child window; the app ends with the Finder window, not the pane.
         cx.on_window_closed(|cx, _| {
