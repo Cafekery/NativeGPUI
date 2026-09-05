@@ -1864,11 +1864,14 @@ fn crawl(cx: &mut App) {
             .filter(|path| path != Path::new("/")),
     );
     let executor = cx.background_executor().clone();
-    executor
-        .spawn(async move { index().crawl(roots, |_| {}) })
-        .detach();
-    // Desktop, Documents and Downloads each cost a permission prompt, so the walk leaves them out;
-    // once it is over, the ones this app has been let into (listed by a visit) join the index.
+    // `NG_NO_CRAWL=1` keeps the index idle, to tell the crawl's disk walk apart from the view's.
+    if env::var_os("NG_NO_CRAWL").is_none() {
+        executor
+            .spawn(async move { index().crawl(roots, |_| {}) })
+            .detach();
+    }
+    // The prompt-gated folders (Desktop, Documents, Downloads, Pictures, Music, Movies) are left
+    // out of the walk; once it is over, the ones a visit has been let into join the index.
     let launched = std::time::SystemTime::now();
     let follow = cx.background_executor().clone();
     cx.background_executor()
@@ -1880,11 +1883,18 @@ fn crawl(cx: &mut App) {
                 if !index.stats().crawled_at.is_some_and(|at| at > launched) {
                     continue;
                 }
-                let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
-                    .iter()
-                    .map(|name| home().join(name))
-                    .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
-                    .collect();
+                let granted: Vec<PathBuf> = [
+                    "Desktop",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music",
+                    "Movies",
+                ]
+                .iter()
+                .map(|name| home().join(name))
+                .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
+                .collect();
                 if !granted.is_empty() {
                     joined.extend(granted.iter().cloned());
                     index.crawl(granted, |_| {});
