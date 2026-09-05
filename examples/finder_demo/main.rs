@@ -1909,8 +1909,9 @@ fn crawl(cx: &mut App) {
             .spawn(async move { index().crawl(roots, |_| {}) })
             .detach();
     }
-    // The prompt-gated folders (Desktop, Documents, Downloads, Pictures, Music, Movies) are left
-    // out of the walk; once it is over, the ones a visit has been let into join the index.
+    // The prompt-gated folders are left out of the walk. Once it is over, Desktop, Documents and
+    // Downloads join if a visit has listed them: that grant is durable. The media homes never
+    // do — a snapshot listing is no grant, and their media-library service asks again per launch.
     let launched = std::time::SystemTime::now();
     let follow = cx.background_executor().clone();
     cx.background_executor()
@@ -1922,18 +1923,11 @@ fn crawl(cx: &mut App) {
                 if !index.stats().crawled_at.is_some_and(|at| at > launched) {
                     continue;
                 }
-                let granted: Vec<PathBuf> = [
-                    "Desktop",
-                    "Documents",
-                    "Downloads",
-                    "Pictures",
-                    "Music",
-                    "Movies",
-                ]
-                .iter()
-                .map(|name| home().join(name))
-                .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
-                .collect();
+                let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
+                    .iter()
+                    .map(|name| home().join(name))
+                    .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
+                    .collect();
                 if !granted.is_empty() {
                     joined.extend(granted.iter().cloned());
                     index.crawl(granted, |_| {});
