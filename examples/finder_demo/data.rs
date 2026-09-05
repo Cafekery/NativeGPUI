@@ -459,6 +459,15 @@ pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
     Arc::new(row_of(dir, entry, index))
 }
 
+/// The name of the folder a search result's key sits in, the way Finder's search results show a
+/// path in place of Kind.
+pub(crate) fn enclosing_name(key: &str) -> SharedString {
+    match Path::new(key).parent().and_then(Path::file_name) {
+        Some(name) => name.to_string_lossy().into_owned().into(),
+        None => "/".into(),
+    }
+}
+
 pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,

@@ -466,11 +466,18 @@ impl FinderDemo {
     }
 
     pub(crate) fn status_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.lines(false).len();
+        let lines = self.lines(false);
+        let count = lines.len();
         let chosen = self.selected.len();
         let available = byte_string(available_bytes(self.here()));
         let text = if chosen > 0 {
-            format!("{chosen} of {count} selected, {available} available")
+            let bytes: u64 = lines
+                .iter()
+                .filter(|line| self.selected.contains(&line.key))
+                .map(|line| line.row.bytes)
+                .sum();
+            let size = byte_string(bytes);
+            format!("{chosen} of {count} selected, {size}, {available} available")
         } else {
             format!("{count} items, {available} available")
         };
