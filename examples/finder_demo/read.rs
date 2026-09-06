@@ -201,7 +201,10 @@ impl FinderDemo {
             if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
                 let mut rows = data::rows_of(id, &known, index);
                 sort(&mut rows);
-                filling.lock().unwrap().batches.push((rows, true));
+                let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
+                let mut mail = filling.lock().unwrap();
+                mail.batches.push((rows, true));
+                mail.lines = lines;
             }
             let post = |mut rows: Vec<Arc<Row>>| {
                 let mut mail = filling.lock().unwrap();
@@ -269,12 +272,14 @@ impl FinderDemo {
         }
         if done {
             self.folders.finish(id);
-            // The read hands over a listing it sorted; only a sort changed while it ran is left.
-            if sorted_by != (self.sort, self.ascending) {
-                self.sort_folder(id);
-            } else if let Some((hidden, lines)) = lines {
-                self.built(id, hidden, lines);
-            }
+        }
+        // The read hands over a listing it sorted; only a sort changed while it ran is left.
+        if done && sorted_by != (self.sort, self.ascending) {
+            self.sort_folder(id);
+        } else if let Some((hidden, lines)) = lines {
+            self.built(id, hidden, lines);
+        }
+        if done {
             self.expand_landed(id);
         }
         if let Some(key) = self.reveal_next.clone() {
