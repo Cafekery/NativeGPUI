@@ -7,8 +7,9 @@ use gpui::{
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{MenuEntry, native_popup, native_slider, window_options};
 
+use crate::FinderDemo;
 use crate::data::Column;
-use crate::{FinderDemo, ICON_VIEW};
+use crate::view::ICON_VIEW;
 
 const SORTS: [(Column, &str); 4] = [
     (Column::Name, "Name"),

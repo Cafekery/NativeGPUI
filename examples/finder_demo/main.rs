@@ -32,6 +32,7 @@ mod tags;
 mod thumbs;
 mod toolbar;
 mod ui;
+mod view;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -63,30 +64,21 @@ use crate::art::Anchor;
 use crate::commands::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 use crate::data::{Column, Folders, Line, Row, intern_path};
 use crate::header::{
-    ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, PANE_INSET, band_glass, default_columns,
-    pane_surface,
+    ColumnSpec, HEADER_H, HeaderDrag, NAME_MIN_W, band_glass, default_columns, pane_surface,
 };
-use crate::icon::{Grid, cell};
-use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
+use crate::icon::Grid;
+use crate::list::{ICON_SIZE, ICON_SMALL};
 use crate::listing::{Keys, Listings};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
 use crate::ui::axis_locked;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
 
-pub(crate) const ICON_VIEW: usize = 0;
-pub(crate) const LIST_VIEW: usize = 1;
-pub(crate) const COLUMN_VIEW: usize = 2;
-pub(crate) const GALLERY_VIEW: usize = 3;
-
-const LIST_ZOOM_SECS: f32 = 0.2;
 thread_local! {
     static START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 const SAVE_EVERY: Duration = Duration::from_secs(180);
-const ICON_STOPS: [f32; 9] = [16., 24., 32., 48., 64., 96., 128., 256., 512.];
-const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
-
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
 pub(crate) struct FinderDemo {
@@ -317,93 +309,6 @@ impl FinderDemo {
         .detach();
     }
 
-    pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_view(view);
-        self.retitle(window);
-        cx.notify();
-    }
-
-    pub(crate) fn set_view(&mut self, view: usize) {
-        self.view = view;
-        prefs::set_view(view);
-        self.settle();
-    }
-
-    fn settle(&mut self) {
-        match self.view {
-            GALLERY_VIEW if self.cursor_line().is_none() => {
-                if let Some(first) = self.lines(false).first().cloned() {
-                    self.pick(&first, false, false);
-                }
-            }
-            COLUMN_VIEW if self.cursor.is_none() => self.column_seed(),
-            _ => {}
-        }
-    }
-
-    pub(crate) fn metrics(&self) -> SidebarMetrics {
-        self.sidebar
-            .as_ref()
-            .map(NativeSidebar::metrics)
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn preview_shown(&self) -> bool {
-        self.preview && self.view != COLUMN_VIEW
-    }
-
-    /// The list's icon size this frame, mid-flight while a zoom animates.
-    pub(crate) fn list_icon_now(&self) -> f32 {
-        match self.list_zoom {
-            Some((from, to, started)) => {
-                let t = (started.elapsed().as_secs_f32() / LIST_ZOOM_SECS).min(1.);
-                from + (to - from) * gpui::ease_in_out(t)
-            }
-            None => self.list_icon,
-        }
-    }
-
-    pub(crate) fn row_h(&self) -> f32 {
-        row_h(self.list_icon_now())
-    }
-
-    /// ⌘= and ⌘-: Finder toggles the list's icons, steps the icon view through its slider stops
-    /// and the gallery strip through three, and leaves column view alone.
-    pub(crate) fn zoom(&mut self, larger: bool, cx: &mut Context<Self>) {
-        fn step(stops: &[f32], from: f32, larger: bool) -> Option<f32> {
-            if larger {
-                stops.iter().copied().find(|stop| *stop > from + 0.5)
-            } else {
-                stops.iter().rev().copied().find(|stop| *stop < from - 0.5)
-            }
-        }
-        match self.view {
-            LIST_VIEW => {
-                let to = if larger { ICON_SIZE } else { ICON_SMALL };
-                if to != self.list_icon {
-                    let from = self.list_icon_now();
-                    self.list_icon = to;
-                    self.list_zoom = Some((from, to, Instant::now()));
-                    prefs::set_list_icon(to);
-                }
-            }
-            ICON_VIEW => {
-                if let Some(size) = step(&ICON_STOPS, self.icon_size as f32, larger) {
-                    self.icon_size = size as f64;
-                    prefs::set_icon_size(size);
-                }
-            }
-            GALLERY_VIEW => {
-                if let Some(size) = step(&STRIP_STOPS, self.strip_icon, larger) {
-                    self.strip_icon = size;
-                    prefs::set_strip_icon(size);
-                }
-            }
-            _ => return,
-        }
-        cx.notify();
-    }
-
     fn sync_window_min(&mut self, window: &Window) {
         let width = f32::from(self.metrics().left)
             + LIST_MIN_W
@@ -424,10 +329,6 @@ impl FinderDemo {
             width: f64::from(width),
             height,
         });
-    }
-
-    pub(crate) fn list_content_w(&self) -> f32 {
-        self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
     }
 
     fn list_column(
@@ -551,25 +452,6 @@ impl FinderDemo {
                     .flatten(),
             )
             .into_any_element()
-    }
-
-    pub(crate) fn pane_w(&self) -> f32 {
-        if self.preview_shown() {
-            self.preview_w
-        } else {
-            0.
-        }
-    }
-
-    /// Tiles per row: the width beside the sidebar, pane included, since the grid scrolls under it.
-    pub(crate) fn columns(&self, window: &Window) -> usize {
-        let metrics = self.metrics();
-        let avail = f32::from(window.viewport_size().width)
-            - f32::from(metrics.left)
-            - f32::from(metrics.right)
-            - 24.;
-        let tile = cell(self.icon_size as f32);
-        ((avail / tile).floor() as usize).max(1)
     }
 }
 

@@ -26,7 +26,8 @@ use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
-use crate::{FinderDemo, GALLERY_VIEW, ns_window};
+use crate::view::GALLERY_VIEW;
+use crate::{FinderDemo, ns_window};
 
 /// Finder's "Calculating…", for a summary a background pass has not finished.
 const CALCULATING: &str = "Calculating\u{2026}";

@@ -10,7 +10,8 @@ use std::time::Duration;
 use gpui::Context;
 
 use crate::data::{self, Column, Row, intern, intern_path};
-use crate::{COLUMN_VIEW, FinderDemo, index, preview};
+use crate::view::COLUMN_VIEW;
+use crate::{FinderDemo, index, preview};
 
 /// Rows per batch while a folder is read, how often the view takes delivery, and how often the
 /// index writes its snapshot.
