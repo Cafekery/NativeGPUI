@@ -20,6 +20,8 @@ pub(crate) enum Glyph {
     Artwork(&'static str),
     /// A tag's dot: filled in Finder's own colour for that index, an outline for no colour.
     Tag(u8),
+    /// The pair of rings on Finder's "All Tags…" row.
+    AllTags,
 }
 
 impl Glyph {
@@ -28,6 +30,7 @@ impl Glyph {
             Glyph::Symbol(name) => SidebarIcon::Symbol(name.into()),
             Glyph::Artwork(name) => SidebarIcon::SystemResource(name.into()),
             Glyph::Tag(color) => SidebarIcon::Dot(finder_color_rgb(color)),
+            Glyph::AllTags => SidebarIcon::Dots,
         }
     }
 }
@@ -108,7 +111,7 @@ pub(crate) fn groups() -> Vec<Group> {
         locations.push(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")));
     }
 
-    let tags = finder_fs::tags::all()
+    let mut tags: Vec<Row> = finder_fs::tags::all()
         .into_iter()
         .map(|tag| {
             let color = tag.color;
@@ -119,6 +122,7 @@ pub(crate) fn groups() -> Vec<Group> {
             )
         })
         .collect();
+    tags.push(row("tag:", "All Tags…", Glyph::AllTags));
 
     let mut groups = vec![
         Group {
