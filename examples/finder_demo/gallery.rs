@@ -63,9 +63,11 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let lines = self.lines(false);
+        // Only the hero needs the chosen rows, and it draws at most three of them.
         let chosen: Vec<Line> = lines
             .iter()
             .filter(|line| self.selected.contains(&line.key))
+            .take(3)
             .cloned()
             .collect();
         let strip = Strip::at(self.strip_icon);
@@ -107,7 +109,7 @@ impl FinderDemo {
             .px(px(STRIP_INSET))
             .overflow_x_scroll()
             .track_scroll(&self.strip)
-            .children(lines.into_iter().enumerate().map(|(index, line)| {
+            .children(lines.iter().cloned().enumerate().map(|(index, line)| {
                 let start = strip.start(index) + f32::from(self.strip.offset().x);
                 let on_screen = start + 2. * strip.cell > 0. && start < room_w + strip.cell;
                 let is_selected = self.selected.contains(&line.key);

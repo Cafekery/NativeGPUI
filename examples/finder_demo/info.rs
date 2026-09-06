@@ -158,8 +158,9 @@ pub(crate) fn open(demo: &Entity<crate::FinderDemo>, cx: &mut App) {
         (
             state
                 .focused_lines()
-                .into_iter()
+                .iter()
                 .filter(|line| state.selected.contains(&line.key))
+                .cloned()
                 .collect::<Vec<_>>(),
             SharedString::from(
                 state

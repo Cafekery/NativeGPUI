@@ -466,20 +466,21 @@ impl FinderDemo {
     }
 
     pub(crate) fn status_bar(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let lines = self.lines(false);
-        let count = lines.len();
+        let count = self.lines(false).len();
         let chosen = self.selected.len();
         let available = byte_string(available_bytes(self.here()));
-        let text = if chosen > 0 {
-            let bytes: u64 = lines
-                .iter()
-                .filter(|line| self.selected.contains(&line.key))
-                .map(|line| line.row.bytes)
-                .sum();
-            let size = byte_string(bytes);
-            format!("{chosen} of {count} selected, {size}, {available} available")
-        } else {
-            format!("{count} items, {available} available")
+        // Adding the selection up walks every chosen row, so the size joins the line once it lands.
+        let size = self
+            .stats
+            .as_ref()
+            .filter(|stats| stats.key == self.stats_key())
+            .map(|stats| byte_string(stats.flat_bytes));
+        let text = match (chosen, size) {
+            (0, _) => format!("{count} items, {available} available"),
+            (chosen, None) => format!("{chosen} of {count} selected, {available} available"),
+            (chosen, Some(size)) => {
+                format!("{chosen} of {count} selected, {size}, {available} available")
+            }
         };
         let slider = matches!(self.view, ICON_VIEW | GALLERY_VIEW);
 

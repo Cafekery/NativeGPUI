@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
@@ -24,6 +25,95 @@ use crate::palette::Palette;
 use crate::ui::{TAGS, artwork, rename_field, row_art, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
+/// Finder's "Calculating…", for a summary a background pass has not finished.
+const CALCULATING: &str = "Calculating\u{2026}";
+
+/// The most rows one summary walks; a selection past this is described by that much of it.
+const STATS_CAP: usize = 4_000_000;
+
+/// What the card and the status bar say about a selection: counted and weighed once per change,
+/// off the main thread, since a disclosed home folder is millions of rows.
+pub(crate) struct Stats {
+    /// The selection's revision and the number of rows it was matched against.
+    pub(crate) key: (u64, usize),
+    pub(crate) items: usize,
+    folders: usize,
+    /// A folder weighs what the index says it weighs; a file weighs itself.
+    bytes: u64,
+    /// The rows' own sizes, which is what the status bar adds up.
+    pub(crate) flat_bytes: u64,
+    created: (f64, f64),
+    modified: (f64, f64),
+    tags: Vec<usize>,
+    /// The first rows of the selection, for the stacked hero.
+    head: Vec<Line>,
+}
+
+/// One pass over the chosen rows. Runs off the main thread, so nothing here may touch a view.
+pub(crate) fn summarize(
+    key: (u64, usize),
+    lines: &[Line],
+    chosen: &HashSet<SharedString>,
+    tags: &HashMap<SharedString, usize>,
+) -> Stats {
+    let mut stats = Stats {
+        key,
+        items: 0,
+        folders: 0,
+        bytes: 0,
+        flat_bytes: 0,
+        created: (f64::MAX, f64::MIN),
+        modified: (f64::MAX, f64::MIN),
+        tags: Vec::new(),
+        head: Vec::new(),
+    };
+    let picked = lines
+        .iter()
+        .filter(|line| chosen.contains(&line.key))
+        .take(STATS_CAP);
+    for line in picked {
+        let row = &line.row;
+        stats.items += 1;
+        stats.folders += usize::from(row.face == Face::Folder);
+        stats.bytes += total_bytes(row);
+        stats.flat_bytes += row.bytes;
+        stats.created = (
+            stats.created.0.min(row.created_at),
+            stats.created.1.max(row.created_at),
+        );
+        stats.modified = (
+            stats.modified.0.min(row.modified_at),
+            stats.modified.1.max(row.modified_at),
+        );
+        if stats.head.len() < STACK_LAYERS.len() {
+            stats.head.push(line.clone());
+        }
+        if let Some(tag) = tags.get(&line.key).filter(|tag| !stats.tags.contains(tag)) {
+            stats.tags.push(*tag);
+        }
+    }
+    stats.tags.sort_unstable();
+    stats
+}
+
+fn total_bytes(row: &Row) -> u64 {
+    match row.opens {
+        Some(id) => crate::index()
+            .folder_size(std::path::Path::new(id))
+            .unwrap_or(row.bytes),
+        None => row.bytes,
+    }
+}
+
+/// The card's date line: one day, or the two ends of the selection's range.
+fn span((lo, hi): (f64, f64)) -> SharedString {
+    let (lo, hi) = (day_string(lo), day_string(hi));
+    SharedString::from(if lo == hi {
+        lo
+    } else {
+        format!("{lo} \u{2013} {hi}")
+    })
+}
 pub(crate) const PREVIEW_W: f32 = 366.;
 
 const MIN_W: f32 = 240.;
@@ -340,72 +430,56 @@ impl FinderDemo {
         self.card_element(card, palette, content, finder)
     }
 
+    /// Finder's own answer while it is still adding a selection up, under the last hero it drew.
     fn many_card(&self, content: f32) -> Card {
-        let lines: Vec<Line> = self
-            .focused_lines()
-            .into_iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .collect();
-        let folders = lines
-            .iter()
-            .filter(|line| line.row.face == Face::Folder)
-            .count();
-        let files = lines.len() - folders;
-        let bytes: u64 = lines.iter().map(|line| self.total_bytes(&line.row)).sum();
-        let kinds = match (files, folders) {
-            (0, n) => format!("{n} folders"),
-            (n, 0) => format!("{n} documents"),
-            (f, d) => format!("{f} documents, {d} folders"),
-        };
-        let span = |at: fn(&Row) -> f64| {
-            let lo = lines
-                .iter()
-                .map(|line| at(&line.row))
-                .fold(f64::MAX, f64::min);
-            let hi = lines
-                .iter()
-                .map(|line| at(&line.row))
-                .fold(f64::MIN, f64::max);
-            let (lo, hi) = (day_string(lo), day_string(hi));
-            SharedString::from(if lo == hi {
-                lo
-            } else {
-                format!("{lo} – {hi}")
-            })
-        };
-        let mut tags: Vec<usize> = lines
-            .iter()
-            .filter_map(|line| self.tags.get(&line.key).copied())
-            .collect();
-        tags.sort_unstable();
-        tags.dedup();
         let side = if self.view == GALLERY_VIEW {
             HEADER_ICON
         } else {
             content
         };
+        let hero = match self.stats.as_ref() {
+            Some(stats) => self.stack_hero(&stats.head, side),
+            None => div().w(px(side)).h(px(side)).into_any_element(),
+        };
+        let actions: &'static [(&'static str, &'static str)] =
+            &[("ellipsis.circle", "More\u{2026}")];
+        let Some(stats) = self
+            .stats
+            .as_ref()
+            .filter(|stats| stats.key == self.stats_key())
+        else {
+            return Card {
+                hero,
+                title: format!("{} items", self.selected.len()).into(),
+                subtitle: CALCULATING.into(),
+                rows: vec![
+                    ("Created", CALCULATING.into()),
+                    ("Modified", CALCULATING.into()),
+                ],
+                show_more: false,
+                tags: Vec::new(),
+                many: true,
+                actions,
+            };
+        };
+        let files = stats.items - stats.folders;
+        let kinds = match (files, stats.folders) {
+            (0, n) => format!("{n} folders"),
+            (n, 0) => format!("{n} documents"),
+            (f, d) => format!("{f} documents, {d} folders"),
+        };
         Card {
-            hero: self.stack_hero(&lines, side),
-            title: format!("{} items", lines.len()).into(),
-            subtitle: format!("{kinds} - {}", byte_string(bytes)).into(),
+            hero,
+            title: format!("{} items", stats.items).into(),
+            subtitle: format!("{kinds} - {}", byte_string(stats.bytes)).into(),
             rows: vec![
-                ("Created", span(|row| row.created_at)),
-                ("Modified", span(|row| row.modified_at)),
+                ("Created", span(stats.created)),
+                ("Modified", span(stats.modified)),
             ],
             show_more: false,
-            tags,
+            tags: stats.tags.clone(),
             many: true,
-            actions: &[("ellipsis.circle", "More…")],
-        }
-    }
-
-    /// A folder weighs what the index says it weighs; a file weighs itself.
-    fn total_bytes(&self, row: &Row) -> u64 {
-        match row.opens {
-            Some(id) => crate::index()
-                .folder_size(std::path::Path::new(id))
-                .unwrap_or(row.bytes),
-            None => row.bytes,
+            actions,
         }
     }
 

@@ -22,11 +22,13 @@ mod sidebar;
 mod toolbar;
 mod ui;
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -72,6 +74,97 @@ pub(crate) enum Slot {
     Row(usize),
 }
 
+fn next_rev() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Atomic::Relaxed)
+}
+
+/// A set of row keys a frame shares rather than copies: handing it to an element costs a clone of
+/// the handle, and every change gives the set a new revision the caches built from it compare.
+#[derive(Clone)]
+pub(crate) struct Keys {
+    keys: Arc<HashSet<SharedString>>,
+    rev: u64,
+}
+
+impl Keys {
+    pub(crate) fn snapshot(&self) -> Arc<HashSet<SharedString>> {
+        self.keys.clone()
+    }
+
+    pub(crate) fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    pub(crate) fn insert(&mut self, key: SharedString) -> bool {
+        self.rev = next_rev();
+        Arc::make_mut(&mut self.keys).insert(key)
+    }
+
+    pub(crate) fn remove(&mut self, key: &SharedString) -> bool {
+        self.rev = next_rev();
+        Arc::make_mut(&mut self.keys).remove(key)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.rev = next_rev();
+        self.keys = Arc::default();
+    }
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self {
+            keys: Arc::default(),
+            rev: next_rev(),
+        }
+    }
+}
+
+impl Deref for Keys {
+    type Target = HashSet<SharedString>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.keys
+    }
+}
+
+impl FromIterator<SharedString> for Keys {
+    fn from_iter<I: IntoIterator<Item = SharedString>>(keys: I) -> Self {
+        Self {
+            keys: Arc::new(keys.into_iter().collect()),
+            rev: next_rev(),
+        }
+    }
+}
+
+/// Everything the rows a frame draws are built from: while this holds, so do they.
+#[derive(PartialEq)]
+struct Stamp {
+    folders: u64,
+    expanded: u64,
+    here: &'static str,
+    sort: Column,
+    ascending: bool,
+    grouped: bool,
+    hidden: bool,
+    query: String,
+    filter: Option<String>,
+    hits: u64,
+}
+
+/// The rows, bands and browser listings a frame draws, kept until [`Stamp`] moves: walking a
+/// disclosed home folder is millions of rows, which no frame can pay for twice.
+#[derive(Default)]
+struct Listings {
+    stamp: Option<Stamp>,
+    tree: Option<Arc<Vec<Line>>>,
+    flat: Option<Arc<Vec<Line>>>,
+    slots: Option<(Arc<Vec<Line>>, Arc<Vec<Slot>>)>,
+    columns: HashMap<&'static str, Arc<Vec<Line>>>,
+    cursor: Option<(SharedString, Option<Line>)>,
+}
+
 pub(crate) const ICON_VIEW: usize = 0;
 pub(crate) const LIST_VIEW: usize = 1;
 pub(crate) const COLUMN_VIEW: usize = 2;
@@ -111,13 +204,19 @@ pub(crate) struct FinderDemo {
     pub(crate) query: String,
     /// Finder's scope bar: `scope::THIS_MAC` or `scope::THIS_FOLDER`.
     pub(crate) scope: usize,
-    pub(crate) expanded: HashSet<SharedString>,
-    pub(crate) selected: HashSet<SharedString>,
+    pub(crate) expanded: Keys,
+    pub(crate) selected: Keys,
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
     pub(crate) renaming: Option<SharedString>,
     /// ⌘X's mark: these rows dim until a paste moves them or the mark clears.
-    pub(crate) cut: HashSet<SharedString>,
+    pub(crate) cut: Keys,
+    cache: RefCell<Listings>,
+    /// What the last selection summary was computed over, and the summary itself.
+    pub(crate) stats: Option<preview::Stats>,
+    stats_pending: Option<(u64, usize)>,
+    /// What [`Self::follow`] last pointed the watcher and the pins at.
+    followed: Option<(u64, &'static str, &'static str, usize)>,
     /// Keys, side in pixels, image.
     pub(crate) stack: RefCell<Option<(Vec<SharedString>, u32, Arc<RenderImage>)>>,
     typed: String,
@@ -179,6 +278,7 @@ pub(crate) struct FinderDemo {
     watching: HashSet<&'static str>,
     /// What the index found elsewhere for the search field.
     hits: Vec<Arc<Row>>,
+    hits_rev: u64,
     /// A row an operation made, to scroll to as soon as its folder is read again.
     reveal_next: Option<SharedString>,
     /// The window an error sheet hangs on.
@@ -267,12 +367,16 @@ impl FinderDemo {
             header_drag: None,
             query: String::new(),
             scope: prefs::search_scope().unwrap_or(scope::THIS_FOLDER),
-            expanded: HashSet::new(),
-            selected: HashSet::new(),
+            expanded: Keys::default(),
+            selected: Keys::default(),
             cursor: None,
             anchor: None,
             renaming: None,
-            cut: HashSet::new(),
+            cut: Keys::default(),
+            cache: RefCell::default(),
+            stats: None,
+            stats_pending: None,
+            followed: None,
             stack: RefCell::new(None),
             typed: String::new(),
             typed_at: None,
@@ -319,6 +423,7 @@ impl FinderDemo {
             watcher: Watcher::new(move |dirs| sink.lock().unwrap().extend(dirs)),
             watching: HashSet::new(),
             hits: Vec::new(),
+            hits_rev: 0,
             reveal_next: None,
             host: None,
             focus: cx.focus_handle(),
@@ -408,9 +513,10 @@ impl FinderDemo {
 
     /// Finder's tag dots: the pick colours every chosen row, and the files carry the tag.
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
-        for key in self.selected.clone() {
+        let chosen = self.selected.snapshot();
+        for key in chosen.iter() {
             self.tags.insert(key.clone(), tag);
-            write_tag(&key, Some(tag), cx);
+            write_tag(key, Some(tag), cx);
         }
     }
 
@@ -501,11 +607,53 @@ impl FinderDemo {
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
+        self.sync_stats(cx);
         if self.column_settling.replace(false) {
             cx.notify();
         }
         crate::ui::frame_drawn();
         self.follow();
+    }
+
+    /// What the last selection summary was asked about: a new selection or a fresh listing needs
+    /// another one.
+    pub(crate) fn stats_key(&self) -> (u64, usize) {
+        (self.selected.rev(), self.focused_lines().len())
+    }
+
+    /// Counting and weighing the selection walks every chosen row, which the card and the status
+    /// bar cannot do on a frame: one pass runs off the main thread per change and they say
+    /// "Calculating…" until it lands.
+    fn sync_stats(&mut self, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            self.stats = None;
+            self.stats_pending = None;
+            return;
+        }
+        let key = self.stats_key();
+        let known = self.stats.as_ref().is_some_and(|stats| stats.key == key);
+        if known || self.stats_pending == Some(key) {
+            return;
+        }
+        self.stats_pending = Some(key);
+        let lines = self.focused_lines();
+        let chosen = self.selected.snapshot();
+        let tags = self.tags.clone();
+        cx.spawn(async move |this, cx| {
+            let stats = cx
+                .background_executor()
+                .spawn(async move { preview::summarize(key, &lines, &chosen, &tags) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.stats_pending == Some(key) {
+                    this.stats_pending = None;
+                }
+                this.stats = Some(stats);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Reads `id` off the main thread, handing rows over as they arrive: the index's copy first
@@ -571,11 +719,12 @@ impl FinderDemo {
         for (rows, replace) in batches {
             self.folders.deliver(id, rows, replace);
         }
-        if landed {
-            self.sort_folder(id);
-        }
         if done {
             self.folders.finish(id);
+        }
+        // A re-read sorts once, when the whole listing has landed and taken the old one's place.
+        if (landed || done) && !self.folders.staging(id) {
+            self.sort_folder(id);
         }
         if let Some(key) = self.reveal_next.clone() {
             if self
@@ -608,11 +757,17 @@ impl FinderDemo {
     /// Watch what is on screen and nothing else: the folder, the disclosed subfolders, the
     /// browser's chain.
     fn follow(&mut self) {
+        let moved = (self.expanded.rev(), self.here(), self.target(), self.view);
+        if self.followed == Some(moved) {
+            return;
+        }
+        self.followed = Some(moved);
         let mut wanted: HashSet<&'static str> = HashSet::from([self.here(), self.target()]);
         wanted.extend(self.expanded.iter().map(|key| intern(key)));
         if self.view == COLUMN_VIEW {
             wanted.extend(self.crumb_ids());
         }
+        self.folders.pin(wanted.iter().copied());
         for id in &wanted {
             if self.watching.insert(id) {
                 self.watcher.watch(Path::new(id));
@@ -654,6 +809,7 @@ impl FinderDemo {
     /// Re-runs the current query, for a fresh scope or a fresh folder.
     fn run_search(&mut self, cx: &mut Context<Self>) {
         self.hits.clear();
+        self.hits_rev = next_rev();
         let query = self.query.trim().to_string();
         cx.notify();
         if query.is_empty() {
@@ -679,6 +835,7 @@ impl FinderDemo {
             this.update(cx, |this, cx| {
                 if this.query.trim() == wanted {
                     this.hits = hits;
+                    this.hits_rev = next_rev();
                     cx.notify();
                 }
             })
@@ -791,10 +948,11 @@ impl FinderDemo {
             return;
         };
         self.go(parent, window, cx);
-        let left = self
-            .lines(self.view == LIST_VIEW)
-            .into_iter()
-            .find(|line| line.row.opens == Some(from));
+        let listing = self.lines(self.view == LIST_VIEW);
+        let left = listing
+            .iter()
+            .find(|line| line.row.opens == Some(from))
+            .cloned();
         if let Some(line) = left {
             self.pick(&line, false, false);
             self.reveal(&line.key);
@@ -853,7 +1011,22 @@ impl FinderDemo {
     }
 
     /// The rows a grouped list draws, with Finder's band headers between them.
-    pub(crate) fn slots(&self, lines: &[Line]) -> Vec<Slot> {
+    pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Arc<Vec<Slot>> {
+        let cached = self
+            .listings()
+            .slots
+            .as_ref()
+            .filter(|(built_for, _)| Arc::ptr_eq(built_for, lines))
+            .map(|(_, slots)| slots.clone());
+        if let Some(slots) = cached {
+            return slots;
+        }
+        let built = Arc::new(self.build_slots(lines));
+        self.listings().slots = Some((lines.clone(), built.clone()));
+        built
+    }
+
+    fn build_slots(&self, lines: &[Line]) -> Vec<Slot> {
         if !self.grouped {
             return (0..lines.len()).map(Slot::Row).collect();
         }
@@ -870,7 +1043,7 @@ impl FinderDemo {
         out
     }
 
-    fn slot_of(&self, lines: &[Line], index: usize) -> usize {
+    fn slot_of(&self, lines: &Arc<Vec<Line>>, index: usize) -> usize {
         self.slots(lines)
             .iter()
             .position(|slot| matches!(slot, Slot::Row(at) if *at == index))
@@ -1101,7 +1274,62 @@ impl FinderDemo {
         );
     }
 
-    pub(crate) fn lines(&self, tree: bool) -> Vec<Line> {
+    /// The rows on screen, built once and shared by everything that draws this frame.
+    pub(crate) fn lines(&self, tree: bool) -> Arc<Vec<Line>> {
+        let cached = match tree {
+            true => self.listings().tree.clone(),
+            false => self.listings().flat.clone(),
+        };
+        if let Some(lines) = cached {
+            return lines;
+        }
+        let built = Arc::new(self.build_lines(tree));
+        let mut listings = self.listings();
+        match tree {
+            true => listings.tree = Some(built.clone()),
+            false => listings.flat = Some(built.clone()),
+        }
+        built
+    }
+
+    /// The cache every listing this frame comes out of, emptied when what it holds is stale.
+    fn listings(&self) -> RefMut<'_, Listings> {
+        let stamp = Stamp {
+            folders: self.folders.changed(),
+            expanded: self.expanded.rev(),
+            here: self.here(),
+            sort: self.sort,
+            ascending: self.ascending,
+            grouped: self.grouped,
+            hidden: self.show_hidden,
+            query: self.query.clone(),
+            filter: self.type_filter.clone(),
+            hits: self.hits_rev,
+        };
+        let mut listings = self.cache.borrow_mut();
+        if listings.stamp.as_ref() != Some(&stamp) {
+            *listings = Listings {
+                stamp: Some(stamp),
+                ..Default::default()
+            };
+        }
+        listings
+    }
+
+    pub(crate) fn listing_cached(&self, folder: &'static str) -> Option<Arc<Vec<Line>>> {
+        self.listings().columns.get(folder).cloned()
+    }
+
+    pub(crate) fn listing_cache(
+        &self,
+        folder: &'static str,
+        lines: Arc<Vec<Line>>,
+    ) -> Arc<Vec<Line>> {
+        self.listings().columns.insert(folder, lines.clone());
+        lines
+    }
+
+    fn build_lines(&self, tree: bool) -> Vec<Line> {
         let mut out = Vec::new();
         self.collect(self.here(), 0, tree, &mut out);
         if !self.searching() {
@@ -1187,17 +1415,18 @@ impl FinderDemo {
     }
 
     pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
-        for key in self.selected.clone() {
-            let next = match self.tags.get(&key).copied() {
+        let chosen = self.selected.snapshot();
+        for key in chosen.iter() {
+            let next = match self.tags.get(key).copied() {
                 Some(index) if index + 1 >= TAGS.len() => None,
                 Some(index) => Some(index + 1),
                 None => Some(0),
             };
             match next {
                 Some(index) => self.tags.insert(key.clone(), index),
-                None => self.tags.remove(&key),
+                None => self.tags.remove(key),
             };
-            write_tag(&key, next, cx);
+            write_tag(key, next, cx);
         }
     }
 
@@ -1450,11 +1679,20 @@ impl FinderDemo {
     }
 
     pub(crate) fn cursor_line(&self) -> Option<Line> {
-        let lines = self.lines(self.view == LIST_VIEW);
-        self.cursor
+        let key = self.cursor.clone()?;
+        let cached = self
+            .listings()
+            .cursor
             .as_ref()
-            .and_then(|key| lines.iter().find(|line| &line.key == key))
-            .cloned()
+            .filter(|(at, _)| *at == key)
+            .map(|(_, line)| line.clone());
+        if let Some(line) = cached {
+            return line;
+        }
+        let lines = self.lines(self.view == LIST_VIEW);
+        let line = lines.iter().find(|line| line.key == key).cloned();
+        self.listings().cursor = Some((key, line.clone()));
+        line
     }
 
     /// Space: the system Quick Look panel over the selection, zooming out of the cursor's icon.
@@ -1733,6 +1971,7 @@ impl Render for FinderDemo {
         if self.host.is_none() {
             self.host = ns_window(window);
         }
+        let began = Instant::now();
         self.scale = window.scale_factor();
         self.frames += 1;
         if let Some(limit) = self.quit_at {
@@ -1781,7 +2020,7 @@ impl Render for FinderDemo {
         let jobs_popover = self.jobs_open.then(|| self.jobs_popover(&palette, cx));
         self.pump(cx);
         self.sync_quick_look(window);
-        native_root(
+        let root = native_root(
             div()
                 .size_full()
                 .relative()
@@ -1838,8 +2077,26 @@ impl Render for FinderDemo {
                         .children(conflict_sheet)
                         .children(jobs_popover),
                 ),
-        )
+        );
+        trace_frame(self, began);
+        root
     }
+}
+
+/// `NG_FRAME_TRACE=1`: how long this window spent building each frame, and over how much.
+fn trace_frame(demo: &FinderDemo, began: Instant) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !ON.get_or_init(|| env::var("NG_FRAME_TRACE").is_ok()) {
+        return;
+    }
+    eprintln!(
+        "frame {} build {:.2}ms rows {} selected {} folders {}",
+        demo.frames,
+        began.elapsed().as_secs_f64() * 1000.,
+        demo.folder().map_or(0, |folder| folder.rows.len()),
+        demo.selected.len(),
+        demo.folders.len(),
+    );
 }
 
 fn main() {

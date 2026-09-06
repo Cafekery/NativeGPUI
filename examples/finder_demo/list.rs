@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, SharedString, Window, div,
     prelude::*, px, uniform_list,
@@ -65,10 +63,10 @@ impl FinderDemo {
         let renaming = self.renaming.clone();
         let cursor = self.cursor.clone();
         let ql_icon = self.ql_icon.clone();
-        let selected: HashSet<SharedString> = self.selected.clone();
-        let cut = self.cut.clone();
+        let selected = self.selected.snapshot();
+        let cut = self.cut.snapshot();
         let tags = self.tags.clone();
-        let expanded = self.expanded.clone();
+        let expanded = self.expanded.snapshot();
         let label = palette.label;
         let secondary = palette.secondary;
         let stripe = palette.stripe;
@@ -87,7 +85,6 @@ impl FinderDemo {
         let icon = self.list_icon_now();
         let row_h = row_h(icon);
         let slots = self.slots(&lines);
-        let drag_keys: HashSet<SharedString> = self.selected.clone();
 
         let list = uniform_list("ng.finder.list", pads + slots.len(), move |range, _, _| {
             range
@@ -277,15 +274,12 @@ impl FinderDemo {
                             .ok();
                         }
                     });
-                    let row = {
-                        let keys = drag_keys.clone();
-                        let key = line.key.clone();
-                        let name = line.row.name.clone();
-                        row.on_drag(RowDrag { key: key.clone() }, move |grab, _, _, cx| {
-                            let _ = (grab, &keys, &name);
-                            cx.new(|_| DragGhost)
-                        })
-                    };
+                    let row = row.on_drag(
+                        RowDrag {
+                            key: line.key.clone(),
+                        },
+                        move |_, _, _, cx| cx.new(|_| DragGhost),
+                    );
                     let row = match line.row.opens {
                         Some(into) => row
                             .drag_over::<RowDrag>(move |style, _, _, _| style.bg(selection))
