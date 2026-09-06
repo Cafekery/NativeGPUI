@@ -1,5 +1,6 @@
 //! A Finder front end: real macOS chrome over the real file system, `NG_QUIT=<frames>` to exit.
 
+mod art;
 mod clipboard;
 mod column;
 mod commands;
@@ -18,6 +19,8 @@ mod prefs;
 mod preview;
 mod scope;
 mod sidebar;
+mod tags;
+mod thumbs;
 mod toolbar;
 mod ui;
 
@@ -34,8 +37,8 @@ use std::time::{Duration, Instant};
 use finder_fs::index::Index;
 use finder_fs::ops::{Conflict, Op};
 use finder_fs::queue::{self, Journal, Queue};
+use finder_fs::volumes;
 use finder_fs::watch::Watcher;
-use finder_fs::{tags, volumes};
 use gpui::{
     AnyElement, App, Bounds, DragMoveEvent, FocusHandle, KeyBinding, KeyDownEvent, Keystroke,
     Modifiers, MouseButton, Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString,
@@ -54,6 +57,7 @@ use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSView, NSWindow};
 use objc2_foundation::{NSArray, NSSize, NSString, NSURL};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::art::Anchor;
 use crate::commands::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 use crate::data::{Column, Folder, Folders, Line, Row, group_of, intern, intern_path, split_key};
 use crate::header::{
@@ -65,7 +69,7 @@ use crate::list::{ICON_SIZE, ICON_SMALL, RowDrag, row_h};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
-use crate::ui::{Anchor, axis_locked, tags};
+use crate::ui::axis_locked;
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {
@@ -315,9 +319,9 @@ impl FinderDemo {
                         .spawn(async { data::refresh_volumes() })
                         .detach();
                 }
-                crate::ui::collect_thumbnails();
-                crate::ui::sweep_thumbnails();
-                let landed = crate::ui::thumbnails_landed();
+                crate::thumbs::collect_thumbnails();
+                crate::thumbs::sweep_thumbnails();
+                let landed = crate::thumbs::thumbnails_landed();
                 let drawn = std::mem::replace(&mut seen, landed) != landed;
                 if this
                     .update(cx, |this, cx| {
@@ -515,15 +519,6 @@ impl FinderDemo {
         path.is_dir().then(|| intern_path(path))
     }
 
-    /// Finder's tag dots: the pick colours every chosen row, and the files carry the tag.
-    pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
-        let chosen = self.selected.snapshot();
-        for key in chosen.iter() {
-            self.tags.insert(key.clone(), vec![tag]);
-            write_tags(key, &[tag], cx);
-        }
-    }
-
     pub(crate) fn crumb_path(&self) -> String {
         self.target().to_string()
     }
@@ -636,7 +631,7 @@ impl FinderDemo {
         if self.column_settling.replace(false) {
             cx.notify();
         }
-        crate::ui::frame_drawn();
+        crate::thumbs::frame_drawn();
         self.follow();
     }
 
@@ -894,7 +889,7 @@ impl FinderDemo {
                     let rows = data::tagged_rows(&tag, index(), HITS);
                     let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()
-                        .map(|row| (row.path.clone(), row_tags(&row.path)))
+                        .map(|row| (row.path.clone(), crate::tags::row_tags(&row.path)))
                         .filter(|(_, carried)| !carried.is_empty())
                         .collect();
                     (rows, marks)
@@ -1477,27 +1472,6 @@ impl FinderDemo {
             self.anchor = Some(line.key.clone());
         }
         self.cursor = Some(line.key.clone());
-    }
-
-    pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
-        let chosen = self.selected.snapshot();
-        for key in chosen.iter() {
-            let next = match self
-                .tags
-                .get(key)
-                .and_then(|carried| carried.first().copied())
-            {
-                Some(index) if index + 1 >= tags().len() => None,
-                Some(index) => Some(index + 1),
-                None => Some(0),
-            };
-            let wanted: Vec<usize> = next.into_iter().collect();
-            match wanted.is_empty() {
-                true => self.tags.remove(key),
-                false => self.tags.insert(key.clone(), wanted.clone()),
-            };
-            write_tags(key, &wanted, cx);
-        }
     }
 
     pub(crate) fn disclose(&mut self, key: &SharedString, open: bool) {
@@ -2362,28 +2336,6 @@ fn tag_title(id: &str) -> String {
         "" => "All Tags".to_string(),
         name => name.to_string(),
     }
-}
-
-/// The tags a file carries that the demo's tag menus know, as their indices.
-fn row_tags(path: &str) -> Vec<usize> {
-    tags::of(Path::new(path))
-        .iter()
-        .filter_map(|tag| crate::ui::tag_index(&tag.name))
-        .collect()
-}
-
-/// One row's Finder tags, written where Finder reads them.
-fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) {
-    let path = PathBuf::from(key.as_ref());
-    let wanted: Vec<tags::Tag> = tags
-        .iter()
-        .map(|index| crate::ui::finder_tag(*index))
-        .collect();
-    cx.background_executor()
-        .spawn(async move {
-            tags::set(&path, &wanted).ok();
-        })
-        .detach();
 }
 
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {

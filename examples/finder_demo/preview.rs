@@ -20,10 +20,12 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
+use crate::art::{Poster, artwork, poster_art, row_art};
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::ui::{Poster, artwork, poster_art, rename_field, row_art, tag_dot, tag_pill};
+use crate::tags::{tag_dot, tag_pill};
+use crate::ui::rename_field;
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 /// Finder's "Calculating…", for a summary a background pass has not finished.
@@ -692,7 +694,7 @@ impl FinderDemo {
             (false, Some(tag)) => tags.child(tag_dot(*tag)).child(
                 div()
                     .text_color(palette.label)
-                    .child(crate::ui::tags()[*tag].name.clone()),
+                    .child(crate::tags::tags()[*tag].name.clone()),
             ),
             (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
             (true, _) => tags

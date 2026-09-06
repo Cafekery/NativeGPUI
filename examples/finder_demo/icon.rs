@@ -11,10 +11,12 @@ use gpui::{
 use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::FinderDemo;
+use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{Anchor, art_at, click_kind, rename_field, row_art, tag_dots, tag_dots_w};
+use crate::tags::{tag_dots, tag_dots_w};
+use crate::ui::{click_kind, rename_field};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;

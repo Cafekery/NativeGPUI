@@ -10,7 +10,7 @@ use native_gpui::sidebar::{
 use native_gpui::{Material, MenuEntry};
 
 use crate::data::{intern, intern_path, volume_roots};
-use crate::ui::finder_color_rgb;
+use crate::tags::finder_color_rgb;
 use crate::{FinderDemo, prefs};
 
 pub(crate) const SIDEBAR_W: f32 = 184.;
@@ -172,7 +172,7 @@ fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     acts[2] = Act::Remove;
     acts.extend(std::iter::repeat_n(
         Act::Nothing,
-        1 + crate::ui::tags().len(),
+        1 + crate::tags::tags().len(),
     ));
     let entries = [
         MenuEntry::item("Open in New Tab")
@@ -191,7 +191,7 @@ fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     ]
     .into_iter()
     .chain([MenuEntry::item("No Color").disabled()])
-    .chain(crate::ui::tags().iter().map(|tag| {
+    .chain(crate::tags::tags().iter().map(|tag| {
         let entry = MenuEntry::item(tag.name.clone()).disabled();
         match finder_color_rgb(tag.color) {
             Some(color) => entry.dot(color),
@@ -403,7 +403,9 @@ impl FinderDemo {
         let Some(tag) = finder_fs::tags::all().into_iter().find(|it| it.name == tag) else {
             return;
         };
-        let favourite = crate::ui::tags().iter().position(|it| it.name == tag.name);
+        let favourite = crate::tags::tags()
+            .iter()
+            .position(|it| it.name == tag.name);
         for path in paths {
             if let Some(index) = favourite {
                 let carried = self.tags.entry(intern_path(path).into()).or_default();
