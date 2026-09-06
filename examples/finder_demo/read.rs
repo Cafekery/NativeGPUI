@@ -10,9 +10,9 @@ use std::time::Duration;
 use gpui::Context;
 
 use crate::app::FinderDemo;
-use crate::data::{self, Column, Row, intern, intern_path};
+use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::view::COLUMN_VIEW;
-use crate::{index, preview};
+use crate::{index, listing, preview};
 
 /// Rows per batch while a folder is read, how often the view takes delivery, and how often the
 /// index writes its snapshot.
@@ -29,6 +29,8 @@ const VOLUMES_EVERY: u64 = 40;
 #[derive(Default)]
 struct Mail {
     batches: Vec<(Vec<Arc<Row>>, bool)>,
+    /// The sorted listing as lines, built where it was sorted, and whether hidden rows are in it.
+    lines: Option<(bool, Vec<Line>)>,
     listed: bool,
     done: bool,
 }
@@ -187,37 +189,61 @@ impl FinderDemo {
         }
         let mail = Arc::new(Mutex::new(Mail::default()));
         let filling = mail.clone();
+        let sorted_by = (self.sort, self.ascending);
+        let plain = self.plain(id);
         let read = cx.background_executor().spawn(async move {
             let dir = Path::new(id);
             let index = index();
+            let sort = |rows: &mut Vec<Arc<Row>>| {
+                rows.sort_by(|a, b| order(sorted_by.0, sorted_by.1, a, b))
+            };
+            let mut all: Vec<Arc<Row>> = Vec::new();
             if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
-                let rows = data::rows_of(id, &known, index);
+                let mut rows = data::rows_of(id, &known, index);
+                sort(&mut rows);
                 filling.lock().unwrap().batches.push((rows, true));
             }
-            let post = |rows: Vec<Arc<Row>>| {
+            let post = |mut rows: Vec<Arc<Row>>| {
                 let mut mail = filling.lock().unwrap();
                 let replace = !mail.listed;
                 mail.listed = true;
+                if replace {
+                    sort(&mut rows);
+                }
                 mail.batches.push((rows, replace));
             };
             let read = finder_fs::list::list_dir_batched(dir, BATCH, |entries| {
-                post(data::rows_of(id, &entries, index))
+                let rows = data::rows_of(id, &entries, index);
+                all.extend(rows.iter().cloned());
+                post(rows);
             });
-            let mut mail = filling.lock().unwrap();
-            if read.is_ok() && !mail.listed {
-                mail.batches.push((Vec::new(), true));
+            if read.is_err() {
+                filling.lock().unwrap().done = true;
+                return;
             }
+            // Six hundred thousand rows sort for seconds, which no main thread has to spend.
+            sort(&mut all);
+            let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
+            let mut mail = filling.lock().unwrap();
+            mail.batches.push((all, true));
+            mail.lines = lines;
             mail.done = true;
         });
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL).await;
-                let (batches, done) = {
+                let (batches, lines, done) = {
                     let mut mail = mail.lock().unwrap();
-                    (std::mem::take(&mut mail.batches), mail.done)
+                    (
+                        std::mem::take(&mut mail.batches),
+                        mail.lines.take(),
+                        mail.done,
+                    )
                 };
                 let alive = this
-                    .update(cx, |this, cx| this.deliver(id, batches, done, cx))
+                    .update(cx, |this, cx| {
+                        this.deliver(id, batches, lines, done, sorted_by, cx)
+                    })
                     .is_ok();
                 if done || !alive {
                     break;
@@ -232,22 +258,23 @@ impl FinderDemo {
         &mut self,
         id: &'static str,
         batches: Vec<(Vec<Arc<Row>>, bool)>,
+        lines: Option<(bool, Vec<Line>)>,
         done: bool,
+        sorted_by: (Column, bool),
         cx: &mut Context<Self>,
     ) {
         let landed = !batches.is_empty();
-        let replaced = batches.iter().any(|(_, replace)| *replace);
         for (rows, replace) in batches {
             self.folders.deliver(id, rows, replace);
         }
         if done {
             self.folders.finish(id);
-        }
-        // A read sorts what it puts on screen, and sorts once more when the last row has landed:
-        // sorting per batch is the whole listing again per batch, and it moves the rows a frame
-        // drew out from under what it built from them.
-        if done || replaced {
-            self.sort_folder(id);
+            // The read hands over a listing it sorted; only a sort changed while it ran is left.
+            if sorted_by != (self.sort, self.ascending) {
+                self.sort_folder(id);
+            } else if let Some((hidden, lines)) = lines {
+                self.built(id, hidden, lines);
+            }
         }
         if let Some(key) = self.reveal_next.clone() {
             if self

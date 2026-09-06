@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 use gpui::SharedString;
 
 use crate::app::FinderDemo;
-use crate::data::{Column, Line, group_of};
+use crate::data::{Column, Line, Row, group_of};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
@@ -124,6 +124,18 @@ impl FromIterator<SharedString> for Keys {
     }
 }
 
+/// A plain listing's rows as the lines a frame draws.
+pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
+    rows.iter()
+        .filter(|row| hidden || !row.hidden)
+        .map(|row| Line {
+            key: row.path.clone(),
+            row: row.clone(),
+            depth: 0,
+        })
+        .collect()
+}
+
 impl FinderDemo {
     /// The rows a grouped list draws, with Finder's band headers between them. An ungrouped list
     /// draws its rows one for one and builds no slots at all.
@@ -200,6 +212,33 @@ impl FinderDemo {
             false => listings.flat = Some(built.clone()),
         }
         built.lines
+    }
+
+    /// Whether the listing is drawn as it is read — no query, no filter, no disclosed row — and
+    /// with it whether hidden rows are drawn.
+    pub(crate) fn plain(&self, id: &'static str) -> Option<bool> {
+        (id == self.here()
+            && self.tag_listing.is_none()
+            && !self.results()
+            && self.expanded.is_empty()
+            && self.query.trim().is_empty()
+            && self.type_filter.is_none())
+        .then_some(self.show_hidden)
+    }
+
+    /// Take the lines a read built for the listing it sorted, so the frame the rows moved under
+    /// does not build every one of them again.
+    pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
+        if self.plain(id) != Some(hidden) {
+            return;
+        }
+        let built = Built {
+            lines: Arc::new(lines),
+            used: self.folders.get(id).map(|folder| folder.rows.len()),
+        };
+        let mut listings = self.listings();
+        listings.tree = Some(built.clone());
+        listings.flat = Some(built);
     }
 
     /// Lifts the cached listing out of the cache, so extending it does not copy what the cache
