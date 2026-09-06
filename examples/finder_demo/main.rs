@@ -974,7 +974,7 @@ impl FinderDemo {
             return;
         }
         let mut by_name: Vec<usize> = (0..lines.len()).collect();
-        by_name.sort_by_key(|&index| lines[index].row.name.to_lowercase());
+        by_name.sort_by(|&i, &j| finder_fs::sort::name_cmp(&lines[i].row.name, &lines[j].row.name));
         let at = self
             .cursor
             .as_ref()
@@ -1008,7 +1008,7 @@ impl FinderDemo {
         let lines = self.focused_lines();
         let prefix = lines
             .iter()
-            .find(|line| line.row.name.to_lowercase().starts_with(&self.typed))
+            .find(|line| finder_fs::sort::starts_with(&line.row.name, &self.typed))
             .cloned();
         match prefix {
             Some(line) => {
@@ -1984,23 +1984,38 @@ struct Mail {
 }
 
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
+    // Finder keeps folders above files regardless of sort column or direction when this
+    // preference is on, so it is applied before the ascending/descending reversal below.
+    // The Kind column groups folders first unconditionally, preference or not: a folder
+    // doesn't really have a "kind" comparable to a file's, so Finder never interleaves them
+    // alphabetically there (verified against real Finder: "Folder" sorts ahead of "Document"
+    // even though that is backwards alphabetically).
+    if folders_first() || sort == Column::Kind {
+        let by_kind = b.opens.is_some().cmp(&a.opens.is_some());
+        if by_kind != Ordering::Equal {
+            return by_kind;
+        }
+    }
     let by = match sort {
         Column::Name => Ordering::Equal,
         Column::Modified => a.modified_at.total_cmp(&b.modified_at),
         Column::Size => a.bytes.cmp(&b.bytes),
-        Column::Kind => a.kind.cmp(&b.kind),
+        Column::Kind => finder_fs::sort::name_cmp(&a.kind, &b.kind),
     };
-    let by = by
-        .then_with(|| nocase(&a.name, &b.name))
-        .then_with(|| a.name.cmp(&b.name));
+    let by = by.then_with(|| finder_fs::sort::name_cmp(&a.name, &b.name));
     if ascending { by } else { by.reverse() }
 }
 
-/// Case-insensitive, without the allocation per comparison that sorting 20 000 names would pay.
-fn nocase(a: &str, b: &str) -> Ordering {
-    a.chars()
-        .flat_map(char::to_lowercase)
-        .cmp(b.chars().flat_map(char::to_lowercase))
+/// Whether Finder's "keep folders on top" preference is on. Finder itself never rereads this
+/// mid-session, so this demo doesn't either: `defaults` is shelled out to once and cached.
+fn folders_first() -> bool {
+    static FOLDERS_FIRST: OnceLock<bool> = OnceLock::new();
+    *FOLDERS_FIRST.get_or_init(|| {
+        std::process::Command::new("defaults")
+            .args(["read", "com.apple.finder", "_FXSortFoldersFirst"])
+            .output()
+            .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"1")
+    })
 }
 
 /// One row's Finder tag, written where Finder reads it.
