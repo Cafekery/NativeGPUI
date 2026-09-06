@@ -1,13 +1,19 @@
-//! What the demo carries between launches: the window's frame is AppKit's own autosave, the rest
-//! rides in user defaults.
+//! What the demo carries between launches: the window's frame is AppKit's own autosave, the
+//! sidebar the user arranged sits in the demo's own store, the rest rides in user defaults.
 
-use objc2_foundation::{NSArray, NSString, NSUserDefaults};
+use std::collections::HashMap;
+
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2_foundation::{
+    NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
+    NSString, NSUserDefaults,
+};
 
 use crate::data::Column;
 
 const VIEW: &str = "ng.finder.view";
-const SIDEBAR: &str = "ng.finder.sidebar";
-const PINNED: &str = "ng.finder.sidebar.pinned";
+const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const ICON: &str = "ng.finder.icon";
@@ -29,37 +35,91 @@ fn write(key: &str, value: f64) {
     defaults().setDouble_forKey(value, &NSString::from_str(key));
 }
 
+/// The sidebar file, read whole: user defaults would follow the Mac's home, not the demo's.
+fn sidebar_file() -> HashMap<String, Vec<String>> {
+    let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
+    let Some(data) = NSData::dataWithContentsOfFile(&path) else {
+        return HashMap::new();
+    };
+    let read = unsafe {
+        NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty())
+    };
+    let Ok(object) = read else {
+        return HashMap::new();
+    };
+    let Ok(map) = object.downcast::<NSDictionary>() else {
+        return HashMap::new();
+    };
+    map.keys()
+        .filter_map(|key| {
+            let key = key.downcast_ref::<NSString>()?;
+            let list = map.objectForKey(key)?.downcast::<NSArray>().ok()?;
+            let values = list
+                .iter()
+                .filter_map(|value| Some(value.downcast_ref::<NSString>()?.to_string()))
+                .collect();
+            Some((key.to_string(), values))
+        })
+        .collect()
+}
+
+fn write_sidebar_file(kept: &HashMap<String, Vec<String>>) {
+    let mut keys = Vec::new();
+    let mut lists: Vec<Retained<AnyObject>> = Vec::new();
+    for (key, values) in kept {
+        keys.push(NSString::from_str(key));
+        let strings: Vec<_> = values
+            .iter()
+            .map(|value| NSString::from_str(value))
+            .collect();
+        let list = NSArray::from_retained_slice(&strings);
+        lists.push(unsafe { Retained::cast_unchecked(list) });
+    }
+    let keys: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
+    let values: Vec<_> = lists.iter().map(|list| &**list).collect();
+    let map = NSDictionary::from_slices(&keys, &values);
+    let written = unsafe {
+        NSJSONSerialization::dataWithJSONObject_options_error(
+            &map,
+            NSJSONWritingOptions::PrettyPrinted,
+        )
+    };
+    let Ok(data) = written else {
+        return;
+    };
+    let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
+    unsafe { data.writeToFile_atomically(&path, true) };
+}
+
 fn read_list(key: &str) -> Vec<String> {
-    let list = defaults().stringArrayForKey(&NSString::from_str(key));
-    list.map(|list| list.iter().map(|text| text.to_string()).collect())
-        .unwrap_or_default()
+    sidebar_file().remove(key).unwrap_or_default()
 }
 
 fn write_list(key: &str, values: &[&str]) {
-    let strings: Vec<_> = values
-        .iter()
-        .map(|value| NSString::from_str(value))
-        .collect();
-    let list = NSArray::from_retained_slice(&strings);
-    unsafe { defaults().setObject_forKey(Some(&list), &NSString::from_str(key)) };
+    let mut kept = sidebar_file();
+    kept.insert(
+        key.to_owned(),
+        values.iter().map(|value| (*value).to_owned()).collect(),
+    );
+    write_sidebar_file(&kept);
 }
 
 /// A sidebar group's rows, in the order the user left them.
 pub(crate) fn sidebar_rows(group: &str) -> Vec<String> {
-    read_list(&format!("{SIDEBAR}.{group}"))
+    read_list(&format!("rows.{group}"))
 }
 
 pub(crate) fn set_sidebar_rows(group: &str, rows: &[&str]) {
-    write_list(&format!("{SIDEBAR}.{group}"), rows);
+    write_list(&format!("rows.{group}"), rows);
 }
 
 /// The folders the user dragged into a sidebar group, which no listing of this Mac would give it.
 pub(crate) fn pinned(group: &str) -> Vec<String> {
-    read_list(&format!("{PINNED}.{group}"))
+    read_list(&format!("pinned.{group}"))
 }
 
 pub(crate) fn set_pinned(group: &str, paths: &[&str]) {
-    write_list(&format!("{PINNED}.{group}"), paths);
+    write_list(&format!("pinned.{group}"), paths);
 }
 
 pub(crate) fn view() -> Option<usize> {

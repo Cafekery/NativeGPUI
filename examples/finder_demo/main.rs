@@ -2122,14 +2122,17 @@ fn home() -> PathBuf {
     volumes::standard(volumes::Standard::Home).unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Where the demo keeps what it writes for itself: the index, and the sidebar the user arranged.
+pub(crate) fn store() -> PathBuf {
+    let store = home().join("Library/Application Support/FinderDemo");
+    std::fs::create_dir_all(&store).ok();
+    store
+}
+
 /// The whole-Mac index, opened once for the app and shared by every window.
 pub(crate) fn index() -> &'static Arc<Index> {
     static INDEX: OnceLock<Arc<Index>> = OnceLock::new();
-    INDEX.get_or_init(|| {
-        let store = home().join("Library/Application Support/FinderDemo");
-        std::fs::create_dir_all(&store).ok();
-        Index::open(&store.join("index.bin"))
-    })
+    INDEX.get_or_init(|| Index::open(&store().join("index.bin")))
 }
 
 /// The index crawls from launch and saves as it goes, so the next launch starts warm.
