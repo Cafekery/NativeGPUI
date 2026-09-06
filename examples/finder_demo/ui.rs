@@ -60,20 +60,18 @@ pub(crate) fn finder_color(color: u8) -> Hsla {
     let Some(system) = tag_system_color(color) else {
         return gpui::white();
     };
-    let space = unsafe { NSColorSpace::displayP3ColorSpace() };
+    let space = NSColorSpace::displayP3ColorSpace();
     let lightened = system
         .ns_color()
         .colorUsingColorSpace(&space)
         .map(|wide| {
             let lift = |channel: CGFloat| channel + (1. - channel) * TAG_LIGHTEN as CGFloat;
-            unsafe {
-                NSColor::colorWithDisplayP3Red_green_blue_alpha(
-                    lift(wide.redComponent()),
-                    lift(wide.greenComponent()),
-                    lift(wide.blueComponent()),
-                    1.,
-                )
-            }
+            NSColor::colorWithDisplayP3Red_green_blue_alpha(
+                lift(wide.redComponent()),
+                lift(wide.greenComponent()),
+                lift(wide.blueComponent()),
+                1.,
+            )
         })
         .and_then(|color| tokens::srgb(&color));
     lightened.unwrap_or_else(|| system_color(system))
