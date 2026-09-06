@@ -7,7 +7,6 @@ mod conflicts;
 mod data;
 mod gallery;
 mod header;
-mod hover_tip;
 mod icon;
 mod info;
 mod list;
@@ -225,9 +224,6 @@ pub(crate) struct FinderDemo {
     pub(crate) type_filter: Option<String>,
     /// Whether type-select found a match earlier in the run typing `type_filter` reached.
     type_filter_seen_match: bool,
-    /// A folder row under the pointer, and since when, for the size tooltip's delay.
-    row_hover: Option<(SharedString, Instant)>,
-    pub(crate) row_tip: Option<SharedString>,
     pub(crate) tags: HashMap<SharedString, usize>,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
@@ -382,8 +378,6 @@ impl FinderDemo {
             typed_at: None,
             type_filter: None,
             type_filter_seen_match: false,
-            row_hover: None,
-            row_tip: None,
             tags: HashMap::new(),
             preview: true,
             preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
@@ -591,8 +585,6 @@ impl FinderDemo {
         self.hits.clear();
         self.icons.forget();
         self.clear_type_filter();
-        self.row_hover = None;
-        self.row_tip = None;
         self.load_column_widths();
         self.read_folder(self.here(), cx);
         self.settle();
@@ -1217,35 +1209,6 @@ impl FinderDemo {
             this.update(cx, |this, cx| {
                 if this.typed_at == since {
                     this.clear_type_filter();
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Finder's hover delay before a row's tooltip shows.
-    pub(crate) fn hover_row(&mut self, hovered: bool, key: SharedString, cx: &mut Context<Self>) {
-        if !hovered {
-            if self.row_hover.as_ref().map(|(at, _)| at) == Some(&key) {
-                self.row_hover = None;
-            }
-            if self.row_tip.as_ref() == Some(&key) {
-                self.row_tip = None;
-                cx.notify();
-            }
-            return;
-        }
-        let since = Instant::now();
-        self.row_hover = Some((key.clone(), since));
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(crate::hover_tip::ROW_TIP_DELAY)
-                .await;
-            this.update(cx, |this, cx| {
-                if this.row_hover.as_ref() == Some(&(key.clone(), since)) {
-                    this.row_tip = Some(key);
                     cx.notify();
                 }
             })
