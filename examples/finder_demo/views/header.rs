@@ -1,8 +1,8 @@
 //! The list view's column-header band, and the two drags that reorder and resize it.
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, TextRun, Window, div,
-    hsla, prelude::*, px,
+    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Window, div,
+    prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{native_label, native_rule, native_symbol};
@@ -12,7 +12,7 @@ use crate::data::Column;
 use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::click_kind;
+use crate::ui::{click_kind, text_width};
 use crate::views::list::{ROW_FONT, column_text, name_prefix};
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
@@ -526,25 +526,9 @@ impl FinderDemo {
         };
         let lines = self.focused_lines();
         let icon = self.list_icon_now();
-        let run = TextRun {
-            len: 0,
-            font: tokens::system_font(FontWeight::NORMAL),
-            color: hsla(0., 0., 0., 1.),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
         let size = px(ROW_FONT);
         let widest = lines.iter().fold(0_f32, |widest, line| {
-            let text = column_text(column, line);
-            let mut run = run.clone();
-            run.len = text.len();
-            let text_w = f32::from(
-                window
-                    .text_system()
-                    .shape_line(text, size, &[run], None)
-                    .width,
-            );
+            let text_w = text_width(window, column_text(column, line), size);
             let total = if column == Column::Name {
                 name_prefix(line, icon) + text_w + CELL_PAD
             } else {

@@ -1,10 +1,7 @@
 //! Finder's path bar: the trail of folders under the list, each one a target for a click, a
 //! drop and a menu.
 
-use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, SharedString, TextRun, Window, div, hsla,
-    prelude::*, px,
-};
+use gpui::{AnyElement, ClickEvent, Context, FontWeight, Window, div, prelude::*, px};
 use native_gpui::native_rule;
 use native_gpui::tokens::{self, SystemColor};
 
@@ -13,6 +10,7 @@ use crate::art::{place_art, small_glyph};
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
+use crate::ui::text_width;
 
 pub(crate) const PATH_H: f32 = 28.;
 
@@ -142,27 +140,11 @@ impl FinderDemo {
     /// the trail fits, and truncates the last name only when it is the one left over.
     fn crumb_labels(&self, crumbs: &[&str], window: &Window) -> Vec<bool> {
         let mut named = vec![true; crumbs.len()];
-        let font = tokens::system_font(FontWeight::NORMAL);
         let size = tokens::small_system_font_size();
-        let run = TextRun {
-            len: 0,
-            font,
-            color: hsla(0., 0., 0., 1.),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let width = |text: &str| {
-            let mut run = run.clone();
-            run.len = text.len();
-            f32::from(
-                window
-                    .text_system()
-                    .shape_line(SharedString::from(text.to_string()), size, &[run], None)
-                    .width,
-            )
-        };
-        let labels: Vec<f32> = crumbs.iter().map(|crumb| width(crumb)).collect();
+        let labels: Vec<f32> = crumbs
+            .iter()
+            .map(|crumb| text_width(window, crumb.to_string(), size))
+            .collect();
         let room = self.list_room - self.pane_w() - 2. * CRUMB_INSET;
         let trail = |named: &[bool]| {
             let icons = crumbs.len() as f32 * (CRUMB_ICON + CRUMB_GAP);

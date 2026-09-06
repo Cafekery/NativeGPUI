@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, TextRun, Window,
-    canvas, div, hsla, opaque_grey, prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, Window, canvas, div,
+    opaque_grey, prelude::*, px,
 };
-use native_gpui::tokens::{self, Appearance, SystemColor, current_appearance, system_color};
+use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
@@ -15,7 +15,7 @@ use crate::data::{Face, Line};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, rename_field};
+use crate::ui::{click_kind, rename_field, text_width};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
 const ROW_H: f32 = 24.;
@@ -300,25 +300,9 @@ impl FinderDemo {
     /// Fits a browser column to its longest currently-loaded name, the standard divider gesture.
     fn fit_browser_column(&mut self, folder: &'static str, window: &Window) {
         let lines = self.column_listing(folder);
-        let run = TextRun {
-            len: 0,
-            font: tokens::system_font(FontWeight::NORMAL),
-            color: hsla(0., 0., 0., 1.),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
         let size = px(ROW_H - 8.);
         let widest = lines.iter().fold(0_f32, |widest, line| {
-            let mut run = run.clone();
-            run.len = line.row.name.len();
-            let text_w = f32::from(
-                window
-                    .text_system()
-                    .shape_line(line.row.name.clone(), size, &[run], None)
-                    .width,
-            );
-            widest.max(text_w)
+            widest.max(text_width(window, line.row.name.clone(), size))
         });
         let width = (LABEL_X + widest + PREVIEW_INSET).max(COL_MIN);
         self.column_widths.insert(folder, width);
