@@ -251,8 +251,6 @@ pub(crate) struct FinderDemo {
     /// `(from, to, started)` while the list's icons grow or shrink between the two sizes.
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
     pub(crate) strip_icon: f32,
-    pub(crate) strip_hover: Option<(usize, Instant)>,
-    pub(crate) strip_tip: Option<usize>,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -400,8 +398,6 @@ impl FinderDemo {
             list_icon: prefs::list_icon().unwrap_or(ICON_SIZE),
             list_zoom: None,
             strip_icon: prefs::strip_icon().unwrap_or(48.),
-            strip_hover: None,
-            strip_tip: None,
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
