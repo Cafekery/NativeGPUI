@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use block2::{DynBlock, RcBlock};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, NSObjectProtocol, ProtocolObject, Sel};
@@ -34,6 +35,11 @@ struct State {
     source: Option<NSRect>,
     on_key: Option<Box<dyn Fn(QuickLookKey)>>,
     sink: Option<Retained<QuickLook>>,
+    /// The panel was asked to open and the deferred job has not reached it yet.
+    opening: bool,
+    /// A panel job is running, so far inside its own nested run loop.
+    busy: bool,
+    pending: Option<Job>,
 }
 
 thread_local! {
@@ -186,20 +192,14 @@ pub fn quick_look(
         state.current = current;
         state.source = source;
         state.on_key = Some(Box::new(on_key));
+        state.opening = true;
         if state.sink.is_none() {
             let sink: Retained<QuickLook> = unsafe { msg_send![QuickLook::alloc(mtm), init] };
             state.sink = Some(sink);
         }
     });
     answer_panel_control(ns_window.class());
-    let panel = panel(mtm);
-    attach(&panel);
-    unsafe {
-        panel.reloadData();
-        panel.setCurrentPreviewItemIndex(current as NSInteger);
-        panel.updateController();
-    }
-    panel.makeKeyAndOrderFront(None);
+    defer(panel(mtm), Job::Open);
 }
 
 /// The selection moved while the panel is up: show the new items without closing.
@@ -221,40 +221,109 @@ pub fn quick_look_update(
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    let panel = panel(mtm);
-    unsafe {
-        panel.reloadData();
-        panel.setCurrentPreviewItemIndex(current as NSInteger);
-    }
+    defer(panel(mtm), Job::Reload);
 }
 
 pub fn quick_look_close() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    if quick_look_visible() {
-        panel(mtm).close();
+    if !quick_look_visible() {
+        return;
     }
+    STATE.with_borrow_mut(|state| state.opening = false);
+    defer(panel(mtm), Job::Close);
 }
 
 pub fn quick_look_visible() -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
+    if STATE.with_borrow(|state| state.opening) {
+        return true;
+    }
     let exists = unsafe { QLPreviewPanel::sharedPreviewPanelExists(mtm) };
     exists && panel(mtm).isVisible()
 }
 
-fn attach(panel: &QLPreviewPanel) {
-    STATE.with_borrow(|state| {
-        if let Some(sink) = &state.sink {
-            let sink: &QuickLook = sink;
-            unsafe {
-                panel.setDataSource(Some(ProtocolObject::from_ref(sink)));
-                panel.setDelegate(Some(sink.as_ref()));
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Job {
+    Open,
+    Reload,
+    Close,
+}
+
+/// The panel loads its item synchronously, in a nested run loop that drains the main queue and so
+/// runs GPUI's foreground tasks: every call that can load or lay it out is enqueued instead, to run
+/// at the run loop's top level where GPUI holds no borrow of its `App`.
+fn defer(panel: Retained<QLPreviewPanel>, job: Job) {
+    let block = RcBlock::new(move || run(&panel, job));
+    unsafe { dispatch_async(&_dispatch_main_q, &block) };
+}
+
+#[repr(C)]
+struct DispatchQueue {
+    _opaque: [u8; 0],
+}
+
+extern "C" {
+    static _dispatch_main_q: DispatchQueue;
+    fn dispatch_async(queue: &DispatchQueue, block: &DynBlock<dyn Fn()>);
+}
+
+/// A job that lands inside another's nested loop waits for it rather than re-entering the panel.
+fn run(panel: &QLPreviewPanel, job: Job) {
+    let queued = STATE.with_borrow_mut(|state| {
+        if state.busy {
+            state.pending = Some(job);
+            return true;
+        }
+        state.busy = true;
+        false
+    });
+    if queued {
+        return;
+    }
+    let mut next = Some(job);
+    while let Some(job) = next {
+        match job {
+            Job::Close => {
+                if panel.isVisible() {
+                    panel.close();
+                }
+            }
+            Job::Open | Job::Reload => {
+                if job == Job::Open || panel.isVisible() {
+                    let current = STATE.with_borrow(|state| state.current);
+                    attach(panel);
+                    unsafe {
+                        panel.reloadData();
+                        panel.setCurrentPreviewItemIndex(current as NSInteger);
+                    }
+                }
+                if job == Job::Open {
+                    unsafe { panel.updateController() };
+                    panel.makeKeyAndOrderFront(None);
+                }
             }
         }
-    });
+        next = STATE.with_borrow_mut(|state| {
+            state.opening = false;
+            state.pending.take()
+        });
+    }
+    STATE.with_borrow_mut(|state| state.busy = false);
+}
+
+fn attach(panel: &QLPreviewPanel) {
+    let Some(sink) = STATE.with_borrow(|state| state.sink.clone()) else {
+        return;
+    };
+    let sink: &QuickLook = &sink;
+    unsafe {
+        panel.setDataSource(Some(ProtocolObject::from_ref(sink)));
+        panel.setDelegate(Some(sink.as_ref()));
+    }
 }
 
 /// The panel finds its controller on the key window's responder chain; GPUI's window learns the
