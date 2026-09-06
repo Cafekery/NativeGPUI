@@ -3,7 +3,6 @@
 mod app;
 mod art;
 mod chrome;
-mod clipboard;
 mod data;
 mod dragdrop;
 mod frame;

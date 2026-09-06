@@ -1,6 +1,7 @@
 //! Every file operation the window starts: what it does when it lands, and what it says when the
 //! file system refuses.
 
+pub(crate) mod clipboard;
 pub(crate) mod conflicts;
 pub(crate) mod jobs;
 pub(crate) mod undo;

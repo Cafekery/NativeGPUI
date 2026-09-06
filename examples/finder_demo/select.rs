@@ -4,14 +4,10 @@
 use std::time::{Duration, Instant};
 
 use gpui::{Context, ScrollStrategy, SharedString, Window};
-use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSPasteboard, NSPasteboardWriting};
-use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::app::FinderDemo;
-use crate::data::{Line, split_key};
-use crate::menus::{CopyNames, SelectAll};
+use crate::data::Line;
+use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
 impl FinderDemo {
@@ -217,37 +213,5 @@ impl FinderDemo {
             .map(|line| line.key.clone())
             .collect();
         cx.notify();
-    }
-
-    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selection(cx);
-    }
-
-    /// Finder's ⌘C: the names as text and the files as file URLs, so a paste in Finder lands them.
-    /// A copy also clears any pending ⌘X mark, Finder's own convention.
-    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        self.clear_cut(cx);
-        let keys: Vec<SharedString> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.key.clone())
-            .collect();
-        if keys.is_empty() {
-            return;
-        }
-        let names: Vec<&str> = keys
-            .iter()
-            .filter_map(|key| split_key(key).map(|(_, name)| name))
-            .collect();
-        let text = NSString::from_str(&names.join("\n"));
-        let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
-            vec![ProtocolObject::from_retained(text)];
-        items.extend(keys.iter().map(|key| {
-            ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key)))
-        }));
-        let board = NSPasteboard::generalPasteboard();
-        board.clearContents();
-        board.writeObjects(&NSArray::from_retained_slice(&items));
     }
 }
