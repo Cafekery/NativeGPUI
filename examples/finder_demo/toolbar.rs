@@ -4,7 +4,7 @@ use gpui::{
     prelude::*, px,
 };
 use native_gpui::sidebar::system_template;
-use native_gpui::tokens::{self, FileType, SystemColor, file_icon, system_color};
+use native_gpui::tokens::{self, FileType, SystemColor, file_icon};
 use native_gpui::{
     MenuEntry, MenuView, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection,
     ToolbarStyle, chrome_host, native_rule, native_slider, set_toolbar,
@@ -16,7 +16,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::palette::Palette;
-use crate::ui::{TAGS, click_kind, glyph, small_glyph};
+use crate::ui::{TAGS, click_kind, finder_color, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
@@ -188,7 +188,7 @@ pub(crate) fn group_menu(sort: Column, ascending: bool) -> Vec<MenuEntry> {
 }
 
 pub(crate) fn action_menu() -> Vec<MenuEntry> {
-    let swatches = MenuView::swatches(TAGS.iter().map(|(_, color)| system_color(*color)));
+    let swatches = MenuView::swatches(TAGS.iter().map(|(_, color)| finder_color(*color)));
     vec![
         MenuEntry::item("New Folder").symbol("folder.badge.plus"),
         MenuEntry::item("New Folder with Selection")
