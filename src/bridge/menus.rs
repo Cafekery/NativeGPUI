@@ -458,14 +458,13 @@ fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuComman
     else {
         return;
     };
-    let mut at = match (first, section) {
+    let start = match (first, section) {
         (_, MenuSection::App) => 2,
         (true, _) => 0,
         (false, _) => menu.numberOfItems(),
     };
-    for command in commands {
-        add_command(mtm, &menu, at, command);
-        at += 1;
+    for (offset, command) in commands.into_iter().enumerate() {
+        add_command(mtm, &menu, start + offset as isize, command);
     }
 }
 

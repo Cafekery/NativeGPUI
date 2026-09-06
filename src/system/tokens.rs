@@ -54,10 +54,7 @@ impl Appearance {
 
     /// Collapse any appearance onto one of the two worlds.
     pub fn of(appearance: &NSAppearance) -> Appearance {
-        let names = NSArray::from_slice(&[
-            Appearance::Light.ns_name().as_ref(),
-            Appearance::Dark.ns_name().as_ref(),
-        ]);
+        let names = NSArray::from_slice(&[Appearance::Light.ns_name(), Appearance::Dark.ns_name()]);
         match appearance.bestMatchFromAppearancesWithNames(&names) {
             Some(name) if &*name == unsafe { NSAppearanceNameDarkAqua } => Appearance::Dark,
             Some(_) => Appearance::Light,
@@ -405,7 +402,7 @@ fn bump(cx: &AsyncApp) {
     // Deferred: a gpui-sourced appearance change arrives while gpui still holds its `App` borrow.
     let cx2 = cx.clone();
     cx.spawn(async move |_| {
-        let _ = cx2.update(|app| app.set_global(snapshot()));
+        cx2.update(|app| app.set_global(snapshot()));
     })
     .detach();
 }

@@ -52,7 +52,8 @@ pub(crate) fn axis(reported: f64) -> Length {
 
 /// A style sized by a control's `fittingSize`.
 pub(crate) fn fitted(fitting: NSSize) -> Style {
-    let mut style = Style::default();
-    style.size = size(axis(fitting.width), axis(fitting.height));
-    style
+    Style {
+        size: size(axis(fitting.width), axis(fitting.height)),
+        ..Default::default()
+    }
 }

@@ -103,7 +103,7 @@ fn restore_appkit_tabs(window: &NSWindow) {
         unsafe {
             objc2::ffi::method_setImplementation(
                 method as *const _ as *mut _,
-                std::mem::transmute::<_, Imp>(imp),
+                std::mem::transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject), Imp>(imp),
             );
         }
     }
@@ -135,7 +135,7 @@ fn answer_new_tab(class: &AnyClass) {
         objc2::ffi::class_addMethod(
             class as *const AnyClass as *mut AnyClass,
             sel!(newWindowForTab:),
-            std::mem::transmute::<_, Imp>(imp),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(imp),
             c"v@:@".as_ptr(),
         );
     }
@@ -174,7 +174,6 @@ fn tab_bar(accessory: &NSView) -> Option<Retained<NSView>> {
         .subviews()
         .iter()
         .find(|view| view.class().name() == c"NSTabBar")
-        .map(Retained::from)
 }
 
 /// Subclass the accessory instance so the inset is re-applied after every layout AppKit runs:

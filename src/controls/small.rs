@@ -21,10 +21,11 @@ use crate::bridge::host::{
 use crate::controls::fitted;
 use crate::system::color::{from_nscolor, to_nscolor};
 
+/// What a small control hands back when its value changes.
+type Handler<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
+
 /// A reader's `None` means the control had nothing to report.
-fn forward_some<T: 'static>(
-    user: Option<Rc<dyn Fn(&T, &mut Window, &mut App)>>,
-) -> Option<NativeDispatch> {
+fn forward_some<T: 'static>(user: Option<Handler<T>>) -> Option<NativeDispatch> {
     user.map(|user| -> NativeDispatch {
         Rc::new(move |value: Box<dyn Any>, window, cx| {
             if let Ok(Some(value)) = value.downcast::<Option<T>>().map(|value| *value) {
@@ -173,7 +174,7 @@ pub struct NativeColorWell {
     style: ColorWellStyle,
     supports_alpha: bool,
     enabled: bool,
-    on_change: Option<Rc<dyn Fn(&Hsla, &mut Window, &mut App)>>,
+    on_change: Option<Handler<Hsla>>,
 }
 
 impl NativeColorWell {
@@ -296,7 +297,7 @@ pub struct NativeDatePicker {
     style: DatePickerStyle,
     elements: DateElements,
     enabled: bool,
-    on_change: Option<Rc<dyn Fn(&f64, &mut Window, &mut App)>>,
+    on_change: Option<Handler<f64>>,
 }
 
 impl NativeDatePicker {
@@ -398,7 +399,7 @@ pub struct NativePathControl {
     path: String,
     style: PathStyle,
     enabled: bool,
-    on_click: Option<Rc<dyn Fn(&String, &mut Window, &mut App)>>,
+    on_click: Option<Handler<String>>,
 }
 
 impl NativePathControl {

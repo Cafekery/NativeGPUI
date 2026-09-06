@@ -157,9 +157,15 @@ impl SurfaceEdge {
     }
 }
 
+/// What the share picker reports as the user moves through it.
+type PickerHandler = dyn Fn(SharePickerEvent, &mut Window, &mut App);
+
+/// A handler a surface runs on the window it belongs to.
+type SurfaceHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
 #[doc(hidden)]
 pub struct ActionIvars {
-    handlers: RefCell<Vec<Rc<dyn Fn(&mut Window, &mut App)>>>,
+    handlers: RefCell<Vec<SurfaceHandler>>,
     cx: AsyncWindowContext,
 }
 
@@ -269,7 +275,7 @@ pub struct NativePopover {
 }
 
 struct DelegateIvars {
-    on_close: Rc<dyn Fn(&mut Window, &mut App)>,
+    on_close: SurfaceHandler,
     cx: AsyncWindowContext,
 }
 
@@ -487,7 +493,7 @@ pub enum SharePickerEvent {
 }
 
 struct PickerIvars {
-    on_event: Rc<dyn Fn(SharePickerEvent, &mut Window, &mut App)>,
+    on_event: Rc<PickerHandler>,
     // AppKit asks for the service list again as the picker tears down, with an empty proposal.
     announced: Cell<bool>,
     cx: AsyncWindowContext,

@@ -81,9 +81,10 @@ impl NativeProgress {
             bar.sizeToFit();
             bar.fittingSize()
         });
-        let mut style = Style::default();
-        style.size = size(self.width, px(fitting.height as f32).into());
-        style
+        Style {
+            size: size(self.width, px(fitting.height as f32).into()),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -266,12 +267,13 @@ impl NativeLevel {
             probe.setMaxValue(max);
             probe.fittingSize()
         });
-        let mut style = Style::default();
-        style.size = size(
-            self.width.unwrap_or_else(|| axis(fitting.width)),
-            px(fitting.height as f32).into(),
-        );
-        style
+        Style {
+            size: size(
+                self.width.unwrap_or_else(|| axis(fitting.width)),
+                px(fitting.height as f32).into(),
+            ),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {

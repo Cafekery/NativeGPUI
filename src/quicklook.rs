@@ -344,19 +344,22 @@ fn answer_panel_control(class: &AnyClass) {
         objc2::ffi::class_addMethod(
             class,
             sel!(acceptsPreviewPanelControl:),
-            std::mem::transmute::<_, Imp>(accepts),
+            std::mem::transmute::<
+                extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> objc2::runtime::Bool,
+                Imp,
+            >(accepts),
             c"B@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(beginPreviewPanelControl:),
-            std::mem::transmute::<_, Imp>(begin),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(begin),
             c"v@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(endPreviewPanelControl:),
-            std::mem::transmute::<_, Imp>(end),
+            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(end),
             c"v@:@".as_ptr(),
         );
     }
