@@ -6,15 +6,16 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor};
 
+use crate::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Column, Line, date_text};
 use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
+use crate::listing::Slot;
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::scope::SCOPE_H;
 use crate::tags::tag_dots;
 use crate::ui::{axis_locked, click_kind, rename_field};
-use crate::{FinderDemo, Slot};
 
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
 pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
