@@ -45,6 +45,7 @@ use crate::data::intern_path;
 use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
 const SAVE_EVERY: Duration = Duration::from_secs(180);
+
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
@@ -152,14 +153,6 @@ fn crawl(cx: &mut App) {
         })
         .detach();
     cx.on_app_quit(|_| async { index().save() }).detach();
-}
-
-/// A tag listing's title: Finder names the window after the tag, or after all of them.
-fn tag_title(id: &str) -> String {
-    match id.strip_prefix("tag:").unwrap_or_default() {
-        "" => "All Tags".to_string(),
-        name => name.to_string(),
-    }
 }
 
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {

@@ -1,6 +1,6 @@
 //! Finder's search scope bar: "Search: This Mac | <folder>", under the toolbar. Hosted like the
-//! header band's cells (see header.rs's `cell_body`): the band's material sits above the whole
-//! GPUI layer and would cover GPUI-drawn text or a GPUI-drawn control.
+//! header band's cells (see `views::header`): the band's material sits above the whole GPUI layer
+//! and would cover GPUI-drawn text or a GPUI-drawn control.
 
 use gpui::{AnyElement, Context, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor};
