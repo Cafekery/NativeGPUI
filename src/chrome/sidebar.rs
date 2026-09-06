@@ -17,16 +17,17 @@ use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBezierPath, NSBundleImageExtension, NSButton,
     NSCellImagePosition, NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation,
     NSDraggingContext, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSFont,
-    NSFontWeightRegular, NSImage, NSImageAlignment, NSImageScaling, NSImageSymbolConfiguration,
-    NSImageView, NSLineBreakMode, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate,
-    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardWriting,
-    NSResponder, NSScreen, NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableCellView,
-    NSTableColumn, NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
+    NSFontWeightRegular, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
+    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSOutlineView,
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSOutlineViewDropOnItemIndex, NSPasteboardItem,
+    NSPasteboardTypeFileURL, NSPasteboardWriting, NSResponder, NSScreen, NSScrollView,
+    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
     NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification, NSView,
     NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle, NSWorkspace,
+    NSWindingRule, NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
@@ -52,6 +53,8 @@ pub enum SidebarIcon {
     /// outline when it does not. Unlike [`SidebarIcon::Symbol`], a filled dot keeps its colour
     /// when the row is unselected or the window isn't key, since the colour is the tag's identity.
     Dot(Option<(u8, u8, u8)>),
+    /// Two overlapping rings, as Finder draws the row that opens every tag.
+    Dots,
 }
 
 #[derive(Clone, Debug)]
@@ -1028,6 +1031,8 @@ struct CellIvars {
     group: bool,
     badge: RefCell<Option<Retained<NSTextField>>>,
     eject: RefCell<Option<Retained<NSButton>>>,
+    /// A tag row's own colour: what Finder draws its label in while the row is selected.
+    tint: RefCell<Option<Retained<NSColor>>>,
 }
 
 impl CellIvars {
@@ -1107,6 +1112,7 @@ fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 const EJECT_POINTS: f64 = 10.0;
 const TAG_DOT_DIAMETER: f64 = 12.5;
 const TAG_DOT_LINE: f64 = 1.0;
+const TAG_DOTS_OVERLAP: f64 = 4.5;
 /// Finder sets its section headers on the row's baseline, where AppKit centres them.
 const GROUP_BASELINE_DROP: f64 = 2.0;
 
@@ -1120,6 +1126,7 @@ fn make_cell(
         group: identifier == ID_GROUP,
         badge: RefCell::new(None),
         eject: RefCell::new(None),
+        tint: RefCell::new(None),
     });
     let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
     cell.setIdentifier(Some(&NSString::from_str(identifier)));
@@ -1222,17 +1229,37 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     Some(image)
 }
 
+fn ring_path(at: NSRect) -> Retained<NSBezierPath> {
+    let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+        NSPoint::new(
+            at.origin.x + TAG_DOT_LINE / 2.,
+            at.origin.y + TAG_DOT_LINE / 2.,
+        ),
+        NSSize::new(at.size.width - TAG_DOT_LINE, at.size.height - TAG_DOT_LINE),
+    ));
+    ring.setLineWidth(TAG_DOT_LINE);
+    ring
+}
+
 /// Finder's tag dot: a disc in the tag's own colour when it has one, a template-tinted ring when
-/// it does not. Drawn rather than an SF Symbol, which the cell would baseline-align, not centre.
-fn tag_dot_image(color: Option<(u8, u8, u8)>) -> Retained<NSImage> {
+/// it does not, a pair of rings for every tag at once. Drawn rather than an SF Symbol, which the
+/// cell would baseline-align, not centre.
+fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
+    let color = match icon {
+        SidebarIcon::Dot(color) => *color,
+        SidebarIcon::Dots => None,
+        _ => return None,
+    };
+    let pair = matches!(icon, SidebarIcon::Dots);
     thread_local! {
-        static DOTS: RefCell<HashMap<Option<(u8, u8, u8)>, Retained<NSImage>>> =
+        static DOTS: RefCell<HashMap<(Option<(u8, u8, u8)>, bool), Retained<NSImage>>> =
             RefCell::new(HashMap::new());
     }
-    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&color).cloned()) {
-        return hit;
+    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&(color, pair)).cloned()) {
+        return Some(hit);
     }
     let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
+        let disc = NSRect::new(rect.origin, NSSize::new(TAG_DOT_DIAMETER, TAG_DOT_DIAMETER));
         match color {
             Some((r, g, b)) => {
                 NSColor::colorWithSRGBRed_green_blue_alpha(
@@ -1242,34 +1269,59 @@ fn tag_dot_image(color: Option<(u8, u8, u8)>) -> Retained<NSImage> {
                     1.,
                 )
                 .setFill();
-                NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+                NSBezierPath::bezierPathWithOvalInRect(disc).fill();
             }
             None => {
-                let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-                    NSPoint::new(
-                        rect.origin.x + TAG_DOT_LINE / 2.,
-                        rect.origin.y + TAG_DOT_LINE / 2.,
-                    ),
-                    NSSize::new(
-                        rect.size.width - TAG_DOT_LINE,
-                        rect.size.height - TAG_DOT_LINE,
-                    ),
-                ));
                 NSColor::blackColor().setStroke();
-                ring.setLineWidth(TAG_DOT_LINE);
-                ring.stroke();
+                if pair {
+                    let behind = NSRect::new(
+                        NSPoint::new(disc.origin.x + TAG_DOTS_OVERLAP, disc.origin.y),
+                        disc.size,
+                    );
+                    let clip = NSBezierPath::bezierPathWithRect(rect);
+                    clip.appendBezierPathWithOvalInRect(disc);
+                    clip.setWindingRule(NSWindingRule::EvenOdd);
+                    NSGraphicsContext::saveGraphicsState_class();
+                    clip.addClip();
+                    ring_path(behind).stroke();
+                    NSGraphicsContext::restoreGraphicsState_class();
+                }
+                ring_path(disc).stroke();
             }
         }
         Bool::YES
     });
+    let width = TAG_DOT_DIAMETER + if pair { TAG_DOTS_OVERLAP } else { 0. };
     let image = NSImage::imageWithSize_flipped_drawingHandler(
-        NSSize::new(TAG_DOT_DIAMETER, TAG_DOT_DIAMETER),
+        NSSize::new(width, TAG_DOT_DIAMETER),
         false,
         &draw,
     );
     image.setTemplate(color.is_none());
-    DOTS.with_borrow_mut(|cache| cache.insert(color, image.clone()));
-    image
+    DOTS.with_borrow_mut(|cache| cache.insert((color, pair), image.clone()));
+    Some(image)
+}
+
+/// Finder draws a selected tag row's label in the tag's own colour, never the accent one.
+fn tint_cell(cell: &SidebarCell, selected: bool) {
+    let Some(title) = (unsafe { cell.textField() }) else {
+        return;
+    };
+    let tint = cell.ivars().tint.borrow().clone().filter(|_| selected);
+    title.setTextColor(Some(tint.as_deref().unwrap_or(&NSColor::labelColor())));
+}
+
+fn tint_selected_rows(outline: &NSOutlineView) {
+    for row in 0..outline.numberOfRows() {
+        let Some(view) = (unsafe { outline.viewAtColumn_row_makeIfNecessary(0, row, false) })
+        else {
+            continue;
+        };
+        if view.isKindOfClass(SidebarCell::class()) {
+            let cell = unsafe { Retained::cast_unchecked::<SidebarCell>(view) };
+            tint_cell(&cell, outline.isRowSelected(row));
+        }
+    }
 }
 
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
@@ -1280,6 +1332,18 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
         }
     }
 
+    *cell.ivars().tint.borrow_mut() = match node.icon {
+        Some(SidebarIcon::Dot(Some((r, g, b)))) => {
+            Some(NSColor::colorWithSRGBRed_green_blue_alpha(
+                r as f64 / 255.,
+                g as f64 / 255.,
+                b as f64 / 255.,
+                1.,
+            ))
+        }
+        _ => None,
+    };
+
     if let Some(view) = unsafe { cell.imageView() } {
         let image = match &node.icon {
             Some(SidebarIcon::Symbol(name)) => {
@@ -1289,7 +1353,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
                 )
             }
             Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
-            Some(SidebarIcon::Dot(color)) => Some(tag_dot_image(*color)),
+            Some(icon @ (SidebarIcon::Dot(_) | SidebarIcon::Dots)) => tag_dot_image(icon),
             None => None,
         };
         view.setImage(image.as_deref());
@@ -1343,6 +1407,8 @@ fn row_view(
         node,
         SidebarRowSize::icon_points(outline.effectiveRowSizeStyle()),
     );
+    let row = unsafe { outline.rowForItem(Some(item)) };
+    tint_cell(&cell, outline.isRowSelected(row));
     Some(unsafe { Retained::cast_unchecked::<NSView>(cell) })
 }
 
@@ -1406,6 +1472,9 @@ mod source {
     }
 
     pub(super) fn selection_changed(shared: &Rc<Shared>) {
+        if let Some(outline) = shared.outline.borrow().clone() {
+            tint_selected_rows(&outline);
+        }
         if shared.suppress.get() > 0 {
             return;
         }
