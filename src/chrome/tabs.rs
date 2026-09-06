@@ -1,13 +1,15 @@
 //! AppKit window tabs: the bar under the toolbar, `New Tab`, and the actions AppKit routes.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ffi::CStr;
 
 use gpui::{Action, AnyWindowHandle, App, AsyncApp, Window};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
-use objc2_foundation::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
+use objc2_foundation::{MainThreadMarker, NSSize};
 
 use crate::bridge::appkit::gpui_view;
 
@@ -31,6 +33,22 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     NEW_TAB.with_borrow_mut(|slot| *slot = Some((cx.to_async(), action.boxed_clone())));
     restore_appkit_tabs(&ns_window);
     teach_new_tab(mtm);
+}
+
+/// Stop the tab bar `points` short of the window's trailing edge, so it ends where a full-height
+/// pane begins and carries its New Tab button there, as Finder's bar ends at the preview pane.
+/// Cheap to call every frame; it takes effect once the bar exists.
+pub fn set_trailing_inset(window: &Window, points: f32) {
+    let Some(accessory) = tab_bar_accessory(&ns_window_of(window)) else {
+        return;
+    };
+    adopt_inset(&accessory);
+    let inset = f64::from(points.max(0.));
+    let key = Retained::as_ptr(&accessory) as usize;
+    let changed = INSET.with_borrow_mut(|insets| insets.insert(key, inset) != Some(inset));
+    if changed {
+        accessory.setNeedsLayout(true);
+    }
 }
 
 /// Open `tab` beside `window` in its tab bar, selected.
@@ -128,4 +146,95 @@ extern "C" fn new_window_for_tab(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {
             .detach();
         }
     });
+}
+
+thread_local! {
+    static INSET: RefCell<HashMap<usize, f64>> = RefCell::new(HashMap::new());
+}
+
+const INSET_CLASS: &CStr = c"NGTabBarInsetView";
+
+/// The titlebar accessory AppKit gives the tab bar, if this window is showing one.
+fn tab_bar_accessory(window: &NSWindow) -> Option<Retained<NSView>> {
+    window
+        .titlebarAccessoryViewControllers()
+        .iter()
+        .map(|controller| controller.view())
+        .find(|view| tab_bar(view).is_some())
+}
+
+fn tab_bar(accessory: &NSView) -> Option<Retained<NSView>> {
+    accessory
+        .subviews()
+        .iter()
+        .find(|view| view.class().name() == c"NSTabBar")
+        .map(Retained::from)
+}
+
+/// Subclass the accessory instance so the inset is re-applied after every layout AppKit runs:
+/// AppKit sizes the bar to the whole titlebar again on each resize and each tab change.
+fn adopt_inset(accessory: &NSView) {
+    if accessory.class().name() == INSET_CLASS {
+        return;
+    }
+    let subclass = match AnyClass::get(INSET_CLASS) {
+        Some(existing) => existing,
+        None => {
+            let mut builder = ClassBuilder::new(INSET_CLASS, accessory.class())
+                .expect("no other class in this process is named NGTabBarInsetView");
+            unsafe {
+                builder.add_method(
+                    sel!(layout),
+                    inset_layout as extern "C" fn(*mut AnyObject, Sel),
+                );
+                builder.add_method(
+                    sel!(resizeSubviewsWithOldSize:),
+                    inset_resize as extern "C" fn(*mut AnyObject, Sel, NSSize),
+                );
+            }
+            builder.register()
+        }
+    };
+    unsafe { AnyObject::set_class(&*(accessory as *const NSView).cast::<AnyObject>(), subclass) };
+}
+
+fn accessory_imp(selector: Sel) -> Imp {
+    AnyClass::get(INSET_CLASS)
+        .and_then(AnyClass::superclass)
+        .and_then(|base| base.instance_method(selector))
+        .expect("NGTabBarInsetView is only ever registered over the accessory's own class")
+        .implementation()
+}
+
+extern "C" fn inset_layout(view: *mut AnyObject, selector: Sel) {
+    let base: extern "C" fn(*mut AnyObject, Sel) =
+        unsafe { std::mem::transmute(accessory_imp(selector)) };
+    base(view, selector);
+    apply_inset(view);
+}
+
+extern "C" fn inset_resize(view: *mut AnyObject, selector: Sel, old: NSSize) {
+    let base: extern "C" fn(*mut AnyObject, Sel, NSSize) =
+        unsafe { std::mem::transmute(accessory_imp(selector)) };
+    base(view, selector, old);
+    apply_inset(view);
+}
+
+fn apply_inset(view: *mut AnyObject) {
+    let inset = INSET.with_borrow(|insets| insets.get(&(view as usize)).copied());
+    let Some(inset) = inset else {
+        return;
+    };
+    let accessory = unsafe { &*view.cast::<NSView>() };
+    let Some(bar) = tab_bar(accessory) else {
+        return;
+    };
+    let mut frame = bar.frame();
+    let width = (accessory.bounds().size.width - inset).max(0.);
+    if frame.origin.x == 0. && frame.size.width == width {
+        return;
+    }
+    frame.origin.x = 0.;
+    frame.size.width = width;
+    bar.setFrame(frame);
 }
