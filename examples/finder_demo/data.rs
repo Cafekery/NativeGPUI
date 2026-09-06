@@ -459,6 +459,46 @@ pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
     Arc::new(row_of(dir, entry, index))
 }
 
+/// Every file Spotlight says carries `tag`, as rows: `mdfind`'s answer read back a folder at a
+/// time, so each row is built the way a listing builds it. An empty tag asks for every tagged file.
+pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
+    let query = match tag.is_empty() {
+        true => "kMDItemUserTags == '*'".to_string(),
+        false => format!("kMDItemUserTags == '{tag}'"),
+    };
+    let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
+        .args(["-onlyin", "/"])
+        .arg(query)
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut wanted: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    for path in String::from_utf8_lossy(&found.stdout).lines().take(limit) {
+        let path = Path::new(path);
+        if let (Some(dir), Some(name)) = (path.parent(), path.file_name()) {
+            wanted
+                .entry(intern_path(dir))
+                .or_default()
+                .insert(name.to_string_lossy().into_owned());
+        }
+    }
+    let mut rows: Vec<Arc<Row>> = Vec::new();
+    for (dir, names) in wanted {
+        let Ok(entries) = finder_fs::list::list_dir(Path::new(dir)) else {
+            continue;
+        };
+        rows.extend(
+            entries
+                .iter()
+                .filter(|entry| names.contains(&entry.name))
+                .map(|entry| Arc::new(row_of(dir, entry, index))),
+        );
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
 /// The name of the folder a search result's key sits in, the way Finder's search results show a
 /// path in place of Kind.
 pub(crate) fn enclosing_name(key: &str) -> SharedString {

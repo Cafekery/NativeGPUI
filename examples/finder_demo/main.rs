@@ -174,6 +174,8 @@ const LIST_ZOOM_SECS: f32 = 0.2;
 /// index writes its snapshot.
 const BATCH: usize = 512;
 const POLL: Duration = Duration::from_millis(5);
+/// Rows a search or a tag listing shows at most.
+const HITS: usize = 200;
 const TICK: Duration = Duration::from_millis(120);
 /// Ticks between volume snapshots, so the status bar's free space stays roughly current.
 const VOLUMES_EVERY: u64 = 40;
@@ -273,6 +275,8 @@ pub(crate) struct FinderDemo {
     /// What the index found elsewhere for the search field.
     hits: Vec<Arc<Row>>,
     hits_rev: u64,
+    /// The sidebar tag row this window is listing, `tag:` on its own for every tag at once.
+    tag_listing: Option<&'static str>,
     /// A row an operation made, to scroll to as soon as its folder is read again.
     reveal_next: Option<SharedString>,
     /// The window an error sheet hangs on.
@@ -414,6 +418,7 @@ impl FinderDemo {
             watching: HashSet::new(),
             hits: Vec::new(),
             hits_rev: 0,
+            tag_listing: None,
             reveal_next: None,
             host: None,
             focus: cx.focus_handle(),
@@ -466,7 +471,7 @@ impl FinderDemo {
         let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
             return here;
         };
-        if self.searching() {
+        if self.results() {
             return holder;
         }
         if self.view != COLUMN_VIEW {
@@ -484,6 +489,12 @@ impl FinderDemo {
 
     pub(crate) fn searching(&self) -> bool {
         !self.query.trim().is_empty() && !self.hits.is_empty()
+    }
+
+    /// Rows found elsewhere on the disk rather than read out of this folder: the search field's
+    /// hits, or a tag's files.
+    pub(crate) fn results(&self) -> bool {
+        self.tag_listing.is_some() || self.searching()
     }
 
     /// The folder `text` names, absolute or under `~`, if it is one.
@@ -515,7 +526,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn retitle(&self, window: &mut Window) {
-        window.set_window_title(&self.crumb_path());
+        match self.tag_listing.map(tag_title) {
+            Some(title) => window.set_window_title(&title),
+            None => window.set_window_title(&self.crumb_path()),
+        }
     }
 
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -597,6 +611,7 @@ impl FinderDemo {
         self.anchor = None;
         self.query.clear();
         self.hits.clear();
+        self.tag_listing = None;
         self.icons.forget();
         self.clear_type_filter();
         self.load_column_widths();
@@ -814,6 +829,7 @@ impl FinderDemo {
 
     /// Re-runs the current query, for a fresh scope or a fresh folder.
     fn run_search(&mut self, cx: &mut Context<Self>) {
+        self.tag_listing = None;
         self.hits.clear();
         self.hits_rev = next_rev();
         let query = self.query.trim().to_string();
@@ -832,7 +848,7 @@ impl FinderDemo {
                 .spawn(async move {
                     let index = index();
                     index
-                        .search(&query, under.as_deref(), 200)
+                        .search(&query, under.as_deref(), HITS)
                         .iter()
                         .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
                         .collect::<Vec<_>>()
@@ -842,6 +858,49 @@ impl FinderDemo {
                 if this.query.trim() == wanted {
                     this.hits = hits;
                     this.hits_rev = next_rev();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Finder's tag rows: the files Spotlight says carry the tag, in a listing titled with it.
+    pub(crate) fn show_tag(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected.clear();
+        self.cursor = None;
+        self.anchor = None;
+        self.query.clear();
+        self.hits.clear();
+        self.hits_rev = next_rev();
+        self.tag_listing = Some(id);
+        self.retitle(window);
+        cx.notify();
+        let tag = id.strip_prefix("tag:").unwrap_or_default().to_string();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let rows = data::tagged_rows(&tag, index(), HITS);
+                    let marks: Vec<(SharedString, usize)> = rows
+                        .iter()
+                        .filter_map(|row| Some((row.path.clone(), first_tag(&row.path)?)))
+                        .collect();
+                    (rows, marks)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.tag_listing == Some(id) {
+                    let (rows, marks) = found;
+                    this.hits = rows;
+                    this.hits_rev = next_rev();
+                    this.tags.extend(marks);
                     cx.notify();
                 }
             })
@@ -1329,8 +1388,10 @@ impl FinderDemo {
 
     fn build_lines(&self, tree: bool) -> Vec<Line> {
         let mut out = Vec::new();
-        self.collect(self.here(), 0, tree, &mut out);
-        if !self.searching() {
+        if self.tag_listing.is_none() {
+            self.collect(self.here(), 0, tree, &mut out);
+        }
+        if !self.results() {
             return out;
         }
         // The index's hits are already ranked best first; anything only the folder listing
@@ -2279,6 +2340,21 @@ fn folders_first() -> bool {
             .output()
             .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"1")
     })
+}
+
+/// A tag listing's title: Finder names the window after the tag, or after all of them.
+fn tag_title(id: &str) -> String {
+    match id.strip_prefix("tag:").unwrap_or_default() {
+        "" => "All Tags".to_string(),
+        name => name.to_string(),
+    }
+}
+
+/// The first tag a file carries that the demo's tag menus know, as their index.
+fn first_tag(path: &str) -> Option<usize> {
+    tags::of(Path::new(path))
+        .iter()
+        .find_map(|tag| crate::ui::tag_index(&tag.name))
 }
 
 /// One row's Finder tag, written where Finder reads it.

@@ -79,7 +79,7 @@ impl FinderDemo {
         let name_w = self.name_w;
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
         // Finder's search results show a path where the Kind column sits.
-        let searching = self.searching();
+        let searching = self.results();
 
         let (pads, lift) = self.list_inset();
         let scale = self.scale;

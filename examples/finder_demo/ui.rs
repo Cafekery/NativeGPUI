@@ -85,6 +85,11 @@ pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
     Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
 }
 
+/// Where a tag name sits in the demo's tag menus, if it is one of them.
+pub(crate) fn tag_index(name: &str) -> Option<usize> {
+    tags().iter().position(|tag| tag.name == name)
+}
+
 /// One of the demo's tags as Finder stores it.
 pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
     tags()[index].clone()
