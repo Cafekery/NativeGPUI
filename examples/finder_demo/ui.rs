@@ -1,12 +1,35 @@
 //! The small element helpers every view shares.
 
-use gpui::{ClickEvent, IntoElement, Styled, WeakEntity, Window};
+use gpui::{
+    ClickEvent, FontWeight, IntoElement, Pixels, SharedString, Styled, TextRun, WeakEntity, Window,
+    hsla,
+};
+use native_gpui::tokens;
 
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
 use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::frame::ns_window;
+
+/// How wide `text` shapes at `size` in the system font: what the column and crumb fits measure.
+pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: Pixels) -> f32 {
+    let text = text.into();
+    let run = TextRun {
+        len: text.len(),
+        font: tokens::system_font(FontWeight::NORMAL),
+        color: hsla(0., 0., 0., 1.),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    f32::from(
+        window
+            .text_system()
+            .shape_line(text, size, &[run], None)
+            .width,
+    )
+}
 
 /// `(extend, toggle, twice)`: Shift, Cmd and a double click.
 pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
