@@ -297,7 +297,7 @@ impl FinderDemo {
             .iter()
             .take(3)
             .filter_map(|line| line.row.artwork)
-            .filter_map(|kind| tokens::file_icon(kind, px(content * STACK_ICON)))
+            .filter_map(|kind| crate::icons::icon(kind, content * STACK_ICON))
             .collect();
         let keys: Vec<SharedString> = lines.iter().take(3).map(|line| line.key.clone()).collect();
         let side = icons
@@ -310,9 +310,17 @@ impl FinderDemo {
             .as_ref()
             .filter(|(k, s, _)| *k == keys && *s == side)
             .map(|(_, _, image)| image.clone());
+        let drawn = lines
+            .iter()
+            .take(3)
+            .filter(|line| line.row.artwork.is_some())
+            .count()
+            == icons.len();
         let image = cached.or_else(|| {
             let image = stack_image(&icons, side)?;
-            *self.stack.borrow_mut() = Some((keys, side, image.clone()));
+            if drawn {
+                *self.stack.borrow_mut() = Some((keys, side, image.clone()));
+            }
             Some(image)
         });
         let art = match image {

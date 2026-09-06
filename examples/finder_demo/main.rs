@@ -6,6 +6,7 @@ mod chrome;
 mod data;
 mod dragdrop;
 mod frame;
+mod icons;
 mod info;
 mod input;
 mod listing;

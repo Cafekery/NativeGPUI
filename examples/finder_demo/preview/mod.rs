@@ -95,6 +95,7 @@ impl Render for PreviewPane {
         let palette = Palette::new(demo.list_focused);
         let content = demo.preview_w - 1. - 2. * INSET;
         let card = demo.info_card(demo.cursor_line().as_ref(), &palette, content, &finder);
+        crate::icons::draw_wanted(&finder, cx);
         let pane = cx.entity();
         native_root(
             div()

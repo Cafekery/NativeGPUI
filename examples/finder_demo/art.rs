@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, Bounds, Div, FontWeight, Hsla, ObjectFit, Pixels, RenderImage, div, img,
     prelude::*, px,
 };
-use native_gpui::tokens::{FileType, SymbolColor, SystemColor, file_icon, sf_symbol_colored};
+use native_gpui::tokens::{FileType, SymbolColor, SystemColor, sf_symbol_colored};
 
 use crate::data::{Face, Row};
 use crate::thumbs::thumb;
@@ -42,7 +42,7 @@ pub(crate) fn square(side: f32) -> Div {
 
 /// The artwork a type wears: the system's icon for it, or its face's symbol when it has none.
 fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
-    kind.and_then(|kind| file_icon(kind, px(size)))
+    kind.and_then(|kind| crate::icons::icon(kind, size))
         .map(|symbol| symbol.img().into_any_element())
         .unwrap_or_else(|| glyph(face, size))
 }

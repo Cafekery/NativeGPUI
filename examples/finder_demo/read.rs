@@ -130,6 +130,7 @@ impl FinderDemo {
             self.read_folder(id, cx);
         }
         self.sync_stats(cx);
+        crate::icons::draw_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
         self.follow();
     }
