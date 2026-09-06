@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui::{AnyWindowHandle, App, AsyncWindowContext, Global, Pixels, SharedString, Window, px};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel,
 };
@@ -1088,6 +1088,8 @@ fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 }
 
 const EJECT_POINTS: f64 = 10.0;
+const TAG_DOT_DIAMETER: f64 = 12.5;
+const TAG_DOT_LINE: f64 = 1.0;
 /// Finder sets its section headers on the row's baseline, where AppKit centres them.
 const GROUP_BASELINE_DROP: f64 = 2.0;
 
@@ -1203,48 +1205,54 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     Some(image)
 }
 
-/// Finder's tag dot: `circle.fill` in the tag's own colour when it has one, the outline `circle`
-/// (template-tinted like any other sidebar glyph) when it does not.
-fn tag_dot_image(color: Option<(u8, u8, u8)>, points: f64) -> Option<Retained<NSImage>> {
+/// Finder's tag dot: a disc in the tag's own colour when it has one, a template-tinted ring when
+/// it does not. Drawn rather than an SF Symbol, which the cell would baseline-align, not centre.
+fn tag_dot_image(color: Option<(u8, u8, u8)>) -> Retained<NSImage> {
     thread_local! {
-        static DOTS: RefCell<HashMap<(Option<(u8, u8, u8)>, u32), Option<Retained<NSImage>>>> =
+        static DOTS: RefCell<HashMap<Option<(u8, u8, u8)>, Retained<NSImage>>> =
             RefCell::new(HashMap::new());
     }
-    let key = (color, points as u32);
-    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&key).cloned()) {
+    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&color).cloned()) {
         return hit;
     }
-    let name = if color.is_some() {
-        "circle.fill"
-    } else {
-        "circle"
-    };
-    let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(points, unsafe {
-        NSFontWeightRegular
-    });
-    let built = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str(name),
-        None,
-    )
-    .and_then(|base| {
-        let config = match color {
+    let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
+        match color {
             Some((r, g, b)) => {
-                let nscolor = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    r as f64 / 255.0,
-                    g as f64 / 255.0,
-                    b as f64 / 255.0,
-                    1.0,
-                );
-                size.configurationByApplyingConfiguration(
-                    &NSImageSymbolConfiguration::configurationWithHierarchicalColor(&nscolor),
+                NSColor::colorWithSRGBRed_green_blue_alpha(
+                    r as f64 / 255.,
+                    g as f64 / 255.,
+                    b as f64 / 255.,
+                    1.,
                 )
+                .setFill();
+                NSBezierPath::bezierPathWithOvalInRect(rect).fill();
             }
-            None => size,
-        };
-        base.imageWithSymbolConfiguration(&config)
+            None => {
+                let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                    NSPoint::new(
+                        rect.origin.x + TAG_DOT_LINE / 2.,
+                        rect.origin.y + TAG_DOT_LINE / 2.,
+                    ),
+                    NSSize::new(
+                        rect.size.width - TAG_DOT_LINE,
+                        rect.size.height - TAG_DOT_LINE,
+                    ),
+                ));
+                NSColor::blackColor().setStroke();
+                ring.setLineWidth(TAG_DOT_LINE);
+                ring.stroke();
+            }
+        }
+        Bool::YES
     });
-    DOTS.with_borrow_mut(|cache| cache.insert(key, built.clone()));
-    built
+    let image = NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize::new(TAG_DOT_DIAMETER, TAG_DOT_DIAMETER),
+        false,
+        &draw,
+    );
+    image.setTemplate(color.is_none());
+    DOTS.with_borrow_mut(|cache| cache.insert(color, image.clone()));
+    image
 }
 
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
@@ -1264,7 +1272,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
                 )
             }
             Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
-            Some(SidebarIcon::Dot(color)) => tag_dot_image(*color, icon_points),
+            Some(SidebarIcon::Dot(color)) => Some(tag_dot_image(*color)),
             None => None,
         };
         view.setImage(image.as_deref());
