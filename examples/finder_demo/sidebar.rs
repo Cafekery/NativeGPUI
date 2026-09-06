@@ -191,11 +191,13 @@ fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     ]
     .into_iter()
     .chain([MenuEntry::item("No Color").disabled()])
-    .chain(
-        crate::ui::tags()
-            .iter()
-            .map(|tag| MenuEntry::item(tag.name.clone()).disabled()),
-    )
+    .chain(crate::ui::tags().iter().map(|tag| {
+        let entry = MenuEntry::item(tag.name.clone()).disabled();
+        match finder_color_rgb(tag.color) {
+            Some(color) => entry.dot(color),
+            None => entry,
+        }
+    }))
     .collect();
     Some((acts, entries))
 }
