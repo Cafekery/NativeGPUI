@@ -1,13 +1,16 @@
 //! Every file operation the window starts: what it does when it lands, and what it says when the
 //! file system refuses.
 
+pub(crate) mod conflicts;
+pub(crate) mod jobs;
+pub(crate) mod undo;
+
 use std::path::PathBuf;
 
 use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, SharedString};
 
 use crate::app::FinderDemo;
-use crate::conflicts;
 use crate::data::{intern_path, split_key};
 
 /// What a finished operation leaves behind it.
