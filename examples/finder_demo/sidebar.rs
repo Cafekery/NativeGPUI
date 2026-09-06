@@ -205,6 +205,29 @@ fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
 
+/// Finder's menu on a row the user pinned: what it opens, and the pin it forgets.
+fn pinned_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
+    let pinned = [FAVOURITES, LOCATIONS]
+        .iter()
+        .any(|group| prefs::pinned(group).iter().any(|kept| kept == id.as_ref()));
+    if !pinned {
+        return None;
+    }
+    let entries = vec![
+        MenuEntry::item("Open in New Tab")
+            .symbol("arrow.up.forward.app")
+            .disabled(),
+        MenuEntry::separator(),
+        MenuEntry::item("Remove from Sidebar").symbol("xmark"),
+    ];
+    Some((vec![Act::Nothing, Act::Nothing, Act::Remove], entries))
+}
+
+/// The menu a sidebar row shows, for the rows Finder gives one.
+fn row_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
+    tag_menu(id).or_else(|| pinned_menu(id))
+}
+
 /// Each group's rows in the order the user left them last launch, with anything new after them.
 pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
     groups
@@ -316,9 +339,9 @@ impl FinderDemo {
         }));
         let demo = cx.entity().downgrade();
         sidebar.on_menu(
-            |id| tag_menu(id).map(|menu| menu.1).unwrap_or_default(),
+            |id| row_menu(id).map(|menu| menu.1).unwrap_or_default(),
             move |id, index, _, cx| {
-                if tag_menu(id).is_none_or(|menu| menu.0.get(index) != Some(&Act::Remove)) {
+                if row_menu(id).is_none_or(|menu| menu.0.get(index) != Some(&Act::Remove)) {
                     return;
                 }
                 let id = id.clone();
@@ -338,6 +361,17 @@ impl FinderDemo {
     }
 
     fn remove_from_sidebar(&mut self, id: &SharedString) {
+        for group in [FAVOURITES, LOCATIONS] {
+            let pinned = prefs::pinned(group);
+            let keep: Vec<&str> = pinned
+                .iter()
+                .map(String::as_str)
+                .filter(|kept| *kept != id.as_ref())
+                .collect();
+            if keep.len() != pinned.len() {
+                prefs::set_pinned(group, &keep);
+            }
+        }
         for rows in &mut self.sidebar_rows {
             rows.retain(|row| *row != id.as_ref());
         }
