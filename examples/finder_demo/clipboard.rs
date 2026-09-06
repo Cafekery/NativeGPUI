@@ -10,7 +10,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
-use crate::{After, FinderDemo};
+use crate::FinderDemo;
+use crate::ops::After;
 
 impl FinderDemo {
     /// ⌘X: the selection copies to the pasteboard and is marked cut until pasted or cleared.
