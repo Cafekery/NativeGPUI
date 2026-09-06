@@ -1,5 +1,7 @@
 //! The column (browser) view.
 
+use std::sync::Arc;
+
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, TextRun, Window,
@@ -185,7 +187,7 @@ impl FinderDemo {
             .pt(px(TOP_GAP))
             .overflow_y_scroll()
             .when_some(handle, |column, handle| column.track_scroll(&handle))
-            .children(lines.into_iter().enumerate().map(|(row, line)| {
+            .children(lines.iter().cloned().enumerate().map(|(row, line)| {
                 let is_selected = picked[row];
                 let joins_above = row > 0 && picked[row - 1];
                 let joins_below = picked.get(row + 1) == Some(&true);
@@ -536,13 +538,16 @@ impl FinderDemo {
         }
     }
 
-    fn column_listing(&self, folder: &'static str) -> Vec<Line> {
+    pub(crate) fn column_listing(&self, folder: &'static str) -> Arc<Vec<Line>> {
+        if let Some(lines) = self.listing_cached(folder) {
+            return lines;
+        }
         let mut lines = Vec::new();
         self.collect(folder, 0, false, &mut lines);
-        lines
+        self.listing_cache(folder, Arc::new(lines))
     }
 
-    pub(crate) fn focused_lines(&self) -> Vec<Line> {
+    pub(crate) fn focused_lines(&self) -> Arc<Vec<Line>> {
         if self.view != COLUMN_VIEW {
             return self.lines(self.view == LIST_VIEW);
         }

@@ -260,16 +260,18 @@ impl FinderDemo {
         let scroll = self.icons.scroll.clone();
         let dragging = self.icons.dragging.clone();
 
-        let layout: Vec<(SharedString, Point<Pixels>)> = lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                (
-                    line.key.clone(),
-                    self.icons.at(&line.key, index, columns, cell),
-                )
-            })
-            .collect();
+        let layout: Rc<Vec<(SharedString, Point<Pixels>)>> = Rc::new(
+            lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    (
+                        line.key.clone(),
+                        self.icons.at(&line.key, index, columns, cell),
+                    )
+                })
+                .collect(),
+        );
         let height = layout
             .iter()
             .map(|(_, at)| f32::from(at.y) + cell)
@@ -294,6 +296,9 @@ impl FinderDemo {
             let at = layout[index].1;
             let y = f32::from(at.y);
             let on_screen = y + 2. * cell > top && y < top + room + cell;
+            if !on_screen {
+                continue;
+            }
             let is_selected = self.selected.contains(&line.key);
             let tag = self.tags.get(&line.key).copied();
             let held = dragging.as_ref() == Some(&line.key);
@@ -408,8 +413,9 @@ impl FinderDemo {
                     let group: Vec<(SharedString, Point<Pixels>)> =
                         if this.selected.contains(&drag.key) {
                             moved
-                                .into_iter()
+                                .iter()
                                 .filter(|(key, _)| this.selected.contains(key))
+                                .cloned()
                                 .collect()
                         } else {
                             vec![(drag.key.clone(), from)]
