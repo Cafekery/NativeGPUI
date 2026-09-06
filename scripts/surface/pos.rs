@@ -27,9 +27,9 @@ use native_gpui::{
 };
 
 use native_gpui::{
-    Cursor, ToolbarItem, ToolbarStyle, WindowLevel, chrome_host, cursor_region, native_rect,
-    native_screen_rect, native_tooltip, native_window_rect, set_corner_radius, set_toolbar,
-    window_flags,
+    Cursor, ToolbarItem, ToolbarStyle, WindowLevel, chrome_host, cursor_region, native_callout,
+    native_rect, native_screen_rect, native_tooltip, native_window_rect, set_corner_radius,
+    set_toolbar, window_flags,
 };
 
 use native_gpui::surfaces::SurfaceEdge;

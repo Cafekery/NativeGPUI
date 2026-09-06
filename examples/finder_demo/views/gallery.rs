@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use gpui::{AnyElement, ClickEvent, Pixels, Point, Window, div, point, prelude::*, px};
-use native_gpui::native_tooltip;
+use native_gpui::native_callout;
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
@@ -141,7 +141,7 @@ impl FinderDemo {
                         })
                         .ok();
                     });
-                native_tooltip(("ng.finder.strip.tip", index), line.row.name.clone(), cell)
+                native_callout(("ng.finder.strip.tip", index), line.row.name.clone(), cell)
             }));
 
         div()
