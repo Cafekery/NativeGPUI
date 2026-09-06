@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, MouseButton, MouseDownEvent,
     SharedString, Window, div, prelude::*, px, uniform_list,
@@ -9,7 +7,8 @@ use native_gpui::tokens::{self, SystemColor};
 use crate::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Column, Line, date_text};
-use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
+use crate::dragdrop::{DragGhost, RowDrag, carries};
+use crate::header::{CELL_PAD, CELL_TRAIL, HEADER_H, PANE_INSET};
 use crate::listing::Slot;
 use crate::menus::row_menu;
 use crate::palette::Palette;
@@ -417,15 +416,4 @@ fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {
                 .font_weight(FontWeight::BOLD)
                 .child(title),
         )
-}
-
-/// What a row drag carries: the row the pointer grabbed, standing for the whole selection.
-#[derive(Clone)]
-pub(crate) struct RowDrag {
-    pub(crate) key: SharedString,
-}
-
-/// Whether a drag carries this row, and so never targets it: Finder drops nothing onto itself.
-fn carries(selected: &HashSet<SharedString>, grab: &RowDrag, key: &SharedString) -> bool {
-    grab.key == *key || (selected.contains(&grab.key) && selected.contains(key))
 }
