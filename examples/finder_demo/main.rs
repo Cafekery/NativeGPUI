@@ -3,18 +3,13 @@
 mod app;
 mod art;
 mod clipboard;
-mod column;
 mod commands;
 mod conflicts;
 mod data;
 mod dragdrop;
 mod frame;
-mod gallery;
-mod header;
-mod icon;
 mod info;
 mod input;
-mod list;
 mod listing;
 mod menus;
 mod navigate;
@@ -37,6 +32,7 @@ mod thumbs;
 mod toolbar;
 mod ui;
 mod view;
+mod views;
 
 use std::collections::HashSet;
 use std::env;
