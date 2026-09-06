@@ -18,20 +18,23 @@ use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, ms
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
-    NSMenuToolbarItem, NSSearchField, NSSearchToolbarItem, NSSharingServicePickerDelegate,
-    NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
-    NSSplitViewController, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSSearchField, NSSearchToolbarItem,
+    NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
+    NSSharingServicePickerToolbarItemDelegate, NSSplitView, NSSplitViewController, NSTextAlignment,
+    NSTextField, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
     NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
-    NSTrackingSeparatorToolbarItem, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
-    NSWindowLevel, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSTrackingSeparatorToolbarItem, NSView, NSViewController, NSWindow, NSWindowButton,
+    NSWindowCollectionBehavior, NSWindowLevel, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
+    NSString,
 };
 
-use crate::bridge::appkit::{gpui_view, to_rect};
+use crate::bridge::appkit::{Container, gpui_view, to_rect};
 use crate::bridge::host::element_key;
 use crate::controls::menu::{MenuEntry, sync_menu};
 use crate::tokens;
@@ -73,6 +76,25 @@ struct Tip {
     text: SharedString,
 }
 
+const CALLOUT_DELAY: f64 = 0.87;
+const CALLOUT_FONT_SIZE: f32 = 14.;
+const CALLOUT_INSET_X: f64 = 8.;
+const CALLOUT_INSET_Y: f64 = 4.;
+
+#[derive(Clone, PartialEq)]
+struct Callout {
+    key: u64,
+    rect: NSRect,
+    text: SharedString,
+}
+
+/// The one popover a window shows its callouts through, and the label inside it.
+#[derive(Clone)]
+struct CalloutView {
+    popover: Retained<NSPopover>,
+    label: Retained<NSTextField>,
+}
+
 #[derive(Copy, Clone)]
 struct Corner {
     supported: bool,
@@ -96,6 +118,10 @@ struct Baseline {
 struct ChromeIvars {
     claims: RefCell<Vec<Claim>>,
     tips: RefCell<Vec<Tip>>,
+    callouts: RefCell<Vec<Callout>>,
+    callout: RefCell<Option<CalloutView>>,
+    shown: RefCell<Option<Callout>>,
+    hovered: Cell<u64>,
     corner: Cell<Corner>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
     /// A cursor this host set itself because its window is not key.
@@ -147,6 +173,7 @@ define_class!(
         // be key, such as a child panel, sets its cursor a turn later, after that reset.
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, _: &NSEvent) {
+            self.hover_callout();
             if self.window().is_some_and(|window| window.isKeyWindow()) {
                 return;
             }
@@ -177,7 +204,15 @@ define_class!(
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _: &NSEvent) {
+            self.hide_callout();
             self.release_cursor();
+        }
+
+        #[unsafe(method(ngShowCallout))]
+        fn show_hovered_callout(&self) {
+            if let Some(callout) = self.pointer().and_then(|point| self.callout_at(point)) {
+                self.show_callout(&callout);
+            }
         }
 
         #[unsafe(method_id(view:stringForToolTip:point:userData:))]
@@ -211,6 +246,10 @@ impl ChromeHost {
         let this = Self::alloc(mtm).set_ivars(ChromeIvars {
             claims: RefCell::new(Vec::new()),
             tips: RefCell::new(Vec::new()),
+            callouts: RefCell::new(Vec::new()),
+            callout: RefCell::new(None),
+            shown: RefCell::new(None),
+            hovered: Cell::new(0),
             corner: Cell::new(corner),
             tracking: RefCell::new(None),
             forced: Cell::new(false),
@@ -334,9 +373,186 @@ impl ChromeHost {
         }
     }
 
+    fn callout_at(&self, point: NSPoint) -> Option<Callout> {
+        self.ivars()
+            .callouts
+            .borrow()
+            .iter()
+            .rev()
+            .find(|callout| contains(callout.rect, point))
+            .cloned()
+    }
+
+    fn set_callout(&self, key: u64, rect: NSRect, text: &SharedString) {
+        let callout = Callout {
+            key,
+            rect,
+            text: text.clone(),
+        };
+        let mut callouts = self.ivars().callouts.borrow_mut();
+        match callouts.iter_mut().find(|existing| existing.key == key) {
+            Some(existing) if *existing == callout => return,
+            Some(existing) => *existing = callout.clone(),
+            None => callouts.push(callout.clone()),
+        }
+        drop(callouts);
+        self.ensure_tracking();
+        self.follow_callout(&callout);
+    }
+
+    fn remove_callout(&self, key: u64) {
+        self.ivars()
+            .callouts
+            .borrow_mut()
+            .retain(|callout| callout.key != key);
+        if self.shows(key) {
+            self.hide_callout();
+        }
+    }
+
+    fn shows(&self, key: u64) -> bool {
+        self.ivars()
+            .shown
+            .borrow()
+            .as_ref()
+            .is_some_and(|shown| shown.key == key)
+    }
+
+    /// A shown callout rides its rect through a scroll, and gives up when the rect leaves the mouse.
+    fn follow_callout(&self, callout: &Callout) {
+        if !self.shows(callout.key) {
+            return;
+        }
+        match self.pointer() {
+            Some(point) if contains(callout.rect, point) => self.show_callout(callout),
+            _ => self.hide_callout(),
+        }
+    }
+
+    fn pointer(&self) -> Option<NSPoint> {
+        let window = self.window()?;
+        Some(self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None))
+    }
+
+    fn hover_callout(&self) {
+        let hovered = self.pointer().and_then(|point| self.callout_at(point));
+        let key = hovered.as_ref().map_or(0, |callout| callout.key);
+        if key == self.ivars().hovered.replace(key) {
+            return;
+        }
+        self.cancel_callout();
+        let shown = self.ivars().shown.borrow().is_some();
+        match hovered {
+            None => self.hide_callout(),
+            // One already up moves to the next rect without waiting again.
+            Some(callout) if shown => self.show_callout(&callout),
+            Some(_) => unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: sel!(ngShowCallout),
+                    withObject: ptr::null::<AnyObject>(),
+                    afterDelay: CALLOUT_DELAY,
+                ];
+            },
+        }
+    }
+
+    // Every AppKit call below can deliver an event back into this host, so no ivar is borrowed
+    // across one.
+    fn show_callout(&self, callout: &Callout) {
+        let mtm = MainThreadMarker::new().expect("AppKit tracking is a main-thread path");
+        let view = self
+            .ivars()
+            .callout
+            .borrow_mut()
+            .get_or_insert_with(|| CalloutView::new(mtm))
+            .clone();
+        view.set_text(&callout.text);
+        if let Some(window) = self.window() {
+            view.popover
+                .setAppearance(Some(&window.effectiveAppearance()));
+        }
+        *self.ivars().shown.borrow_mut() = Some(callout.clone());
+        view.popover
+            .showRelativeToRect_ofView_preferredEdge(callout.rect, self, NSRectEdge::MinY);
+        view.disown_mouse();
+    }
+
+    fn hide_callout(&self) {
+        self.cancel_callout();
+        self.ivars().hovered.set(0);
+        if self.ivars().shown.borrow_mut().take().is_none() {
+            return;
+        }
+        let view = self.ivars().callout.borrow().clone();
+        if let Some(view) = view {
+            view.popover.close();
+        }
+    }
+
+    fn cancel_callout(&self) {
+        unsafe {
+            let _: () = msg_send![
+                NSObject::class(),
+                cancelPreviousPerformRequestsWithTarget: self as &AnyObject,
+                selector: sel!(ngShowCallout),
+                object: ptr::null::<AnyObject>(),
+            ];
+        }
+    }
+
     fn invalidate_cursor_rects(&self) {
         if let Some(window) = self.window() {
             window.invalidateCursorRectsForView(self);
+        }
+    }
+}
+
+impl CalloutView {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        label.setFont(
+            tokens::ns_font(
+                tokens::system_font_family(),
+                px(CALLOUT_FONT_SIZE),
+                FontWeight::NORMAL,
+            )
+            .as_deref(),
+        );
+        label.setAlignment(NSTextAlignment::Center);
+        let content = Container::new(mtm, NSRect::ZERO, false);
+        content.addSubview(&label);
+        let controller = NSViewController::new(mtm);
+        controller.setView(&content);
+        let popover = NSPopover::new(mtm);
+        popover.setContentViewController(Some(&controller));
+        popover.setBehavior(NSPopoverBehavior::Semitransient);
+        popover.setAnimates(false);
+        Self { popover, label }
+    }
+
+    fn set_text(&self, text: &SharedString) {
+        self.label.setStringValue(&NSString::from_str(text));
+        let fit = self.label.fittingSize();
+        let size = NSSize::new(
+            (fit.width + 2. * CALLOUT_INSET_X).ceil(),
+            (fit.height + 2. * CALLOUT_INSET_Y).ceil(),
+        );
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(CALLOUT_INSET_X, (size.height - fit.height) / 2.),
+            NSSize::new(size.width - 2. * CALLOUT_INSET_X, fit.height),
+        ));
+        self.popover.setContentSize(size);
+    }
+
+    /// The callout names the cell under the mouse, so every point over it belongs to that cell.
+    fn disown_mouse(&self) {
+        if let Some(window) = self
+            .popover
+            .contentViewController()
+            .and_then(|controller| controller.view().window())
+        {
+            window.setIgnoresMouseEvents(true);
         }
     }
 }
@@ -1854,6 +2070,112 @@ impl Element for NativeTooltip {
 }
 
 impl IntoElement for NativeTooltip {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// Name a GPUI element in a callout over its own bounds, wrapping `child` transparently: the
+/// system popover, pointing down at the element, after the same wait Finder's gallery strip uses.
+pub fn native_callout(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> NativeCallout {
+    NativeCallout {
+        id: id.into(),
+        text: text.into(),
+        child: child.into_any_element(),
+    }
+}
+
+pub struct NativeCallout {
+    id: ElementId,
+    text: SharedString,
+    child: AnyElement,
+}
+
+struct CalloutGuard {
+    host: Retained<ChromeHost>,
+    key: u64,
+}
+
+impl Drop for CalloutGuard {
+    fn drop(&mut self) {
+        self.host.remove_callout(self.key);
+    }
+}
+
+impl Element for NativeCallout {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<Bounds<Pixels>>;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.child.prepaint(window, cx);
+        let visible = bounds.intersect(&window.content_mask().bounds);
+        (visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        visible: &mut Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+
+        let Some(global_id) = id else {
+            return;
+        };
+        let host = chrome(window);
+        let key = element_key(id);
+        window.with_element_state::<CalloutGuard, ()>(global_id, |existing, _| {
+            let guard = existing.unwrap_or_else(|| CalloutGuard {
+                host: host.clone(),
+                key,
+            });
+            ((), guard)
+        });
+        match visible {
+            Some(bounds) => host.set_callout(key, native_rect(*bounds), &self.text),
+            None => host.remove_callout(key),
+        }
+    }
+}
+
+impl IntoElement for NativeCallout {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
