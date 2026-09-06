@@ -130,9 +130,6 @@ impl FinderDemo {
             self.read_folder(id, cx);
         }
         self.sync_stats(cx);
-        if self.column_settling.replace(false) {
-            cx.notify();
-        }
         crate::thumbs::frame_drawn();
         self.follow();
     }
