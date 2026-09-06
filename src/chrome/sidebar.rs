@@ -66,6 +66,7 @@ pub struct SidebarItem {
     icon: Option<SidebarIcon>,
     badge: Option<i64>,
     eject: bool,
+    drops: bool,
     group: bool,
     children: Vec<SidebarItem>,
 }
@@ -77,6 +78,7 @@ pub fn sidebar_item(id: impl Into<SharedString>, title: impl Into<SharedString>)
         icon: None,
         badge: None,
         eject: false,
+        drops: false,
         group: false,
         children: Vec::new(),
     }
@@ -109,6 +111,12 @@ impl SidebarItem {
         self
     }
 
+    /// Whether files dropped on the row itself, rather than between rows, are the row's to keep.
+    pub fn accepts_drops(mut self, accepts: bool) -> Self {
+        self.drops = accepts;
+        self
+    }
+
     pub fn badge(mut self, count: i64) -> Self {
         self.badge = Some(count);
         self
@@ -138,6 +146,7 @@ struct Node {
     icon: Option<SidebarIcon>,
     badge: Option<i64>,
     eject: bool,
+    drops: bool,
     group: bool,
     parent: Option<usize>,
     children: Vec<usize>,
@@ -150,6 +159,7 @@ impl Node {
         self.icon.hash(&mut hasher);
         self.badge.hash(&mut hasher);
         self.eject.hash(&mut hasher);
+        self.drops.hash(&mut hasher);
         self.group.hash(&mut hasher);
         self.children.is_empty().hash(&mut hasher);
         hasher.finish()
@@ -182,6 +192,7 @@ impl Model {
                 icon: item.icon.clone(),
                 badge: item.badge,
                 eject: item.eject,
+                drops: item.drops,
                 group: item.group,
                 parent,
                 children: Vec::new(),
@@ -399,6 +410,8 @@ pub struct SidebarDrop {
     pub paths: Vec<PathBuf>,
     pub group: SharedString,
     pub index: usize,
+    /// The row the files landed on, when it is one that [`SidebarItem::accepts_drops`].
+    pub onto: Option<SharedString>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1730,6 +1743,17 @@ fn file_drop_target(
         .map(|_| (parent, at))
 }
 
+/// A row that takes files itself, as Finder's tags do: the drop lands on it, not between rows.
+fn file_drop_row(shared: &Rc<Shared>, item: Option<&AnyObject>) -> Option<u64> {
+    let key = Shared::key_of_item(item?);
+    shared
+        .model
+        .borrow()
+        .node(key)
+        .filter(|node| node.drops)
+        .map(|_| key)
+}
+
 fn validate_file_drop(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
@@ -1739,6 +1763,15 @@ fn validate_file_drop(
 ) -> NSDragOperation {
     if shared.on_drop_paths.borrow().is_none() || dragged_paths(info).is_empty() {
         return NSDragOperation::empty();
+    }
+    if let Some(key) = file_drop_row(shared, item) {
+        unsafe {
+            outline.setDropItem_dropChildIndex(
+                Some(&shared.item(key)),
+                NSOutlineViewDropOnItemIndex as NSInteger,
+            )
+        };
+        return NSDragOperation::Copy;
     }
     let Some((group, at)) = file_drop_target(shared, outline, info, item, index) else {
         return NSDragOperation::empty();
@@ -1758,19 +1791,36 @@ fn accept_file_drop(
     if paths.is_empty() {
         return false;
     }
-    let Some((group, at)) = file_drop_target(shared, outline, info, item, index) else {
+    let onto = file_drop_row(shared, item);
+    let Some((group, at)) = onto
+        .and_then(|key| {
+            let model = shared.model.borrow();
+            let parent = model.parent_key(key)?;
+            let at = model
+                .children_keys(Some(parent))
+                .iter()
+                .position(|&k| k == key)?;
+            Some((parent, at))
+        })
+        .or_else(|| file_drop_target(shared, outline, info, item, index))
+    else {
         return false;
     };
     let Some(handler) = shared.on_drop_paths.borrow().clone() else {
         return false;
     };
-    let Some(group) = shared.model.borrow().id_for(group) else {
+    let model_ids = {
+        let model = shared.model.borrow();
+        (model.id_for(group), onto.and_then(|key| model.id_for(key)))
+    };
+    let (Some(group), onto) = model_ids else {
         return false;
     };
     let dropped = SidebarDrop {
         paths,
         group,
         index: at,
+        onto,
     };
     shared
         .cx
