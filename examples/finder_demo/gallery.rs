@@ -7,7 +7,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{art_at, click_kind, row_art};
+use crate::ui::{Poster, art_at, click_kind, poster_art, row_art};
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
@@ -67,13 +67,13 @@ impl FinderDemo {
         let hero = match chosen.as_slice() {
             [] => self.cursor_line().map(|line| {
                 art_at(
-                    row_art(&line.row, size, scale, true),
+                    poster_art(&line.row, size, scale, Poster::Hero),
                     size,
                     Some(self.ql_icon.clone()),
                 )
             }),
             [one] => Some(art_at(
-                row_art(&one.row, size, scale, true),
+                poster_art(&one.row, size, scale, Poster::Hero),
                 size,
                 Some(self.ql_icon.clone()),
             )),
