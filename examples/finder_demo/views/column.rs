@@ -2,8 +2,8 @@
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString,
-    Window, canvas, div, opaque_grey, prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
+    UniformListScrollHandle, Window, canvas, div, opaque_grey, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
@@ -141,37 +141,13 @@ impl FinderDemo {
         let folder = rung.folder;
         let lines = self.column_listing(folder);
         let scale = self.scale;
-        let handle = self.column_scrolls.get(index).cloned();
-        // Until the column has painted once its rows have no bounds, so none of them is on screen.
-        let seen = match &handle {
-            Some(handle) if handle.bounds_for_item(0).is_some() => {
-                handle.top_item()..handle.bottom_item() + 1
-            }
-            _ => {
-                if !lines.is_empty() {
-                    self.column_settling.replace(true);
-                }
-                0..0
-            }
-        };
-        let picked: Vec<bool> = lines
-            .iter()
-            .map(|line| {
-                if emphasized {
-                    self.selected.contains(&line.key)
-                } else {
-                    rung.selected.as_ref() == Some(&line.key)
-                }
-            })
-            .collect();
+        let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
         let this_menu = this.clone();
         let hit_lines = lines.clone();
         let hit_scroll = handle.clone();
         let hit = move |at: Point<Pixels>| {
-            let top = hit_scroll
-                .as_ref()
-                .map_or(0., |handle| f32::from(handle.offset().y));
+            let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y);
             let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
             (row >= 0.)
                 .then(|| hit_lines.get(row as usize).cloned())
@@ -180,6 +156,9 @@ impl FinderDemo {
         let renaming = self.renaming.clone();
         let cursor = self.cursor.clone();
         let ql_icon = self.ql_icon.clone();
+        let chosen = self.selected.snapshot();
+        let alone = rung.selected.clone();
+        let label = palette.label;
         let (fill, selection_text) = if emphasized {
             (palette.selection, palette.selection_text)
         } else {
@@ -189,6 +168,100 @@ impl FinderDemo {
             )
         };
 
+        let rows = lines.clone();
+        let list = uniform_list(
+            ("ng.finder.column.rows", index),
+            lines.len(),
+            move |range, _, _| {
+                let picked = |row: usize| match rows.get(row) {
+                    Some(line) if emphasized => chosen.contains(&line.key),
+                    Some(line) => alone.as_ref() == Some(&line.key),
+                    None => false,
+                };
+                range
+                    .map(|row| {
+                        let line = rows[row].clone();
+                        let is_selected = picked(row);
+                        let joins_above = row > 0 && picked(row - 1);
+                        let joins_below = picked(row + 1);
+                        let this = this.clone();
+                        let clicked = line.clone();
+                        let name = div()
+                            .ml(px(LABEL_X - ICON_X - ICON))
+                            .flex_1()
+                            .overflow_hidden();
+                        let mut cell = div()
+                            .id(("ng.finder.column.row", row))
+                            .h(px(ROW_H))
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .pl(px(ICON_X))
+                            .pr(px(CHEVRON_TRAIL - (CHEVRON - 3.5) / 2.))
+                            .text_color(if is_selected { selection_text } else { label })
+                            .when(is_selected, |cell| {
+                                cell.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(PILL_INSET))
+                                        .right(px(PILL_INSET))
+                                        .top_0()
+                                        .bottom_0()
+                                        .when(!joins_above, |pill| {
+                                            pill.rounded_tl(px(PILL_RADIUS))
+                                                .rounded_tr(px(PILL_RADIUS))
+                                        })
+                                        .when(!joins_below, |pill| {
+                                            pill.rounded_bl(px(PILL_RADIUS))
+                                                .rounded_br(px(PILL_RADIUS))
+                                        })
+                                        .bg(fill),
+                                )
+                            })
+                            .child(art_at(
+                                row_art(&line.row, ICON, scale, true),
+                                ICON,
+                                (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
+                            ))
+                            .child(if renaming.as_ref() == Some(&line.key) {
+                                name.child(rename_field(&line, row, this.clone()))
+                            } else {
+                                name.text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(line.row.name.clone())
+                            });
+                        if line.row.opens.is_some() {
+                            let color = if is_selected && emphasized {
+                                SystemColor::AlternateSelectedControlText
+                            } else {
+                                SystemColor::SecondaryLabel
+                            };
+                            cell = cell.children(
+                                small_glyph("chevron.right", CHEVRON, FontWeight::SEMIBOLD, color)
+                                    .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
+                            );
+                        }
+                        cell.on_click(move |event: &ClickEvent, window, cx| {
+                            let (extend, toggle, twice) = click_kind(event);
+                            let line = clicked.clone();
+                            this.update(cx, |this: &mut FinderDemo, cx| {
+                                let listing = this.column_listing(folder);
+                                this.pick_in(&listing, &line, extend, toggle);
+                                if twice {
+                                    this.open(&line, window, cx);
+                                }
+                                this.column_arrived(window, cx);
+                            })
+                            .ok();
+                        })
+                        .into_any_element()
+                    })
+                    .collect()
+            },
+        )
+        .flex_1()
+        .track_scroll(&handle);
+
         let column = div()
             .id(("ng.finder.column", index))
             .w(px(self.column_width(folder) - GRIP_W))
@@ -196,85 +269,7 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .pt(px(TOP_GAP))
-            .overflow_y_scroll()
-            .when_some(handle, |column, handle| column.track_scroll(&handle))
-            .children(lines.iter().cloned().enumerate().map(|(row, line)| {
-                let is_selected = picked[row];
-                let joins_above = row > 0 && picked[row - 1];
-                let joins_below = picked.get(row + 1) == Some(&true);
-                let this = this.clone();
-                let clicked = line.clone();
-                let name = div()
-                    .ml(px(LABEL_X - ICON_X - ICON))
-                    .flex_1()
-                    .overflow_hidden();
-                let mut cell = div()
-                    .id(("ng.finder.column.row", row))
-                    .h(px(ROW_H))
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .pl(px(ICON_X))
-                    .pr(px(CHEVRON_TRAIL - (CHEVRON - 3.5) / 2.))
-                    .text_color(if is_selected {
-                        selection_text
-                    } else {
-                        palette.label
-                    })
-                    .when(is_selected, |cell| {
-                        cell.child(
-                            div()
-                                .absolute()
-                                .left(px(PILL_INSET))
-                                .right(px(PILL_INSET))
-                                .top_0()
-                                .bottom_0()
-                                .when(!joins_above, |pill| {
-                                    pill.rounded_tl(px(PILL_RADIUS)).rounded_tr(px(PILL_RADIUS))
-                                })
-                                .when(!joins_below, |pill| {
-                                    pill.rounded_bl(px(PILL_RADIUS)).rounded_br(px(PILL_RADIUS))
-                                })
-                                .bg(fill),
-                        )
-                    })
-                    .child(art_at(
-                        row_art(&line.row, ICON, scale, seen.contains(&row)),
-                        ICON,
-                        (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
-                    ))
-                    .child(if renaming.as_ref() == Some(&line.key) {
-                        name.child(rename_field(&line, row, this.clone()))
-                    } else {
-                        name.text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(line.row.name.clone())
-                    });
-                if line.row.opens.is_some() {
-                    let color = if is_selected && emphasized {
-                        SystemColor::AlternateSelectedControlText
-                    } else {
-                        SystemColor::SecondaryLabel
-                    };
-                    cell = cell.children(
-                        small_glyph("chevron.right", CHEVRON, FontWeight::SEMIBOLD, color)
-                            .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
-                    );
-                }
-                cell.on_click(move |event: &ClickEvent, window, cx| {
-                    let (extend, toggle, twice) = click_kind(event);
-                    let line = clicked.clone();
-                    this.update(cx, |this: &mut FinderDemo, cx| {
-                        let listing = this.column_listing(folder);
-                        this.pick_in(&listing, &line, extend, toggle);
-                        if twice {
-                            this.open(&line, window, cx);
-                        }
-                        this.column_arrived(window, cx);
-                    })
-                    .ok();
-                })
-            }));
+            .child(list);
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
@@ -382,7 +377,7 @@ impl FinderDemo {
     pub(crate) fn column_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let (chain, leaf) = self.column_chain();
         while self.column_scrolls.len() < chain.len() {
-            self.column_scrolls.push(ScrollHandle::new());
+            self.column_scrolls.push(UniformListScrollHandle::new());
         }
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
         let mut columns: Vec<AnyElement> = chain

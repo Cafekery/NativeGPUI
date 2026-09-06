@@ -1,5 +1,7 @@
 //! The gallery view: the selection large, every item in a strip along the bottom.
 
+use std::ops::Range;
+
 use gpui::{AnyElement, ClickEvent, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::native_tooltip;
 
@@ -40,6 +42,14 @@ impl Strip {
 
     fn start(self, index: usize) -> f32 {
         STRIP_INSET + index as f32 * (self.cell + self.gap)
+    }
+
+    /// The cells `room` wide of strip shows at this offset, a cell either side for a short scroll.
+    fn seen(self, offset: f32, room: f32, count: usize) -> Range<usize> {
+        let first = ((-offset - STRIP_INSET) / (self.cell + self.gap)).floor() - 1.;
+        let first = (first.max(0.) as usize).min(count);
+        let last = ((-offset + room - STRIP_INSET) / (self.cell + self.gap)).ceil() + 1.;
+        first..(last.max(0.) as usize).clamp(first, count)
     }
 }
 
@@ -92,33 +102,34 @@ impl FinderDemo {
             }
             hit_lines.get(index as usize).cloned()
         };
+        // Only the cells on screen are built; the strip's whole width is one empty child.
+        let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
         let strip_row = div()
             .id("ng.finder.filmstrip")
             .h(px(strip.height()))
             .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(strip.gap))
-            .px(px(STRIP_INSET))
+            .relative()
             .overflow_x_scroll()
             .track_scroll(&self.strip)
-            .children(lines.iter().cloned().enumerate().map(|(index, line)| {
-                let start = strip.start(index) + f32::from(self.strip.offset().x);
-                let on_screen = start + 2. * strip.cell > 0. && start < room_w + strip.cell;
+            .child(div().w(px(strip.start(lines.len()))).h_full().flex_none())
+            .children(seen.map(|index| {
+                let line = lines[index].clone();
                 let is_selected = self.selected.contains(&line.key);
                 let this = this.clone();
                 let clicked = line.clone();
                 let cell = div()
                     .id(("ng.finder.frame", index))
+                    .absolute()
+                    .left(px(strip.start(index)))
+                    .top(px(strip.margin))
                     .w(px(strip.cell))
                     .h(px(strip.cell))
-                    .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(row_art(&line.row, strip.icon, scale, on_screen))
+                    .child(row_art(&line.row, strip.icon, scale, true))
                     .on_click(move |event: &ClickEvent, window, cx| {
                         let (extend, toggle, twice) = click_kind(event);
                         let line = clicked.clone();

@@ -109,9 +109,7 @@ pub(crate) struct FinderDemo {
     /// What each browser column has been dragged to this session, keyed by the folder it lists.
     pub(crate) column_widths: HashMap<&'static str, f32>,
     /// One per browser column, so a column knows which of its rows are on screen.
-    pub(crate) column_scrolls: Vec<ScrollHandle>,
-    /// A column has painted rows whose bounds it does not know yet: draw once more.
-    pub(crate) column_settling: RefCell<bool>,
+    pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
     /// The pixels a point buys on this window's screen, for the thumbnails it asks for.
@@ -216,7 +214,6 @@ impl FinderDemo {
             column_depth: 0,
             column_widths: HashMap::new(),
             column_scrolls: Vec::new(),
-            column_settling: RefCell::new(false),
             column_grab: None,
             icons: Grid::default(),
             scale: 2.,
