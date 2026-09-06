@@ -141,6 +141,14 @@ pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
     )
 }
 
+/// A tag listing's title: Finder names the window after the tag, or after all of them.
+pub(crate) fn tag_title(id: &str) -> String {
+    match id.strip_prefix("tag:").unwrap_or_default() {
+        "" => "All Tags".to_string(),
+        name => name.to_string(),
+    }
+}
+
 /// The tags a file carries that the demo's tag menus know, as their indices.
 pub(crate) fn row_tags(path: &str) -> Vec<usize> {
     finder_fs::tags::of(Path::new(path))

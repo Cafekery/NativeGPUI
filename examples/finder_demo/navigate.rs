@@ -7,8 +7,9 @@ use gpui::{Context, SharedString, Window};
 use crate::app::FinderDemo;
 use crate::data::{Folder, Line, intern_path, split_key};
 use crate::menus::{self, Back, Forward};
+use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
-use crate::{home, open_finder_window, tag_title};
+use crate::{home, open_finder_window};
 
 impl FinderDemo {
     pub(crate) fn here(&self) -> &'static str {
