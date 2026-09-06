@@ -15,8 +15,9 @@ use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowT
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::data::{Column, Face as F, available_bytes, byte_string};
+use crate::list::RowDrag;
 use crate::palette::Palette;
-use crate::ui::{TAGS, click_kind, finder_color, glyph, small_glyph};
+use crate::ui::{TAGS, finder_color, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
@@ -356,8 +357,34 @@ impl FinderDemo {
             .text_size(tokens::small_system_font_size())
             .text_color(palette.secondary);
 
+        let (selection, selection_text) = (palette.selection, palette.selection_text);
         for (index, crumb) in crumbs.iter().enumerate() {
-            if index > 0 {
+            // The fixture starts at the home folder, so the crumbs above it lead nowhere.
+            let target = index
+                .checked_sub(crumbs.len() - chain.len())
+                .and_then(|step| chain.get(step).copied());
+            let mut segment = div()
+                .id(("ng.finder.crumb", index))
+                .h_full()
+                .flex()
+                .items_center()
+                .min_w(px(CRUMB_ICON))
+                .gap(px(CRUMB_GAP))
+                .active(move |style| style.text_color(selection_text))
+                .child(crumb_icon(index == 0))
+                .when(named[index], |crumb_row| {
+                    crumb_row.child(
+                        div()
+                            .min_w(px(0.))
+                            .rounded_full()
+                            .text_ellipsis()
+                            .drag_over::<RowDrag>(move |style, _, _, _| {
+                                style.bg(selection).text_color(selection_text)
+                            })
+                            .child(*crumb),
+                    )
+                });
+            if index + 1 < crumbs.len() {
                 if let Some(chevron) = small_glyph(
                     "chevron.right",
                     7.,
@@ -365,40 +392,28 @@ impl FinderDemo {
                     SystemColor::SecondaryLabel,
                 ) {
                     // Finder leaves a point more after a chevron than before it.
-                    trail = trail.child(div().flex_none().mr(px(1.)).child(chevron));
+                    segment = segment.child(div().flex_none().mr(px(1.)).child(chevron));
                 }
             }
-            // The fixture starts at the home folder, so the crumbs above it lead nowhere.
-            let target = index
-                .checked_sub(crumbs.len() - chain.len())
-                .and_then(|step| chain.get(step).copied());
-            trail = trail.child(
-                div()
-                    .id(("ng.finder.crumb", index))
-                    .flex()
-                    .items_center()
-                    .min_w(px(CRUMB_ICON))
-                    .gap(px(CRUMB_GAP))
-                    .child(crumb_icon(index == 0))
-                    .when(named[index], |crumb_row| {
-                        crumb_row.child(div().min_w(px(0.)).text_ellipsis().child(*crumb))
-                    })
-                    .when_some(target, |crumb_row, id| {
-                        // Finder's path bar walks on the second click, not the first; ⌥-click
-                        // copies the crumb's path instead of walking it, like ⌥⌘C on a selection.
-                        crumb_row.on_click(cx.listener(
-                            move |this, event: &ClickEvent, window, cx| {
-                                if is_alt_click(event) {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        id.to_string(),
-                                    ));
-                                } else if click_kind(event).2 {
-                                    this.go(id, window, cx);
-                                }
-                            },
-                        ))
-                    }),
-            );
+            trail = trail.child(segment.when_some(target, |crumb_row, id| {
+                // Finder's path bar walks on the first click, released over the crumb; ⌥-click
+                // copies the crumb's path instead, like its menu's Copy as Pathname.
+                crumb_row
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if is_alt_click(event) {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()));
+                        } else {
+                            this.go(id, window, cx);
+                        }
+                    }))
+                    .on_drop(
+                        cx.listener(move |this, grab: &RowDrag, window: &mut Window, cx| {
+                            let keys = this.drag_keys(&grab.key);
+                            this.drop_into(id, &keys, window.modifiers().alt, cx);
+                            cx.notify();
+                        }),
+                    )
+            }));
         }
 
         div()
