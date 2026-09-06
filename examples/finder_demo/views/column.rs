@@ -1,7 +1,5 @@
 //! The column (browser) view.
 
-use std::sync::Arc;
-
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, Window, canvas, div,
@@ -16,7 +14,6 @@ use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{click_kind, rename_field, text_width};
-use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -33,9 +30,9 @@ const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
 const COL_MIN: f32 = 100.;
 
-struct Rung {
-    folder: &'static str,
-    selected: Option<SharedString>,
+pub(crate) struct Rung {
+    pub(crate) folder: &'static str,
+    pub(crate) selected: Option<SharedString>,
 }
 
 fn divider() -> Hsla {
@@ -46,7 +43,7 @@ fn divider() -> Hsla {
 }
 
 impl FinderDemo {
-    fn column_chain(&self) -> (Vec<Rung>, Option<Line>) {
+    pub(crate) fn column_chain(&self) -> (Vec<Rung>, Option<Line>) {
         let root = || {
             (
                 vec![Rung {
@@ -522,26 +519,5 @@ impl FinderDemo {
         if let Some(line) = listing.first().cloned() {
             self.pick_in(&listing, &line, false, false);
         }
-    }
-
-    pub(crate) fn column_listing(&self, folder: &'static str) -> Arc<Vec<Line>> {
-        if let Some(lines) = self.listing_cached(folder) {
-            return lines;
-        }
-        let mut lines = Vec::new();
-        self.collect(folder, 0, false, &mut lines);
-        self.listing_cache(folder, Arc::new(lines))
-    }
-
-    pub(crate) fn focused_lines(&self) -> Arc<Vec<Line>> {
-        if self.view != COLUMN_VIEW {
-            return self.lines(self.view == LIST_VIEW);
-        }
-        let (chain, _) = self.column_chain();
-        let focused = chain
-            .iter()
-            .rposition(|rung| rung.selected.is_some())
-            .unwrap_or(0);
-        self.column_listing(chain[focused].folder)
     }
 }
