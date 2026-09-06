@@ -220,6 +220,7 @@ impl FinderDemo {
                     ],
                     0,
                 )
+                .tool_tip("See folders you viewed previously")
                 .selection(ToolbarSelection::Momentary)
                 .group_width(ToolbarGroupWidth::Expanded)
                 .on_select(move |index, window, cx| {
@@ -227,7 +228,8 @@ impl FinderDemo {
                         .ok();
                 }),
                 ToolbarItem::flexible_space(),
-                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop"),
+                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
+                    .tool_tip("Share the selected items using AirDrop"),
                 ToolbarItem::group(
                     VIEW_ID,
                     "View",
@@ -237,6 +239,7 @@ impl FinderDemo {
                         .map(|(symbol, label)| ToolbarSegment::new(*symbol, *label)),
                     self.view,
                 )
+                .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
                 // Automatic, not Expanded: the capsule has to collapse when the search field opens.
                 .group_width(ToolbarGroupWidth::Automatic)
                 .on_select(move |index, _, cx| {
@@ -247,26 +250,31 @@ impl FinderDemo {
                     .ok();
                 }),
                 ToolbarItem::space(),
-                ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.ascending)),
+                ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.ascending))
+                    .tool_tip("Change the item grouping (hold down Option to change the sort)"),
                 ToolbarItem::space(),
-                ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress").on_click(
-                    move |_, cx| {
+                ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
+                    .tool_tip("See the progress of file operations")
+                    .on_click(move |_, cx| {
                         jobs.update(cx, |this: &mut Self, cx| {
                             this.jobs_open = !this.jobs_open;
                             cx.notify();
                         })
                         .ok();
-                    },
-                ),
-                ToolbarItem::share(SHARE_ID, "Share", self.share_items()),
-                ToolbarItem::symbol(TAG_ID, "tag", "Edit Tags").on_click(move |_, cx| {
-                    tag.update(cx, |this: &mut Self, cx| {
-                        this.cycle_tag(cx);
-                        cx.notify();
-                    })
-                    .ok();
-                }),
-                ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", action_menu()),
+                    }),
+                ToolbarItem::share(SHARE_ID, "Share", self.share_items())
+                    .tool_tip("Share the selected items"),
+                ToolbarItem::symbol(TAG_ID, "tag", "Edit Tags")
+                    .tool_tip("Edit Tags")
+                    .on_click(move |_, cx| {
+                        tag.update(cx, |this: &mut Self, cx| {
+                            this.cycle_tag(cx);
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+                ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", action_menu())
+                    .tool_tip("Perform tasks with the selected items"),
                 ToolbarItem::space(),
                 ToolbarItem::search(SEARCH_ID, "Search")
                     .placeholder("Search")
