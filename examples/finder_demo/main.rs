@@ -560,6 +560,24 @@ impl FinderDemo {
         self.arrive(window, cx);
     }
 
+    /// Finder's Show in Enclosing Folder: the parent folder, with the crumb chosen in it.
+    pub(crate) fn show_enclosing(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(parent) = Path::new(id).parent().map(intern_path) else {
+            return;
+        };
+        self.go(parent, window, cx);
+        let key = SharedString::from(id);
+        self.selected = std::iter::once(key.clone()).collect();
+        self.cursor = Some(key.clone());
+        self.anchor = Some(key.clone());
+        self.reveal_next = Some(key);
+    }
+
     pub(crate) fn step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let next = if forward {
             self.at + 1
@@ -1986,6 +2004,14 @@ impl Render for FinderDemo {
             GALLERY_VIEW => self.gallery_body(&palette, window, cx),
             _ => self.list_body(&palette, cx),
         };
+        // The rows only: a menu whose element also spans the path bar swallows the crumbs' own.
+        let body = menus::attach(
+            "ng.finder.background",
+            menus::background(self),
+            cx.entity().downgrade(),
+            body,
+        )
+        .into_any_element();
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
 
         let list_view = self.view == LIST_VIEW;
@@ -2042,13 +2068,8 @@ impl Render for FinderDemo {
                                 .flex()
                                 .overflow_hidden()
                                 .when(!list_view, |row| row.pl(metrics.left))
-                                .child(menus::attach(
-                                    "ng.finder.background",
-                                    menus::background(self),
-                                    cx.entity().downgrade(),
-                                    self.list_column(
-                                        body, headers, path_bar, &palette, metrics, corner, cx,
-                                    ),
+                                .child(self.list_column(
+                                    body, headers, path_bar, &palette, metrics, corner, cx,
                                 )),
                         )
                         .children(

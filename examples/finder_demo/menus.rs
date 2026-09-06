@@ -38,6 +38,10 @@ pub(crate) enum Act {
     Paste,
     NewFile,
     OpenTerminal(&'static str),
+    OpenTab(&'static str),
+    OpenWindowAt(&'static str),
+    Enclosing(&'static str),
+    CopyPathname(&'static str),
     Toggle(Column),
 }
 
@@ -177,6 +181,25 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu
 }
 
+/// A right-click on a path-bar crumb: everything acts on that folder, not on the selection.
+pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
+    let mut menu = Menu::default();
+    menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(id));
+    menu.item(MenuEntry::item("Open in New Window"), Act::OpenWindowAt(id));
+    menu.item(
+        MenuEntry::item("Show in Enclosing Folder"),
+        Act::Enclosing(id),
+    );
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
+    menu.item(MenuEntry::item("Show Inspector"), Act::Inspector);
+    menu.item(
+        MenuEntry::item(format!("Copy “{name}” as Pathname")),
+        Act::CopyPathname(id),
+    );
+    menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(id));
+    menu
+}
+
 /// The list header's menu: the optional columns, checked when they are shown.
 pub(crate) fn header(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
@@ -221,6 +244,14 @@ impl FinderDemo {
             Act::Paste => self.paste(false, cx),
             Act::NewFile => self.new_file(cx),
             Act::OpenTerminal(path) => open_terminal(path),
+            Act::OpenTab(id) => self.open_tab(id, window, cx),
+            Act::OpenWindowAt(id) => {
+                open_finder_window(id, 1, cx);
+            }
+            Act::Enclosing(id) => self.show_enclosing(id, window, cx),
+            Act::CopyPathname(id) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()))
+            }
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();
@@ -329,6 +360,16 @@ impl FinderDemo {
         if let Some(first) = opens.first() {
             self.go(first, window, cx);
         }
+    }
+
+    /// A second window, handed to AppKit as a tab of this one.
+    pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
+        let host = window.window_handle();
+        cx.defer(move |cx| {
+            let tab = open_finder_window(id, 1, cx);
+            tab.update(cx, |_, tab, cx| native_gpui::add_tab(host, tab, cx))
+                .ok();
+        });
     }
 
     fn open_in_window(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
