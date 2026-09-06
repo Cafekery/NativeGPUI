@@ -358,7 +358,7 @@ impl FinderDemo {
         self.sidebar_follow();
         self.retitle(window);
         window.focus(&self.focus, cx);
-        self.warm_icons(cx);
+        self.warm_icons();
     }
 
     fn remove_from_sidebar(&mut self, id: &SharedString) {

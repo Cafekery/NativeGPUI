@@ -5,16 +5,16 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
 use gpui::{
     Bounds, Context, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString,
-    UniformListScrollHandle, px,
+    UniformListScrollHandle,
 };
 use native_gpui::sidebar::NativeSidebar;
-use native_gpui::tokens::{self, FileType};
+use native_gpui::tokens::FileType;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
@@ -240,24 +240,17 @@ impl FinderDemo {
         this
     }
 
-    /// Rasterise the artwork every folder wears up front, so no frame pays for it.
-    pub(crate) fn warm_icons(&self, cx: &mut Context<Self>) {
+    /// Ask for the artwork every folder wears up front, so no frame is the first to want it.
+    pub(crate) fn warm_icons(&self) {
         let kinds = [
             FileType::Folder,
             FileType::Path("/"),
             FileType::Extension("app"),
         ];
-        let sizes = [ICON_SMALL, ICON_SIZE, PREVIEW_W - 1. - 2. * INSET];
-        cx.spawn(async move |_, cx| {
-            for kind in kinds {
-                cx.background_executor()
-                    .timer(Duration::from_millis(4))
-                    .await;
-                for size in sizes {
-                    tokens::file_icon(kind, px(size));
-                }
+        for kind in kinds {
+            for size in [ICON_SMALL, ICON_SIZE, PREVIEW_W - 1. - 2. * INSET] {
+                crate::icons::icon(kind, size);
             }
-        })
-        .detach();
+        }
     }
 }
