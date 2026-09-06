@@ -28,6 +28,7 @@ const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.set_view(view);
+        self.install_toolbar(window, cx);
         self.retitle(window);
         cx.notify();
     }
