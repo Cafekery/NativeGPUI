@@ -5,8 +5,8 @@ use std::path::Path;
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
-use crate::commands::{self, Back, Forward};
 use crate::data::{Folder, Line, intern_path, split_key};
+use crate::menus::{self, Back, Forward};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{home, open_finder_window, tag_title};
 
@@ -90,7 +90,7 @@ impl FinderDemo {
         self.recents.retain(|(seen, _)| *seen != id);
         self.recents.insert(0, (id, title));
         self.recents.truncate(10);
-        native_gpui::set_menu("Go", commands::go_rows(&self.recents));
+        native_gpui::set_menu("Go", menus::go_rows(&self.recents));
     }
 
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {

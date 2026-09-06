@@ -4,7 +4,6 @@ mod app;
 mod art;
 mod chrome;
 mod clipboard;
-mod commands;
 mod conflicts;
 mod data;
 mod dragdrop;
@@ -44,8 +43,8 @@ use native_gpui::tokens::{self, SystemTheme};
 use native_gpui::{install_menus, remember_frame, window_options};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
-use crate::commands::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 use crate::data::intern_path;
+use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
 const SAVE_EVERY: Duration = Duration::from_secs(180);
 fn main() {
@@ -53,14 +52,14 @@ fn main() {
         tokens::init(cx);
         install_menus(cx);
         conflicts::install_undo_redo(cx);
-        commands::install(cx);
+        menus::install(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
         cx.bind_keys([
             KeyBinding::new("cmd-a", SelectAll, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-x", commands::Cut, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-v", commands::Paste, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-alt-v", commands::MoveHere, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-x", menus::Cut, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-v", menus::Paste, Some(LIST_CONTEXT)),
+            KeyBinding::new("cmd-alt-v", menus::MoveHere, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-[", Back, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-]", Forward, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
@@ -180,7 +179,7 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> Window
             if extra == 0 {
                 remember_frame(window, "ng.finder.window");
             }
-            native_gpui::window_tabs(window, commands::NewTab, cx);
+            native_gpui::window_tabs(window, menus::NewTab, cx);
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();

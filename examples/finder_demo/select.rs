@@ -10,8 +10,8 @@ use objc2_app_kit::{NSPasteboard, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::app::FinderDemo;
-use crate::commands::{CopyNames, SelectAll};
 use crate::data::{Line, split_key};
+use crate::menus::{CopyNames, SelectAll};
 use crate::view::LIST_VIEW;
 
 impl FinderDemo {
