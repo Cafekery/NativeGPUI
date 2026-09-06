@@ -5,10 +5,11 @@ use std::time::Instant;
 use gpui::{Context, Window};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
+use crate::app::FinderDemo;
 use crate::header::PANE_INSET;
 use crate::icon::cell;
 use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
-use crate::{FinderDemo, prefs};
+use crate::prefs;
 
 pub(crate) const ICON_VIEW: usize = 0;
 

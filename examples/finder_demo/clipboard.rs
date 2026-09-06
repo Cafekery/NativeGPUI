@@ -10,7 +10,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::ops::After;
 
 impl FinderDemo {

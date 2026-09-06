@@ -4,7 +4,7 @@ use gpui::{ClickEvent, IntoElement, Styled, WeakEntity, Window};
 
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::frame::ns_window;
 

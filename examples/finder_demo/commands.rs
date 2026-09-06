@@ -4,7 +4,7 @@ use finder_fs::volumes::{self, Standard};
 use gpui::{App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, prepend_menu};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};

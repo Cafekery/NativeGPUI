@@ -8,7 +8,7 @@ use native_gpui::{
     QuickLookKey, quick_look, quick_look_close, quick_look_update, quick_look_visible,
 };
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::view::LIST_VIEW;
 

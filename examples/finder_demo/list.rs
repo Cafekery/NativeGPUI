@@ -4,7 +4,7 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Column, Line, date_text};
 use crate::dragdrop::{DragGhost, RowDrag, carries};

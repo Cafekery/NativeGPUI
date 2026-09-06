@@ -7,7 +7,7 @@ use gpui::{
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{MenuEntry, native_popup, native_slider, window_options};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::Column;
 use crate::view::ICON_VIEW;
 

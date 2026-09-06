@@ -4,10 +4,11 @@ use std::path::Path;
 
 use gpui::{Context, SharedString, Window};
 
+use crate::app::FinderDemo;
 use crate::commands::{self, Back, Forward};
 use crate::data::{Folder, Line, intern_path, split_key};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
-use crate::{FinderDemo, home, open_finder_window, tag_title};
+use crate::{home, open_finder_window, tag_title};
 
 impl FinderDemo {
     pub(crate) fn here(&self) -> &'static str {

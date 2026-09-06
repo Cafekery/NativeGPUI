@@ -9,7 +9,7 @@ use native_gpui::{
     Blending, Layer, Material, glass, material, native_label, native_rule, native_symbol,
 };
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::Column;
 use crate::list::{ROW_FONT, column_text, name_prefix};
 use crate::menus;

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use finder_fs::ops::Op;
 use gpui::{Context, DragMoveEvent, IntoElement, Render, SharedString, Window, div};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::ops::After;
 
 /// What a row drag carries: the row the pointer grabbed, standing for the whole selection.
