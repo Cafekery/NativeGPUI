@@ -11,8 +11,9 @@ use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 use crate::clipboard::can_paste;
 use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
+use crate::ops::After;
 use crate::tags::{finder_color, tags};
-use crate::{After, FinderDemo, ICON_VIEW, open_finder_window};
+use crate::{FinderDemo, ICON_VIEW, open_finder_window};
 
 const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];

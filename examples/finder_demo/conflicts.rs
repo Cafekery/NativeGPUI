@@ -22,10 +22,11 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 
+use crate::FinderDemo;
 use crate::data::byte_string;
+use crate::ops::After;
 use crate::palette::Palette;
 use crate::toolbar::PATH_H;
-use crate::{After, FinderDemo};
 
 const SHEET_W: f32 = 460.;
 const ICON: f32 = 64.;
@@ -621,7 +622,7 @@ impl FinderDemo {
                                 self.journal.record(&done, &row.op);
                                 landed = true;
                             }
-                            let touched = crate::touched(&row.op);
+                            let touched = crate::ops::touched(&row.op);
                             self.settled(touched, done.results, row.after, cx);
                         }
                         Err(err) => self.complain(&err.to_string()),
