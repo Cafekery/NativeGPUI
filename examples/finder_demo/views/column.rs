@@ -13,7 +13,7 @@ use crate::data::{Face, Line};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, rename_field, text_width};
+use crate::ui::{click_kind, rename_field, scroller, text_width};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -265,14 +265,21 @@ impl FinderDemo {
         .flex_1()
         .track_scroll(&handle);
 
+        let bar = scroller(
+            ("ng.finder.column.scroller", index),
+            &handle.0.borrow().base_handle,
+            0.,
+        );
         let column = div()
             .id(("ng.finder.column", index))
             .w(px(self.column_width(folder) - GRIP_W))
             .flex_none()
+            .relative()
             .flex()
             .flex_col()
             .pt(px(TOP_GAP))
-            .child(list);
+            .child(list)
+            .children(bar.map(|bar| div().absolute().top_0().bottom_0().right_0().child(bar)));
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
