@@ -65,7 +65,7 @@ use crate::list::{ICON_SIZE, ICON_SMALL, RowDrag, row_h};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
-use crate::ui::{Anchor, TAGS, axis_locked};
+use crate::ui::{Anchor, axis_locked, tags};
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {
@@ -1416,7 +1416,7 @@ impl FinderDemo {
         let chosen = self.selected.snapshot();
         for key in chosen.iter() {
             let next = match self.tags.get(key).copied() {
-                Some(index) if index + 1 >= TAGS.len() => None,
+                Some(index) if index + 1 >= tags().len() => None,
                 Some(index) => Some(index + 1),
                 None => Some(0),
             };

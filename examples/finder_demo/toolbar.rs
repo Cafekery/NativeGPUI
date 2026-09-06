@@ -18,7 +18,7 @@ use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::list::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
-use crate::ui::{TAGS, finder_color, glyph, small_glyph};
+use crate::ui::{finder_color, glyph, small_glyph, tags};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
@@ -190,7 +190,7 @@ pub(crate) fn group_menu(sort: Column, ascending: bool) -> Vec<MenuEntry> {
 }
 
 pub(crate) fn action_menu() -> Vec<MenuEntry> {
-    let swatches = MenuView::swatches(TAGS.iter().map(|(_, color)| finder_color(*color)));
+    let swatches = MenuView::swatches(tags().iter().map(|tag| finder_color(tag.color)));
     vec![
         MenuEntry::item("New Folder").symbol("folder.badge.plus"),
         MenuEntry::item("New Folder with Selection")
