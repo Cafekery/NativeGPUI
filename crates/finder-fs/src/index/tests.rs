@@ -290,7 +290,7 @@ fn snapshot_round_trip() {
     assert!(reopened.children(&root.join("Demo.app")).is_none());
 
     // A snapshot the index cannot read is not one it trusts.
-    fs::write(&store, b"NGVIDX01 and nothing else").unwrap();
+    fs::write(&store, b"NGVIDX03 and nothing else").unwrap();
     assert_eq!(Index::open(&store).stats().files, 0);
 }
 

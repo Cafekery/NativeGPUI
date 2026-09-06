@@ -1,7 +1,6 @@
 //! The arena the index answers from: one fixed-size node per entry, names interned once, a
 //! directory's children a linked list in listing order.
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -35,7 +34,6 @@ fn reserve<T>(items: &mut Vec<T>, more: usize) {
 #[derive(Clone, Copy)]
 pub struct Node {
     pub size: u64,
-    pub file_id: u64,
     pub parent: u32,
     pub first_child: u32,
     pub next_sibling: u32,
@@ -45,10 +43,12 @@ pub struct Node {
     pub flags: u8,
     pub state: u8,
     pub depth: u8,
-    pub pad: u8,
+    /// The snapshot writes these structs as bytes, so the tail has to be a field: padding the
+    /// compiler inserts is never written and reading it back would be reading uninitialized memory.
+    pub pad: [u8; 5],
 }
 
-const _: () = assert!(std::mem::size_of::<Node>() == 48);
+const _: () = assert!(std::mem::size_of::<Node>() == 40);
 
 impl Node {
     pub fn kind(&self) -> EntryKind {
@@ -252,8 +252,21 @@ pub struct Root {
 
 pub struct Relist {
     dir: u32,
-    old: HashMap<u32, u32>,
+    /// The children before the relist, by name, so a name still there keeps its node. Sorted and
+    /// taken from in place: a directory of 20 000 entries is one allocation, not a hash table.
+    old: Vec<(u32, u32)>,
     ids: Vec<u32>,
+}
+
+impl Relist {
+    fn take(&mut self, name: u32) -> Option<u32> {
+        let at = self
+            .old
+            .binary_search_by_key(&name, |&(name, _)| name)
+            .ok()?;
+        let id = std::mem::replace(&mut self.old[at].1, NONE);
+        (id != NONE).then_some(id)
+    }
 }
 
 pub struct Tree {
@@ -275,7 +288,6 @@ impl Default for Tree {
         Tree {
             nodes: vec![Node {
                 size: 0,
-                file_id: 0,
                 parent: NONE,
                 first_child: NONE,
                 next_sibling: NONE,
@@ -285,7 +297,7 @@ impl Default for Tree {
                 flags: 1,
                 state: 0,
                 depth: 0,
-                pad: 0,
+                pad: [0; 5],
             }],
             name_of: vec![root],
             names,
@@ -393,7 +405,6 @@ impl Tree {
         let depth = self.nodes[parent as usize].depth.saturating_add(1);
         let node = Node {
             size: 0,
-            file_id: 0,
             parent,
             first_child: NONE,
             next_sibling: NONE,
@@ -403,7 +414,7 @@ impl Tree {
             flags: 1,
             state: 0,
             depth,
-            pad: 0,
+            pad: [0; 5],
         };
         self.nodes.push(node);
         self.name_of.push(name);
@@ -422,7 +433,6 @@ impl Tree {
         node.modified = secs(entry.modified);
         node.created = secs(entry.created);
         node.added = entry.added.map_or(0, secs);
-        node.file_id = entry.file_id;
         if !node.is_dir() {
             node.size = entry.size;
         }
@@ -455,12 +465,14 @@ impl Tree {
     /// A directory's children rewritten in batches: the old list stays whole for readers until
     /// [`Tree::end_relist`] swaps in the new one.
     pub fn start_relist(&self, dir: u32) -> Relist {
+        let mut old: Vec<(u32, u32)> = self
+            .children(dir)
+            .map(|id| (self.name_of[id as usize], id))
+            .collect();
+        old.sort_unstable();
         Relist {
             dir,
-            old: self
-                .children(dir)
-                .map(|id| (self.name_of[id as usize], id))
-                .collect(),
+            old,
             ids: Vec::new(),
         }
     }
@@ -469,7 +481,7 @@ impl Tree {
     pub fn relist(&mut self, state: &mut Relist, entries: &[Entry], sealed: &[bool]) {
         for (i, entry) in entries.iter().enumerate() {
             let name = self.names.intern(&entry.name);
-            let id = match state.old.remove(&name) {
+            let id = match state.take(name) {
                 Some(id) => {
                     self.write(id, entry, sealed[i]);
                     id
@@ -489,8 +501,10 @@ impl Tree {
             self.nodes[last as usize].next_sibling = NONE;
         }
         self.nodes[dir as usize].first_child = ids.first().copied().unwrap_or(NONE);
-        for id in old.into_values() {
-            self.tombstone(id);
+        for (_, id) in old {
+            if id != NONE {
+                self.tombstone(id);
+            }
         }
         self.nodes[dir as usize].state |= LISTED | VISITED;
         ids
@@ -561,7 +575,7 @@ impl Tree {
             added: (node.added != 0).then(|| time(node.added)),
             hidden: node.flags & HIDDEN != 0,
             package: node.flags & PACKAGE != 0,
-            file_id: node.file_id,
+            file_id: 0,
         }
     }
 

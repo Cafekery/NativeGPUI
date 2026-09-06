@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::store::{NONE, Names, Node, Root, Tree};
 
-const MAGIC: &[u8; 8] = b"NGVIDX02";
+const MAGIC: &[u8; 8] = b"NGVIDX03";
 const HEADER: usize = 88;
 
 pub fn epoch(time: SystemTime) -> u64 {
