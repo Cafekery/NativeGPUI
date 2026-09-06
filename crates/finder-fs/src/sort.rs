@@ -17,6 +17,14 @@ const OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensiti
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareForcedOrdering);
 
+// No `CompareForcedOrdering` here: that flag exists to break ties deterministically when two
+// strings fold to the same value, which would turn every caseless match into "not equal" and
+// defeat the point of a prefix test. No `CompareAnchored` either: for `CFStringCompareWithOptions`
+// it doesn't ignore a longer receiver the way `-hasPrefix:` does, so the prefix range is passed
+// in directly instead.
+const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
+    .union(CFStringCompareFlags::CompareWidthInsensitive);
+
 // SAFETY: the returned CFString borrows `s`'s bytes and must not outlive it; we never let it
 // escape the caller's stack frame.
 unsafe fn borrow_cf_str(s: &str) -> CFRetained<CFString> {
@@ -37,6 +45,27 @@ pub fn name_cmp(a: &str, b: &str) -> Ordering {
     let b = unsafe { borrow_cf_str(b) };
     let range = CFRange::new(0, a.length());
     unsafe { a.compare_with_options_and_locale(Some(&b), range, OPTIONS, current_locale()) }.into()
+}
+
+/// Finder's type-select: whether `name` starts with `prefix`, case- and width-insensitively.
+pub fn starts_with(name: &str, prefix: &str) -> bool {
+    let name_cf = unsafe { borrow_cf_str(name) };
+    let prefix_cf = unsafe { borrow_cf_str(prefix) };
+    let prefix_len = prefix_cf.length();
+    if name_cf.length() < prefix_len {
+        return false;
+    }
+    let range = CFRange::new(0, prefix_len);
+    let order: Ordering = unsafe {
+        name_cf.compare_with_options_and_locale(
+            Some(&prefix_cf),
+            range,
+            PREFIX_OPTIONS,
+            current_locale(),
+        )
+    }
+    .into();
+    order == Ordering::Equal
 }
 
 /// Sorts `names` into Finder's Name order. Converts each name to a `CFString` once, instead of
@@ -74,6 +103,15 @@ pub fn sort_names(names: &mut [String]) {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn prefix_is_case_and_width_insensitive() {
+        assert!(starts_with("README.md", "read"));
+        assert!(starts_with("Ärger", "ärger"));
+        assert!(starts_with("Brewfile", "brewfile"));
+        assert!(!starts_with("backup.sh", "README"));
+        assert!(!starts_with("file 2", "file 10"));
+    }
 
     #[test]
     fn numeric_order() {
