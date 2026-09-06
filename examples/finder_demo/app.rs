@@ -23,12 +23,13 @@ use crate::chrome::scope_bar;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::listing::{Keys, Listings};
+use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
 use crate::views::icon::Grid;
 use crate::views::list::{ICON_SIZE, ICON_SMALL};
-use crate::{conflicts, prefs, read};
+use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
@@ -141,7 +142,7 @@ pub(crate) struct FinderDemo {
     /// The conflict sheet, while one of the queue's operations has a name collision to resolve.
     pub(crate) conflict: Option<conflicts::Sheet>,
     /// The queue's jobs, for the toolbar's progress popover.
-    pub(crate) jobs: Vec<conflicts::JobRow>,
+    pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) jobs_open: bool,
 }
 

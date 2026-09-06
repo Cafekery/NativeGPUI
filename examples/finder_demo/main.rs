@@ -4,7 +4,6 @@ mod app;
 mod art;
 mod chrome;
 mod clipboard;
-mod conflicts;
 mod data;
 mod dragdrop;
 mod frame;
@@ -51,7 +50,7 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
-        conflicts::install_undo_redo(cx);
+        ops::undo::install_undo_redo(cx);
         menus::install(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
         cx.bind_keys([
