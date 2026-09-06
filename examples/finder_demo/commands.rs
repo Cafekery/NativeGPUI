@@ -198,13 +198,7 @@ impl FinderDemo {
                 crate::open_finder_window(this.here(), 1, cx);
             }))
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
-                let host = window.window_handle();
-                let here = this.here();
-                cx.defer(move |cx| {
-                    let tab = crate::open_finder_window(here, 1, cx);
-                    tab.update(cx, |_, tab, cx| native_gpui::add_tab(host, tab, cx))
-                        .ok();
-                });
+                this.open_tab(this.here(), window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
                 this.run_menu(Act::NewFolder, window, cx);

@@ -16,6 +16,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::list::RowDrag;
+use crate::menus;
 use crate::palette::Palette;
 use crate::ui::{TAGS, finder_color, glyph, small_glyph};
 use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
@@ -395,13 +396,14 @@ impl FinderDemo {
                     segment = segment.child(div().flex_none().mr(px(1.)).child(chevron));
                 }
             }
-            trail = trail.child(segment.when_some(target, |crumb_row, id| {
+            let segment = segment.when_some(target, |crumb_row, id| {
                 // Finder's path bar walks on the first click, released over the crumb; ⌥-click
-                // copies the crumb's path instead, like its menu's Copy as Pathname.
+                // opens the crumb in a new window and closes this one.
                 crumb_row
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if is_alt_click(event) {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()));
+                            crate::open_finder_window(id, 1, cx);
+                            window.remove_window();
                         } else {
                             this.go(id, window, cx);
                         }
@@ -413,7 +415,17 @@ impl FinderDemo {
                             cx.notify();
                         }),
                     )
-            }));
+            });
+            trail = trail.child(match target {
+                Some(id) => menus::attach(
+                    ("ng.finder.crumb.menu", index),
+                    menus::crumb(id, crumb),
+                    cx.entity().downgrade(),
+                    segment,
+                )
+                .into_any_element(),
+                None => segment.into_any_element(),
+            });
         }
 
         div()
