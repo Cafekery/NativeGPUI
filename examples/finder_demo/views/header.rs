@@ -1,13 +1,11 @@
 //! The list view's column-header band, and the two drags that reorder and resize it.
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Pixels, TextRun,
-    Window, div, hsla, prelude::*, px,
+    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, TextRun, Window, div,
+    hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{
-    Blending, Layer, Material, glass, material, native_label, native_rule, native_symbol,
-};
+use native_gpui::{native_label, native_rule, native_symbol};
 
 use crate::app::FinderDemo;
 use crate::data::Column;
@@ -111,60 +109,6 @@ fn overlay(fill: Hsla) -> Div {
         .left_0()
         .right_0()
         .bg(fill)
-}
-
-/// The pane's glass, frosting the rows. Only its window-side corners round: the glass starts a
-/// radius left of the pane so its left corners fall outside the clip, with a rule for that edge.
-pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
-    div()
-        .absolute()
-        .top_0()
-        .right_0()
-        .bottom_0()
-        .w(width)
-        .overflow_hidden()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .bottom_0()
-                .left(-corner)
-                .child(
-                    glass("ng.finder.pane")
-                        .frosting_gpui()
-                        .corner_radius(corner),
-                ),
-        )
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .bottom_0()
-                .w(px(1.))
-                .child(native_rule("ng.finder.pane.edge")),
-        )
-        .into_any_element()
-}
-
-/// One material over the toolbar, scope and column-header bands, from the window's edge, so it
-/// runs on under the floating sidebar and its gutters and corners frost the rows.
-pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .right(right)
-        .h(height)
-        .child(
-            material("ng.finder.band", Material::Header)
-                .layer(Layer::Above)
-                // At the default BehindWindow this samples what is behind the window, not the rows.
-                .blending(Blending::WithinWindow)
-                .size_full(),
-        )
-        .into_any_element()
 }
 
 fn cell_body(
