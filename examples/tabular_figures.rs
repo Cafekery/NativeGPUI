@@ -43,7 +43,7 @@ enum Want {
 fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) {
     let widths: Vec<f32> = ('0'..='9')
         .map(|d| {
-            let text: String = std::iter::repeat(d).take(REPEATS).collect();
+            let text: String = std::iter::repeat_n(d, REPEATS).collect();
             shaped_width(window, font, size, &text)
         })
         .collect();
@@ -78,8 +78,8 @@ impl Render for Probe {
             let size = px(14.);
 
             println!(
-                "{:<44} {:>9} {:>9} {:>9}  {:<12} {}",
-                "FONT", "'1'x10", "'4'x10", "SPREAD", "FIGURES", "VERDICT"
+                "{:<44} {:>9} {:>9} {:>9}  {:<12} VERDICT",
+                "FONT", "'1'x10", "'4'x10", "SPREAD", "FIGURES"
             );
 
             let mut menlo = system_font(FontWeight::NORMAL);

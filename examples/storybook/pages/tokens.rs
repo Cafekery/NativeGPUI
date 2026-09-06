@@ -39,7 +39,10 @@ const FILE_TYPES: &[(&str, FileType<'static>)] = &[
 
 const ABSENT_UTI: &str = "com.apple.icon";
 
-const SYMBOLS: &[(&str, fn() -> SymbolColor)] = &[
+/// One symbol the page draws, and the colouring it asks for.
+type Sample = (&'static str, fn() -> SymbolColor);
+
+const SYMBOLS: &[Sample] = &[
     ("gearshape", || SymbolColor::Label),
     ("magnifyingglass", || SymbolColor::Label),
     ("trash", || SymbolColor::Label),

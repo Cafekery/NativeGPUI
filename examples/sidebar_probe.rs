@@ -444,7 +444,7 @@ fn edge_anim(edge: &mut Edge, sidebar: &NativeSidebar) -> bool {
 fn edge_table(edge: &Edge, sidebar: &NativeSidebar) {
     println!("\n=== EDGE SWEEP TABLE (arm {}) ===", edge_arm());
     println!(
-        "{:<12} {:<9} {:>17} {:>17} {:>17} {:>16} {:<5} {:>4}  {}",
+        "{:<12} {:<9} {:>17} {:>17} {:>17} {:>16} {:<5} {:>4}  note",
         "state",
         "target",
         "aimed logical",
@@ -452,8 +452,7 @@ fn edge_table(edge: &Edge, sidebar: &NativeSidebar) {
         "received logical",
         "error (pt)",
         "hit",
-        "att",
-        "note"
+        "att"
     );
     let mut worst = 0f64;
     let mut received = 0usize;
@@ -1342,7 +1341,7 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
 
     if let Ok(every) = env::var("NG_TOGGLE_EVERY") {
         if let Ok(every) = every.parse::<u64>() {
-            if f > 40 && f % every == 0 {
+            if f > 40 && f.is_multiple_of(every) {
                 sidebar.toggle();
             }
         }
@@ -1531,7 +1530,6 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         demo.row_click_tries += 1;
         click_at(window_to_global(sidebar, at.x, at.y));
         demo.click_wait = 24;
-        return;
     }
 }
 

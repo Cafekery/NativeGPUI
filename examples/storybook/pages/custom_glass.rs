@@ -28,7 +28,10 @@ pub struct State {
 }
 
 #[cfg(feature = "private-api")]
-const PRESETS: [(&str, fn() -> GlassRecipe); 4] = [
+/// One preset the page offers, and the recipe behind it.
+type Preset = (&'static str, fn() -> GlassRecipe);
+
+const PRESETS: [Preset; 4] = [
     ("Regular (dark)", GlassRecipe::regular),
     ("Regular (light)", GlassRecipe::regular_light),
     ("Clear", GlassRecipe::clear),
