@@ -218,10 +218,7 @@ fn report(window: &Window) {
         return;
     }
 
-    println!(
-        "{:<44} {:<16} {:<26} {}",
-        "ROW", "POINT", "hitTest:", "VERDICT"
-    );
+    println!("{:<44} {:<16} {:<26} VERDICT", "ROW", "POINT", "hitTest:");
     let rows: [(&str, NSPoint, &NSView, bool); 4] = [
         ("over the switch, under the material", knob_at, &knob, false),
         ("over a hosted label", label_at, &gpui, true),

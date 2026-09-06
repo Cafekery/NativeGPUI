@@ -180,7 +180,7 @@ fn header_band() -> AnyElement {
                             .items_center()
                             .child(
                                 div().flex_1().px_2().child(
-                                    native_label(("hdr", i), *title)
+                                    native_label(("hdr", i), title)
                                         .font_size(px(11.))
                                         .weight(FontWeight::MEDIUM)
                                         .color(SystemColor::SecondaryLabel)

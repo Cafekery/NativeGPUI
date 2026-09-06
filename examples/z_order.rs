@@ -132,8 +132,8 @@ fn keys(list: &[u64]) -> String {
 fn report(readings: &[Reading]) {
     REPORTED.store(1, Ordering::Relaxed);
     println!(
-        "{:<26} {:<16} {:<16} {:<16} {}",
-        "PHASE", "PAINT ORDER", "SUBVIEWS", "KEY LOOP", "VERDICT"
+        "{:<26} {:<16} {:<16} {:<16} VERDICT",
+        "PHASE", "PAINT ORDER", "SUBVIEWS", "KEY LOOP"
     );
     for reading in readings {
         let phase = &SCRIPT[reading.phase];

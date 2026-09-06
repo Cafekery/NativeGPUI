@@ -181,10 +181,7 @@ fn report(window: &Window) {
         return;
     }
 
-    println!(
-        "{:<40} {:<16} {:<34} {}",
-        "ROW", "POINT", "hitTest:", "VERDICT"
-    );
+    println!("{:<40} {:<16} {:<34} VERDICT", "ROW", "POINT", "hitTest:");
     let rows: [(&str, NSPoint, &NSView, bool); 4] = [
         (
             "over the switch, below the container",

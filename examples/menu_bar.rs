@@ -320,8 +320,8 @@ fn rows_of(menu: &NSMenu) -> Vec<Retained<NSMenuItem>> {
 fn print_header() {
     println!();
     println!(
-        "{:<10} {:<24} {:<4} {:<14} {:<32} {:<18} {}",
-        "MENU", "TITLE", "KEY", "MODIFIERS", "SELECTOR", "TARGET", "ENABLED"
+        "{:<10} {:<24} {:<4} {:<14} {:<32} {:<18} ENABLED",
+        "MENU", "TITLE", "KEY", "MODIFIERS", "SELECTOR", "TARGET"
     );
 }
 
