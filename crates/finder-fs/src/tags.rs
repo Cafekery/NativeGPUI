@@ -5,7 +5,7 @@
 //! through the URL resource key Finder uses, so both apps agree.
 
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -133,9 +133,20 @@ fn finder_tags() -> Option<Vec<Tag>> {
     )
 }
 
+/// The account's home, not `$HOME`: a fixture home moves an app's folders, never Finder's tags.
+fn home() -> Option<PathBuf> {
+    let passwd = unsafe { libc::getpwuid(libc::getuid()) };
+    let dir = unsafe { passwd.as_ref() }?.pw_dir;
+    if dir.is_null() {
+        return None;
+    }
+    let dir = unsafe { CStr::from_ptr(dir) };
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+}
+
 /// macOS 26 keeps `FinderTagDict` in the iCloud key-value store, not in `SyncedPreferences`.
 fn tag_dict() -> Option<Vec<u8>> {
-    let stores = PathBuf::from(std::env::var_os("HOME")?).join("Library/Daemon Containers");
+    let stores = home()?.join("Library/Daemon Containers");
     std::fs::read_dir(stores).ok()?.flatten().find_map(|store| {
         let store = store
             .path()
