@@ -41,9 +41,8 @@ fn sidebar_file() -> HashMap<String, Vec<String>> {
     let Some(data) = NSData::dataWithContentsOfFile(&path) else {
         return HashMap::new();
     };
-    let read = unsafe {
-        NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty())
-    };
+    let read =
+        NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty());
     let Ok(object) = read else {
         return HashMap::new();
     };
@@ -88,7 +87,7 @@ fn write_sidebar_file(kept: &HashMap<String, Vec<String>>) {
         return;
     };
     let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
-    unsafe { data.writeToFile_atomically(&path, true) };
+    data.writeToFile_atomically(&path, true);
 }
 
 fn read_list(key: &str) -> Vec<String> {
