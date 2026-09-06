@@ -1,6 +1,7 @@
 //! `NSPopUpButton` and real `NSMenu`s: pop-up, pull-down and context menus.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::CStr;
 use std::fmt;
@@ -14,11 +15,12 @@ use gpui::{
     Size, Style, Window, px, size,
 };
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBox, NSBoxType, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition, NSView,
+    NSBezierPath, NSBox, NSBoxType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
+    NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition,
+    NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
@@ -37,6 +39,8 @@ pub enum MenuEntry {
         title: String,
         /// An SF Symbol name.
         symbol: Option<String>,
+        /// A filled disc in this sRGB colour, drawn where the symbol would go.
+        dot: Option<(u8, u8, u8)>,
         enabled: bool,
         checked: bool,
         /// Drawn at the trailing edge; a label only, since a transient menu is not listening.
@@ -52,6 +56,7 @@ impl MenuEntry {
         Self::Item {
             title: title.into(),
             symbol: None,
+            dot: None,
             enabled: true,
             checked: false,
             key: None,
@@ -71,6 +76,14 @@ impl MenuEntry {
     pub fn symbol(mut self, name: impl Into<String>) -> Self {
         if let Self::Item { symbol, .. } = &mut self {
             *symbol = Some(name.into());
+        }
+        self
+    }
+
+    /// Finder's tag rows: a disc in the tag's own colour rather than an SF Symbol.
+    pub fn dot(mut self, color: (u8, u8, u8)) -> Self {
+        if let Self::Item { dot, .. } = &mut self {
+            *dot = Some(color);
         }
         self
     }
@@ -319,6 +332,53 @@ fn symbol_image(name: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
 }
 
+/// Which image a row wears, as a string: an `NSImage` cannot say what it was made from.
+fn image_key(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<String> {
+    match (symbol, dot) {
+        (Some(name), _) => Some(name.to_owned()),
+        (None, Some((r, g, b))) => Some(format!("dot {r} {g} {b}")),
+        (None, None) => None,
+    }
+}
+
+fn menu_image(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<Retained<NSImage>> {
+    match (symbol, dot) {
+        (Some(name), _) => symbol_image(name),
+        (None, Some(color)) => Some(dot_image(color)),
+        (None, None) => None,
+    }
+}
+
+/// A tag's disc, drawn rather than an SF Symbol, which a menu row would baseline-align.
+fn dot_image(color: (u8, u8, u8)) -> Retained<NSImage> {
+    thread_local! {
+        static DOTS: RefCell<HashMap<(u8, u8, u8), Retained<NSImage>>> =
+            RefCell::new(HashMap::new());
+    }
+    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&color).cloned()) {
+        return hit;
+    }
+    let (r, g, b) = color;
+    let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
+        NSColor::colorWithSRGBRed_green_blue_alpha(
+            r as f64 / 255.,
+            g as f64 / 255.,
+            b as f64 / 255.,
+            1.,
+        )
+        .setFill();
+        NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+        Bool::YES
+    });
+    let image = NSImage::imageWithSize_flipped_drawingHandler(
+        NSSize::new(SWATCH_DIAMETER, SWATCH_DIAMETER),
+        false,
+        &draw,
+    );
+    DOTS.with_borrow_mut(|cache| cache.insert(color, image.clone()));
+    image
+}
+
 fn nsstring_is(text: &NSString, want: &str) -> bool {
     let ptr = text.UTF8String();
     if ptr.is_null() {
@@ -373,6 +433,7 @@ fn sync_level(
         let MenuEntry::Item {
             title,
             symbol,
+            dot,
             enabled,
             checked,
             key,
@@ -412,20 +473,21 @@ fn sync_level(
             item.setKeyEquivalent(&NSString::from_str(""));
         }
 
-        // The symbol name is parked in `representedObject`; an NSImage cannot say which it is.
+        // What the image is, is parked in `representedObject`; an NSImage cannot say which it is.
         let current = item
             .representedObject()
             .and_then(|object| object.downcast::<NSString>().ok());
-        let matches = match (&current, symbol) {
+        let want = image_key(symbol.as_deref(), *dot);
+        let matches = match (&current, &want) {
             (Some(have), Some(want)) => nsstring_is(have, want),
             (None, None) => true,
             _ => false,
         };
         if !matches {
-            item.setImage(symbol.as_deref().and_then(symbol_image).as_deref());
-            let name = symbol.as_deref().map(NSString::from_str);
-            let name: Option<&AnyObject> = name.as_deref().map(|name| name.as_ref());
-            unsafe { item.setRepresentedObject(name) };
+            item.setImage(menu_image(symbol.as_deref(), *dot).as_deref());
+            let key = want.map(|key| NSString::from_str(&key));
+            let key: Option<&AnyObject> = key.as_deref().map(|key| key.as_ref());
+            unsafe { item.setRepresentedObject(key) };
         }
 
         if submenu.is_empty() {
