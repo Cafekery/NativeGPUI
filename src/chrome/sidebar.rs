@@ -599,6 +599,7 @@ impl NativeSidebar {
 
     /// Called with the row's id when the user clicks its eject affordance; unmounts nothing.
     /// Files dropped on a group: the sidebar draws the insertion line, the app keeps the row.
+    /// Only folders insert; a file dropped between rows is refused, as Finder refuses it.
     pub fn on_drop_paths(&self, handler: impl Fn(&SidebarDrop, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_drop_paths.borrow_mut() = Some(Rc::new(handler));
     }
@@ -1743,6 +1744,12 @@ fn file_drop_target(
         .map(|_| (parent, at))
 }
 
+/// Finder makes a sidebar row of a folder and of nothing else: a file dropped between rows shows
+/// no insertion line.
+fn insertable(paths: &[PathBuf]) -> bool {
+    paths.iter().all(|path| path.is_dir())
+}
+
 /// A row that takes files itself, as Finder's tags do: the drop lands on it, not between rows.
 fn file_drop_row(shared: &Rc<Shared>, item: Option<&AnyObject>) -> Option<u64> {
     let key = Shared::key_of_item(item?);
@@ -1761,7 +1768,8 @@ fn validate_file_drop(
     item: Option<&AnyObject>,
     index: NSInteger,
 ) -> NSDragOperation {
-    if shared.on_drop_paths.borrow().is_none() || dragged_paths(info).is_empty() {
+    let paths = dragged_paths(info);
+    if shared.on_drop_paths.borrow().is_none() || paths.is_empty() {
         return NSDragOperation::empty();
     }
     if let Some(key) = file_drop_row(shared, item) {
@@ -1772,6 +1780,9 @@ fn validate_file_drop(
             )
         };
         return NSDragOperation::Copy;
+    }
+    if !insertable(&paths) {
+        return NSDragOperation::empty();
     }
     let Some((group, at)) = file_drop_target(shared, outline, info, item, index) else {
         return NSDragOperation::empty();
@@ -1792,6 +1803,9 @@ fn accept_file_drop(
         return false;
     }
     let onto = file_drop_row(shared, item);
+    if onto.is_none() && !insertable(&paths) {
+        return false;
+    }
     let Some((group, at)) = onto
         .and_then(|key| {
             let model = shared.model.borrow();
