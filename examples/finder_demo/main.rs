@@ -226,7 +226,7 @@ pub(crate) struct FinderDemo {
     pub(crate) type_filter: Option<String>,
     /// Whether type-select found a match earlier in the run typing `type_filter` reached.
     type_filter_seen_match: bool,
-    pub(crate) tags: HashMap<SharedString, usize>,
+    pub(crate) tags: HashMap<SharedString, Vec<usize>>,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
     pub(crate) preview_window: Option<PreviewWindow>,
@@ -516,8 +516,8 @@ impl FinderDemo {
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let chosen = self.selected.snapshot();
         for key in chosen.iter() {
-            self.tags.insert(key.clone(), tag);
-            write_tag(key, Some(tag), cx);
+            self.tags.insert(key.clone(), vec![tag]);
+            write_tags(key, &[tag], cx);
         }
     }
 
@@ -888,9 +888,10 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let rows = data::tagged_rows(&tag, index(), HITS);
-                    let marks: Vec<(SharedString, usize)> = rows
+                    let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()
-                        .filter_map(|row| Some((row.path.clone(), first_tag(&row.path)?)))
+                        .map(|row| (row.path.clone(), row_tags(&row.path)))
+                        .filter(|(_, carried)| !carried.is_empty())
                         .collect();
                     (rows, marks)
                 })
@@ -1476,16 +1477,21 @@ impl FinderDemo {
     pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
         let chosen = self.selected.snapshot();
         for key in chosen.iter() {
-            let next = match self.tags.get(key).copied() {
+            let next = match self
+                .tags
+                .get(key)
+                .and_then(|carried| carried.first().copied())
+            {
                 Some(index) if index + 1 >= tags().len() => None,
                 Some(index) => Some(index + 1),
                 None => Some(0),
             };
-            match next {
-                Some(index) => self.tags.insert(key.clone(), index),
-                None => self.tags.remove(key),
+            let wanted: Vec<usize> = next.into_iter().collect();
+            match wanted.is_empty() {
+                true => self.tags.remove(key),
+                false => self.tags.insert(key.clone(), wanted.clone()),
             };
-            write_tag(key, next, cx);
+            write_tags(key, &wanted, cx);
         }
     }
 
@@ -2350,17 +2356,21 @@ fn tag_title(id: &str) -> String {
     }
 }
 
-/// The first tag a file carries that the demo's tag menus know, as their index.
-fn first_tag(path: &str) -> Option<usize> {
+/// The tags a file carries that the demo's tag menus know, as their indices.
+fn row_tags(path: &str) -> Vec<usize> {
     tags::of(Path::new(path))
         .iter()
-        .find_map(|tag| crate::ui::tag_index(&tag.name))
+        .filter_map(|tag| crate::ui::tag_index(&tag.name))
+        .collect()
 }
 
-/// One row's Finder tag, written where Finder reads it.
-fn write_tag(key: &SharedString, tag: Option<usize>, cx: &mut Context<FinderDemo>) {
+/// One row's Finder tags, written where Finder reads them.
+fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) {
     let path = PathBuf::from(key.as_ref());
-    let wanted: Vec<tags::Tag> = tag.map(crate::ui::finder_tag).into_iter().collect();
+    let wanted: Vec<tags::Tag> = tags
+        .iter()
+        .map(|index| crate::ui::finder_tag(*index))
+        .collect();
     cx.background_executor()
         .spawn(async move {
             tags::set(&path, &wanted).ok();

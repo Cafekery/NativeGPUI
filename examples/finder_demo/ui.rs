@@ -25,6 +25,9 @@ use crate::{FinderDemo, ns_window};
 
 /// Finder's tag dot: 10pt across, its fill a fifth of the way from the system colour to white.
 const TAG_DOT: f32 = 10.;
+/// Finder overlaps a row's dots at this pitch and draws at most [`TAG_DOTS_MAX`] of them.
+const TAG_DOT_PITCH: f32 = 5.;
+const TAG_DOTS_MAX: usize = 3;
 const TAG_LIGHTEN: f32 = 0.2;
 /// Finder's tag pill wears the system colour itself, a shade darkened by the sheet behind it.
 const TAG_PILL_ALPHA: f32 = 0.85;
@@ -400,6 +403,36 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .border_color(finder_edge(color))
         .bg(finder_color(color))
         .into_any_element()
+}
+
+/// The room a row's tag dots take.
+pub(crate) fn tag_dots_w(count: usize) -> f32 {
+    match count.min(TAG_DOTS_MAX) {
+        0 => 0.,
+        shown => TAG_DOT + TAG_DOT_PITCH * (shown - 1) as f32,
+    }
+}
+
+/// Finder's stack: the newest tag leftmost and over the ones before it, three dots at most.
+pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
+    let shown = &tags[tags.len().saturating_sub(TAG_DOTS_MAX)..];
+    if shown.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .relative()
+            .flex_none()
+            .w(px(tag_dots_w(shown.len())))
+            .h(px(TAG_DOT))
+            .children(shown.iter().enumerate().map(|(at, tag)| {
+                div()
+                    .absolute()
+                    .left(px((shown.len() - 1 - at) as f32 * TAG_DOT_PITCH))
+                    .child(tag_dot(*tag))
+            }))
+            .into_any_element(),
+    )
 }
 
 /// `(extend, toggle, twice)`: Shift, Cmd and a double click.

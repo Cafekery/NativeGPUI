@@ -370,7 +370,10 @@ impl FinderDemo {
         let favourite = crate::ui::tags().iter().position(|it| it.name == tag.name);
         for path in paths {
             if let Some(index) = favourite {
-                self.tags.insert(intern_path(path).into(), index);
+                let carried = self.tags.entry(intern_path(path).into()).or_default();
+                if !carried.contains(&index) {
+                    carried.push(index);
+                }
             }
             let path = path.clone();
             let tag = tag.clone();
