@@ -55,6 +55,9 @@ pub(crate) struct FinderDemo {
     /// Finder's scope bar: `scope_bar::THIS_MAC` or `scope_bar::THIS_FOLDER`.
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
+    /// Folders an Option-disclose is still waiting on, each with its depth under the row it
+    /// started from: a listing that lands under one of these discloses its own folders too.
+    pub(crate) expanding: HashMap<&'static str, usize>,
     pub(crate) selected: Keys,
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
@@ -171,6 +174,7 @@ impl FinderDemo {
             query: String::new(),
             scope: prefs::search_scope().unwrap_or(scope_bar::THIS_FOLDER),
             expanded: Keys::default(),
+            expanding: HashMap::new(),
             selected: Keys::default(),
             cursor: None,
             anchor: None,

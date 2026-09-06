@@ -92,6 +92,18 @@ impl Keys {
         Arc::make_mut(&mut self.keys).remove(key)
     }
 
+    /// Every key in one revision: a disclosed subtree is thousands of them, and one at a time
+    /// would copy the set and rebuild the rows behind it that many times.
+    pub(crate) fn extend(&mut self, keys: impl IntoIterator<Item = SharedString>) {
+        self.rev = next_rev();
+        Arc::make_mut(&mut self.keys).extend(keys);
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&SharedString) -> bool) {
+        self.rev = next_rev();
+        Arc::make_mut(&mut self.keys).retain(keep);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.rev = next_rev();
         self.keys = Arc::default();
