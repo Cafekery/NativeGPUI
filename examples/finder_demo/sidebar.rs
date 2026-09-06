@@ -9,12 +9,15 @@ use native_gpui::sidebar::{
 
 use crate::FinderDemo;
 use crate::data::{intern, intern_path, volume_roots};
+use crate::ui::finder_color_rgb;
 
 pub(crate) const SIDEBAR_W: f32 = 184.;
 
 pub(crate) enum Glyph {
     Symbol(&'static str),
     Artwork(&'static str),
+    /// A tag's dot: filled in Finder's own colour for that index, an outline for no colour.
+    Tag(u8),
 }
 
 impl Glyph {
@@ -22,6 +25,7 @@ impl Glyph {
         match *self {
             Glyph::Symbol(name) => SidebarIcon::Symbol(name.into()),
             Glyph::Artwork(name) => SidebarIcon::SystemResource(name.into()),
+            Glyph::Tag(color) => SidebarIcon::Dot(finder_color_rgb(color)),
         }
     }
 }
@@ -105,10 +109,11 @@ pub(crate) fn groups() -> Vec<Group> {
     let tags = finder_fs::tags::all()
         .into_iter()
         .map(|tag| {
+            let color = tag.color;
             row(
                 intern(&format!("tag:{}", tag.name)),
                 tag.name,
-                Glyph::Symbol("circle.fill"),
+                Glyph::Tag(color),
             )
         })
         .collect();
