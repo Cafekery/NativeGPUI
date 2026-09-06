@@ -76,7 +76,6 @@ impl FinderDemo {
         let columns = self.list_columns.clone();
         let name_w = self.name_w;
         let dates = tokens::system_font_tabular(FontWeight::NORMAL);
-        let row_tip = self.row_tip.clone();
         // Finder's search results show a path where the Kind column sits.
         let searching = self.searching();
 
@@ -308,32 +307,8 @@ impl FinderDemo {
                                     })
                                     .ok();
                                 }
-                            })
-                            .on_hover({
-                                let this = this.clone();
-                                let key = line.key.clone();
-                                move |hovered: &bool, _, cx| {
-                                    let key = key.clone();
-                                    this.update(cx, |demo: &mut FinderDemo, cx| {
-                                        demo.hover_row(*hovered, key, cx);
-                                    })
-                                    .ok();
-                                }
                             }),
                         None => row,
-                    };
-                    let row = if row_tip.as_deref() == Some(line.key.as_ref()) {
-                        match line.row.opens.and_then(crate::hover_tip::folder_summary) {
-                            Some(text) => row.child(crate::hover_tip::row_tooltip(
-                                text,
-                                name_prefix(&line, icon) - LABEL_GAP - icon / 2.,
-                                row_h + 6.,
-                                label,
-                            )),
-                            None => row,
-                        }
-                    } else {
-                        row
                     };
                     row_menu(("ng.finder.row.menu", at), &line, &selected, this, row)
                         .into_any_element()
