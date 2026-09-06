@@ -8,8 +8,8 @@ use native_gpui::{MenuEntry, MenuView};
 
 use super::{Act, Menu};
 use crate::app::FinderDemo;
-use crate::clipboard::can_paste;
 use crate::data::{Column, Line};
+use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, tags};
 use crate::view::ICON_VIEW;
 use crate::views::header::column_title;
