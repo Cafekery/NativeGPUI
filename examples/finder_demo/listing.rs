@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 
 use gpui::SharedString;
 
+use crate::FinderDemo;
 use crate::data::{Column, Line, group_of};
-use crate::{FinderDemo, LIST_VIEW};
+use crate::view::LIST_VIEW;
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {

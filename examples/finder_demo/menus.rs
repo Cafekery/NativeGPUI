@@ -13,7 +13,8 @@ use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
 use crate::ops::After;
 use crate::tags::{finder_color, tags};
-use crate::{FinderDemo, ICON_VIEW, open_finder_window};
+use crate::view::ICON_VIEW;
+use crate::{FinderDemo, open_finder_window};
 
 const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];

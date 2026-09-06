@@ -3,7 +3,8 @@
 use gpui::{Context, KeyDownEvent, ScrollStrategy, Window, point, px};
 use native_gpui::{quick_look_close, quick_look_visible};
 
-use crate::{COLUMN_VIEW, FinderDemo, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
+use crate::FinderDemo;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 
 impl FinderDemo {
     pub(crate) fn on_key(

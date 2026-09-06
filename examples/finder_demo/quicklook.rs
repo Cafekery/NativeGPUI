@@ -8,8 +8,9 @@ use native_gpui::{
     QuickLookKey, quick_look, quick_look_close, quick_look_update, quick_look_visible,
 };
 
+use crate::FinderDemo;
 use crate::data::Line;
-use crate::{FinderDemo, LIST_VIEW};
+use crate::view::LIST_VIEW;
 
 impl FinderDemo {
     /// Space: the system Quick Look panel over the selection, zooming out of the cursor's icon.

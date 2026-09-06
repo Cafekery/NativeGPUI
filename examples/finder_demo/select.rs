@@ -9,9 +9,10 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardWriting};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
+use crate::FinderDemo;
 use crate::commands::{CopyNames, SelectAll};
 use crate::data::{Line, split_key};
-use crate::{FinderDemo, LIST_VIEW};
+use crate::view::LIST_VIEW;
 
 impl FinderDemo {
     pub(crate) fn reveal(&mut self, key: &SharedString) {

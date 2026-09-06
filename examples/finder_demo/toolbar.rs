@@ -14,13 +14,14 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
+use crate::FinderDemo;
 use crate::art::{glyph, small_glyph};
 use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
 use crate::tags::{finder_color, tags};
-use crate::{FinderDemo, GALLERY_VIEW, ICON_VIEW};
+use crate::view::{GALLERY_VIEW, ICON_VIEW};
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
