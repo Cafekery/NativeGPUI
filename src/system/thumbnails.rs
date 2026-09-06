@@ -145,6 +145,9 @@ fn generate(job: Job) {
                 | QLThumbnailGenerationRequestRepresentationTypes::Icon,
         )
     };
+    // Icon mode is Finder's own rendering: the fitted picture with its keyline, corner radius
+    // and shadow baked into a raster the size of the box.
+    unsafe { request.setIconMode(true) };
 
     let key = job.key;
     let pixels = job.pixels as usize;
@@ -161,10 +164,8 @@ fn generate(job: Job) {
     }
 }
 
-/// Draws at the aspect-correct size Quick Look already fit within the requested box, not the
-/// box itself: a landscape photo stays landscape, a tall one stays tall, matching Finder rather
-/// than stretching every kind of picture to fill a square. `max_pixels` (the box side we asked
-/// the generator for) also caps the raster, so a source Quick Look upscales never grows past it.
+/// Draws at the size Quick Look chose within the requested box, capped by `max_pixels` (the box
+/// side we asked the generator for) so a source Quick Look upscales never grows past it.
 fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     let fit = image.size();
     let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
