@@ -20,12 +20,12 @@ use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
 use crate::data::{Column, Folders, Line, Row};
-use crate::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
-use crate::icon::Grid;
-use crate::list::{ICON_SIZE, ICON_SMALL};
 use crate::listing::{Keys, Listings};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::LIST_VIEW;
+use crate::views::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
+use crate::views::icon::Grid;
+use crate::views::list::{ICON_SIZE, ICON_SMALL};
 use crate::{conflicts, prefs, read, scope, sidebar};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";

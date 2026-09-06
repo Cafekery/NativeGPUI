@@ -6,10 +6,10 @@ use gpui::{Context, Window};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
 use crate::app::FinderDemo;
-use crate::header::PANE_INSET;
-use crate::icon::cell;
-use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
 use crate::prefs;
+use crate::views::header::PANE_INSET;
+use crate::views::icon::cell;
+use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
 
 pub(crate) const ICON_VIEW: usize = 0;
 

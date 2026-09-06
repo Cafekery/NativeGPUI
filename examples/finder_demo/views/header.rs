@@ -11,11 +11,11 @@ use native_gpui::{
 
 use crate::app::FinderDemo;
 use crate::data::Column;
-use crate::list::{ROW_FONT, column_text, name_prefix};
 use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::click_kind;
+use crate::views::list::{ROW_FONT, column_text, name_prefix};
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -478,14 +478,12 @@ impl FinderDemo {
                 }
                 let mut head = start;
                 let mut best = (f32::MAX, from);
-                for slot in 0..=count {
+                for (slot, width) in others[..count].iter().chain([&0.]).enumerate() {
                     let error = (head - left).abs();
                     if error < best.0 {
                         best = (error, slot);
                     }
-                    if slot < count {
-                        head += others[slot];
-                    }
+                    head += width;
                 }
                 if best.1 != from {
                     let spec = self.list_columns.remove(from);
