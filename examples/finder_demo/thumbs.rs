@@ -48,14 +48,11 @@ pub(crate) fn thumbnails_landed() -> usize {
 pub(crate) fn collect_thumbnails() {
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
     for (key, image) in landed {
-        match image {
-            Some(image) => {
-                THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
-            }
-            // A cancelled generation asks again the next time the row is on screen.
-            None => ASKED.with(|asked| {
-                asked.borrow_mut().remove(&key);
-            }),
+        // What came back empty stays asked: Quick Look draws nothing for this file, and asking
+        // again is a stat and a lock for every row of every frame. The sweep re-arms whatever
+        // scrolled away, so a row that comes back asks once more.
+        if let Some(image) = image {
+            THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
         }
     }
 }
@@ -75,14 +72,17 @@ pub(crate) fn sweep_thumbnails() {
         return;
     }
     SWEPT.with(|swept| swept.set((Some(now), frames)));
-    let drawn: Vec<PathBuf> = DRAWN.with(|drawn| {
-        drawn
+    let drawn: HashSet<SharedString> = DRAWN.with(|drawn| drawn.borrow_mut().drain().collect());
+    ASKED.with(|asked| {
+        asked
             .borrow_mut()
-            .drain()
-            .map(|path| PathBuf::from(path.as_ref()))
-            .collect()
+            .retain(|(path, _, _)| drawn.contains(path))
     });
-    thumbnails::cancel_thumbnails_outside(&drawn);
+    let paths: Vec<PathBuf> = drawn
+        .iter()
+        .map(|path| PathBuf::from(path.as_ref()))
+        .collect();
+    thumbnails::cancel_thumbnails_outside(&paths);
 }
 
 /// Whether Quick Look has a rendered page or picture for this row, rather than a type icon.
@@ -122,11 +122,14 @@ pub(crate) fn thumb(
     if let Some(image) = THUMBS.with(|thumbs| thumbs.borrow().get(&key).cloned()) {
         return Some(image);
     }
-    // Everything below costs a `stat` or a lock, so a row off screen or already waiting stops here.
-    if !visible || ASKED.with(|asked| asked.borrow().contains(&key)) {
+    if !visible {
         return None;
     }
     DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
+    // Everything below costs a `stat` or a lock, so a row already waiting stops here.
+    if ASKED.with(|asked| asked.borrow().contains(&key)) {
+        return None;
+    }
     let path = Path::new(row.path.as_ref());
     if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale, icon) {
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
