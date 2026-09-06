@@ -33,14 +33,16 @@ struct Key {
     // The final pixel dimension, so two (size, scale) pairs that land on the same raster share
     // a cache entry.
     pixels: u32,
+    icon: bool,
 }
 
 impl Key {
-    fn new(path: &Path, size: Pixels, scale: f32) -> Self {
+    fn new(path: &Path, size: Pixels, scale: f32, icon: bool) -> Self {
         Key {
             path: path.to_path_buf(),
             mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
             pixels: (f32::from(size) * scale).round().max(1.0) as u32,
+            icon,
         }
     }
 }
@@ -62,25 +64,32 @@ struct State {
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
 
-/// A previously generated thumbnail, if this exact `(path, mtime, size, scale)` is cached.
+/// A previously generated thumbnail, if this exact `(path, mtime, size, scale, icon)` is cached.
 ///
 /// The brief describes the cache key as `(path, mtime, size)`; `scale` is folded into the pixel
 /// size that key means, so it is taken here too, to compute the same key [`thumbnail`] would.
-pub fn cached_thumbnail(path: &Path, size: Pixels, scale: f32) -> Option<Arc<RenderImage>> {
-    let key = Key::new(path, size, scale);
+pub fn cached_thumbnail(
+    path: &Path,
+    size: Pixels,
+    scale: f32,
+    icon: bool,
+) -> Option<Arc<RenderImage>> {
+    let key = Key::new(path, size, scale, icon);
     STATE.lock().unwrap().cache.get(&key).cloned().flatten()
 }
 
 /// Request a thumbnail (or, failing that, an icon) for `path`, delivered to `done` once
 /// generated. A cache hit calls `done` immediately, on the calling thread. Requests for the same
-/// key already in flight share one generation.
+/// key already in flight share one generation. `icon` asks Quick Look for Finder's icon
+/// rendering rather than the picture on its own.
 pub fn thumbnail(
     path: &Path,
     size: Pixels,
     scale: f32,
+    icon: bool,
     done: impl FnOnce(Option<Arc<RenderImage>>) + Send + 'static,
 ) {
-    let key = Key::new(path, size, scale);
+    let key = Key::new(path, size, scale, icon);
     let mut state = STATE.lock().unwrap();
     if let Some(hit) = state.cache.get(&key) {
         let hit = hit.clone();
@@ -147,7 +156,7 @@ fn generate(job: Job) {
     };
     // Icon mode is Finder's own rendering: the fitted picture with its keyline, corner radius
     // and shadow baked into a raster the size of the box.
-    unsafe { request.setIconMode(true) };
+    unsafe { request.setIconMode(job.key.icon) };
 
     let key = job.key;
     let pixels = job.pixels as usize;
@@ -223,7 +232,7 @@ mod tests {
         write_png(&path, 64);
 
         let (tx, rx) = mpsc::channel();
-        thumbnail(&path, Pixels::from(32.0), 2.0, move |image| {
+        thumbnail(&path, Pixels::from(32.0), 2.0, true, move |image| {
             tx.send(image).unwrap();
         });
         let image = rx
@@ -235,7 +244,7 @@ mod tests {
 
         let before = STATE.lock().unwrap().cache.len();
         let (tx2, rx2) = mpsc::channel();
-        thumbnail(&path, Pixels::from(32.0), 2.0, move |image| {
+        thumbnail(&path, Pixels::from(32.0), 2.0, true, move |image| {
             tx2.send(image).unwrap();
         });
         let second = rx2
@@ -245,7 +254,7 @@ mod tests {
         assert!(Arc::ptr_eq(&image, &second), "same cached raster");
         assert_eq!(STATE.lock().unwrap().cache.len(), before, "no new entry");
 
-        assert!(cached_thumbnail(&path, Pixels::from(32.0), 2.0).is_some());
+        assert!(cached_thumbnail(&path, Pixels::from(32.0), 2.0, true).is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

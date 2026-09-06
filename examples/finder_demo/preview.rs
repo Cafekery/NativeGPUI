@@ -23,7 +23,7 @@ use objc2_foundation::NSRect;
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::ui::{TAGS, artwork, rename_field, row_art, tag_dot, tag_pill};
+use crate::ui::{Poster, TAGS, artwork, poster_art, rename_field, row_art, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 /// Finder's "Calculating…", for a summary a background pass has not finished.
@@ -829,10 +829,15 @@ fn hero(row: &Row, content: f32, scale: f32) -> AnyElement {
             .justify_center()
             .rounded(px(6.))
             .bg(system_color(SystemColor::TertiarySystemFill))
-            .child(row_art(row, (content * 9. / 16.).floor(), scale, true))
+            .child(poster_art(
+                row,
+                (content * 9. / 16.).floor(),
+                scale,
+                Poster::Card,
+            ))
             .into_any_element();
     }
-    row_art(row, content, scale, true)
+    poster_art(row, content, scale, Poster::Card)
 }
 
 fn kind_line(row: &Row) -> SharedString {

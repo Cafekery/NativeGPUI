@@ -67,8 +67,8 @@ const RENDERABLE: &[&str] = &[
     "m4v", "key", "pages", "numbers",
 ];
 
-/// A file, its pixel side: what one thumbnail is.
-type Thumb = (SharedString, u32);
+/// A file, its pixel side, and whether Quick Look drew it as an icon: what one thumbnail is.
+type Thumb = (SharedString, u32, bool);
 
 thread_local! {
     /// What the generator has delivered, so a row asks once and draws from here every frame after.
@@ -154,25 +154,46 @@ fn renderable(row: &Row) -> bool {
 /// Finder's row icon: the file's own rendered thumbnail at this size where Quick Look draws one,
 /// its type's icon until that lands. Only a row on screen asks for one.
 pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyElement {
-    if !renderable(row) {
-        return artwork(row, size);
+    match thumb(row, size, scale, visible, true) {
+        Some(image) => picture(image, size),
+        None => artwork(row, size),
     }
-    let key = (row.path.clone(), (size * scale).round().max(1.) as u32);
+}
+
+/// Finder's large preview art: the picture at its own aspect, keylined and rounded on that rect
+/// rather than on the box it is centred in, and without an icon's inset, radius or shadow.
+pub(crate) fn poster_art(row: &Row, size: f32, scale: f32, kind: Poster) -> AnyElement {
+    match thumb(row, size, scale, true, false) {
+        Some(image) => poster(image, size, scale, kind),
+        None => artwork(row, size),
+    }
+}
+
+/// The thumbnail a row draws from, once one has landed; a row on screen asks for one.
+fn thumb(row: &Row, size: f32, scale: f32, visible: bool, icon: bool) -> Option<Arc<RenderImage>> {
+    if !renderable(row) {
+        return None;
+    }
+    let key = (
+        row.path.clone(),
+        (size * scale).round().max(1.) as u32,
+        icon,
+    );
     if let Some(image) = THUMBS.with(|thumbs| thumbs.borrow().get(&key).cloned()) {
-        return picture(image, size);
+        return Some(image);
     }
     // Everything below costs a `stat` or a lock, so a row off screen or already waiting stops here.
     if !visible || ASKED.with(|asked| asked.borrow().contains(&key)) {
-        return artwork(row, size);
+        return None;
     }
     DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
     let path = Path::new(row.path.as_ref());
-    if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale) {
+    if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale, icon) {
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
-        return picture(image, size);
+        return Some(image);
     }
-    ask(path, key, size, scale);
-    artwork(row, size)
+    ask(path, key, size, scale, icon);
+    None
 }
 
 /// Finder's Quick Look icon: the whole picture fit inside the box, centred, with the keyline,
@@ -194,13 +215,61 @@ fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
         .into_any_element()
 }
 
+/// Which preview a poster is: Finder strokes a gallery hero with a light keyline and a wider
+/// radius, a preview card with a dark one.
+#[derive(Clone, Copy)]
+pub(crate) enum Poster {
+    Hero,
+    Card,
+}
+
+fn poster(image: Arc<RenderImage>, size: f32, scale: f32, kind: Poster) -> AnyElement {
+    let fit = image.size(0);
+    let (radius, keyline) = match kind {
+        Poster::Hero => (
+            6.5,
+            Hsla {
+                h: 0.,
+                s: 0.,
+                l: 1.,
+                a: 0.1,
+            },
+        ),
+        Poster::Card => (
+            2.5,
+            Hsla {
+                h: 0.,
+                s: 0.,
+                l: 0.,
+                a: 0.24,
+            },
+        ),
+    };
+    div()
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            img(image)
+                .w(px((u32::from(fit.width) as f32 / scale).min(size)))
+                .h(px((u32::from(fit.height) as f32 / scale).min(size)))
+                .rounded(px(radius))
+                .border(px(0.5))
+                .border_color(keyline),
+        )
+        .into_any_element()
+}
+
 /// One request per file and size: the module coalesces the work already in flight, but a waiter
 /// a frame would pile up behind it.
-fn ask(path: &Path, key: Thumb, size: f32, scale: f32) {
+fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
     if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
         return;
     }
-    thumbnails::thumbnail(path, px(size), scale, move |image| {
+    thumbnails::thumbnail(path, px(size), scale, icon, move |image| {
         LANDED.lock().unwrap().push((key, image));
         DELIVERED.fetch_add(1, Ordering::Relaxed);
     });
