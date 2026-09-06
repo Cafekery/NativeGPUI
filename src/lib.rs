@@ -41,7 +41,7 @@ pub use bridge::menus::{
 };
 pub use bridge::root::{NativeRoot, native_root, window_options};
 pub use chrome::sidebar::*;
-pub use chrome::tabs::{add_tab, window_tabs};
+pub use chrome::tabs::{add_tab, set_trailing_inset, window_tabs};
 pub use chrome::window_chrome::*;
 pub use chrome::{sidebar, window_chrome};
 pub use controls::*;
