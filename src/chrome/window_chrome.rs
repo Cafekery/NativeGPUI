@@ -2,6 +2,7 @@
 //! [`native_rect`] -> [`native_window_rect`] -> [`native_screen_rect`].
 
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 use std::panic::Location;
 use std::ptr;
 use std::rc::Rc;
@@ -9,7 +10,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, AsyncWindowContext, Bounds, CursorStyle, Element, ElementId, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Point, Size, Window, px,
+    Point, SharedString, Size, Window, px,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -19,7 +20,7 @@ use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
     NSMenuToolbarItem, NSSearchField, NSSearchToolbarItem, NSSharingServicePickerDelegate,
     NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
-    NSSplitViewController, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSSplitViewController, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
     NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
@@ -65,6 +66,13 @@ struct Claim {
     cursor: Cursor,
 }
 
+#[derive(Clone, PartialEq)]
+struct Tip {
+    key: u64,
+    rect: NSRect,
+    text: SharedString,
+}
+
 #[derive(Copy, Clone)]
 struct Corner {
     supported: bool,
@@ -87,6 +95,7 @@ struct Baseline {
 
 struct ChromeIvars {
     claims: RefCell<Vec<Claim>>,
+    tips: RefCell<Vec<Tip>>,
     corner: Cell<Corner>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
     /// A cursor this host set itself because its window is not key.
@@ -171,6 +180,17 @@ define_class!(
             self.release_cursor();
         }
 
+        #[unsafe(method_id(view:stringForToolTip:point:userData:))]
+        fn string_for_tool_tip(
+            &self,
+            _: &NSView,
+            _: NSToolTipTag,
+            point: NSPoint,
+            _: *mut c_void,
+        ) -> Retained<NSString> {
+            NSString::from_str(self.tip_at(point).as_deref().unwrap_or(""))
+        }
+
         // One rect per claim: `cursorUpdate:` alone cannot switch between adjacent regions.
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
@@ -190,6 +210,7 @@ impl ChromeHost {
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ChromeIvars {
             claims: RefCell::new(Vec::new()),
+            tips: RefCell::new(Vec::new()),
             corner: Cell::new(corner),
             tracking: RefCell::new(None),
             forced: Cell::new(false),
@@ -218,12 +239,7 @@ impl ChromeHost {
             .borrow()
             .iter()
             .rev()
-            .find(|claim| {
-                point.x >= claim.rect.origin.x
-                    && point.x <= claim.rect.origin.x + claim.rect.size.width
-                    && point.y >= claim.rect.origin.y
-                    && point.y <= claim.rect.origin.y + claim.rect.size.height
-            })
+            .find(|claim| contains(claim.rect, point))
             .copied()
     }
 
@@ -273,11 +289,63 @@ impl ChromeHost {
         }
     }
 
+    fn tip_at(&self, point: NSPoint) -> Option<SharedString> {
+        self.ivars()
+            .tips
+            .borrow()
+            .iter()
+            .rev()
+            .find(|tip| contains(tip.rect, point))
+            .map(|tip| tip.text.clone())
+    }
+
+    fn set_tip(&self, key: u64, rect: NSRect, text: &SharedString) {
+        let tip = Tip {
+            key,
+            rect,
+            text: text.clone(),
+        };
+        let mut tips = self.ivars().tips.borrow_mut();
+        match tips.iter_mut().find(|existing| existing.key == key) {
+            Some(existing) if *existing == tip => return,
+            Some(existing) => *existing = tip,
+            None => tips.push(tip),
+        }
+        drop(tips);
+        self.reset_tool_tips();
+    }
+
+    fn remove_tip(&self, key: u64) {
+        let mut tips = self.ivars().tips.borrow_mut();
+        let before = tips.len();
+        tips.retain(|tip| tip.key != key);
+        let changed = tips.len() != before;
+        drop(tips);
+        if changed {
+            self.reset_tool_tips();
+        }
+    }
+
+    // A tool tip rect cannot be moved, only replaced, and replacing one restarts its delay.
+    fn reset_tool_tips(&self) {
+        self.removeAllToolTips();
+        for tip in self.ivars().tips.borrow().iter() {
+            unsafe { self.addToolTipRect_owner_userData(tip.rect, self.as_ref(), ptr::null_mut()) };
+        }
+    }
+
     fn invalidate_cursor_rects(&self) {
         if let Some(window) = self.window() {
             window.invalidateCursorRectsForView(self);
         }
     }
+}
+
+fn contains(rect: NSRect, point: NSPoint) -> bool {
+    point.x >= rect.origin.x
+        && point.x <= rect.origin.x + rect.size.width
+        && point.y >= rect.origin.y
+        && point.y <= rect.origin.y + rect.size.height
 }
 
 /// Install-or-get. Everything public in this module funnels through here.
@@ -1643,6 +1711,111 @@ impl Element for CursorRegion {
 }
 
 impl IntoElement for CursorRegion {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// Give a GPUI element the system tooltip over its own bounds, wrapping `child` transparently.
+pub fn native_tooltip(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> NativeTooltip {
+    NativeTooltip {
+        id: id.into(),
+        text: text.into(),
+        child: child.into_any_element(),
+    }
+}
+
+pub struct NativeTooltip {
+    id: ElementId,
+    text: SharedString,
+    child: AnyElement,
+}
+
+struct TipGuard {
+    host: Retained<ChromeHost>,
+    key: u64,
+}
+
+impl Drop for TipGuard {
+    fn drop(&mut self) {
+        self.host.remove_tip(self.key);
+    }
+}
+
+impl Element for NativeTooltip {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<Bounds<Pixels>>;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.child.prepaint(window, cx);
+        let visible = bounds.intersect(&window.content_mask().bounds);
+        (visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        visible: &mut Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+
+        let Some(global_id) = id else {
+            return;
+        };
+        let host = chrome(window);
+        let key = element_key(id);
+        window.with_element_state::<TipGuard, ()>(global_id, |existing, _| {
+            let guard = existing.unwrap_or_else(|| TipGuard {
+                host: host.clone(),
+                key,
+            });
+            ((), guard)
+        });
+        match visible {
+            Some(bounds) => host.set_tip(key, native_rect(*bounds), &self.text),
+            None => host.remove_tip(key),
+        }
+    }
+}
+
+impl IntoElement for NativeTooltip {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
