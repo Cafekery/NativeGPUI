@@ -499,6 +499,23 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
     rows
 }
 
+/// One line for the item at `id`, for the menus that act on a folder rather than on a row.
+pub(crate) fn path_line(id: &'static str) -> Option<Line> {
+    let path = Path::new(id);
+    let dir = path.parent().map_or("/", intern_path);
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let entry = finder_fs::list::list_dir(Path::new(dir))
+        .ok()?
+        .into_iter()
+        .find(|entry| entry.name == name)?;
+    let row = Arc::new(row_of(dir, &entry, crate::index()));
+    Some(Line {
+        key: row.path.clone(),
+        row,
+        depth: 0,
+    })
+}
+
 /// The name of the folder a search result's key sits in, the way Finder's search results show a
 /// path in place of Kind.
 pub(crate) fn enclosing_name(key: &str) -> SharedString {

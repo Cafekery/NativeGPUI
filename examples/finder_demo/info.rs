@@ -8,6 +8,8 @@ use gpui::{
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::window_options;
 
+use std::path::Path;
+
 use crate::data::{Line, byte_string, day_string};
 use crate::ui::row_art;
 
@@ -151,21 +153,32 @@ impl Render for Info {
 const COMBINE_OVER: usize = 3;
 
 /// Finder opens one window per chosen item, cascaded down the screen; ours combines a selection
-/// bigger than [`COMBINE_OVER`] into a single summary window instead.
-pub(crate) fn open(demo: &Entity<crate::FinderDemo>, cx: &mut App) {
+/// bigger than [`COMBINE_OVER`] into a single summary window instead. `at` names the folder to
+/// open on in place of the selection, as the path bar's crumbs do.
+pub(crate) fn open(demo: &Entity<crate::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
     let (lines, path) = {
         let state = demo.read(cx);
-        (
-            state
+        let lines = match at {
+            Some(id) => crate::data::path_line(id).into_iter().collect(),
+            None => state
                 .focused_lines()
                 .iter()
                 .filter(|line| state.selected.contains(&line.key))
                 .cloned()
                 .collect::<Vec<_>>(),
+        };
+        let holder = at
+            .and_then(|id| Path::new(id).parent())
+            .map(|parent| crate::data::folder_of(crate::data::intern_path(parent)));
+        let crumbs = match &holder {
+            Some(folder) => Some(folder.crumbs.as_slice()),
+            None => state.folder().map(|folder| folder.crumbs.as_slice()),
+        };
+        (
+            lines,
             SharedString::from(
-                state
-                    .folder()
-                    .map(|folder| folder.crumbs.join(" \u{203a} "))
+                crumbs
+                    .map(|crumbs| crumbs.join(" \u{203a} "))
                     .unwrap_or_default(),
             ),
         )

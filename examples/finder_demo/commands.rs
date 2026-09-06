@@ -228,7 +228,7 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, cx));
+                cx.defer(move |cx| crate::info::open(&demo, None, cx));
             }))
             .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
                 this.run_menu(Act::Inspector, window, cx);

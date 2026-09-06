@@ -277,6 +277,8 @@ pub(crate) struct FinderDemo {
     hits_rev: u64,
     /// The sidebar tag row this window is listing, `tag:` on its own for every tag at once.
     tag_listing: Option<&'static str>,
+    /// The folder the path bar's Show Inspector named, while the pane shows it.
+    pub(crate) inspecting: Option<Line>,
     /// A row an operation made, to scroll to as soon as its folder is read again.
     reveal_next: Option<SharedString>,
     /// The window an error sheet hangs on.
@@ -419,6 +421,7 @@ impl FinderDemo {
             hits: Vec::new(),
             hits_rev: 0,
             tag_listing: None,
+            inspecting: None,
             reveal_next: None,
             host: None,
             focus: cx.focus_handle(),
@@ -612,6 +615,7 @@ impl FinderDemo {
         self.query.clear();
         self.hits.clear();
         self.tag_listing = None;
+        self.inspecting = None;
         self.icons.forget();
         self.clear_type_filter();
         self.load_column_widths();
@@ -1450,6 +1454,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn pick_in(&mut self, lines: &[Line], line: &Line, extend: bool, toggle: bool) {
+        self.inspecting = None;
         if toggle {
             if !self.selected.remove(&line.key) {
                 self.selected.insert(line.key.clone());
@@ -1744,6 +1749,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn cursor_line(&self) -> Option<Line> {
+        if self.inspecting.is_some() {
+            return self.inspecting.clone();
+        }
         let key = self.cursor.clone()?;
         let cached = self
             .listings()
