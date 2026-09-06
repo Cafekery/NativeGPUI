@@ -101,7 +101,8 @@ pub(crate) fn index() -> &'static Arc<Index> {
     INDEX.get_or_init(|| Index::open(&store().join("index.bin")))
 }
 
-/// The index crawls from launch and saves as it goes, so the next launch starts warm.
+/// The index catches up from launch and saves as it goes, so the next launch starts warm: a root
+/// the last run left in the snapshot is brought forward from the FSEvents log, not walked again.
 fn crawl(cx: &mut App) {
     let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
     roots.extend(
@@ -114,7 +115,7 @@ fn crawl(cx: &mut App) {
     // `NG_NO_CRAWL=1` keeps the index idle, to tell the crawl's disk walk apart from the view's.
     if env::var_os("NG_NO_CRAWL").is_none() {
         executor
-            .spawn(async move { index().crawl(roots, |_| {}) })
+            .spawn(async move { index().sync(roots, |_| {}) })
             .detach();
     }
     // The prompt-gated folders are left out of the walk. Once it is over, Desktop, Documents and

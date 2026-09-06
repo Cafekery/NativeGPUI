@@ -11,6 +11,8 @@ const MANY: usize = 2000;
 const MANY_BYTES: u64 = (MANY * 10) as u64;
 const DEEP_BYTES: u64 = 4 + 40 + 400;
 const APP_BYTES: u64 = 500 + 60;
+/// Long enough for the FSEvents daemon to have logged the writes just made.
+const SETTLE: Duration = Duration::from_millis(800);
 
 struct Temp(PathBuf);
 
@@ -57,6 +59,36 @@ fn crawled(root: &Path) -> Arc<Index> {
     let index = Index::open(&root.join("index.bin"));
     crawl(&index, root);
     index
+}
+
+fn sync(index: &Arc<Index>, root: &Path) {
+    let (tx, rx) = mpsc::channel();
+    index.sync(vec![root.to_path_buf()], move |progress: Progress| {
+        if progress.done {
+            let _ = tx.send(());
+        }
+    });
+    rx.recv_timeout(Duration::from_secs(120)).unwrap();
+}
+
+/// A store outside the tree under test, so writing it is not itself a change to catch up on.
+fn store(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("finder-fs-store-{name}.bin"));
+    let _ = fs::remove_file(&path);
+    path
+}
+
+/// The directories the crate has read under `root` since `mark`.
+fn reads_under(root: &Path, mark: usize) -> Vec<PathBuf> {
+    crate::list::READS.lock().unwrap()[mark..]
+        .iter()
+        .filter(|dir| dir.starts_with(root))
+        .cloned()
+        .collect()
+}
+
+fn reads_mark() -> usize {
+    crate::list::READS.lock().unwrap().len()
 }
 
 fn crawl(index: &Arc<Index>, root: &Path) {
@@ -260,4 +292,105 @@ fn snapshot_round_trip() {
     // A snapshot the index cannot read is not one it trusts.
     fs::write(&store, b"NGVIDX01 and nothing else").unwrap();
     assert_eq!(Index::open(&store).stats().files, 0);
+}
+
+#[test]
+fn a_cold_sync_crawls_the_whole_tree() {
+    let temp = tree("cold-sync");
+    let root = &temp.0;
+    let store = store("cold-sync");
+    let index = Index::open(&store);
+    let mark = reads_mark();
+
+    sync(&index, root);
+
+    assert_eq!(index.children(&root.join("many")).unwrap().len(), MANY);
+    assert_eq!(index.stats().files as usize, MANY + 6);
+    // Every directory of the fixture, the unreadable one included.
+    assert!(reads_under(root, mark).len() >= 8);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_warm_sync_over_an_unchanged_tree_reads_nothing() {
+    let temp = tree("warm-sync");
+    let root = &temp.0;
+    let store = store("warm-sync");
+    let index = Index::open(&store);
+    // FSEvents dates an event when its daemon logs it, so building the fixture is still landing
+    // in the log for a moment after the last write returns.
+    std::thread::sleep(SETTLE);
+    sync(&index, root);
+    index.save();
+    drop(index);
+    std::thread::sleep(SETTLE);
+
+    let index = Index::open(&store);
+    let mark = reads_mark();
+    sync(&index, root);
+
+    assert_eq!(reads_under(root, mark), Vec::<PathBuf>::new());
+    assert_eq!(index.stats().files as usize, MANY + 6);
+    assert_eq!(index.children(&root.join("many")).unwrap().len(), MANY);
+    assert_eq!(index.folder_size(&root.join("a")), Some(DEEP_BYTES));
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_warm_sync_reads_the_subtree_that_changed() {
+    let temp = tree("changed-sync");
+    let root = &temp.0;
+    let store = store("changed-sync");
+    let index = Index::open(&store);
+    std::thread::sleep(SETTLE);
+    sync(&index, root);
+    index.save();
+    drop(index);
+    std::thread::sleep(SETTLE);
+
+    fs::write(root.join("a/b/c/four.txt"), vec![b'x'; 4000]).unwrap();
+    fs::create_dir_all(root.join("a/b/c/fresh")).unwrap();
+    fs::write(root.join("a/b/c/fresh/five.txt"), vec![b'x'; 50]).unwrap();
+    std::thread::sleep(SETTLE);
+
+    let index = Index::open(&store);
+    let mark = reads_mark();
+    sync(&index, root);
+
+    let read = reads_under(root, mark);
+    assert!(read.contains(&root.join("a/b/c")), "{read:?}");
+    assert!(!read.contains(&root.join("many")), "{read:?}");
+    assert_eq!(index.search("four", None, 4).len(), 1);
+    assert_eq!(index.search("five", None, 4).len(), 1);
+    assert_eq!(
+        index.folder_size(&root.join("a")),
+        Some(DEEP_BYTES + 4000 + 50)
+    );
+    assert_eq!(index.children(&root.join("many")).unwrap().len(), MANY);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn an_event_id_the_log_cannot_hold_forces_a_full_crawl() {
+    let temp = tree("stale-id");
+    let root = &temp.0;
+    let store = store("stale-id");
+    let index = Index::open(&store);
+    sync(&index, root);
+
+    let tree = index.read();
+    let roots = std::slice::from_ref(root);
+    let now = crate::watch::latest_event_id();
+    assert_eq!(super::catchup::plan(&tree, roots, now).warm, roots);
+
+    // An id no counter has reached yet: a restored snapshot, or ids that wrapped under it.
+    let plan = super::catchup::plan(&tree, roots, 1);
+    assert_eq!(plan.cold, roots);
+    assert!(plan.warm.is_empty() && plan.since_when == 0);
+
+    // A root the snapshot has never recorded is cold whatever the log says.
+    let other = vec![root.join("a")];
+    assert_eq!(super::catchup::plan(&tree, &other, now).cold, other);
+    drop(tree);
+    let _ = fs::remove_file(&store);
 }

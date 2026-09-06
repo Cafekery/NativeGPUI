@@ -8,7 +8,9 @@
 //!   it cannot read, and reports progress; a second call resumes rather than restarts.
 //! - `children`/`folder_size`/`search` answer from memory in milliseconds.
 //! - `note_changed` re-reads the named directories (the watcher's job to call).
+//! - `sync` is the launch entry: it replays FSEvents since the snapshot instead of walking again.
 
+mod catchup;
 mod crawl;
 mod search;
 mod snapshot;
@@ -24,7 +26,8 @@ use std::time::SystemTime;
 
 use crate::entry::Entry;
 use crate::list::list_dir;
-use store::{COMPLETE, LISTED, PACKAGE, Tree};
+use crawl::Walk;
+use store::{COMPLETE, LISTED, PACKAGE, Tree, VISITED};
 
 /// Entries written under one lock: a 20 000-file directory costs a reader a few milliseconds.
 const BATCH: usize = 4096;
@@ -88,7 +91,28 @@ impl Index {
         if self.crawling.swap(true, Ordering::SeqCst) {
             return;
         }
-        crawl::spawn(self, roots, progress);
+        crawl::spawn(
+            self,
+            Walk {
+                crawl: roots.clone(),
+                record: roots,
+                since: crate::watch::latest_event_id(),
+            },
+            progress,
+        );
+    }
+
+    /// The launch walk: roots the snapshot already holds are brought up to date from the FSEvents
+    /// log instead of read again, and only what the log names, or has never been seen, is crawled.
+    pub fn sync(
+        self: &Arc<Self>,
+        roots: Vec<PathBuf>,
+        progress: impl Fn(Progress) + Send + 'static,
+    ) {
+        if self.crawling.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        catchup::spawn(self, roots, progress);
     }
 
     /// The directory's entries as the index last read them, or `None` if it has not read it.
@@ -126,36 +150,51 @@ impl Index {
     pub fn note_changed(&self, dirs: &[PathBuf]) {
         let home = crawl::home();
         for dir in dirs {
-            let listed = list_dir(dir);
-            let Some(id) = resolve(&self.read(), dir) else {
-                continue;
-            };
-            let entries = match listed {
-                Ok(entries) => entries,
-                Err(error) => {
-                    if error.kind() == io::ErrorKind::NotFound {
-                        let mut tree = self.write();
-                        let size = tree.nodes[id as usize].size;
-                        tree.tombstone(id);
-                        tree.propagate(id, -(size as i64));
-                    }
-                    continue;
-                }
-            };
-            let sealed: Vec<bool> = entries
-                .iter()
-                .map(|entry| crawl::sealed(&dir.join(&entry.name), entry, &home))
-                .collect();
-            relist(self, id, &entries, &sealed);
-            let mut tree = self.write();
-            let before = tree.nodes[id as usize].size;
-            let after: u64 = tree
-                .children(id)
-                .map(|child| tree.nodes[child as usize].size)
-                .sum();
-            tree.nodes[id as usize].size = after;
-            tree.propagate(id, after as i64 - before as i64);
+            self.refresh(dir, &home);
         }
+    }
+
+    /// One directory read again, answering with the subdirectories the index has never been into
+    /// and so still owes a walk.
+    fn refresh(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
+        let listed = list_dir(dir);
+        let Some(id) = resolve(&self.read(), dir) else {
+            return Vec::new();
+        };
+        let entries = match listed {
+            Ok(entries) => entries,
+            Err(error) => {
+                if error.kind() == io::ErrorKind::NotFound {
+                    let mut tree = self.write();
+                    let size = tree.nodes[id as usize].size;
+                    tree.tombstone(id);
+                    tree.propagate(id, -(size as i64));
+                }
+                return Vec::new();
+            }
+        };
+        let sealed: Vec<bool> = entries
+            .iter()
+            .map(|entry| crawl::sealed(&dir.join(&entry.name), entry, home))
+            .collect();
+        let ids = relist(self, id, &entries, &sealed);
+        let mut tree = self.write();
+        let before = tree.nodes[id as usize].size;
+        let after: u64 = tree
+            .children(id)
+            .map(|child| tree.nodes[child as usize].size)
+            .sum();
+        tree.nodes[id as usize].size = after;
+        tree.propagate(id, after as i64 - before as i64);
+        entries
+            .iter()
+            .zip(ids)
+            .zip(sealed)
+            .filter(|((entry, id), sealed)| {
+                entry.is_dir() && !sealed && tree.nodes[*id as usize].state & VISITED == 0
+            })
+            .map(|((entry, _), _)| dir.join(&entry.name))
+            .collect()
     }
 
     /// Writes the snapshot to a temp file and renames it over `store`.
