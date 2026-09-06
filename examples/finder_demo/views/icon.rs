@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ClickEvent, Div, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
@@ -55,9 +56,25 @@ impl Look {
     }
 }
 
+/// A tile's row and where the grid puts it.
+type Tile = (SharedString, Point<Pixels>);
+
+/// Where every tile of one listing sits, and how tall that makes the grid.
+pub(crate) struct Layout {
+    lines: Arc<Vec<Line>>,
+    columns: usize,
+    cell: f32,
+    moved: u64,
+    pub(crate) tiles: Vec<Tile>,
+    pub(crate) height: f32,
+}
+
 #[derive(Default)]
 pub(crate) struct Grid {
     placed: HashMap<SharedString, Point<Pixels>>,
+    /// Bumped by every drag that lands, so the layout built from the old places is rebuilt.
+    moved: u64,
+    layout: Option<Rc<Layout>>,
     dragging: Option<SharedString>,
     scroll: ScrollHandle,
 }
@@ -77,13 +94,48 @@ impl Grid {
     }
 
     fn place(&mut self, key: SharedString, at: Point<Pixels>) {
+        self.moved += 1;
         self.placed
             .insert(key, point(at.x.max(px(0.)), at.y.max(px(0.))));
     }
 
     pub(crate) fn forget(&mut self) {
+        self.moved += 1;
         self.placed.clear();
         self.dragging = None;
+    }
+
+    /// Where the tiles sit, rebuilt only when the rows, the grid's shape or a drag move them:
+    /// placing every row of a large folder is more than a frame can pay for.
+    fn layout(&mut self, lines: &Arc<Vec<Line>>, columns: usize, cell: f32) -> Rc<Layout> {
+        let held = self.layout.clone().filter(|built| {
+            Arc::ptr_eq(&built.lines, lines)
+                && built.columns == columns
+                && built.cell == cell
+                && built.moved == self.moved
+        });
+        if let Some(built) = held {
+            return built;
+        }
+        let tiles: Vec<Tile> = lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| (line.key.clone(), self.at(&line.key, index, columns, cell)))
+            .collect();
+        let height = tiles
+            .iter()
+            .map(|(_, at)| f32::from(at.y) + cell)
+            .fold(cell, f32::max);
+        let built = Rc::new(Layout {
+            lines: lines.clone(),
+            columns,
+            cell,
+            moved: self.moved,
+            tiles,
+            height,
+        });
+        self.layout = Some(built.clone());
+        built
     }
 
     /// Scroll the tile whole into `visible`, the width left of the pane.
@@ -274,22 +326,8 @@ impl FinderDemo {
         let scroll = self.icons.scroll.clone();
         let dragging = self.icons.dragging.clone();
 
-        let layout: Rc<Vec<(SharedString, Point<Pixels>)>> = Rc::new(
-            lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    (
-                        line.key.clone(),
-                        self.icons.at(&line.key, index, columns, cell),
-                    )
-                })
-                .collect(),
-        );
-        let height = layout
-            .iter()
-            .map(|(_, at)| f32::from(at.y) + cell)
-            .fold(cell, f32::max);
+        let layout = self.icons.layout(&lines, columns, cell);
+        let height = layout.height;
 
         // The grid runs on beneath the pane, padded by its width so the last column clears it.
         let width = GRID_X + columns as f32 * cell + self.pane_w();
@@ -307,7 +345,7 @@ impl FinderDemo {
         let top = -f32::from(self.icons.scroll.offset().y);
         let room = f32::from(window.viewport_size().height);
         for (index, line) in lines.iter().enumerate() {
-            let at = layout[index].1;
+            let at = layout.tiles[index].1;
             let y = f32::from(at.y);
             let on_screen = y + 2. * cell > top && y < top + room + cell;
             if !on_screen {
@@ -406,6 +444,7 @@ impl FinderDemo {
         let this_drop = this.clone();
         canvas = canvas.on_drop(move |drag: &TileDrag, window, cx| {
             let Some(from) = dropped
+                .tiles
                 .iter()
                 .find(|(key, _)| key == &drag.key)
                 .map(|(_, at)| *at)
@@ -418,16 +457,16 @@ impl FinderDemo {
             let moved = dropped.clone();
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
-                    let group: Vec<(SharedString, Point<Pixels>)> =
-                        if this.selected.contains(&drag.key) {
-                            moved
-                                .iter()
-                                .filter(|(key, _)| this.selected.contains(key))
-                                .cloned()
-                                .collect()
-                        } else {
-                            vec![(drag.key.clone(), from)]
-                        };
+                    let group: Vec<Tile> = if this.selected.contains(&drag.key) {
+                        moved
+                            .tiles
+                            .iter()
+                            .filter(|(key, _)| this.selected.contains(key))
+                            .cloned()
+                            .collect()
+                    } else {
+                        vec![(drag.key.clone(), from)]
+                    };
                     for (key, at) in group {
                         this.icons.place(key, at + delta);
                     }
@@ -442,7 +481,7 @@ impl FinderDemo {
         let hit_scroll = scroll.clone();
         let hit = move |at: Point<Pixels>| {
             let at = at - hit_scroll.offset();
-            let index = tile_at(&hit_layout, at, cell)?;
+            let index = tile_at(&hit_layout.tiles, at, cell)?;
             hit_lines.get(index).cloned()
         };
 
@@ -453,7 +492,7 @@ impl FinderDemo {
         let canvas =
             canvas.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
                 let at = event.position - empty_scroll.bounds().origin - empty_scroll.offset();
-                if tile_at(&empty, at, cell).is_some() {
+                if tile_at(&empty.tiles, at, cell).is_some() {
                     return;
                 }
                 this.update(cx, |this: &mut FinderDemo, cx| {
