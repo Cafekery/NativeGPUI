@@ -64,7 +64,7 @@ pub(crate) fn backdrop(
 pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
-    hit: impl Fn(Point<Pixels>) -> Option<Line> + 'static,
+    hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
     child: impl IntoElement,
 ) -> NativeContextMenu {
     let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
@@ -72,11 +72,13 @@ pub(crate) fn rows_menu(
     let demo = this.clone();
     native_context_menu(id, child)
         .entries_at(move |at, _, cx| {
-            let Some(line) = hit(at) else {
-                return Vec::new();
-            };
             let menu = demo
-                .update(cx, |demo: &mut FinderDemo, _| item(&demo.selected, &line))
+                .update(cx, |demo: &mut FinderDemo, _| {
+                    let line = hit(demo, at)?;
+                    Some(item(&demo.selected, &line))
+                })
+                .ok()
+                .flatten()
                 .unwrap_or_default();
             *built.borrow_mut() = menu.acts;
             menu.entries

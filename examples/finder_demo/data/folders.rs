@@ -72,7 +72,8 @@ impl Folders {
         self.cache.get_mut(id)
     }
 
-    /// Bumped by every change to any listing, so what a frame built from them knows to rebuild.
+    /// Bumped by every change to a listing except rows landing at the end of one, so what a frame
+    /// built knows to rebuild rather than extend.
     pub(crate) fn changed(&self) -> u64 {
         self.changed
     }
@@ -85,13 +86,6 @@ impl Folders {
     /// Whether the listing is in memory, without asking for it.
     pub(crate) fn has(&self, id: &'static str) -> bool {
         self.cache.contains_key(id)
-    }
-
-    /// Whether a re-read of `id` is still gathering its rows beside the ones on screen.
-    pub(crate) fn staging(&self, id: &'static str) -> bool {
-        self.cache
-            .get(id)
-            .is_some_and(|folder| folder.staged.is_some())
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -121,15 +115,17 @@ impl Folders {
     /// Rows from a read: the first batch stands in for whatever was there, the rest add to it. A
     /// listing that already has rows keeps them until the whole re-read is in hand.
     pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) {
-        self.changed += 1;
         let folder = self.cache.entry(id).or_insert_with(|| {
             self.order.push(id);
             folder_of(id)
         });
         if replace {
+            self.changed += 1;
             folder.staged = (!folder.rows.is_empty()).then(Vec::new);
         }
         match &mut folder.staged {
+            // Staged rows are not the ones on screen, and rows landing at the end of a listing
+            // extend what a frame built from it: neither disturbs what is drawn.
             Some(staged) => staged.extend(rows),
             None => folder.rows.extend(rows),
         }
@@ -152,6 +148,7 @@ impl Folders {
                     && !self.reading.contains(id);
                 if drop {
                     over -= 1;
+                    self.changed += 1;
                     self.cache.remove(id);
                 }
                 !drop

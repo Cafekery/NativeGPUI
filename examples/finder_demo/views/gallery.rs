@@ -92,15 +92,14 @@ impl FinderDemo {
         };
 
         let this = cx.entity().downgrade();
-        let hit_lines = lines.clone();
         let hit_strip = self.strip.clone();
-        let hit = move |at: Point<Pixels>| {
+        let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let x = f32::from(at.x) - f32::from(hit_strip.offset().x) - STRIP_INSET;
             let index = x / (strip.cell + strip.gap);
             if x < 0. || index.fract() * (strip.cell + strip.gap) > strip.cell {
                 return None;
             }
-            hit_lines.get(index as usize).cloned()
+            demo.lines(false).get(index as usize).cloned()
         };
         // Only the cells on screen are built; the strip's whole width is one empty child.
         let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
