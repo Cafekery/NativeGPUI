@@ -6,7 +6,7 @@ use gpui::{AnyElement, Context, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{ControlSize, SegmentStyle, native_label, native_segmented};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 
 pub(crate) const SCOPE_H: f32 = 28.;
 const SCOPE_INSET: f32 = 8.;

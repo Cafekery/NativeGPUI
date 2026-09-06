@@ -10,7 +10,7 @@ use gpui::{
 };
 use native_gpui::tokens::{SystemColor, system_color};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
 use crate::menus::row_menu;

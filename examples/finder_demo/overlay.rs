@@ -4,7 +4,7 @@ use gpui::{AnyElement, Context, FontWeight, WeakEntity, Window, div, prelude::*,
 use native_gpui::tokens;
 use native_gpui::{Material, material, system_corner_radius};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::palette::Palette;
 use crate::ui::{focus_gpui, key_to_parent, native_text_field};
 

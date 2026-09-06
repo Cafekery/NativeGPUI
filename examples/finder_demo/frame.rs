@@ -15,6 +15,8 @@ use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::app::FinderDemo;
+use crate::app::LIST_CONTEXT;
 use crate::commands::{ZoomIn, ZoomOut};
 use crate::header::{HEADER_H, band_glass, pane_surface};
 use crate::palette::Palette;
@@ -22,7 +24,7 @@ use crate::preview::LIST_MIN_W;
 use crate::toolbar::PATH_H;
 use crate::ui::axis_locked;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
-use crate::{FinderDemo, LIST_CONTEXT, menus, scope};
+use crate::{menus, scope};
 
 pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     let handle = HasWindowHandle::window_handle(window).ok()?;

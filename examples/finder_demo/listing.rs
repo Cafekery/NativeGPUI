@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 
 use gpui::SharedString;
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::{Column, Line, group_of};
 use crate::view::LIST_VIEW;
 

@@ -8,13 +8,14 @@ use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
+use crate::app::FinderDemo;
 use crate::clipboard::can_paste;
 use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
+use crate::open_finder_window;
 use crate::ops::After;
 use crate::tags::{finder_color, tags};
 use crate::view::ICON_VIEW;
-use crate::{FinderDemo, open_finder_window};
 
 const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];

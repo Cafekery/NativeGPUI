@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, SharedString};
 
+use crate::app::FinderDemo;
+use crate::conflicts;
 use crate::data::{intern_path, split_key};
-use crate::{FinderDemo, conflicts};
 
 /// What a finished operation leaves behind it.
 #[derive(Clone, Copy, PartialEq)]

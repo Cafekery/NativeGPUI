@@ -14,7 +14,7 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::art::{glyph, small_glyph};
 use crate::data::{Column, Face as F, available_bytes, byte_string};
 use crate::dragdrop::RowDrag;

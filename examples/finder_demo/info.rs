@@ -155,7 +155,7 @@ const COMBINE_OVER: usize = 3;
 /// Finder opens one window per chosen item, cascaded down the screen; ours combines a selection
 /// bigger than [`COMBINE_OVER`] into a single summary window instead. `at` names the folder to
 /// open on in place of the selection, as the path bar's crumbs do.
-pub(crate) fn open(demo: &Entity<crate::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
+pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
     let (lines, path) = {
         let state = demo.read(cx);
         let lines = match at {

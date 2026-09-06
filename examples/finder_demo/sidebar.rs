@@ -9,9 +9,10 @@ use native_gpui::sidebar::{
 };
 use native_gpui::{Material, MenuEntry};
 
+use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, volume_roots};
+use crate::prefs;
 use crate::tags::finder_color_rgb;
-use crate::{FinderDemo, prefs};
 
 pub(crate) const SIDEBAR_W: f32 = 184.;
 

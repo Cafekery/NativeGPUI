@@ -3,7 +3,7 @@
 use gpui::{AnyElement, ClickEvent, Window, div, point, prelude::*, px};
 use native_gpui::native_tooltip;
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
 use crate::data::Line;
 use crate::menus::row_menu;

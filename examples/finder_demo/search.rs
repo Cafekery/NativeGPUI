@@ -5,9 +5,10 @@ use std::path::PathBuf;
 
 use gpui::{Context, SharedString, Window};
 
+use crate::app::FinderDemo;
 use crate::data;
 use crate::listing::next_rev;
-use crate::{FinderDemo, index, prefs, scope};
+use crate::{index, prefs, scope};
 
 /// Rows a search or a tag listing shows at most.
 const HITS: usize = 200;

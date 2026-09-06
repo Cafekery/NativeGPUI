@@ -8,7 +8,7 @@ use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
 use objc2_core_foundation::CGFloat;
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 
 /// Finder's tag dot: 10pt across, its fill a fifth of the way from the system colour to white.
 const TAG_DOT: f32 = 10.;

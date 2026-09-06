@@ -22,7 +22,7 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::data::byte_string;
 use crate::ops::After;
 use crate::palette::Palette;

@@ -20,7 +20,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
-use crate::FinderDemo;
+use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art};
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::frame::ns_window;
