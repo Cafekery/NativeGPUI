@@ -11,7 +11,7 @@ use gpui::SharedString;
 
 use crate::app::FinderDemo;
 use crate::data::{Column, Line, group_of};
-use crate::view::LIST_VIEW;
+use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
 /// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {
@@ -199,17 +199,28 @@ impl FinderDemo {
         listings
     }
 
-    pub(crate) fn listing_cached(&self, folder: &'static str) -> Option<Arc<Vec<Line>>> {
-        self.listings().columns.get(folder).cloned()
-    }
-
-    pub(crate) fn listing_cache(
-        &self,
-        folder: &'static str,
-        lines: Arc<Vec<Line>>,
-    ) -> Arc<Vec<Line>> {
+    pub(crate) fn column_listing(&self, folder: &'static str) -> Arc<Vec<Line>> {
+        let cached = self.listings().columns.get(folder).cloned();
+        if let Some(lines) = cached {
+            return lines;
+        }
+        let mut lines = Vec::new();
+        self.collect(folder, 0, false, &mut lines);
+        let lines = Arc::new(lines);
         self.listings().columns.insert(folder, lines.clone());
         lines
+    }
+
+    pub(crate) fn focused_lines(&self) -> Arc<Vec<Line>> {
+        if self.view != COLUMN_VIEW {
+            return self.lines(self.view == LIST_VIEW);
+        }
+        let (chain, _) = self.column_chain();
+        let focused = chain
+            .iter()
+            .rposition(|rung| rung.selected.is_some())
+            .unwrap_or(0);
+        self.column_listing(chain[focused].folder)
     }
 
     fn build_lines(&self, tree: bool) -> Vec<Line> {
