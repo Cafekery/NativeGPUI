@@ -1,8 +1,8 @@
 //! The list view's column-header band, and the two drags that reorder and resize it.
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Pixels, Render,
-    TextRun, Window, div, hsla, prelude::*, px,
+    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Pixels, TextRun,
+    Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{
@@ -100,14 +100,6 @@ pub(crate) fn column_title(column: Column) -> &'static str {
         Column::Modified => "Date Modified",
         Column::Size => "Size",
         Column::Kind => "Kind",
-    }
-}
-
-pub(crate) struct DragGhost;
-
-impl Render for DragGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
     }
 }
 
@@ -299,7 +291,7 @@ impl FinderDemo {
                                 cx.notify();
                             })
                             .ok();
-                            cx.new(|_| DragGhost)
+                            cx.new(|_| crate::dragdrop::DragGhost)
                         }
                     }),
             );
@@ -419,7 +411,7 @@ impl FinderDemo {
                             cx.notify();
                         })
                         .ok();
-                        cx.new(|_| DragGhost)
+                        cx.new(|_| crate::dragdrop::DragGhost)
                     }
                 })
                 .map(|cell| with_menu(cell.into_any_element())),

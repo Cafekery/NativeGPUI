@@ -16,7 +16,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::art::{glyph, small_glyph};
 use crate::data::{Column, Face as F, available_bytes, byte_string};
-use crate::list::RowDrag;
+use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
 use crate::tags::{finder_color, tags};
