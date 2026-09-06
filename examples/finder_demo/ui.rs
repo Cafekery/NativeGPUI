@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -13,52 +13,83 @@ use gpui::{
 };
 
 use native_gpui::thumbnails;
-use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored};
+use native_gpui::tokens::{
+    self, SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color,
+};
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
+use objc2_app_kit::{NSColor, NSColorSpace};
+use objc2_core_foundation::CGFloat;
 
 use crate::data::{Face, Line, Row};
 use crate::{FinderDemo, ns_window};
 
-/// The demo's tags, in Finder's order; the second field is Finder's own colour index for each
-/// (1 grey … 7 orange, matching `finder_fs::tags`).
-pub(crate) const TAGS: &[(&str, u8)] = &[
-    ("Red", 6),
-    ("Orange", 7),
-    ("Yellow", 5),
-    ("Green", 2),
-    ("Blue", 4),
-    ("Purple", 3),
-    ("Gray", 1),
-];
+/// Finder's tag dot: 10pt across, its fill a fifth of the way from the system colour to white.
+const TAG_DOT: f32 = 10.;
+const TAG_LIGHTEN: f32 = 0.2;
+/// Finder's tag pill wears the system colour itself, a shade darkened by the sheet behind it.
+const TAG_PILL_ALPHA: f32 = 0.85;
 
-/// Finder's own sRGB for a tag colour index (1 grey … 7 orange), sampled from Finder's own tag
-/// swatches (Get Info / the Tags context menu) rather than guessed from `NSColor.systemRed` etc.,
-/// which run more saturated and don't match. `None` for 0 (no colour) or anything out of range.
-pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
+/// The tags Finder's own tag menus offer, read once from Finder's preferences.
+pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
+    static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
+    TAGS.get_or_init(finder_fs::tags::favorites)
+}
+
+/// The system colour behind a tag colour index (1 grey … 7 orange), `None` for 0 (no colour).
+fn tag_system_color(color: u8) -> Option<SystemColor> {
     Some(match color {
-        1 => (165, 165, 169), // Gray
-        2 => (93, 210, 122),  // Green
-        3 => (213, 89, 230),  // Purple
-        4 => (51, 160, 255),  // Blue
-        5 => (255, 214, 51),  // Yellow
-        6 => (255, 96, 99),   // Red
-        7 => (255, 164, 83),  // Orange
+        1 => SystemColor::SystemGray,
+        2 => SystemColor::SystemGreen,
+        3 => SystemColor::SystemPurple,
+        4 => SystemColor::SystemBlue,
+        5 => SystemColor::SystemYellow,
+        6 => SystemColor::SystemRed,
+        7 => SystemColor::SystemOrange,
         _ => return None,
     })
 }
 
-/// [`finder_color_rgb`] as an [`Hsla`] gpui can paint with, white if the index is out of range.
+/// The line Finder rings a tag dot with: the system colour itself.
+pub(crate) fn finder_edge(color: u8) -> Hsla {
+    tag_system_color(color).map_or(gpui::white(), system_color)
+}
+
+/// What Finder fills a tag dot or swatch with: its system colour a fifth of the way to white,
+/// lightened on the display's own primaries, which is where Finder's fills land exactly.
 pub(crate) fn finder_color(color: u8) -> Hsla {
-    let (r, g, b) = finder_color_rgb(color).unwrap_or((255, 255, 255));
-    gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
+    let Some(system) = tag_system_color(color) else {
+        return gpui::white();
+    };
+    let space = unsafe { NSColorSpace::displayP3ColorSpace() };
+    let lightened = system
+        .ns_color()
+        .colorUsingColorSpace(&space)
+        .map(|wide| {
+            let lift = |channel: CGFloat| channel + (1. - channel) * TAG_LIGHTEN as CGFloat;
+            unsafe {
+                NSColor::colorWithDisplayP3Red_green_blue_alpha(
+                    lift(wide.redComponent()),
+                    lift(wide.greenComponent()),
+                    lift(wide.blueComponent()),
+                    1.,
+                )
+            }
+        })
+        .and_then(|color| tokens::srgb(&color));
+    lightened.unwrap_or_else(|| system_color(system))
+}
+
+/// [`finder_color`] as the sRGB bytes the sidebar draws its dot with, `None` for no colour.
+pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
+    tag_system_color(color)?;
+    let rgba = gpui::Rgba::from(finder_color(color));
+    let byte = |channel: f32| (channel * 255.).round().clamp(0., 255.) as u8;
+    Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
 }
 
 /// One of the demo's tags as Finder stores it.
 pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
-    finder_fs::tags::Tag {
-        name: TAGS[index].0.to_string(),
-        color: TAGS[index].1,
-    }
+    tags()[index].clone()
 }
 
 /// The kinds Quick Look draws a real page or picture for; every other type keeps its icon.
@@ -343,25 +374,28 @@ pub(crate) fn small_glyph(
 }
 
 pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
-    let (name, color) = TAGS[index];
-    let mut wash = finder_color(color);
-    wash.a = 0.55;
+    let tag = &tags()[index];
+    let mut wash = finder_edge(tag.color);
+    wash.a = TAG_PILL_ALPHA;
     div()
         .px(px(6.))
-        .rounded(px(4.))
+        .rounded(px(3.))
         .bg(wash)
         .text_color(text)
-        .child(name)
+        .child(tag.name.clone())
         .into_any_element()
 }
 
 pub(crate) fn tag_dot(index: usize) -> AnyElement {
+    let color = tags()[index].color;
     div()
-        .w(px(8.))
-        .h(px(8.))
+        .w(px(TAG_DOT))
+        .h(px(TAG_DOT))
         .rounded_full()
         .flex_none()
-        .bg(finder_color(TAGS[index].1))
+        .border(px(1.))
+        .border_color(finder_edge(color))
+        .bg(finder_color(color))
         .into_any_element()
 }
 

@@ -23,7 +23,7 @@ use objc2_foundation::NSRect;
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
-use crate::ui::{Poster, TAGS, artwork, poster_art, rename_field, row_art, tag_dot, tag_pill};
+use crate::ui::{Poster, artwork, poster_art, rename_field, row_art, tag_dot, tag_pill};
 use crate::{FinderDemo, GALLERY_VIEW, ns_window};
 
 /// Finder's "Calculating…", for a summary a background pass has not finished.
@@ -687,9 +687,11 @@ impl FinderDemo {
             .line_height(px(LINE_H))
             .text_size(body);
         lower = lower.child(match (card.many, card.tags.first()) {
-            (false, Some(tag)) => tags
-                .child(tag_dot(*tag))
-                .child(div().text_color(palette.label).child(TAGS[*tag].0)),
+            (false, Some(tag)) => tags.child(tag_dot(*tag)).child(
+                div()
+                    .text_color(palette.label)
+                    .child(crate::ui::tags()[*tag].name.clone()),
+            ),
             (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
             (true, _) => tags
                 .children(card.tags.iter().map(|tag| tag_pill(*tag, palette.label)))
