@@ -550,6 +550,7 @@ impl FinderDemo {
             spec.width = prefs::list_column_width(here, spec.column)
                 .unwrap_or_else(|| ColumnSpec::of(spec.column).width);
         }
+        self.refit_name_column();
     }
 
     /// Finder's own gesture: fit a column to its widest currently-loaded cell, standard padding.

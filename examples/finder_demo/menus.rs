@@ -360,7 +360,7 @@ impl FinderDemo {
             }
             None => self.list_columns.push(ColumnSpec::of(column)),
         }
-        self.fit_name_column();
+        self.refit_name_column();
     }
 }
 

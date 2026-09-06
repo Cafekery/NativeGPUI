@@ -377,6 +377,13 @@ impl FinderDemo {
         }
     }
 
+    /// The columns beside it changed: the Name column fills the span again from scratch, rather
+    /// than by the deltas a resize hands it.
+    pub(crate) fn refit_name_column(&mut self) {
+        self.list_span = f32::NAN;
+        self.fit_name_column();
+    }
+
     /// The Name column takes whatever width the window gives or takes, down to its minimum.
     pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room
