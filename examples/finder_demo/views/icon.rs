@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use gpui::{
     AnyElement, App, ClickEvent, Div, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
@@ -61,7 +61,9 @@ type Tile = (SharedString, Point<Pixels>);
 
 /// Where every tile of one listing sits, and how tall that makes the grid.
 pub(crate) struct Layout {
-    lines: Arc<Vec<Line>>,
+    /// Weak, so a layout kept from the last frame is not a second owner of a listing still
+    /// growing; the allocation it names is never reused while this holds.
+    lines: Weak<Vec<Line>>,
     columns: usize,
     cell: f32,
     moved: u64,
@@ -109,7 +111,7 @@ impl Grid {
     /// placing every row of a large folder is more than a frame can pay for.
     fn layout(&mut self, lines: &Arc<Vec<Line>>, columns: usize, cell: f32) -> Rc<Layout> {
         let held = self.layout.clone().filter(|built| {
-            Arc::ptr_eq(&built.lines, lines)
+            std::ptr::eq(built.lines.as_ptr(), Arc::as_ptr(lines))
                 && built.columns == columns
                 && built.cell == cell
                 && built.moved == self.moved
@@ -127,7 +129,7 @@ impl Grid {
             .map(|(_, at)| f32::from(at.y) + cell)
             .fold(cell, f32::max);
         let built = Rc::new(Layout {
-            lines: lines.clone(),
+            lines: Arc::downgrade(lines),
             columns,
             cell,
             moved: self.moved,
@@ -476,13 +478,12 @@ impl FinderDemo {
                 .ok();
         });
 
-        let hit_lines = lines.clone();
         let hit_layout = layout.clone();
         let hit_scroll = scroll.clone();
-        let hit = move |at: Point<Pixels>| {
+        let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let at = at - hit_scroll.offset();
             let index = tile_at(&hit_layout.tiles, at, cell)?;
-            hit_lines.get(index).cloned()
+            demo.lines(false).get(index).cloned()
         };
 
         let empty = layout;

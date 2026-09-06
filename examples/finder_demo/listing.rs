@@ -50,6 +50,14 @@ pub(crate) struct Stamp {
 /// The band slots built for one listing, beside the listing they were built from.
 type Bands = (Arc<Vec<Line>>, Arc<Vec<Slot>>);
 
+/// A listing as built, and how many of the folder's rows went into it while rows landing at the
+/// end of that folder can extend it rather than build it again.
+#[derive(Clone)]
+struct Built {
+    lines: Arc<Vec<Line>>,
+    used: Option<usize>,
+}
+
 /// The cursor's key, and the line it names while that listing holds one.
 type Cursor = (SharedString, Option<Line>);
 
@@ -58,10 +66,10 @@ type Cursor = (SharedString, Option<Line>);
 #[derive(Default)]
 pub(crate) struct Listings {
     stamp: Option<Stamp>,
-    tree: Option<Arc<Vec<Line>>>,
-    flat: Option<Arc<Vec<Line>>>,
+    tree: Option<Built>,
+    flat: Option<Built>,
     slots: Option<Bands>,
-    columns: HashMap<&'static str, Arc<Vec<Line>>>,
+    columns: HashMap<&'static str, Built>,
     cursor: Option<Cursor>,
 }
 
@@ -117,8 +125,12 @@ impl FromIterator<SharedString> for Keys {
 }
 
 impl FinderDemo {
-    /// The rows a grouped list draws, with Finder's band headers between them.
-    pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Arc<Vec<Slot>> {
+    /// The rows a grouped list draws, with Finder's band headers between them. An ungrouped list
+    /// draws its rows one for one and builds no slots at all.
+    pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Option<Arc<Vec<Slot>>> {
+        if !self.grouped {
+            return None;
+        }
         let cached = self
             .listings()
             .slots
@@ -126,17 +138,14 @@ impl FinderDemo {
             .filter(|(built_for, _)| Arc::ptr_eq(built_for, lines))
             .map(|(_, slots)| slots.clone());
         if let Some(slots) = cached {
-            return slots;
+            return Some(slots);
         }
         let built = Arc::new(self.build_slots(lines));
         self.listings().slots = Some((lines.clone(), built.clone()));
-        built
+        Some(built)
     }
 
     fn build_slots(&self, lines: &[Line]) -> Vec<Slot> {
-        if !self.grouped {
-            return (0..lines.len()).map(Slot::Row).collect();
-        }
         let mut band: Option<SharedString> = None;
         let mut out = Vec::with_capacity(lines.len() + 4);
         for (index, line) in lines.iter().enumerate() {
@@ -151,7 +160,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn slot_of(&self, lines: &Arc<Vec<Line>>, index: usize) -> usize {
-        self.slots(lines)
+        let Some(slots) = self.slots(lines) else {
+            return index;
+        };
+        slots
             .iter()
             .position(|slot| matches!(slot, Slot::Row(at) if *at == index))
             .unwrap_or(index)
@@ -159,20 +171,75 @@ impl FinderDemo {
 
     /// The rows on screen, built once and shared by everything that draws this frame.
     pub(crate) fn lines(&self, tree: bool) -> Arc<Vec<Line>> {
-        let cached = match tree {
-            true => self.listings().tree.clone(),
-            false => self.listings().flat.clone(),
+        let rows = self.appendable();
+        // Held by the caller alone, so extending it below grows it in place rather than copying.
+        let fresh = {
+            let listings = self.listings();
+            let built = match tree {
+                true => &listings.tree,
+                false => &listings.flat,
+            };
+            built
+                .as_ref()
+                .filter(|built| built.used == rows)
+                .map(|built| built.lines.clone())
         };
-        if let Some(lines) = cached {
+        if let Some(lines) = fresh {
             return lines;
         }
-        let built = Arc::new(self.build_lines(tree));
+        let taken = self.take(tree);
+        let built = self
+            .extended(taken, self.here(), tree, rows)
+            .unwrap_or_else(|| Built {
+                lines: Arc::new(self.build_lines(tree)),
+                used: rows,
+            });
         let mut listings = self.listings();
         match tree {
             true => listings.tree = Some(built.clone()),
             false => listings.flat = Some(built.clone()),
         }
-        built
+        built.lines
+    }
+
+    /// Lifts the cached listing out of the cache, so extending it does not copy what the cache
+    /// still holds, and drops the bands built from it.
+    fn take(&self, tree: bool) -> Option<Built> {
+        let mut listings = self.listings();
+        listings.slots = None;
+        match tree {
+            true => listings.tree.take(),
+            false => listings.flat.take(),
+        }
+    }
+
+    /// How many rows of the folder on screen a listing is built from, when it is that one folder
+    /// in order and nothing else; `None` where the index's hits or a tag listing shape it.
+    fn appendable(&self) -> Option<usize> {
+        if self.tag_listing.is_some() || self.results() {
+            return None;
+        }
+        self.folders
+            .get(self.here())
+            .map(|folder| folder.rows.len())
+    }
+
+    /// The rows a listing gained since it was built, appended to what was built: while a folder
+    /// streams, every frame would otherwise build every row that has landed so far.
+    fn extended(
+        &self,
+        built: Option<Built>,
+        id: &'static str,
+        tree: bool,
+        rows: Option<usize>,
+    ) -> Option<Built> {
+        let mut built = built?;
+        let rows = rows?;
+        let used = built.used.filter(|used| rows > *used)?;
+        let lines = Arc::make_mut(&mut built.lines);
+        self.collect_from(id, used, 0, tree, lines);
+        built.used = Some(rows);
+        Some(built)
     }
 
     /// The cache every listing this frame comes out of, emptied when what it holds is stale.
@@ -200,15 +267,29 @@ impl FinderDemo {
     }
 
     pub(crate) fn column_listing(&self, folder: &'static str) -> Arc<Vec<Line>> {
-        let cached = self.listings().columns.get(folder).cloned();
-        if let Some(lines) = cached {
+        let rows = self.folders.get(folder).map(|listing| listing.rows.len());
+        let fresh = self
+            .listings()
+            .columns
+            .get(folder)
+            .filter(|built| built.used == rows)
+            .map(|built| built.lines.clone());
+        if let Some(lines) = fresh {
             return lines;
         }
-        let mut lines = Vec::new();
-        self.collect(folder, 0, false, &mut lines);
-        let lines = Arc::new(lines);
-        self.listings().columns.insert(folder, lines.clone());
-        lines
+        let taken = self.listings().columns.remove(folder);
+        let built = self
+            .extended(taken, folder, false, rows)
+            .unwrap_or_else(|| {
+                let mut lines = Vec::new();
+                self.collect(folder, 0, false, &mut lines);
+                Built {
+                    lines: Arc::new(lines),
+                    used: rows,
+                }
+            });
+        self.listings().columns.insert(folder, built.clone());
+        built.lines
     }
 
     pub(crate) fn focused_lines(&self) -> Arc<Vec<Line>> {
@@ -251,14 +332,28 @@ impl FinderDemo {
     }
 
     pub(crate) fn collect(&self, id: &'static str, depth: usize, tree: bool, out: &mut Vec<Line>) {
+        self.collect_from(id, 0, depth, tree, out);
+    }
+
+    /// The listing's rows from `from` on, filtered and disclosed the way a frame draws them.
+    fn collect_from(
+        &self,
+        id: &'static str,
+        from: usize,
+        depth: usize,
+        tree: bool,
+        out: &mut Vec<Line>,
+    ) {
         let Some(folder) = self.folders.get(id) else {
             return;
         };
+        out.reserve(folder.rows.len().saturating_sub(from));
         let query = self.query.trim().to_lowercase();
         let type_filter = self.type_filter.as_deref().unwrap_or("");
         let rows = folder
             .rows
             .iter()
+            .skip(from)
             .filter(|row| self.show_hidden || !row.hidden)
             .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query))
             .filter(|row| type_filter.is_empty() || row.name.to_lowercase().contains(type_filter));

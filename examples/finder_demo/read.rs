@@ -235,14 +235,17 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         let landed = !batches.is_empty();
+        let replaced = batches.iter().any(|(_, replace)| *replace);
         for (rows, replace) in batches {
             self.folders.deliver(id, rows, replace);
         }
         if done {
             self.folders.finish(id);
         }
-        // A re-read sorts once, when the whole listing has landed and taken the old one's place.
-        if (landed || done) && !self.folders.staging(id) {
+        // A read sorts what it puts on screen, and sorts once more when the last row has landed:
+        // sorting per batch is the whole listing again per batch, and it moves the rows a frame
+        // drew out from under what it built from them.
+        if done || replaced {
             self.sort_folder(id);
         }
         if let Some(key) = self.reveal_next.clone() {

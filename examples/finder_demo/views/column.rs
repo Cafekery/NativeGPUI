@@ -144,13 +144,12 @@ impl FinderDemo {
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
         let this_menu = this.clone();
-        let hit_lines = lines.clone();
         let hit_scroll = handle.clone();
-        let hit = move |at: Point<Pixels>| {
+        let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y);
             let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
             (row >= 0.)
-                .then(|| hit_lines.get(row as usize).cloned())
+                .then(|| demo.column_listing(folder).get(row as usize).cloned())
                 .flatten()
         };
         let renaming = self.renaming.clone();
@@ -168,11 +167,15 @@ impl FinderDemo {
             )
         };
 
-        let rows = lines.clone();
         let list = uniform_list(
             ("ng.finder.column.rows", index),
             lines.len(),
-            move |range, _, _| {
+            move |range, _, cx| {
+                let Ok(rows) =
+                    this.update(cx, |demo: &mut FinderDemo, _| demo.column_listing(folder))
+                else {
+                    return Vec::new();
+                };
                 let picked = |row: usize| match rows.get(row) {
                     Some(line) if emphasized => chosen.contains(&line.key),
                     Some(line) => alone.as_ref() == Some(&line.key),

@@ -99,24 +99,32 @@ impl FinderDemo {
 
         let (pads, lift) = self.list_inset();
         let slots = self.slots(&lines);
-        let hit = self.row_at(&lines, &slots, pads, look.row_h);
+        let hit = self.row_at(pads, look.row_h);
+        let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
-        let list = uniform_list("ng.finder.list", pads + slots.len(), move |range, _, _| {
+        // The listing comes from the demo per frame, not captured: an element holding it would
+        // keep a second reference, and a listing still streaming grows in place only while the
+        // frame that draws it holds the only one.
+        let list = uniform_list("ng.finder.list", pads + count, move |range, _, cx| {
+            let Ok(lines) = this.update(cx, |demo: &mut FinderDemo, _| demo.lines(true)) else {
+                return Vec::new();
+            };
             range
                 .map(|index| {
-                    let Some(slot) = index.checked_sub(pads).map(|at| &slots[at]) else {
+                    let Some(at) = index.checked_sub(pads) else {
                         return div()
                             .id(("ng.finder.pad", index))
                             .h(px(look.row_h))
                             .w_full()
                             .into_any_element();
                     };
-                    let at = match slot {
-                        Slot::Header(title) => {
+                    let at = match slots.as_ref().map(|slots| &slots[at]) {
+                        Some(Slot::Header(title)) => {
                             return band(title.clone(), look.secondary, look.name_w, look.row_h)
                                 .into_any_element();
                         }
-                        Slot::Row(at) => *at,
+                        Some(Slot::Row(at)) => *at,
+                        None => at,
                     };
                     row(&lines[at], at, &look, &marks, this.clone())
                 })
@@ -142,21 +150,19 @@ impl FinderDemo {
     /// Which row a point in the list's own coordinates lands on, for the one menu the rows share.
     fn row_at(
         &self,
-        lines: &Arc<Vec<Line>>,
-        slots: &Arc<Vec<Slot>>,
         pads: usize,
         row_h: f32,
-    ) -> impl Fn(Point<Pixels>) -> Option<Line> + use<> {
-        let lines = lines.clone();
-        let slots = slots.clone();
+    ) -> impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + use<> {
         let scroll = self.scroll.clone();
-        move |at| {
+        move |demo, at| {
             let top = f32::from(scroll.0.borrow().base_handle.offset().y);
             let index = ((f32::from(at.y) - top) / row_h).floor();
-            let slot = slots.get((index.max(0.) as usize).checked_sub(pads)?)?;
-            match slot {
-                Slot::Row(row) => lines.get(*row).cloned(),
-                Slot::Header(_) => None,
+            let at = (index.max(0.) as usize).checked_sub(pads)?;
+            let lines = demo.lines(true);
+            match demo.slots(&lines).as_ref().map(|slots| slots.get(at)) {
+                Some(Some(Slot::Row(row))) => lines.get(*row).cloned(),
+                Some(_) => None,
+                None => lines.get(at).cloned(),
             }
         }
     }
