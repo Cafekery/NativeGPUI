@@ -151,7 +151,7 @@ fn generate(job: Job) {
     let block = RcBlock::new(
         move |rep: *mut QLThumbnailRepresentation, _err: *mut NSError| {
             let image = unsafe { rep.as_ref() }.map(|rep| unsafe { rep.NSImage() });
-            let result = image.and_then(|image| render(&image, points, pixels));
+            let result = image.and_then(|image| render(&image, pixels));
             complete(key.clone(), result);
         },
     );
@@ -161,13 +161,17 @@ fn generate(job: Job) {
     }
 }
 
-fn render(image: &NSImage, points: NSSize, pixels: usize) -> Option<Arc<RenderImage>> {
-    let rgba = tokens::draw(image, points, pixels, pixels)?;
-    let buf = RgbaImage::from_raw(
-        pixels as u32,
-        pixels as u32,
-        tokens::to_bgra_straight(&rgba),
-    )?;
+/// Draws at the aspect-correct size Quick Look already fit within the requested box, not the
+/// box itself: a landscape photo stays landscape, a tall one stays tall, matching Finder rather
+/// than stretching every kind of picture to fill a square. `max_pixels` (the box side we asked
+/// the generator for) also caps the raster, so a source Quick Look upscales never grows past it.
+fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
+    let fit = image.size();
+    let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
+    let h = (fit.height.round() as usize).clamp(1, max_pixels.max(1));
+    let points = NSSize::new(w as f64, h as f64);
+    let rgba = tokens::draw(image, points, w, h)?;
+    let buf = RgbaImage::from_raw(w as u32, h as u32, tokens::to_bgra_straight(&rgba))?;
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
 }
 
