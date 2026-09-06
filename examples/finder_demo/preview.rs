@@ -20,14 +20,15 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
+use crate::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art};
 use crate::data::{Face, Line, Row, byte_string, date_text, day_string};
+use crate::frame::ns_window;
 use crate::header::NAME_MIN_W;
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
 use crate::view::GALLERY_VIEW;
-use crate::{FinderDemo, ns_window};
 
 /// Finder's "Calculating…", for a summary a background pass has not finished.
 const CALCULATING: &str = "Calculating\u{2026}";
