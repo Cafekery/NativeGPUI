@@ -46,6 +46,10 @@ pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bund
 pub enum SidebarIcon {
     Symbol(SharedString),
     SystemResource(SharedString),
+    /// A small circle, as Finder draws a tag: filled in this sRGB colour when it has one, an
+    /// outline when it does not. Unlike [`SidebarIcon::Symbol`], a filled dot keeps its colour
+    /// when the row is unselected or the window isn't key, since the colour is the tag's identity.
+    Dot(Option<(u8, u8, u8)>),
 }
 
 #[derive(Clone, Debug)]
@@ -1199,6 +1203,50 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     Some(image)
 }
 
+/// Finder's tag dot: `circle.fill` in the tag's own colour when it has one, the outline `circle`
+/// (template-tinted like any other sidebar glyph) when it does not.
+fn tag_dot_image(color: Option<(u8, u8, u8)>, points: f64) -> Option<Retained<NSImage>> {
+    thread_local! {
+        static DOTS: RefCell<HashMap<(Option<(u8, u8, u8)>, u32), Option<Retained<NSImage>>>> =
+            RefCell::new(HashMap::new());
+    }
+    let key = (color, points as u32);
+    if let Some(hit) = DOTS.with_borrow(|cache| cache.get(&key).cloned()) {
+        return hit;
+    }
+    let name = if color.is_some() {
+        "circle.fill"
+    } else {
+        "circle"
+    };
+    let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(points, unsafe {
+        NSFontWeightRegular
+    });
+    let built = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        None,
+    )
+    .and_then(|base| {
+        let config = match color {
+            Some((r, g, b)) => {
+                let nscolor = NSColor::colorWithSRGBRed_green_blue_alpha(
+                    r as f64 / 255.0,
+                    g as f64 / 255.0,
+                    b as f64 / 255.0,
+                    1.0,
+                );
+                size.configurationByApplyingConfiguration(
+                    &NSImageSymbolConfiguration::configurationWithHierarchicalColor(&nscolor),
+                )
+            }
+            None => size,
+        };
+        base.imageWithSymbolConfiguration(&config)
+    });
+    DOTS.with_borrow_mut(|cache| cache.insert(key, built.clone()));
+    built
+}
+
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     if let Some(title) = unsafe { cell.textField() } {
         let wanted = NSString::from_str(&node.title);
@@ -1216,6 +1264,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
                 )
             }
             Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
+            Some(SidebarIcon::Dot(color)) => tag_dot_image(*color, icon_points),
             None => None,
         };
         view.setImage(image.as_deref());

@@ -8,35 +8,56 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Bounds, ClickEvent, FontWeight, Hsla, Pixels, RenderImage, SharedString,
+    AnyElement, Bounds, ClickEvent, FontWeight, Hsla, ObjectFit, Pixels, RenderImage, SharedString,
     WeakEntity, Window, div, img, prelude::*, px,
 };
 
 use native_gpui::thumbnails;
-use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored, system_color};
+use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored};
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
 use crate::data::{Face, Line, Row};
 use crate::{FinderDemo, ns_window};
 
-pub(crate) const TAGS: &[(&str, SystemColor)] = &[
-    ("Red", SystemColor::SystemRed),
-    ("Orange", SystemColor::SystemOrange),
-    ("Yellow", SystemColor::SystemYellow),
-    ("Green", SystemColor::SystemGreen),
-    ("Blue", SystemColor::SystemBlue),
-    ("Purple", SystemColor::SystemPurple),
-    ("Gray", SystemColor::SystemGray),
+/// The demo's tags, in Finder's order; the second field is Finder's own colour index for each
+/// (1 grey … 7 orange, matching `finder_fs::tags`).
+pub(crate) const TAGS: &[(&str, u8)] = &[
+    ("Red", 6),
+    ("Orange", 7),
+    ("Yellow", 5),
+    ("Green", 2),
+    ("Blue", 4),
+    ("Purple", 3),
+    ("Gray", 1),
 ];
 
-/// The demo's tag colours are Finder's, in Finder's order; these are Finder's colour indices.
-const TAG_COLORS: [u8; 7] = [6, 7, 5, 2, 4, 3, 1];
+/// Finder's own sRGB for a tag colour index (1 grey … 7 orange), sampled from Finder's own tag
+/// swatches (Get Info / the Tags context menu) rather than guessed from `NSColor.systemRed` etc.,
+/// which run more saturated and don't match. `None` for 0 (no colour) or anything out of range.
+pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
+    Some(match color {
+        1 => (165, 165, 169), // Gray
+        2 => (93, 210, 122),  // Green
+        3 => (213, 89, 230),  // Purple
+        4 => (51, 160, 255),  // Blue
+        5 => (255, 214, 51),  // Yellow
+        6 => (255, 96, 99),   // Red
+        7 => (255, 164, 83),  // Orange
+        _ => return None,
+    })
+}
+
+/// [`finder_color_rgb`] as an [`Hsla`] gpui can paint with, white if the index is out of range.
+pub(crate) fn finder_color(color: u8) -> Hsla {
+    let (r, g, b) = finder_color_rgb(color).unwrap_or((255, 255, 255));
+    gpui::rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into()
+}
 
 /// One of the demo's tags as Finder stores it.
 pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
     finder_fs::tags::Tag {
         name: TAGS[index].0.to_string(),
-        color: TAG_COLORS[index],
+        color: TAGS[index].1,
     }
 }
 
@@ -154,7 +175,11 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     artwork(row, size)
 }
 
+/// Finder's Quick Look icon: the whole picture fit inside the box (never cropped, never
+/// upscaled past what [`thumbnails`] rendered), centred, with the thin light keyline and small
+/// corner radius Finder frames every thumbnail with.
 fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
+    let radius = px((size * 0.05).clamp(1.5, 5.));
     div()
         .w(px(size))
         .h(px(size))
@@ -162,7 +187,20 @@ fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(img(image).max_w(px(size)).max_h(px(size)))
+        .child(
+            img(image)
+                .max_w(px(size))
+                .max_h(px(size))
+                .object_fit(ObjectFit::Contain)
+                .rounded(radius)
+                .border_1()
+                .border_color(Hsla {
+                    h: 0.,
+                    s: 0.,
+                    l: 1.,
+                    a: 0.3,
+                }),
+        )
         .into_any_element()
 }
 
@@ -247,7 +285,7 @@ pub(crate) fn small_glyph(
 
 pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
     let (name, color) = TAGS[index];
-    let mut wash = system_color(color);
+    let mut wash = finder_color(color);
     wash.a = 0.55;
     div()
         .px(px(6.))
@@ -264,7 +302,7 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .h(px(8.))
         .rounded_full()
         .flex_none()
-        .bg(system_color(TAGS[index].1))
+        .bg(finder_color(TAGS[index].1))
         .into_any_element()
 }
 

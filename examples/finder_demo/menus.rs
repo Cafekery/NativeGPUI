@@ -6,13 +6,12 @@ use std::path::PathBuf;
 
 use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, ElementId, IntoElement, SharedString, WeakEntity, Window};
-use native_gpui::tokens::system_color;
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 use crate::clipboard::can_paste;
 use crate::data::{Column, Line};
 use crate::header::{ColumnSpec, column_title};
-use crate::ui::TAGS;
+use crate::ui::{TAGS, finder_color};
 use crate::{After, FinderDemo, ICON_VIEW, open_finder_window};
 
 const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
@@ -169,7 +168,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.view(
         MenuView::swatches_picking(
-            TAGS.iter().map(|(_, color)| system_color(*color)),
+            TAGS.iter().map(|(_, color)| finder_color(*color)),
             |index| SWATCH.with(|cell| cell.set(Some(index))),
         ),
         Act::Swatch,
