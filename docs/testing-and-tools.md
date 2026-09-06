@@ -26,7 +26,7 @@ Each probe is an example under `examples/` with its verdict and exit code in the
 
 | script | use |
 |---|---|
-| `bundle.sh <example> [features]` | builds an ad-hoc-signed `.app` in `dist/`. A bare Cargo binary is never made key by `activate`, so anything about focus, key equivalents or the menu bar runs from a bundle: `open -n dist/Storybook.app` |
+| `bundle.sh <example> [features]` | builds a signed `.app` in `dist/`. A bare Cargo binary is never made key by `activate`, so anything about focus, key equivalents or the menu bar runs from a bundle: `open -n dist/Storybook.app` |
 | `winlist.sh [pid]` | the window server's view of what is on screen: number, owner pid, layer, geometry, owner, title. The only reliable "is it really up / really gone" |
 | `lockguard.sh` | exits 90 if the display is locked or asleep. Run it before and after anything that produces a number; a 90 voids the numbers |
 | `keys.sh` | the keyboard suite: real keystrokes through System Events into a bundled window, results read back from AppKit |
@@ -34,6 +34,28 @@ Each probe is an example under `examples/` with its verdict and exit code in the
 | `menubar.sh` | reads the menu bar back out of a second process through Accessibility |
 | `surface.sh` | the public-surface arms, see above |
 | `uidiff.py a.png [b.png]` | structure (rows, columns, edges) out of window captures |
+
+## Signing and privacy prompts
+
+TCC stores a privacy grant against the app's designated requirement, so an ad-hoc bundle is granted
+per build: its requirement is `cdhash H"..."`, which every rebuild changes, and Desktop, Documents,
+Downloads and "data from other apps" ask again. `bundle.sh` signs with the first identity
+`security find-identity -v -p codesigning` offers, Developer ID before Apple Development, and with
+nothing to offer it makes a `NativeGPUI Dev` certificate in a keychain of its own and signs with that
+(`NG_CODESIGN_IDENTITY` overrides). Either way the requirement becomes identifier-plus-certificate and
+outlives the build. Ad-hoc is the last resort when no identity can be had, and it costs a prompt per
+build. The Info.plist carries the usage strings for what the Finder demo reaches: Desktop, Documents,
+Downloads, removable and network volumes, file-provider domains, and `NSAppDataUsageDescription` for
+"data from other apps".
+
+The grant follows the identifier and the certificate in the signature, never the file name, so copy a
+bundle (`ditto dist/FinderDemo.app /tmp/ngv/Probe.app`) instead of re-bundling or re-signing it: a copy
+shares the grant, a hand-made or ad-hoc bundle is a new app and asks again. A test launch that must not
+ask at all gets a home of its own:
+
+```sh
+open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_CRAWL=1 dist/FinderDemo.app
+```
 
 ## Capturing the screen
 

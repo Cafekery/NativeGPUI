@@ -7,13 +7,14 @@ features=${2:-}
 
 if [ "$name" = storybook ] && [ -z "$features" ]; then
   features=private-api
-  echo "storybook: defaulting to --features private-api"
+  echo "storybook: defaulting to --features private-api" >&2
 fi
 
 cd "$(dirname "$0")/.." || exit 1
 
 title=$(python3 -c "import sys; print(sys.argv[1].replace('_',' ').title().replace(' ',''))" "$name")
 app="dist/$title.app"
+bundle_id="dev.cafekery.nativegpui.$name"
 
 build=(cargo build --release --example "$name")
 [ -n "$features" ] && build+=(--features "$features")
@@ -33,7 +34,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
 	<key>CFBundleDevelopmentRegion</key>	<string>en</string>
 	<key>CFBundleExecutable</key>		<string>$title</string>
-	<key>CFBundleIdentifier</key>		<string>dev.cafekery.nativegpui.$name</string>
+	<key>CFBundleIdentifier</key>		<string>$bundle_id</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key>			<string>$title</string>
 	<key>CFBundleDisplayName</key>		<string>$title</string>
@@ -45,11 +46,89 @@ cat > "$app/Contents/Info.plist" <<PLIST
 	<key>NSPrincipalClass</key>		<string>NSApplication</string>
 	<key>NSSupportsAutomaticTermination</key><true/>
 	<key>NSSupportsSuddenTermination</key>	<true/>
+	<key>NSDesktopFolderUsageDescription</key>	<string>$title lists your Desktop the way Finder does.</string>
+	<key>NSDocumentsFolderUsageDescription</key>	<string>$title lists your Documents the way Finder does.</string>
+	<key>NSDownloadsFolderUsageDescription</key>	<string>$title lists your Downloads the way Finder does.</string>
+	<key>NSRemovableVolumesUsageDescription</key>	<string>$title lists connected disks under Locations.</string>
+	<key>NSNetworkVolumesUsageDescription</key>	<string>$title lists mounted network shares under Locations.</string>
+	<key>NSFileProviderDomainUsageDescription</key>	<string>$title lists cloud folders such as iCloud Drive.</string>
+	<key>NSAppDataUsageDescription</key>		<string>$title lists other apps' data folders while browsing your Library.</string>
 </dict>
 </plist>
 PLIST
 
-# An unsigned bundle is refused activation, and its TCC grant is keyed to the signature.
-codesign --force --sign - --timestamp=none "$app" 2>/dev/null || echo "warning: codesign failed"
+# TCC keys a grant to the app's designated requirement. Ad-hoc signing makes that requirement the
+# cdhash, which every rebuild changes, so every rebuild is a new app that has to be granted again; a
+# real identity makes it identifier-plus-certificate, which survives rebuilds.
+identity=${NG_CODESIGN_IDENTITY:-}
+self_signed="NativeGPUI Dev"
+keychain="$HOME/Library/Keychains/nativegpui-dev.keychain-db"
+keychain_password=nativegpui
+
+find_identity() {
+  security find-identity -v -p codesigning 2>/dev/null |
+    sed -n 's/^ *[0-9]*) [0-9A-F]* "\(.*\)"$/\1/p' | grep -m1 "$1"
+}
+
+# No identity on this Mac: keep one of ours in a keychain of its own, with a password the script
+# knows so later builds sign unattended. codesign resolves a name only through the user's keychain
+# search list, and only an unlocked keychain whose key allows codesign signs without a dialog.
+own_identity() {
+  local dir status
+  [ -f "$keychain" ] || security create-keychain -p "$keychain_password" "$keychain" || return 1
+  local -a list
+  while IFS= read -r line; do list+=("$(printf '%s' "$line" | sed 's/^ *"//;s/"$//')"); done \
+    < <(security list-keychains -d user)
+  printf '%s\n' "${list[@]}" | grep -qxF "$keychain" ||
+    security list-keychains -d user -s "${list[@]}" "$keychain" || return 1
+  security unlock-keychain -p "$keychain_password" "$keychain" || return 1
+  security set-keychain-settings "$keychain"
+  if ! security find-certificate -c "$self_signed" "$keychain" >/dev/null 2>&1; then
+    dir=$(mktemp -d) || return 1
+    cat > "$dir/req.cfg" <<CFG
+[req]
+distinguished_name = dn
+x509_extensions    = ext
+prompt             = no
+[dn]
+CN = $self_signed
+[ext]
+basicConstraints   = critical,CA:false
+keyUsage           = critical,digitalSignature
+extendedKeyUsage   = critical,codeSigning
+CFG
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+      -config "$dir/req.cfg" -keyout "$dir/key.pem" -out "$dir/cert.pem" >/dev/null 2>&1 &&
+      /usr/bin/openssl pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" \
+        -name "$self_signed" -passout "pass:$keychain_password" -out "$dir/id.p12" >/dev/null 2>&1 &&
+      security import "$dir/id.p12" -k "$keychain" -P "$keychain_password" -A >/dev/null 2>&1 &&
+      security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+        -k "$keychain_password" "$keychain" >/dev/null 2>&1
+    status=$?
+    rm -rf "$dir"
+    [ $status -eq 0 ] || return 1
+  fi
+  printf '%s' "$self_signed"
+}
+
+if [ -z "$identity" ]; then
+  identity=$(find_identity '^Developer ID Application:') ||
+    identity=$(find_identity '^Apple Development:') ||
+    identity=$(find_identity '^Mac Developer:') ||
+    identity=$(own_identity)
+fi
+
+if [ -n "$identity" ]; then
+  sign=(codesign --force --sign "$identity" --identifier "$bundle_id" --timestamp=none
+    --options runtime)
+  [ "$identity" = "$self_signed" ] && sign+=(--keychain "$keychain")
+  "${sign[@]}" "$app" 2>/dev/null ||
+    { echo "warning: codesign as '$identity' failed" >&2; identity=; }
+fi
+# Last resort: an ad-hoc bundle launches, but its privacy grants die with the next build.
+if [ -z "$identity" ]; then
+  codesign --force --sign - --identifier "$bundle_id" --timestamp=none "$app" 2>/dev/null ||
+    echo "warning: codesign failed" >&2
+fi
 
 echo "$app"
