@@ -168,6 +168,37 @@ fn cell_body(
 }
 
 impl FinderDemo {
+    /// The columns beside it changed: the Name column fills the span again from scratch, rather
+    /// than by the deltas a resize hands it.
+    pub(crate) fn refit_name_column(&mut self) {
+        self.list_span = f32::NAN;
+        self.fit_name_column();
+    }
+
+    /// The Name column takes whatever width the window gives or takes, down to its minimum.
+    pub(crate) fn fit_name_column(&mut self) {
+        let span = self.list_room
+            - if self.preview_shown() {
+                self.preview_w
+            } else {
+                0.
+            };
+        let fixed = self.list_content_w() - self.name_w;
+        if self.list_span.is_nan() {
+            self.name_w = (span - fixed).max(NAME_MIN_W);
+        } else if span != self.list_span {
+            let delta = span - self.list_span;
+            let overflow = (self.list_content_w() - self.list_span).max(0.);
+            let change = if delta < 0. {
+                delta
+            } else {
+                (delta - overflow).max(0.)
+            };
+            self.name_w = (self.name_w + change).max(NAME_MIN_W);
+        }
+        self.list_span = span;
+    }
+
     pub(crate) fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         if self.header_drag.is_some() && !cx.has_active_drag() {
             if matches!(self.header_drag, Some(HeaderDrag::Resize { .. })) {
