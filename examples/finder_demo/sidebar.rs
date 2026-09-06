@@ -239,7 +239,8 @@ impl FinderDemo {
                     Some(
                         sidebar_item(row.id, row.title.clone())
                             .icon(row.glyph.icon())
-                            .ejectable(row.eject),
+                            .ejectable(row.eject)
+                            .accepts_drops(matches!(row.glyph, Glyph::Tag(_))),
                     )
                 }))
             })
@@ -301,7 +302,10 @@ impl FinderDemo {
             cx.notify();
         }));
         sidebar.on_drop_paths(cx.listener(|this, dropped: &SidebarDrop, _, cx| {
-            this.pin(dropped);
+            match dropped.onto.as_ref().and_then(|id| id.strip_prefix("tag:")) {
+                Some(tag) => this.tag_dropped(tag, &dropped.paths, cx),
+                None => this.pin(dropped),
+            }
             cx.notify();
         }));
         sidebar.on_eject(cx.listener(|this, id: &SharedString, window, cx| {
@@ -357,6 +361,31 @@ impl FinderDemo {
     }
 
     /// Finder's own sidebar drop, and one Finder refuses: a folder pinned under Locations too.
+    /// Finder's drop on a tag row: the files keep the tags they had and gain this one.
+    fn tag_dropped(&mut self, tag: &str, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+        let Some(tag) = finder_fs::tags::all().into_iter().find(|it| it.name == tag) else {
+            return;
+        };
+        let favourite = crate::ui::tags().iter().position(|it| it.name == tag.name);
+        for path in paths {
+            if let Some(index) = favourite {
+                self.tags.insert(intern_path(path).into(), index);
+            }
+            let path = path.clone();
+            let tag = tag.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    let mut carried = finder_fs::tags::of(&path);
+                    if carried.iter().any(|it| it.name == tag.name) {
+                        return;
+                    }
+                    carried.push(tag);
+                    finder_fs::tags::set(&path, &carried).ok();
+                })
+                .detach();
+        }
+    }
+
     fn pin(&mut self, dropped: &SidebarDrop) {
         let group = match dropped.group.as_ref() {
             id @ (FAVOURITES | LOCATIONS) => id,
