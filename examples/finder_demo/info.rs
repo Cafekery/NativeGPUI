@@ -10,8 +10,8 @@ use native_gpui::window_options;
 
 use std::path::Path;
 
+use crate::art::row_art;
 use crate::data::{Line, byte_string, day_string};
-use crate::ui::row_art;
 
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
@@ -54,7 +54,7 @@ impl Info {
             .text_size(tokens::small_system_font_size())
             .text_color(system_color(SystemColor::Label))
             .font_weight(FontWeight::BOLD)
-            .children(crate::ui::small_glyph(
+            .children(crate::art::small_glyph(
                 if open {
                     "chevron.down"
                 } else {

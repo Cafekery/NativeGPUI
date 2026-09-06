@@ -1,0 +1,193 @@
+//! Finder's tags: the colours it fills a dot or a swatch with, and the dots a row wears.
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use gpui::{AnyElement, Context, Hsla, SharedString, div, prelude::*, px};
+use native_gpui::tokens::{self, SystemColor, system_color};
+use objc2_app_kit::{NSColor, NSColorSpace};
+use objc2_core_foundation::CGFloat;
+
+use crate::FinderDemo;
+
+/// Finder's tag dot: 10pt across, its fill a fifth of the way from the system colour to white.
+const TAG_DOT: f32 = 10.;
+/// Finder overlaps a row's dots at this pitch and draws at most [`TAG_DOTS_MAX`] of them.
+const TAG_DOT_PITCH: f32 = 5.;
+const TAG_DOTS_MAX: usize = 3;
+const TAG_LIGHTEN: f32 = 0.2;
+/// Finder's tag pill wears the system colour itself, a shade darkened by the sheet behind it.
+const TAG_PILL_ALPHA: f32 = 0.85;
+
+/// The tags Finder's own tag menus offer, read once from Finder's preferences.
+pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
+    static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
+    TAGS.get_or_init(finder_fs::tags::favorites)
+}
+
+/// The system colour behind a tag colour index (1 grey … 7 orange), `None` for 0 (no colour).
+fn tag_system_color(color: u8) -> Option<SystemColor> {
+    Some(match color {
+        1 => SystemColor::SystemGray,
+        2 => SystemColor::SystemGreen,
+        3 => SystemColor::SystemPurple,
+        4 => SystemColor::SystemBlue,
+        5 => SystemColor::SystemYellow,
+        6 => SystemColor::SystemRed,
+        7 => SystemColor::SystemOrange,
+        _ => return None,
+    })
+}
+
+/// The line Finder rings a tag dot with: the system colour itself.
+pub(crate) fn finder_edge(color: u8) -> Hsla {
+    tag_system_color(color).map_or(gpui::white(), system_color)
+}
+
+/// What Finder fills a tag dot or swatch with: its system colour a fifth of the way to white,
+/// lightened on the display's own primaries, which is where Finder's fills land exactly.
+pub(crate) fn finder_color(color: u8) -> Hsla {
+    let Some(system) = tag_system_color(color) else {
+        return gpui::white();
+    };
+    let space = NSColorSpace::displayP3ColorSpace();
+    let lightened = system
+        .ns_color()
+        .colorUsingColorSpace(&space)
+        .map(|wide| {
+            let lift = |channel: CGFloat| channel + (1. - channel) * TAG_LIGHTEN as CGFloat;
+            NSColor::colorWithDisplayP3Red_green_blue_alpha(
+                lift(wide.redComponent()),
+                lift(wide.greenComponent()),
+                lift(wide.blueComponent()),
+                1.,
+            )
+        })
+        .and_then(|color| tokens::srgb(&color));
+    lightened.unwrap_or_else(|| system_color(system))
+}
+
+/// [`finder_color`] as the sRGB bytes the sidebar draws its dot with, `None` for no colour.
+pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
+    tag_system_color(color)?;
+    let rgba = gpui::Rgba::from(finder_color(color));
+    let byte = |channel: f32| (channel * 255.).round().clamp(0., 255.) as u8;
+    Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
+}
+
+/// Where a tag name sits in the demo's tag menus, if it is one of them.
+pub(crate) fn tag_index(name: &str) -> Option<usize> {
+    tags().iter().position(|tag| tag.name == name)
+}
+
+/// One of the demo's tags as Finder stores it.
+pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
+    tags()[index].clone()
+}
+
+pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
+    let tag = &tags()[index];
+    let mut wash = finder_edge(tag.color);
+    wash.a = TAG_PILL_ALPHA;
+    div()
+        .px(px(6.))
+        .rounded(px(3.))
+        .bg(wash)
+        .text_color(text)
+        .child(tag.name.clone())
+        .into_any_element()
+}
+
+pub(crate) fn tag_dot(index: usize) -> AnyElement {
+    let color = tags()[index].color;
+    div()
+        .w(px(TAG_DOT))
+        .h(px(TAG_DOT))
+        .rounded_full()
+        .flex_none()
+        .border(px(1.))
+        .border_color(finder_edge(color))
+        .bg(finder_color(color))
+        .into_any_element()
+}
+
+/// The room a row's tag dots take.
+pub(crate) fn tag_dots_w(count: usize) -> f32 {
+    match count.min(TAG_DOTS_MAX) {
+        0 => 0.,
+        shown => TAG_DOT + TAG_DOT_PITCH * (shown - 1) as f32,
+    }
+}
+
+/// Finder's stack: the newest tag leftmost and over the ones before it, three dots at most.
+pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
+    let shown = &tags[tags.len().saturating_sub(TAG_DOTS_MAX)..];
+    if shown.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .relative()
+            .flex_none()
+            .w(px(tag_dots_w(shown.len())))
+            .h(px(TAG_DOT))
+            .children(shown.iter().enumerate().map(|(at, tag)| {
+                div()
+                    .absolute()
+                    .left(px((shown.len() - 1 - at) as f32 * TAG_DOT_PITCH))
+                    .child(tag_dot(*tag))
+            }))
+            .into_any_element(),
+    )
+}
+
+/// The tags a file carries that the demo's tag menus know, as their indices.
+pub(crate) fn row_tags(path: &str) -> Vec<usize> {
+    finder_fs::tags::of(Path::new(path))
+        .iter()
+        .filter_map(|tag| tag_index(&tag.name))
+        .collect()
+}
+
+/// One row's Finder tags, written where Finder reads them.
+fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) {
+    let path = PathBuf::from(key.as_ref());
+    let wanted: Vec<finder_fs::tags::Tag> = tags.iter().map(|index| finder_tag(*index)).collect();
+    cx.background_executor()
+        .spawn(async move {
+            finder_fs::tags::set(&path, &wanted).ok();
+        })
+        .detach();
+}
+
+impl FinderDemo {
+    /// Finder's tag dots: the pick colours every chosen row, and the files carry the tag.
+    pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
+        let chosen = self.selected.snapshot();
+        for key in chosen.iter() {
+            self.tags.insert(key.clone(), vec![tag]);
+            write_tags(key, &[tag], cx);
+        }
+    }
+
+    pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
+        let chosen = self.selected.snapshot();
+        for key in chosen.iter() {
+            let next = match self
+                .tags
+                .get(key)
+                .and_then(|carried| carried.first().copied())
+            {
+                Some(index) if index + 1 >= tags().len() => None,
+                Some(index) => Some(index + 1),
+                None => Some(0),
+            };
+            let wanted: Vec<usize> = next.into_iter().collect();
+            match wanted.is_empty() {
+                true => self.tags.remove(key),
+                false => self.tags.insert(key.clone(), wanted.clone()),
+            };
+            write_tags(key, &wanted, cx);
+        }
+    }
+}

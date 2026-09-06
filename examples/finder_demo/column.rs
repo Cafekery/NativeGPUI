@@ -9,11 +9,12 @@ use gpui::{
 };
 use native_gpui::tokens::{self, Appearance, SystemColor, current_appearance, system_color};
 
+use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Face, Line};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{art_at, click_kind, rename_field, row_art, small_glyph};
+use crate::ui::{click_kind, rename_field};
 use crate::{COLUMN_VIEW, FinderDemo, LIST_VIEW};
 
 const ROW_H: f32 = 24.;

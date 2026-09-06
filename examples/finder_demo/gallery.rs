@@ -4,10 +4,11 @@ use gpui::{AnyElement, ClickEvent, Window, div, point, prelude::*, px};
 use native_gpui::native_tooltip;
 
 use crate::FinderDemo;
+use crate::art::{Poster, art_at, poster_art, row_art};
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{Poster, art_at, click_kind, poster_art, row_art};
+use crate::ui::click_kind;
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
