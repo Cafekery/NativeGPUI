@@ -17,14 +17,16 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::app::FinderDemo;
 use crate::app::LIST_CONTEXT;
+use crate::chrome::path_bar::PATH_H;
+use crate::chrome::scope_bar;
+use crate::chrome::surface::{band_glass, pane_surface};
 use crate::commands::{ZoomIn, ZoomOut};
+use crate::menus;
 use crate::palette::Palette;
-use crate::path_bar::PATH_H;
 use crate::preview::LIST_MIN_W;
 use crate::ui::axis_locked;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
-use crate::views::header::{HEADER_H, band_glass, pane_surface};
-use crate::{menus, scope};
+use crate::views::header::HEADER_H;
 
 pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
@@ -231,7 +233,11 @@ impl FinderDemo {
         } = column;
         // The scope bar lives in the same hosted band as the toolbar and column header: it grows
         // the content's top inset the way `list_inset` grows the list's.
-        let scope_h = if self.searching() { scope::SCOPE_H } else { 0. };
+        let scope_h = if self.searching() {
+            scope_bar::SCOPE_H
+        } else {
+            0.
+        };
         let scope_row = (scope_h > 0.).then(|| self.scope_row(cx));
         let above = metrics.top;
         let top = above + px(scope_h);

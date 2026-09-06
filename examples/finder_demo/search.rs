@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
+use crate::chrome::scope_bar;
 use crate::data;
 use crate::listing::next_rev;
-use crate::{index, prefs, scope};
+use crate::{index, prefs};
 
 /// Rows a search or a tag listing shows at most.
 const HITS: usize = 200;
@@ -42,7 +43,7 @@ impl FinderDemo {
             return;
         }
         let under = match self.scope {
-            scope::THIS_MAC => None,
+            scope_bar::THIS_MAC => None,
             _ => Some(PathBuf::from(self.here())),
         };
         let wanted = query.clone();

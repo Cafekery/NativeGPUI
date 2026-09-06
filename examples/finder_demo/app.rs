@@ -19,6 +19,8 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
+use crate::chrome::scope_bar;
+use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::listing::{Keys, Listings};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
@@ -26,7 +28,7 @@ use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
 use crate::views::icon::Grid;
 use crate::views::list::{ICON_SIZE, ICON_SMALL};
-use crate::{conflicts, prefs, read, scope, sidebar};
+use crate::{conflicts, prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
@@ -49,7 +51,7 @@ pub(crate) struct FinderDemo {
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
-    /// Finder's scope bar: `scope::THIS_MAC` or `scope::THIS_FOLDER`.
+    /// Finder's scope bar: `scope_bar::THIS_MAC` or `scope_bar::THIS_FOLDER`.
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
     pub(crate) selected: Keys,
@@ -168,7 +170,7 @@ impl FinderDemo {
             name_w: NAME_MIN_W,
             header_drag: None,
             query: String::new(),
-            scope: prefs::search_scope().unwrap_or(scope::THIS_FOLDER),
+            scope: prefs::search_scope().unwrap_or(scope_bar::THIS_FOLDER),
             expanded: Keys::default(),
             selected: Keys::default(),
             cursor: None,
