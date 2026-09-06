@@ -1,12 +1,12 @@
 //! The gallery view: the selection large, every item in a strip along the bottom.
 
-use gpui::{AnyElement, ClickEvent, Window, div, point, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::native_tooltip;
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
 use crate::data::Line;
-use crate::menus::row_menu;
+use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::ui::click_kind;
 
@@ -82,6 +82,16 @@ impl FinderDemo {
         };
 
         let this = cx.entity().downgrade();
+        let hit_lines = lines.clone();
+        let hit_strip = self.strip.clone();
+        let hit = move |at: Point<Pixels>| {
+            let x = f32::from(at.x) - f32::from(hit_strip.offset().x) - STRIP_INSET;
+            let index = x / (strip.cell + strip.gap);
+            if x < 0. || index.fract() * (strip.cell + strip.gap) > strip.cell {
+                return None;
+            }
+            hit_lines.get(index as usize).cloned()
+        };
         let strip_row = div()
             .id("ng.finder.filmstrip")
             .h(px(strip.height()))
@@ -97,7 +107,6 @@ impl FinderDemo {
                 let on_screen = start + 2. * strip.cell > 0. && start < room_w + strip.cell;
                 let is_selected = self.selected.contains(&line.key);
                 let this = this.clone();
-                let this_menu = this.clone();
                 let clicked = line.clone();
                 let cell = div()
                     .id(("ng.finder.frame", index))
@@ -122,13 +131,7 @@ impl FinderDemo {
                         })
                         .ok();
                     });
-                row_menu(
-                    ("ng.finder.strip.menu", index),
-                    &line,
-                    &self.selected,
-                    this_menu,
-                    native_tooltip(("ng.finder.strip.tip", index), line.row.name.clone(), cell),
-                )
+                native_tooltip(("ng.finder.strip.tip", index), line.row.name.clone(), cell)
             }));
 
         div()
@@ -146,7 +149,7 @@ impl FinderDemo {
                     .justify_center()
                     .children(hero),
             )
-            .child(strip_row)
+            .child(rows_menu("ng.finder.strip.menu", this, hit, strip_row))
             .into_any_element()
     }
 

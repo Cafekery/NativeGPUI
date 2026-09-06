@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, Font, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
+    MouseDownEvent, Pixels, Point, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
+    uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -13,7 +14,7 @@ use crate::chrome::scope_bar::SCOPE_H;
 use crate::data::{Column, Line, date_text, enclosing_name};
 use crate::dragdrop::{DragGhost, RowDrag, carries};
 use crate::listing::Slot;
-use crate::menus::row_menu;
+use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::tag_dots;
 use crate::ui::{axis_locked, click_kind, rename_field};
@@ -98,6 +99,7 @@ impl FinderDemo {
 
         let (pads, lift) = self.list_inset();
         let slots = self.slots(&lines);
+        let hit = self.row_at(&lines, &slots, pads, look.row_h);
 
         let list = uniform_list("ng.finder.list", pads + slots.len(), move |range, _, _| {
             range
@@ -128,8 +130,35 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .mt(px(-lift))
-            .child(axis_locked(list))
+            .child(rows_menu(
+                "ng.finder.list.menu",
+                cx.entity().downgrade(),
+                hit,
+                axis_locked(list),
+            ))
             .into_any_element()
+    }
+
+    /// Which row a point in the list's own coordinates lands on, for the one menu the rows share.
+    fn row_at(
+        &self,
+        lines: &Arc<Vec<Line>>,
+        slots: &Arc<Vec<Slot>>,
+        pads: usize,
+        row_h: f32,
+    ) -> impl Fn(Point<Pixels>) -> Option<Line> + use<> {
+        let lines = lines.clone();
+        let slots = slots.clone();
+        let scroll = self.scroll.clone();
+        move |at| {
+            let top = f32::from(scroll.0.borrow().base_handle.offset().y);
+            let index = ((f32::from(at.y) - top) / row_h).floor();
+            let slot = slots.get((index.max(0.) as usize).checked_sub(pads)?)?;
+            match slot {
+                Slot::Row(row) => lines.get(*row).cloned(),
+                Slot::Header(_) => None,
+            }
+        }
     }
 
     /// The type-select fallback's pill, bottom-right of the list, while a filter is live.
@@ -423,11 +452,10 @@ fn row(
             },
             move |_, _, _, cx| cx.new(|_| DragGhost),
         );
-    let row = match line.row.opens {
-        Some(into) => drop_target(row, line, into, marks, look.selection, this.clone()),
-        None => row,
-    };
-    row_menu(("ng.finder.row.menu", at), line, &marks.selected, this, row).into_any_element()
+    match line.row.opens {
+        Some(into) => drop_target(row, line, into, marks, look.selection, this).into_any_element(),
+        None => row.into_any_element(),
+    }
 }
 
 /// A folder row takes the rows dragged onto it, and springs open under a drag that rests there.

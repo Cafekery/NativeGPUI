@@ -13,7 +13,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
-use crate::menus::row_menu;
+use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
 use crate::ui::{click_kind, rename_field};
@@ -228,6 +228,17 @@ fn tile(
         )
 }
 
+/// Which tile a point in the grid's own scrolled coordinates lands on.
+fn tile_at(
+    layout: &[(SharedString, Point<Pixels>)],
+    at: Point<Pixels>,
+    cell: f32,
+) -> Option<usize> {
+    layout.iter().position(|(_, tile)| {
+        at.x >= tile.x && at.x < tile.x + px(cell) && at.y >= tile.y && at.y < tile.y + px(cell)
+    })
+}
+
 fn elide(name: &SharedString, room: f32) -> SharedString {
     let per_line = (room / (LABEL_FONT * 0.58)).floor() as usize;
     let budget = per_line * LABEL_LINES;
@@ -387,13 +398,7 @@ impl FinderDemo {
                     })
                     .ok();
             });
-            canvas = canvas.child(row_menu(
-                ("ng.finder.tile.menu", index),
-                line,
-                &self.selected,
-                this.clone(),
-                tile,
-            ));
+            canvas = canvas.child(tile);
         }
 
         let dropped = layout.clone();
@@ -432,18 +437,23 @@ impl FinderDemo {
                 .ok();
         });
 
+        let hit_lines = lines.clone();
+        let hit_layout = layout.clone();
+        let hit_scroll = scroll.clone();
+        let hit = move |at: Point<Pixels>| {
+            let at = at - hit_scroll.offset();
+            let index = tile_at(&hit_layout, at, cell)?;
+            hit_lines.get(index).cloned()
+        };
+
         let empty = layout;
         let empty_scroll = scroll;
+        let this_menu = this.clone();
         // Hit-tested by hand: GPUI's drag is a bubble listener and misses a press a tile swallows.
-        canvas
-            .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
+        let canvas =
+            canvas.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
                 let at = event.position - empty_scroll.bounds().origin - empty_scroll.offset();
-                if empty.iter().any(|(_, tile)| {
-                    at.x >= tile.x
-                        && at.x < tile.x + px(cell)
-                        && at.y >= tile.y
-                        && at.y < tile.y + px(cell)
-                }) {
+                if tile_at(&empty, at, cell).is_some() {
                     return;
                 }
                 this.update(cx, |this: &mut FinderDemo, cx| {
@@ -453,7 +463,7 @@ impl FinderDemo {
                     cx.notify();
                 })
                 .ok();
-            })
-            .into_any_element()
+            });
+        rows_menu("ng.finder.icons.menu", this_menu, hit, canvas).into_any_element()
     }
 }
