@@ -26,7 +26,7 @@ use crate::app::FinderDemo;
 use crate::data::byte_string;
 use crate::ops::After;
 use crate::palette::Palette;
-use crate::toolbar::PATH_H;
+use crate::path_bar::PATH_H;
 
 const SHEET_W: f32 = 460.;
 const ICON: f32 = 64.;
