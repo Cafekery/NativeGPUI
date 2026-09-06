@@ -12,7 +12,7 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent, Pixels,
-    Size, Style, Window, px, size,
+    Point, Size, Style, Window, px, size,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
@@ -768,6 +768,7 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         id: id.into(),
         child: child.into_any_element(),
         entries: Vec::new(),
+        build: None,
         origin: MenuOrigin::default(),
         on_select: None,
     }
@@ -775,10 +776,14 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
 /// What a context menu hands back: the index of the row the user picked.
 type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
+/// A menu built where the click landed, in the element's own coordinates.
+type EntryBuilder = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry>>;
+
 pub struct NativeContextMenu {
     id: ElementId,
     child: AnyElement,
     entries: Vec<MenuEntry>,
+    build: Option<EntryBuilder>,
     origin: MenuOrigin,
     on_select: Option<SelectHandler>,
 }
@@ -791,6 +796,16 @@ impl NativeContextMenu {
 
     pub fn entries(mut self, entries: impl IntoIterator<Item = MenuEntry>) -> Self {
         self.entries = entries.into_iter().collect();
+        self
+    }
+
+    /// The rows the menu shows, built when the click lands from where in this element it landed,
+    /// so one menu can serve every row of a container.
+    pub fn entries_at(
+        mut self,
+        build: impl Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry> + 'static,
+    ) -> Self {
+        self.build = Some(Rc::new(build));
         self
     }
 
@@ -861,11 +876,12 @@ impl Element for NativeContextMenu {
         host.on_change(key, ValueKind::None, None);
 
         if let Some(handler) = self.on_select.take() {
-            if !self.entries.is_empty() {
+            let build = self.build.take();
+            if !self.entries.is_empty() || build.is_some() {
                 let entries = std::mem::take(&mut self.entries);
                 let origin = self.origin;
                 let async_cx = window.to_async(cx);
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, _, _| {
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
@@ -884,8 +900,14 @@ impl Element for NativeContextMenu {
                         ),
                         MenuOrigin::ElementTopLeft => NSPoint::new(0., 0.),
                     };
+                    let entries = match &build {
+                        Some(build) => build(event.position - bounds.origin, window, cx),
+                        None => entries.clone(),
+                    };
+                    if entries.is_empty() {
+                        return;
+                    }
                     let anchor = anchor.clone();
-                    let entries = entries.clone();
                     let handler = handler.clone();
                     // Deferred: the tracking loop services GPUI's display link, and entering it
                     // under GPUI's `App` borrow panics on the next frame.
