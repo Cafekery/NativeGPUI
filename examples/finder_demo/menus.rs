@@ -25,8 +25,10 @@ pub(crate) enum Act {
     Groups,
     ViewOptions,
     GetInfo,
+    GetInfoAt(&'static str),
     NewFolder,
     Inspector,
+    InspectorAt(&'static str),
     Sort(Column),
     Open,
     OpenWindow,
@@ -189,8 +191,8 @@ pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
         MenuEntry::item("Show in Enclosing Folder"),
         Act::Enclosing(id),
     );
-    menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
-    menu.item(MenuEntry::item("Show Inspector"), Act::Inspector);
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(id));
+    menu.item(MenuEntry::item("Show Inspector"), Act::InspectorAt(id));
     menu.item(
         MenuEntry::item(format!("Copy “{name}” as Pathname")),
         Act::CopyPathname(id),
@@ -227,10 +229,21 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
-            Act::Inspector => self.preview = true,
+            Act::Inspector => {
+                self.preview = true;
+                self.inspecting = None;
+            }
+            Act::InspectorAt(id) => {
+                self.preview = true;
+                self.inspecting = crate::data::path_line(id);
+            }
             Act::GetInfo => {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, cx));
+                cx.defer(move |cx| crate::info::open(&demo, None, cx));
+            }
+            Act::GetInfoAt(id) => {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, Some(id), cx));
             }
             Act::Sort(column) => self.sort_by(column),
             Act::Open => self.open_here(window, cx),
