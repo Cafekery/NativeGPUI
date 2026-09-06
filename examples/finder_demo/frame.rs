@@ -91,13 +91,8 @@ impl Render for FinderDemo {
             _ => self.list_body(&palette, cx),
         };
         // The rows only: a menu whose element also spans the path bar swallows the crumbs' own.
-        let body = menus::attach(
-            "ng.finder.background",
-            menus::background(self),
-            cx.entity().downgrade(),
-            body,
-        )
-        .into_any_element();
+        let body = menus::backdrop("ng.finder.background", cx.entity().downgrade(), body)
+            .into_any_element();
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
 
         let list_view = self.view == LIST_VIEW;

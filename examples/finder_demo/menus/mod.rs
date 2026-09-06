@@ -8,7 +8,7 @@ mod context;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{ElementId, IntoElement, Pixels, Point, WeakEntity};
+use gpui::{App, ElementId, IntoElement, Pixels, Point, WeakEntity, Window};
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 pub(crate) use self::actions::Act;
@@ -39,6 +39,26 @@ pub(crate) fn attach(
         })
 }
 
+/// The empty-space menu, built when the right-click lands rather than on every frame.
+pub(crate) fn backdrop(
+    id: impl Into<ElementId>,
+    this: WeakEntity<FinderDemo>,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
+    let built = acts.clone();
+    let demo = this.clone();
+    native_context_menu(id, child)
+        .entries_at(move |_, _, cx| {
+            let menu = demo
+                .update(cx, |demo: &mut FinderDemo, _| background(demo))
+                .unwrap_or_default();
+            *built.borrow_mut() = menu.acts;
+            menu.entries
+        })
+        .on_select(picks(acts, this))
+}
+
 /// One menu for a whole view, built for the row `hit` names when the right-click lands: a hosted
 /// view per painted row is what a long listing cannot afford.
 pub(crate) fn rows_menu(
@@ -61,13 +81,21 @@ pub(crate) fn rows_menu(
             *built.borrow_mut() = menu.acts;
             menu.entries
         })
-        .on_select(move |index, window, cx| {
-            let act = acts.borrow().get(*index).copied().unwrap_or(Act::Nothing);
-            this.update(cx, |demo: &mut FinderDemo, cx| {
-                demo.run_menu(act, window, cx)
-            })
-            .ok();
+        .on_select(picks(acts, this))
+}
+
+/// Runs what the pick names, against the actions the menu was built with.
+fn picks(
+    acts: Rc<RefCell<Vec<Act>>>,
+    this: WeakEntity<FinderDemo>,
+) -> impl Fn(&usize, &mut Window, &mut App) {
+    move |index, window, cx| {
+        let act = acts.borrow().get(*index).copied().unwrap_or(Act::Nothing);
+        this.update(cx, |demo: &mut FinderDemo, cx| {
+            demo.run_menu(act, window, cx)
         })
+        .ok();
+    }
 }
 
 /// Entries and their actions in step, since a pick reports its depth-first position.
