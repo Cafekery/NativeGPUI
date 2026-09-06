@@ -72,8 +72,9 @@ impl Folders {
         self.cache.get_mut(id)
     }
 
-    /// Bumped by every change to a listing except rows landing at the end of one, so what a frame
-    /// built knows to rebuild rather than extend.
+    /// Bumped by every change to what a listing draws — never by rows landing at the end of one,
+    /// nor by a re-read staged behind it — so what a frame built knows to rebuild rather than
+    /// extend.
     pub(crate) fn changed(&self) -> u64 {
         self.changed
     }
@@ -120,7 +121,6 @@ impl Folders {
             folder_of(id)
         });
         if replace {
-            self.changed += 1;
             folder.staged = (!folder.rows.is_empty()).then(Vec::new);
         }
         match &mut folder.staged {
