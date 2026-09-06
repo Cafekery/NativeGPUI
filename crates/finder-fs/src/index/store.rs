@@ -239,6 +239,17 @@ impl Names {
     }
 }
 
+/// What one crawled root was left in: enough to ask FSEvents for the changes since, and a cheap
+/// second opinion when the log cannot answer.
+#[derive(Clone, Debug)]
+pub struct Root {
+    pub path: PathBuf,
+    /// The FSEvents id this root's subtree is current to.
+    pub event_id: u64,
+    /// The root directory's own mtime when it was last read.
+    pub modified: u32,
+}
+
 pub struct Relist {
     dir: u32,
     old: HashMap<u32, u32>,
@@ -254,6 +265,7 @@ pub struct Tree {
     pub bytes: u64,
     pub crawled_at: Option<SystemTime>,
     pub event_id: u64,
+    pub roots: Vec<Root>,
 }
 
 impl Default for Tree {
@@ -282,11 +294,39 @@ impl Default for Tree {
             bytes: 0,
             crawled_at: None,
             event_id: 0,
+            roots: Vec::new(),
         }
     }
 }
 
 impl Tree {
+    pub fn root_state(&self, path: &Path) -> Option<&Root> {
+        self.roots.iter().find(|root| root.path == path)
+    }
+
+    /// Records what a finished walk leaves a root at, replacing any earlier state for it.
+    pub fn set_root(&mut self, path: &Path, event_id: u64, modified: u32) {
+        match self.roots.iter_mut().find(|root| root.path == path) {
+            Some(root) => (root.event_id, root.modified) = (event_id, modified),
+            None => self.roots.push(Root {
+                path: path.to_path_buf(),
+                event_id,
+                modified,
+            }),
+        }
+    }
+
+    /// Whether the index has read this directory's entries.
+    pub fn listed(&self, path: &Path) -> bool {
+        self.find(path).is_some_and(|id| {
+            let node = self.nodes[id as usize];
+            node.is_dir()
+                && !node.deleted()
+                && node.flags & PACKAGE == 0
+                && node.state & LISTED != 0
+        })
+    }
+
     /// The node for an absolute path, if the index has one.
     pub fn find(&self, path: &Path) -> Option<u32> {
         let mut cur = ROOT;

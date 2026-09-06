@@ -54,16 +54,31 @@ pub struct Crawl {
     finishing: AtomicBool,
     start: Instant,
     home: PathBuf,
+    walk: Walk,
 }
 
-pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) + Send + 'static) {
+/// What one walk is asked for: the subtrees to read, the roots whose state it refreshes when it is
+/// over, and the FSEvents id the tree will then be current to.
+pub struct Walk {
+    pub crawl: Vec<PathBuf>,
+    pub record: Vec<PathBuf>,
+    pub since: u64,
+}
+
+pub fn real(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub fn spawn(index: &Arc<Index>, walk: Walk, report: impl Fn(Progress) + Send + 'static) {
+    let walk = Walk {
+        crawl: walk.crawl.iter().map(|root| real(root)).collect(),
+        record: walk.record.iter().map(|root| real(root)).collect(),
+        since: walk.since,
+    };
     let crawl = Arc::new(Crawl {
         index: index.clone(),
         work: Mutex::new(Work {
-            roots: roots
-                .iter()
-                .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.clone()))
-                .collect(),
+            roots: walk.crawl.iter().cloned().collect(),
             ..Work::default()
         }),
         wake: Condvar::new(),
@@ -75,6 +90,7 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
         finishing: AtomicBool::new(false),
         start: Instant::now(),
         home: home(),
+        walk,
     });
     for _ in 0..THREADS {
         let crawl = crawl.clone();
@@ -281,11 +297,26 @@ impl Crawl {
             let mut tree = self.index.write();
             tree.recompute();
             tree.crawled_at = Some(SystemTime::now());
-            tree.event_id = crate::watch::latest_event_id();
+            for root in &self.walk.record {
+                tree.set_root(root, self.walk.since, modified(root));
+            }
+            tree.event_id = tree
+                .roots
+                .iter()
+                .map(|root| root.event_id)
+                .min()
+                .unwrap_or(self.walk.since);
         }
         self.index.crawling.store(false, Ordering::SeqCst);
         self.send(None, true);
     }
+}
+
+/// A directory's own mtime, as the snapshot records it for a root.
+pub fn modified(path: &Path) -> u32 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map_or(0, super::store::secs)
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
@@ -302,6 +333,16 @@ fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
         return Class::Weigh;
     }
     Class::Descend
+}
+
+/// Whether the crawl refuses this path on its name alone, without an entry to look at: another
+/// volume's tree, a folder macOS puts a prompt on the screen for, another app's state.
+pub fn off_limits(path: &Path, home: &Path) -> bool {
+    elsewhere(path)
+        || guarded(path)
+        || private(path, home)
+        || sandboxed(path, home)
+        || simulator(path)
 }
 
 /// Whether the crawl will leave this child's contents out of the index.

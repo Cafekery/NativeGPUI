@@ -20,9 +20,35 @@ use objc2_core_services::{
     ConstFSEventStreamRef, FSEventStreamContext, FSEventStreamCreate, FSEventStreamEventFlags,
     FSEventStreamEventId, FSEventStreamGetLatestEventId, FSEventStreamInvalidate,
     FSEventStreamRelease, FSEventStreamStart, FSEventStreamStop, FSEventsGetCurrentEventId,
-    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventFlagHistoryDone,
-    kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventFlagEventIdsWrapped,
+    kFSEventStreamEventFlagHistoryDone, kFSEventStreamEventFlagKernelDropped,
+    kFSEventStreamEventFlagMount, kFSEventStreamEventFlagMustScanSubDirs,
+    kFSEventStreamEventFlagRootChanged, kFSEventStreamEventFlagUnmount,
+    kFSEventStreamEventFlagUserDropped, kFSEventStreamEventIdSinceNow,
 };
+
+/// One batch from a stream: what changed, and what the stream could not describe change by change.
+#[derive(Clone, Debug, Default)]
+pub struct Replay {
+    /// Directories whose contents changed.
+    pub dirs: Vec<PathBuf>,
+    /// Subtrees to read again whole: the log dropped events, or a volume came or went.
+    pub rescan: Vec<PathBuf>,
+    /// The highest event id in the batch.
+    pub event_id: u64,
+    /// Everything that happened while the app was away has now been reported.
+    pub history_done: bool,
+    /// The event ids restarted: no saved id means anything any more.
+    pub wrapped: bool,
+}
+
+/// The events that say "I cannot tell you what changed under here, look again yourself".
+const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
+    | kFSEventStreamEventFlagUserDropped
+    | kFSEventStreamEventFlagKernelDropped
+    | kFSEventStreamEventFlagRootChanged
+    | kFSEventStreamEventFlagMount
+    | kFSEventStreamEventFlagUnmount;
 
 struct Shared {
     paths: Mutex<HashSet<PathBuf>>,
@@ -54,7 +80,13 @@ impl Watcher {
         Watcher::spawn(
             HashSet::new(),
             kFSEventStreamEventIdSinceNow,
-            Box::new(move |dirs, _id| on_change(dirs)),
+            Box::new(move |replay: Replay| {
+                let mut dirs = replay.dirs;
+                dirs.extend(replay.rescan);
+                if !dirs.is_empty() {
+                    on_change(dirs);
+                }
+            }),
         )
     }
 
@@ -73,7 +105,7 @@ impl Watcher {
     fn spawn(
         paths: HashSet<PathBuf>,
         since: FSEventStreamEventId,
-        on_change: Box<dyn Fn(Vec<PathBuf>, u64) + Send + 'static>,
+        on_change: Box<dyn Fn(Replay) + Send + 'static>,
     ) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::new(paths),
@@ -101,12 +133,12 @@ impl Drop for Watcher {
     }
 }
 
-/// Every directory changed after `event_id` under `roots`, then live changes, with the latest
-/// event id alongside so the caller can persist where it got to.
+/// Every directory changed after `event_id` under `roots`, then live changes, so a caller holding
+/// a snapshot from the last run learns what it missed instead of reading the disk again.
 pub fn since(
     event_id: u64,
     roots: Vec<PathBuf>,
-    on_change: impl Fn(Vec<PathBuf>, u64) + Send + 'static,
+    on_change: impl Fn(Replay) + Send + 'static,
 ) -> Watcher {
     let since_when = if event_id == 0 {
         kFSEventStreamEventIdSinceNow
@@ -134,13 +166,13 @@ fn strip_trailing_slash(raw: &str) -> PathBuf {
 }
 
 struct Context {
-    on_change: Box<dyn Fn(Vec<PathBuf>, u64) + Send + 'static>,
+    on_change: Box<dyn Fn(Replay) + Send + 'static>,
 }
 
 /// The watcher thread's body: idles on `shared.changed` while there is nothing to watch, and
 /// otherwise runs one FSEvents stream at a time, recreating it whenever `watch`/`unwatch` change
 /// the path set.
-fn run(shared: Arc<Shared>, on_change: Box<dyn Fn(Vec<PathBuf>, u64) + Send + 'static>) {
+fn run(shared: Arc<Shared>, on_change: Box<dyn Fn(Replay) + Send + 'static>) {
     let run_loop = CFRunLoop::current().expect("watcher thread has a run loop");
     let run_loop_addr = (&*run_loop) as *const CFRunLoop as usize;
     let context = Box::into_raw(Box::new(Context { on_change }));
@@ -228,20 +260,28 @@ unsafe extern "C-unwind" fn callback(
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
     let ids = unsafe { std::slice::from_raw_parts(event_ids.as_ptr(), num_events) };
 
-    let mut dirs = HashSet::new();
-    let mut latest = 0u64;
+    let mut replay = Replay::default();
+    let (mut dirs, mut rescan) = (HashSet::new(), HashSet::new());
     for i in 0..num_events {
-        latest = latest.max(ids[i]);
+        replay.event_id = replay.event_id.max(ids[i]);
+        replay.history_done |= flags[i] & kFSEventStreamEventFlagHistoryDone != 0;
+        replay.wrapped |= flags[i] & kFSEventStreamEventFlagEventIdsWrapped != 0;
         if flags[i] & kFSEventStreamEventFlagHistoryDone != 0 {
             continue;
         }
-        if let Some(path) = paths.get(i) {
-            dirs.insert(strip_trailing_slash(&path.to_string()));
-        }
+        let Some(path) = paths.get(i) else { continue };
+        let path = strip_trailing_slash(&path.to_string());
+        match flags[i] & RESCAN != 0 {
+            true => rescan.insert(path),
+            false => dirs.insert(path),
+        };
     }
-    if !dirs.is_empty() {
-        (context.on_change)(dirs.into_iter().collect(), latest);
+    replay.dirs = dirs.into_iter().collect();
+    replay.rescan = rescan.into_iter().collect();
+    if replay.dirs.is_empty() && replay.rescan.is_empty() && !replay.history_done {
+        return;
     }
+    (context.on_change)(replay);
 }
 
 #[cfg(test)]
@@ -380,8 +420,8 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let started = std::time::Instant::now();
-        let _watcher = since(start_id, vec![dir.clone()], move |dirs, id| {
-            let _ = tx.send((dirs, id));
+        let _watcher = since(start_id, vec![dir.clone()], move |replay: Replay| {
+            let _ = tx.send((replay.dirs, replay.event_id));
         });
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);

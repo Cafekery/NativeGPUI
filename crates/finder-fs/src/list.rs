@@ -51,12 +51,19 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// Every directory opened, so a test can hold the index to reading only what it claims to.
+#[cfg(test)]
+pub(crate) static READS: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// [`list_dir`] delivered in batches of at most `batch` entries, in order.
 pub fn list_dir_batched(
     dir: &Path,
     batch: usize,
     mut on_batch: impl FnMut(Vec<Entry>),
 ) -> io::Result<()> {
+    #[cfg(test)]
+    READS.lock().unwrap().push(dir.to_path_buf());
     let path = CString::new(dir.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     // `O_DIRECTORY` already rejects a non-directory target, so a symlink to a directory still
