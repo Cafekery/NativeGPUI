@@ -76,7 +76,7 @@ The value you pass a component must be the state its `on_change` writes.
 ## Examples
 
 * `examples/storybook/` — the component browser: native sidebar, GPUI content, one page per module in `pages/`. `PAGES` in `main.rs` is the only place a page is registered.
-* `examples/finder_demo/` — a Finder recreation and the proving ground for the chrome: real sidebar and toolbar, a list that scrolls sideways under the sidebar, and a preview pane that frosts the rows beneath it (a glass in the window, with a child window for the card, see `preview.rs`).
+* `examples/finder_demo/` — a Finder recreation and the proving ground for the chrome: real sidebar and toolbar, a list that scrolls sideways under the sidebar, and a preview pane that frosts the rows beneath it (a glass in the window, with a child window for the card, see `preview/`).
 
 Single-component demos: `button`, `glass`, `keys`, `material`, `menu`, `menu_bar`, `progress`, `sidebar`, `slider`, `small`, `smoke`, `surfaces`, `text_field`, `tokens`, `window_chrome`, `gallery`, plus `custom_glass` and `glass_variants` behind `private-api`. Probes and gates: `glass_hit`, `decoration_hit`, `z_order`, `tabular_figures`, `ngdispatch`, `menu_probe`, `sidebar_probe`.
 
