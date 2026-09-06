@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, SharedString, Window, div,
-    prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Div, DragMoveEvent, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    SharedString, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -258,21 +260,40 @@ impl FinderDemo {
                             Column::Name => cell,
                         });
                     }
-                    let row = row.child(div().w(px(PANE_INSET)).flex_none()).on_click({
-                        let this = this.clone();
-                        move |event: &ClickEvent, window, cx| {
-                            let (extend, toggle, twice) = click_kind(event);
-                            let line = clicked.clone();
-                            this.update(cx, |this: &mut FinderDemo, cx| {
-                                this.pick(&line, extend, toggle);
-                                if twice {
-                                    this.open(&line, window, cx);
+                    let row = row
+                        .child(div().w(px(PANE_INSET)).flex_none())
+                        .on_mouse_down(MouseButton::Left, {
+                            let this = this.clone();
+                            let pressed = line.clone();
+                            move |event: &MouseDownEvent, _, cx| {
+                                if event.modifiers.shift || event.modifiers.platform {
+                                    return;
                                 }
-                                cx.notify();
-                            })
-                            .ok();
-                        }
-                    });
+                                let line = pressed.clone();
+                                this.update(cx, |this: &mut FinderDemo, cx| {
+                                    if !this.selected.contains(&line.key) {
+                                        this.pick(&line, false, false);
+                                        cx.notify();
+                                    }
+                                })
+                                .ok();
+                            }
+                        })
+                        .on_click({
+                            let this = this.clone();
+                            move |event: &ClickEvent, window, cx| {
+                                let (extend, toggle, twice) = click_kind(event);
+                                let line = clicked.clone();
+                                this.update(cx, |this: &mut FinderDemo, cx| {
+                                    this.pick(&line, extend, toggle);
+                                    if twice {
+                                        this.open(&line, window, cx);
+                                    }
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        });
                     let row = row.on_drag(
                         RowDrag {
                             key: line.key.clone(),
@@ -281,10 +302,24 @@ impl FinderDemo {
                     );
                     let row = match line.row.opens {
                         Some(into) => row
-                            .drag_over::<RowDrag>(move |style, _, _, _| style.bg(selection))
+                            .drag_over::<RowDrag>({
+                                let carried = selected.clone();
+                                let key = line.key.clone();
+                                move |style, grab: &RowDrag, _, _| match carries(
+                                    &carried, grab, &key,
+                                ) {
+                                    true => style,
+                                    false => style.bg(selection),
+                                }
+                            })
                             .on_drop({
                                 let this = this.clone();
+                                let carried = selected.clone();
+                                let key = line.key.clone();
                                 move |grab: &RowDrag, window: &mut Window, cx| {
+                                    if carries(&carried, grab, &key) {
+                                        return;
+                                    }
                                     let key = grab.key.clone();
                                     // Finder copies instead of moving while Option is held.
                                     let copy = window.modifiers().alt;
@@ -298,8 +333,12 @@ impl FinderDemo {
                             })
                             .on_drag_move({
                                 let this = this.clone();
+                                let carried = selected.clone();
+                                let key = line.key.clone();
                                 move |event: &DragMoveEvent<RowDrag>, window: &mut Window, cx| {
-                                    if !event.bounds.contains(&event.event.position) {
+                                    if !event.bounds.contains(&event.event.position)
+                                        || carries(&carried, event.drag(cx), &key)
+                                    {
                                         return;
                                     }
                                     this.update(cx, |demo: &mut FinderDemo, cx| {
@@ -381,4 +420,9 @@ fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {
 #[derive(Clone)]
 pub(crate) struct RowDrag {
     pub(crate) key: SharedString,
+}
+
+/// Whether a drag carries this row, and so never targets it: Finder drops nothing onto itself.
+fn carries(selected: &HashSet<SharedString>, grab: &RowDrag, key: &SharedString) -> bool {
+    grab.key == *key || (selected.contains(&grab.key) && selected.contains(key))
 }
