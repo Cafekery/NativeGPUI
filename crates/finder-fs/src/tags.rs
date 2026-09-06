@@ -1,21 +1,22 @@
 //! Finder tags: the user's named colours from Finder's preferences, and the tags on a file.
 //!
-//! `all` reads Finder's tag list (name + colour index) so the demo shows the user's own tags;
-//! `of`/`set` read and write a file's tags through the URL resource key Finder uses, so both
-//! apps agree.
+//! `all` reads Finder's own tag list (name, colour index and order) so the sidebar shows the
+//! user's tags, `favorites` the ones its tag menus offer; `of`/`set` read and write a file's tags
+//! through the URL resource key Finder uses, so both apps agree.
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSArray, NSData, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString, NSURL,
-    NSURLTagNamesKey, NSUserDefaults,
+    NSArray, NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions,
+    NSPropertyListSerialization, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,16 +37,7 @@ const STANDARD: [(&str, u8); 7] = [
     ("Gray", 1),
 ];
 
-pub fn all() -> Vec<Tag> {
-    if let Some(names) = favorite_tag_names() {
-        if names.len() == STANDARD.len() {
-            return names
-                .into_iter()
-                .zip(STANDARD.iter())
-                .map(|(name, &(_, color))| Tag { name, color })
-                .collect();
-        }
-    }
+fn standard() -> Vec<Tag> {
     STANDARD
         .iter()
         .map(|&(name, color)| Tag {
@@ -55,6 +47,39 @@ pub fn all() -> Vec<Tag> {
         .collect()
 }
 
+/// Every tag the user has, in the order Finder's sidebar lists them.
+pub fn all() -> Vec<Tag> {
+    match finder_tags().filter(|tags| !tags.is_empty()) {
+        Some(tags) => tags,
+        None => standard(),
+    }
+}
+
+/// The tags Finder's tag menus offer, in the order the user dragged them.
+pub fn favorites() -> Vec<Tag> {
+    let known = all();
+    let color = |name: &str| {
+        known
+            .iter()
+            .find(|tag| tag.name == name)
+            .map(|tag| tag.color)
+            .unwrap_or_default()
+    };
+    let favorites: Vec<Tag> = favorite_tag_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| !name.is_empty())
+        .map(|name| Tag {
+            color: color(&name),
+            name,
+        })
+        .collect();
+    match favorites.is_empty() {
+        true => standard(),
+        false => favorites,
+    }
+}
+
 fn favorite_tag_names() -> Option<Vec<String>> {
     let suite = NSString::from_str("com.apple.finder");
     let defaults = NSUserDefaults::alloc();
@@ -62,6 +87,78 @@ fn favorite_tag_names() -> Option<Vec<String>> {
     let key = NSString::from_str("FavoriteTagNames");
     let names = defaults.stringArrayForKey(&key)?;
     Some(names.to_vec().iter().map(|s| s.to_string()).collect())
+}
+
+fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
+    let data = NSData::with_bytes(bytes);
+    unsafe {
+        NSPropertyListSerialization::propertyListWithData_options_format_error(
+            &data,
+            NSPropertyListMutabilityOptions::Immutable,
+            std::ptr::null_mut(),
+        )
+    }
+    .ok()
+}
+
+fn finder_tags() -> Option<Vec<Tag>> {
+    let dict = plist(&tag_dict()?)?.downcast::<NSDictionary>().ok()?;
+    let dict: Retained<NSDictionary<NSString, AnyObject>> =
+        unsafe { Retained::cast_unchecked(dict) };
+    let entries = dict
+        .objectForKey(&NSString::from_str("FinderTags"))?
+        .downcast::<NSArray>()
+        .ok()?;
+    let entries: Retained<NSArray<NSDictionary<NSString, AnyObject>>> =
+        unsafe { Retained::cast_unchecked(entries) };
+    Some(
+        entries
+            .to_vec()
+            .iter()
+            .filter_map(|entry| {
+                let name = entry
+                    .objectForKey(&NSString::from_str("n"))?
+                    .downcast::<NSString>()
+                    .ok()?;
+                let color = entry
+                    .objectForKey(&NSString::from_str("l"))
+                    .and_then(|value| value.downcast::<NSNumber>().ok())
+                    .map_or(0, |value| value.unsignedCharValue());
+                Some(Tag {
+                    name: name.to_string(),
+                    color,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// macOS 26 keeps `FinderTagDict` in the iCloud key-value store, not in `SyncedPreferences`.
+fn tag_dict() -> Option<Vec<u8>> {
+    let stores = PathBuf::from(std::env::var_os("HOME")?).join("Library/Daemon Containers");
+    std::fs::read_dir(stores).ok()?.flatten().find_map(|store| {
+        let store = store
+            .path()
+            .join("Data/com.apple.kvs/com.apple.KeyValueService-Production.sqlite");
+        let out = Command::new("/usr/bin/sqlite3")
+            .arg("-readonly")
+            .arg(&store)
+            .arg(
+                "select hex(ZPLISTDATAVALUE) from ZSYDMANAGEDKEYVALUE where ZKEY = 'FinderTagDict'",
+            )
+            .output()
+            .ok()?;
+        let hex = String::from_utf8(out.stdout).ok()?;
+        let hex = hex.trim();
+        match hex.is_empty() {
+            true => None,
+            false => hex
+                .as_bytes()
+                .chunks(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+                .collect(),
+        }
+    })
 }
 
 fn url(path: &Path) -> Retained<NSURL> {
@@ -100,15 +197,7 @@ fn xattr_colors(path: &Path) -> HashMap<String, u8> {
     let Some(bytes) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags") else {
         return colors;
     };
-    let data = NSData::with_bytes(&bytes);
-    let plist = unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &data,
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    };
-    let Ok(Ok(entries)) = plist.map(|p| p.downcast::<NSArray>()) else {
+    let Some(Ok(entries)) = plist(&bytes).map(|p| p.downcast::<NSArray>()) else {
         return colors;
     };
     let entries: Retained<NSArray<NSString>> = unsafe { Retained::cast_unchecked(entries) };
@@ -196,6 +285,7 @@ mod tests {
 
     #[test]
     fn all_is_never_empty() {
-        assert_eq!(all().len(), 7);
+        assert!(!all().is_empty());
+        assert!(!favorites().is_empty());
     }
 }
