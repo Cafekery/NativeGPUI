@@ -258,6 +258,7 @@ pub fn install_menus(cx: &mut App) {
     );
 
     let file = section(mtm, &bar, "File");
+    crate::chrome::tabs::teach_new_tab(mtm);
     // Live only for windows that opted into tabs (`window_tabs`); AppKit validates it.
     item(mtm, &file, "New Tab", sel!(newWindowForTab:), "t", CMD);
     item(mtm, &file, "Close", sel!(performClose:), "w", CMD);

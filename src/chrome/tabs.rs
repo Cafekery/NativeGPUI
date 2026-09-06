@@ -30,10 +30,7 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     ns_window.setTabbingMode(NSWindowTabbingMode::Automatic);
     NEW_TAB.with_borrow_mut(|slot| *slot = Some((cx.to_async(), action.boxed_clone())));
     restore_appkit_tabs(&ns_window);
-    if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
-        let delegate: &AnyObject = delegate.as_ref();
-        answer_new_tab(delegate.class());
-    }
+    teach_new_tab(mtm);
 }
 
 /// Open `tab` beside `window` in its tab bar, selected.
@@ -95,6 +92,16 @@ extern "C" fn toggle_tab_bar(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
     let mtm = MainThreadMarker::new().expect("AppKit sends toggleTabBar: on the main thread");
     NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
     let _: () = unsafe { msg_send![super(this, NSWindow::class()), toggleTabBar: sender] };
+}
+
+/// AppKit decides once, when it first builds a window's tab bar, whether that bar carries the
+/// New Tab button, and gpui builds the bar while it creates the window: nothing the responder
+/// chain learns afterwards brings the button back, so the app delegate answers from launch.
+pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
+    if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
+        let delegate: &AnyObject = delegate.as_ref();
+        answer_new_tab(delegate.class());
+    }
 }
 
 /// Teach a responder class `newWindowForTab:`. A second call is a no-op: the class has it.
