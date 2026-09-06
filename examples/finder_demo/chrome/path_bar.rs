@@ -6,11 +6,10 @@ use gpui::{
     prelude::*, px,
 };
 use native_gpui::native_rule;
-use native_gpui::tokens::{self, FileType, SystemColor, file_icon};
+use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
-use crate::art::{glyph, small_glyph};
-use crate::data::Face as F;
+use crate::art::{place_art, small_glyph};
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
@@ -28,26 +27,6 @@ const CRUMB_ICON: f32 = 13.;
 /// Whether a path-bar click landed with ⌥ down, Finder's own "power user version" idiom.
 fn is_alt_click(event: &ClickEvent) -> bool {
     matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
-}
-
-fn crumb_icon(volume: bool) -> AnyElement {
-    // The boot disk's own artwork, which `public.volume` does not carry: that type draws a folder.
-    let (kind, face) = match volume {
-        true => (FileType::Path("/"), F::Volume),
-        false => (FileType::Folder, F::Folder),
-    };
-    let art = file_icon(kind, px(CRUMB_ICON))
-        .map(|symbol| symbol.img().into_any_element())
-        .unwrap_or_else(|| glyph(face, CRUMB_ICON));
-    div()
-        .w(px(CRUMB_ICON))
-        .h(px(CRUMB_ICON))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(art)
-        .into_any_element()
 }
 
 impl FinderDemo {
@@ -85,7 +64,7 @@ impl FinderDemo {
                 .min_w(px(CRUMB_ICON))
                 .gap(px(CRUMB_GAP))
                 .active(move |style| style.text_color(selection_text))
-                .child(crumb_icon(index == 0))
+                .child(place_art(index == 0, CRUMB_ICON))
                 .when(named[index], |crumb_row| {
                     crumb_row.child(
                         div()

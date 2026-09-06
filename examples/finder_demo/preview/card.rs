@@ -15,7 +15,7 @@ use native_gpui::tokens::{
 use super::INSET;
 use super::stats::{CALCULATING, span};
 use crate::app::FinderDemo;
-use crate::art::{Poster, artwork, poster_art, row_art};
+use crate::art::{Poster, artwork, poster_art, row_art, square};
 use crate::data::{Face, Line, Row, byte_string, date_text};
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
@@ -319,15 +319,7 @@ impl FinderDemo {
             Some(image) => img(image).w(px(content)).h(px(content)).into_any_element(),
             None => artwork(&first.row, content),
         };
-        div()
-            .w(px(content))
-            .h(px(content))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(art)
-            .into_any_element()
+        square(content).child(art).into_any_element()
     }
 
     fn card_element(

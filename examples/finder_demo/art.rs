@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Bounds, FontWeight, Hsla, ObjectFit, Pixels, RenderImage, div, img, prelude::*, px,
+    AnyElement, Bounds, Div, FontWeight, Hsla, ObjectFit, Pixels, RenderImage, div, img,
+    prelude::*, px,
 };
-use native_gpui::tokens::{SymbolColor, SystemColor, file_icon, sf_symbol_colored};
+use native_gpui::tokens::{FileType, SymbolColor, SystemColor, file_icon, sf_symbol_colored};
 
 use crate::data::{Face, Row};
 use crate::thumbs::thumb;
@@ -28,16 +29,28 @@ pub(crate) fn poster_art(row: &Row, size: f32, scale: f32, kind: Poster) -> AnyE
     }
 }
 
-/// Finder's Quick Look icon: the whole picture fit inside the box, centred, with the keyline,
-/// corner radius and shadow Quick Look's icon mode baked into the raster.
-fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
+/// The box every icon is drawn in: a square that centres whatever art it is given.
+pub(crate) fn square(side: f32) -> Div {
     div()
-        .w(px(size))
-        .h(px(size))
+        .w(px(side))
+        .h(px(side))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
+}
+
+/// The artwork a type wears: the system's icon for it, or its face's symbol when it has none.
+fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
+    kind.and_then(|kind| file_icon(kind, px(size)))
+        .map(|symbol| symbol.img().into_any_element())
+        .unwrap_or_else(|| glyph(face, size))
+}
+
+/// Finder's Quick Look icon: the whole picture fit inside the box, centred, with the keyline,
+/// corner radius and shadow Quick Look's icon mode baked into the raster.
+fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
+    square(size)
         .child(
             img(image)
                 .max_w(px(size))
@@ -77,13 +90,7 @@ fn poster(image: Arc<RenderImage>, size: f32, scale: f32, kind: Poster) -> AnyEl
             },
         ),
     };
-    div()
-        .w(px(size))
-        .h(px(size))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
+    square(size)
         .child(
             img(image)
                 .w(px((u32::from(fit.width) as f32 / scale).min(size)))
@@ -121,19 +128,20 @@ pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyE
 }
 
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
-    let art = row
-        .artwork
-        .and_then(|kind| file_icon(kind, px(size)))
-        .map(|symbol| symbol.img().into_any_element())
-        .unwrap_or_else(|| glyph(row.face, size));
-    div()
-        .w(px(size))
-        .h(px(size))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(art)
+    square(size)
+        .child(type_art(row.artwork, row.face, size))
+        .into_any_element()
+}
+
+/// The artwork a folder wears in the chrome, or the boot disk's own: `public.volume` carries none,
+/// so a volume draws what `/` draws.
+pub(crate) fn place_art(volume: bool, size: f32) -> AnyElement {
+    let (kind, face) = match volume {
+        true => (FileType::Path("/"), Face::Volume),
+        false => (FileType::Folder, Face::Folder),
+    };
+    square(size)
+        .child(type_art(Some(kind), face, size))
         .into_any_element()
 }
 
