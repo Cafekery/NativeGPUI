@@ -1,15 +1,17 @@
 //! Finder's sidebar: this Mac's Favorites, the volumes it has mounted, and the user's own tags.
 
+use std::path::PathBuf;
+
 use gpui::{SharedString, Window, prelude::*, px};
 use native_gpui::Material;
 use native_gpui::sidebar::{
-    NativeSidebar, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions, sidebar_group,
-    sidebar_item,
+    NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
+    sidebar_group, sidebar_item,
 };
 
-use crate::FinderDemo;
 use crate::data::{intern, intern_path, volume_roots};
 use crate::ui::finder_color_rgb;
+use crate::{FinderDemo, prefs};
 
 pub(crate) const SIDEBAR_W: f32 = 184.;
 
@@ -118,14 +120,14 @@ pub(crate) fn groups() -> Vec<Group> {
         })
         .collect();
 
-    vec![
+    let mut groups = vec![
         Group {
-            id: "g-favourites",
+            id: FAVOURITES,
             title: "Favorites",
             rows: favourites,
         },
         Group {
-            id: "g-locations",
+            id: LOCATIONS,
             title: "Locations",
             rows: locations,
         },
@@ -134,13 +136,50 @@ pub(crate) fn groups() -> Vec<Group> {
             title: "Tags",
             rows: tags,
         },
-    ]
+    ];
+    for group in &mut groups {
+        for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
+            let id = intern_path(&path);
+            if !path.is_dir() || group.rows.iter().any(|row| row.id == id) {
+                continue;
+            }
+            let title = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy();
+            group
+                .rows
+                .push(row(id, title.into_owned(), Glyph::Symbol("folder")));
+        }
+    }
+    groups
 }
 
-pub(crate) fn default_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
+pub(crate) const FAVOURITES: &str = "g-favourites";
+pub(crate) const LOCATIONS: &str = "g-locations";
+
+/// Each group's rows in the order the user left them last launch, with anything new after them.
+pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
     groups
         .iter()
-        .map(|group| group.rows.iter().map(|row| row.id).collect())
+        .map(|group| {
+            let mut rows: Vec<&'static str> = prefs::sidebar_rows(group.id)
+                .iter()
+                .filter_map(|kept| {
+                    group
+                        .rows
+                        .iter()
+                        .find(|row| row.id == kept)
+                        .map(|row| row.id)
+                })
+                .collect();
+            for row in &group.rows {
+                if !rows.contains(&row.id) {
+                    rows.push(row.id);
+                }
+            }
+            rows
+        })
         .collect()
 }
 
@@ -216,6 +255,10 @@ impl FinderDemo {
             this.reorder(moved);
             cx.notify();
         }));
+        sidebar.on_drop_paths(cx.listener(|this, dropped: &SidebarDrop, _, cx| {
+            this.pin(dropped);
+            cx.notify();
+        }));
         sidebar.on_eject(cx.listener(|this, id: &SharedString, window, cx| {
             this.eject(id, window, cx);
         }));
@@ -241,6 +284,55 @@ impl FinderDemo {
         };
         let id = rows.remove(from);
         rows.insert(moved.index.min(rows.len()), id);
+        self.store_rows(group);
+    }
+
+    /// Finder's own sidebar drop, and one Finder refuses: a folder pinned under Locations too.
+    fn pin(&mut self, dropped: &SidebarDrop) {
+        let group = match dropped.group.as_ref() {
+            id @ (FAVOURITES | LOCATIONS) => id,
+            _ => return,
+        };
+        let Some(at) = self.sidebar_groups.iter().position(|it| it.id == group) else {
+            return;
+        };
+        let folders: Vec<&'static str> = dropped
+            .paths
+            .iter()
+            .filter(|path| path.is_dir())
+            .map(|path| intern_path(path))
+            .collect();
+        if folders.is_empty() {
+            return;
+        }
+        let mut pinned = prefs::pinned(self.sidebar_groups[at].id);
+        for id in &folders {
+            if !pinned.iter().any(|kept| kept == id) {
+                pinned.push((*id).to_owned());
+            }
+        }
+        let keep: Vec<&str> = pinned.iter().map(String::as_str).collect();
+        prefs::set_pinned(self.sidebar_groups[at].id, &keep);
+        self.refresh_sidebar();
+        let rows = &mut self.sidebar_rows[at];
+        let mut index = dropped.index.min(rows.len());
+        for id in folders {
+            if let Some(from) = rows.iter().position(|row| *row == id) {
+                rows.remove(from);
+                index -= usize::from(from < index);
+            }
+            index = index.min(rows.len());
+            rows.insert(index, id);
+            index += 1;
+        }
+        self.store_rows(at);
+        if let Some(sidebar) = &self.sidebar {
+            sidebar.update(&self.sidebar_items());
+        }
+    }
+
+    fn store_rows(&self, group: usize) {
+        prefs::set_sidebar_rows(self.sidebar_groups[group].id, &self.sidebar_rows[group]);
     }
 
     /// Finder's eject: the volume leaves the Mac, and the sidebar loses its row with it.

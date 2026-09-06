@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{AnyWindowHandle, App, AsyncWindowContext, Global, Pixels, SharedString, Window, px};
@@ -13,22 +14,23 @@ use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition,
-    NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSFont,
+    NSApplication, NSAutoresizingMaskOptions, NSBezierPath, NSBundleImageExtension, NSButton,
+    NSCellImagePosition, NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation,
+    NSDraggingContext, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSFont,
     NSFontWeightRegular, NSImage, NSImageAlignment, NSImageScaling, NSImageSymbolConfiguration,
     NSImageView, NSLineBreakMode, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate,
-    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardWriting, NSResponder, NSScreen,
-    NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
+    NSOutlineViewDropOnItemIndex, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardWriting,
+    NSResponder, NSScreen, NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableCellView,
+    NSTableColumn, NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
     NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification, NSView,
     NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
-    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
+    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
 };
 use objc2_quartz_core::CAAutoresizingMask;
 
@@ -387,6 +389,14 @@ pub struct RowLayout {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Files dropped on the sidebar: what they were, the group they landed in, and where in it.
+pub struct SidebarDrop {
+    pub paths: Vec<PathBuf>,
+    pub group: SharedString,
+    pub index: usize,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SidebarMove {
     pub id: SharedString,
     pub parent: Option<SharedString>,
@@ -396,6 +406,7 @@ pub struct SidebarMove {
 type SelectHandler = Rc<dyn Fn(&Option<SharedString>, &mut Window, &mut App)>;
 type ReorderHandler = Rc<dyn Fn(&SidebarMove, &mut Window, &mut App)>;
 type EjectHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
+type DropHandler = Rc<dyn Fn(&SidebarDrop, &mut Window, &mut App)>;
 
 struct Shared {
     model: RefCell<Model>,
@@ -403,6 +414,7 @@ struct Shared {
     on_select: RefCell<Option<SelectHandler>>,
     on_reorder: RefCell<Option<ReorderHandler>>,
     on_eject: RefCell<Option<EjectHandler>>,
+    on_drop_paths: RefCell<Option<DropHandler>>,
     /// Non-zero while we drive the selection ourselves, so the round-trip does not echo.
     suppress: Cell<u32>,
     writes: Cell<u64>,
@@ -554,6 +566,11 @@ impl NativeSidebar {
     }
 
     /// Called with the row's id when the user clicks its eject affordance; unmounts nothing.
+    /// Files dropped on a group: the sidebar draws the insertion line, the app keeps the row.
+    pub fn on_drop_paths(&self, handler: impl Fn(&SidebarDrop, &mut Window, &mut App) + 'static) {
+        *self.0.shared.on_drop_paths.borrow_mut() = Some(Rc::new(handler));
+    }
+
     pub fn on_eject(&self, handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
@@ -1470,6 +1487,28 @@ define_class!(
                 source::expandable(self.ivars(), item)
             }
 
+            #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
+            fn validate_drop(
+                &self,
+                outline: &NSOutlineView,
+                info: &ProtocolObject<dyn NSDraggingInfo>,
+                item: Option<&AnyObject>,
+                index: NSInteger,
+            ) -> NSDragOperation {
+                validate_row_drop(self.ivars(), outline, info, item, index)
+            }
+
+            #[unsafe(method(outlineView:acceptDrop:item:childIndex:))]
+            fn accept_drop(
+                &self,
+                outline: &NSOutlineView,
+                info: &ProtocolObject<dyn NSDraggingInfo>,
+                item: Option<&AnyObject>,
+                index: NSInteger,
+            ) -> bool {
+                accept_row_drop(self.ivars(), outline, info, item, index)
+            }
+
             $($drag)*
         }
 
@@ -1514,6 +1553,92 @@ fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
         .draggingPasteboard()
         .stringForType(&NSString::from_str(ROW_PASTEBOARD_TYPE))?;
     text.to_string().parse().ok()
+}
+
+/// The file URLs a drag carries, empty for any other drag.
+fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
+    let pasteboard = info.draggingPasteboard();
+    let Some(items) = pasteboard.pasteboardItems() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let text = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+            let url = NSURL::URLWithString(&text)?;
+            Some(PathBuf::from(url.path()?.to_string()))
+        })
+        .collect()
+}
+
+/// Where files land: a group and a row index in it. Never onto a row, which owns no files here.
+fn file_drop_target(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> Option<(u64, usize)> {
+    let (parent, at) = drop_target(shared, outline, info, item, index)?;
+    let parent = parent?;
+    shared
+        .model
+        .borrow()
+        .node(parent)
+        .filter(|node| node.group)
+        .map(|_| (parent, at))
+}
+
+fn validate_file_drop(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> NSDragOperation {
+    if shared.on_drop_paths.borrow().is_none() || dragged_paths(info).is_empty() {
+        return NSDragOperation::empty();
+    }
+    let Some((group, at)) = file_drop_target(shared, outline, info, item, index) else {
+        return NSDragOperation::empty();
+    };
+    unsafe { outline.setDropItem_dropChildIndex(Some(&shared.item(group)), at as NSInteger) };
+    NSDragOperation::Generic
+}
+
+fn accept_file_drop(
+    shared: &Rc<Shared>,
+    outline: &NSOutlineView,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    item: Option<&AnyObject>,
+    index: NSInteger,
+) -> bool {
+    let paths = dragged_paths(info);
+    if paths.is_empty() {
+        return false;
+    }
+    let Some((group, at)) = file_drop_target(shared, outline, info, item, index) else {
+        return false;
+    };
+    let Some(handler) = shared.on_drop_paths.borrow().clone() else {
+        return false;
+    };
+    let Some(group) = shared.model.borrow().id_for(group) else {
+        return false;
+    };
+    let dropped = SidebarDrop {
+        paths,
+        group,
+        index: at,
+    };
+    shared
+        .cx
+        .borrow()
+        .spawn(async move |cx| {
+            let _ = cx.update(|window, app| handler(&dropped, window, app));
+        })
+        .detach();
+    true
 }
 
 fn drop_target(
@@ -1570,7 +1695,7 @@ fn validate_row_drop(
     index: NSInteger,
 ) -> NSDragOperation {
     let Some(source) = dragged_key(info) else {
-        return NSDragOperation::empty();
+        return validate_file_drop(shared, outline, info, item, index);
     };
     let Some((parent, at)) = drop_target(shared, outline, info, item, index) else {
         return NSDragOperation::empty();
@@ -1591,7 +1716,7 @@ fn accept_row_drop(
     index: NSInteger,
 ) -> bool {
     let Some(source) = dragged_key(info) else {
-        return false;
+        return accept_file_drop(shared, outline, info, item, index);
     };
     if index < 0 {
         return false;
@@ -1662,29 +1787,88 @@ outline_source!(
     ) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
         row_pasteboard_item(self.ivars(), item)
     }
+);
 
-    #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
-    fn validate_drop(
-        &self,
-        outline: &NSOutlineView,
-        info: &ProtocolObject<dyn NSDraggingInfo>,
-        item: Option<&AnyObject>,
-        index: NSInteger,
-    ) -> NSDragOperation {
-        validate_row_drop(self.ivars(), outline, info, item, index)
+/// Hands the drag GPUI is running to AppKit as file URLs: a hosted `NSOutlineView` is a dragging
+/// destination and sees nothing of GPUI's own drags.
+pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    let view = gpui_view(window);
+    let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
+        return false;
+    };
+    let at = event.locationInWindow();
+    let workspace = NSWorkspace::sharedWorkspace();
+    let items: Vec<Retained<NSDraggingItem>> = paths
+        .iter()
+        .filter_map(|path| {
+            let text = NSString::from_str(path.to_str()?);
+            let url = NSURL::fileURLWithPath(&text);
+            let item = NSDraggingItem::initWithPasteboardWriter(
+                NSDraggingItem::alloc(),
+                ProtocolObject::from_ref(&*url),
+            );
+            let frame = NSRect::new(
+                NSPoint::new(at.x - DRAG_ICON / 2., at.y - DRAG_ICON / 2.),
+                NSSize::new(DRAG_ICON, DRAG_ICON),
+            );
+            let icon = workspace.iconForFile(&text);
+            unsafe { item.setDraggingFrame_contents(frame, Some(&icon)) };
+            Some(item)
+        })
+        .collect();
+    if items.is_empty() {
+        return false;
     }
+    let source = FileDragSource::new(mtm);
+    view.beginDraggingSessionWithItems_event_source(
+        &NSArray::from_retained_slice(&items),
+        &event,
+        ProtocolObject::from_ref(&*source),
+    );
+    // AppKit does not keep the source alive; the session ends when the next one starts.
+    DRAG_SOURCE.with(|held| *held.borrow_mut() = Some(source));
+    true
+}
 
-    #[unsafe(method(outlineView:acceptDrop:item:childIndex:))]
-    fn accept_drop(
-        &self,
-        outline: &NSOutlineView,
-        info: &ProtocolObject<dyn NSDraggingInfo>,
-        item: Option<&AnyObject>,
-        index: NSInteger,
-    ) -> bool {
-        accept_row_drop(self.ivars(), outline, info, item, index)
+const DRAG_ICON: f64 = 32.;
+
+thread_local! {
+    static DRAG_SOURCE: RefCell<Option<Retained<FileDragSource>>> = const { RefCell::new(None) };
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarFileDragSource"]
+    struct FileDragSource;
+
+    unsafe impl NSObjectProtocol for FileDragSource {}
+
+    unsafe impl NSDraggingSource for FileDragSource {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn operation_mask(
+            &self,
+            _: &NSDraggingSession,
+            context: NSDraggingContext,
+        ) -> NSDragOperation {
+            match context {
+                NSDraggingContext::WithinApplication => {
+                    NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy
+                }
+                _ => NSDragOperation::Copy,
+            }
+        }
     }
 );
+
+impl FileDragSource {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), init] }
+    }
+}
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -2072,6 +2256,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         on_select: RefCell::new(None),
         on_reorder: RefCell::new(None),
         on_eject: RefCell::new(None),
+        on_drop_paths: RefCell::new(None),
         suppress: Cell::new(0),
         writes: Cell::new(0),
         cx: RefCell::new(window.to_async(cx)),
@@ -2129,13 +2314,13 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         outline.setDataSource(Some(&data_source));
         outline.setDelegate(Some(&delegate));
     }
+    let mut dragged_types = vec![unsafe { NSPasteboardTypeFileURL }.retain()];
     if options.reorderable {
-        outline.registerForDraggedTypes(&NSArray::from_slice(&[&*NSString::from_str(
-            ROW_PASTEBOARD_TYPE,
-        )]));
+        dragged_types.push(NSString::from_str(ROW_PASTEBOARD_TYPE));
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::empty(), false);
     }
+    outline.registerForDraggedTypes(&NSArray::from_retained_slice(&dragged_types));
     *shared.outline.borrow_mut() = Some(outline.clone());
 
     let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), strip);
