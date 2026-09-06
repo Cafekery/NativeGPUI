@@ -11,7 +11,7 @@ use crate::header::{CELL_PAD, CELL_TRAIL, DragGhost, HEADER_H, PANE_INSET};
 use crate::menus::row_menu;
 use crate::palette::Palette;
 use crate::scope::SCOPE_H;
-use crate::ui::{art_at, axis_locked, click_kind, rename_field, row_art, small_glyph, tag_dot};
+use crate::ui::{art_at, axis_locked, click_kind, rename_field, row_art, small_glyph, tag_dots};
 use crate::{FinderDemo, Slot};
 
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
@@ -225,8 +225,8 @@ impl FinderDemo {
                                 .text_ellipsis()
                                 .child(line.row.name.clone())
                         });
-                    if let Some(tag) = tags.get(&line.key) {
-                        name = name.child(div().ml(px(6.)).child(tag_dot(*tag)));
+                    if let Some(dots) = tags.get(&line.key).and_then(|carried| tag_dots(carried)) {
+                        name = name.child(div().ml(px(6.)).child(dots));
                     }
 
                     let clicked = line.clone();

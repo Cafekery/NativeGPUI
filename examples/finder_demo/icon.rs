@@ -14,7 +14,7 @@ use crate::FinderDemo;
 use crate::data::Line;
 use crate::menus::row_menu;
 use crate::palette::Palette;
-use crate::ui::{Anchor, art_at, click_kind, rename_field, row_art, tag_dot};
+use crate::ui::{Anchor, art_at, click_kind, rename_field, row_art, tag_dots, tag_dots_w};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -133,13 +133,13 @@ struct Ghost {
     size: f32,
     scale: f32,
     look: Look,
-    tag: Option<usize>,
+    tags: Vec<usize>,
 }
 
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         tile(
-            &self.line, self.size, self.scale, self.look, true, self.tag, None, true, None,
+            &self.line, self.size, self.scale, self.look, true, &self.tags, None, true, None,
         )
         .opacity(GHOST_ALPHA)
     }
@@ -152,7 +152,7 @@ fn tile(
     scale: f32,
     look: Look,
     selected: bool,
-    tag: Option<usize>,
+    tags: &[usize],
     editor: Option<AnyElement>,
     visible: bool,
     anchor: Option<Anchor>,
@@ -179,7 +179,8 @@ fn tile(
         );
     }
 
-    let room = cell - 2. * LABEL_INSET - if tag.is_some() { 12. } else { 0. };
+    let dots = tag_dots_w(tags.len());
+    let room = cell - 2. * LABEL_INSET - if dots > 0. { dots + 2. } else { 0. };
     let caption = match editor {
         Some(editor) => {
             let fit = line.row.name.chars().count() as f32 * LABEL_FONT * 0.58 + 24.;
@@ -221,7 +222,7 @@ fn tile(
                 .items_start()
                 .gap(px(4.))
                 .child(caption)
-                .children(tag.map(tag_dot)),
+                .children(tag_dots(tags)),
         )
 }
 
@@ -300,7 +301,7 @@ impl FinderDemo {
                 continue;
             }
             let is_selected = self.selected.contains(&line.key);
-            let tag = self.tags.get(&line.key).copied();
+            let carried = self.tags.get(&line.key).cloned().unwrap_or_default();
             let held = dragging.as_ref() == Some(&line.key);
             let grab = Rc::new(Cell::new(point(px(0.), px(0.))));
             let editor = (self.renaming.as_ref() == Some(&line.key))
@@ -319,7 +320,7 @@ impl FinderDemo {
                     scale,
                     look,
                     is_selected,
-                    tag,
+                    &carried,
                     editor,
                     on_screen,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
@@ -346,7 +347,7 @@ impl FinderDemo {
                             size,
                             scale,
                             look,
-                            tag,
+                            tags: carried.clone(),
                         })
                     }
                 },

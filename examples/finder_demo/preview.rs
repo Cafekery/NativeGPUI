@@ -55,7 +55,7 @@ pub(crate) fn summarize(
     key: (u64, usize),
     lines: &[Line],
     chosen: &HashSet<SharedString>,
-    tags: &HashMap<SharedString, usize>,
+    tags: &HashMap<SharedString, Vec<usize>>,
 ) -> Stats {
     let mut stats = Stats {
         key,
@@ -89,8 +89,10 @@ pub(crate) fn summarize(
         if stats.head.len() < STACK_LAYERS.len() {
             stats.head.push(line.clone());
         }
-        if let Some(tag) = tags.get(&line.key).filter(|tag| !stats.tags.contains(tag)) {
-            stats.tags.push(*tag);
+        for tag in tags.get(&line.key).map(Vec::as_slice).unwrap_or_default() {
+            if !stats.tags.contains(tag) {
+                stats.tags.push(*tag);
+            }
         }
     }
     stats.tags.sort_unstable();
@@ -432,7 +434,7 @@ impl FinderDemo {
                 subtitle: kind_line(row),
                 rows: info_rows(row, self.preview_expanded),
                 show_more: row.dimensions.is_some() || row.duration.is_some(),
-                tags: self.tags.get(&line.key).copied().into_iter().collect(),
+                tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
                 many: false,
                 actions: actions(row.face),
             }
