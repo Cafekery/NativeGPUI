@@ -18,16 +18,17 @@ use objc2_app_kit::{
     NSCellImagePosition, NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation,
     NSDraggingContext, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSFont,
     NSFontWeightRegular, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSOutlineView,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSOutlineViewDropOnItemIndex, NSPasteboardItem,
-    NSPasteboardTypeFileURL, NSPasteboardWriting, NSResponder, NSScreen, NSScrollView,
-    NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
+    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSMenu, NSMenuDelegate,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSOutlineViewDropOnItemIndex,
+    NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardWriting, NSResponder, NSScreen,
+    NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableCellView, NSTableColumn,
     NSTableColumnResizingOptions, NSTableView, NSTableViewAnimationOptions,
     NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSTextAlignment,
     NSTextField, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSUserInterfaceItemIdentification, NSView,
     NSViewController, NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView,
     NSWindingRule, NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
@@ -37,6 +38,7 @@ use objc2_quartz_core::CAAutoresizingMask;
 
 use crate::Material;
 use crate::bridge::appkit::{Container, gpui_view, rects_equal};
+use crate::controls::MenuEntry;
 use crate::materials::RawMaterial;
 use crate::tokens;
 
@@ -410,6 +412,8 @@ type SelectHandler = Rc<dyn Fn(&Option<SharedString>, &mut Window, &mut App)>;
 type ReorderHandler = Rc<dyn Fn(&SidebarMove, &mut Window, &mut App)>;
 type EjectHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 type DropHandler = Rc<dyn Fn(&SidebarDrop, &mut Window, &mut App)>;
+type MenuHandler = Rc<dyn Fn(&SharedString) -> Vec<MenuEntry>>;
+type MenuPickHandler = Rc<dyn Fn(&SharedString, usize, &mut Window, &mut App)>;
 
 struct Shared {
     model: RefCell<Model>,
@@ -418,6 +422,9 @@ struct Shared {
     on_reorder: RefCell<Option<ReorderHandler>>,
     on_eject: RefCell<Option<EjectHandler>>,
     on_drop_paths: RefCell<Option<DropHandler>>,
+    on_menu: RefCell<Option<(MenuHandler, MenuPickHandler)>>,
+    /// The row the open contextual menu was raised on, so its pick knows what it acts on.
+    menu_row: RefCell<Option<SharedString>>,
     /// Non-zero while we drive the selection ourselves, so the round-trip does not echo.
     suppress: Cell<u32>,
     writes: Cell<u64>,
@@ -561,6 +568,15 @@ impl NativeSidebar {
         handler: impl Fn(&Option<SharedString>, &mut Window, &mut App) + 'static,
     ) {
         *self.0.shared.on_select.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// The menu a right-click on a row drops, and what one of its rows runs when picked.
+    pub fn on_menu(
+        &self,
+        entries: impl Fn(&SharedString) -> Vec<MenuEntry> + 'static,
+        picked: impl Fn(&SharedString, usize, &mut Window, &mut App) + 'static,
+    ) {
+        *self.0.shared.on_menu.borrow_mut() = Some((Rc::new(entries), Rc::new(picked)));
     }
 
     /// Called after the user drags a row, and only with [`SidebarOptions::reorderable`].
@@ -1313,8 +1329,7 @@ fn tint_cell(cell: &SidebarCell, selected: bool) {
 
 fn tint_selected_rows(outline: &NSOutlineView) {
     for row in 0..outline.numberOfRows() {
-        let Some(view) = (unsafe { outline.viewAtColumn_row_makeIfNecessary(0, row, false) })
-        else {
+        let Some(view) = outline.viewAtColumn_row_makeIfNecessary(0, row, false) else {
             continue;
         };
         if view.isKindOfClass(SidebarCell::class()) {
@@ -1492,6 +1507,51 @@ mod source {
             .detach();
     }
 
+    /// Finder builds a sidebar row's menu when the click lands, not when the sidebar is made.
+    pub(super) fn menu_needs_update(shared: &Rc<Shared>, menu: &NSMenu, target: &AnyObject) {
+        let mtm = MainThreadMarker::new().expect("outline view callbacks are main-thread");
+        let row = shared
+            .outline
+            .borrow()
+            .as_ref()
+            .map(|outline| outline.clickedRow())
+            .filter(|&row| row >= 0)
+            .and_then(|row| {
+                let outline = shared.outline.borrow().clone()?;
+                let item = outline.itemAtRow(row)?;
+                shared.model.borrow().id_for(Shared::key_of_item(&item))
+            });
+        *shared.menu_row.borrow_mut() = row.clone();
+        let entries = match (row, shared.on_menu.borrow().clone()) {
+            (Some(row), Some((entries, _))) => entries(&row),
+            _ => Vec::new(),
+        };
+        crate::controls::menu::sync_menu(
+            mtm,
+            menu,
+            &entries,
+            Some((target, sel!(ngSidebarMenuPick:))),
+        );
+    }
+
+    pub(super) fn menu_picked(shared: &Rc<Shared>, sender: &AnyObject) {
+        let index: NSInteger = unsafe { msg_send![sender, tag] };
+        let Some(row) = shared.menu_row.borrow().clone() else {
+            return;
+        };
+        let Some((_, picked)) = shared.on_menu.borrow().clone() else {
+            return;
+        };
+        let index = index.max(0) as usize;
+        shared
+            .cx
+            .borrow()
+            .spawn(async move |cx| {
+                let _ = cx.update(|window, app| picked(&row, index, window, app));
+            })
+            .detach();
+    }
+
     pub(super) fn eject_clicked(shared: &Rc<Shared>, sender: &NSView) {
         let Some(outline) = shared.outline.borrow().clone() else {
             return;
@@ -1532,6 +1592,18 @@ define_class!(
             #[unsafe(method(ngSidebarEject:))]
             fn eject_clicked(&self, sender: &NSView) {
                 source::eject_clicked(self.ivars(), sender)
+            }
+
+            #[unsafe(method(ngSidebarMenuPick:))]
+            fn menu_picked(&self, sender: &AnyObject) {
+                source::menu_picked(self.ivars(), sender)
+            }
+        }
+
+        unsafe impl NSMenuDelegate for $class {
+            #[unsafe(method(menuNeedsUpdate:))]
+            fn menu_needs_update(&self, menu: &NSMenu) {
+                source::menu_needs_update(self.ivars(), menu, self.as_ref())
             }
         }
 
@@ -2326,17 +2398,20 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         on_reorder: RefCell::new(None),
         on_eject: RefCell::new(None),
         on_drop_paths: RefCell::new(None),
+        on_menu: RefCell::new(None),
+        menu_row: RefCell::new(None),
         suppress: Cell::new(0),
         writes: Cell::new(0),
         cx: RefCell::new(window.to_async(cx)),
         expand_groups: Cell::new(options.expand_groups),
         outline: RefCell::new(None),
     });
-    let (source, data_source, delegate) = match options.reorderable {
+    let (source, data_source, delegate, menu_delegate) = match options.reorderable {
         true => {
             let this = ReorderSource::new(mtm, shared.clone());
             (
                 Retained::into_super(this.clone()),
+                ProtocolObject::from_retained(this.clone()),
                 ProtocolObject::from_retained(this.clone()),
                 ProtocolObject::from_retained(this),
             )
@@ -2345,6 +2420,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             let this = OutlineSource::new(mtm, shared.clone());
             (
                 Retained::into_super(this.clone()),
+                ProtocolObject::from_retained(this.clone()),
                 ProtocolObject::from_retained(this.clone()),
                 ProtocolObject::from_retained(this),
             )
@@ -2382,6 +2458,10 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     unsafe {
         outline.setDataSource(Some(&data_source));
         outline.setDelegate(Some(&delegate));
+        let menu = NSMenu::new(mtm);
+        menu.setAutoenablesItems(false);
+        menu.setDelegate(Some(&menu_delegate));
+        outline.setMenu(Some(&menu));
     }
     let mut dragged_types = vec![unsafe { NSPasteboardTypeFileURL }.retain()];
     if options.reorderable {

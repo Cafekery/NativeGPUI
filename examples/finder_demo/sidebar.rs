@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use gpui::{SharedString, Window, prelude::*, px};
-use native_gpui::Material;
 use native_gpui::sidebar::{
     NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
     sidebar_group, sidebar_item,
 };
+use native_gpui::{Material, MenuEntry};
 
 use crate::data::{intern, intern_path, volume_roots};
 use crate::ui::finder_color_rgb;
@@ -159,6 +159,47 @@ pub(crate) fn groups() -> Vec<Group> {
     groups
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    Nothing,
+    Remove,
+}
+
+/// Finder's menu on a sidebar tag row: what it opens, what it forgets, and the colour it wears.
+fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
+    let name = id.strip_prefix("tag:").filter(|name| !name.is_empty())?;
+    let mut acts = vec![Act::Nothing; 7];
+    acts[2] = Act::Remove;
+    acts.extend(std::iter::repeat_n(
+        Act::Nothing,
+        1 + crate::ui::tags().len(),
+    ));
+    let entries = [
+        MenuEntry::item("Open in New Tab")
+            .symbol("arrow.up.forward.app")
+            .disabled(),
+        MenuEntry::separator(),
+        MenuEntry::item("Remove from Sidebar").symbol("xmark"),
+        MenuEntry::item(format!("Delete Tag \u{201c}{name}\u{201d}\u{2026}"))
+            .symbol("xmark")
+            .disabled(),
+        MenuEntry::separator(),
+        MenuEntry::item(format!("Rename \u{201c}{name}\u{201d}"))
+            .symbol("pencil")
+            .disabled(),
+        MenuEntry::separator(),
+    ]
+    .into_iter()
+    .chain([MenuEntry::item("No Color").disabled()])
+    .chain(
+        crate::ui::tags()
+            .iter()
+            .map(|tag| MenuEntry::item(tag.name.clone()).disabled()),
+    )
+    .collect();
+    Some((acts, entries))
+}
+
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
 
@@ -266,12 +307,36 @@ impl FinderDemo {
         sidebar.on_eject(cx.listener(|this, id: &SharedString, window, cx| {
             this.eject(id, window, cx);
         }));
+        let demo = cx.entity().downgrade();
+        sidebar.on_menu(
+            |id| tag_menu(id).map(|menu| menu.1).unwrap_or_default(),
+            move |id, index, _, cx| {
+                if tag_menu(id).is_none_or(|menu| menu.0.get(index) != Some(&Act::Remove)) {
+                    return;
+                }
+                let id = id.clone();
+                demo.update(cx, |this: &mut FinderDemo, cx| {
+                    this.remove_from_sidebar(&id);
+                    cx.notify();
+                })
+                .ok();
+            },
+        );
         sidebar.update(&self.sidebar_items());
         self.sidebar = Some(sidebar);
         self.sidebar_follow();
         self.retitle(window);
         window.focus(&self.focus, cx);
         self.warm_icons(cx);
+    }
+
+    fn remove_from_sidebar(&mut self, id: &SharedString) {
+        for rows in &mut self.sidebar_rows {
+            rows.retain(|row| *row != id.as_ref());
+        }
+        if let Some(sidebar) = &self.sidebar {
+            sidebar.update(&self.sidebar_items());
+        }
     }
 
     fn reorder(&mut self, moved: &SidebarMove) {
