@@ -37,8 +37,8 @@ use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
 use finder_fs::{tags, volumes};
 use gpui::{
-    AnyElement, App, Bounds, FocusHandle, KeyBinding, KeyDownEvent, Keystroke, Modifiers,
-    MouseButton, Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString,
+    AnyElement, App, Bounds, DragMoveEvent, FocusHandle, KeyBinding, KeyDownEvent, Keystroke,
+    Modifiers, MouseButton, Pixels, RenderImage, ScrollHandle, ScrollStrategy, SharedString,
     UniformListScrollHandle, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
     prelude::*, px, relative, size,
 };
@@ -61,7 +61,7 @@ use crate::header::{
     pane_surface,
 };
 use crate::icon::{Grid, cell};
-use crate::list::{ICON_SIZE, ICON_SMALL, row_h};
+use crate::list::{ICON_SIZE, ICON_SMALL, RowDrag, row_h};
 use crate::palette::Palette;
 use crate::preview::{INSET, LIST_MIN_W, PREVIEW_W, PreviewWindow};
 use crate::toolbar::PATH_H;
@@ -348,7 +348,7 @@ impl FinderDemo {
         let mut this = Self {
             folders: Folders::default(),
             sidebar: None,
-            sidebar_rows: sidebar::default_rows(&groups),
+            sidebar_rows: sidebar::stored_rows(&groups),
             sidebar_groups: groups,
             toolbar: false,
             history: vec![start],
@@ -963,6 +963,27 @@ impl FinderDemo {
                 }
             }
             _ => self.spring = Some((into, now)),
+        }
+    }
+
+    /// A row drag that reaches the sidebar becomes an AppKit file drag: the sidebar is a hosted
+    /// `NSOutlineView`, and nothing of GPUI's own drags is offered to it.
+    pub(crate) fn drag_to_sidebar(
+        &mut self,
+        event: &DragMoveEvent<RowDrag>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.event.position.x >= self.metrics().left {
+            return;
+        }
+        let paths: Vec<PathBuf> = self
+            .drag_keys(&event.drag(cx).key)
+            .iter()
+            .map(|key| PathBuf::from(key.as_ref()))
+            .collect();
+        if native_gpui::sidebar::drag_files(window, &paths) {
+            cx.stop_active_drag(window);
         }
     }
 
@@ -2002,6 +2023,7 @@ impl Render for FinderDemo {
                         .map(|element| self.menu_bar_actions(element, cx))
                         .map(|element| self.wire_undo_redo(element, cx))
                         .on_key_down(cx.listener(Self::on_key))
+                        .on_drag_move(cx.listener(Self::drag_to_sidebar))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {

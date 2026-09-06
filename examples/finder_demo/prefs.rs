@@ -1,11 +1,13 @@
 //! What the demo carries between launches: the window's frame is AppKit's own autosave, the rest
 //! rides in user defaults.
 
-use objc2_foundation::{NSString, NSUserDefaults};
+use objc2_foundation::{NSArray, NSString, NSUserDefaults};
 
 use crate::data::Column;
 
 const VIEW: &str = "ng.finder.view";
+const SIDEBAR: &str = "ng.finder.sidebar";
+const PINNED: &str = "ng.finder.sidebar.pinned";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const ICON: &str = "ng.finder.icon";
@@ -25,6 +27,39 @@ fn read(key: &str) -> Option<f64> {
 
 fn write(key: &str, value: f64) {
     defaults().setDouble_forKey(value, &NSString::from_str(key));
+}
+
+fn read_list(key: &str) -> Vec<String> {
+    let list = defaults().stringArrayForKey(&NSString::from_str(key));
+    list.map(|list| list.iter().map(|text| text.to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn write_list(key: &str, values: &[&str]) {
+    let strings: Vec<_> = values
+        .iter()
+        .map(|value| NSString::from_str(value))
+        .collect();
+    let list = NSArray::from_retained_slice(&strings);
+    unsafe { defaults().setObject_forKey(Some(&list), &NSString::from_str(key)) };
+}
+
+/// A sidebar group's rows, in the order the user left them.
+pub(crate) fn sidebar_rows(group: &str) -> Vec<String> {
+    read_list(&format!("{SIDEBAR}.{group}"))
+}
+
+pub(crate) fn set_sidebar_rows(group: &str, rows: &[&str]) {
+    write_list(&format!("{SIDEBAR}.{group}"), rows);
+}
+
+/// The folders the user dragged into a sidebar group, which no listing of this Mac would give it.
+pub(crate) fn pinned(group: &str) -> Vec<String> {
+    read_list(&format!("{PINNED}.{group}"))
+}
+
+pub(crate) fn set_pinned(group: &str, paths: &[&str]) {
+    write_list(&format!("{PINNED}.{group}"), paths);
 }
 
 pub(crate) fn view() -> Option<usize> {
