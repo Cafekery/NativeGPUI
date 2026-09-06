@@ -288,9 +288,10 @@ impl FinderDemo {
             },
         );
         sidebar.on_select(cx.listener(|this, id: &Option<SharedString>, window, cx| {
-            let path = id.as_deref().filter(|id| id.starts_with('/'));
-            if let Some(path) = path {
-                this.go(intern(path), window, cx);
+            match id.as_deref() {
+                Some(path) if path.starts_with('/') => this.go(intern(path), window, cx),
+                Some(tag) if tag.starts_with("tag:") => this.show_tag(intern(tag), window, cx),
+                _ => {}
             }
             if let Some(sidebar) = &this.sidebar {
                 sidebar.focus_content();
