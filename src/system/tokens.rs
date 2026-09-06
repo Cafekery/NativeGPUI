@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use block2::StackBlock;
 use gpui::{
@@ -325,16 +325,21 @@ pub fn window_background() -> Hsla {
     system_color(WINDOW_BACKGROUND)
 }
 
+// `NSScreen` answers only on the main thread; a worker draws at the scale it last gave.
+static SCALE: AtomicU32 = AtomicU32::new(2.0f32.to_bits());
+
 fn display_scale() -> f32 {
     with_cache(|cache| {
         *cache.scale.get_or_insert_with(|| {
             let Some(mtm) = MainThreadMarker::new() else {
-                return 2.0;
+                return f32::from_bits(SCALE.load(Ordering::Acquire));
             };
-            NSScreen::screens(mtm)
+            let scale = NSScreen::screens(mtm)
                 .iter()
                 .map(|s| s.backingScaleFactor() as f32)
-                .fold(1.0f32, f32::max)
+                .fold(1.0f32, f32::max);
+            SCALE.store(scale.to_bits(), Ordering::Release);
+            scale
         })
     })
 }
