@@ -538,6 +538,7 @@ pub enum ToolbarItem {
         id: String,
         symbol: String,
         label: String,
+        tool_tip: Option<String>,
         on_click: Option<ToolbarHandler>,
     },
     /// Several glyphs in one capsule: `NSToolbarItemGroup`.
@@ -548,6 +549,7 @@ pub enum ToolbarItem {
         selection: ToolbarSelection,
         selected: usize,
         width: ToolbarGroupWidth,
+        tool_tip: Option<String>,
         on_select: Option<ToolbarIndexHandler>,
     },
     /// The search field that collapses to a glyph: `NSSearchToolbarItem`.
@@ -557,6 +559,7 @@ pub enum ToolbarItem {
         placeholder: String,
         /// What the field widens to when it takes focus.
         width: Pixels,
+        tool_tip: Option<String>,
         on_change: Option<ToolbarTextHandler>,
     },
     /// A glyph with a chevron that drops a real menu: `NSMenuToolbarItem`.
@@ -565,6 +568,7 @@ pub enum ToolbarItem {
         symbol: String,
         label: String,
         entries: Vec<MenuEntry>,
+        tool_tip: Option<String>,
         on_select: Option<ToolbarIndexHandler>,
     },
     /// The system share sheet: `NSSharingServicePickerToolbarItem`.
@@ -572,6 +576,7 @@ pub enum ToolbarItem {
         id: String,
         label: String,
         items: Vec<String>,
+        tool_tip: Option<String>,
     },
     /// A divider tracking a split-view divider: `NSTrackingSeparatorToolbarItem`. Needs a sidebar.
     Separator {
@@ -585,6 +590,7 @@ pub enum ToolbarItem {
         label: String,
         /// Constrained per dimension, and only where positive: zero means "measure yourself".
         size: Size<Pixels>,
+        tool_tip: Option<String>,
         build: ToolbarViewBuilder,
     },
     FlexibleSpace,
@@ -601,6 +607,7 @@ impl ToolbarItem {
             id: id.into(),
             symbol: symbol.into(),
             label: label.into(),
+            tool_tip: None,
             on_click: None,
         }
     }
@@ -619,6 +626,7 @@ impl ToolbarItem {
             selection: ToolbarSelection::default(),
             selected,
             width: ToolbarGroupWidth::default(),
+            tool_tip: None,
             on_select: None,
         }
     }
@@ -629,6 +637,7 @@ impl ToolbarItem {
             label: label.into(),
             placeholder: String::new(),
             width: px(220.),
+            tool_tip: None,
             on_change: None,
         }
     }
@@ -644,6 +653,7 @@ impl ToolbarItem {
             symbol: symbol.into(),
             label: label.into(),
             entries: entries.into_iter().collect(),
+            tool_tip: None,
             on_select: None,
         }
     }
@@ -657,6 +667,7 @@ impl ToolbarItem {
             id: id.into(),
             label: label.into(),
             items: items.into_iter().map(Into::into).collect(),
+            tool_tip: None,
         }
     }
 
@@ -677,6 +688,7 @@ impl ToolbarItem {
             id: id.into(),
             label: label.into(),
             size,
+            tool_tip: None,
             build: Rc::new(build),
         }
     }
@@ -745,6 +757,33 @@ impl ToolbarItem {
             *slot = width;
         }
         self
+    }
+
+    /// What hovering the item shows; AppKit also reports it as the item's `AXHelp`.
+    pub fn tool_tip(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        match &mut self {
+            ToolbarItem::Symbol { tool_tip, .. }
+            | ToolbarItem::Group { tool_tip, .. }
+            | ToolbarItem::Search { tool_tip, .. }
+            | ToolbarItem::Menu { tool_tip, .. }
+            | ToolbarItem::Share { tool_tip, .. }
+            | ToolbarItem::View { tool_tip, .. } => *tool_tip = Some(text),
+            _ => {}
+        }
+        self
+    }
+
+    fn tip(&self) -> Option<&str> {
+        match self {
+            ToolbarItem::Symbol { tool_tip, .. }
+            | ToolbarItem::Group { tool_tip, .. }
+            | ToolbarItem::Search { tool_tip, .. }
+            | ToolbarItem::Menu { tool_tip, .. }
+            | ToolbarItem::Share { tool_tip, .. }
+            | ToolbarItem::View { tool_tip, .. } => tool_tip.as_deref(),
+            _ => None,
+        }
     }
 
     fn identifier(&self) -> String {
@@ -984,6 +1023,7 @@ impl ToolbarDelegate {
             .find(|item| item.identifier() == wanted)
             .cloned()?;
 
+        let tip = spec.tip().map(NSString::from_str);
         let item: Retained<NSToolbarItem> = match spec {
             ToolbarItem::Symbol {
                 symbol,
@@ -993,7 +1033,6 @@ impl ToolbarDelegate {
             } => {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
                 item.setLabel(&NSString::from_str(&label));
-                item.setToolTip(Some(&NSString::from_str(&label)));
                 item.setBordered(true);
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));
@@ -1080,7 +1119,6 @@ impl ToolbarDelegate {
                 let item =
                     NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), ident);
                 item.setLabel(&NSString::from_str(&label));
-                item.setToolTip(Some(&NSString::from_str(&label)));
                 item.setBordered(true);
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));
@@ -1103,7 +1141,6 @@ impl ToolbarDelegate {
                     ident,
                 );
                 item.setLabel(&NSString::from_str(&label));
-                item.setToolTip(Some(&NSString::from_str(&label)));
                 item.setDelegate(Some(ProtocolObject::from_ref(self)));
                 Retained::into_super(item)
             }
@@ -1145,6 +1182,7 @@ impl ToolbarDelegate {
             }
             ToolbarItem::FlexibleSpace | ToolbarItem::Space => return None,
         };
+        item.setToolTip(tip.as_deref());
 
         let mut built = self.ivars().built.borrow_mut();
         match built.iter_mut().find(|(id, _)| *id == wanted) {
