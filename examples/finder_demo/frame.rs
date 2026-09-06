@@ -9,7 +9,7 @@ use gpui::{
 };
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
-use native_gpui::{native_root, system_corner_radius};
+use native_gpui::{NativeScroller, native_root, system_corner_radius};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -24,7 +24,7 @@ use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
 use crate::palette::Palette;
 use crate::preview::LIST_MIN_W;
-use crate::ui::axis_locked;
+use crate::ui::{axis_locked, scroller};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
 use crate::views::header::HEADER_H;
 
@@ -213,6 +213,23 @@ impl FinderDemo {
         });
     }
 
+    /// The rows' own scroller: the list and the grid scroll under one, the browser's columns
+    /// carry theirs each, and the gallery scrolls only across.
+    fn scroller_bar(&self) -> Option<NativeScroller> {
+        match self.view {
+            LIST_VIEW => {
+                let inset = self.list_inset().0 as f32 * self.row_h();
+                scroller(
+                    "ng.finder.scroller",
+                    &self.scroll.0.borrow().base_handle,
+                    inset,
+                )
+            }
+            ICON_VIEW => scroller("ng.finder.scroller", &self.icons.scroll, 0.),
+            _ => None,
+        }
+    }
+
     fn list_column(
         &self,
         column: Column,
@@ -334,6 +351,14 @@ impl FinderDemo {
                         .pl(metrics.left)
                         .child(headers),
                 )
+            }))
+            .children(self.scroller_bar().map(|bar| {
+                div()
+                    .absolute()
+                    .top(top + px(if banded { HEADER_H } else { 0. }))
+                    .bottom(px(foot))
+                    .right(px(pane))
+                    .child(bar)
             }))
             .children(
                 (self.view == LIST_VIEW)

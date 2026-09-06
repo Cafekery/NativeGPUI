@@ -7,6 +7,7 @@ mod label;
 pub(crate) mod menu;
 mod progress;
 mod rule;
+mod scroller;
 mod slider;
 mod small;
 mod switch;
@@ -30,6 +31,7 @@ pub use progress::{
     native_spinner,
 };
 pub use rule::{NativeRule, native_rule};
+pub use scroller::{NativeScroller, native_scroller};
 pub use slider::{NativeSlider, native_slider};
 pub use small::{
     ColorWellStyle, DateElements, DatePickerStyle, NativeColorWell, NativeDatePicker,

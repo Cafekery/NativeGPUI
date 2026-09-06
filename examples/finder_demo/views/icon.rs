@@ -78,7 +78,7 @@ pub(crate) struct Grid {
     moved: u64,
     layout: Option<Rc<Layout>>,
     dragging: Option<SharedString>,
-    scroll: ScrollHandle,
+    pub(crate) scroll: ScrollHandle,
 }
 
 impl Grid {
