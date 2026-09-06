@@ -96,6 +96,9 @@ impl FinderDemo {
 
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         if self.here() == id {
+            if self.results() {
+                self.arrive(window, cx);
+            }
             return;
         }
         self.history.truncate(self.at + 1);
