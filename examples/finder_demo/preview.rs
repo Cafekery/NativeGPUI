@@ -12,7 +12,8 @@ use native_gpui::tokens::{
     self, Symbol, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
 use native_gpui::{
-    Cursor, chrome_host, cursor_region, native_root, native_screen_rect, window_options,
+    Cursor, chrome_host, cursor_region, native_root, native_screen_rect, tab_bar_height,
+    window_options,
 };
 use objc2::msg_send;
 use objc2::rc::Retained;
@@ -343,14 +344,16 @@ impl FinderDemo {
         // The card window stops short of the window's right and bottom edges: those are the
         // parent's resize edges, and a child window over them would take the drag. The bars at the
         // bottom end at the pane, so they take no height from it.
+        // The tab bar ends at the pane, and the pane runs on over its height to the toolbar.
+        let top = metrics.top - px(tab_bar_height(window));
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
-                metrics.top,
+                top,
             ),
             size: size(
                 px(self.preview_w - RESIZE_EDGE),
-                viewport.height - metrics.top - metrics.bottom - px(RESIZE_EDGE),
+                viewport.height - top - metrics.bottom - px(RESIZE_EDGE),
             ),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);

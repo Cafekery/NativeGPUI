@@ -51,6 +51,12 @@ pub fn set_trailing_inset(window: &Window, points: f32) {
     }
 }
 
+/// How much height AppKit's tab bar takes under the toolbar here, 0 when this window shows none.
+pub fn tab_bar_height(window: &Window) -> f32 {
+    tab_bar_accessory(&ns_window_of(window))
+        .map_or(0., |accessory| accessory.frame().size.height as f32)
+}
+
 /// Open `tab` beside `window` in its tab bar, selected.
 pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
     let Ok(host) = window.update(cx, |_, window, _| ns_window_of(window)) else {
