@@ -2,15 +2,15 @@
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, SharedString, Window, canvas, div,
-    opaque_grey, prelude::*, px,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString,
+    Window, canvas, div, opaque_grey, prelude::*, px,
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Face, Line};
-use crate::menus::row_menu;
+use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{click_kind, rename_field, text_width};
@@ -165,6 +165,18 @@ impl FinderDemo {
             })
             .collect();
         let this = cx.entity().downgrade();
+        let this_menu = this.clone();
+        let hit_lines = lines.clone();
+        let hit_scroll = handle.clone();
+        let hit = move |at: Point<Pixels>| {
+            let top = hit_scroll
+                .as_ref()
+                .map_or(0., |handle| f32::from(handle.offset().y));
+            let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
+            (row >= 0.)
+                .then(|| hit_lines.get(row as usize).cloned())
+                .flatten()
+        };
         let renaming = self.renaming.clone();
         let cursor = self.cursor.clone();
         let ql_icon = self.ql_icon.clone();
@@ -177,7 +189,7 @@ impl FinderDemo {
             )
         };
 
-        div()
+        let column = div()
             .id(("ng.finder.column", index))
             .w(px(self.column_width(folder) - GRIP_W))
             .flex_none()
@@ -191,7 +203,6 @@ impl FinderDemo {
                 let joins_above = row > 0 && picked[row - 1];
                 let joins_below = picked.get(row + 1) == Some(&true);
                 let this = this.clone();
-                let this_menu = this.clone();
                 let clicked = line.clone();
                 let name = div()
                     .ml(px(LABEL_X - ICON_X - ICON))
@@ -250,7 +261,7 @@ impl FinderDemo {
                             .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
                     );
                 }
-                let cell = cell.on_click(move |event: &ClickEvent, window, cx| {
+                cell.on_click(move |event: &ClickEvent, window, cx| {
                     let (extend, toggle, twice) = click_kind(event);
                     let line = clicked.clone();
                     this.update(cx, |this: &mut FinderDemo, cx| {
@@ -262,16 +273,9 @@ impl FinderDemo {
                         this.column_arrived(window, cx);
                     })
                     .ok();
-                });
-                row_menu(
-                    ("ng.finder.column.menu", index * 512 + row),
-                    &line,
-                    &self.selected,
-                    this_menu,
-                    cell,
-                )
-            }))
-            .into_any_element()
+                })
+            }));
+        rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
     /// Finder rules every column, the last one included.

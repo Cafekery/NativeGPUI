@@ -5,9 +5,10 @@ mod actions;
 mod bar;
 mod context;
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-use gpui::{ElementId, IntoElement, SharedString, WeakEntity};
+use gpui::{ElementId, IntoElement, Pixels, Point, WeakEntity};
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 pub(crate) use self::actions::Act;
@@ -38,15 +39,35 @@ pub(crate) fn attach(
         })
 }
 
-/// The menu for one row, built from the demo as it stands when the row is drawn.
-pub(crate) fn row_menu(
+/// One menu for a whole view, built for the row `hit` names when the right-click lands: a hosted
+/// view per painted row is what a long listing cannot afford.
+pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
-    line: &Line,
-    selected: &HashSet<SharedString>,
     this: WeakEntity<FinderDemo>,
+    hit: impl Fn(Point<Pixels>) -> Option<Line> + 'static,
     child: impl IntoElement,
 ) -> NativeContextMenu {
-    attach(id, item(selected, line), this, child)
+    let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
+    let built = acts.clone();
+    let demo = this.clone();
+    native_context_menu(id, child)
+        .entries_at(move |at, _, cx| {
+            let Some(line) = hit(at) else {
+                return Vec::new();
+            };
+            let menu = demo
+                .update(cx, |demo: &mut FinderDemo, _| item(&demo.selected, &line))
+                .unwrap_or_default();
+            *built.borrow_mut() = menu.acts;
+            menu.entries
+        })
+        .on_select(move |index, window, cx| {
+            let act = acts.borrow().get(*index).copied().unwrap_or(Act::Nothing);
+            this.update(cx, |demo: &mut FinderDemo, cx| {
+                demo.run_menu(act, window, cx)
+            })
+            .ok();
+        })
 }
 
 /// Entries and their actions in step, since a pick reports its depth-first position.
