@@ -175,11 +175,9 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     artwork(row, size)
 }
 
-/// Finder's Quick Look icon: the whole picture fit inside the box (never cropped, never
-/// upscaled past what [`thumbnails`] rendered), centred, with the thin light keyline and small
-/// corner radius Finder frames every thumbnail with.
+/// Finder's Quick Look icon: the whole picture fit inside the box, centred, with the keyline,
+/// corner radius and shadow Quick Look's icon mode baked into the raster.
 fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
-    let radius = px((size * 0.05).clamp(1.5, 5.));
     div()
         .w(px(size))
         .h(px(size))
@@ -191,15 +189,7 @@ fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
             img(image)
                 .max_w(px(size))
                 .max_h(px(size))
-                .object_fit(ObjectFit::Contain)
-                .rounded(radius)
-                .border_1()
-                .border_color(Hsla {
-                    h: 0.,
-                    s: 0.,
-                    l: 1.,
-                    a: 0.3,
-                }),
+                .object_fit(ObjectFit::Contain),
         )
         .into_any_element()
 }
