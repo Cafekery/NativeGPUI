@@ -1018,7 +1018,7 @@ impl ToolbarDelegate {
                 let images: Vec<Retained<NSImage>> = segments
                     .iter()
                     .map(|segment| {
-                        symbol_image(&segment.symbol, &segment.label).unwrap_or_else(NSImage::new)
+                        symbol_image(&segment.symbol, &segment.label).unwrap_or_default()
                     })
                     .collect();
                 let image_refs: Vec<&NSImage> = images.iter().map(|image| &**image).collect();
@@ -1322,7 +1322,7 @@ pub fn toolbar_description(window: &Window) -> String {
     for item in toolbar.items().iter() {
         let id = item.itemIdentifier().to_string();
         let class = item.class().name().to_string_lossy().into_owned();
-        let shown = if visible.iter().any(|found| *found == id) {
+        let shown = if visible.contains(&id) {
             "visible"
         } else {
             "clipped"

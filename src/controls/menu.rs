@@ -772,13 +772,15 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         on_select: None,
     }
 }
+/// What a context menu hands back: the index of the row the user picked.
+type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 pub struct NativeContextMenu {
     id: ElementId,
     child: AnyElement,
     entries: Vec<MenuEntry>,
     origin: MenuOrigin,
-    on_select: Option<Rc<dyn Fn(usize, &mut Window, &mut App)>>,
+    on_select: Option<SelectHandler>,
 }
 
 impl NativeContextMenu {
