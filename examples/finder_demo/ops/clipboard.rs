@@ -1,6 +1,7 @@
 //! Finder's clipboard: ⌘C writes the names and the file URLs, ⌘X marks the selection (rows
 //! dim until pasted or the mark clears), ⌘V moves a cut selection or copies a copied one.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use finder_fs::ops::Op;
@@ -116,15 +117,26 @@ fn read_pasteboard() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether the general pasteboard holds files a Paste row could act on, cheap enough to call
-/// while a context menu is being built.
+/// Whether the general pasteboard holds files a Paste row could act on. Reading the items is IPC
+/// to the pasteboard server, so the answer is kept until the pasteboard's change count moves.
 pub(crate) fn can_paste() -> bool {
+    thread_local! {
+        static ANSWERED: Cell<(isize, bool)> = const { Cell::new((-1, false)) };
+    }
+    let board = NSPasteboard::generalPasteboard();
+    let changed = board.changeCount();
+    if let Some(answer) = ANSWERED.with(|seen| {
+        let (at, answer) = seen.get();
+        (at == changed).then_some(answer)
+    }) {
+        return answer;
+    }
     let file_url = unsafe { NSPasteboardTypeFileURL };
-    NSPasteboard::generalPasteboard()
-        .pasteboardItems()
-        .is_some_and(|items| {
-            items
-                .iter()
-                .any(|item| item.stringForType(file_url).is_some())
-        })
+    let answer = board.pasteboardItems().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| item.stringForType(file_url).is_some())
+    });
+    ANSWERED.with(|seen| seen.set((changed, answer)));
+    answer
 }
