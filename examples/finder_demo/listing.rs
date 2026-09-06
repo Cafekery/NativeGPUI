@@ -226,11 +226,10 @@ impl FinderDemo {
         built.lines
     }
 
-    /// Whether the listing is drawn as it is read — no query, no filter, no disclosed row — and
+    /// Whether a listing is drawn as it is read — no query, no filter, no disclosed row — and
     /// with it whether hidden rows are drawn.
-    pub(crate) fn plain(&self, id: &'static str) -> Option<bool> {
-        (id == self.here()
-            && self.tag_listing.is_none()
+    pub(crate) fn plain(&self) -> Option<bool> {
+        (self.tag_listing.is_none()
             && !self.results()
             && self.expanded.is_empty()
             && self.query.trim().is_empty()
@@ -241,7 +240,7 @@ impl FinderDemo {
     /// Take the lines a read built for the listing it sorted, so the frame the rows moved under
     /// does not build every one of them again.
     pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
-        if self.plain(id) != Some(hidden) {
+        if id != self.here() || self.plain() != Some(hidden) {
             return;
         }
         let built = Built {

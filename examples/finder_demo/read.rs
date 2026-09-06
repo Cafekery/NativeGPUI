@@ -190,7 +190,7 @@ impl FinderDemo {
         let mail = Arc::new(Mutex::new(Mail::default()));
         let filling = mail.clone();
         let sorted_by = (self.sort, self.ascending);
-        let plain = self.plain(id);
+        let plain = self.plain();
         let read = cx.background_executor().spawn(async move {
             let dir = Path::new(id);
             let index = index();
