@@ -275,6 +275,7 @@ impl FinderDemo {
             } else if let Some((hidden, lines)) = lines {
                 self.built(id, hidden, lines);
             }
+            self.expand_landed(id);
         }
         if let Some(key) = self.reveal_next.clone() {
             if self

@@ -1,14 +1,21 @@
 //! What is chosen and where the cursor is: Finder's click, Shift and Command rules, its
 //! type-select, and the disclosure triangles the list opens with them.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use finder_fs::index;
 use gpui::{Context, ScrollStrategy, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
+
+/// How far under a row Option-disclose walks, and how many folders a window holds open: past
+/// either, the walk stops rather than opening a home folder's millions of rows.
+const DEEP_LEVELS: usize = 16;
+const DEEP_FOLDERS: usize = 5_000;
 
 impl FinderDemo {
     pub(crate) fn reveal(&mut self, key: &SharedString) {
@@ -41,7 +48,7 @@ impl FinderDemo {
             .iter()
             .filter(|(key, _)| self.expanded.contains(key) != open)
             .count();
-        if expandable > 0 {
+        if expandable > 0 || (deep && open) {
             for (key, into) in folders {
                 if deep {
                     self.disclose_tree(&key, into, open);
@@ -70,16 +77,61 @@ impl FinderDemo {
 
     pub(crate) fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
         self.disclose(key, open);
-        let Some(folder) = self.folders.get(into) else {
-            return;
-        };
-        let children: Vec<(SharedString, &'static str)> = folder
-            .rows
-            .iter()
-            .filter_map(|row| row.opens.map(|deeper| (row.path.clone(), deeper)))
-            .collect();
-        for (key, deeper) in children {
-            self.disclose_tree(&key, deeper, open);
+        if open {
+            self.expand_under(into, 0);
+        } else {
+            self.collapse_under(into);
+        }
+    }
+
+    /// Discloses every folder under `id` that is in memory and asks for the listings that are
+    /// not: a read that lands carries the walk on from where it stopped. Packages and symlinks
+    /// open nothing, and the paths the index seals are left shut.
+    fn expand_under(&mut self, id: &'static str, depth: usize) {
+        let home = crate::home();
+        let mut opened: Vec<SharedString> = Vec::new();
+        let mut walk = vec![(id, depth)];
+        while let Some((id, depth)) = walk.pop() {
+            if depth >= DEEP_LEVELS || self.expanded.len() + opened.len() >= DEEP_FOLDERS {
+                continue;
+            }
+            let Some(folder) = self.folders.get(id) else {
+                self.expanding.insert(id, depth);
+                continue;
+            };
+            let loading = folder.loading;
+            let children: Vec<(SharedString, &'static str)> = folder
+                .rows
+                .iter()
+                .filter_map(|row| row.opens.map(|deeper| (row.path.clone(), deeper)))
+                .filter(|(_, deeper)| !index::off_limits(Path::new(deeper), &home))
+                .collect();
+            if loading {
+                self.expanding.insert(id, depth);
+            } else {
+                self.expanding.remove(id);
+            }
+            for (key, deeper) in children {
+                opened.push(key);
+                walk.push((deeper, depth + 1));
+            }
+        }
+        self.expanded.extend(opened);
+    }
+
+    /// Shuts every folder under `id`, whether or not this window ever had its listing: an open
+    /// row is keyed by its own path.
+    fn collapse_under(&mut self, id: &'static str) {
+        let under = id.trim_end_matches('/');
+        let inside = |path: &str| path.strip_prefix(under).is_some_and(|r| r.starts_with('/'));
+        self.expanded.retain(|key| !inside(key));
+        self.expanding.retain(|id, _| !inside(id));
+    }
+
+    /// The listing a walk was waiting on: disclose what it holds and go on down.
+    pub(crate) fn expand_landed(&mut self, id: &'static str) {
+        if let Some(depth) = self.expanding.remove(id) {
+            self.expand_under(id, depth);
         }
     }
 

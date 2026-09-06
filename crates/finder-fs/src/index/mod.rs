@@ -29,6 +29,8 @@ use crate::list::list_dir;
 use crawl::Walk;
 use store::{COMPLETE, LISTED, PACKAGE, Tree, VISITED};
 
+pub use crawl::off_limits;
+
 /// Entries written under one lock: a 20 000-file directory costs a reader a few milliseconds.
 const BATCH: usize = 4096;
 /// How long a writer stands aside for a waiting reader before taking its turn anyway.
