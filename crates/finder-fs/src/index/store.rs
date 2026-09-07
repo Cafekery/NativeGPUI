@@ -33,21 +33,21 @@ fn reserve<T>(items: &mut Vec<T>, more: usize) {
 #[derive(Clone, Copy)]
 pub struct Node {
     pub size: u64,
+    pub modified: i64,
+    pub created: i64,
+    pub added: i64,
     pub parent: u32,
     pub first_child: u32,
     pub next_sibling: u32,
-    pub modified: u32,
-    pub created: u32,
-    pub added: u32,
     pub flags: u8,
     pub state: u8,
     pub depth: u8,
     /// The snapshot writes these structs as bytes, so the tail has to be a field: padding the
     /// compiler inserts is never written and reading it back would be reading uninitialized memory.
-    pub pad: [u8; 5],
+    pub pad: [u8; 1],
 }
 
-const _: () = assert!(std::mem::size_of::<Node>() == 40);
+const _: () = assert!(std::mem::size_of::<Node>() == 48);
 
 impl Node {
     pub fn kind(&self) -> EntryKind {
@@ -77,13 +77,25 @@ fn kind_bits(kind: EntryKind) -> u8 {
     }
 }
 
-pub fn secs(t: SystemTime) -> u32 {
-    t.duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs().min(u32::MAX as u64) as u32)
+/// A time the volume does not record. Zero is 1970 and negative is older than that, so a
+/// missing time needs a value of its own.
+pub const NO_TIME: i64 = i64::MIN;
+
+/// Seconds from the UNIX epoch, signed: a file older than 1970 keeps its date.
+pub fn secs(t: SystemTime) -> i64 {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(since) => since.as_secs() as i64,
+        Err(before) => -(before.duration().as_secs() as i64),
+    }
 }
 
-pub fn time(s: u32) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(s as u64)
+pub fn time(s: i64) -> SystemTime {
+    let gap = Duration::from_secs(s.unsigned_abs());
+    match s < 0 {
+        true => UNIX_EPOCH.checked_sub(gap),
+        false => UNIX_EPOCH.checked_add(gap),
+    }
+    .unwrap_or(UNIX_EPOCH)
 }
 
 /// The number of intern tables. Growing one costs a shard of a rehash, not a whole one.
@@ -246,7 +258,7 @@ pub struct Root {
     /// The FSEvents id this root's subtree is current to.
     pub event_id: u64,
     /// The root directory's own mtime when it was last read.
-    pub modified: u32,
+    pub modified: i64,
 }
 
 pub struct Relist {
@@ -287,16 +299,16 @@ impl Default for Tree {
         Tree {
             nodes: vec![Node {
                 size: 0,
+                modified: 0,
+                created: 0,
+                added: NO_TIME,
                 parent: NONE,
                 first_child: NONE,
                 next_sibling: NONE,
-                modified: 0,
-                created: 0,
-                added: 0,
                 flags: 1,
                 state: 0,
                 depth: 0,
-                pad: [0; 5],
+                pad: [0; 1],
             }],
             name_of: vec![root],
             names,
@@ -316,7 +328,7 @@ impl Tree {
     }
 
     /// Records what a finished walk leaves a root at, replacing any earlier state for it.
-    pub fn set_root(&mut self, path: &Path, event_id: u64, modified: u32) {
+    pub fn set_root(&mut self, path: &Path, event_id: u64, modified: i64) {
         match self.roots.iter_mut().find(|root| root.path == path) {
             Some(root) => (root.event_id, root.modified) = (event_id, modified),
             None => self.roots.push(Root {
@@ -404,16 +416,16 @@ impl Tree {
         let depth = self.nodes[parent as usize].depth.saturating_add(1);
         let node = Node {
             size: 0,
+            modified: 0,
+            created: 0,
+            added: NO_TIME,
             parent,
             first_child: NONE,
             next_sibling: NONE,
-            modified: 0,
-            created: 0,
-            added: 0,
             flags: 1,
             state: 0,
             depth,
-            pad: [0; 5],
+            pad: [0; 1],
         };
         self.nodes.push(node);
         self.name_of.push(name);
@@ -431,7 +443,7 @@ impl Tree {
             | if entry.package { PACKAGE } else { 0 };
         node.modified = secs(entry.modified);
         node.created = secs(entry.created);
-        node.added = entry.added.map_or(0, secs);
+        node.added = entry.added.map_or(NO_TIME, secs);
         if !node.is_dir() {
             node.size = entry.size;
         }
@@ -568,7 +580,7 @@ impl Tree {
             size: node.size,
             modified: time(node.modified),
             created: time(node.created),
-            added: (node.added != 0).then(|| time(node.added)),
+            added: (node.added != NO_TIME).then(|| time(node.added)),
             hidden: node.flags & HIDDEN != 0,
             package: node.flags & PACKAGE != 0,
             file_id: 0,

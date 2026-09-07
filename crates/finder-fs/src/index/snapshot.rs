@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::store::{NONE, Names, Node, Root, Tree};
 
-const MAGIC: &[u8; 8] = b"NGVIDX03";
+const MAGIC: &[u8; 8] = b"NGVIDX04";
 const HEADER: usize = 88;
 
 pub fn epoch(time: SystemTime) -> u64 {
@@ -80,15 +80,15 @@ pub fn load(path: &Path) -> Option<Tree> {
 fn read_roots(mut bytes: &[u8]) -> Option<Vec<Root>> {
     let mut roots = Vec::new();
     while !bytes.is_empty() {
-        let head: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
-        let len = u32::from_le_bytes(head[12..16].try_into().ok()?) as usize;
-        let path = bytes.get(16..16 + len)?;
+        let head: &[u8; 20] = bytes.get(..20)?.try_into().ok()?;
+        let len = u32::from_le_bytes(head[16..20].try_into().ok()?) as usize;
+        let path = bytes.get(20..20 + len)?;
         roots.push(Root {
             path: PathBuf::from(OsStr::from_bytes(path)),
             event_id: u64::from_le_bytes(head[..8].try_into().ok()?),
-            modified: u32::from_le_bytes(head[8..12].try_into().ok()?),
+            modified: i64::from_le_bytes(head[8..16].try_into().ok()?),
         });
-        bytes = &bytes[16 + len..];
+        bytes = &bytes[20 + len..];
     }
     Some(roots)
 }

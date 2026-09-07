@@ -3,7 +3,7 @@ use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{Index, Progress};
 
@@ -259,6 +259,58 @@ fn a_hit_below_a_byte_of_depth_carries_its_real_path() {
     assert!(hits[0].path.exists());
     assert_eq!(index.search("needle", Some(&temp.0), 4).len(), 1);
     assert_eq!(index.children(&leaf).unwrap()[0].name, "needle.txt");
+}
+
+/// A file whose mtime an unsigned 32-bit second cannot hold: before 1970, or past 2106.
+fn dated(dir: &Path, name: &str, at: SystemTime) {
+    let file = fs::File::create(dir.join(name)).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(at))
+        .unwrap();
+}
+
+#[test]
+fn a_date_outside_the_unsigned_epoch_reads_alike_from_the_index_and_the_disk() {
+    let root = std::env::temp_dir().join("finder-fs-index-dates");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let temp = Temp(fs::canonicalize(&root).unwrap());
+    let before_epoch = UNIX_EPOCH - Duration::from_secs(14_182_940);
+    let reference = UNIX_EPOCH + Duration::from_secs(978_307_200);
+    let next_century = UNIX_EPOCH + Duration::from_secs(4_102_444_800);
+    let far_future = UNIX_EPOCH + Duration::from_secs(7_258_118_400);
+    dated(&temp.0, "pre-epoch-1969.txt", before_epoch);
+    dated(&temp.0, "reference-2001.txt", reference);
+    dated(&temp.0, "future-2100.txt", next_century);
+    dated(&temp.0, "year-2200.txt", far_future);
+    let store = store("dates");
+    let index = Index::open(&store);
+    crawl(&index, &temp.0);
+
+    let dates = |entries: Vec<crate::Entry>| {
+        let mut dates: Vec<(String, SystemTime)> = entries
+            .into_iter()
+            .map(|entry| (entry.name, entry.modified))
+            .collect();
+        dates.sort();
+        dates
+    };
+    let from_disk = dates(crate::list::list_dir(&temp.0).unwrap());
+    assert_eq!(
+        from_disk,
+        [
+            ("future-2100.txt".to_string(), next_century),
+            ("pre-epoch-1969.txt".to_string(), before_epoch),
+            ("reference-2001.txt".to_string(), reference),
+            ("year-2200.txt".to_string(), far_future),
+        ]
+    );
+    assert_eq!(dates(index.children(&temp.0).unwrap()), from_disk);
+
+    index.save();
+    assert_eq!(
+        dates(Index::open(&store).children(&temp.0).unwrap()),
+        from_disk
+    );
 }
 
 #[test]
