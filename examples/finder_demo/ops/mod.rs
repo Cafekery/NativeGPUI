@@ -100,12 +100,13 @@ impl FinderDemo {
         }
     }
 
-    /// The rename lands on disk; the row comes back with the folder's next read.
+    /// The rename lands on disk; the row comes back with the folder's next read. A typed `/`
+    /// is stored as `:`, which is the byte Finder draws as a slash.
     pub(crate) fn rename(&mut self, key: &SharedString, name: &str, cx: &mut Context<Self>) {
         let Some((_, old)) = split_key(key) else {
             return;
         };
-        let name = name.trim();
+        let name = name.trim().replace('/', ":");
         if name.is_empty() || name == old {
             return;
         }
@@ -113,7 +114,7 @@ impl FinderDemo {
         self.run_op(
             Op::Rename {
                 path: PathBuf::from(key.as_ref()),
-                name: name.to_owned(),
+                name,
             },
             After::Select,
             cx,

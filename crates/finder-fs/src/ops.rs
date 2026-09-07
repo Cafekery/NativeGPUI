@@ -12,6 +12,9 @@ use objc2_foundation::{
     NSFileWriteNoPermissionError, NSString, NSURL,
 };
 
+/// The most bytes a name can carry on the volumes Finder writes to.
+const NAME_MAX: usize = 255;
+
 #[derive(Clone, Debug)]
 pub enum Op {
     Move { items: Vec<PathBuf>, into: PathBuf },
@@ -110,6 +113,23 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
 
 fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     fm.removeItemAtURL_error(&url(path)).map_err(io_error)
+}
+
+/// Finder's name field: one component of the enclosing folder, never a path.
+fn check_name(name: &str) -> io::Result<()> {
+    let refuse = |advice: &str| {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("The name \u{201c}{name}\u{201d} can't be used.{advice}"),
+        ))
+    };
+    if name.len() > NAME_MAX {
+        return refuse(" Try using a name with fewer characters.");
+    }
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+        return refuse("");
+    }
+    Ok(())
 }
 
 /// Splits `name` the way Finder does: no extension for dot-files or a trailing dot.
@@ -289,6 +309,7 @@ fn delete(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Resul
 }
 
 fn rename(path: PathBuf, name: String) -> io::Result<Done> {
+    check_name(&name)?;
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no parent"))?;
@@ -336,6 +357,7 @@ fn duplicate(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Re
 }
 
 fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
+    check_name(&name)?;
     let fm = NSFileManager::defaultManager();
     let mut dest = into.join(&name);
     if dest.exists() {
@@ -554,6 +576,54 @@ mod tests {
         let back = perform(undo, Conflict::Replace, no_progress).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_takes_a_name_and_never_a_path() {
+        let dir = temp_dir("rename-escape");
+        let file = dir.join("a.txt");
+        touch(&file, "mine");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let outside = std::env::temp_dir().join(format!("ngv-escaped-{}.txt", std::process::id()));
+        let _ = fs::remove_file(&outside);
+        let long = "x".repeat(256);
+
+        for name in [
+            "sub/moved.txt",
+            &outside.to_string_lossy(),
+            "",
+            ".",
+            "..",
+            "a\0b",
+            &long,
+        ] {
+            let err = perform(
+                Op::Rename {
+                    path: file.clone(),
+                    name: name.to_string(),
+                },
+                Conflict::Replace,
+                no_progress,
+            )
+            .expect_err(&format!("{name:?} is not a name"));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{name:?}");
+        }
+        assert!(file.exists(), "the item stayed where it was");
+        assert!(!dir.join("sub").join("moved.txt").exists());
+        assert!(!outside.exists(), "the item never left the folder");
+
+        let done = perform(
+            Op::Rename {
+                path: file.clone(),
+                name: "a:b.txt".into(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("a:b.txt")]);
 
         let _ = fs::remove_dir_all(&dir);
     }
