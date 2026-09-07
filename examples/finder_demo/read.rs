@@ -324,14 +324,25 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
-        for id in &wanted {
+        // A stream reports the whole subtree under its path, so a folder inside another wanted one
+        // needs none of its own: a disclosed subtree is one watch, not one per folder, and every
+        // watch canonicalizes its path here and rebuilds the stream on the watcher's thread.
+        let inside = |id: &str| {
+            Path::new(id)
+                .ancestors()
+                .skip(1)
+                .any(|up| up.to_str().is_some_and(|up| wanted.contains(up)))
+        };
+        let outermost: HashSet<&'static str> =
+            wanted.iter().copied().filter(|id| !inside(id)).collect();
+        for id in &outermost {
             if self.watching.insert(id) {
                 self.watcher.watch(Path::new(id));
             }
         }
         let watcher = &self.watcher;
         self.watching.retain(|id| {
-            let keep = wanted.contains(id);
+            let keep = outermost.contains(id);
             if !keep {
                 watcher.unwatch(Path::new(id));
             }
