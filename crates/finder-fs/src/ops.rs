@@ -3,6 +3,7 @@
 
 use std::ffi::CString;
 use std::io;
+use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -168,6 +169,32 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the item carries Finder's Locked flag, which stops it being trashed or deleted.
+/// Finder asks before it clears one; `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
+pub fn locked(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
+}
+
+/// Clears the Locked flag from the item and, for a folder, from everything under it: a locked
+/// child refuses the folder it sits in.
+fn unlock(path: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let flags = meta.st_flags();
+    // `chflags` follows a link, so the lock a link carries itself is left where it is.
+    if flags & libc::UF_IMMUTABLE != 0 && !meta.is_symlink() {
+        let name = c_path(path)?;
+        if unsafe { libc::chflags(name.as_ptr(), flags & !libc::UF_IMMUTABLE) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            unlock(&entry?.path())?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether a name is in use: a broken symlink holds its name as firmly as a file does, which
 /// `Path::exists` does not see because it follows the link.
 fn taken(path: &Path) -> bool {
@@ -270,13 +297,40 @@ fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
     std::fs::rename(&aside, staged)
 }
 
-fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
+fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
     let mut resulting: Option<Retained<NSURL>> = None;
     fm.trashItemAtURL_resultingItemURL_error(&url(path), Some(&mut resulting))
         .map_err(io_error)?;
     Ok(resulting
         .map(|u| path_from(&u))
         .unwrap_or_else(|| path.to_path_buf()))
+}
+
+/// A refusal a lock explains is retried once the lock is off, the way Finder carries on after
+/// its "the item is locked" question.
+fn past_the_lock<T>(
+    path: &Path,
+    refused: io::Error,
+    again: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    if refused.kind() != io::ErrorKind::PermissionDenied || unlock(path).is_err() {
+        return Err(refused);
+    }
+    again()
+}
+
+fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
+    match trash_at(fm, path) {
+        Err(refused) => past_the_lock(path, refused, || trash_at(fm, path)),
+        landed => landed,
+    }
+}
+
+fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
+    match remove_path(fm, path) {
+        Err(refused) => past_the_lock(path, refused, || remove_path(fm, path)),
+        gone => gone,
+    }
 }
 
 /// Where an item landed, and what it displaced getting there.
@@ -500,7 +554,7 @@ fn delete(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     for (i, item) in items.iter().enumerate() {
-        remove_path(&fm, item)?;
+        delete_one(&fm, item)?;
         progress(Progress {
             done: i + 1,
             total,
@@ -1176,6 +1230,54 @@ mod tests {
         );
 
         purge(&first.results);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_item_is_unlocked_and_removed() {
+        let dir = temp_dir("locked");
+        let lock = |path: &Path| {
+            assert!(
+                std::process::Command::new("/usr/bin/chflags")
+                    .arg("uchg")
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        let file = dir.join("locked.txt");
+        touch(&file, "locked");
+        lock(&file);
+        assert!(locked(&file));
+
+        let done = perform(
+            Op::Trash(vec![file.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert!(!taken(&file), "the locked item left its folder");
+        let undo = done.undo.expect("a trash undoes with a put back");
+        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        assert_eq!(back.results, vec![file.clone()]);
+
+        let folder = dir.join("Folder");
+        fs::create_dir_all(&folder).unwrap();
+        touch(&folder.join("child.txt"), "child");
+        lock(&folder.join("child.txt"));
+        perform(
+            Op::DeleteImmediately(vec![folder.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert!(!folder.exists(), "a locked child stopped nothing");
+
+        let _ = std::process::Command::new("/usr/bin/chflags")
+            .args(["-R", "nouchg"])
+            .arg(&dir)
+            .status();
         let _ = fs::remove_dir_all(&dir);
     }
 
