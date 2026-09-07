@@ -281,6 +281,16 @@ impl FinderDemo {
         }
     }
 
+    /// The fill a folder the drag rests on draws with, where the view lights it from state
+    /// rather than from a hover style: dark part-way through the flash, plain otherwise.
+    pub(crate) fn drop_fill(&self, key: &SharedString, fill: Hsla) -> Option<Hsla> {
+        let hold = self.spring.as_ref()?;
+        (hold.key == *key).then(|| match self.spring_flash() == Some(key) {
+            true => flashed(fill),
+            false => fill,
+        })
+    }
+
     /// The row whose drop highlight is dark this frame, part-way through its flash.
     pub(crate) fn spring_flash(&self) -> Option<&SharedString> {
         let spring = self.spring.as_ref()?;

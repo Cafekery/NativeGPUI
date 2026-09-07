@@ -14,6 +14,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
+use crate::dragdrop::{Grabbed, carries, drop_hover};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
@@ -182,6 +183,12 @@ struct TileDrag {
     grab: Rc<Cell<Point<Pixels>>>,
 }
 
+impl Grabbed for TileDrag {
+    fn key(&self) -> &SharedString {
+        &self.key
+    }
+}
+
 struct Ghost {
     line: Line,
     size: f32,
@@ -193,7 +200,7 @@ struct Ghost {
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         tile(
-            &self.line, self.size, self.scale, self.look, true, &self.tags, None, true, None,
+            &self.line, self.size, self.scale, self.look, true, &self.tags, None, true, None, None,
         )
         .opacity(GHOST_ALPHA)
     }
@@ -210,8 +217,12 @@ fn tile(
     editor: Option<AnyElement>,
     visible: bool,
     anchor: Option<Anchor>,
+    drop: Option<Hsla>,
 ) -> Div {
     let cell = cell(size);
+    // A folder under a drag draws the way a selected tile does, its label pill flashing.
+    let lit = selected || drop.is_some();
+    let pill = drop.unwrap_or(look.selection);
     let mut icon = div()
         .w(px(size))
         .h(px(size))
@@ -220,7 +231,7 @@ fn tile(
         .flex()
         .items_center()
         .justify_center();
-    if selected {
+    if lit {
         icon = icon.child(
             div()
                 .absolute()
@@ -248,12 +259,8 @@ fn tile(
             .line_height(px(LABEL_LINE))
             .line_clamp(LABEL_LINES)
             .text_align(TextAlign::Center)
-            .text_color(if selected {
-                look.selection_text
-            } else {
-                look.label
-            })
-            .when(selected, |pill| pill.bg(look.selection))
+            .text_color(if lit { look.selection_text } else { look.label })
+            .when(lit, |label| label.bg(pill))
             .child(elide(&line.row.display, room - 8.)),
     };
 
@@ -375,6 +382,7 @@ impl FinderDemo {
                     editor,
                     on_screen,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
+                    self.drop_fill(&line.key, look.selection),
                 ))
                 .when(held, |tile| tile.opacity(SOURCE_ALPHA));
 
@@ -407,12 +415,24 @@ impl FinderDemo {
             let tile = slot
                 .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
                 .on_click(pick_on_click(line, this.clone()));
+            let tile = match line.row.opens {
+                Some(into) => drop_hover::<TileDrag>(
+                    tile,
+                    line.key.clone(),
+                    into,
+                    None,
+                    self.selected.snapshot(),
+                    this.clone(),
+                ),
+                None => tile,
+            };
             canvas = canvas.child(tile);
         }
 
         let dropped = layout.clone();
         let drop_scroll = scroll.clone();
         let this_drop = this.clone();
+        let dropped_lines = lines.clone();
         canvas = canvas.on_drop(move |drag: &TileDrag, window, cx| {
             let Some(from) = dropped
                 .tiles
@@ -426,8 +446,23 @@ impl FinderDemo {
                 window.mouse_position() - drop_scroll.bounds().origin - drop_scroll.offset();
             let delta = landed - drag.grab.get() - from;
             let moved = dropped.clone();
+            let under = tile_at(&dropped.tiles, landed, cell)
+                .and_then(|index| dropped_lines.get(index))
+                .cloned();
+            // Finder copies instead of moving while Option is held.
+            let copy = window.modifiers().alt;
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
+                    let into = under
+                        .filter(|line| !carries(&this.selected.snapshot(), drag, &line.key))
+                        .and_then(|line| line.row.opens);
+                    if let Some(into) = into {
+                        let keys = this.drag_keys(&drag.key);
+                        this.drop_into(into, &keys, copy, cx);
+                        this.icons.dragging = None;
+                        cx.notify();
+                        return;
+                    }
                     let group: Vec<Tile> = if this.selected.contains(&drag.key) {
                         moved
                             .tiles
