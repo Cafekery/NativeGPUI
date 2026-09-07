@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSDictionary, NSError,
-    NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError, NSFileReadNoPermissionError,
-    NSFileReadNoSuchFileError, NSFileWriteFileExistsError, NSFileWriteInvalidFileNameError,
-    NSFileWriteNoPermissionError, NSFileWriteOutOfSpaceError, NSFileWriteVolumeReadOnlyError,
-    NSString, NSURL,
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCocoaErrorDomain, NSDictionary,
+    NSError, NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError, NSFilePathErrorKey,
+    NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
+    NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSFileWriteOutOfSpaceError,
+    NSFileWriteVolumeReadOnlyError, NSString, NSURL,
 };
 
 use crate::volumes;
@@ -249,10 +249,35 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
         Ok(()) => Ok(()),
         Err(err) if past_path_max(&err) => {
             let _ = deep::remove(dst);
-            deep::transfer(src, dst, is_move)
+            deep::transfer(src, dst, is_move).map_err(|err| deep_error(err, src, dst, is_move))
         }
         Err(err) => Err(volume_refusal(&err, src, dst, is_move).unwrap_or_else(|| io_error(err))),
     }
+}
+
+/// The refusal `NSFileManager` would have raised where the deep walk saw the file system refuse,
+/// so a message reads the same however deep the tree was.
+fn deep_error(err: io::Error, src: &Path, dest: &Path, is_move: bool) -> io::Error {
+    let Some(refused) = err.raw_os_error().and_then(|code| cocoa_error(code, dest)) else {
+        return err;
+    };
+    volume_refusal(&refused, src, dest, is_move).unwrap_or_else(|| io_error(refused))
+}
+
+fn cocoa_error(code: i32, path: &Path) -> Option<Retained<NSError>> {
+    let cocoa = match code {
+        libc::EACCES | libc::EPERM => NSFileWriteNoPermissionError,
+        libc::EROFS => NSFileWriteVolumeReadOnlyError,
+        libc::ENOSPC => NSFileWriteOutOfSpaceError,
+        libc::ENAMETOOLONG => NSFileWriteInvalidFileNameError,
+        libc::ENOENT => NSFileNoSuchFileError,
+        libc::EEXIST => NSFileWriteFileExistsError,
+        _ => return None,
+    };
+    let named = NSString::from_str(&path.to_string_lossy());
+    let named: &AnyObject = &named;
+    let info = NSDictionary::from_slices(&[unsafe { NSFilePathErrorKey }], &[named]);
+    Some(unsafe { NSError::errorWithDomain_code_userInfo(NSCocoaErrorDomain, cocoa, Some(&info)) })
 }
 
 fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
@@ -1533,6 +1558,37 @@ mod tests {
             !taken(&dst.join("Deep")),
             "a copy that failed left a part of the tree behind"
         );
+
+        deep_sh(&tree, 249, "chmod 700 d250");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deep_refusal_is_worded_like_a_shallow_one() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root walks into a directory whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("deep-wording");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 249, "chmod 000 d250");
+
+        let err = perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .expect_err("a directory that cannot be read cannot be copied");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        let message = err.to_string();
+        assert!(message.contains("permission"), "{message}");
+        assert!(!message.contains("os error"), "{message}");
 
         deep_sh(&tree, 249, "chmod 700 d250");
         let _ = fs::remove_dir_all(&dir);
