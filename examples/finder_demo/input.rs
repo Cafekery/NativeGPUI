@@ -15,6 +15,9 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        if key == "escape" && self.cancel_drag(window, cx) {
+            return;
+        }
         if key == "escape" && quick_look_visible() {
             quick_look_close();
             return;
