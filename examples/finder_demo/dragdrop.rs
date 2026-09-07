@@ -16,8 +16,10 @@ use crate::ops::After;
 use crate::view::COLUMN_VIEW;
 use crate::views::list::TWIST_W;
 
-/// What the springing delay preference adds to.
-const SPRING_FLOOR: f32 = 0.5;
+/// What the springing delay preference adds to, and the delay Finder treats as none at all:
+/// below it a hold waits a flash longer, not shorter.
+const SPRING_FLOOR: f32 = 0.2;
+const SPRING_NONE: f32 = 0.15;
 
 /// One step of the flash a held folder gives before it springs, and the steps it takes: the row
 /// goes dark, plain, dark, and then the folder opens.
@@ -203,7 +205,11 @@ fn springing_delay() -> Option<Duration> {
         let delay: f32 = global_default("com.apple.springing.delay")
             .and_then(|delay| delay.parse().ok())
             .unwrap_or(0.5);
-        Some(Duration::from_secs_f32(SPRING_FLOOR + delay))
+        let held = match delay < SPRING_NONE {
+            true => SPRING_FLOOR + delay + FLASH.as_secs_f32() * FLASHES as f32,
+            false => SPRING_FLOOR + delay,
+        };
+        Some(Duration::from_secs_f32(held))
     })
 }
 
