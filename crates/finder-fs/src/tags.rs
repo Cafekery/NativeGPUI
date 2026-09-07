@@ -1,8 +1,5 @@
-//! Finder tags: the user's named colours from Finder's preferences, and the tags on a file.
-//!
-//! `all` reads Finder's own tag list (name, colour index and order) so the sidebar shows the
-//! user's tags, `favorites` the ones its tag menus offer; `of`/`set` read and write a file's tags
-//! through the URL resource key Finder uses, so both apps agree.
+//! Finder tags: the user's named colours from Finder's preferences, and the tags on a file,
+//! read and written through the URL resource key Finder uses.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};

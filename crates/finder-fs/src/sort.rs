@@ -17,11 +17,9 @@ const OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensiti
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareForcedOrdering);
 
-// No `CompareForcedOrdering` here: that flag exists to break ties deterministically when two
-// strings fold to the same value, which would turn every caseless match into "not equal" and
-// defeat the point of a prefix test. No `CompareAnchored` either: for `CFStringCompareWithOptions`
-// it doesn't ignore a longer receiver the way `-hasPrefix:` does, so the prefix range is passed
-// in directly instead.
+// No `CompareForcedOrdering`: it breaks ties that fold equal, which is the point of a prefix
+// test. No `CompareAnchored` either: it does not ignore a longer receiver, so the range is
+// passed in directly.
 const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
     .union(CFStringCompareFlags::CompareWidthInsensitive);
 
@@ -68,8 +66,7 @@ pub fn starts_with(name: &str, prefix: &str) -> bool {
     order == Ordering::Equal
 }
 
-/// Sorts `names` into Finder's Name order. Converts each name to a `CFString` once, instead of
-/// on every comparison the way repeated calls to `name_cmp` in `slice::sort_by` would.
+/// Sorts `names` into Finder's Name order, converting each to a `CFString` once.
 pub fn sort_names(names: &mut [String]) {
     let cf_strings: Vec<CFRetained<CFString>> =
         names.iter().map(|s| unsafe { borrow_cf_str(s) }).collect();
@@ -159,8 +156,7 @@ mod tests {
         sort_names(&mut names);
         let elapsed = start.elapsed();
         println!("sorted 20000 names in {:?}", elapsed);
-        // Target is 30ms in a release build; leave headroom here since debug builds and CI
-        // machines are slower and this is a wall-clock measurement, not an algorithmic one.
+        // Loose: a wall-clock measurement on a machine also running the other tests.
         assert!(elapsed.as_millis() < 200, "took {:?}", elapsed);
     }
 }

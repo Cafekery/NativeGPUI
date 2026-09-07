@@ -2,15 +2,8 @@
 //! between launches, and answering the questions a listing alone cannot — a folder's recursive
 //! size, a name search across the disk, a listing before the disk has been asked.
 //!
-//! Contract:
-//! - `Index::open` loads the last snapshot from `store` in well under a second for ~2M entries.
-//! - `crawl` walks `roots` in order on background threads with `list::list_dir`, skipping what
-//!   it cannot read, and reports progress; a second call resumes rather than restarts.
-//! - `children`/`folder_size`/`search` answer from memory in milliseconds.
-//! - `note_changed` re-reads the named directories (the watcher's job to call).
-//! - `sync` is the launch entry: it replays FSEvents since the snapshot instead of walking again.
-//! - `save` writes the snapshot when the tree has changed, and a finished walk saves itself: the
-//!   crawl is the expensive state, so it is on disk before anything can ask the app to quit.
+//! A finished walk saves itself: the crawl is the expensive state, so it is on disk before
+//! anything can ask the app to quit.
 
 mod catchup;
 mod crawl;

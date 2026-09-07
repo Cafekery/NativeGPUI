@@ -1,9 +1,5 @@
 //! File operations with Finder's semantics: copies and moves through NSFileManager (packages,
 //! metadata and permissions intact), Trash with Put Back, and an undo journal.
-//!
-//! `perform` runs on the caller's thread — callers spawn; progress is reported once per item in
-//! `items`; conflicts follow `Conflict`; every `Done` carries the operation that undoes it when
-//! one exists.
 
 use std::io;
 use std::path::{Path, PathBuf};

@@ -12,8 +12,7 @@ use super::store::Tree;
 use super::{Index, Progress};
 use crate::watch::{self, Replay};
 
-/// How long the replay of a whole disk's history may take before the catch-up settles for what it
-/// has and leaves the rest for the next launch.
+/// How long a replay may take before the catch-up leaves the rest for the next launch.
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Which roots the snapshot can be caught up on, and from which event id.
@@ -65,8 +64,7 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
     });
 }
 
-/// A root is warm when the snapshot both holds its tree and remembers where the event log had got
-/// to; an id from the future — a restored snapshot, a rebuilt log — is no id at all.
+/// A root is warm when the snapshot holds its tree and an event id the log still reaches.
 pub(super) fn plan(tree: &Tree, roots: &[PathBuf], now: u64) -> Plan {
     let mut plan = Plan {
         since_when: u64::MAX,
@@ -117,8 +115,7 @@ fn collect(batch: &mut Batch, replay: Replay) -> bool {
     replay.history_done
 }
 
-/// Re-reads what the log named and hands the crawl what is left: the roots never seen, the
-/// subtrees the log could not describe, and the directories that are new since the snapshot.
+/// Re-reads what the log named and hands the crawl the roots and subtrees it could not.
 fn reconcile(
     index: &Arc<Index>,
     plan: &Plan,
@@ -166,9 +163,8 @@ fn reconcile(
     }
 }
 
-/// The directory to read again for a reported path: the path itself when the index has listed it,
-/// its parent when the path is new or gone. A path in neither is one the crawl never opened, and
-/// asking after it at launch is exactly what must not happen.
+/// The directory to read again: the path when the index has listed it, its parent when it is
+/// new or gone, and nothing at all for a path the crawl never opened.
 fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
     if !open_to_us(path, home) {
         return None;
@@ -180,9 +176,8 @@ fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
     tree.listed(parent).then(|| parent.to_path_buf())
 }
 
-/// A path the crawl would refuse on its name is one the catch-up must not open either. A visit
-/// can leave a prompt-gated folder listed in the index; reading it again at launch, unasked, is
-/// what puts the prompt back on the user's screen.
+/// A path the crawl refuses on its name the catch-up must not open either: a visit can leave a
+/// TCC-gated folder in the index, and reading it again unasked puts the prompt back on screen.
 fn open_to_us(path: &Path, home: &Path) -> bool {
     !path.ancestors().any(|part| crawl::off_limits(part, home))
 }
@@ -204,8 +199,7 @@ mod tests {
         assert!(!open_to_us(Path::new("/System/Volumes/Data/Users"), &home));
     }
 
-    /// The shape a crawl of `/` walks into: another account's home, whose Documents, Library and
-    /// media folders macOS guards exactly as it guards ours.
+    /// What a crawl of `/` walks into: another account's home, guarded exactly as ours is.
     #[test]
     fn a_home_that_is_not_ours_is_never_opened() {
         let home = PathBuf::from("/Users/tester");

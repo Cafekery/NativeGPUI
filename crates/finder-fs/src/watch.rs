@@ -1,9 +1,6 @@
 //! Change notifications: FSEvents streams for the folders on screen, and the catch-up stream the
-//! index uses to learn what changed while the app was not running.
-//!
-//! Each [`Watcher`] owns one background thread with its own `CFRunLoop`; `watch`/`unwatch`
-//! recreate the underlying FSEvents stream (streams are immutable once created) starting from the
-//! last event id seen, so no events are dropped across the swap.
+//! index uses to learn what changed while the app was not running. An FSEvents stream is
+//! immutable, so `watch`/`unwatch` recreate it from the last event id seen.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
