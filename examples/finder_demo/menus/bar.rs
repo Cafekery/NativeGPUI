@@ -5,6 +5,7 @@ use gpui::{App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, prepend_menu};
 
 use crate::app::FinderDemo;
+use crate::chrome::sheet::GoSheet;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
@@ -353,7 +354,7 @@ impl FinderDemo {
                 native_gpui::set_menu("Go", go_rows(&this.recents));
             }))
             .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
-                this.go_sheet = Some(this.crumb_path());
+                this.go_sheet = Some(GoSheet::at(this.crumb_path()));
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &QuickLook, window, cx| {

@@ -1,6 +1,6 @@
 //! Where the window is: the folder on screen, the trail behind it, and every way of leaving it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gpui::{Context, SharedString, Window};
 
@@ -10,6 +10,20 @@ use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{home, open_finder_window};
+
+/// What a typed path names: `~` for the home folder, and no trailing separator.
+pub(crate) fn typed_path(text: &str) -> PathBuf {
+    let text = text.trim();
+    let full = match text.strip_prefix('~') {
+        Some(rest) => format!("{}{rest}", home().to_string_lossy()),
+        None => text.to_string(),
+    };
+    let trimmed = full.trim_end_matches('/');
+    PathBuf::from(match trimmed.is_empty() {
+        true => "/",
+        false => trimmed,
+    })
+}
 
 impl FinderDemo {
     pub(crate) fn here(&self) -> &'static str {
@@ -44,17 +58,8 @@ impl FinderDemo {
 
     /// The folder `text` names, absolute or under `~`, if it is one.
     pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
-        let text = text.trim();
-        let full = match text.strip_prefix('~') {
-            Some(rest) => format!("{}{rest}", home().to_string_lossy()),
-            None => text.to_string(),
-        };
-        let trimmed = full.trim_end_matches('/');
-        let path = Path::new(match trimmed.is_empty() {
-            true => "/",
-            false => trimmed,
-        });
-        finder_fs::list::is_dir(path).then(|| intern_path(path))
+        let path = typed_path(text);
+        finder_fs::list::is_dir(&path).then(|| intern_path(&path))
     }
 
     pub(crate) fn crumb_path(&self) -> String {
