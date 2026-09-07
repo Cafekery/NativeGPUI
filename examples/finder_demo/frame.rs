@@ -66,6 +66,7 @@ impl Render for FinderDemo {
         self.sync_window_min(window);
         self.sync_preview_window(window, cx);
         native_gpui::set_trailing_inset(window, self.pane_w());
+        self.spring_tick(window, cx);
         if let Some((_, _, started)) = self.list_zoom {
             if started.elapsed().as_secs_f32() >= LIST_ZOOM_SECS {
                 self.list_zoom = None;

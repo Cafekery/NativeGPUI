@@ -28,6 +28,10 @@ impl FinderDemo {
             self.clear_cut(cx);
             return;
         }
+        if key == "space" && self.spring.is_some() {
+            self.spring_now(cx);
+            return;
+        }
         if key == "space" && self.cursor_line().is_some() {
             self.toggle_quick_look(window, cx);
             return;
