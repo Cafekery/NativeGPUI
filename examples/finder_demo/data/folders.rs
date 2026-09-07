@@ -134,7 +134,10 @@ impl Folders {
 
     /// Drops the oldest listings nothing is drawing or reading, back to [`CACHED`].
     fn evict(&mut self, keep: &'static str) {
-        let mut over = self.order.len().saturating_sub(CACHED);
+        // A disclosed subtree pins every listing it opened and reads them all at once, so the
+        // sweep below can drop none of them: without this it runs once per listing that lands.
+        let held = CACHED.max(self.pinned.len() + self.reading.len());
+        let mut over = self.order.len().saturating_sub(held);
         if over == 0 {
             return;
         }
