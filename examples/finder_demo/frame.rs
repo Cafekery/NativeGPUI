@@ -247,7 +247,7 @@ impl FinderDemo {
         } else {
             0.
         };
-        let scope_row = (scope_h > 0.).then(|| self.scope_row(cx));
+        let scope_bar = (scope_h > 0.).then(|| self.scope_bar(cx));
         let above = metrics.top;
         let top = above + px(scope_h);
         // The path bar takes height from the list, not from the pane, which runs to the corner.
@@ -305,7 +305,7 @@ impl FinderDemo {
                 let height = top + if banded { px(HEADER_H) } else { px(0.) };
                 column.child(band_glass(px(pane), height))
             })
-            .children(scope_row.map(|row| {
+            .children(scope_bar.map(|bar| {
                 div()
                     .absolute()
                     .top(above)
@@ -313,7 +313,7 @@ impl FinderDemo {
                     .right(px(pane))
                     .h(px(scope_h))
                     .pl(metrics.left)
-                    .child(row)
+                    .child(bar)
             }))
             .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             .children(path_bar.map(|bar| {

@@ -16,7 +16,7 @@ pub(crate) const THIS_MAC: usize = 0;
 pub(crate) const THIS_FOLDER: usize = 1;
 
 impl FinderDemo {
-    pub(crate) fn scope_row(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn scope_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let folder_name = self.folder().map_or("this Mac".to_string(), |folder| {
             format!("\u{201c}{}\u{201d}", folder.title)
         });
