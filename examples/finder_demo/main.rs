@@ -11,6 +11,7 @@ mod info;
 mod input;
 mod listing;
 mod menus;
+mod meta;
 mod navigate;
 mod ops;
 mod options;

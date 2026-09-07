@@ -16,7 +16,9 @@ use super::INSET;
 use super::stats::{CALCULATING, span};
 use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
-use crate::data::{Face, Line, Row, byte_string, date_text};
+use finder_fs::meta::Meta;
+
+use crate::data::{Face, Line, Row, byte_string, stamp};
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
@@ -154,24 +156,91 @@ fn kind_line(row: &Row) -> SharedString {
     }
 }
 
-fn info_rows(row: &Row, expanded: bool) -> Vec<(&'static str, SharedString)> {
-    let media = row.dimensions.is_some() || row.duration.is_some();
-    let mut rows = Vec::with_capacity(6);
-    if media {
-        rows.push(("Created", date_text(row.created_at)));
+/// A row's Information block, and whether Spotlight knows more than it lists closed. Finder
+/// keeps a file's own dates first, then what its type is measured in.
+fn info_rows(
+    row: &Row,
+    meta: Option<&Meta>,
+    expanded: bool,
+) -> (Vec<(&'static str, SharedString)>, bool) {
+    let none = Meta::default();
+    // A folder's block is its two dates and no More: Spotlight's file attributes are not its.
+    let meta = match row.face {
+        Face::Folder | Face::Volume => &none,
+        _ => meta.unwrap_or(&none),
+    };
+    let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}\u{d7}{h}"));
+    let mut all: Vec<(&'static str, SharedString, bool)> = vec![
+        ("Created", stamp(row.created_at), false),
+        ("Modified", stamp(row.modified_at), false),
+    ];
+    let mut add = |label, value: Option<SharedString>, under_more| {
+        all.extend(value.map(|value| (label, value, under_more)));
+    };
+    add("Last opened", meta.last_used.map(stamp), false);
+    // Only what was shot or recorded carries a content date Finder shows apart from the file's.
+    let media = meta.pixels.is_some() || meta.duration.is_some();
+    add(
+        "Content created",
+        meta.content_created.filter(|_| media).map(stamp),
+        true,
+    );
+    add("Dimensions", meta.pixels.map(size), false);
+    add("Duration", meta.duration.map(clock), false);
+    // An application wears its version whatever the block is showing; a document's is under More.
+    add(
+        "Version",
+        meta.version.clone().map(SharedString::from),
+        row.face != Face::Program,
+    );
+    add(
+        "Pages",
+        meta.pages.map(|pages| pages.to_string().into()),
+        true,
+    );
+    add("Resolution", meta.page.map(size), true);
+    add(
+        "Security",
+        meta.security.clone().map(SharedString::from),
+        true,
+    );
+    add(
+        "Color space",
+        meta.color_space.clone().map(SharedString::from),
+        true,
+    );
+    add(
+        "Color profile",
+        meta.color_profile.clone().map(SharedString::from),
+        true,
+    );
+    add(
+        "Encoding software",
+        (!meta.encoders.is_empty()).then(|| meta.encoders.join(", ").into()),
+        true,
+    );
+    add(
+        "Category",
+        meta.category.clone().map(SharedString::from),
+        true,
+    );
+    let more = all.iter().any(|(_, _, under_more)| *under_more);
+    let rows = all
+        .into_iter()
+        .filter(|(_, _, under_more)| expanded || !under_more)
+        .map(|(label, value, _)| (label, value))
+        .collect();
+    (rows, more)
+}
+
+/// A running time as Finder writes it: minutes and seconds, hours only where there are any.
+fn clock(seconds: f64) -> SharedString {
+    let seconds = seconds.max(0.).round() as u64;
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    match hours {
+        0 => format!("{minutes}:{seconds:02}").into(),
+        _ => format!("{hours}:{minutes:02}:{seconds:02}").into(),
     }
-    rows.push(("Modified", date_text(row.modified_at)));
-    if media {
-        rows.extend(row.dimensions.clone().map(|value| ("Dimensions", value)));
-        rows.extend(row.duration.clone().map(|value| ("Duration", value)));
-        if expanded {
-            rows.push(("Kind", row.kind.clone()));
-            rows.push(("Size", row.size.clone()));
-        }
-    } else {
-        rows.push(("Size", row.size.clone()));
-    }
-    rows
 }
 
 fn actions(face: Face) -> &'static [(&'static str, &'static str)] {
@@ -201,6 +270,8 @@ impl FinderDemo {
                 return div().into_any_element();
             };
             let row = &line.row;
+            let meta = crate::meta::meta(&row.path);
+            let (rows, show_more) = info_rows(row, meta.as_deref(), self.preview_expanded);
             Card {
                 hero: if self.view == GALLERY_VIEW {
                     row_art(row, HEADER_ICON, self.scale, true)
@@ -209,8 +280,8 @@ impl FinderDemo {
                 },
                 title: row.name.clone(),
                 subtitle: kind_line(row),
-                rows: info_rows(row, self.preview_expanded),
-                show_more: row.dimensions.is_some() || row.duration.is_some(),
+                rows,
+                show_more,
                 tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
                 many: false,
                 actions: actions(row.face),
@@ -450,8 +521,20 @@ impl FinderDemo {
                     .gap(px(8.))
                     .line_height(px(LINE_H))
                     .text_size(body)
-                    .child(div().text_color(palette.secondary).child(*label))
-                    .child(div().text_color(palette.label).child(value.clone())),
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(palette.secondary)
+                            .child(*label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_right()
+                            .text_color(palette.label)
+                            .child(value.clone()),
+                    ),
             );
         }
         lower = lower.child(block).child(

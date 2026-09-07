@@ -54,6 +54,41 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
     })
 }
 
+/// The preview card's date: Finder's relative short form for today and yesterday, the full form
+/// with a weekday for anything older.
+pub(crate) fn stamp(seconds: f64) -> SharedString {
+    thread_local! {
+        static FORMATTER: Retained<NSDateFormatter> = {
+            let formatter = NSDateFormatter::new();
+            formatter.setDateStyle(NSDateFormatterStyle::FullStyle);
+            formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
+            formatter
+        };
+        static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
+    }
+    if seconds == 0. {
+        return "--".into();
+    }
+    let minute = (seconds / 60.).floor() as i64;
+    SEEN.with(|seen| {
+        if let Some(text) = seen.borrow().get(&minute) {
+            return text.clone();
+        }
+        let text = match days_ago(seconds).abs() <= 1 {
+            true => date_text(seconds),
+            false => FORMATTER.with(|formatter| {
+                SharedString::from(
+                    formatter
+                        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+                        .to_string(),
+                )
+            }),
+        };
+        seen.borrow_mut().insert(minute, text.clone());
+        text
+    })
+}
+
 /// The band Finder files a row under while Use Groups is on.
 pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {
     match sort {
