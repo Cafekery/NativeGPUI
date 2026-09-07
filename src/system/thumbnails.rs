@@ -1,7 +1,6 @@
-//! Real thumbnails and icons for files, via `QLThumbnailGenerator`. An LRU cache keyed by path,
-//! mtime and requested pixel size makes a repeat request instant; in-flight requests for the
-//! same key are coalesced into one generation; at most 8 generations run at once so scrolling a
-//! large folder queues rather than floods the thumbnailing daemon.
+//! Real thumbnails and icons for files, via `QLThumbnailGenerator`: an LRU cache keyed by path,
+//! mtime and pixel size, requests for one key coalesced, and at most 8 generations at once so
+//! scrolling a large folder queues rather than floods the thumbnailing daemon.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -64,10 +63,7 @@ struct State {
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
 
-/// A previously generated thumbnail, if this exact `(path, mtime, size, scale, icon)` is cached.
-///
-/// The brief describes the cache key as `(path, mtime, size)`; `scale` is folded into the pixel
-/// size that key means, so it is taken here too, to compute the same key [`thumbnail`] would.
+/// A thumbnail already generated for this exact `(path, mtime, size, scale, icon)`.
 pub fn cached_thumbnail(
     path: &Path,
     size: Pixels,

@@ -464,13 +464,13 @@ impl NativeSidebar {
         *self.0.shared.on_reorder.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Called with the row's id when the user clicks its eject affordance; unmounts nothing.
     /// Files dropped on a group: the sidebar draws the insertion line, the app keeps the row.
     /// Only folders insert; a file dropped between rows is refused, as Finder refuses it.
     pub fn on_drop_paths(&self, handler: impl Fn(&SidebarDrop, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_drop_paths.borrow_mut() = Some(Rc::new(handler));
     }
 
+    /// Called with the row's id when the user clicks its eject affordance; unmounts nothing.
     pub fn on_eject(&self, handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
