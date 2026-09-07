@@ -39,6 +39,12 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
         let mut roots: Vec<PathBuf> = roots.iter().map(|root| crawl::real(root)).collect();
         roots.dedup();
         let plan = plan(&index.read(), &roots, now);
+        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
+            eprintln!(
+                "catchup warm {:?} cold {:?} since {}",
+                plan.warm, plan.cold, plan.since_when
+            );
+        }
         if plan.warm.is_empty() {
             let walk = Walk {
                 crawl: roots.clone(),
@@ -196,6 +202,21 @@ mod tests {
         assert!(!open_to_us(&home.join("Desktop/notes"), &home));
         assert!(!open_to_us(&home.join("Library/Caches/x"), &home));
         assert!(!open_to_us(Path::new("/System/Volumes/Data/Users"), &home));
+    }
+
+    /// The shape a crawl of `/` walks into: another account's home, whose Documents, Library and
+    /// media folders macOS guards exactly as it guards ours.
+    #[test]
+    fn a_home_that_is_not_ours_is_never_opened() {
+        let home = PathBuf::from("/Users/tester");
+        assert!(!open_to_us(Path::new("/Users/other/Documents"), &home));
+        assert!(!open_to_us(
+            Path::new("/Users/other/Library/Containers"),
+            &home
+        ));
+        assert!(!open_to_us(Path::new("/Users/other/Music/iTunes"), &home));
+        assert!(open_to_us(Path::new("/Users/other/Projects/thing"), &home));
+        assert!(open_to_us(Path::new("/Users/other"), &home));
     }
 
     #[test]

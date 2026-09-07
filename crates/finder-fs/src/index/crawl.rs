@@ -386,16 +386,25 @@ fn simulator(path: &Path) -> bool {
 /// right under it) and a blocked-access notice for every sandboxed app. Finder hides it anyway;
 /// a visit lists it like any folder.
 fn sandboxed(path: &Path, home: &Path) -> bool {
-    !home.as_os_str().is_empty() && path == home.join("Library")
+    in_a_home(path, home) && path.file_name().unwrap_or_default().as_bytes() == b"Library"
 }
 
 fn private(path: &Path, home: &Path) -> bool {
-    !home.as_os_str().is_empty()
-        && path.parent() == Some(home)
+    in_a_home(path, home)
         && matches!(
             path.file_name().unwrap_or_default().as_bytes(),
             b"Desktop" | b"Documents" | b"Downloads" | b"Pictures" | b"Music" | b"Movies"
         )
+}
+
+/// Directly inside a home folder: this app's, or any other account's. A crawl of `/` reaches every
+/// home on the Mac, and a read of one macOS guards blocks in `opendir` behind a consent prompt no
+/// one answers, which parks the whole walk.
+fn in_a_home(path: &Path, home: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    (!home.as_os_str().is_empty() && parent == home) || parent.parent() == Some(Path::new("/Users"))
 }
 
 fn is_symlink(path: &Path) -> bool {
