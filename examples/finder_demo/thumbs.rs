@@ -22,11 +22,17 @@ const RENDERABLE: &[&str] = &[
 /// A file, its pixel side, and whether Quick Look drew it as an icon: what one thumbnail is.
 type Thumb = (SharedString, u32, bool);
 
+/// A file and whether Quick Look drew it as an icon, against the largest raster it has landed.
+type Landed = HashMap<(SharedString, bool), (u32, Arc<RenderImage>)>;
+
 thread_local! {
     /// What the generator has delivered, so a row asks once and draws from here every frame after.
     static THUMBS: RefCell<HashMap<Thumb, Arc<RenderImage>>> = RefCell::new(HashMap::new());
     /// Every thumbnail asked for, so a row on screen for a hundred frames asks once.
     static ASKED: RefCell<HashSet<Thumb>> = RefCell::new(HashSet::new());
+    /// The largest raster landed per file, so a size change draws that one scaled while the
+    /// generator works, rather than falling back to the type's icon.
+    static LARGEST: RefCell<Landed> = RefCell::new(HashMap::new());
     /// The rows drawn since the last sweep: the ones whose generation is still worth running.
     static DRAWN: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
     /// Frames drawn, and when and after how many frames the last sweep ran.
@@ -52,9 +58,34 @@ pub(crate) fn collect_thumbnails() {
         // again is a stat and a lock for every row of every frame. The sweep re-arms whatever
         // scrolled away, so a row that comes back asks once more.
         if let Some(image) = image {
+            keep(&key, &image);
             THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
         }
     }
+}
+
+/// Record a raster as the one a later size draws from until its own lands.
+fn keep(key: &Thumb, image: &Arc<RenderImage>) {
+    LARGEST.with(|largest| {
+        let mut largest = largest.borrow_mut();
+        let slot = largest.entry((key.0.clone(), key.2));
+        slot.and_modify(|held| {
+            if held.0 < key.1 {
+                *held = (key.1, image.clone());
+            }
+        })
+        .or_insert_with(|| (key.1, image.clone()));
+    });
+}
+
+/// The largest raster this file has ever drawn, whatever size asked for it.
+fn largest(path: &SharedString, icon: bool) -> Option<Arc<RenderImage>> {
+    LARGEST.with(|largest| {
+        largest
+            .borrow()
+            .get(&(path.clone(), icon))
+            .map(|(_, image)| image.clone())
+    })
 }
 
 /// A window finished a frame: what it drew is what the next sweep keeps.
@@ -128,15 +159,16 @@ pub(crate) fn thumb(
     DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
     // Everything below costs a `stat` or a lock, so a row already waiting stops here.
     if ASKED.with(|asked| asked.borrow().contains(&key)) {
-        return None;
+        return largest(&row.path, icon);
     }
     let path = Path::new(row.path.as_ref());
     if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale, icon) {
+        keep(&key, &image);
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
         return Some(image);
     }
     ask(path, key, size, scale, icon);
-    None
+    largest(&row.path, icon)
 }
 
 /// One request per file and size: the module coalesces the work already in flight, but a waiter

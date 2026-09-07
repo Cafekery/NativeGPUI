@@ -90,11 +90,18 @@ fn poster(image: Arc<RenderImage>, size: f32, scale: f32, kind: Poster) -> AnyEl
             },
         ),
     };
+    let (w, h) = (
+        u32::from(fit.width) as f32 / scale,
+        u32::from(fit.height) as f32 / scale,
+    );
+    // The raster that landed may have been drawn for another width: it wears this box's fit,
+    // not its own size, so a pane being dragged scales what it has until the next one lands.
+    let zoom = (size / w.max(1.)).min(size / h.max(1.));
     square(size)
         .child(
             img(image)
-                .w(px((u32::from(fit.width) as f32 / scale).min(size)))
-                .h(px((u32::from(fit.height) as f32 / scale).min(size)))
+                .w(px(w * zoom))
+                .h(px(h * zoom))
                 .rounded(px(radius))
                 .border(px(0.5))
                 .border_color(keyline),
