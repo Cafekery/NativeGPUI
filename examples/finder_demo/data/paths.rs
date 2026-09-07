@@ -2,15 +2,21 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{OnceLock, RwLock};
 
 use gpui::SharedString;
 
 /// Every id the demo carries is one of these: an absolute path that lives as long as the app.
 pub(crate) fn intern(text: &str) -> &'static str {
-    static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut pool = POOL.get_or_init(Default::default).lock().unwrap();
-    if let Some(known) = pool.get(text) {
+    static POOL: OnceLock<RwLock<HashSet<&'static str>>> = OnceLock::new();
+    let pool = POOL.get_or_init(Default::default);
+    // Almost every id asked for is one already kept, and a disclosed subtree asks a frame's worth
+    // of them while the reads it started ask for their own: a lock only writers hold serializes it.
+    if let Some(known) = pool.read().unwrap().get(text).copied() {
+        return known;
+    }
+    let mut pool = pool.write().unwrap();
+    if let Some(known) = pool.get(text).copied() {
         return known;
     }
     let kept: &'static str = Box::leak(text.to_owned().into_boxed_str());
