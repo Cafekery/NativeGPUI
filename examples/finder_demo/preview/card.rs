@@ -141,28 +141,6 @@ fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-fn hero(row: &Row, content: f32, scale: f32) -> AnyElement {
-    if matches!(row.face, Face::Movie | Face::Image) {
-        return div()
-            .w(px(content))
-            .h(px(content * 9. / 16.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .bg(system_color(SystemColor::TertiarySystemFill))
-            .child(poster_art(
-                row,
-                (content * 9. / 16.).floor(),
-                scale,
-                Poster::Card,
-            ))
-            .into_any_element();
-    }
-    poster_art(row, content, scale, Poster::Card)
-}
-
 fn kind_line(row: &Row) -> SharedString {
     match row.size.as_ref() {
         "--" => row.kind.clone(),
@@ -221,7 +199,7 @@ impl FinderDemo {
                 hero: if self.view == GALLERY_VIEW {
                     row_art(row, HEADER_ICON, self.scale, true)
                 } else {
-                    hero(row, content, self.scale)
+                    poster_art(row, content, self.scale, Poster::Card)
                 },
                 title: row.name.clone(),
                 subtitle: kind_line(row),
