@@ -4,6 +4,7 @@
 use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -90,7 +91,7 @@ fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Re
         Op::Copy { items, into } => move_or_copy(items, into, conflict, false, progress),
         Op::Trash(items) => trash(items, progress),
         Op::DeleteImmediately(items) => delete(items, progress),
-        Op::Rename { path, name } => rename(path, name),
+        Op::Rename { path, name } => rename(path, name, conflict),
         Op::Duplicate(items) => duplicate(items, progress),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
@@ -171,6 +172,17 @@ fn check_name(name: &str) -> io::Result<()> {
 /// `Path::exists` does not see because it follows the link.
 fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether both paths name the one item: a rename that only changes a name's case finds the item
+/// itself standing at the destination on a case-insensitive volume.
+fn same_item(one: &Path, other: &Path) -> bool {
+    let id = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .map(|meta| (meta.dev(), meta.ino()))
+            .ok()
+    };
+    matches!((id(one), id(other)), (Some(one), Some(other)) if one == other)
 }
 
 /// Splits `name` the way Finder does: no extension for dot-files or a trailing dot.
@@ -501,7 +513,7 @@ fn delete(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result
     })
 }
 
-fn rename(path: PathBuf, name: String) -> io::Result<Done> {
+fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
     check_name(&name)?;
     let dir = path
         .parent()
@@ -514,18 +526,34 @@ fn rename(path: PathBuf, name: String) -> io::Result<Done> {
         });
     }
     let fm = NSFileManager::defaultManager();
-    transfer(&fm, &path, &dest, true)?;
+    let placed = if same_item(&path, &dest) {
+        transfer(&fm, &path, &dest, true)?;
+        Placed::at(dest)
+    } else {
+        place_one(&fm, &path, dest, conflict, true)?
+    };
+    let Some(dest) = placed.dest else {
+        return Ok(Done {
+            results: Vec::new(),
+            undo: None,
+        });
+    };
     let old_name = path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
+    let back = Op::Rename {
+        path: dest.clone(),
+        name: old_name,
+    };
+    let undo = match placed.displaced.is_empty() {
+        true => back,
+        false => Op::Batch(vec![back, Op::PutBack(placed.displaced)]),
+    };
     Ok(Done {
-        results: vec![dest.clone()],
-        undo: Some(Op::Rename {
-            path: dest,
-            name: old_name,
-        }),
+        results: vec![dest],
+        undo: Some(undo),
     })
 }
 
@@ -919,6 +947,73 @@ mod tests {
         let back = perform(undo, Conflict::Replace, no_progress).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_onto_a_taken_name_resolves_like_a_move() {
+        let dir = temp_dir("rename-conflict");
+        let source = dir.join("a.txt");
+        let taken = dir.join("b.txt");
+        touch(&source, "new");
+        touch(&taken, "MY ONLY COPY");
+
+        let skipped = perform(
+            Op::Rename {
+                path: source.clone(),
+                name: "b.txt".into(),
+            },
+            Conflict::Skip,
+            no_progress,
+        )
+        .unwrap();
+        assert!(skipped.results.is_empty() && skipped.undo.is_none());
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "MY ONLY COPY");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new");
+
+        let done = perform(
+            Op::Rename {
+                path: source.clone(),
+                name: "b.txt".into(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![taken.clone()]);
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "new");
+        assert!(!source.exists());
+
+        let undo = done.undo.expect("a rename that replaced can be undone");
+        perform(undo, Conflict::Replace, no_progress).unwrap();
+        assert_eq!(
+            fs::read_to_string(&taken).unwrap(),
+            "MY ONLY COPY",
+            "undo put the replaced item back"
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "new");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_that_only_changes_case_keeps_the_item() {
+        let dir = temp_dir("rename-case");
+        let file = dir.join("a.txt");
+        touch(&file, "mine");
+
+        let done = perform(
+            Op::Rename {
+                path: file.clone(),
+                name: "A.TXT".into(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("A.TXT")]);
+        assert_eq!(fs::read_to_string(dir.join("A.TXT")).unwrap(), "mine");
 
         let _ = fs::remove_dir_all(&dir);
     }
