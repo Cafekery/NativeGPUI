@@ -314,6 +314,29 @@ fn a_date_outside_the_unsigned_epoch_reads_alike_from_the_index_and_the_disk() {
 }
 
 #[test]
+fn search_folds_case_diacritics_and_composition() {
+    let temp = tree("fold");
+    let root = &temp.0;
+    fs::write(root.join("cafe\u{301}-nfd.txt"), b"").unwrap();
+    fs::write(root.join("caf\u{e9}-nfc.txt"), b"").unwrap();
+    let index = crawled(root);
+
+    for query in ["cafe", "caf\u{e9}", "cafe\u{301}", "CAF\u{c9}"] {
+        let mut found: Vec<String> = index
+            .search(query, None, 10)
+            .into_iter()
+            .map(|hit| hit.entry.name)
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            ["cafe\u{301}-nfd.txt", "caf\u{e9}-nfc.txt"],
+            "searching {query:?}"
+        );
+    }
+}
+
+#[test]
 fn note_changed_moves_sizes_up() {
     let temp = tree("changed");
     let root = &temp.0;
