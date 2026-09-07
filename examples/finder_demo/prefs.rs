@@ -1,5 +1,5 @@
-//! What the demo carries between launches: the window's frame is AppKit's own autosave, the
-//! sidebar the user arranged sits in the demo's own store, the rest rides in user defaults.
+//! What the demo carries between launches: AppKit autosaves the frame, the sidebar sits in the
+//! demo's store, the rest in user defaults.
 
 use std::collections::HashMap;
 
@@ -103,7 +103,6 @@ fn write_list(key: &str, values: &[&str]) {
     write_sidebar_file(&kept);
 }
 
-/// A sidebar group's rows, in the order the user left them.
 pub(crate) fn sidebar_rows(group: &str) -> Vec<String> {
     read_list(&format!("rows.{group}"))
 }
@@ -187,7 +186,6 @@ pub(crate) fn set_list_column_width(folder: &str, column: Column, width: f32) {
     write(&format!("{}.{folder}", column_key(column)), width as f64);
 }
 
-/// The column (browser) view's per-folder column width.
 pub(crate) fn column_view_width(folder: &str) -> Option<f32> {
     read(&format!("ng.finder.col.browser.{folder}")).map(|v| v as f32)
 }

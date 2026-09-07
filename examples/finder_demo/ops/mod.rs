@@ -1,5 +1,4 @@
-//! Every file operation the window starts: what it does when it lands, and what it says when the
-//! file system refuses.
+//! Every file operation the window starts, and what it says when the file system refuses.
 
 pub(crate) mod clipboard;
 pub(crate) mod conflicts;
@@ -43,8 +42,7 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
 }
 
 impl FinderDemo {
-    /// Every file operation runs through the queue; a move or copy that would collide with an
-    /// existing name shows Finder's conflict sheet first.
+    /// Every operation runs through the queue; a colliding name shows the conflict sheet first.
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
         match conflicts::split(op, after) {
             conflicts::Split::Clean(op) => self.submit_op(op, Conflict::KeepBoth, after, cx),

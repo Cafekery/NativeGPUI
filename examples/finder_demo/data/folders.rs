@@ -20,7 +20,6 @@ pub(crate) struct Folder {
     pub(crate) rows: Vec<Arc<Row>>,
     /// A re-read's rows as they arrive, while `rows` keeps what is on screen.
     staged: Option<Vec<Arc<Row>>>,
-    /// Rows are still arriving from the disk.
     pub(crate) loading: bool,
 }
 
@@ -47,7 +46,6 @@ pub(crate) struct Folders {
     order: Vec<&'static str>,
     reading: HashSet<&'static str>,
     wanted: RefCell<Vec<&'static str>>,
-    /// The listings a frame draws from: however many there are, they stay.
     pinned: HashSet<&'static str>,
     changed: u64,
 }
@@ -72,9 +70,7 @@ impl Folders {
         self.cache.get_mut(id)
     }
 
-    /// Bumped by every change to what a listing draws — never by rows landing at the end of one,
-    /// nor by a re-read staged behind it — so what a frame built knows to rebuild rather than
-    /// extend.
+    /// Bumped by every change to what a listing draws, never by rows landing at the end of one.
     pub(crate) fn changed(&self) -> u64 {
         self.changed
     }
@@ -113,8 +109,7 @@ impl Folders {
         }
     }
 
-    /// Rows from a read: the first batch stands in for whatever was there, the rest add to it. A
-    /// listing that already has rows keeps them until the whole re-read is in hand.
+    /// Rows from a read: the first batch stands in for what was there, the rest add to it.
     pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) {
         let folder = self.cache.entry(id).or_insert_with(|| {
             self.order.push(id);
@@ -124,8 +119,6 @@ impl Folders {
             folder.staged = (!folder.rows.is_empty()).then(Vec::new);
         }
         match &mut folder.staged {
-            // Staged rows are not the ones on screen, and rows landing at the end of a listing
-            // extend what a frame built from it: neither disturbs what is drawn.
             Some(staged) => staged.extend(rows),
             None => folder.rows.extend(rows),
         }
@@ -134,8 +127,7 @@ impl Folders {
 
     /// Drops the oldest listings nothing is drawing or reading, back to [`CACHED`].
     fn evict(&mut self, keep: &'static str) {
-        // A disclosed subtree pins every listing it opened and reads them all at once, so the
-        // sweep below can drop none of them: without this it runs once per listing that lands.
+        // A disclosed subtree pins and reads every listing it opened: none may be dropped.
         let held = CACHED.max(self.pinned.len() + self.reading.len());
         let mut over = self.order.len().saturating_sub(held);
         if over == 0 {

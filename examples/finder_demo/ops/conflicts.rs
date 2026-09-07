@@ -1,5 +1,4 @@
-//! Finder's conflict sheet: Merge is always offered, and Apply to All when more than one name
-//! collides.
+//! Finder's conflict sheet: Merge between folders, Apply to All when more than one name goes.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -39,8 +38,7 @@ impl Choice {
     }
 }
 
-/// One item still needing a decision, plus what to do once every conflict in this operation is
-/// resolved.
+/// One item still needing a decision, and what to do once every conflict is resolved.
 pub(crate) struct Sheet {
     copy: bool,
     into: PathBuf,
@@ -83,8 +81,7 @@ impl Sheet {
     }
 }
 
-/// Splits `op` into the items that land cleanly and the ones a name collides on; `None` means
-/// nothing collided and the whole op can run as it is.
+/// `op` split into the items that land cleanly and the ones a name collides on.
 pub(crate) enum Split {
     Clean(Op),
     Conflicted { clean: Option<Op>, sheet: Sheet },
@@ -161,7 +158,7 @@ pub(super) fn item_icon(path: &Path, size: f32) -> AnyElement {
         .unwrap_or_else(|| div().into_any_element())
 }
 
-/// One side of the "which one do you want to keep" comparison Finder shows below the question.
+/// One side of Finder's "which one do you want to keep" comparison.
 fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
     let name = path
         .file_name()
@@ -199,8 +196,7 @@ fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
 }
 
 impl FinderDemo {
-    /// Finder's "An item named…" sheet: Keep Both / Stop / Replace, Merge whenever both sides
-    /// are folders, and Apply to All once more than one conflict is pending.
+    /// Finder's "An item named…" sheet: Keep Both / Stop / Replace, and Merge between folders.
     pub(crate) fn conflict_sheet(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(sheet) = &self.conflict else {
             return div().into_any_element();
@@ -330,9 +326,7 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Runs the sheet's choice: `Stop` drops every conflict still pending in this operation,
-    /// everything else submits the current item (or, with Apply to All, every item still
-    /// pending) with that `ops::Conflict` and shows the next conflict if one is left.
+    /// Runs the sheet's choice: `Stop` drops every conflict still pending in this operation.
     pub(crate) fn resolve_conflict(&mut self, choice: Choice, cx: &mut Context<Self>) {
         let Some(mut sheet) = self.conflict.take() else {
             return;

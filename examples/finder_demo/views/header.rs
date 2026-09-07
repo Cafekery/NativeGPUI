@@ -168,8 +168,7 @@ fn cell_body(
 }
 
 impl FinderDemo {
-    /// The columns beside it changed: the Name column fills the span again from scratch, rather
-    /// than by the deltas a resize hands it.
+    /// The columns beside it changed: Name fills the span again rather than by a resize delta.
     pub(crate) fn refit_name_column(&mut self) {
         self.list_span = f32::NAN;
         self.fit_name_column();
@@ -486,8 +485,7 @@ impl FinderDemo {
                         }
                     }
                 }
-                // Option holds the divider after it still, borrowing the growth from its neighbour
-                // instead of letting every column past it slide.
+                // Option borrows the growth from the neighbour instead of sliding the rest.
                 if event.event.modifiers.alt {
                     if let Some(neighbour) = self.list_columns.get_mut(index) {
                         neighbour.width = (neighbour.width - grown).max(COL_MIN_W);

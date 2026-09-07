@@ -87,7 +87,6 @@ fn main() {
     });
 }
 
-/// The user's home folder, where the demo opens.
 fn home() -> PathBuf {
     volumes::standard(volumes::Standard::Home).unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -99,14 +98,12 @@ pub(crate) fn store() -> PathBuf {
     store
 }
 
-/// The whole-Mac index, opened once for the app and shared by every window.
 pub(crate) fn index() -> &'static Arc<Index> {
     static INDEX: OnceLock<Arc<Index>> = OnceLock::new();
     INDEX.get_or_init(|| Index::open(&store().join("index.bin")))
 }
 
-/// The index catches up from launch and saves as it goes, so the next launch starts warm: a root
-/// the last run left in the snapshot is brought forward from the FSEvents log, not walked again.
+/// The index catches up from the FSEvents log rather than walking again, and saves as it goes.
 fn crawl(cx: &mut App) {
     let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
     roots.extend(
@@ -122,9 +119,8 @@ fn crawl(cx: &mut App) {
             .spawn(async move { index().sync(roots, |_| {}) })
             .detach();
     }
-    // The prompt-gated folders are left out of the walk. Once it is over, Desktop, Documents and
-    // Downloads join if a visit has listed them: that grant is durable. The media homes never
-    // do — a snapshot listing is no grant, and their media-library service asks again per launch.
+    // The TCC-gated folders are left out of the walk; Desktop, Documents and Downloads join once
+    // a visit has listed them. The media homes never do: their service asks again every launch.
     let launched = std::time::SystemTime::now();
     let follow = cx.background_executor().clone();
     cx.background_executor()

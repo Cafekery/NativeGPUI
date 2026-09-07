@@ -1,5 +1,4 @@
-//! What the preview card lists under Information: Spotlight's attributes for the row on show,
-//! asked for once per file off the main thread and drawn from the map every frame after.
+//! Spotlight's attributes for the row on show, asked for once per file off the main thread.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -26,8 +25,7 @@ pub(crate) fn meta(path: &SharedString) -> Option<Arc<Meta>> {
     None
 }
 
-/// Ask for what the frames since the last call wanted. Every window that draws a card calls
-/// this; one Spotlight round trip per file, on the background executor.
+/// Ask for what the frames since the last call wanted: one Spotlight round trip per file.
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let wanted: Vec<SharedString> = WANTED.with(|wanted| wanted.borrow_mut().drain().collect());
     if wanted.is_empty() {

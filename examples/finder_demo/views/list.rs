@@ -53,7 +53,6 @@ pub(crate) const ROW_FONT: f32 = 14.;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
 
 pub(crate) const INDENT: f32 = 15.;
-/// The gap Finder leaves between a row's name and its tag dots.
 const TAG_DOTS_GAP: f32 = 6.;
 
 impl FinderDemo {
@@ -102,9 +101,8 @@ impl FinderDemo {
         let hit = self.row_at(pads, look.row_h);
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
-        // The listing comes from the demo per frame, not captured: an element holding it would
-        // keep a second reference, and a listing still streaming grows in place only while the
-        // frame that draws it holds the only one.
+        // Taken from the demo per frame: a captured listing would hold a second reference, and
+        // a streaming listing grows in place only while the frame drawing it holds the only one.
         let list = uniform_list("ng.finder.list", pads + count, move |range, _, cx| {
             let Ok(lines) = this.update(cx, |demo: &mut FinderDemo, _| demo.lines(true)) else {
                 return Vec::new();
@@ -199,8 +197,7 @@ const PILL_PAD_Y: f32 = 3.;
 const PILL_FONT: f32 = 11.;
 const PILL_RADIUS: f32 = 6.;
 
-/// Everything the rows of one frame draw with, so a row builder takes one of these rather than a
-/// dozen captures.
+/// Everything the rows of one frame draw with, so a row builder takes one of these.
 struct Look {
     icon: f32,
     row_h: f32,
@@ -217,7 +214,6 @@ struct Look {
     columns: Vec<ColumnSpec>,
 }
 
-/// What the window has marked its rows with, as one frame sees it.
 struct Marks {
     selected: Arc<HashSet<SharedString>>,
     cut: Arc<HashSet<SharedString>>,
@@ -240,7 +236,6 @@ fn pill(fill: Hsla) -> Div {
         .bg(fill)
 }
 
-/// The disclosure triangle, which only a folder wears.
 fn twist(
     line: &Line,
     at: usize,
@@ -287,8 +282,7 @@ fn twist(
     })
 }
 
-/// The Name column: the twist at its indent, the icon, the name or the field renaming it, and the
-/// row's tag dots.
+/// The Name column: the twist, the icon, the name or the field renaming it, and the tag dots.
 fn name_cell(
     line: &Line,
     at: usize,
@@ -344,7 +338,6 @@ fn name_cell(
     name
 }
 
-/// One of the columns beside Name, drawn the way its own column draws.
 fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div {
     let cell = div().w(px(spec.width)).flex_none().text_color(detail);
     match spec.column {
@@ -375,7 +368,6 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
     }
 }
 
-/// One row of the list, with its menu, its clicks and the drags it takes part in.
 fn row(
     line: &Line,
     at: usize,
@@ -410,7 +402,6 @@ fn row(
         .font_family(tokens::system_font_family())
         .text_size(px(ROW_FONT))
         .text_color(text)
-        // Finder's own cut styling: the row dims until pasted or the mark clears.
         .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
         .children(fill.map(pill))
         .child(name_cell(line, at, look, marks, lit, this.clone()));
@@ -517,7 +508,6 @@ fn drop_target(
     })
 }
 
-/// Finder's group header: the band's name over the rows it holds.
 fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {
     div()
         .h(px(row_h))

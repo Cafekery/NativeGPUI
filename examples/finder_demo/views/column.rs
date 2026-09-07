@@ -283,7 +283,6 @@ impl FinderDemo {
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
-    /// Finder rules every column, the last one included.
     fn on_column_grip(&mut self, x: f32, cx: &mut Context<Self>) {
         let Some((folder, origin)) = self.column_grab else {
             return;
@@ -294,8 +293,7 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// What this folder's browser column has been dragged to, this folder's saved width, or
-    /// Finder's default.
+    /// What this column was dragged to, what was saved for it, or Finder's default.
     pub(crate) fn column_width(&self, folder: &'static str) -> f32 {
         self.column_widths
             .get(folder)
@@ -417,7 +415,7 @@ impl FinderDemo {
                 |_, _, _| (),
                 move |_, _, window, _| {
                     // Window-level, like the pane's grip: the pointer leaves the divider as the
-                    // column grows, so a hitbox under it would drop the drag.
+                    // column grows.
                     let moved = this.clone();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {

@@ -6,12 +6,10 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::SharedString;
 
-/// Every id the demo carries is one of these: an absolute path that lives as long as the app.
 pub(crate) fn intern(text: &str) -> &'static str {
     static POOL: OnceLock<RwLock<HashSet<&'static str>>> = OnceLock::new();
     let pool = POOL.get_or_init(Default::default);
-    // Almost every id asked for is one already kept, and a disclosed subtree asks a frame's worth
-    // of them while the reads it started ask for their own: a lock only writers hold serializes it.
+    // Almost every id asked for is one already kept, so only a new one takes the write lock.
     if let Some(known) = pool.read().unwrap().get(text).copied() {
         return known;
     }
@@ -42,8 +40,7 @@ pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
     Some((intern(if dir.is_empty() { "/" } else { dir }), name))
 }
 
-/// The name of the folder a search result's key sits in, the way Finder's search results show a
-/// path in place of Kind.
+/// The folder a key sits in, which Finder's search results show in place of Kind.
 pub(crate) fn enclosing_name(key: &str) -> SharedString {
     match Path::new(key).parent().and_then(Path::file_name) {
         Some(name) => name.to_string_lossy().into_owned().into(),

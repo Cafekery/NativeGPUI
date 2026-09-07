@@ -36,8 +36,7 @@ pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?.window()
 }
 
-/// What the view drew this frame: the rows, the list header band above them, and the path bar
-/// under them.
+/// What the view drew this frame: the rows, the header band above them, the path bar below.
 struct Column {
     rows: AnyElement,
     headers: Option<AnyElement>,
@@ -134,8 +133,8 @@ impl Render for FinderDemo {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
-                                // The native sidebar is an NSView; a click here takes AppKit first
-                                // responder back to the GPUI view so bare keys reach on_key.
+                                // The sidebar is an NSView: this takes first responder back to
+                                // the GPUI view so bare keys reach on_key.
                                 native_gpui::focus_gpui(window);
                                 window.focus(&this.focus, cx);
                             }),
@@ -213,8 +212,7 @@ impl FinderDemo {
         });
     }
 
-    /// The rows' own scroller: the list and the grid scroll under one, the browser's columns
-    /// carry theirs each, and the gallery scrolls only across.
+    /// The rows' own scroller; the browser's columns carry theirs and the gallery has none.
     fn scroller_bar(&self) -> Option<NativeScroller> {
         match self.view {
             LIST_VIEW => {
@@ -243,8 +241,7 @@ impl FinderDemo {
             headers,
             path_bar,
         } = column;
-        // The scope bar lives in the same hosted band as the toolbar and column header: it grows
-        // the content's top inset the way `list_inset` grows the list's.
+        // The scope bar shares the hosted band with the toolbar, so it grows the top inset.
         let scope_h = if self.searching() {
             scope_bar::SCOPE_H
         } else {
@@ -329,8 +326,7 @@ impl FinderDemo {
                     .when(banded, |bar_row| bar_row.pl(metrics.left))
                     .child(bar)
             }))
-            // A second scroller on the same handle, the pane's width shorter, so header and rows
-            // clamp and scroll alike.
+            // A second scroller on the same handle, so header and rows clamp and scroll alike.
             .children(headers.map(|headers| {
                 axis_locked(
                     div()

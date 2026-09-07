@@ -11,8 +11,7 @@ use native_gpui::tokens::{FileType, SymbolColor, SystemColor, sf_symbol_colored}
 use crate::data::{Face, Row};
 use crate::thumbs::thumb;
 
-/// Finder's row icon: the file's own rendered thumbnail at this size where Quick Look draws one,
-/// its type's icon until that lands. Only a row on screen asks for one.
+/// Finder's row icon: Quick Look's thumbnail where there is one, the type's icon until it lands.
 pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyElement {
     match thumb(row, size, scale, visible, true) {
         Some(image) => picture(image, size),
@@ -20,9 +19,7 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     }
 }
 
-/// Finder's large preview art: the picture at its own aspect, fit inside a `width` by `height`
-/// box, keylined and rounded on that rect rather than on the box it is centred in, and without
-/// an icon's inset, radius or shadow.
+/// Finder's large preview art: the picture at its own aspect, keylined on its rect, not the box.
 pub(crate) fn poster_art(
     row: &Row,
     width: f32,
@@ -38,12 +35,10 @@ pub(crate) fn poster_art(
     }
 }
 
-/// The box every icon is drawn in: a square that centres whatever art it is given.
 pub(crate) fn square(side: f32) -> Div {
     slot(side, side)
 }
 
-/// The box a poster is centred in, which is as tall as the pane's rule makes it.
 fn slot(width: f32, height: f32) -> Div {
     div()
         .w(px(width))
@@ -54,15 +49,13 @@ fn slot(width: f32, height: f32) -> Div {
         .justify_center()
 }
 
-/// The artwork a type wears: the system's icon for it, or its face's symbol when it has none.
 fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
     kind.and_then(|kind| crate::icons::icon(kind, size))
         .map(|symbol| symbol.img().into_any_element())
         .unwrap_or_else(|| glyph(face, size))
 }
 
-/// Finder's Quick Look icon: the whole picture fit inside the box, centred, with the keyline,
-/// corner radius and shadow Quick Look's icon mode baked into the raster.
+/// Quick Look's icon mode bakes the keyline, corner radius and shadow into the raster.
 fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
     square(size)
         .child(
@@ -74,8 +67,7 @@ fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// Which preview a poster is: Finder strokes a gallery hero with a light keyline and a wider
-/// radius, a preview card with a dark one.
+/// Which preview a poster is: a hero is keylined light and rounded wider than a card.
 #[derive(Clone, Copy)]
 pub(crate) enum Poster {
     Hero,
@@ -114,8 +106,7 @@ fn poster(
         u32::from(fit.width) as f32 / scale,
         u32::from(fit.height) as f32 / scale,
     );
-    // The raster that landed may have been drawn for another width: it wears this box's fit,
-    // not its own size, so a pane being dragged scales what it has until the next one lands.
+    // The raster may have been drawn for another width: it wears this box's fit, not its own.
     let zoom = (width / w.max(1.)).min(height / h.max(1.));
     slot(width, height)
         .child(
@@ -160,8 +151,7 @@ pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// The artwork a folder wears in the chrome, or the boot disk's own: `public.volume` carries none,
-/// so a volume draws what `/` draws.
+/// The artwork a folder wears in the chrome: `public.volume` has none, so a volume draws `/`'s.
 pub(crate) fn place_art(volume: bool, size: f32) -> AnyElement {
     let (kind, face) = match volume {
         true => (FileType::Path("/"), Face::Volume),

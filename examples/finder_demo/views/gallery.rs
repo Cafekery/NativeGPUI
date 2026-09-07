@@ -61,8 +61,6 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let lines = self.lines(false);
-        // Only the hero needs the chosen rows, and it draws at most three of them: taking as
-        // many as are chosen stops the walk at the last one rather than at the last row.
         let chosen: Vec<Line> = lines
             .iter()
             .filter(|line| self.selected.contains(&line.key))

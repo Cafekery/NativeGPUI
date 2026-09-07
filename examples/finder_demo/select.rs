@@ -1,5 +1,4 @@
-//! What is chosen and where the cursor is: Finder's click, Shift and Command rules, its
-//! type-select, and the disclosure triangles the list opens with them.
+//! What is chosen and where the cursor is: Finder's click rules, its type-select, its twists.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -12,8 +11,7 @@ use crate::data::Line;
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
-/// How far under a row Option-disclose walks, and how many folders a window holds open: past
-/// either, the walk stops rather than opening a home folder's millions of rows.
+/// How far under a row Option-disclose walks, and how many folders one window holds open.
 const DEEP_LEVELS: usize = 16;
 const DEEP_FOLDERS: usize = 5_000;
 
@@ -84,9 +82,7 @@ impl FinderDemo {
         }
     }
 
-    /// Discloses every folder under `id` that is in memory and asks for the listings that are
-    /// not: a read that lands carries the walk on from where it stopped. Packages and symlinks
-    /// open nothing, and the paths the index seals are left shut.
+    /// Discloses every folder in memory under `id` and asks for the listings that are not.
     fn expand_under(&mut self, id: &'static str, depth: usize) {
         let home = crate::home();
         let mut opened: Vec<SharedString> = Vec::new();
@@ -119,8 +115,7 @@ impl FinderDemo {
         self.expanded.extend(opened);
     }
 
-    /// Shuts every folder under `id`, whether or not this window ever had its listing: an open
-    /// row is keyed by its own path.
+    /// Shuts every folder under `id`, whether or not this window ever had its listing.
     fn collapse_under(&mut self, id: &'static str) {
         let under = id.trim_end_matches('/');
         let inside = |path: &str| path.strip_prefix(under).is_some_and(|r| r.starts_with('/'));
@@ -158,8 +153,7 @@ impl FinderDemo {
         self.reveal(&line.key);
     }
 
-    /// Finder's type-select: jump to the first row starting with what is typed. When nothing
-    /// starts with it, fall back to filtering rather than Finder's beep-and-do-nothing.
+    /// Finder's type-select, falling back to a filter where no row starts with what is typed.
     pub(crate) fn type_select(&mut self, typed: &str, cx: &mut Context<Self>) {
         let now = Instant::now();
         if self
@@ -200,8 +194,7 @@ impl FinderDemo {
         self.type_filter_seen_match = false;
     }
 
-    /// Finder's type-select timeout: once a match existed, an idle spell clears the fallback
-    /// filter on its own; a run that never matched anything waits for Escape or navigation.
+    /// Once a match existed an idle spell clears the filter; a run that never matched waits.
     fn schedule_filter_clear(&mut self, cx: &mut Context<Self>) {
         let since = self.typed_at;
         cx.spawn(async move |this, cx| {

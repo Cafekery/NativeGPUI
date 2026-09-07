@@ -20,8 +20,7 @@ impl FinderDemo {
         self.folders.get(self.here())
     }
 
-    /// The folder an operation lands in: where the cursor points in the browser or a search hit,
-    /// otherwise the folder on screen.
+    /// The folder an operation lands in: where the cursor points, else the folder on screen.
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
         let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
@@ -85,7 +84,6 @@ impl FinderDemo {
         chain
     }
 
-    /// Keep the Go menu's Recent Folders in step with where the window has been.
     fn remember_recent(&mut self, id: &'static str) {
         let title = crate::data::folder_of(id).title.to_string();
         self.recents.retain(|(seen, _)| *seen != id);

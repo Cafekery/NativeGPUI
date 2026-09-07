@@ -36,8 +36,7 @@ impl Glyph {
     }
 }
 
-/// A sidebar row: the folder it opens (a path, or a `tag:` name that opens nothing), its label,
-/// its glyph, and whether it ejects.
+/// A sidebar row: what it opens (a path, or a `tag:` name that opens nothing) and how it looks.
 pub(crate) struct Row {
     pub(crate) id: &'static str,
     pub(crate) title: SharedString,
@@ -224,7 +223,6 @@ fn pinned_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     Some((vec![Act::Nothing, Act::Nothing, Act::Remove], entries))
 }
 
-/// The menu a sidebar row shows, for the rows Finder gives one.
 fn row_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     tag_menu(id).or_else(|| pinned_menu(id))
 }
@@ -273,7 +271,7 @@ impl FinderDemo {
             .collect()
     }
 
-    /// Rebuilds the sidebar around the volumes mounted now, keeping the order the user set.
+    /// Rebuilds around the volumes mounted now, keeping the order the user set.
     pub(crate) fn refresh_sidebar(&mut self) {
         crate::data::refresh_volumes();
         self.sidebar_groups = groups();
@@ -398,7 +396,6 @@ impl FinderDemo {
         self.store_rows(group);
     }
 
-    /// Finder's own sidebar drop, and one Finder refuses: a folder pinned under Locations too.
     /// Finder's drop on a tag row: the files keep the tags they had and gain this one.
     fn tag_dropped(&mut self, tag: &str, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
         let Some(tag) = finder_fs::tags::all().into_iter().find(|it| it.name == tag) else {
@@ -476,7 +473,6 @@ impl FinderDemo {
         prefs::set_sidebar_rows(self.sidebar_groups[group].id, &self.sidebar_rows[group]);
     }
 
-    /// Finder's eject: the volume leaves the Mac, and the sidebar loses its row with it.
     fn eject(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         let path = std::path::PathBuf::from(id.as_ref());
         let url = objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(

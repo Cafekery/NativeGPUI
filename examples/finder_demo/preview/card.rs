@@ -1,5 +1,4 @@
-//! The card the pane draws: one row's hero, kind, dates and tags, or the stack a multi-row
-//! selection wears.
+//! The card the pane draws: one row's hero, kind, dates and tags, or a selection's stack.
 
 use std::sync::Arc;
 
@@ -92,8 +91,7 @@ pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
     (-3., 0., 0.02, 1.),
 ];
 
-/// The icons fanned into one square image, `side` device pixels across, the first in front.
-/// Straight-alpha BGRA in and out, as the workspace icons come.
+/// The icons fanned into one square, `side` pixels across; straight-alpha BGRA, as icons come.
 fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     if icons.is_empty() {
         return None;
@@ -165,8 +163,7 @@ fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
     }
 }
 
-/// A row's Information block, and whether Spotlight knows more than it lists closed. Finder
-/// keeps a file's own dates first, then what its type is measured in.
+/// A row's Information block, and whether Spotlight knows more than it lists closed.
 fn info_rows(
     row: &Row,
     meta: Option<&Meta>,
@@ -242,7 +239,7 @@ fn info_rows(
     (rows, more)
 }
 
-/// A running time as Finder writes it: minutes and seconds, hours only where there are any.
+/// A running time as Finder writes it: hours only where there are any.
 fn clock(seconds: f64) -> SharedString {
     let seconds = seconds.max(0.).round() as u64;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -299,8 +296,7 @@ impl FinderDemo {
         self.card_element(card, palette, content, finder)
     }
 
-    /// What the summary weighed the selection at, for a folder or package the row itself cannot
-    /// size.
+    /// What the summary weighed a folder or package at, which the row itself cannot size.
     fn weighed(&self) -> Option<u64> {
         self.stats
             .as_ref()
@@ -309,13 +305,11 @@ impl FinderDemo {
             .filter(|bytes| *bytes > 0)
     }
 
-    /// The hero's box: as tall as the pane is wide and then some, capped by the pane's height, so
-    /// what is under it sits where the width alone puts it and no picture moves it.
+    /// The hero's box: as tall as the pane is wide and then some, capped by the pane's height.
     pub(crate) fn hero_h(&self, content: f32) -> f32 {
         (content * HERO_TALL).min(self.pane_h * HERO_CAP)
     }
 
-    /// Finder's own answer while it is still adding a selection up, under the last hero it drew.
     fn many_card(&self, content: f32) -> Card {
         let side = if self.view == GALLERY_VIEW {
             HEADER_ICON

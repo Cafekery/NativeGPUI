@@ -42,8 +42,7 @@ pub(crate) enum Act {
     Toggle(Column),
 }
 
-/// The folder context menu's Open in Terminal: the user's `TERM_PROGRAM`, if a GUI launch
-/// happens to carry one, otherwise Terminal.app.
+/// Open in Terminal: the user's `TERM_PROGRAM` if a GUI launch carries one, else Terminal.app.
 fn open_terminal(path: &str) {
     let app = std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "Terminal".to_owned());
     let _ = std::process::Command::new("open")
@@ -107,7 +106,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Finder's New Folder: `untitled folder` in the folder on screen, named as it lands.
     pub(crate) fn new_folder(&mut self, cx: &mut Context<Self>) {
         self.make_folder("untitled folder", Vec::new(), cx);
     }
@@ -121,7 +119,6 @@ impl FinderDemo {
         self.make_folder("New Folder With Items", chosen, cx);
     }
 
-    /// File ▸ New Text File: `untitled.txt` in the folder on screen, named as it lands.
     pub(crate) fn new_file(&mut self, cx: &mut Context<Self>) {
         let op = Op::NewFile {
             into: PathBuf::from(self.target()),
@@ -162,7 +159,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// The chosen rows, as the paths an operation takes.
     pub(crate) fn paths(&self) -> Vec<PathBuf> {
         self.focused_lines()
             .iter()

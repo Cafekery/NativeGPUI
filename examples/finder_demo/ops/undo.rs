@@ -1,5 +1,4 @@
-//! Finder's Undo and Redo: the standard Edit menu's own items, retitled off the queue's journal
-//! and dispatched into the window.
+//! Finder's Undo and Redo: the Edit menu's own items, retitled off the queue's journal.
 
 use std::cell::{Cell, RefCell};
 
@@ -35,8 +34,7 @@ struct SinkIvars {
 }
 
 define_class!(
-    /// Retargets the Edit menu's stock Undo/Redo rows, which nothing in this app's responder
-    /// chain otherwise answers.
+    /// Answers the Edit menu's stock Undo/Redo rows, which nothing else in the chain does.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGUndoRedoSink"]
@@ -90,8 +88,8 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Retargets the Edit menu's Undo/Redo rows once, right after `install_menus`. A second call is
-/// a no-op: the rows no longer carry their original titles to search for.
+/// Retargets the Edit menu's Undo/Redo rows, right after `install_menus`; a second call is a
+/// no-op, the rows no longer carrying the titles it searches for.
 pub(crate) fn install_undo_redo(cx: &mut App) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -122,8 +120,7 @@ thread_local! {
     static SINK: RefCell<Option<Retained<UndoRedoSink>>> = const { RefCell::new(None) };
 }
 
-/// Sets the Edit menu's Undo/Redo titles to Finder's own wording — "Undo Move of \"X\"" — and
-/// their enabled state, off the journal's current stacks.
+/// The Edit menu's Undo/Redo titles and enabled state, off the journal's current stacks.
 pub(crate) fn refresh_edit_menu(journal: &Journal) {
     ITEMS.with(|shared| {
         let items = shared.borrow();

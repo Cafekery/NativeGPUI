@@ -77,8 +77,7 @@ impl FinderDemo {
         row_h(self.list_icon_now())
     }
 
-    /// ⌘= and ⌘-: Finder toggles the list's icons, steps the icon view through its slider stops
-    /// and the gallery strip through three, and leaves column view alone.
+    /// ⌘= and ⌘-: the list toggles, the grid and the strip step, column view does nothing.
     pub(crate) fn zoom(&mut self, larger: bool, cx: &mut Context<Self>) {
         fn step(stops: &[f32], from: f32, larger: bool) -> Option<f32> {
             if larger {
