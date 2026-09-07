@@ -349,6 +349,20 @@ fn place_one(
     }
 }
 
+/// Finder refuses before it starts: nothing goes inside itself, however deep the descendant.
+fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()> {
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !real(into).starts_with(real(item)) {
+        return Ok(());
+    }
+    let name = item.file_name().unwrap_or_default().to_string_lossy();
+    let verb = if is_move { "moved" } else { "copied" };
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("The item \u{201c}{name}\u{201d} can't be {verb} into itself."),
+    ))
+}
+
 fn common_parent(items: &[PathBuf]) -> Option<PathBuf> {
     let first = items.first()?.parent()?;
     items
@@ -368,6 +382,9 @@ fn move_or_copy(
     let total = items.len();
     let mut results = Vec::with_capacity(total);
     let mut displaced = Vec::new();
+    for item in &items {
+        refuse_into_itself(item, &into, is_move)?;
+    }
     for (i, item) in items.iter().enumerate() {
         let name = item
             .file_name()
@@ -871,6 +888,49 @@ mod tests {
         let back = perform(undo, Conflict::Replace, no_progress).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_refuses_to_go_inside_itself() {
+        let dir = temp_dir("into-itself");
+        let folder = dir.join("Folder");
+        let inner = folder.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        touch(&folder.join("a.txt"), "one");
+
+        for (is_move, wording) in [
+            (false, "can't be copied into itself"),
+            (true, "can't be moved into itself"),
+        ] {
+            let items = vec![folder.clone()];
+            let into = inner.clone();
+            let op = if is_move {
+                Op::Move { items, into }
+            } else {
+                Op::Copy { items, into }
+            };
+            let err = perform(op, Conflict::KeepBoth, no_progress).expect_err(wording);
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains(wording), "{err}");
+        }
+        assert_eq!(
+            fs::read_dir(&inner).unwrap().count(),
+            0,
+            "nothing was written into the descendant"
+        );
+
+        let err = perform(
+            Op::Copy {
+                items: vec![folder.clone()],
+                into: folder.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .expect_err("a folder is inside itself");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
         let _ = fs::remove_dir_all(&dir);
     }
