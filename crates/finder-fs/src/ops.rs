@@ -503,6 +503,16 @@ fn place_one(
         transfer(fm, src, &dest, is_move)?;
         return Ok(Placed::at(dest));
     }
+    // The item standing at the destination is the item going there: Finder leaves a move where it
+    // is and makes a copy into the same folder a Duplicate.
+    if same_item(src, &dest) {
+        if is_move {
+            return Ok(Placed::at(dest));
+        }
+        let dest = duplicate_path(&dest);
+        transfer(fm, src, &dest, false)?;
+        return Ok(Placed::at(dest));
+    }
     match conflict {
         Conflict::Skip => Ok(Placed {
             dest: None,
@@ -863,6 +873,50 @@ mod tests {
         let back = perform(undo, Conflict::Replace, no_progress).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moving_an_item_onto_itself_changes_nothing() {
+        let dir = temp_dir("onto-itself");
+        let file = dir.join("a.txt");
+        touch(&file, "one");
+
+        let done = perform(
+            Op::Move {
+                items: vec![file.clone()],
+                into: dir.clone(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![file.clone()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copying_into_its_own_folder_duplicates() {
+        let dir = temp_dir("own-folder");
+        let file = dir.join("a.txt");
+        touch(&file, "one");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![file.clone()],
+                into: dir.clone(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("a copy.txt")]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one");
+        assert_eq!(fs::read_to_string(dir.join("a copy.txt")).unwrap(), "one");
 
         let _ = fs::remove_dir_all(&dir);
     }
