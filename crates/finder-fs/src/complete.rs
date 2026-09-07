@@ -307,8 +307,9 @@ mod tests {
     #[test]
     fn measured_on_this_machine() {
         warm();
+        let root = tree("measured");
         let t0 = Instant::now();
-        let a = complete("/Users/jace/Dev", None, 10);
+        let a = complete(&format!("{}/Dev", root.display()), None, 10);
         let da = t0.elapsed();
         let t1 = Instant::now();
         let b = complete("~/", None, 10);
