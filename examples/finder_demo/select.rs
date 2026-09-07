@@ -40,6 +40,7 @@ impl FinderDemo {
         let folders: Vec<(SharedString, &'static str)> = lines
             .iter()
             .filter(|line| keys.contains(&line.key))
+            .filter(|line| line.row.discloses)
             .filter_map(|line| line.row.opens.map(|into| (line.key.clone(), into)))
             .collect();
         let expandable = folders
@@ -123,6 +124,7 @@ impl FinderDemo {
             let children: Vec<(SharedString, &'static str)> = folder
                 .rows
                 .iter()
+                .filter(|row| row.discloses)
                 .filter_map(|row| row.opens.map(|deeper| (row.path.clone(), deeper)))
                 .filter(|(_, deeper)| !index::off_limits(Path::new(deeper), &home))
                 .collect();

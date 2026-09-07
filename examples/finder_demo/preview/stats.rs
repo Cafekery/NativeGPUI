@@ -80,7 +80,7 @@ pub(crate) fn summarize(
 }
 
 fn total_bytes(row: &Row) -> u64 {
-    match row.opens {
+    match row.opens.filter(|_| row.discloses) {
         Some(id) => crate::index()
             .folder_size(std::path::Path::new(id))
             .unwrap_or(row.bytes),

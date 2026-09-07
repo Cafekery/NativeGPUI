@@ -245,7 +245,7 @@ fn twist(
         .flex()
         .items_center()
         .justify_center();
-    if line.row.opens.is_none() {
+    if !line.row.discloses {
         return slot;
     }
     let arrow = if open {

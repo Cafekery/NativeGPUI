@@ -46,7 +46,7 @@ fn gone(error: &std::io::Error) -> bool {
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
     // Finder groups folders first under the preference, and always in the Kind column.
     if folders_first() || sort == Column::Kind {
-        let by_kind = b.opens.is_some().cmp(&a.opens.is_some());
+        let by_kind = b.discloses.cmp(&a.discloses);
         if by_kind != Ordering::Equal {
             return by_kind;
         }
