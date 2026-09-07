@@ -70,7 +70,7 @@ struct Marks {
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
 pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
     match column {
-        Column::Name => line.row.name.clone(),
+        Column::Name => line.row.display.clone(),
         Column::Modified => date_text(line.row.modified_at),
         Column::Size => line.row.size.clone(),
         Column::Kind => line.row.kind.clone(),
@@ -320,7 +320,7 @@ fn name_cell(
                 .ml(px(LABEL_GAP))
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(line.row.name.clone())
+                .child(line.row.display.clone())
         });
     if let Some(dots) = marks
         .tags

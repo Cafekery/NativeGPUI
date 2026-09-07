@@ -64,7 +64,7 @@ impl FinderDemo {
     pub(crate) fn retitle(&self, window: &mut Window) {
         match self.tag_listing.map(tag_title) {
             Some(title) => window.set_window_title(&title),
-            None => window.set_window_title(&self.crumb_path()),
+            None => window.set_window_title(&finder_fs::name::display(&self.crumb_path())),
         }
     }
 

@@ -149,9 +149,9 @@ fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
 
 /// Finder titles an application by its stem: the `.app` is the package's, not the app's.
 fn title_line(row: &Row) -> SharedString {
-    match row.name.strip_suffix(".app") {
+    match row.display.strip_suffix(".app") {
         Some(stem) if row.face == Face::Program => stem.to_string().into(),
-        _ => row.name.clone(),
+        _ => row.display.clone(),
     }
 }
 

@@ -33,6 +33,8 @@ pub(crate) enum Column {
 #[derive(Clone)]
 pub(crate) struct Row {
     pub(crate) name: SharedString,
+    /// The name as Finder draws it, which is not always the name the directory stores.
+    pub(crate) display: SharedString,
     /// The file's absolute path: the row's identity everywhere the demo names it.
     pub(crate) path: SharedString,
     pub(crate) size: SharedString,
@@ -78,6 +80,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
     };
     Row {
         name: entry.name.clone().into(),
+        display: finder_fs::name::display(&entry.name).into_owned().into(),
         size: match directory && bytes == 0 {
             true => "--".into(),
             false => byte_string(bytes).into(),

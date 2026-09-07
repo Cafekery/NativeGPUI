@@ -111,7 +111,7 @@ impl Render for Info {
                                 div()
                                     .flex()
                                     .justify_between()
-                                    .child(heading(row.name.clone()))
+                                    .child(heading(row.display.clone()))
                                     .child(
                                         div()
                                             .text_size(tokens::small_system_font_size())
@@ -195,7 +195,7 @@ pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static st
                 ..window_options()
             },
             move |window, cx| {
-                window.set_window_title(&format!("{} Info", line.row.name));
+                window.set_window_title(&format!("{} Info", line.row.display));
                 cx.new(|_| Info { line, where_ })
             },
         );
@@ -254,7 +254,7 @@ impl Render for Combined {
                                     .whitespace_nowrap()
                                     .text_size(tokens::small_system_font_size())
                                     .text_color(system_color(SystemColor::Label))
-                                    .child(line.row.name.clone()),
+                                    .child(line.row.display.clone()),
                             )
                             .child(
                                 div()
