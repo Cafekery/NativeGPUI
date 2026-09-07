@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, Font, FontWeight, Hsla, MouseButton, Pixels, Point,
-    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Div, Font, FontWeight, Hsla, MouseButton, Pixels, Point, SharedString,
+    Stateful, WeakEntity, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -13,7 +13,7 @@ use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art, small_glyph};
 use crate::chrome::scope_bar::SCOPE_H;
 use crate::data::{Column, Line, date_text, enclosing_name};
-use crate::dragdrop::{DragGhost, RowDrag, carries};
+use crate::dragdrop::{DragGhost, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
@@ -33,9 +33,6 @@ pub(crate) const LIST_TOP_GAP: f32 = 5.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
-
-/// What a drop highlight's lightness falls to while the row flashes before it springs.
-const FLASH_DIM: f32 = 0.83;
 
 const PILL_INSET: f32 = 10.;
 const PILL_PAD_X: f32 = 8.;
@@ -424,71 +421,19 @@ fn row(
                 true => flashed(look.selection),
                 false => look.selection,
             };
-            drop_target(row, line, into, marks, fill, this).into_any_element()
+            drop_target::<RowDrag>(
+                row,
+                line.key.clone(),
+                into,
+                Some(ICON_X + line.depth as f32 * INDENT),
+                marks.selected.clone(),
+                fill,
+                this,
+            )
+            .into_any_element()
         }
         None => row.into_any_element(),
     }
-}
-
-/// A drop highlight mid-flash: Finder darkens the fill rather than dropping it.
-fn flashed(fill: Hsla) -> Hsla {
-    Hsla {
-        l: fill.l * FLASH_DIM,
-        ..fill
-    }
-}
-
-/// A folder row takes the rows dragged onto it, and springs open under a drag that rests there.
-fn drop_target(
-    row: Stateful<Div>,
-    line: &Line,
-    into: &'static str,
-    marks: &Marks,
-    fill: Hsla,
-    this: WeakEntity<FinderDemo>,
-) -> Stateful<Div> {
-    row.drag_over::<RowDrag>({
-        let carried = marks.selected.clone();
-        let key = line.key.clone();
-        move |style, grab: &RowDrag, _, _| match carries(&carried, grab, &key) {
-            true => style,
-            false => style.bg(fill),
-        }
-    })
-    .on_drop({
-        let this = this.clone();
-        let carried = marks.selected.clone();
-        let key = line.key.clone();
-        move |grab: &RowDrag, window: &mut Window, cx| {
-            if carries(&carried, grab, &key) {
-                return;
-            }
-            let key = grab.key.clone();
-            // Finder copies instead of moving while Option is held.
-            let copy = window.modifiers().alt;
-            this.update(cx, |demo: &mut FinderDemo, cx| {
-                let keys = demo.drag_keys(&key);
-                demo.drop_into(into, &keys, copy, cx);
-                cx.notify();
-            })
-            .ok();
-        }
-    })
-    .on_drag_move({
-        let carried = marks.selected.clone();
-        let key = line.key.clone();
-        let depth = line.depth as f32;
-        move |event: &DragMoveEvent<RowDrag>, _, cx| {
-            let at = event.event.position;
-            let twist = event.bounds.left() + px(ICON_X + depth * INDENT);
-            let over = (event.bounds.contains(&at) && !carries(&carried, event.drag(cx), &key))
-                .then(|| at.x > twist - px(TWIST_W) && at.x <= twist);
-            this.update(cx, |demo: &mut FinderDemo, cx| {
-                demo.hover_folder(&key, into, over, cx);
-            })
-            .ok();
-        }
-    })
 }
 
 fn band(title: SharedString, colour: Hsla, name_w: f32, row_h: f32) -> Div {
