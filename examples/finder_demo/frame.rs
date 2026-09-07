@@ -99,7 +99,7 @@ impl Render for FinderDemo {
         let sheet = self
             .go_sheet
             .clone()
-            .map(|text| self.go_sheet(&text, &palette, window, cx));
+            .map(|open| self.go_sheet(&open, &palette, window, cx));
         let conflict_sheet = self
             .conflict
             .is_some()

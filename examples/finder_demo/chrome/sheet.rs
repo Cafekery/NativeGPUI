@@ -1,35 +1,143 @@
 //! Finder's two overlays: the Go to Folder sheet and Quick Look.
 
+use finder_fs::sort::fold;
 use gpui::{AnyElement, Context, FontWeight, WeakEntity, Window, div, prelude::*, px};
 use native_gpui::tokens;
 use native_gpui::{Material, material, system_corner_radius};
 
 use crate::app::FinderDemo;
+use crate::data::intern_path;
+use crate::navigate::typed_path;
 use crate::palette::Palette;
 use crate::ui::{focus_gpui, key_to_parent, native_text_field};
+use crate::{home, index};
 
 const SHEET_W: f32 = 520.;
+/// How many paths the sheet offers under the field.
+const CHOICES: usize = 8;
+
+/// What the Go to Folder sheet holds: what was typed, that with the completion of the component
+/// being typed on the end of it, and the paths offered under the field.
+#[derive(Clone)]
+pub(crate) struct GoSheet {
+    typed: String,
+    shown: String,
+    choices: Vec<String>,
+}
+
+impl GoSheet {
+    pub(crate) fn at(path: String) -> GoSheet {
+        GoSheet {
+            shown: path.clone(),
+            typed: path,
+            choices: Vec::new(),
+        }
+    }
+}
+
+/// A completion in the form the path was typed in: `complete` shortens the home folder to `~`,
+/// which belongs only where that is how the typing started.
+fn as_typed(typed: &str, display: String) -> String {
+    match display.strip_prefix('~') {
+        Some(rest) if !typed.starts_with('~') => format!("{}{rest}", home().to_string_lossy()),
+        _ => display,
+    }
+}
+
+/// The best completion, when it carries on from what was typed: the name's own spelling comes
+/// with it, as a completion inserted over the typed text does, and only once a component has
+/// been started.
+fn inline(typed: &str, choices: &[String]) -> Option<String> {
+    let best = choices.first()?;
+    let (head, tail) = best.split_at_checked(typed.len())?;
+    (!typed.ends_with('/') && !tail.is_empty() && fold(head) == fold(typed)).then(|| best.clone())
+}
 
 impl FinderDemo {
-    /// Finder's ⇧⌘G sheet: a path field that walks the window when it resolves.
+    /// A keystroke in the sheet. The completion sits at the end of the field, so what is typed
+    /// after it replaces it and a delete takes all of it, the way a selected completion behaves.
+    fn go_typing(&mut self, text: String, cx: &mut Context<Self>) {
+        let Some(sheet) = self.go_sheet.as_ref() else {
+            return;
+        };
+        let typed = match text.strip_prefix(sheet.shown.as_str()) {
+            Some(more) if !more.is_empty() => format!("{}{more}", sheet.typed),
+            _ if sheet.shown.starts_with(&text) => match text.len() < sheet.typed.len() {
+                true => text,
+                false => sheet.typed.clone(),
+            },
+            _ => text,
+        };
+        let completing = typed.len() > sheet.typed.len();
+        self.go_sheet = Some(GoSheet::at(typed.clone()));
+        cx.notify();
+        if !completing {
+            return;
+        }
+        let wanted = typed.clone();
+        cx.spawn(async move |this, cx| {
+            let choices = cx
+                .background_executor()
+                .spawn(async move {
+                    finder_fs::complete::complete(&typed, Some(index()), CHOICES)
+                        .into_iter()
+                        .map(|found| as_typed(&typed, found.display))
+                        .collect::<Vec<String>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(sheet) = this.go_sheet.as_mut() else {
+                    return;
+                };
+                if sheet.typed != wanted {
+                    return;
+                }
+                sheet.shown = inline(&sheet.typed, &choices).unwrap_or_else(|| sheet.typed.clone());
+                sheet.choices = choices;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Return in the sheet: a folder is walked to, a file is revealed in the folder holding it.
+    fn go_typed(&mut self, typed: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.folder_at_path(typed) {
+            self.go(id, window, cx);
+            return;
+        }
+        let path = typed_path(typed);
+        if path.symlink_metadata().is_ok() {
+            self.show_enclosing(intern_path(&path), window, cx);
+        }
+    }
+
+    /// Finder's ⇧⌘G sheet: a path field that completes the component being typed and walks the
+    /// window when it resolves.
     pub(crate) fn go_sheet(
         &self,
-        text: &str,
+        sheet: &GoSheet,
         palette: &Palette,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let this: WeakEntity<Self> = cx.entity().downgrade();
         let leave = this.clone();
-        let field = native_text_field("ng.finder.go", text)
+        let typing = this.clone();
+        let field = native_text_field("ng.finder.go", &sheet.shown)
             .stretch()
-            .editing(0..text.chars().count())
+            .editing(0..sheet.shown.chars().count())
+            .on_change(move |text, _, cx| {
+                let text = text.to_string();
+                typing
+                    .update(cx, |demo: &mut FinderDemo, cx| demo.go_typing(text, cx))
+                    .ok();
+            })
             .on_submit(move |typed, window, cx| {
                 let typed = typed.to_string();
                 this.update(cx, |demo: &mut FinderDemo, cx| {
-                    if let Some(id) = demo.folder_at_path(&typed) {
-                        demo.go(id, window, cx);
-                    }
+                    demo.go_typed(&typed, window, cx);
                     demo.go_sheet = None;
                     focus_gpui(window);
                     key_to_parent(window);
@@ -82,7 +190,22 @@ impl FinderDemo {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Go to the folder:"),
                             )
-                            .child(div().h(px(24.)).child(field)),
+                            .child(div().h(px(24.)).child(field))
+                            .children((!sheet.choices.is_empty()).then(|| {
+                                div().flex().flex_col().gap(px(2.)).children(
+                                    sheet.choices.iter().enumerate().map(|(at, choice)| {
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(match at {
+                                                0 => palette.label,
+                                                _ => palette.secondary,
+                                            })
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(choice.clone())
+                                    }),
+                                )
+                            })),
                     ),
             )
             .into_any_element()

@@ -20,6 +20,7 @@ use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
 use crate::chrome::scope_bar;
+use crate::chrome::sheet::GoSheet;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::dragdrop::Spring;
@@ -94,7 +95,7 @@ pub(crate) struct FinderDemo {
     /// The folders this window has been through, newest first, for the Go menu.
     pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
-    pub(crate) go_sheet: Option<String>,
+    pub(crate) go_sheet: Option<GoSheet>,
     /// The cursor row's icon, as last drawn: the Quick Look panel zooms out of it.
     pub(crate) ql_icon: Anchor,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
