@@ -54,7 +54,7 @@ impl FinderDemo {
             true => "/",
             false => trimmed,
         });
-        path.is_dir().then(|| intern_path(path))
+        finder_fs::list::is_dir(path).then(|| intern_path(path))
     }
 
     pub(crate) fn crumb_path(&self) -> String {

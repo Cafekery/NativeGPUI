@@ -30,12 +30,49 @@ const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
     | libc::ATTR_CMN_FLAGS
     | libc::ATTR_CMN_FILEID;
 
+const OPEN_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
+
 struct FdGuard(RawFd);
 
 impl Drop for FdGuard {
     fn drop(&mut self) {
         unsafe { libc::close(self.0) };
     }
+}
+
+/// The directory's own descriptor. `O_DIRECTORY` already rejects a non-directory target, so a
+/// symlink to a directory still opens (matching `read_dir`) while a symlink to a file correctly
+/// fails with `ENOTDIR`. A path past `PATH_MAX` cannot be opened whole, so it is walked one
+/// component at a time with `openat`, which is never handed more than one name.
+fn open_dir(dir: &Path) -> io::Result<FdGuard> {
+    let path = CString::new(dir.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let fd = unsafe { libc::open(path.as_ptr(), OPEN_FLAGS) };
+    if fd >= 0 {
+        return Ok(FdGuard(fd));
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() != Some(libc::ENAMETOOLONG) {
+        return Err(err);
+    }
+    let mut at: Option<FdGuard> = None;
+    for part in dir.components() {
+        let name = CString::new(part.as_os_str().as_bytes())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let parent = at.as_ref().map_or(libc::AT_FDCWD, |open| open.0);
+        let fd = unsafe { libc::openat(parent, name.as_ptr(), OPEN_FLAGS) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        at = Some(FdGuard(fd));
+    }
+    at.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+}
+
+/// Whether `path` is a directory at any depth: `Path::is_dir` stats the whole path, which a path
+/// past `PATH_MAX` cannot be.
+pub fn is_dir(path: &Path) -> bool {
+    open_dir(path).is_ok()
 }
 
 /// Every entry of `dir`. Errors are the directory's own (missing, unreadable); a single entry
@@ -59,15 +96,8 @@ pub fn list_dir_batched(
 ) -> io::Result<()> {
     #[cfg(test)]
     READS.lock().unwrap().push(dir.to_path_buf());
-    let path = CString::new(dir.as_os_str().as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    // `O_DIRECTORY` already rejects a non-directory target, so a symlink to a directory still
-    // opens (matching `read_dir`) while a symlink to a file correctly fails with `ENOTDIR`.
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let _guard = FdGuard(fd);
+    let open = open_dir(dir)?;
+    let fd = open.0;
 
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
@@ -229,6 +259,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, symlink};
+    use std::path::PathBuf;
 
     fn by_name(entries: &[Entry]) -> BTreeMap<&str, &Entry> {
         entries.iter().map(|e| (e.name.as_str(), e)).collect()
@@ -343,6 +374,56 @@ mod tests {
     fn missing_dir_is_not_found() {
         let err = list_dir(Path::new("/no/such/directory/at/all")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// A directory far past `PATH_MAX`, built one component at a time because `mkdir` cannot be
+    /// handed the whole path either.
+    fn deep_dir(root: &Path, levels: usize) -> PathBuf {
+        fs::create_dir(root).unwrap();
+        let mut path = root.to_path_buf();
+        let mut at = open_dir(root).unwrap();
+        for level in 0..levels {
+            let name = CString::new(format!("d{level:04}")).unwrap();
+            assert_eq!(unsafe { libc::mkdirat(at.0, name.as_ptr(), 0o755) }, 0);
+            let fd = unsafe { libc::openat(at.0, name.as_ptr(), OPEN_FLAGS) };
+            assert!(fd >= 0);
+            at = FdGuard(fd);
+            path.push(name.to_str().unwrap());
+        }
+        let leaf = CString::new("leaf.txt").unwrap();
+        let fd =
+            unsafe { libc::openat(at.0, leaf.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o644) };
+        assert!(fd >= 0);
+        unsafe { libc::close(fd) };
+        path
+    }
+
+    fn remove_deep(root: &Path) {
+        assert!(
+            std::process::Command::new("rm")
+                .args(["-rf".as_ref(), root.as_os_str()])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
+    fn a_directory_past_path_max_lists() {
+        let root = std::env::temp_dir().join(format!("finder-fs-deep-{}", std::process::id()));
+        remove_deep(&root);
+        let deep = deep_dir(&root, 1200);
+        assert!(deep.as_os_str().len() > libc::PATH_MAX as usize);
+        assert_eq!(
+            fs::read_dir(&deep).unwrap_err().raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+
+        assert!(is_dir(&deep));
+        let entries = list_dir(&deep).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "leaf.txt");
+        remove_deep(&root);
     }
 
     #[test]
