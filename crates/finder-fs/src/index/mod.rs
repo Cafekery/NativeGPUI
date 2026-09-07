@@ -9,6 +9,8 @@
 //! - `children`/`folder_size`/`search` answer from memory in milliseconds.
 //! - `note_changed` re-reads the named directories (the watcher's job to call).
 //! - `sync` is the launch entry: it replays FSEvents since the snapshot instead of walking again.
+//! - `save` writes the snapshot when the tree has changed, and a finished walk saves itself: the
+//!   crawl is the expensive state, so it is on disk before anything can ask the app to quit.
 
 mod catchup;
 mod crawl;
@@ -21,8 +23,8 @@ mod tests;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::entry::Entry;
 use crate::list::list_dir;
@@ -70,6 +72,10 @@ pub struct Index {
     /// `RwLock` indefinitely, so a writer waits its turn behind anyone already asking to read.
     waiting: AtomicUsize,
     crawling: AtomicBool,
+    /// Whether the tree holds a change the snapshot on disk does not.
+    dirty: AtomicBool,
+    saving: AtomicBool,
+    writing: Mutex<()>,
 }
 
 impl Index {
@@ -79,6 +85,9 @@ impl Index {
             tree: RwLock::new(snapshot::load(store).unwrap_or_default()),
             waiting: AtomicUsize::new(0),
             crawling: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
+            saving: AtomicBool::new(false),
+            writing: Mutex::new(()),
         })
     }
 
@@ -199,9 +208,36 @@ impl Index {
             .collect()
     }
 
-    /// Writes the snapshot to a temp file and renames it over `store`.
+    /// Writes the snapshot to a temp file and renames it over `store`, if the tree has changed
+    /// since the last one landed.
     pub fn save(&self) {
-        let _ = snapshot::save(&self.read(), &self.store);
+        let _writing = self.writing.lock().unwrap_or_else(|held| held.into_inner());
+        if !self.dirty.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let started = Instant::now();
+        self.saving.store(true, Ordering::Release);
+        let written = snapshot::save(&self.read(), &self.store);
+        self.saving.store(false, Ordering::Release);
+        if written.is_err() {
+            self.dirty.store(true, Ordering::Release);
+        }
+        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
+            let bytes = std::fs::metadata(&self.store).map_or(0, |meta| meta.len());
+            eprintln!(
+                "save {} ms {bytes} {}",
+                started.elapsed().as_millis(),
+                written.is_ok()
+            );
+        }
+    }
+
+    /// Waits out a save already under way, for at most `budget`, and never starts one.
+    pub fn settle(&self, budget: Duration) {
+        let deadline = Instant::now() + budget;
+        while self.saving.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     pub fn stats(&self) -> Stats {
@@ -223,6 +259,7 @@ impl Index {
     }
 
     fn write(&self) -> RwLockWriteGuard<'_, Tree> {
+        self.dirty.store(true, Ordering::Release);
         for _ in 0..YIELDS {
             if self.waiting.load(Ordering::Acquire) == 0 {
                 break;

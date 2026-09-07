@@ -46,6 +46,8 @@ use crate::data::intern_path;
 use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
 const SAVE_EVERY: Duration = Duration::from_secs(180);
+/// What a quit can spend on a save already under way; gpui gives shutdown handlers about 200 ms.
+const QUIT_WAIT: Duration = Duration::from_millis(150);
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
@@ -154,7 +156,8 @@ fn crawl(cx: &mut App) {
             }
         })
         .detach();
-    cx.on_app_quit(|_| async { index().save() }).detach();
+    cx.on_app_quit(|_| async { index().settle(QUIT_WAIT) })
+        .detach();
 }
 
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {
