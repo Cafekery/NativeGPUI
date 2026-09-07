@@ -426,6 +426,10 @@ impl FinderDemo {
         if !moved {
             self.shaped(&shape, walk);
         }
+        // Finder holds the row the cursor is on in view across a re-sort, wherever it moved to.
+        if let Some(key) = self.cursor.clone() {
+            self.reveal(&key);
+        }
     }
 
     /// Watch what is on screen and nothing else.

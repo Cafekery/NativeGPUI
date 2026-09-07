@@ -331,12 +331,7 @@ impl FinderDemo {
         )
         .id(("ng.finder.header", slot))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            if this.sort == column {
-                this.ascending = !this.ascending;
-            } else {
-                this.sort = column;
-                this.ascending = true;
-            }
+            this.sort_by(column, cx);
             cx.notify();
         }));
         cell = match index {
