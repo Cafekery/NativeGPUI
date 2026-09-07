@@ -45,13 +45,18 @@ pub(crate) struct Row {
     pub(crate) kind: SharedString,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
-    /// The folder this row opens: a directory the user can walk into, never a package.
+    /// The folder this row opens: a directory the user can walk into, or an alias's target,
+    /// never a package.
     pub(crate) opens: Option<&'static str>,
+    /// Whether the list can disclose it in place. Finder gives an alias no triangle, however
+    /// its target opens.
+    pub(crate) discloses: bool,
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
 fn artwork_of(entry: &Entry, path: &str, uti: &str) -> Option<FileType<'static>> {
-    if entry.package {
+    // An alias wears the icon of what it points at, badged; the system draws that for the link.
+    if entry.package || entry.kind == EntryKind::Symlink {
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
@@ -64,6 +69,15 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str) -> Option<FileType<'static>>
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
         None => FileType::Uti(intern(uti)),
     })
+}
+
+/// Where an alias leads: Finder opens it at the folder it points at, wherever that is.
+fn target_folder(path: &str) -> Option<&'static str> {
+    let path = Path::new(path);
+    path.is_dir()
+        .then(|| std::fs::canonicalize(path).ok())
+        .flatten()
+        .map(|target| intern_path(&target))
 }
 
 fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
@@ -91,7 +105,11 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         kind: kind.label.to_string().into(),
         face: face_of(&kind.uti),
         hidden: entry.hidden,
-        opens: entry.is_dir().then(|| intern(&path)),
+        opens: match entry.kind {
+            EntryKind::Symlink => target_folder(&path),
+            _ => entry.is_dir().then(|| intern(&path)),
+        },
+        discloses: entry.is_dir(),
         artwork: artwork_of(entry, &path, &kind.uti),
         path: path.into(),
     }
