@@ -1,5 +1,6 @@
 //! What is chosen and where the cursor is: Finder's click rules, its type-select, its twists.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -30,37 +31,38 @@ impl FinderDemo {
         let lines = self.lines(true);
         let chosen = self.selected.snapshot();
         let cursor = self.cursor.clone().filter(|_| chosen.is_empty());
-        let mut keys: Vec<SharedString> = Vec::new();
-        let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
-        for line in lines.iter().filter(|line| match &cursor {
+        let picked = |line: &Line| match &cursor {
             Some(cursor) => *cursor == line.key,
             None => chosen.contains(&line.key),
-        }) {
-            keys.push(line.key.clone());
-            if let Some(into) = line.row.opens.filter(|_| line.row.discloses) {
-                folders.push((line.key.clone(), into));
-            }
-        }
+        };
+        let folders: Vec<(SharedString, &'static str)> = lines
+            .iter()
+            .filter(|line| picked(line))
+            .filter_map(|line| {
+                line.row
+                    .opens
+                    .filter(|_| line.row.discloses)
+                    .map(|into| (line.key.clone(), into))
+            })
+            .collect();
         let expandable = folders
             .iter()
             .filter(|(key, _)| self.expanded.contains(key) != open)
             .count();
         if expandable > 0 || (deep && open) {
-            for (key, into) in folders {
-                if deep {
-                    self.disclose_tree(&key, into, open);
-                } else {
-                    self.disclose(&key, open);
-                }
-            }
+            self.disclose_all(&folders, open, deep);
             return;
         }
-        if open || keys.len() != 1 {
+        if open {
             return;
         }
-        let Some(index) = self.line_at(&lines, &keys[0]) else {
+        let mut only = lines.iter().enumerate().filter(|(_, line)| picked(line));
+        let Some((index, _)) = only.next() else {
             return;
         };
+        if only.next().is_some() {
+            return;
+        }
         let depth = lines[index].depth;
         if depth == 0 {
             return;
@@ -73,11 +75,44 @@ impl FinderDemo {
     }
 
     pub(crate) fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
-        self.disclose(key, open);
+        self.disclose_all(&[(key.clone(), into)], open, true);
+    }
+
+    /// Opens or shuts every folder named, and under a deep disclose everything below them, once.
+    fn disclose_all(&mut self, folders: &[(SharedString, &'static str)], open: bool, deep: bool) {
         if open {
-            self.expand_under(into, 0);
-        } else {
-            self.collapse_under(into);
+            let mut opened: Vec<SharedString> = Vec::with_capacity(folders.len());
+            for (key, into) in folders {
+                opened.push(key.clone());
+                if deep {
+                    self.expand_under(into, 0, &mut opened);
+                }
+            }
+            self.expanded.extend(opened);
+            return;
+        }
+        let shut: HashSet<&SharedString> = folders.iter().map(|(key, _)| key).collect();
+        let under: HashSet<&str> = match deep {
+            true => folders
+                .iter()
+                .map(|(_, into)| into.trim_end_matches('/'))
+                .collect(),
+            false => HashSet::new(),
+        };
+        let inside = |path: &str| {
+            let mut rest = path;
+            while let Some(cut) = rest.rfind('/') {
+                rest = &rest[..cut];
+                if under.contains(rest) {
+                    return true;
+                }
+            }
+            false
+        };
+        self.expanded
+            .retain(|key| !shut.contains(key) && !inside(key));
+        if deep {
+            self.expanding.retain(|id, _| !inside(id));
         }
     }
 
@@ -106,9 +141,8 @@ impl FinderDemo {
     }
 
     /// Discloses every folder in memory under `id` and asks for the listings that are not.
-    fn expand_under(&mut self, id: &'static str, depth: usize) {
+    fn expand_under(&mut self, id: &'static str, depth: usize, opened: &mut Vec<SharedString>) {
         let home = crate::home();
-        let mut opened: Vec<SharedString> = Vec::new();
         let mut walk = vec![(id, depth)];
         while let Some((id, depth)) = walk.pop() {
             if depth >= DEEP_LEVELS || self.expanded.len() + opened.len() >= DEEP_FOLDERS {
@@ -136,21 +170,14 @@ impl FinderDemo {
                 walk.push((deeper, depth + 1));
             }
         }
-        self.expanded.extend(opened);
-    }
-
-    /// Shuts every folder under `id`, whether or not this window ever had its listing.
-    fn collapse_under(&mut self, id: &'static str) {
-        let under = id.trim_end_matches('/');
-        let inside = |path: &str| path.strip_prefix(under).is_some_and(|r| r.starts_with('/'));
-        self.expanded.retain(|key| !inside(key));
-        self.expanding.retain(|id, _| !inside(id));
     }
 
     /// The listing a walk was waiting on: disclose what it holds and go on down.
     pub(crate) fn expand_landed(&mut self, id: &'static str) {
         if let Some(depth) = self.expanding.remove(id) {
-            self.expand_under(id, depth);
+            let mut opened: Vec<SharedString> = Vec::new();
+            self.expand_under(id, depth, &mut opened);
+            self.expanded.extend(opened);
         }
     }
 
