@@ -263,7 +263,18 @@ impl FinderDemo {
                     self.settled(touched, done.results, row.after, cx);
                     self.complain(&error.to_string());
                 }
-                Event::Cancelled(job) => self.jobs.retain(|row| row.id != job),
+                Event::Cancelled { job, done } => {
+                    let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
+                        continue;
+                    };
+                    let row = self.jobs.remove(pos);
+                    if row.record && done.undo.is_some() {
+                        self.journal.record(&done, &row.op);
+                        landed = true;
+                    }
+                    let touched = crate::ops::touched(&row.op);
+                    self.settled(touched, done.results, row.after, cx);
+                }
                 Event::Paused => {
                     for row in &mut self.jobs {
                         row.paused = true;
