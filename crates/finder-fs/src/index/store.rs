@@ -1,6 +1,7 @@
 //! The arena the index answers from: one fixed-size node per entry, names interned once, a
 //! directory's children a linked list in listing order.
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -120,9 +121,18 @@ fn hash(bytes: &[u8]) -> u32 {
     (h ^ (h >> 32)) as u32
 }
 
+/// What a search matches against: ASCII as it stands, anything else case-, width- and
+/// diacritic-folded, so "cafe" and "café" are one string however either is composed.
+pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
+    match bytes.is_ascii() {
+        true => Cow::Borrowed(bytes),
+        false => Cow::Owned(crate::sort::fold(&String::from_utf8_lossy(bytes)).into_bytes()),
+    }
+}
+
 pub fn letters(bytes: &[u8]) -> u32 {
     let mut m = 0;
-    for &b in bytes {
+    for &b in folded(bytes).iter() {
         m |= match b | 0x20 {
             c @ b'a'..=b'z' => 1 << (c - b'a'),
             b'0'..=b'9' if b.is_ascii_digit() => 1 << 26,

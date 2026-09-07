@@ -2,7 +2,7 @@
 //! against a rising cutoff so only the best `limit` are ever kept.
 
 use super::Hit;
-use super::store::{Tree, letters};
+use super::store::{Tree, folded, letters};
 
 const SUBSTRING: u8 = 1;
 const WORD: u8 = 2;
@@ -83,7 +83,7 @@ fn class_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
 }
 
 pub fn search(tree: &Tree, query: &str, under: Option<u32>, limit: usize) -> Vec<Hit> {
-    let query = query.to_lowercase();
+    let query = crate::sort::fold(query);
     let query = query.as_bytes();
     if query.is_empty() || limit == 0 {
         return Vec::new();
@@ -96,7 +96,7 @@ pub fn search(tree: &Tree, query: &str, under: Option<u32>, limit: usize) -> Vec
         if mask & wanted != wanted {
             continue;
         }
-        class[id] = class_of(tree.names.bytes(id as u32), query, &folds);
+        class[id] = class_of(&folded(tree.names.bytes(id as u32)), query, &folds);
         any |= class[id] != 0;
     }
     if !any {

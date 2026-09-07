@@ -6,6 +6,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 
+use finder_fs::sort::fold;
 use gpui::SharedString;
 
 use crate::app::FinderDemo;
@@ -383,15 +384,15 @@ impl FinderDemo {
             return;
         };
         out.reserve(folder.rows.len().saturating_sub(from));
-        let query = self.query.trim().to_lowercase();
-        let type_filter = self.type_filter.as_deref().unwrap_or("");
+        let query = fold(self.query.trim());
+        let type_filter = fold(self.type_filter.as_deref().unwrap_or(""));
         let rows = folder
             .rows
             .iter()
             .skip(from)
             .filter(|row| self.show_hidden || !row.hidden)
-            .filter(|row| query.is_empty() || row.name.to_lowercase().contains(&query))
-            .filter(|row| type_filter.is_empty() || row.name.to_lowercase().contains(type_filter));
+            .filter(|row| query.is_empty() || fold(&row.name).contains(&query))
+            .filter(|row| type_filter.is_empty() || fold(&row.name).contains(&type_filter));
 
         for row in rows {
             let open = tree && self.expanded.contains(&row.path);

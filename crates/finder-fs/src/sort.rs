@@ -1,8 +1,8 @@
 //! Finder's Name column order.
 
 use objc2_core_foundation::{
-    CFIndex, CFLocale, CFRange, CFRetained, CFString, CFStringBuiltInEncodings,
-    CFStringCompareFlags, kCFAllocatorNull,
+    CFIndex, CFLocale, CFMutableString, CFRange, CFRetained, CFString, CFStringBuiltInEncodings,
+    CFStringCompareFlags, CFStringNormalizationForm, kCFAllocatorNull,
 };
 use std::cmp::Ordering;
 use std::sync::OnceLock;
@@ -16,6 +16,10 @@ const OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensiti
     .union(CFStringCompareFlags::CompareNumerically)
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareForcedOrdering);
+
+const FOLD_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
+    .union(CFStringCompareFlags::CompareWidthInsensitive)
+    .union(CFStringCompareFlags::CompareDiacriticInsensitive);
 
 // `CompareNonliteral` matches canonically equivalent text, so a name stored NFD answers to a
 // prefix typed NFC, and `CompareDiacriticInsensitive` answers a prefix typed without the accent
@@ -58,6 +62,21 @@ pub fn starts_with(name: &str, prefix: &str) -> bool {
     let range = CFRange::new(0, name_cf.length());
     let mut found = CFRange::new(0, 0);
     unsafe { name_cf.find_with_options(Some(&prefix_cf), range, PREFIX_OPTIONS, &mut found) }
+}
+
+/// The form Finder searches in: case, width and diacritics folded away, decomposed first so a
+/// name stored either way folds onto the same bytes.
+pub fn fold(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    let borrowed = unsafe { borrow_cf_str(s) };
+    let Some(folded) = CFMutableString::new_copy(None, 0, Some(&borrowed)) else {
+        return s.to_lowercase();
+    };
+    unsafe { CFMutableString::normalize(Some(&folded), CFStringNormalizationForm::D) };
+    CFMutableString::fold(Some(&folded), FOLD_OPTIONS, current_locale());
+    folded.to_string()
 }
 
 /// Sorts `names` into Finder's Name order, converting each to a `CFString` once.
@@ -111,6 +130,13 @@ mod tests {
         assert!(starts_with("cafe\u{301}.txt", "cafe"));
         assert!(starts_with("cafe.txt", "caf\u{e9}"));
         assert!(!starts_with("cafe.txt", "cafx"));
+    }
+
+    #[test]
+    fn folding_meets_in_one_form() {
+        assert_eq!(fold("cafe\u{301}"), fold("caf\u{e9}"));
+        assert_eq!(fold("CAF\u{c9}"), fold("cafe"));
+        assert_eq!(fold("README.md"), "readme.md");
     }
 
     #[test]
