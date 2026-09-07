@@ -1,5 +1,4 @@
-//! What a drag carries and where a drop lands: Finder's move, its Option-copy and its
-//! spring-loaded folders.
+//! What a drag carries and where a drop lands: Finder's move, Option-copy and spring-loading.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -54,8 +53,7 @@ impl FinderDemo {
         }
     }
 
-    /// A row drag that reaches the sidebar becomes an AppKit file drag: the sidebar is a hosted
-    /// `NSOutlineView`, and nothing of GPUI's own drags is offered to it.
+    /// A row drag reaching the sidebar becomes an AppKit file drag: the sidebar is an NSView.
     pub(crate) fn drag_to_sidebar(
         &mut self,
         event: &DragMoveEvent<RowDrag>,

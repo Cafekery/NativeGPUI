@@ -87,8 +87,7 @@ pub(crate) fn key_to_parent(window: &Window) {
     }
 }
 
-/// The scroller a scrolling view wears at its trailing edge, or nothing while it all fits.
-/// `inset` is the content the view keeps above its rows, which the knob does not stand for.
+/// The trailing-edge scroller, or nothing while it all fits; `inset` is content above the rows.
 pub(crate) fn scroller(
     id: impl Into<ElementId>,
     handle: &ScrollHandle,
@@ -112,7 +111,7 @@ pub(crate) fn scroller(
     )
 }
 
-/// A scroll container that ignores the other axis; nested with a list, each axis then has one owner.
+/// A scroll container that ignores the other axis, so nested scrollers own one axis each.
 pub(crate) fn axis_locked<E: Styled>(mut element: E) -> E {
     element.style().restrict_scroll_to_axis = Some(true);
     element

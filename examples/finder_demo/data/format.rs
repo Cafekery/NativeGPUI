@@ -21,8 +21,7 @@ pub(super) fn reference_seconds(at: SystemTime) -> f64 {
         .map_or(0., |since| since.as_secs_f64() - UNIX_TO_REFERENCE)
 }
 
-/// Finder's date column, formatted once a minute and shared by every row in it: `NSDateFormatter`
-/// costs tens of microseconds a call, which 20 000 rows cannot pay.
+/// Finder's date column, formatted once a minute and shared by every row in it.
 pub(crate) fn date_text(seconds: f64) -> SharedString {
     thread_local! {
         static FORMATTER: Retained<NSDateFormatter> = {

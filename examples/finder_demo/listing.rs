@@ -1,5 +1,4 @@
-//! The rows a frame draws: built once from the listings on screen, kept until what they were
-//! built from moves.
+//! The rows a frame draws: built once from the listings on screen, kept until they move.
 
 use std::cell::RefMut;
 use std::collections::{HashMap, HashSet};
@@ -24,8 +23,7 @@ pub(crate) fn next_rev() -> u64 {
     NEXT.fetch_add(1, Atomic::Relaxed)
 }
 
-/// A set of row keys a frame shares rather than copies: handing it to an element costs a clone of
-/// the handle, and every change gives the set a new revision the caches built from it compare.
+/// A set of row keys a frame shares rather than copies, under a revision its caches compare.
 #[derive(Clone)]
 pub(crate) struct Keys {
     keys: Arc<HashSet<SharedString>>,
@@ -47,11 +45,10 @@ pub(crate) struct Stamp {
     hits: u64,
 }
 
-/// The band slots built for one listing, beside the listing they were built from.
+/// The band slots built for one listing, beside that listing.
 type Bands = (Arc<Vec<Line>>, Arc<Vec<Slot>>);
 
-/// A listing as built, and how many of the folder's rows went into it while rows landing at the
-/// end of that folder can extend it rather than build it again.
+/// A listing as built, and how many of the folder's rows went into it.
 #[derive(Clone)]
 struct Built {
     lines: Arc<Vec<Line>>,
@@ -61,8 +58,7 @@ struct Built {
 /// The cursor's key, and the line it names while that listing holds one.
 type Cursor = (SharedString, Option<Line>);
 
-/// The rows, bands and browser listings a frame draws, kept until [`Stamp`] moves: walking a
-/// disclosed home folder is millions of rows, which no frame can pay for twice.
+/// The rows, bands and browser listings a frame draws, kept until [`Stamp`] moves.
 #[derive(Default)]
 pub(crate) struct Listings {
     stamp: Option<Stamp>,
@@ -92,8 +88,7 @@ impl Keys {
         Arc::make_mut(&mut self.keys).remove(key)
     }
 
-    /// Every key in one revision: a disclosed subtree is thousands of them, and one at a time
-    /// would copy the set and rebuild the rows behind it that many times.
+    /// Every key in one revision, so a disclosed subtree rebuilds the rows behind it once.
     pub(crate) fn extend(&mut self, keys: impl IntoIterator<Item = SharedString>) {
         self.rev = next_rev();
         Arc::make_mut(&mut self.keys).extend(keys);
@@ -136,7 +131,6 @@ impl FromIterator<SharedString> for Keys {
     }
 }
 
-/// A plain listing's rows as the lines a frame draws.
 pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
     rows.iter()
         .filter(|row| hidden || !row.hidden)
@@ -149,8 +143,7 @@ pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
 }
 
 impl FinderDemo {
-    /// The rows a grouped list draws, with Finder's band headers between them. An ungrouped list
-    /// draws its rows one for one and builds no slots at all.
+    /// The rows a grouped list draws, with Finder's band headers between them.
     pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Option<Arc<Vec<Slot>>> {
         if !self.grouped {
             return None;
@@ -193,10 +186,8 @@ impl FinderDemo {
             .unwrap_or(index)
     }
 
-    /// The rows on screen, built once and shared by everything that draws this frame.
     pub(crate) fn lines(&self, tree: bool) -> Arc<Vec<Line>> {
         let rows = self.appendable();
-        // Held by the caller alone, so extending it below grows it in place rather than copying.
         let fresh = {
             let listings = self.listings();
             let built = match tree {
@@ -226,8 +217,7 @@ impl FinderDemo {
         built.lines
     }
 
-    /// Whether a listing is drawn as it is read — no query, no filter, no disclosed row — and
-    /// with it whether hidden rows are drawn.
+    /// Whether a listing is drawn as it is read, and with it whether hidden rows are drawn.
     pub(crate) fn plain(&self) -> Option<bool> {
         (self.tag_listing.is_none()
             && !self.results()
@@ -237,8 +227,7 @@ impl FinderDemo {
         .then_some(self.show_hidden)
     }
 
-    /// Take the lines a read built for the listing it sorted, so the frame the rows moved under
-    /// does not build every one of them again.
+    /// Take the lines a read built, so the frame they land under does not build them again.
     pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
         if id != self.here() || self.plain() != Some(hidden) {
             return;
@@ -252,8 +241,7 @@ impl FinderDemo {
         listings.flat = Some(built);
     }
 
-    /// Lifts the cached listing out of the cache, so extending it does not copy what the cache
-    /// still holds, and drops the bands built from it.
+    /// Lifts the cached listing out, so extending it does not copy what the cache still holds.
     fn take(&self, tree: bool) -> Option<Built> {
         let mut listings = self.listings();
         listings.slots = None;
@@ -263,8 +251,7 @@ impl FinderDemo {
         }
     }
 
-    /// How many rows of the folder on screen a listing is built from, when it is that one folder
-    /// in order and nothing else; `None` where the index's hits or a tag listing shape it.
+    /// How many rows of the folder on screen a listing is built from; `None` where hits shape it.
     fn appendable(&self) -> Option<usize> {
         if self.tag_listing.is_some() || self.results() {
             return None;
@@ -274,8 +261,7 @@ impl FinderDemo {
             .map(|folder| folder.rows.len())
     }
 
-    /// The rows a listing gained since it was built, appended to what was built: while a folder
-    /// streams, every frame would otherwise build every row that has landed so far.
+    /// The rows a listing gained since it was built, appended to what was built.
     fn extended(
         &self,
         built: Option<Built>,
@@ -362,8 +348,7 @@ impl FinderDemo {
         if !self.results() {
             return out;
         }
-        // The index's hits are already ranked best first; anything only the folder listing
-        // still knows about (too new for the index) trails behind, unranked.
+        // The index's hits are ranked best first; what only the listing knows trails behind.
         let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
         let mut merged: Vec<Line> = self
             .hits

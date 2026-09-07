@@ -1,5 +1,4 @@
-//! Finder's ⌘I window: one per item, with the General block it opens on. A big selection
-//! combines into a single summary window instead of one per item.
+//! Finder's ⌘I window: one per item, or one summary for a selection past [`COMBINE_OVER`].
 
 use gpui::{
     App, Bounds, Context, Entity, FontWeight, IntoElement, ParentElement, Render, SharedString,
@@ -148,13 +147,10 @@ impl Render for Info {
     }
 }
 
-/// A selection past this size gets one combined window; Finder needs ⌃⌘I for that, ours needs
-/// only ⌘I once there are enough items that N separate windows would be a mess.
+/// A selection past this size gets one combined window rather than one window per item.
 const COMBINE_OVER: usize = 3;
 
-/// Finder opens one window per chosen item, cascaded down the screen; ours combines a selection
-/// bigger than [`COMBINE_OVER`] into a single summary window instead. `at` names the folder to
-/// open on in place of the selection, as the path bar's crumbs do.
+/// One window per chosen item, cascaded down the screen; `at` opens on a folder instead.
 pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
     let (lines, path) = {
         let state = demo.read(cx);

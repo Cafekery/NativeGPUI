@@ -102,14 +102,12 @@ pub(crate) fn rows_of(dir: &'static str, entries: &[Entry], index: &Index) -> Ve
         .collect()
 }
 
-/// One row for a file the index found somewhere else on the disk.
 pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
     let dir = path.parent().map_or("/", intern_path);
     Arc::new(row_of(dir, entry, index))
 }
 
-/// Every file Spotlight says carries `tag`, as rows: `mdfind`'s answer read back a folder at a
-/// time, so each row is built the way a listing builds it. An empty tag asks for every tagged file.
+/// Every file Spotlight says carries `tag`, as rows; an empty tag asks for every tagged file.
 pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     let query = match tag.is_empty() {
         true => "kMDItemUserTags == '*'".to_string(),

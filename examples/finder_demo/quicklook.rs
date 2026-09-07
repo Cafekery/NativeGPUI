@@ -1,5 +1,4 @@
-//! The system Quick Look panel: opened over the selection, zooming out of the cursor's icon, and
-//! kept in step with the window while it is up.
+//! The system Quick Look panel, kept in step with the selection while it is up.
 
 use std::path::PathBuf;
 
@@ -13,7 +12,7 @@ use crate::data::Line;
 use crate::view::LIST_VIEW;
 
 impl FinderDemo {
-    /// Space: the system Quick Look panel over the selection, zooming out of the cursor's icon.
+    /// Space: the panel over the selection, zooming out of the cursor's icon.
     pub(crate) fn toggle_quick_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if quick_look_visible() {
             quick_look_close();
@@ -57,7 +56,6 @@ impl FinderDemo {
         Some((paths, current))
     }
 
-    /// The panel follows the selection while it is up.
     pub(crate) fn sync_quick_look(&mut self, window: &Window) {
         if !quick_look_visible() {
             self.ql_shown = None;

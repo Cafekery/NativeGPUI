@@ -1,5 +1,4 @@
-//! Finder's preview pane: a glass in the main window frosting the rows, and a borderless child
-//! window over it carrying the card.
+//! Finder's preview pane: a glass frosting the rows, and a child window carrying the card.
 
 mod card;
 mod stats;
@@ -36,8 +35,7 @@ pub(crate) const INSET: f32 = 10.;
 /// The parent's resize edge, left uncovered by the card window.
 const RESIZE_EDGE: f32 = 6.;
 
-/// A borderless child window over the list: one Metal layer cannot both blur GPUI content and
-/// paint GPUI content over that blur, so the card needs a window of its own.
+/// The card's own window: one Metal layer cannot both blur GPUI content and paint over the blur.
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
@@ -72,8 +70,7 @@ impl PreviewPane {
             self.drag = None;
             return;
         }
-        // The pointer's screen position, not the event's: GPUI re-sends the last window-local
-        // position while a drag holds, and this window moves under the pointer as it resizes.
+        // The pointer's screen position: GPUI re-sends the last window-local one while dragging.
         let pointer = NSEvent::mouseLocation().x as f32;
         let room = self.finder.read(cx).list_room;
         let width = (right - pointer).clamp(MIN_W, MAX_W.min(room - LIST_MIN_W).max(MIN_W));
@@ -103,8 +100,8 @@ impl Render for PreviewPane {
                 .size_full()
                 .font_family(family)
                 .text_size(tokens::system_font_size())
-                // AppKit sends the drag to the window the grip was pressed in, and the pointer
-                // leaves that window as soon as the pane grows, so no hitbox is ever under it.
+                // AppKit sends the drag to the window the grip was pressed in, which the pointer
+                // leaves as soon as the pane grows.
                 .child(canvas(|_, _, _| (), move |_, _, window, _| {
                     // A non-activating panel: a click here must still bring the app forward.
                     window.on_mouse_event(|_: &MouseDownEvent, phase, _, cx| {
@@ -125,8 +122,7 @@ impl Render for PreviewPane {
                     });
                 }))
                 .child(
-                    // The parent paints the pane's material and edges; this window, never key,
-                    // carries only what must draw above that material.
+                    // The parent paints the pane's material; this carries what draws above it.
                     div()
                         .size_full()
                         .relative()
@@ -230,10 +226,8 @@ impl FinderDemo {
             return;
         }
 
-        // The card window stops short of the window's right and bottom edges: those are the
-        // parent's resize edges, and a child window over them would take the drag. The bars at the
-        // bottom end at the pane, so they take no height from it.
-        // The tab bar ends at the pane, and the pane runs on over its height to the toolbar.
+        // The card window stops short of the parent's resize edges: a child window over them
+        // would take the drag.
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
@@ -245,8 +239,7 @@ impl FinderDemo {
         match &mut self.preview_window {
             Some(pane) if !same_rect(pane.frame, frame) => {
                 pane.frame = frame;
-                // Moved off this draw: resizing the pane's window from inside the parent's frame
-                // leaves the pane's own gpui window without its size change.
+                // Off this draw: resizing from inside the parent's frame loses the size change.
                 let pane_window = pane.window.clone();
                 cx.spawn(async move |_, _| pane_window.setFrame_display(frame, true))
                     .detach();

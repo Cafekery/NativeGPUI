@@ -1,11 +1,9 @@
-//! The two materials the window is built from: the pane's glass over the rows, and the band that
-//! runs from the window's edge under the toolbar.
+//! The window's two materials: the pane's glass over the rows, and the toolbar's band.
 
 use gpui::{AnyElement, Pixels, div, prelude::*, px};
 use native_gpui::{Blending, Layer, Material, glass, material, native_rule};
 
-/// The pane's glass, frosting the rows. Only its window-side corners round: the glass starts a
-/// radius left of the pane so its left corners fall outside the clip, with a rule for that edge.
+/// The pane's glass: it starts a radius left of the pane, so only its window-side corners round.
 pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
     div()
         .absolute()
@@ -39,8 +37,7 @@ pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// One material over the toolbar, scope and column-header bands, from the window's edge, so it
-/// runs on under the floating sidebar and its gutters and corners frost the rows.
+/// One material over the toolbar, scope and header bands, running on under the floating sidebar.
 pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
     div()
         .absolute()

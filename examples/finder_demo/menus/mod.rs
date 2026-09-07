@@ -1,5 +1,4 @@
-//! Finder's contextual menus, read off the real one: which rows each context shows, in what
-//! order, and what a pick runs.
+//! Finder's contextual menus: which rows each context shows, and what a pick runs.
 
 mod actions;
 mod bar;
@@ -59,8 +58,7 @@ pub(crate) fn backdrop(
         .on_select(picks(acts, this))
 }
 
-/// One menu for a whole view, built for the row `hit` names when the right-click lands: a hosted
-/// view per painted row is what a long listing cannot afford.
+/// One menu for a whole view, built when the click lands: a hosted view per row costs too much.
 pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
@@ -86,7 +84,6 @@ pub(crate) fn rows_menu(
         .on_select(picks(acts, this))
 }
 
-/// Runs what the pick names, against the actions the menu was built with.
 fn picks(
     acts: Rc<RefCell<Vec<Act>>>,
     this: WeakEntity<FinderDemo>,

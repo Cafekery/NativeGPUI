@@ -1,5 +1,5 @@
-//! Reading folders off the disk: what a frame asked for and did not have, what the watcher says
-//! changed, and the order Finder sorts a listing in.
+//! Reading folders off the disk: what a frame asked for, what the watcher says changed, and the
+//! order Finder sorts a listing in.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -14,34 +14,26 @@ use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::view::COLUMN_VIEW;
 use crate::{index, listing, preview};
 
-/// Rows per batch while a folder is read, how often the view takes delivery, and how often the
-/// index writes its snapshot.
 const BATCH: usize = 512;
 
 const POLL: Duration = Duration::from_millis(5);
 
 const TICK: Duration = Duration::from_millis(120);
 
-/// Ticks between volume snapshots, so the status bar's free space stays roughly current.
 const VOLUMES_EVERY: u64 = 40;
 
 /// The rows arriving from one directory read, and whether they replace what is on screen.
 #[derive(Default)]
 struct Mail {
     batches: Vec<(Vec<Arc<Row>>, bool)>,
-    /// The sorted listing as lines, built where it was sorted, and whether hidden rows are in it.
+    /// The sorted listing as lines, and whether hidden rows are in it.
     lines: Option<(bool, Vec<Line>)>,
     listed: bool,
     done: bool,
 }
 
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
-    // Finder keeps folders above files regardless of sort column or direction when this
-    // preference is on, so it is applied before the ascending/descending reversal below.
-    // The Kind column groups folders first unconditionally, preference or not: a folder
-    // doesn't really have a "kind" comparable to a file's, so Finder never interleaves them
-    // alphabetically there (verified against real Finder: "Folder" sorts ahead of "Document"
-    // even though that is backwards alphabetically).
+    // Finder groups folders first under the preference, and always in the Kind column.
     if folders_first() || sort == Column::Kind {
         let by_kind = b.opens.is_some().cmp(&a.opens.is_some());
         if by_kind != Ordering::Equal {
@@ -58,8 +50,7 @@ fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
     if ascending { by } else { by.reverse() }
 }
 
-/// Whether Finder's "keep folders on top" preference is on. Finder itself never rereads this
-/// mid-session, so this demo doesn't either: `defaults` is shelled out to once and cached.
+/// Finder's "keep folders on top" preference, read once: Finder never rereads it mid-session.
 fn folders_first() -> bool {
     static FOLDERS_FIRST: OnceLock<bool> = OnceLock::new();
     *FOLDERS_FIRST.get_or_init(|| {
@@ -70,8 +61,7 @@ fn folders_first() -> bool {
     })
 }
 
-/// The window's own tick: the watcher's reports, the volume snapshot and the thumbnails that
-/// landed since the last one.
+/// The window's tick: the watcher's reports, the volume snapshot, the thumbnails that landed.
 pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |this, cx| {
         let mut seen = 0;
@@ -105,7 +95,6 @@ pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Cont
     .detach();
 }
 
-/// The queue reports from its own thread; the window takes delivery on the same tick.
 pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |this, cx| {
         loop {
@@ -125,8 +114,7 @@ pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
 }
 
 impl FinderDemo {
-    /// Start a read for every folder the last frame asked for and did not have, and keep the
-    /// watcher pointed at what is on screen.
+    /// Everything the last frame asked for and did not have, plus where the watcher points.
     pub(crate) fn pump(&mut self, cx: &mut Context<Self>) {
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
@@ -138,15 +126,11 @@ impl FinderDemo {
         self.follow();
     }
 
-    /// What the last selection summary was asked about: a new selection or a fresh listing needs
-    /// another one.
+    /// What a summary was asked about: a new selection or a fresh listing needs another one.
     pub(crate) fn stats_key(&self) -> (u64, usize) {
         (self.selected.rev(), self.focused_lines().len())
     }
 
-    /// Counting and weighing the selection walks every chosen row, which the card and the status
-    /// bar cannot do on a frame: one pass runs off the main thread per change and they say
-    /// "Calculating…" until it lands.
     fn sync_stats(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             self.stats = None;
@@ -179,8 +163,7 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Reads `id` off the main thread, handing rows over as they arrive: the index's copy first
-    /// when it has one, then the disk's, which replaces it.
+    /// Reads `id` off the main thread: the index's copy first when it has one, then the disk's.
     pub(crate) fn read_folder(&mut self, id: &'static str, cx: &mut Context<Self>) {
         if !id.starts_with('/') || !self.folders.start(id) {
             return;
@@ -225,7 +208,6 @@ impl FinderDemo {
                 filling.lock().unwrap().done = true;
                 return;
             }
-            // Six hundred thousand rows sort for seconds, which no main thread has to spend.
             sort(&mut all);
             let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
             let mut mail = filling.lock().unwrap();
@@ -274,7 +256,6 @@ impl FinderDemo {
         if done {
             self.folders.finish(id);
         }
-        // The read hands over a listing it sorted; only a sort changed while it ran is left.
         if done && sorted_by != (self.sort, self.ascending) {
             self.sort_folder(id);
         } else if let Some((hidden, lines)) = lines {
@@ -311,8 +292,7 @@ impl FinderDemo {
         }
     }
 
-    /// Watch what is on screen and nothing else: the folder, the disclosed subfolders, the
-    /// browser's chain.
+    /// Watch what is on screen and nothing else.
     fn follow(&mut self) {
         let moved = (self.expanded.rev(), self.here(), self.target(), self.view);
         if self.followed == Some(moved) {
@@ -325,9 +305,8 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
-        // A stream reports the whole subtree under its path, so a folder inside another wanted one
-        // needs none of its own: a disclosed subtree is one watch, not one per folder, and every
-        // watch canonicalizes its path here and rebuilds the stream on the watcher's thread.
+        // An FSEvents stream reports the whole subtree, so a folder inside a watched one needs
+        // no watch of its own.
         let inside = |id: &str| {
             Path::new(id)
                 .ancestors()
@@ -351,7 +330,6 @@ impl FinderDemo {
         });
     }
 
-    /// The watcher's report: re-read what changed and is on screen, and tell the index.
     fn changed(&mut self, dirs: Vec<PathBuf>, cx: &mut Context<Self>) {
         if dirs.is_empty() {
             return;

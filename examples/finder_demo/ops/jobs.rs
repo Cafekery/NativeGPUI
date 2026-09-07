@@ -1,5 +1,4 @@
-//! The queue's jobs: the toolbar's progress popover, what a job says about itself, and the
-//! events the queue reports back to the window.
+//! The queue's jobs: the toolbar's progress popover, and the events the queue reports back.
 
 use std::path::PathBuf;
 
@@ -15,8 +14,7 @@ use crate::chrome::path_bar::PATH_H;
 use crate::data::byte_string;
 use crate::palette::Palette;
 
-/// What a completed job in the queue does when it lands: record it in the undo journal, or not,
-/// when the job it finished was itself running the journal's own undo or redo.
+/// A queued job, and whether landing it records an entry in the undo journal.
 pub(crate) struct JobRow {
     pub(crate) id: JobId,
     pub(crate) op: Op,
@@ -67,8 +65,7 @@ fn describe(op: &Op) -> String {
 }
 
 impl FinderDemo {
-    /// The toolbar's progress popover: every queued job with a determinate bar, throughput and
-    /// pause/resume/cancel.
+    /// The toolbar's progress popover: every queued job, with throughput and pause/cancel.
     pub(crate) fn jobs_popover(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let rows: Vec<AnyElement> = self
             .jobs
@@ -182,9 +179,7 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Submits `op` to the operation queue and tracks it for the progress popover; `record`
-    /// controls whether landing it adds a fresh entry to the undo journal, which is false only
-    /// while the journal's own undo/redo is what is running.
+    /// Submits `op`; `record` is false only while the journal's own undo or redo is running.
     pub(crate) fn submit_op(
         &mut self,
         op: Op,
@@ -208,8 +203,7 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Drains the operation queue's events: progress updates the popover, a finished job settles
-    /// the view and records it in the undo journal (unless it was the journal's own undo/redo).
+    /// Drains the queue's events: progress updates the popover, a finished job settles the view.
     pub(crate) fn handle_queue_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
         if events.is_empty() {
             return;

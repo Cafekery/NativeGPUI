@@ -1,5 +1,5 @@
-//! What the card and the status bar say about a selection: counted and weighed once per change,
-//! off the main thread, since a disclosed home folder is millions of rows.
+//! What the card and the status bar say about a selection, counted once per change off the
+//! main thread: a disclosed home folder is millions of rows.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,11 +11,9 @@ use crate::data::{Face, Line, Row, day_string};
 /// Finder's "Calculating…", for a summary a background pass has not finished.
 pub(super) const CALCULATING: &str = "Calculating\u{2026}";
 
-/// The most rows one summary walks; a selection past this is described by that much of it.
+/// The most rows one summary walks; a bigger selection is described by that much of it.
 const STATS_CAP: usize = 4_000_000;
 
-/// What the card and the status bar say about a selection: counted and weighed once per change,
-/// off the main thread, since a disclosed home folder is millions of rows.
 pub(crate) struct Stats {
     /// The selection's revision and the number of rows it was matched against.
     pub(crate) key: (u64, usize),

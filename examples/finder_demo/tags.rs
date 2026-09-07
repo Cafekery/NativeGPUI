@@ -10,13 +10,10 @@ use objc2_core_foundation::CGFloat;
 
 use crate::app::FinderDemo;
 
-/// Finder's tag dot: 10pt across, its fill a fifth of the way from the system colour to white.
 const TAG_DOT: f32 = 10.;
-/// Finder overlaps a row's dots at this pitch and draws at most [`TAG_DOTS_MAX`] of them.
 const TAG_DOT_PITCH: f32 = 5.;
 const TAG_DOTS_MAX: usize = 3;
 const TAG_LIGHTEN: f32 = 0.2;
-/// Finder's tag pill wears the system colour itself, a shade darkened by the sheet behind it.
 const TAG_PILL_ALPHA: f32 = 0.85;
 
 /// The tags Finder's own tag menus offer, read once from Finder's preferences.
@@ -39,13 +36,12 @@ fn tag_system_color(color: u8) -> Option<SystemColor> {
     })
 }
 
-/// The line Finder rings a tag dot with: the system colour itself.
 pub(crate) fn finder_edge(color: u8) -> Hsla {
     tag_system_color(color).map_or(gpui::white(), system_color)
 }
 
-/// What Finder fills a tag dot or swatch with: its system colour a fifth of the way to white,
-/// lightened on the display's own primaries, which is where Finder's fills land exactly.
+/// What Finder fills a dot with: its system colour lifted toward white on the display's own
+/// primaries, which is where Finder's fills land exactly.
 pub(crate) fn finder_color(color: u8) -> Hsla {
     let Some(system) = tag_system_color(color) else {
         return gpui::white();
@@ -75,12 +71,10 @@ pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
     Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
 }
 
-/// Where a tag name sits in the demo's tag menus, if it is one of them.
 pub(crate) fn tag_index(name: &str) -> Option<usize> {
     tags().iter().position(|tag| tag.name == name)
 }
 
-/// One of the demo's tags as Finder stores it.
 pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
     tags()[index].clone()
 }
@@ -111,7 +105,6 @@ pub(crate) fn tag_dot(index: usize) -> AnyElement {
         .into_any_element()
 }
 
-/// The room a row's tag dots take.
 pub(crate) fn tag_dots_w(count: usize) -> f32 {
     match count.min(TAG_DOTS_MAX) {
         0 => 0.,
@@ -141,7 +134,6 @@ pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
     )
 }
 
-/// A tag listing's title: Finder names the window after the tag, or after all of them.
 pub(crate) fn tag_title(id: &str) -> String {
     match id.strip_prefix("tag:").unwrap_or_default() {
         "" => "All Tags".to_string(),
@@ -157,7 +149,6 @@ pub(crate) fn row_tags(path: &str) -> Vec<usize> {
         .collect()
 }
 
-/// One row's Finder tags, written where Finder reads them.
 fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) {
     let path = PathBuf::from(key.as_ref());
     let wanted: Vec<finder_fs::tags::Tag> = tags.iter().map(|index| finder_tag(*index)).collect();
@@ -169,7 +160,6 @@ fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) 
 }
 
 impl FinderDemo {
-    /// Finder's tag dots: the pick colours every chosen row, and the files carry the tag.
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let chosen = self.selected.snapshot();
         for key in chosen.iter() {

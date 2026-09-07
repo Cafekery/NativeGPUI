@@ -1,5 +1,4 @@
-//! Finder's search field: this folder's rows filter as they always have, and the index adds what
-//! it knows about the rest of the subtree.
+//! Finder's search field: this folder's rows filter, and the index adds the rest of the subtree.
 
 use std::path::PathBuf;
 
@@ -19,20 +18,16 @@ impl FinderDemo {
         !self.query.trim().is_empty() && !self.hits.is_empty()
     }
 
-    /// Rows found elsewhere on the disk rather than read out of this folder: the search field's
-    /// hits, or a tag's files.
+    /// Rows found elsewhere on the disk: the search field's hits, or a tag's files.
     pub(crate) fn results(&self) -> bool {
         self.tag_listing.is_some() || self.searching()
     }
 
-    /// Finder's search field: this folder's rows filter as they always have, and the index adds
-    /// what it knows about the rest of the subtree.
     pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
         self.query = text;
         self.run_search(cx);
     }
 
-    /// Re-runs the current query, for a fresh scope or a fresh folder.
     fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
         self.hits.clear();

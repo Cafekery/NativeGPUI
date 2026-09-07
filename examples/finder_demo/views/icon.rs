@@ -61,8 +61,7 @@ type Tile = (SharedString, Point<Pixels>);
 
 /// Where every tile of one listing sits, and how tall that makes the grid.
 pub(crate) struct Layout {
-    /// Weak, so a layout kept from the last frame is not a second owner of a listing still
-    /// growing; the allocation it names is never reused while this holds.
+    /// Weak, so a layout from the last frame is not a second owner of a listing still growing.
     lines: Weak<Vec<Line>>,
     columns: usize,
     cell: f32,
@@ -107,8 +106,7 @@ impl Grid {
         self.dragging = None;
     }
 
-    /// Where the tiles sit, rebuilt only when the rows, the grid's shape or a drag move them:
-    /// placing every row of a large folder is more than a frame can pay for.
+    /// Where the tiles sit, rebuilt only when the rows, the grid's shape or a drag move them.
     fn layout(&mut self, lines: &Arc<Vec<Line>>, columns: usize, cell: f32) -> Rc<Layout> {
         let held = self.layout.clone().filter(|built| {
             std::ptr::eq(built.lines.as_ptr(), Arc::as_ptr(lines))

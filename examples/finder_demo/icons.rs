@@ -17,8 +17,7 @@ thread_local! {
     static WANTED: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The system's artwork for a type at this size, once drawn; until then the same type at the
-/// nearest size already drawn, and the face's symbol where there is none.
+/// The system's artwork for a type at this size, or the nearest size already drawn.
 pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
     let key = (kind, size.to_bits());
     if let Some(icon) = ICONS.with(|icons| icons.borrow().get(&key).cloned()) {
@@ -33,8 +32,7 @@ pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
     nearest(kind, size)
 }
 
-/// A zoom asks for a size a frame and cannot wait for any of them: what is drawn for the type
-/// already, worn at the size asked for.
+/// What is drawn for the type already, worn at the size asked for: a zoom asks a size a frame.
 fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
     ICONS.with(|icons| {
         icons
@@ -53,8 +51,7 @@ fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
     })
 }
 
-/// Draw what the frames since the last call asked for. Every window that draws a row calls this:
-/// the card asks for artwork at a size no list does.
+/// Draw what the frames since the last call asked for; every window that draws a row calls it.
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let wanted = WANTED.with(|wanted| wanted.take());
     if wanted.is_empty() {

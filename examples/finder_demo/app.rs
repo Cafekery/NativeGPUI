@@ -33,8 +33,7 @@ use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
-/// The stacked hero drawn for a multi-row selection: the keys it was built from, the side it was
-/// rasterised at, and the image.
+/// The stacked hero for a selection: its keys, the side it was rasterised at, and the image.
 pub(crate) type Stack = (Vec<SharedString>, u32, Arc<RenderImage>);
 
 pub(crate) struct FinderDemo {
@@ -55,8 +54,7 @@ pub(crate) struct FinderDemo {
     /// Finder's scope bar: `scope_bar::THIS_MAC` or `scope_bar::THIS_FOLDER`.
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
-    /// Folders an Option-disclose is still waiting on, each with its depth under the row it
-    /// started from: a listing that lands under one of these discloses its own folders too.
+    /// Folders an Option-disclose waits on, each with its depth under the row it started from.
     pub(crate) expanding: HashMap<&'static str, usize>,
     pub(crate) selected: Keys,
     pub(crate) cursor: Option<SharedString>,
@@ -65,7 +63,6 @@ pub(crate) struct FinderDemo {
     /// ⌘X's mark: these rows dim until a paste moves them or the mark clears.
     pub(crate) cut: Keys,
     pub(crate) cache: RefCell<Listings>,
-    /// What the last selection summary was computed over, and the summary itself.
     pub(crate) stats: Option<preview::Stats>,
     pub(crate) stats_pending: Option<(u64, usize)>,
     /// What [`Self::follow`] last pointed the watcher and the pins at.
@@ -75,7 +72,6 @@ pub(crate) struct FinderDemo {
     pub(crate) typed_at: Option<Instant>,
     /// Set once a typed prefix matches no row's start; the substring filter it fell back to.
     pub(crate) type_filter: Option<String>,
-    /// Whether type-select found a match earlier in the run typing `type_filter` reached.
     pub(crate) type_filter_seen_match: bool,
     pub(crate) tags: HashMap<SharedString, Vec<usize>>,
     pub(crate) preview: bool,
@@ -113,14 +109,12 @@ pub(crate) struct FinderDemo {
     pub(crate) column_depth: usize,
     /// What each browser column has been dragged to this session, keyed by the folder it lists.
     pub(crate) column_widths: HashMap<&'static str, f32>,
-    /// One per browser column, so a column knows which of its rows are on screen.
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
     /// The pixels a point buys on this window's screen, for the thumbnails it asks for.
     pub(crate) scale: f32,
     pub(crate) window_min_w: f32,
-    /// FSEvents for the folders on screen; a change re-reads what it names.
     pub(crate) watcher: Watcher,
     pub(crate) watching: HashSet<&'static str>,
     /// What the index found elsewhere for the search field.
@@ -137,14 +131,11 @@ pub(crate) struct FinderDemo {
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
     pub(crate) quit_at: Option<u64>,
-    /// Every move/copy/trash/etc. runs through here, one at a time, off the main thread.
     pub(crate) queue: Queue,
     pub(crate) journal: Journal,
-    /// The pending queue events a background thread is handing this window since the last frame.
     pub(crate) queue_events: Arc<Mutex<Vec<queue::Event>>>,
     /// The conflict sheet, while one of the queue's operations has a name collision to resolve.
     pub(crate) conflict: Option<conflicts::Sheet>,
-    /// The queue's jobs, for the toolbar's progress popover.
     pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) jobs_open: bool,
 }

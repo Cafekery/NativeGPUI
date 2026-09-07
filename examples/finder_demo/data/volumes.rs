@@ -8,7 +8,6 @@ use objc2_foundation::{NSFileManager, NSString};
 
 use super::paths::intern;
 
-/// One mounted volume as of the last snapshot.
 struct Mounted {
     mount: String,
     name: &'static str,
@@ -20,8 +19,7 @@ fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
     SEEN.get_or_init(Default::default)
 }
 
-/// Re-reads the mounted volumes. Enumerating them costs milliseconds, so nothing on a frame's
-/// path may call it: the path bar, the sidebar and the status bar read this snapshot.
+/// Re-reads the mounted volumes; enumerating them costs milliseconds, so no frame may call it.
 pub(crate) fn refresh_volumes() {
     let mounted = volumes::mounted()
         .iter()

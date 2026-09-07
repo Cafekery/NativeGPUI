@@ -1,5 +1,4 @@
-//! Finder's toolbar: the window's real `NSToolbar`, its items and the artwork AppKit does not
-//! carry.
+//! Finder's toolbar: the window's real `NSToolbar`, and the artwork AppKit does not carry.
 
 use block2::RcBlock;
 use gpui::{Context, Window, px};
