@@ -1,13 +1,15 @@
 //! Mounted volumes and the standard folders, for the sidebar and the status bar.
 
-use std::path::PathBuf;
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
 
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSArray, NSDictionary, NSFileManager, NSNumber, NSString, NSURL, NSURLResourceKey,
-    NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeIsEjectableKey,
-    NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey, NSURLVolumeNameKey,
-    NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
+    NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeAvailableCapacityKey,
+    NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey,
+    NSURLVolumeNameKey, NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
 };
 
 #[derive(Clone, Debug)]
@@ -29,6 +31,7 @@ fn keys() -> Retained<NSArray<NSURLResourceKey>> {
             NSURLVolumeIsLocalKey,
             NSURLVolumeTotalCapacityKey,
             NSURLVolumeAvailableCapacityForImportantUsageKey,
+            NSURLVolumeAvailableCapacityKey,
         ])
     }
 }
@@ -57,30 +60,55 @@ fn bool_value(
 fn u64_value(
     values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
     key: &NSString,
-) -> u64 {
+) -> Option<u64> {
     values
         .objectForKey(key)
         .and_then(|v| v.downcast::<NSNumber>().ok())
         .map(|n| n.longLongValue().max(0) as u64)
-        .unwrap_or(0)
+}
+
+/// Free space. `…ForImportantUsage` reads 0 on exFAT and FAT32 rather than being absent, so a
+/// zero from either key means "this file system does not say" and `statfs` answers instead.
+fn available_at(
+    values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
+    path: &Path,
+) -> u64 {
+    let free = |key: &NSString| u64_value(values, key).filter(|&free| free > 0);
+    free(unsafe { NSURLVolumeAvailableCapacityForImportantUsageKey })
+        .or_else(|| free(unsafe { NSURLVolumeAvailableCapacityKey }))
+        .unwrap_or_else(|| statfs_available(path))
+}
+
+fn statfs_available(path: &Path) -> u64 {
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stat` is a valid out-pointer for the call.
+    if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return 0;
+    }
+    // SAFETY: statfs returned 0, so the struct is initialised.
+    let stat = unsafe { stat.assume_init() };
+    stat.f_bavail.saturating_mul(stat.f_bsize as u64)
 }
 
 fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
     let values = url.resourceValuesForKeys_error(keys).ok()?;
     let name_key = unsafe { NSURLVolumeNameKey };
+    let path = url
+        .path()
+        .map(|p| PathBuf::from(p.to_string()))
+        .unwrap_or_default();
+    let available = available_at(&values, &path);
     Some(Volume {
         name: string_value(&values, name_key).unwrap_or_default(),
-        path: url
-            .path()
-            .map(|p| PathBuf::from(p.to_string()))
-            .unwrap_or_default(),
+        path,
         ejectable: bool_value(&values, unsafe { NSURLVolumeIsEjectableKey })
             || bool_value(&values, unsafe { NSURLVolumeIsRemovableKey }),
         network: !bool_value(&values, unsafe { NSURLVolumeIsLocalKey }),
-        capacity: u64_value(&values, unsafe { NSURLVolumeTotalCapacityKey }),
-        available: u64_value(&values, unsafe {
-            NSURLVolumeAvailableCapacityForImportantUsageKey
-        }),
+        capacity: u64_value(&values, unsafe { NSURLVolumeTotalCapacityKey }).unwrap_or(0),
+        available,
     })
 }
 
@@ -145,6 +173,14 @@ mod tests {
         assert!(!volumes.is_empty());
         assert_eq!(volumes[0].path, PathBuf::from("/"));
         assert!(volumes[0].capacity > 0);
+    }
+
+    #[test]
+    fn free_space_falls_back_to_the_file_system() {
+        let boot = mounted().remove(0);
+        assert!(boot.available > 0);
+        assert!(statfs_available(&boot.path) > 0);
+        assert_eq!(statfs_available(Path::new("/no/such/volume")), 0);
     }
 
     #[test]
