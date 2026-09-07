@@ -5,11 +5,16 @@
 
 use std::cell::RefCell;
 
+use std::rc::Rc;
+
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
+use objc2_app_kit::{
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
+    NSMenuItem,
+};
 use objc2_foundation::{MainThreadMarker, NSBundle, NSNumber, NSObject, NSProcessInfo, NSString};
 
 /// One of the standard menus, as a place for an app's own rows.
@@ -44,6 +49,7 @@ pub struct MenuCommand {
     action: Option<Box<dyn Action>>,
     rows: Vec<MenuCommand>,
     alternate: bool,
+    checked: bool,
 }
 
 impl MenuCommand {
@@ -54,7 +60,14 @@ impl MenuCommand {
             action: Some(Box::new(action)),
             rows: Vec::new(),
             alternate: false,
+            checked: false,
         }
+    }
+
+    /// The check mark Finder puts beside the sort, the grouping and the view a window is in.
+    pub fn checked(mut self, on: bool) -> Self {
+        self.checked = on;
+        self
     }
 
     /// The row the one above it becomes while Option is held, as Finder swaps Duplicate.
@@ -71,6 +84,7 @@ impl MenuCommand {
             action: None,
             rows: rows.into_iter().collect(),
             alternate: false,
+            checked: false,
         }
     }
 
@@ -81,6 +95,7 @@ impl MenuCommand {
             action: None,
             rows: Vec::new(),
             alternate: false,
+            checked: false,
         }
     }
 
@@ -522,6 +537,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     if command.alternate {
         row.setAlternate(true);
     }
+    set_state(&row, command.checked);
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
 }
 
@@ -542,6 +558,35 @@ fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
     Some((keystroke.key.clone(), mask))
 }
 
+fn set_state(row: &NSMenuItem, on: bool) {
+    row.setState(match on {
+        true => NSControlStateValueOn,
+        false => NSControlStateValueOff,
+    });
+}
+
+/// Answers whether a row is checked, asked for each one as its menu opens.
+type MenuState = dyn Fn(&dyn Action) -> Option<bool>;
+
+/// Follow the app's state with the check marks on its rows: AppKit validates every row as its menu
+/// opens, and each `Some` answer is that row's state. The closure runs inside AppKit's menu
+/// tracking, where gpui holds its `App`, so it must read state of its own.
+pub fn on_menu_state(check: impl Fn(&dyn Action) -> Option<bool> + 'static) {
+    STATE.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
+}
+
+fn action_of(item: &NSMenuItem) -> Option<Box<dyn Action>> {
+    let index = item
+        .representedObject()
+        .and_then(|object| object.downcast::<NSNumber>().ok())
+        .map(|number| number.integerValue())?;
+    COMMANDS.with_borrow(|commands| {
+        commands
+            .get(index as usize)
+            .map(|action| action.boxed_clone())
+    })
+}
+
 struct SinkIvars {
     cx: AsyncApp,
 }
@@ -557,17 +602,7 @@ define_class!(
     impl CommandSink {
         #[unsafe(method(ngMenuCommand:))]
         fn ng_menu_command(&self, sender: *mut NSMenuItem) {
-            let index = unsafe { sender.as_ref() }
-                .and_then(|item| item.representedObject())
-                .and_then(|object| object.downcast::<NSNumber>().ok())
-                .map(|number| number.integerValue());
-            let Some(action) = index.and_then(|index| {
-                COMMANDS.with_borrow(|commands| {
-                    commands
-                        .get(index as usize)
-                        .map(|action| action.boxed_clone())
-                })
-            }) else {
+            let Some(action) = unsafe { sender.as_ref() }.and_then(action_of) else {
                 return;
             };
             // Deferred: this fires inside AppKit's menu tracking loop.
@@ -580,14 +615,23 @@ define_class!(
         }
 
         #[unsafe(method(validateMenuItem:))]
-        fn validate(&self, _: *mut AnyObject) -> bool {
-            true
+        fn validate(&self, sender: *mut NSMenuItem) -> Bool {
+            let Some(item) = (unsafe { sender.as_ref() }) else {
+                return Bool::YES;
+            };
+            let check = STATE.with_borrow(|slot| slot.clone());
+            if let Some(on) = check.zip(action_of(item)).and_then(|(check, action)| check(&*action))
+            {
+                set_state(item, on);
+            }
+            Bool::YES
         }
     }
 );
 
 thread_local! {
     static SHARED: RefCell<Option<Retained<CommandSink>>> = const { RefCell::new(None) };
+    static STATE: RefCell<Option<Rc<MenuState>>> = const { RefCell::new(None) };
     static COMMANDS: RefCell<Vec<Box<dyn Action>>> = const { RefCell::new(Vec::new()) };
 }
 

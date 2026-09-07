@@ -13,7 +13,7 @@ use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 pub(crate) use self::actions::Act;
 pub(crate) use self::bar::{
     Back, CopyNames, Cut, Forward, MoveHere, NewTab, Paste, SelectAll, ZoomIn, ZoomOut, go_rows,
-    install,
+    install, remember,
 };
 pub(crate) use self::context::{background, crumb, header, item};
 use crate::app::FinderDemo;

@@ -1,8 +1,10 @@
 //! The menu bar Finder carries, read off the real one: the same rows, order and key equivalents.
 
+use std::cell::Cell;
+
 use finder_fs::volumes::{self, Standard};
-use gpui::{App, Context, Div, InteractiveElement, Window, actions};
-use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, prepend_menu};
+use gpui::{Action, App, Context, Div, InteractiveElement, Window, actions};
+use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, on_menu_state, prepend_menu};
 
 use crate::app::FinderDemo;
 use crate::chrome::sheet::GoSheet;
@@ -71,7 +73,36 @@ actions!(
     ]
 );
 
+thread_local! {
+    /// The view, sort and grouping the check marks follow, since a row is validated where the
+    /// window they belong to cannot be read.
+    static STATE: Cell<(usize, Column, bool)> = const { Cell::new((LIST_VIEW, Column::Name, false)) };
+}
+
+pub(crate) fn remember(demo: &FinderDemo) {
+    STATE.set((demo.view, demo.sort, demo.grouped));
+}
+
+fn checked(action: &dyn Action) -> Option<bool> {
+    let (view, sort, grouped) = STATE.get();
+    let rows: [(&dyn Action, bool); 9] = [
+        (&ViewIcons, view == ICON_VIEW),
+        (&ViewList, view == LIST_VIEW),
+        (&ViewColumns, view == COLUMN_VIEW),
+        (&ViewGallery, view == GALLERY_VIEW),
+        (&SortByName, sort == Column::Name),
+        (&SortByKind, sort == Column::Kind),
+        (&SortByModified, sort == Column::Modified),
+        (&SortBySize, sort == Column::Size),
+        (&UseGroups, grouped),
+    ];
+    rows.into_iter()
+        .find(|(row, _)| action.partial_eq(*row))
+        .map(|(_, on)| on)
+}
+
 pub(crate) fn install(_cx: &mut App) {
+    on_menu_state(checked);
     prepend_menu(
         MenuSection::File,
         [
