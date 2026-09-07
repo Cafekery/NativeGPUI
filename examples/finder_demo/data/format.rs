@@ -17,9 +17,13 @@ use super::row::{Column, Row};
 
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 
+/// A date as `NSDate` counts them, from 2001. Signed both ways: a file older than 1970 keeps
+/// its date, and 2001-01-01 is zero rather than "no date".
 pub(super) fn reference_seconds(at: SystemTime) -> f64 {
-    at.duration_since(UNIX_EPOCH)
-        .map_or(0., |since| since.as_secs_f64() - UNIX_TO_REFERENCE)
+    match at.duration_since(UNIX_EPOCH) {
+        Ok(since) => since.as_secs_f64() - UNIX_TO_REFERENCE,
+        Err(before) => -before.duration().as_secs_f64() - UNIX_TO_REFERENCE,
+    }
 }
 
 type Cache = LocalKey<RefCell<HashMap<i64, SharedString>>>;
@@ -30,9 +34,6 @@ fn per_minute(
     seen: &'static Cache,
     write: impl FnOnce(f64) -> SharedString,
 ) -> SharedString {
-    if seconds == 0. {
-        return "--".into();
-    }
     let minute = (seconds / 60.).floor() as i64;
     seen.with(|seen| {
         if let Some(text) = seen.borrow().get(&minute) {

@@ -314,10 +314,10 @@ impl Crawl {
 }
 
 /// A directory's own mtime, as the snapshot records it for a root.
-pub fn modified(path: &Path) -> u32 {
+pub fn modified(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
-        .map_or(0, super::store::secs)
+        .map_or(super::store::NO_TIME, super::store::secs)
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
