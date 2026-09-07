@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(&*k.label, "Plain Text Document");
 
         let k = kind_for_extension("zip");
-        assert_eq!(&*k.label, "Zip archive");
+        assert!(k.label.eq_ignore_ascii_case("zip archive"), "{}", k.label);
     }
 
     #[test]

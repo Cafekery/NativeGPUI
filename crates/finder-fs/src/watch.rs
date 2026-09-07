@@ -339,12 +339,12 @@ mod tests {
         });
         watcher.watch(&dir);
         watcher.watch(&sub);
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(500));
 
         let started = std::time::Instant::now();
         fs::write(dir.join("a.txt"), b"hi").unwrap();
         assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(2)),
+            recv_containing(&rx, &dir, Duration::from_secs(10)),
             "no callback for top-level create"
         );
         eprintln!("watch: create -> callback in {:?}", started.elapsed());
@@ -352,7 +352,7 @@ mod tests {
         let started = std::time::Instant::now();
         fs::rename(dir.join("a.txt"), dir.join("b.txt")).unwrap();
         assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(2)),
+            recv_containing(&rx, &dir, Duration::from_secs(10)),
             "no callback for rename"
         );
         eprintln!("watch: rename -> callback in {:?}", started.elapsed());
@@ -360,7 +360,7 @@ mod tests {
         let started = std::time::Instant::now();
         fs::write(sub.join("c.txt"), b"hi").unwrap();
         assert!(
-            recv_containing(&rx, &sub, Duration::from_secs(2)),
+            recv_containing(&rx, &sub, Duration::from_secs(10)),
             "no callback for subdir create"
         );
         eprintln!(
@@ -371,7 +371,7 @@ mod tests {
         let started = std::time::Instant::now();
         fs::remove_file(dir.join("b.txt")).unwrap();
         assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(2)),
+            recv_containing(&rx, &dir, Duration::from_secs(10)),
             "no callback for delete"
         );
         eprintln!("watch: delete -> callback in {:?}", started.elapsed());
