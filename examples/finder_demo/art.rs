@@ -20,20 +20,34 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     }
 }
 
-/// Finder's large preview art: the picture at its own aspect, keylined and rounded on that rect
-/// rather than on the box it is centred in, and without an icon's inset, radius or shadow.
-pub(crate) fn poster_art(row: &Row, size: f32, scale: f32, kind: Poster) -> AnyElement {
-    match thumb(row, size, scale, true, false) {
-        Some(image) => poster(image, size, scale, kind),
-        None => artwork(row, size),
+/// Finder's large preview art: the picture at its own aspect, fit inside a `width` by `height`
+/// box, keylined and rounded on that rect rather than on the box it is centred in, and without
+/// an icon's inset, radius or shadow.
+pub(crate) fn poster_art(
+    row: &Row,
+    width: f32,
+    height: f32,
+    scale: f32,
+    kind: Poster,
+) -> AnyElement {
+    match thumb(row, width.max(height), scale, true, false) {
+        Some(image) => poster(image, width, height, scale, kind),
+        None => slot(width, height)
+            .child(type_art(row.artwork, row.face, width.min(height)))
+            .into_any_element(),
     }
 }
 
 /// The box every icon is drawn in: a square that centres whatever art it is given.
 pub(crate) fn square(side: f32) -> Div {
+    slot(side, side)
+}
+
+/// The box a poster is centred in, which is as tall as the pane's rule makes it.
+fn slot(width: f32, height: f32) -> Div {
     div()
-        .w(px(side))
-        .h(px(side))
+        .w(px(width))
+        .h(px(height))
         .flex_none()
         .flex()
         .items_center()
@@ -68,7 +82,13 @@ pub(crate) enum Poster {
     Card,
 }
 
-fn poster(image: Arc<RenderImage>, size: f32, scale: f32, kind: Poster) -> AnyElement {
+fn poster(
+    image: Arc<RenderImage>,
+    width: f32,
+    height: f32,
+    scale: f32,
+    kind: Poster,
+) -> AnyElement {
     let fit = image.size(0);
     let (radius, keyline) = match kind {
         Poster::Hero => (
@@ -96,8 +116,8 @@ fn poster(image: Arc<RenderImage>, size: f32, scale: f32, kind: Poster) -> AnyEl
     );
     // The raster that landed may have been drawn for another width: it wears this box's fit,
     // not its own size, so a pane being dragged scales what it has until the next one lands.
-    let zoom = (size / w.max(1.)).min(size / h.max(1.));
-    square(size)
+    let zoom = (width / w.max(1.)).min(height / h.max(1.));
+    slot(width, height)
         .child(
             img(image)
                 .w(px(w * zoom))

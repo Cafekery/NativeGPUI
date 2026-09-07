@@ -79,13 +79,13 @@ impl FinderDemo {
         let hero = match chosen.as_slice() {
             [] => self.cursor_line().map(|line| {
                 art_at(
-                    poster_art(&line.row, size, scale, Poster::Hero),
+                    poster_art(&line.row, size, size, scale, Poster::Hero),
                     size,
                     Some(self.ql_icon.clone()),
                 )
             }),
             [one] => Some(art_at(
-                poster_art(&one.row, size, scale, Poster::Hero),
+                poster_art(&one.row, size, size, scale, Poster::Hero),
                 size,
                 Some(self.ql_icon.clone()),
             )),

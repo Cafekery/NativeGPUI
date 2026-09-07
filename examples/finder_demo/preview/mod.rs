@@ -214,6 +214,8 @@ impl FinderDemo {
         self.list_focused = self.focus.is_focused(window);
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
+        let top = metrics.top - px(tab_bar_height(window));
+        self.pane_h = f32::from(viewport.height - top - metrics.bottom) - RESIZE_EDGE;
         self.fit_name_column();
 
         if !self.preview_shown() {
@@ -231,16 +233,12 @@ impl FinderDemo {
         // parent's resize edges, and a child window over them would take the drag. The bars at the
         // bottom end at the pane, so they take no height from it.
         // The tab bar ends at the pane, and the pane runs on over its height to the toolbar.
-        let top = metrics.top - px(tab_bar_height(window));
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
                 top,
             ),
-            size: size(
-                px(self.preview_w - RESIZE_EDGE),
-                viewport.height - top - metrics.bottom - px(RESIZE_EDGE),
-            ),
+            size: size(px(self.preview_w - RESIZE_EDGE), px(self.pane_h)),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
         match &mut self.preview_window {
