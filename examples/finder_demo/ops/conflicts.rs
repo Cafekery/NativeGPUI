@@ -124,7 +124,8 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     let mut clean = Vec::new();
     let mut conflicted = VecDeque::new();
     for item in items {
-        if taken(&Sheet::dest_of(&into, &item)) {
+        let dest = Sheet::dest_of(&into, &item);
+        if taken(&dest) && !same_item(&dest, &item) {
             conflicted.push_back(item);
         } else {
             clean.push(item);
