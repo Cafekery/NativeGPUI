@@ -14,8 +14,8 @@ use native_gpui::{
     ButtonBezel, CheckState, LabelAlign, MenuEntry, MenuOrigin, MenuView, native_button,
     native_checkbox, native_color_well, native_context_menu, native_date_picker, native_label,
     native_level, native_path_control, native_popup, native_progress, native_radio, native_rule,
-    native_search_field, native_secure_field, native_segmented, native_slider, native_spinner,
-    native_scroller, native_stepper, native_switch, native_text_field,
+    native_scroller, native_search_field, native_secure_field, native_segmented, native_slider,
+    native_spinner, native_stepper, native_switch, native_text_field,
 };
 
 use native_gpui::{Blending, Material, RawMaterial, glass, glass_container, material};
@@ -34,8 +34,8 @@ use native_gpui::{
 
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{
-    NativePopover, NativeSheet, PopoverOptions, PopoverBehavior, ShareItem, SurfaceAnchor, native_anchor,
-    present_popover, present_share_picker, present_sheet,
+    NativePopover, NativeSheet, PopoverBehavior, PopoverOptions, ShareItem, SurfaceAnchor,
+    native_anchor, present_popover, present_share_picker, present_sheet,
 };
 
 use native_gpui::tokens::{

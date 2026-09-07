@@ -264,15 +264,14 @@ impl FinderDemo {
         if done {
             self.expand_landed(id);
         }
-        if let Some(key) = self.reveal_next.clone() {
-            if self
-                .folders
+        let landed_row = self.reveal_next.clone().filter(|key| {
+            self.folders
                 .get(id)
-                .is_some_and(|folder| folder.rows.iter().any(|row| row.path == key))
-            {
-                self.reveal_next = None;
-                self.reveal(&key);
-            }
+                .is_some_and(|folder| folder.rows.iter().any(|row| &row.path == key))
+        });
+        if let Some(key) = landed_row {
+            self.reveal_next = None;
+            self.reveal(&key);
         }
         if landed || done {
             cx.notify();
