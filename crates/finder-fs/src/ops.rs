@@ -1,8 +1,11 @@
 //! File operations with Finder's semantics: copies and moves through NSFileManager (packages,
 //! metadata and permissions intact), Trash with Put Back, and an undo journal.
 
+use std::ffi::CString;
 use std::io;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -17,14 +20,40 @@ const NAME_MAX: usize = 255;
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    Move { items: Vec<PathBuf>, into: PathBuf },
-    Copy { items: Vec<PathBuf>, into: PathBuf },
+    Move {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Copy {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
     Trash(Vec<PathBuf>),
     DeleteImmediately(Vec<PathBuf>),
-    Rename { path: PathBuf, name: String },
+    Rename {
+        path: PathBuf,
+        name: String,
+    },
     Duplicate(Vec<PathBuf>),
-    NewFolder { into: PathBuf, name: String },
-    NewFile { into: PathBuf, name: String },
+    NewFolder {
+        into: PathBuf,
+        name: String,
+    },
+    NewFile {
+        into: PathBuf,
+        name: String,
+    },
+    /// Puts each item back at the path it came from, over whatever stands there now.
+    PutBack(Vec<Restore>),
+    /// Several operations as one step, in order.
+    Batch(Vec<Op>),
+}
+
+/// An item and the path it belongs at.
+#[derive(Clone, Debug)]
+pub struct Restore {
+    pub item: PathBuf,
+    pub to: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,15 +81,21 @@ pub struct Done {
 }
 
 pub fn perform(op: Op, conflict: Conflict, mut progress: impl FnMut(Progress)) -> io::Result<Done> {
+    run(op, conflict, &mut progress)
+}
+
+fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     match op {
-        Op::Move { items, into } => move_or_copy(items, into, conflict, true, &mut progress),
-        Op::Copy { items, into } => move_or_copy(items, into, conflict, false, &mut progress),
-        Op::Trash(items) => trash(items, &mut progress),
-        Op::DeleteImmediately(items) => delete(items, &mut progress),
+        Op::Move { items, into } => move_or_copy(items, into, conflict, true, progress),
+        Op::Copy { items, into } => move_or_copy(items, into, conflict, false, progress),
+        Op::Trash(items) => trash(items, progress),
+        Op::DeleteImmediately(items) => delete(items, progress),
         Op::Rename { path, name } => rename(path, name),
-        Op::Duplicate(items) => duplicate(items, &mut progress),
+        Op::Duplicate(items) => duplicate(items, progress),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
+        Op::PutBack(items) => put_back(items, progress),
+        Op::Batch(ops) => batch(ops, conflict, progress),
     }
 }
 
@@ -181,47 +216,136 @@ fn duplicate_path(path: &Path) -> PathBuf {
     }
 }
 
-/// Places `src` at `dest`, resolving a conflict at `dest` if one already exists there; `None`
-/// when the conflict was skipped and nothing moved.
+fn c_path(path: &Path) -> io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the path contains a NUL"))
+}
+
+/// A free sibling of `dest`: a transfer lands here first, so `dest` is never missing.
+fn staging_path(dest: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = dest.parent().unwrap_or_else(|| Path::new("."));
+    dir.join(format!(
+        ".finder-fs-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Swaps two paths in one step, or in two renames on a volume without `RENAME_SWAP`; `staged`
+/// holds what stood at `dest` either way.
+fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
+    let (from, to) = (c_path(staged)?, c_path(dest)?);
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if !matches!(err.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
+        return Err(err);
+    }
+    let aside = staging_path(dest);
+    std::fs::rename(dest, &aside)?;
+    if let Err(err) = std::fs::rename(staged, dest) {
+        let _ = std::fs::rename(&aside, dest);
+        return Err(err);
+    }
+    std::fs::rename(&aside, staged)
+}
+
+fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
+    let mut resulting: Option<Retained<NSURL>> = None;
+    fm.trashItemAtURL_resultingItemURL_error(&url(path), Some(&mut resulting))
+        .map_err(io_error)?;
+    Ok(resulting
+        .map(|u| path_from(&u))
+        .unwrap_or_else(|| path.to_path_buf()))
+}
+
+/// Where an item landed, and what it displaced getting there.
+struct Placed {
+    dest: Option<PathBuf>,
+    displaced: Vec<Restore>,
+}
+
+impl Placed {
+    fn at(dest: PathBuf) -> Placed {
+        Placed {
+            dest: Some(dest),
+            displaced: Vec::new(),
+        }
+    }
+}
+
+/// Lands `src` where `dest` already stands without `dest` ever going missing: the transfer goes
+/// to a sibling and the two are exchanged, so a transfer that fails leaves `dest` untouched. What
+/// stood there goes to the Trash, and comes back with the undo.
+fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> io::Result<Placed> {
+    let staged = staging_path(&dest);
+    if let Err(err) = transfer(fm, src, &staged, is_move) {
+        let _ = remove_path(fm, &staged);
+        return Err(err);
+    }
+    if let Err(err) = exchange(&staged, &dest) {
+        let _ = remove_path(fm, &staged);
+        return Err(err);
+    }
+    let displaced = match trash_one(fm, &staged) {
+        Ok(item) => vec![Restore {
+            item,
+            to: dest.clone(),
+        }],
+        Err(_) => {
+            let _ = remove_path(fm, &staged);
+            Vec::new()
+        }
+    };
+    Ok(Placed {
+        dest: Some(dest),
+        displaced,
+    })
+}
+
+/// Places `src` at `dest`, resolving a conflict at `dest` if one already exists there; no
+/// destination when the conflict was skipped and nothing moved.
 fn place_one(
     fm: &NSFileManager,
     src: &Path,
     dest: PathBuf,
     conflict: Conflict,
     is_move: bool,
-) -> io::Result<Option<PathBuf>> {
+) -> io::Result<Placed> {
     if !dest.exists() {
         transfer(fm, src, &dest, is_move)?;
-        return Ok(Some(dest));
+        return Ok(Placed::at(dest));
     }
     match conflict {
-        Conflict::Skip => Ok(None),
+        Conflict::Skip => Ok(Placed {
+            dest: None,
+            displaced: Vec::new(),
+        }),
         Conflict::KeepBoth => {
             let dest = keep_both_path(&dest);
             transfer(fm, src, &dest, is_move)?;
-            Ok(Some(dest))
+            Ok(Placed::at(dest))
         }
-        Conflict::Replace => {
-            remove_path(fm, &dest)?;
-            transfer(fm, src, &dest, is_move)?;
-            Ok(Some(dest))
-        }
+        Conflict::Replace => replace_at(fm, src, dest, is_move),
         Conflict::Merge if src.is_dir() && dest.is_dir() => {
+            let mut displaced = Vec::new();
             for entry in std::fs::read_dir(src)? {
                 let entry = entry?;
                 let child_dest = dest.join(entry.file_name());
-                place_one(fm, &entry.path(), child_dest, Conflict::Merge, is_move)?;
+                let placed = place_one(fm, &entry.path(), child_dest, Conflict::Merge, is_move)?;
+                displaced.extend(placed.displaced);
             }
             if is_move {
                 std::fs::remove_dir(src)?;
             }
-            Ok(Some(dest))
+            Ok(Placed {
+                dest: Some(dest),
+                displaced,
+            })
         }
-        Conflict::Merge => {
-            remove_path(fm, &dest)?;
-            transfer(fm, src, &dest, is_move)?;
-            Ok(Some(dest))
-        }
+        Conflict::Merge => replace_at(fm, src, dest, is_move),
     }
 }
 
@@ -238,49 +362,97 @@ fn move_or_copy(
     into: PathBuf,
     conflict: Conflict,
     is_move: bool,
-    progress: &mut impl FnMut(Progress),
+    progress: &mut dyn FnMut(Progress),
 ) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
+    let mut displaced = Vec::new();
     for (i, item) in items.iter().enumerate() {
         let name = item
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
         let dest = into.join(name);
-        results.extend(place_one(&fm, item, dest, conflict, is_move)?);
+        let placed = place_one(&fm, item, dest, conflict, is_move)?;
+        results.extend(placed.dest);
+        displaced.extend(placed.displaced);
         progress(Progress {
             done: i + 1,
             total,
             current: Some(item.clone()),
         });
     }
-    let undo = if results.is_empty() {
-        None
-    } else if is_move {
-        common_parent(&items).map(|orig| Op::Move {
-            items: results.clone(),
-            into: orig,
-        })
-    } else {
-        Some(Op::Trash(results.clone()))
-    };
+    let undo = undo_of_transfer(is_move, &items, &results, displaced);
     Ok(Done { results, undo })
 }
 
-fn trash(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Result<Done> {
+/// What takes a finished transfer back: what landed goes home, and then whatever a Replace
+/// displaced goes back on top of it.
+fn undo_of_transfer(
+    is_move: bool,
+    items: &[PathBuf],
+    results: &[PathBuf],
+    displaced: Vec<Restore>,
+) -> Option<Op> {
+    let landed = if results.is_empty() {
+        None
+    } else if is_move {
+        common_parent(items).map(|orig| Op::Move {
+            items: results.to_vec(),
+            into: orig,
+        })
+    } else {
+        Some(Op::Trash(results.to_vec()))
+    };
+    let restored = (!displaced.is_empty()).then(|| Op::PutBack(displaced));
+    match (landed, restored) {
+        (Some(landed), Some(restored)) => Some(Op::Batch(vec![landed, restored])),
+        (landed, restored) => landed.or(restored),
+    }
+}
+
+fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+    let fm = NSFileManager::defaultManager();
+    let total = items.len();
+    let mut results = Vec::with_capacity(total);
+    for (i, restore) in items.iter().enumerate() {
+        let placed = place_one(
+            &fm,
+            &restore.item,
+            restore.to.clone(),
+            Conflict::Replace,
+            true,
+        )?;
+        results.extend(placed.dest);
+        progress(Progress {
+            done: i + 1,
+            total,
+            current: Some(restore.item.clone()),
+        });
+    }
+    Ok(Done {
+        results,
+        undo: None,
+    })
+}
+
+fn batch(ops: Vec<Op>, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+    let mut results = Vec::new();
+    for op in ops {
+        results.extend(run(op, conflict, progress)?.results);
+    }
+    Ok(Done {
+        results,
+        undo: None,
+    })
+}
+
+fn trash(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
     for (i, item) in items.iter().enumerate() {
-        let mut resulting: Option<Retained<NSURL>> = None;
-        fm.trashItemAtURL_resultingItemURL_error(&url(item), Some(&mut resulting))
-            .map_err(io_error)?;
-        results.push(
-            resulting
-                .map(|u| path_from(&u))
-                .unwrap_or_else(|| item.clone()),
-        );
+        results.push(trash_one(&fm, item)?);
         progress(Progress {
             done: i + 1,
             total,
@@ -294,7 +466,7 @@ fn trash(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Result
     Ok(Done { results, undo })
 }
 
-fn delete(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Result<Done> {
+fn delete(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     for (i, item) in items.iter().enumerate() {
@@ -339,7 +511,7 @@ fn rename(path: PathBuf, name: String) -> io::Result<Done> {
     })
 }
 
-fn duplicate(items: Vec<PathBuf>, progress: &mut impl FnMut(Progress)) -> io::Result<Done> {
+fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
@@ -397,6 +569,7 @@ fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("finder-fs-ops-{name}-{}", std::process::id()));
@@ -410,6 +583,22 @@ mod tests {
     }
 
     fn no_progress(_: Progress) {}
+
+    /// The paths an op's undo would put back: what a Replace displaced into the Trash.
+    fn displaced(op: &Op) -> Vec<PathBuf> {
+        match op {
+            Op::PutBack(items) => items.iter().map(|item| item.item.clone()).collect(),
+            Op::Batch(ops) => ops.iter().flat_map(displaced).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn purge(paths: &[PathBuf]) {
+        for path in paths {
+            let _ = fs::remove_file(path);
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 
     #[test]
     fn copy_round_trip() {
@@ -530,6 +719,7 @@ mod tests {
             "child"
         );
 
+        purge(&displaced(&done.undo.unwrap()));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -584,6 +774,77 @@ mod tests {
         }
         assert_eq!(fs::read_to_string(&source).unwrap(), "MY ONLY COPY");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_keeps_the_destination_when_the_transfer_fails() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("replace-fails");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        let source = dir.join("a.txt");
+        touch(&source, "new");
+        touch(&into.join("a.txt"), "IRREPLACEABLE");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o000)).unwrap();
+
+        perform(
+            Op::Copy {
+                items: vec![source.clone()],
+                into: into.clone(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .expect_err("an unreadable source cannot be copied");
+        assert_eq!(
+            fs::read_to_string(into.join("a.txt")).unwrap(),
+            "IRREPLACEABLE",
+            "a replace that failed left the destination destroyed"
+        );
+        let left: Vec<_> = fs::read_dir(&into)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "a staged transfer was left behind: {left:?}");
+
+        let _ = fs::set_permissions(&source, fs::Permissions::from_mode(0o600));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_undoes_back_to_the_item_it_displaced() {
+        let dir = temp_dir("replace-undo");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&dir.join("a.txt"), "new");
+        touch(&into.join("a.txt"), "MY ONLY COPY");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![into.join("a.txt")]);
+        assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "new");
+
+        let undo = done.undo.expect("a replace can be undone");
+        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        assert_eq!(
+            fs::read_to_string(into.join("a.txt")).unwrap(),
+            "MY ONLY COPY",
+            "undo put the replaced item back"
+        );
+
+        purge(&back.results);
         let _ = fs::remove_dir_all(&dir);
     }
 
