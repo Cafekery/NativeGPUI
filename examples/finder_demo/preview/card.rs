@@ -149,10 +149,19 @@ fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-fn kind_line(row: &Row) -> SharedString {
-    match row.size.as_ref() {
-        "--" => row.kind.clone(),
-        size => format!("{} - {size}", row.kind).into(),
+/// Finder titles an application by its stem: the `.app` is the package's, not the app's.
+fn title_line(row: &Row) -> SharedString {
+    match row.name.strip_suffix(".app") {
+        Some(stem) if row.face == Face::Program => stem.to_string().into(),
+        _ => row.name.clone(),
+    }
+}
+
+fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
+    match (row.size.as_ref(), weighed) {
+        ("--", None) => row.kind.clone(),
+        ("--", Some(bytes)) => format!("{} - {}", row.kind, byte_string(bytes)).into(),
+        (size, _) => format!("{} - {size}", row.kind).into(),
     }
 }
 
@@ -278,8 +287,8 @@ impl FinderDemo {
                 } else {
                     poster_art(row, content, self.hero_h(content), self.scale, Poster::Card)
                 },
-                title: row.name.clone(),
-                subtitle: kind_line(row),
+                title: title_line(row),
+                subtitle: kind_line(row, self.weighed()),
                 rows,
                 show_more,
                 tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
@@ -288,6 +297,16 @@ impl FinderDemo {
             }
         };
         self.card_element(card, palette, content, finder)
+    }
+
+    /// What the summary weighed the selection at, for a folder or package the row itself cannot
+    /// size.
+    fn weighed(&self) -> Option<u64> {
+        self.stats
+            .as_ref()
+            .filter(|stats| stats.key == self.stats_key())
+            .map(|stats| stats.bytes)
+            .filter(|bytes| *bytes > 0)
     }
 
     /// The hero's box: as tall as the pane is wide and then some, capped by the pane's height, so
