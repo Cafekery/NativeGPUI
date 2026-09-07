@@ -112,11 +112,17 @@ fn sound(tree: &Tree) -> bool {
         return false;
     }
     let within = |id: u32| id == NONE || id < nodes;
+    // A node's parent is an earlier node, which is what ends a walk to the root.
     tree.name_of.iter().all(|&id| id < names)
         && tree
             .nodes
             .iter()
-            .all(|n| within(n.parent) && within(n.first_child) && within(n.next_sibling))
+            .enumerate()
+            .all(|(id, n)| id == 0 || n.parent < id as u32)
+        && tree
+            .nodes
+            .iter()
+            .all(|n| within(n.first_child) && within(n.next_sibling))
 }
 
 pub fn save(tree: &Tree, path: &Path) -> std::io::Result<()> {

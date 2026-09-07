@@ -20,7 +20,6 @@ pub const LISTED: u8 = 1 << 0;
 pub const VISITED: u8 = 1 << 1;
 pub const COMPLETE: u8 = 1 << 2;
 
-const MAX_DEPTH: usize = 255;
 /// Doubling a vector of millions of entries costs more resident memory than the index itself.
 const CHUNK: usize = 1 << 19;
 
@@ -553,10 +552,7 @@ impl Tree {
     /// Adds `delta` to every directory above `id`, for a change already applied below.
     pub fn propagate(&mut self, id: u32, delta: i64) {
         let mut cur = self.nodes[id as usize].parent;
-        for _ in 0..MAX_DEPTH {
-            if cur == NONE {
-                break;
-            }
+        while cur != NONE {
             let node = &mut self.nodes[cur as usize];
             node.size = node.size.saturating_add_signed(delta);
             cur = node.parent;
@@ -582,10 +578,7 @@ impl Tree {
     pub fn path(&self, id: u32) -> PathBuf {
         let mut parts = Vec::new();
         let mut cur = id;
-        for _ in 0..MAX_DEPTH {
-            if cur == ROOT || cur == NONE {
-                break;
-            }
+        while cur != ROOT && cur != NONE {
             parts.push(self.names.bytes(self.name_of[cur as usize]));
             cur = self.nodes[cur as usize].parent;
         }
@@ -598,11 +591,11 @@ impl Tree {
 
     pub fn is_under(&self, id: u32, root: u32) -> bool {
         let mut cur = id;
-        for _ in 0..MAX_DEPTH {
+        while cur != NONE {
             if cur == root {
                 return true;
             }
-            if cur == NONE || cur == ROOT {
+            if cur == ROOT {
                 return false;
             }
             cur = self.nodes[cur as usize].parent;

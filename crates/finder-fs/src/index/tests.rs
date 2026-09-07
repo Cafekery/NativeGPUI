@@ -8,6 +8,8 @@ use std::time::Duration;
 use super::{Index, Progress};
 
 const MANY: usize = 2000;
+/// Deeper than the byte a node's depth is kept in.
+const DEEP_LEVELS: usize = 300;
 const MANY_BYTES: u64 = (MANY * 10) as u64;
 const DEEP_BYTES: u64 = 4 + 40 + 400;
 const APP_BYTES: u64 = 500 + 60;
@@ -235,6 +237,28 @@ fn search_ranks_and_scopes() {
     );
     // Never inside a package.
     assert!(index.search("Info.plist", None, 10).is_empty());
+}
+
+#[test]
+fn a_hit_below_a_byte_of_depth_carries_its_real_path() {
+    let root = std::env::temp_dir().join("finder-fs-index-depth");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let temp = Temp(fs::canonicalize(&root).unwrap());
+    let mut leaf = temp.0.clone();
+    for _ in 0..DEEP_LEVELS {
+        leaf.push("d");
+    }
+    fs::create_dir_all(&leaf).unwrap();
+    fs::write(leaf.join("needle.txt"), b"x").unwrap();
+    let index = crawled(&temp.0);
+
+    let hits = index.search("needle", None, 4);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, leaf.join("needle.txt"));
+    assert!(hits[0].path.exists());
+    assert_eq!(index.search("needle", Some(&temp.0), 4).len(), 1);
+    assert_eq!(index.children(&leaf).unwrap()[0].name, "needle.txt");
 }
 
 #[test]
