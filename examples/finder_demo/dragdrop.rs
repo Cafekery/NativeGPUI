@@ -329,6 +329,16 @@ impl FinderDemo {
         }
     }
 
+    /// Finder's Escape: the drag is called off where it stands, and nothing is dropped.
+    pub(crate) fn cancel_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !cx.stop_active_drag(window) {
+            return false;
+        }
+        self.spring = None;
+        cx.notify();
+        true
+    }
+
     /// A row drag reaching the sidebar becomes an AppKit file drag: the sidebar is an NSView.
     pub(crate) fn drag_to_sidebar(
         &mut self,
