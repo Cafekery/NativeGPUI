@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use gpui::{AnyElement, ClickEvent, Pixels, Point, Window, div, point, prelude::*, px};
+use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::native_callout;
 
 use crate::app::FinderDemo;
@@ -10,7 +10,7 @@ use crate::art::{Poster, art_at, poster_art, row_art};
 use crate::data::Line;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
-use crate::ui::click_kind;
+use crate::ui::pick_on_click;
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
@@ -75,19 +75,18 @@ impl FinderDemo {
         let size = (room_w.min(room_h) - 2. * HERO_INSET).clamp(64., HERO_MAX);
         let scale = self.scale;
         let hero = match chosen.as_slice() {
-            [] => self.cursor_line().map(|line| {
-                art_at(
-                    poster_art(&line.row, size, size, scale, Poster::Hero),
-                    size,
-                    Some(self.ql_icon.clone()),
-                )
-            }),
-            [one] => Some(art_at(
-                poster_art(&one.row, size, size, scale, Poster::Hero),
-                size,
-                Some(self.ql_icon.clone()),
-            )),
-            many => Some(self.stack_hero(many, size)),
+            many if many.len() > 1 => Some(self.stack_hero(many, size)),
+            _ => chosen
+                .first()
+                .cloned()
+                .or_else(|| self.cursor_line())
+                .map(|line| {
+                    art_at(
+                        poster_art(&line.row, size, size, scale, Poster::Hero),
+                        size,
+                        Some(self.ql_icon.clone()),
+                    )
+                }),
         };
 
         let this = cx.entity().downgrade();
@@ -113,8 +112,6 @@ impl FinderDemo {
             .children(seen.map(|index| {
                 let line = lines[index].clone();
                 let is_selected = self.selected.contains(&line.key);
-                let this = this.clone();
-                let clicked = line.clone();
                 let cell = div()
                     .id(("ng.finder.frame", index))
                     .absolute()
@@ -128,18 +125,7 @@ impl FinderDemo {
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
                     .child(row_art(&line.row, strip.icon, scale, true))
-                    .on_click(move |event: &ClickEvent, window, cx| {
-                        let (extend, toggle, twice) = click_kind(event);
-                        let line = clicked.clone();
-                        this.update(cx, |this: &mut FinderDemo, cx| {
-                            this.pick(&line, extend, toggle);
-                            if twice {
-                                this.open(&line, window, cx);
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    });
+                    .on_click(pick_on_click(&line, this.clone()));
                 native_callout(("ng.finder.strip.tip", index), line.row.name.clone(), cell)
             }));
 

@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::thread::LocalKey;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::SharedString;
@@ -21,7 +22,37 @@ pub(super) fn reference_seconds(at: SystemTime) -> f64 {
         .map_or(0., |since| since.as_secs_f64() - UNIX_TO_REFERENCE)
 }
 
-/// Finder's date column, formatted once a minute and shared by every row in it.
+type Cache = LocalKey<RefCell<HashMap<i64, SharedString>>>;
+
+/// One formatted string per minute, shared by every row that falls in it.
+fn per_minute(
+    seconds: f64,
+    seen: &'static Cache,
+    write: impl FnOnce(f64) -> SharedString,
+) -> SharedString {
+    if seconds == 0. {
+        return "--".into();
+    }
+    let minute = (seconds / 60.).floor() as i64;
+    seen.with(|seen| {
+        if let Some(text) = seen.borrow().get(&minute) {
+            return text.clone();
+        }
+        let text = write(seconds);
+        seen.borrow_mut().insert(minute, text.clone());
+        text
+    })
+}
+
+fn formatted(formatter: &NSDateFormatter, seconds: f64) -> SharedString {
+    SharedString::from(
+        formatter
+            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+            .to_string(),
+    )
+}
+
+/// Finder's date column: the short relative form.
 pub(crate) fn date_text(seconds: f64) -> SharedString {
     thread_local! {
         static FORMATTER: Retained<NSDateFormatter> = {
@@ -33,23 +64,8 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
         };
         static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
     }
-    if seconds == 0. {
-        return "--".into();
-    }
-    let minute = (seconds / 60.).floor() as i64;
-    SEEN.with(|seen| {
-        if let Some(text) = seen.borrow().get(&minute) {
-            return text.clone();
-        }
-        let text = FORMATTER.with(|formatter| {
-            SharedString::from(
-                formatter
-                    .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-                    .to_string(),
-            )
-        });
-        seen.borrow_mut().insert(minute, text.clone());
-        text
+    per_minute(seconds, &SEEN, |seconds| {
+        FORMATTER.with(|formatter| formatted(formatter, seconds))
     })
 }
 
@@ -65,26 +81,11 @@ pub(crate) fn stamp(seconds: f64) -> SharedString {
         };
         static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
     }
-    if seconds == 0. {
-        return "--".into();
-    }
-    let minute = (seconds / 60.).floor() as i64;
-    SEEN.with(|seen| {
-        if let Some(text) = seen.borrow().get(&minute) {
-            return text.clone();
-        }
-        let text = match days_ago(seconds).abs() <= 1 {
+    per_minute(seconds, &SEEN, |seconds| {
+        match days_ago(seconds).abs() <= 1 {
             true => date_text(seconds),
-            false => FORMATTER.with(|formatter| {
-                SharedString::from(
-                    formatter
-                        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-                        .to_string(),
-                )
-            }),
-        };
-        seen.borrow_mut().insert(minute, text.clone());
-        text
+            false => FORMATTER.with(|formatter| formatted(formatter, seconds)),
+        }
     })
 }
 

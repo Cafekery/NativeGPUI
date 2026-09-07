@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 use gpui::{
-    AnyElement, App, ClickEvent, Div, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollHandle, SharedString, TextAlign, Window, div, point, prelude::*, px,
+    AnyElement, App, Div, Hsla, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
+    SharedString, TextAlign, Window, div, point, prelude::*, px,
 };
 use native_gpui::tokens::{SystemColor, system_color};
 
@@ -17,7 +17,7 @@ use crate::data::Line;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
-use crate::ui::{click_kind, rename_field};
+use crate::ui::{pick_on_click, pick_on_press, rename_field};
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -404,38 +404,9 @@ impl FinderDemo {
                 },
             );
 
-            let pressed = line.clone();
-            let this_down = this.clone();
-            slot = slot.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                if event.modifiers.shift || event.modifiers.platform {
-                    return;
-                }
-                let line = pressed.clone();
-                this_down
-                    .update(cx, |this: &mut FinderDemo, cx| {
-                        if !this.selected.contains(&line.key) {
-                            this.pick(&line, false, false);
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-            });
-
-            let clicked = line.clone();
-            let this_click = this.clone();
-            let tile = slot.on_click(move |event: &ClickEvent, window, cx| {
-                let (extend, toggle, twice) = click_kind(event);
-                let line = clicked.clone();
-                this_click
-                    .update(cx, |this: &mut FinderDemo, cx| {
-                        this.pick(&line, extend, toggle);
-                        if twice {
-                            this.open(&line, window, cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-            });
+            let tile = slot
+                .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
+                .on_click(pick_on_click(line, this.clone()));
             canvas = canvas.child(tile);
         }
 

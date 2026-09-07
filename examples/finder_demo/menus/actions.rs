@@ -160,10 +160,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn paths(&self) -> Vec<PathBuf> {
-        self.focused_lines()
+        self.chosen_keys()
             .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| PathBuf::from(line.key.as_ref()))
+            .map(|key| PathBuf::from(key.as_ref()))
             .collect()
     }
 
@@ -175,17 +174,15 @@ impl FinderDemo {
     }
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
-        let items = self.paths();
-        if items.is_empty() {
-            return;
-        }
-        self.selected.clear();
-        self.cursor = None;
-        self.anchor = None;
-        self.run_op(Op::Trash(items), After::Nothing, cx);
+        self.remove_selection(Op::Trash, cx);
     }
 
     pub(crate) fn delete_selection(&mut self, cx: &mut Context<Self>) {
+        self.remove_selection(Op::DeleteImmediately, cx);
+    }
+
+    /// The chosen rows leave the listing with the operation that takes them off it.
+    fn remove_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, cx: &mut Context<Self>) {
         let items = self.paths();
         if items.is_empty() {
             return;
@@ -193,16 +190,11 @@ impl FinderDemo {
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
-        self.run_op(Op::DeleteImmediately(items), After::Nothing, cx);
+        self.run_op(op(items), After::Nothing, cx);
     }
 
     fn open_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let opens: Vec<&'static str> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .filter_map(|line| line.row.opens)
-            .collect();
+        let opens = self.chosen_folders();
         if let Some(first) = opens.first() {
             self.go(first, window, cx);
         }
@@ -219,13 +211,7 @@ impl FinderDemo {
     }
 
     fn open_in_window(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let opens: Vec<&'static str> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .filter_map(|line| line.row.opens)
-            .collect();
-        for (extra, id) in opens.into_iter().enumerate() {
+        for (extra, id) in self.chosen_folders().into_iter().enumerate() {
             open_finder_window(id, extra + 1, cx);
         }
     }

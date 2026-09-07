@@ -1,13 +1,13 @@
 //! Finder's ⌘I window: one per item, or one summary for a selection past [`COMBINE_OVER`].
 
+use std::path::Path;
+
 use gpui::{
-    App, Bounds, Context, Entity, FontWeight, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, FontWeight, IntoElement, ParentElement, Render,
+    SharedString, Styled, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::window_options;
-
-use std::path::Path;
 
 use crate::art::row_art;
 use crate::data::{Line, byte_string, day_string};
@@ -15,6 +15,27 @@ use crate::data::{Line, byte_string, day_string};
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
+
+/// The window's body, inset under the title bar AppKit draws over it.
+fn body() -> Div {
+    div()
+        .size_full()
+        .bg(system_color(SystemColor::WindowBackground))
+        .pt(px(34.))
+        .px(px(12.))
+        .pb(px(12.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+}
+
+fn heading(text: SharedString) -> Div {
+    div()
+        .font_weight(FontWeight::BOLD)
+        .text_size(tokens::small_system_font_size())
+        .text_color(system_color(SystemColor::Label))
+        .child(text)
+}
 
 pub(crate) struct Info {
     line: Line,
@@ -72,15 +93,7 @@ impl Render for Info {
         let row = &self.line.row;
         let scale = window.scale_factor();
         let size_text: SharedString = row.size.clone();
-        div()
-            .size_full()
-            .bg(system_color(SystemColor::WindowBackground))
-            .pt(px(34.))
-            .px(px(12.))
-            .pb(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
+        body()
             .child(
                 div()
                     .flex()
@@ -96,13 +109,7 @@ impl Render for Info {
                                 div()
                                     .flex()
                                     .justify_between()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_size(tokens::small_system_font_size())
-                                            .text_color(system_color(SystemColor::Label))
-                                            .child(row.name.clone()),
-                                    )
+                                    .child(heading(row.name.clone()))
                                     .child(
                                         div()
                                             .text_size(tokens::small_system_font_size())
@@ -156,12 +163,7 @@ pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static st
         let state = demo.read(cx);
         let lines = match at {
             Some(id) => crate::data::path_line(id).into_iter().collect(),
-            None => state
-                .focused_lines()
-                .iter()
-                .filter(|line| state.selected.contains(&line.key))
-                .cloned()
-                .collect::<Vec<_>>(),
+            None => state.chosen_lines(),
         };
         let holder = at
             .and_then(|id| Path::new(id).parent())
@@ -219,22 +221,8 @@ impl Render for Combined {
         kinds.sort_unstable();
         kinds.dedup();
         let kind_text: SharedString = kinds.join(", ").into();
-        div()
-            .size_full()
-            .bg(system_color(SystemColor::WindowBackground))
-            .pt(px(34.))
-            .px(px(12.))
-            .pb(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(tokens::small_system_font_size())
-                    .text_color(system_color(SystemColor::Label))
-                    .child(SharedString::from(format!("{count} Items"))),
-            )
+        body()
+            .child(heading(format!("{count} Items").into()))
             .child(Info::section("General", true))
             .child(
                 div()
