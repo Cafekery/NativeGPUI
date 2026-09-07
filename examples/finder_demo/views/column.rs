@@ -139,7 +139,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let folder = rung.folder;
-        let lines = self.column_listing(folder);
+        let rows = self.column_listing(folder);
         let scale = self.scale;
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
@@ -167,15 +167,11 @@ impl FinderDemo {
             )
         };
 
+        // The count and the rows it indexes come from one read: a second read can be shorter.
         let list = uniform_list(
             ("ng.finder.column.rows", index),
-            lines.len(),
-            move |range, _, cx| {
-                let Ok(rows) =
-                    this.update(cx, |demo: &mut FinderDemo, _| demo.column_listing(folder))
-                else {
-                    return Vec::new();
-                };
+            rows.len(),
+            move |range, _, _| {
                 let picked = |row: usize| match rows.get(row) {
                     Some(line) if emphasized => chosen.contains(&line.key),
                     Some(line) => alone.as_ref() == Some(&line.key),

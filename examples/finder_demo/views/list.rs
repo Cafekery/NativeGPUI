@@ -132,12 +132,8 @@ impl FinderDemo {
         let hit = self.row_at(pads, look.row_h);
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
-        // Taken from the demo per frame: a captured listing would hold a second reference, and
-        // a streaming listing grows in place only while the frame drawing it holds the only one.
-        let list = uniform_list("ng.finder.list", pads + count, move |range, _, cx| {
-            let Ok(lines) = this.update(cx, |demo: &mut FinderDemo, _| demo.lines(true)) else {
-                return Vec::new();
-            };
+        // The count and the rows it indexes come from one read: a second read can be shorter.
+        let list = uniform_list("ng.finder.list", pads + count, move |range, _, _| {
             range
                 .map(|index| {
                     let Some(at) = index.checked_sub(pads) else {
