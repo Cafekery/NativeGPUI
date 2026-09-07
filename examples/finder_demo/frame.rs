@@ -104,7 +104,7 @@ impl Render for FinderDemo {
             .is_some()
             .then(|| self.conflict_sheet(&palette, cx));
         let jobs_popover = self.jobs_open.then(|| self.jobs_popover(&palette, cx));
-        self.pump(cx);
+        self.pump(window, cx);
         self.sync_quick_look(window);
         let root = native_root(
             div()

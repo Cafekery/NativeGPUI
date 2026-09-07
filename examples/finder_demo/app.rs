@@ -126,6 +126,8 @@ pub(crate) struct FinderDemo {
     pub(crate) inspecting: Option<Line>,
     /// A row an operation made, to scroll to as soon as its folder is read again.
     pub(crate) reveal_next: Option<SharedString>,
+    /// Where to land after the folder on screen was deleted under the window.
+    pub(crate) vanished: Option<&'static str>,
     /// The window an error sheet hangs on.
     pub(crate) host: Option<Retained<NSWindow>>,
     pub(crate) focus: FocusHandle,
@@ -223,6 +225,7 @@ impl FinderDemo {
             tag_listing: None,
             inspecting: None,
             reveal_next: None,
+            vanished: None,
             host: None,
             focus: cx.focus_handle(),
             frames: 0,

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use gpui::Context;
+use gpui::{Context, Window};
 
 use crate::app::FinderDemo;
 use crate::data::{self, Column, Line, Row, intern, intern_path};
@@ -30,6 +30,17 @@ struct Mail {
     lines: Option<(bool, Vec<Line>)>,
     listed: bool,
     done: bool,
+    /// The read failed because the folder is no longer there.
+    gone: bool,
+}
+
+/// Whether a failed read means the folder itself is gone: deleted, replaced by a file, or on a
+/// volume that went away.
+fn gone(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }
 
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
@@ -115,7 +126,13 @@ pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
 
 impl FinderDemo {
     /// Everything the last frame asked for and did not have, plus where the watcher points.
-    pub(crate) fn pump(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.vanished.take() {
+            match self.here() == id {
+                true => self.arrive(window, cx),
+                false => self.go(id, window, cx),
+            }
+        }
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
@@ -204,8 +221,10 @@ impl FinderDemo {
                 all.extend(rows.iter().cloned());
                 post(rows);
             });
-            if read.is_err() {
-                filling.lock().unwrap().done = true;
+            if let Err(error) = read {
+                let mut mail = filling.lock().unwrap();
+                mail.gone = gone(&error);
+                mail.done = true;
                 return;
             }
             sort(&mut all);
@@ -218,17 +237,19 @@ impl FinderDemo {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL).await;
-                let (batches, lines, done) = {
+                let (batches, lines, done, gone) = {
                     let mut mail = mail.lock().unwrap();
                     (
                         std::mem::take(&mut mail.batches),
                         mail.lines.take(),
                         mail.done,
+                        mail.gone,
                     )
                 };
                 let alive = this
-                    .update(cx, |this, cx| {
-                        this.deliver(id, batches, lines, done, sorted_by, cx)
+                    .update(cx, |this, cx| match gone {
+                        true => this.folder_gone(id, cx),
+                        false => this.deliver(id, batches, lines, done, sorted_by, cx),
                     })
                     .is_ok();
                 if done || !alive {

@@ -109,6 +109,16 @@ impl Folders {
         }
     }
 
+    /// Drops a listing whose folder is gone, and the read that found it gone.
+    pub(crate) fn forget(&mut self, id: &'static str) {
+        self.reading.remove(id);
+        self.pinned.remove(id);
+        self.order.retain(|&held| held != id);
+        if self.cache.remove(id).is_some() {
+            self.changed += 1;
+        }
+    }
+
     /// Rows from a read: the first batch stands in for what was there, the rest add to it.
     pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) {
         let folder = self.cache.entry(id).or_insert_with(|| {

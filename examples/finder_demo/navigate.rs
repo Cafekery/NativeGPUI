@@ -124,6 +124,36 @@ impl FinderDemo {
         self.reveal_next = Some(key);
     }
 
+    /// A folder deleted under the window: Finder drops the listing and shows the nearest folder
+    /// above it that is still there.
+    pub(crate) fn folder_gone(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        cx.notify();
+        let inside = |path: &str| {
+            path == id
+                || path
+                    .strip_prefix(id.trim_end_matches('/'))
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        let leaving = inside(self.here());
+        self.folders.forget(id);
+        self.expanded.retain(|key| !inside(key));
+        self.expanding.retain(|held, _| !inside(held));
+        self.history.retain(|been| !inside(been));
+        if !leaving {
+            return;
+        }
+        let above = Path::new(id)
+            .ancestors()
+            .skip(1)
+            .find(|up| up.is_dir())
+            .map_or("/", intern_path);
+        if self.history.is_empty() {
+            self.history.push(above);
+        }
+        self.at = self.at.min(self.history.len() - 1);
+        self.vanished = Some(above);
+    }
+
     pub(crate) fn step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let next = if forward {
             self.at + 1
