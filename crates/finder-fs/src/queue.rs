@@ -31,6 +31,12 @@ pub enum Event {
         item: PathBuf,
     },
     Finished(JobId, io::Result<Done>),
+    /// A batch that stopped at an item: what landed before it is in `done`, undo and all.
+    Failed {
+        job: JobId,
+        done: Done,
+        error: io::Error,
+    },
     Paused,
     Resumed,
     Cancelled(JobId),
@@ -161,6 +167,11 @@ fn worker_loop(shared: Arc<Shared>) {
         shared.pending.fetch_sub(1, Ordering::SeqCst);
         match outcome {
             RunOutcome::Done(result) => shared.emit(Event::Finished(job.id, result)),
+            RunOutcome::Failed { done, error } => shared.emit(Event::Failed {
+                job: job.id,
+                done,
+                error,
+            }),
             RunOutcome::Cancelled => shared.emit(Event::Cancelled(job.id)),
         }
     }
@@ -168,6 +179,7 @@ fn worker_loop(shared: Arc<Shared>) {
 
 enum RunOutcome {
     Done(io::Result<Done>),
+    Failed { done: Done, error: io::Error },
     Cancelled,
 }
 
@@ -193,6 +205,7 @@ fn run_split_job(
     let total_bytes = total_size(items.clone(), Duration::from_millis(100));
     let mut meter = Meter::new();
     let mut results = Vec::with_capacity(items.len());
+    let mut undos = Vec::with_capacity(items.len());
     for item in &items {
         wait_while_paused(shared);
         if shared.cancelled.lock().unwrap().remove(&id.0) {
@@ -202,6 +215,7 @@ fn run_split_job(
         match ops::perform(item_op(&op, item.clone()), conflict, |_| {}) {
             Ok(done) => {
                 results.extend(done.results);
+                undos.extend(done.undo);
                 let bytes_per_sec = meter.tick(size);
                 shared.emit(Event::Progress {
                     job: id,
@@ -211,11 +225,25 @@ fn run_split_job(
                     item: item.clone(),
                 });
             }
-            Err(e) => return RunOutcome::Done(Err(e)),
+            Err(error) => {
+                return RunOutcome::Failed {
+                    done: batch_done(results, undos),
+                    error,
+                };
+            }
         }
     }
-    let undo = aggregate_undo(&op, &items, &results);
-    RunOutcome::Done(Ok(Done { results, undo }))
+    RunOutcome::Done(Ok(batch_done(results, undos)))
+}
+
+/// A split batch undoes item by item, in the order the items ran.
+fn batch_done(results: Vec<PathBuf>, mut undos: Vec<Op>) -> Done {
+    let undo = match undos.len() {
+        0 => None,
+        1 => undos.pop(),
+        _ => Some(Op::Batch(undos)),
+    };
+    Done { results, undo }
 }
 
 fn split_items(op: &Op) -> Option<&[PathBuf]> {
@@ -253,34 +281,6 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
         | Op::Batch(_) => {
             unreachable!("only called for splittable ops")
         }
-    }
-}
-
-fn common_parent(items: &[PathBuf]) -> Option<PathBuf> {
-    let first = items.first()?.parent()?;
-    items
-        .iter()
-        .all(|p| p.parent() == Some(first))
-        .then(|| first.to_path_buf())
-}
-
-/// Mirrors the per-op undo shapes in `ops.rs` for a batch split into single-item calls.
-fn aggregate_undo(op: &Op, original_items: &[PathBuf], results: &[PathBuf]) -> Option<Op> {
-    if results.is_empty() {
-        return None;
-    }
-    match op {
-        Op::Move { .. } | Op::Trash(_) => common_parent(original_items).map(|into| Op::Move {
-            items: results.to_vec(),
-            into,
-        }),
-        Op::Copy { .. } | Op::Duplicate(_) => Some(Op::Trash(results.to_vec())),
-        Op::DeleteImmediately(_)
-        | Op::Rename { .. }
-        | Op::NewFolder { .. }
-        | Op::NewFile { .. }
-        | Op::PutBack(_)
-        | Op::Batch(_) => None,
     }
 }
 
@@ -655,6 +655,52 @@ mod tests {
         assert!(dst.join("a.txt").exists());
         assert!(!dst.join("b.txt").exists());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_batch_that_fails_keeps_what_landed() {
+        let dir = temp_dir("partial");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let good = src.join("good.txt");
+        fs::write(&good, "landed").unwrap();
+        let missing = src.join("missing.txt");
+
+        let (tx, rx) = mpsc::channel();
+        let queue = Queue::new(move |e| {
+            let _ = tx.send(e);
+        });
+        let id = queue.submit(
+            Op::Copy {
+                items: vec![good.clone(), missing.clone()],
+                into: dst.clone(),
+            },
+            Conflict::Replace,
+        );
+
+        let event = expect(
+            &rx,
+            Duration::from_secs(10),
+            |e| matches!(e, Event::Failed { job, .. } if *job == id),
+        );
+        let Event::Failed { done, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(
+            done.results,
+            vec![dst.join("good.txt")],
+            "the item that landed is still a result"
+        );
+        let undo = done.undo.expect("what landed is still undoable");
+        let back = ops::perform(undo, Conflict::Replace, |_| {}).unwrap();
+        assert!(!dst.join("good.txt").exists());
+
+        for trashed in back.results {
+            let _ = fs::remove_file(trashed);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

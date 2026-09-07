@@ -250,6 +250,19 @@ impl FinderDemo {
                         Err(err) => self.complain(&err.to_string()),
                     }
                 }
+                Event::Failed { job, done, error } => {
+                    let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
+                        continue;
+                    };
+                    let row = self.jobs.remove(pos);
+                    if row.record && done.undo.is_some() {
+                        self.journal.record(&done, &row.op);
+                        landed = true;
+                    }
+                    let touched = crate::ops::touched(&row.op);
+                    self.settled(touched, done.results, row.after, cx);
+                    self.complain(&error.to_string());
+                }
                 Event::Cancelled(job) => self.jobs.retain(|row| row.id != job),
                 Event::Paused => {
                     for row in &mut self.jobs {

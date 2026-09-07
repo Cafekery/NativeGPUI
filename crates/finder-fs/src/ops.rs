@@ -363,14 +363,6 @@ fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()>
     ))
 }
 
-fn common_parent(items: &[PathBuf]) -> Option<PathBuf> {
-    let first = items.first()?.parent()?;
-    items
-        .iter()
-        .all(|p| p.parent() == Some(first))
-        .then(|| first.to_path_buf())
-}
-
 fn move_or_copy(
     items: Vec<PathBuf>,
     into: PathBuf,
@@ -381,6 +373,7 @@ fn move_or_copy(
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
+    let mut home = Vec::with_capacity(total);
     let mut displaced = Vec::new();
     for item in &items {
         refuse_into_itself(item, &into, is_move)?;
@@ -391,7 +384,13 @@ fn move_or_copy(
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
         let dest = into.join(name);
         let placed = place_one(&fm, item, dest, conflict, is_move)?;
-        results.extend(placed.dest);
+        if let Some(dest) = placed.dest {
+            home.push(Restore {
+                item: dest.clone(),
+                to: item.clone(),
+            });
+            results.push(dest);
+        }
         displaced.extend(placed.displaced);
         progress(Progress {
             done: i + 1,
@@ -399,29 +398,22 @@ fn move_or_copy(
             current: Some(item.clone()),
         });
     }
-    let undo = undo_of_transfer(is_move, &items, &results, displaced);
+    let undo = undo_of_transfer(is_move, home, &results, displaced);
     Ok(Done { results, undo })
 }
 
-/// What takes a finished transfer back: what landed goes home, and then whatever a Replace
-/// displaced goes back on top of it.
+/// What takes a finished transfer back: each item to the path it came from, or the Trash for a
+/// copy, and then whatever a Replace displaced goes back on top of it.
 fn undo_of_transfer(
     is_move: bool,
-    items: &[PathBuf],
+    home: Vec<Restore>,
     results: &[PathBuf],
     displaced: Vec<Restore>,
 ) -> Option<Op> {
-    let landed = if results.is_empty() {
-        None
-    } else if is_move {
-        common_parent(items).map(|orig| Op::Move {
-            items: results.to_vec(),
-            into: orig,
-        })
-    } else {
-        Some(Op::Trash(results.to_vec()))
-    };
-    let restored = (!displaced.is_empty()).then(|| Op::PutBack(displaced));
+    let mut put_back = if is_move { home } else { Vec::new() };
+    put_back.extend(displaced);
+    let landed = (!is_move && !results.is_empty()).then(|| Op::Trash(results.to_vec()));
+    let restored = (!put_back.is_empty()).then_some(Op::PutBack(put_back));
     match (landed, restored) {
         (Some(landed), Some(restored)) => Some(Op::Batch(vec![landed, restored])),
         (landed, restored) => landed.or(restored),
@@ -468,18 +460,21 @@ fn trash(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
+    let mut home = Vec::with_capacity(total);
     for (i, item) in items.iter().enumerate() {
-        results.push(trash_one(&fm, item)?);
+        let trashed = trash_one(&fm, item)?;
+        home.push(Restore {
+            item: trashed.clone(),
+            to: item.clone(),
+        });
+        results.push(trashed);
         progress(Progress {
             done: i + 1,
             total,
             current: Some(item.clone()),
         });
     }
-    let undo = common_parent(&items).map(|orig| Op::Move {
-        items: results.clone(),
-        into: orig,
-    });
+    let undo = (!home.is_empty()).then_some(Op::PutBack(home));
     Ok(Done { results, undo })
 }
 
@@ -542,10 +537,8 @@ fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Res
             current: Some(item.clone()),
         });
     }
-    Ok(Done {
-        results: results.clone(),
-        undo: Some(Op::Trash(results)),
-    })
+    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    Ok(Done { results, undo })
 }
 
 fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
@@ -980,6 +973,76 @@ mod tests {
         .unwrap();
         assert_eq!(done.results, vec![dir.join("a:b.txt")]);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_move_from_two_folders_undoes_to_both() {
+        let dir = temp_dir("two-parents");
+        let one = dir.join("one");
+        let two = dir.join("two");
+        let into = dir.join("dest");
+        for folder in [&one, &two, &into] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&one.join("a.txt"), "a");
+        touch(&two.join("b.txt"), "b");
+
+        let done = perform(
+            Op::Move {
+                items: vec![one.join("a.txt"), two.join("b.txt")],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results.len(), 2);
+
+        let undo = done.undo.expect("a move from two folders is undoable");
+        perform(undo, Conflict::Replace, no_progress).unwrap();
+        assert_eq!(fs::read_to_string(one.join("a.txt")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(two.join("b.txt")).unwrap(), "b");
+        assert_eq!(fs::read_dir(&into).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn put_back_restores_the_name_the_trash_took() {
+        let dir = temp_dir("put-back");
+        let file = dir.join("collide.txt");
+        touch(&file, "first");
+        let first = perform(
+            Op::Trash(vec![file.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+
+        touch(&file, "second");
+        let second = perform(
+            Op::Trash(vec![file.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_ne!(
+            second.results[0].file_name(),
+            file.file_name(),
+            "the Trash renames what collides in it"
+        );
+
+        let undo = second.undo.expect("trash undoes with a put back");
+        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        assert_eq!(back.results, vec![file.clone()]);
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "second",
+            "put back restores the name the item had"
+        );
+
+        purge(&first.results);
         let _ = fs::remove_dir_all(&dir);
     }
 
