@@ -13,7 +13,7 @@ use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art, small_glyph};
 use crate::chrome::scope_bar::SCOPE_H;
 use crate::data::{Column, Line, date_text, enclosing_name};
-use crate::dragdrop::{DragGhost, RowDrag, drop_target, flashed};
+use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
@@ -427,7 +427,7 @@ fn row(
                 into,
                 Some(ICON_X + line.depth as f32 * INDENT),
                 marks.selected.clone(),
-                fill,
+                Lit::Fill(fill),
                 this,
             )
             .into_any_element()

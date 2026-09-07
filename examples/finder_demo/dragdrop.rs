@@ -13,6 +13,7 @@ use gpui::{
 
 use crate::app::FinderDemo;
 use crate::ops::After;
+use crate::view::COLUMN_VIEW;
 use crate::views::list::TWIST_W;
 
 /// What the springing delay preference adds to.
@@ -57,6 +58,15 @@ pub(crate) fn carries<D: Grabbed>(
     }
 }
 
+/// How a drop target lights up: Finder fills a row and outlines a whole column, and a view that
+/// draws the highlight itself, from `drop_row`, needs no style of its own.
+#[derive(Clone, Copy)]
+pub(crate) enum Lit {
+    Drawn,
+    Fill(Hsla),
+    Outline(Hsla),
+}
+
 /// A drop highlight mid-flash: Finder darkens the fill rather than dropping it.
 pub(crate) fn flashed(fill: Hsla) -> Hsla {
     Hsla {
@@ -97,16 +107,17 @@ pub(crate) fn drop_lands<D: Grabbed>(
     key: SharedString,
     into: &'static str,
     carried: Arc<HashSet<SharedString>>,
-    fill: Hsla,
+    lit: Lit,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     target
         .drag_over::<D>({
             let carried = carried.clone();
             let key = key.clone();
-            move |style, grab: &D, _, _| match carries(&carried, grab, &key) {
-                true => style,
-                false => style.bg(fill),
+            move |style, grab: &D, _, _| match (carries(&carried, grab, &key), lit) {
+                (true, _) | (false, Lit::Drawn) => style,
+                (false, Lit::Fill(fill)) => style.bg(fill),
+                (false, Lit::Outline(edge)) => style.border_color(edge),
             }
         })
         .on_drop({
@@ -137,7 +148,7 @@ pub(crate) fn drop_target<D: Grabbed>(
     into: &'static str,
     twist: Option<f32>,
     carried: Arc<HashSet<SharedString>>,
-    fill: Hsla,
+    lit: Lit,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     let target = drop_lands::<D>(
@@ -145,7 +156,7 @@ pub(crate) fn drop_target<D: Grabbed>(
         key.clone(),
         into,
         carried.clone(),
-        fill,
+        lit,
         this.clone(),
     );
     drop_hover::<D>(target, key, into, twist, carried, this)
@@ -277,6 +288,7 @@ impl FinderDemo {
                 self.disclose(&key, true);
                 cx.notify();
             }
+            false if self.view == COLUMN_VIEW => self.column_open(&key, window, cx),
             false => self.go(into, window, cx),
         }
     }
@@ -289,6 +301,11 @@ impl FinderDemo {
             true => flashed(fill),
             false => fill,
         })
+    }
+
+    /// The folder the drag rests on this frame, for a view that draws its highlight itself.
+    pub(crate) fn drop_row(&self) -> Option<&SharedString> {
+        Some(&self.spring.as_ref()?.key)
     }
 
     /// The row whose drop highlight is dark this frame, part-way through its flash.
