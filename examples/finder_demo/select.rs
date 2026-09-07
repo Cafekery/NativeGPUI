@@ -82,6 +82,30 @@ impl FinderDemo {
         }
     }
 
+    /// The chosen rows, in the order the view lists them.
+    pub(crate) fn chosen_lines(&self) -> Vec<Line> {
+        self.focused_lines()
+            .iter()
+            .filter(|line| self.selected.contains(&line.key))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn chosen_keys(&self) -> Vec<SharedString> {
+        self.chosen_lines()
+            .into_iter()
+            .map(|line| line.key)
+            .collect()
+    }
+
+    /// The folders among the chosen rows, which are the ones a window or tab can open.
+    pub(crate) fn chosen_folders(&self) -> Vec<&'static str> {
+        self.chosen_lines()
+            .iter()
+            .filter_map(|line| line.row.opens)
+            .collect()
+    }
+
     /// Discloses every folder in memory under `id` and asks for the listings that are not.
     fn expand_under(&mut self, id: &'static str, depth: usize) {
         let home = crate::home();

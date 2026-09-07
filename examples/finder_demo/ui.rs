@@ -1,8 +1,8 @@
 //! The small element helpers every view shares.
 
 use gpui::{
-    ClickEvent, ElementId, FontWeight, IntoElement, Pixels, ScrollHandle, SharedString, Styled,
-    TextRun, WeakEntity, Window, hsla, point,
+    App, ClickEvent, ElementId, FontWeight, IntoElement, MouseDownEvent, Pixels, ScrollHandle,
+    SharedString, Styled, TextRun, WeakEntity, Window, hsla, point,
 };
 use native_gpui::tokens;
 use native_gpui::{NativeScroller, native_scroller};
@@ -41,6 +41,47 @@ pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
             mouse.up.click_count >= 2,
         ),
         _ => (false, false, false),
+    }
+}
+
+/// Finder's row click: it picks the row, and the second one opens it.
+pub(crate) fn pick_on_click(
+    line: &Line,
+    this: WeakEntity<FinderDemo>,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    let line = line.clone();
+    move |event, window, cx| {
+        let (extend, toggle, twice) = click_kind(event);
+        let line = line.clone();
+        this.update(cx, |this: &mut FinderDemo, cx| {
+            this.pick(&line, extend, toggle);
+            if twice {
+                this.open(&line, window, cx);
+            }
+            cx.notify();
+        })
+        .ok();
+    }
+}
+
+/// A press picks an unchosen row before its drag starts; Shift and Command wait for the click.
+pub(crate) fn pick_on_press(
+    line: &Line,
+    this: WeakEntity<FinderDemo>,
+) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+    let line = line.clone();
+    move |event, _, cx| {
+        if event.modifiers.shift || event.modifiers.platform {
+            return;
+        }
+        let line = line.clone();
+        this.update(cx, |this: &mut FinderDemo, cx| {
+            if !this.selected.contains(&line.key) {
+                this.pick(&line, false, false);
+                cx.notify();
+            }
+        })
+        .ok();
     }
 }
 

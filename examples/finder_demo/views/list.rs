@@ -2,9 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, Font, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, Pixels, Point, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
-    uniform_list,
+    AnyElement, ClickEvent, Div, DragMoveEvent, Font, FontWeight, Hsla, MouseButton, Pixels, Point,
+    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -17,7 +16,7 @@ use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::tag_dots;
-use crate::ui::{axis_locked, click_kind, rename_field};
+use crate::ui::{axis_locked, pick_on_click, pick_on_press, rename_field};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
@@ -410,39 +409,8 @@ fn row(
     }
     let row = row
         .child(div().w(px(PANE_INSET)).flex_none())
-        .on_mouse_down(MouseButton::Left, {
-            let this = this.clone();
-            let pressed = line.clone();
-            move |event: &MouseDownEvent, _, cx| {
-                if event.modifiers.shift || event.modifiers.platform {
-                    return;
-                }
-                let line = pressed.clone();
-                this.update(cx, |this: &mut FinderDemo, cx| {
-                    if !this.selected.contains(&line.key) {
-                        this.pick(&line, false, false);
-                        cx.notify();
-                    }
-                })
-                .ok();
-            }
-        })
-        .on_click({
-            let this = this.clone();
-            let clicked = line.clone();
-            move |event: &ClickEvent, window, cx| {
-                let (extend, toggle, twice) = click_kind(event);
-                let line = clicked.clone();
-                this.update(cx, |this: &mut FinderDemo, cx| {
-                    this.pick(&line, extend, toggle);
-                    if twice {
-                        this.open(&line, window, cx);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
+        .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
+        .on_click(pick_on_click(line, this.clone()))
         .on_drag(
             RowDrag {
                 key: line.key.clone(),

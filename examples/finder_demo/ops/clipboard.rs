@@ -23,12 +23,7 @@ impl FinderDemo {
     /// Finder's ⌘C: the names as text and the files as file URLs; it also clears the ⌘X mark.
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         self.clear_cut(cx);
-        let keys: Vec<SharedString> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.key.clone())
-            .collect();
+        let keys = self.chosen_keys();
         if keys.is_empty() {
             return;
         }
@@ -49,12 +44,7 @@ impl FinderDemo {
 
     /// ⌘X: the selection copies to the pasteboard and is marked cut until pasted or cleared.
     pub(crate) fn cut_selection(&mut self, cx: &mut Context<Self>) {
-        let keys: Vec<SharedString> = self
-            .focused_lines()
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.key.clone())
-            .collect();
+        let keys = self.chosen_keys();
         if keys.is_empty() {
             return;
         }
