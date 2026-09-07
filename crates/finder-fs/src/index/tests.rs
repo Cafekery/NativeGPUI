@@ -55,8 +55,12 @@ fn tree(name: &str) -> Temp {
     Temp(fs::canonicalize(&root).unwrap())
 }
 
+/// The snapshot a finished crawl writes lands outside the tree under test, so a second crawl
+/// does not count it.
 fn crawled(root: &Path) -> Arc<Index> {
-    let index = Index::open(&root.join("index.bin"));
+    let index = Index::open(&store(
+        &root.file_name().unwrap_or_default().to_string_lossy(),
+    ));
     crawl(&index, root);
     index
 }
@@ -174,7 +178,7 @@ fn children_and_sizes() {
 fn a_second_crawl_is_ignored() {
     let temp = tree("second");
     let root = &temp.0;
-    let index = Index::open(&root.join("index.bin"));
+    let index = Index::open(&store("second"));
     let (first, done) = mpsc::channel();
     index.crawl(vec![root.clone()], move |progress: Progress| {
         if progress.done {
@@ -392,5 +396,70 @@ fn an_event_id_the_log_cannot_hold_forces_a_full_crawl() {
     let other = vec![root.join("a")];
     assert_eq!(super::catchup::plan(&tree, &other, now).cold, other);
     drop(tree);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_finished_crawl_lands_a_snapshot() {
+    let temp = tree("crawl-save");
+    let root = &temp.0;
+    let store = store("crawl-save");
+    let index = Index::open(&store);
+    crawl(&index, root);
+
+    let reopened = Index::open(&store);
+    assert_eq!(reopened.stats().files, index.stats().files);
+    assert_eq!(reopened.stats().event_id, index.stats().event_id);
+    assert_eq!(reopened.children(&root.join("many")).unwrap().len(), MANY);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_snapshot_keeps_the_id_of_the_tree_it_holds() {
+    let temp = tree("older-id");
+    let root = &temp.0;
+    let store = store("older-id");
+    let index = Index::open(&store);
+    crawl(&index, root);
+    let landed = index.stats().event_id;
+
+    fs::write(root.join("many/late.dat"), vec![b'l'; 90]).unwrap();
+    std::thread::sleep(SETTLE);
+    index.note_changed(&[root.join("many")]);
+    index.save();
+
+    // The change is in the snapshot and the id is still the one the crawl finished at: an id
+    // newer than the tree would tell the next launch to replay from after the change it missed.
+    let reopened = Index::open(&store);
+    assert_eq!(reopened.search("late", None, 4).len(), 1);
+    assert_eq!(reopened.stats().event_id, landed);
+    assert!(landed <= crate::watch::latest_event_id());
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_failed_write_leaves_the_snapshot_that_landed() {
+    let temp = tree("atomic");
+    let root = &temp.0;
+    let store = store("atomic");
+    let index = Index::open(&store);
+    crawl(&index, root);
+    let landed = fs::read(&store).unwrap();
+
+    // A directory where the temp file goes: the save fails before it can rename anything.
+    let temp_path = store.with_extension("tmp");
+    let _ = fs::remove_file(&temp_path);
+    fs::create_dir_all(&temp_path).unwrap();
+    fs::write(root.join("late.txt"), vec![b'l'; 5]).unwrap();
+    index.note_changed(&[root.clone()]);
+    index.save();
+
+    assert_eq!(fs::read(&store).unwrap(), landed);
+    assert_eq!(Index::open(&store).search("late", None, 4).len(), 0);
+
+    // The change the failed save could not write is still owed, and the next one carries it.
+    fs::remove_dir(&temp_path).unwrap();
+    index.save();
+    assert_eq!(Index::open(&store).search("late", None, 4).len(), 1);
     let _ = fs::remove_file(&store);
 }

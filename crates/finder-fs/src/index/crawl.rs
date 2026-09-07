@@ -308,6 +308,7 @@ impl Crawl {
                 .unwrap_or(self.walk.since);
         }
         self.index.crawling.store(false, Ordering::SeqCst);
+        self.index.save();
         self.send(None, true);
     }
 }
