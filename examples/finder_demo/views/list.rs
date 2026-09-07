@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, ClickEvent, Div, Font, FontWeight, Hsla, MouseButton, Pixels, Point, SharedString,
-    Stateful, WeakEntity, div, prelude::*, px, uniform_list,
+    Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -18,7 +18,7 @@ use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::tag_dots;
-use crate::ui::{axis_locked, pick_on_click, pick_on_press, rename_field};
+use crate::ui::{axis_locked, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
 /// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
@@ -139,7 +139,7 @@ impl FinderDemo {
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
-        let list = uniform_list("ng.finder.list", pads + count, move |range, _, _| {
+        let list = uniform_list("ng.finder.list", pads + count, move |range, window, _| {
             range
                 .map(|index| {
                     let Some(at) = index.checked_sub(pads) else {
@@ -157,7 +157,7 @@ impl FinderDemo {
                         Some(Slot::Row(at)) => *at,
                         None => at,
                     };
-                    row(&lines[at], at, &look, &marks, this.clone())
+                    row(&lines[at], at, &look, &marks, window, this.clone())
                 })
                 .collect::<Vec<_>>()
         })
@@ -364,16 +364,35 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
     }
 }
 
+/// The strip of a folder row a drag lands on: Finder takes the disclosure triangle, the icon and
+/// the name it labels, and no more of the row than that.
+fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
+    let twist = ICON_X + line.depth as f32 * INDENT;
+    let name = twist
+        + look.icon
+        + LABEL_GAP
+        + text_width(window, line.row.display.clone(), px(ROW_FONT))
+        + LABEL_GAP;
+    (twist, name.min(look.name_w))
+}
+
 fn row(
     line: &Line,
     at: usize,
     look: &Look,
     marks: &Marks,
+    window: &Window,
     this: WeakEntity<FinderDemo>,
 ) -> AnyElement {
     let is_selected = marks.selected.contains(&line.key);
-    let lit = is_selected && look.focused;
-    let text = if is_selected {
+    let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
+        match marks.springing.as_ref() == Some(&line.key) {
+            true => flashed(look.selection),
+            false => look.selection,
+        }
+    });
+    let lit = dropping.is_some() || (is_selected && look.focused);
+    let text = if is_selected || dropping.is_some() {
         look.selection_text
     } else {
         look.label
@@ -388,12 +407,6 @@ fn row(
         (false, true) => Some(look.stripe),
         (false, false) => None,
     };
-    let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
-        match marks.springing.as_ref() == Some(&line.key) {
-            true => flashed(look.selection),
-            false => look.selection,
-        }
-    });
     let mut row = div()
         .id(("ng.finder.row", at))
         .w_full()
@@ -426,7 +439,7 @@ fn row(
             row,
             line.key.clone(),
             into,
-            Some(ICON_X + line.depth as f32 * INDENT),
+            Some(drop_band(line, look, window)),
             marks.selected.clone(),
             Lit::Drawn,
             this,
