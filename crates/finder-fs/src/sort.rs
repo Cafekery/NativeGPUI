@@ -17,11 +17,14 @@ const OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensiti
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareForcedOrdering);
 
-// No `CompareForcedOrdering`: it breaks ties that fold equal, which is the point of a prefix
-// test. No `CompareAnchored` either: it does not ignore a longer receiver, so the range is
-// passed in directly.
+// `CompareNonliteral` matches canonically equivalent text, so a name stored NFD answers to a
+// prefix typed NFC, and `CompareDiacriticInsensitive` answers a prefix typed without the accent
+// at all, which is what Finder selects on; `CompareAnchored` holds the match to the start.
 const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
-    .union(CFStringCompareFlags::CompareWidthInsensitive);
+    .union(CFStringCompareFlags::CompareWidthInsensitive)
+    .union(CFStringCompareFlags::CompareNonliteral)
+    .union(CFStringCompareFlags::CompareDiacriticInsensitive)
+    .union(CFStringCompareFlags::CompareAnchored);
 
 // SAFETY: the returned CFString borrows `s`'s bytes and must not outlive it; we never let it
 // escape the caller's stack frame.
@@ -47,23 +50,14 @@ pub fn name_cmp(a: &str, b: &str) -> Ordering {
 
 /// Finder's type-select: whether `name` starts with `prefix`, case- and width-insensitively.
 pub fn starts_with(name: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
     let name_cf = unsafe { borrow_cf_str(name) };
     let prefix_cf = unsafe { borrow_cf_str(prefix) };
-    let prefix_len = prefix_cf.length();
-    if name_cf.length() < prefix_len {
-        return false;
-    }
-    let range = CFRange::new(0, prefix_len);
-    let order: Ordering = unsafe {
-        name_cf.compare_with_options_and_locale(
-            Some(&prefix_cf),
-            range,
-            PREFIX_OPTIONS,
-            current_locale(),
-        )
-    }
-    .into();
-    order == Ordering::Equal
+    let range = CFRange::new(0, name_cf.length());
+    let mut found = CFRange::new(0, 0);
+    unsafe { name_cf.find_with_options(Some(&prefix_cf), range, PREFIX_OPTIONS, &mut found) }
 }
 
 /// Sorts `names` into Finder's Name order, converting each to a `CFString` once.
@@ -108,6 +102,15 @@ mod tests {
         assert!(starts_with("Brewfile", "brewfile"));
         assert!(!starts_with("backup.sh", "README"));
         assert!(!starts_with("file 2", "file 10"));
+    }
+
+    #[test]
+    fn prefix_ignores_how_the_name_is_composed() {
+        assert!(starts_with("cafe\u{301}.txt", "caf\u{e9}"));
+        assert!(starts_with("caf\u{e9}.txt", "cafe\u{301}"));
+        assert!(starts_with("cafe\u{301}.txt", "cafe"));
+        assert!(starts_with("cafe.txt", "caf\u{e9}"));
+        assert!(!starts_with("cafe.txt", "cafx"));
     }
 
     #[test]
