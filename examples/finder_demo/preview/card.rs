@@ -71,6 +71,15 @@ const ACTION_SLOT_W: f32 = 75.5;
 
 const ACTION_ICON_SIZE: f32 = 15.;
 
+const STACK_ICON: f32 = 0.62;
+
+/// Back to front: tilt in degrees, x and y offsets in shares of the square, scale.
+pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
+    (-10., 0.03, -0.025, 0.9),
+    (7., -0.025, 0., 0.95),
+    (-3., 0., 0.02, 1.),
+];
+
 struct Card {
     hero: AnyElement,
     title: SharedString,
@@ -81,15 +90,6 @@ struct Card {
     many: bool,
     actions: &'static [(&'static str, &'static str)],
 }
-
-const STACK_ICON: f32 = 0.62;
-
-/// Back to front: tilt in degrees, x and y offsets in shares of the square, scale.
-pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
-    (-10., 0.03, -0.025, 0.9),
-    (7., -0.025, 0., 0.95),
-    (-3., 0., 0.02, 1.),
-];
 
 /// The icons fanned into one square, `side` pixels across; straight-alpha BGRA, as icons come.
 fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {

@@ -1,3 +1,5 @@
+//! The list view, and the row every other view's list is measured against.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -19,6 +21,52 @@ use crate::tags::tag_dots;
 use crate::ui::{axis_locked, pick_on_click, pick_on_press, rename_field};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
+/// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
+pub(crate) const ICON_SIZE: f32 = 32.;
+pub(crate) const ICON_SMALL: f32 = 16.;
+pub(crate) const ICON_X: f32 = 26.;
+pub(crate) const INDENT: f32 = 15.;
+pub(crate) const TWIST_W: f32 = 15.;
+pub(crate) const ROW_FONT: f32 = 14.;
+pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
+pub(crate) const LIST_TOP_GAP: f32 = 5.;
+const BAND_INSET: f32 = 8.;
+const LABEL_GAP: f32 = 6.;
+const TAG_DOTS_GAP: f32 = 6.;
+
+const PILL_INSET: f32 = 10.;
+const PILL_PAD_X: f32 = 8.;
+const PILL_PAD_Y: f32 = 3.;
+const PILL_FONT: f32 = 11.;
+const PILL_RADIUS: f32 = 6.;
+
+/// Everything the rows of one frame draw with, so a row builder takes one of these.
+struct Look {
+    icon: f32,
+    row_h: f32,
+    name_w: f32,
+    scale: f32,
+    label: Hsla,
+    secondary: Hsla,
+    stripe: Hsla,
+    selection: Hsla,
+    selection_text: Hsla,
+    focused: bool,
+    dates: Font,
+    searching: bool,
+    columns: Vec<ColumnSpec>,
+}
+
+struct Marks {
+    selected: Arc<HashSet<SharedString>>,
+    cut: Arc<HashSet<SharedString>>,
+    expanded: Arc<HashSet<SharedString>>,
+    tags: HashMap<SharedString, Vec<usize>>,
+    renaming: Option<SharedString>,
+    cursor: Option<SharedString>,
+    ql_icon: Anchor,
+}
+
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
 pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
     match column {
@@ -34,25 +82,9 @@ pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
     ICON_X + line.depth as f32 * INDENT + icon + LABEL_GAP
 }
 
-/// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
-pub(crate) const ICON_SIZE: f32 = 32.;
-pub(crate) const ICON_SMALL: f32 = 16.;
-const BAND_INSET: f32 = 8.;
-pub(crate) const ICON_X: f32 = 26.;
-const LABEL_GAP: f32 = 6.;
-pub(crate) const TWIST_W: f32 = 15.;
-
 pub(crate) fn row_h(icon: f32) -> f32 {
     icon + 4.
 }
-
-pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
-
-pub(crate) const ROW_FONT: f32 = 14.;
-pub(crate) const LIST_TOP_GAP: f32 = 5.;
-
-pub(crate) const INDENT: f32 = 15.;
-const TAG_DOTS_GAP: f32 = 6.;
 
 impl FinderDemo {
     /// The list's top content inset: `(blank leading rows, how far the list frame is lifted)`.
@@ -188,39 +220,6 @@ impl FinderDemo {
                 .into_any_element(),
         )
     }
-}
-
-const PILL_INSET: f32 = 10.;
-const PILL_PAD_X: f32 = 8.;
-const PILL_PAD_Y: f32 = 3.;
-const PILL_FONT: f32 = 11.;
-const PILL_RADIUS: f32 = 6.;
-
-/// Everything the rows of one frame draw with, so a row builder takes one of these.
-struct Look {
-    icon: f32,
-    row_h: f32,
-    name_w: f32,
-    scale: f32,
-    label: Hsla,
-    secondary: Hsla,
-    stripe: Hsla,
-    selection: Hsla,
-    selection_text: Hsla,
-    focused: bool,
-    dates: Font,
-    searching: bool,
-    columns: Vec<ColumnSpec>,
-}
-
-struct Marks {
-    selected: Arc<HashSet<SharedString>>,
-    cut: Arc<HashSet<SharedString>>,
-    expanded: Arc<HashSet<SharedString>>,
-    tags: HashMap<SharedString, Vec<usize>>,
-    renaming: Option<SharedString>,
-    cursor: Option<SharedString>,
-    ql_icon: Anchor,
 }
 
 /// Finder's selection pill, inset from both edges so it never runs under the pane.

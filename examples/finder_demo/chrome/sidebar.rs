@@ -15,6 +15,8 @@ use crate::prefs;
 use crate::tags::finder_color_rgb;
 
 pub(crate) const SIDEBAR_W: f32 = 184.;
+pub(crate) const FAVOURITES: &str = "g-favourites";
+pub(crate) const LOCATIONS: &str = "g-locations";
 
 pub(crate) enum Glyph {
     Symbol(&'static str),
@@ -201,9 +203,6 @@ fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
     .collect();
     Some((acts, entries))
 }
-
-pub(crate) const FAVOURITES: &str = "g-favourites";
-pub(crate) const LOCATIONS: &str = "g-locations";
 
 /// Finder's menu on a row the user pinned: what it opens, and the pin it forgets.
 fn pinned_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {

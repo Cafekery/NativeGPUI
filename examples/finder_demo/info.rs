@@ -15,6 +15,8 @@ use crate::data::{Line, byte_string, day_string};
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
+/// A selection past this size gets one combined window rather than one window per item.
+const COMBINE_OVER: usize = 3;
 
 /// The window's body, inset under the title bar AppKit draws over it.
 fn body() -> Div {
@@ -153,9 +155,6 @@ impl Render for Info {
             .child(Self::section("Sharing & Permissions", false))
     }
 }
-
-/// A selection past this size gets one combined window rather than one window per item.
-const COMBINE_OVER: usize = 3;
 
 /// One window per chosen item, cascaded down the screen; `at` opens on a folder instead.
 pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
