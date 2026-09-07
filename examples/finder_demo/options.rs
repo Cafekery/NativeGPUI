@@ -75,7 +75,7 @@ impl Render for ViewOptions {
                         move |index: &usize, _, cx| {
                             let column = SORTS[*index].0;
                             demo.update(cx, |this, cx| {
-                                this.sort_by(column);
+                                this.sort_by(column, cx);
                                 cx.notify();
                             });
                         }

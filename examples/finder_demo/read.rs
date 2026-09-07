@@ -34,6 +34,10 @@ struct Mail {
     gone: bool,
 }
 
+/// A folder put in order off the main thread: its rows, and the lines built from them where the
+/// listing is drawn as it is read.
+type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
+
 /// Whether a failed read means the folder itself is gone: deleted, replaced by a file, or on a
 /// volume that went away.
 fn gone(error: &std::io::Error) -> bool {
@@ -279,7 +283,7 @@ impl FinderDemo {
             self.landed(id);
         }
         if done && sorted_by != (self.sort, self.ascending) {
-            self.sort_folder(id);
+            self.sort_folder(id, (self.sort, self.ascending), cx);
         } else if let Some((hidden, lines)) = lines {
             self.built(id, hidden, lines);
         }
@@ -300,16 +304,66 @@ impl FinderDemo {
         }
     }
 
-    fn sort_folder(&mut self, id: &'static str) {
-        let (sort, ascending) = (self.sort, self.ascending);
+    /// One folder put in the order asked for off the main thread, with the listing built from it
+    /// where it is the one on screen: a listing this size cannot be sorted inside a frame.
+    fn sort_folder(&mut self, id: &'static str, by: (Column, bool), cx: &mut Context<Self>) {
+        let Some(rows) = self.folders.get(id).map(|folder| folder.rows.clone()) else {
+            return;
+        };
+        let was = rows.len();
+        let plain = self.plain().filter(|_| id == self.here());
+        cx.spawn(async move |this, cx| {
+            let sorted = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut rows = rows;
+                    rows.sort_by(|a, b| order(by.0, by.1, a, b));
+                    let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
+                    (rows, lines)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.sorted(id, by, was, sorted, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A sort that landed: the rows take the order it made and the listing built beside them,
+    /// unless a read moved the folder while it ran, which sorts what is there now instead.
+    fn sorted(
+        &mut self,
+        id: &'static str,
+        by: (Column, bool),
+        was: usize,
+        sorted: Sorted,
+        cx: &mut Context<Self>,
+    ) {
+        (self.sort, self.ascending) = by;
+        if self
+            .folders
+            .get(id)
+            .is_none_or(|folder| folder.rows.len() != was)
+        {
+            self.sort_folder(id, by, cx);
+            return;
+        }
+        let (rows, lines) = sorted;
         if let Some(folder) = self.folders.get_mut(id) {
-            folder.rows.sort_by(|a, b| order(sort, ascending, a, b));
+            folder.rows = rows;
+        }
+        if let Some((hidden, lines)) = lines {
+            self.built(id, hidden, lines);
         }
     }
 
-    pub(crate) fn resort(&mut self) {
+    /// Finder's re-sort: every listing in memory takes the new order, and the arrow follows the
+    /// rows rather than running ahead of them.
+    pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
         for id in self.folders.cached() {
-            self.sort_folder(id);
+            self.sort_folder(id, by, cx);
         }
     }
 

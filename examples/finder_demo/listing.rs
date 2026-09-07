@@ -282,13 +282,26 @@ impl FinderDemo {
     }
 
     /// Lifts the cached listing out, so extending it does not copy what the cache still holds.
+    /// A read hands one vector to both listings, and only its last holder can be carried through.
     fn take(&self, tree: bool) -> Option<Built> {
         let mut listings = self.listings();
         listings.slots = None;
-        match tree {
+        let taken = match tree {
             true => listings.tree.take(),
             false => listings.flat.take(),
+        };
+        let twin = match tree {
+            true => &mut listings.flat,
+            false => &mut listings.tree,
+        };
+        if twin
+            .as_ref()
+            .zip(taken.as_ref())
+            .is_some_and(|(twin, taken)| Arc::ptr_eq(&twin.lines, &taken.lines))
+        {
+            *twin = None;
         }
+        taken
     }
 
     /// How many rows of the folder on screen a listing is built from; `None` where hits shape it.
