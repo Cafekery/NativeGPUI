@@ -41,8 +41,6 @@ pub(crate) struct Row {
     pub(crate) created_at: f64,
     /// Finder's localized kind, e.g. `PDF document`.
     pub(crate) kind: SharedString,
-    pub(crate) dimensions: Option<SharedString>,
-    pub(crate) duration: Option<SharedString>,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
     /// The folder this row opens: a directory the user can walk into, never a package.
@@ -88,8 +86,6 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         modified_at: reference_seconds(entry.modified),
         created_at: reference_seconds(entry.created),
         kind: kind.label.to_string().into(),
-        dimensions: None,
-        duration: None,
         face: face_of(&kind.uti),
         hidden: entry.hidden,
         opens: entry.is_dir().then(|| intern(&path)),

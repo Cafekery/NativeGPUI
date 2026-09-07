@@ -133,6 +133,7 @@ impl FinderDemo {
         }
         self.sync_stats(cx);
         crate::icons::draw_wanted(&cx.entity(), cx);
+        crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
         self.follow();
     }

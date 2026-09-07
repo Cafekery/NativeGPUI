@@ -6,6 +6,7 @@ pub mod entry;
 pub mod index;
 pub mod kind;
 pub mod list;
+pub mod meta;
 pub mod ops;
 pub mod queue;
 pub mod sort;
