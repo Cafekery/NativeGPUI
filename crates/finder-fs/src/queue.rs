@@ -39,7 +39,11 @@ pub enum Event {
     },
     Paused,
     Resumed,
-    Cancelled(JobId),
+    /// A job stopped between items: what landed before it stopped is in `done`, undo and all.
+    Cancelled {
+        job: JobId,
+        done: Done,
+    },
 }
 
 struct Job {
@@ -122,7 +126,10 @@ impl Queue {
             state.jobs.remove(pos);
             drop(state);
             self.shared.pending.fetch_sub(1, Ordering::SeqCst);
-            self.shared.emit(Event::Cancelled(job));
+            self.shared.emit(Event::Cancelled {
+                job,
+                done: batch_done(Vec::new(), Vec::new()),
+            });
         } else {
             drop(state);
             self.shared.cancelled.lock().unwrap().insert(job.0);
@@ -145,7 +152,10 @@ fn next_job(shared: &Shared) -> Job {
             let job = state.jobs.pop_front().unwrap();
             drop(state);
             shared.pending.fetch_sub(1, Ordering::SeqCst);
-            shared.emit(Event::Cancelled(job.id));
+            shared.emit(Event::Cancelled {
+                job: job.id,
+                done: batch_done(Vec::new(), Vec::new()),
+            });
             continue;
         }
         return state.jobs.pop_front().unwrap();
@@ -172,7 +182,7 @@ fn worker_loop(shared: Arc<Shared>) {
                 done,
                 error,
             }),
-            RunOutcome::Cancelled => shared.emit(Event::Cancelled(job.id)),
+            RunOutcome::Cancelled(done) => shared.emit(Event::Cancelled { job: job.id, done }),
         }
     }
 }
@@ -180,7 +190,7 @@ fn worker_loop(shared: Arc<Shared>) {
 enum RunOutcome {
     Done(io::Result<Done>),
     Failed { done: Done, error: io::Error },
-    Cancelled,
+    Cancelled(Done),
 }
 
 fn run_job(shared: &Shared, id: JobId, op: Op, conflict: Conflict) -> RunOutcome {
@@ -209,7 +219,7 @@ fn run_split_job(
     for item in &items {
         wait_while_paused(shared);
         if shared.cancelled.lock().unwrap().remove(&id.0) {
-            return RunOutcome::Cancelled;
+            return RunOutcome::Cancelled(batch_done(results, undos));
         }
         let size = walk_size(item);
         match ops::perform(item_op(&op, item.clone()), conflict, |_| {}) {
@@ -644,7 +654,7 @@ mod tests {
         expect(
             &rx,
             Duration::from_secs(1),
-            |e| matches!(e, Event::Cancelled(job) if *job == id2),
+            |e| matches!(e, Event::Cancelled { job, .. } if *job == id2),
         );
         assert_eq!(queue.pending(), 1);
 
@@ -655,6 +665,64 @@ mod tests {
         assert!(dst.join("a.txt").exists());
         assert!(!dst.join("b.txt").exists());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_copy_keeps_what_landed() {
+        let dir = temp_dir("cancel-landed");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let files: Vec<PathBuf> = (0..200)
+            .map(|i| {
+                let path = src.join(format!("f{i:03}.txt"));
+                fs::write(&path, "x").unwrap();
+                path
+            })
+            .collect();
+
+        let (tx, rx) = mpsc::channel();
+        let queue = Queue::new(move |e| {
+            let _ = tx.send(e);
+        });
+        let id = queue.submit(
+            Op::Copy {
+                items: files.clone(),
+                into: dst.clone(),
+            },
+            Conflict::Replace,
+        );
+
+        expect(
+            &rx,
+            Duration::from_secs(10),
+            |e| matches!(e, Event::Progress { job, .. } if *job == id),
+        );
+        queue.cancel(id);
+        let event = expect(
+            &rx,
+            Duration::from_secs(10),
+            |e| matches!(e, Event::Cancelled { job, .. } if *job == id),
+        );
+        let Event::Cancelled { done, .. } = event else {
+            unreachable!()
+        };
+        assert!(
+            !done.results.is_empty(),
+            "the items that landed before the cancel are still results"
+        );
+        for landed in &done.results {
+            assert!(landed.exists() && landed.starts_with(&dst));
+        }
+        let undo = done.undo.expect("what landed is still undoable");
+        let back = ops::perform(undo, Conflict::Replace, |_| {}).unwrap();
+        assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+
+        for trashed in back.results {
+            let _ = fs::remove_file(trashed);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
