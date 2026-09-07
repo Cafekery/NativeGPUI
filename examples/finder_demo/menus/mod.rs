@@ -26,43 +26,17 @@ pub(crate) fn attach(
     this: WeakEntity<FinderDemo>,
     child: impl IntoElement,
 ) -> NativeContextMenu {
-    let acts = menu.acts;
     native_context_menu(id, child)
         .entries(menu.entries)
-        .on_select(move |index, window, cx| {
-            let act = acts.get(*index).copied().unwrap_or(Act::Nothing);
-            this.update(cx, |demo: &mut FinderDemo, cx| {
-                demo.run_menu(act, window, cx)
-            })
-            .ok();
-        })
+        .on_select(picks(Rc::new(RefCell::new(menu.acts)), this))
 }
 
-/// The empty-space menu, built when the right-click lands rather than on every frame.
-pub(crate) fn backdrop(
+/// A menu built where the right-click landed rather than on every frame: a hosted view per
+/// painted row is what a long listing cannot afford.
+fn menu_at(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
-    child: impl IntoElement,
-) -> NativeContextMenu {
-    let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
-    let built = acts.clone();
-    let demo = this.clone();
-    native_context_menu(id, child)
-        .entries_at(move |_, _, cx| {
-            let menu = demo
-                .update(cx, |demo: &mut FinderDemo, _| background(demo))
-                .unwrap_or_default();
-            *built.borrow_mut() = menu.acts;
-            menu.entries
-        })
-        .on_select(picks(acts, this))
-}
-
-/// One menu for a whole view, built when the click lands: a hosted view per row costs too much.
-pub(crate) fn rows_menu(
-    id: impl Into<ElementId>,
-    this: WeakEntity<FinderDemo>,
-    hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
+    build: impl Fn(&FinderDemo, Point<Pixels>) -> Menu + 'static,
     child: impl IntoElement,
 ) -> NativeContextMenu {
     let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
@@ -71,17 +45,34 @@ pub(crate) fn rows_menu(
     native_context_menu(id, child)
         .entries_at(move |at, _, cx| {
             let menu = demo
-                .update(cx, |demo: &mut FinderDemo, _| {
-                    let line = hit(demo, at)?;
-                    Some(item(&demo.selected, &line))
-                })
-                .ok()
-                .flatten()
+                .update(cx, |demo: &mut FinderDemo, _| build(demo, at))
                 .unwrap_or_default();
             *built.borrow_mut() = menu.acts;
             menu.entries
         })
         .on_select(picks(acts, this))
+}
+
+pub(crate) fn backdrop(
+    id: impl Into<ElementId>,
+    this: WeakEntity<FinderDemo>,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    menu_at(id, this, |demo, _| background(demo), child)
+}
+
+/// One menu for a whole view, for the row `hit` names.
+pub(crate) fn rows_menu(
+    id: impl Into<ElementId>,
+    this: WeakEntity<FinderDemo>,
+    hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    let build = move |demo: &FinderDemo, at| match hit(demo, at) {
+        Some(line) => item(&demo.selected, &line),
+        None => Menu::default(),
+    };
+    menu_at(id, this, build, child)
 }
 
 fn picks(
