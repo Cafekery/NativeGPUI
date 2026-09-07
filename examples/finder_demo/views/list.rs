@@ -34,6 +34,9 @@ const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
 
+/// What a drop highlight's lightness falls to while the row flashes before it springs.
+const FLASH_DIM: f32 = 0.83;
+
 const PILL_INSET: f32 = 10.;
 const PILL_PAD_X: f32 = 8.;
 const PILL_PAD_Y: f32 = 3.;
@@ -65,6 +68,8 @@ struct Marks {
     renaming: Option<SharedString>,
     cursor: Option<SharedString>,
     ql_icon: Anchor,
+    /// The row whose drop highlight is dark this frame, part-way through its springing flash.
+    springing: Option<SharedString>,
 }
 
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
@@ -125,6 +130,7 @@ impl FinderDemo {
             renaming: self.renaming.clone(),
             cursor: self.cursor.clone(),
             ql_icon: self.ql_icon.clone(),
+            springing: self.spring_flash().cloned(),
         };
 
         let (pads, lift) = self.list_inset();
@@ -413,8 +419,22 @@ fn row(
             move |_, _, _, cx| cx.new(|_| DragGhost),
         );
     match line.row.opens {
-        Some(into) => drop_target(row, line, into, marks, look.selection, this).into_any_element(),
+        Some(into) => {
+            let fill = match marks.springing.as_ref() == Some(&line.key) {
+                true => flashed(look.selection),
+                false => look.selection,
+            };
+            drop_target(row, line, into, marks, fill, this).into_any_element()
+        }
         None => row.into_any_element(),
+    }
+}
+
+/// A drop highlight mid-flash: Finder darkens the fill rather than dropping it.
+fn flashed(fill: Hsla) -> Hsla {
+    Hsla {
+        l: fill.l * FLASH_DIM,
+        ..fill
     }
 }
 
@@ -424,7 +444,7 @@ fn drop_target(
     line: &Line,
     into: &'static str,
     marks: &Marks,
-    selection: Hsla,
+    fill: Hsla,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     row.drag_over::<RowDrag>({
@@ -432,7 +452,7 @@ fn drop_target(
         let key = line.key.clone();
         move |style, grab: &RowDrag, _, _| match carries(&carried, grab, &key) {
             true => style,
-            false => style.bg(selection),
+            false => style.bg(fill),
         }
     })
     .on_drop({
@@ -457,14 +477,14 @@ fn drop_target(
     .on_drag_move({
         let carried = marks.selected.clone();
         let key = line.key.clone();
-        move |event: &DragMoveEvent<RowDrag>, window: &mut Window, cx| {
-            if !event.bounds.contains(&event.event.position)
-                || carries(&carried, event.drag(cx), &key)
-            {
-                return;
-            }
+        let depth = line.depth as f32;
+        move |event: &DragMoveEvent<RowDrag>, _, cx| {
+            let at = event.event.position;
+            let twist = event.bounds.left() + px(ICON_X + depth * INDENT);
+            let over = (event.bounds.contains(&at) && !carries(&carried, event.drag(cx), &key))
+                .then(|| at.x > twist - px(TWIST_W) && at.x <= twist);
             this.update(cx, |demo: &mut FinderDemo, cx| {
-                demo.hover_folder(into, window, cx);
+                demo.hover_folder(&key, into, over, cx);
             })
             .ok();
         }

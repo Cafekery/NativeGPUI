@@ -22,6 +22,7 @@ use crate::art::Anchor;
 use crate::chrome::scope_bar;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
+use crate::dragdrop::Spring;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
@@ -89,7 +90,7 @@ pub(crate) struct FinderDemo {
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
     pub(crate) grouped: bool,
-    pub(crate) spring: Option<(&'static str, Instant)>,
+    pub(crate) spring: Option<Spring>,
     /// The folders this window has been through, newest first, for the Go menu.
     pub(crate) recents: Vec<(&'static str, String)>,
     /// The path typed into Finder's Go to Folder sheet, while it is open.
