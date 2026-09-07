@@ -271,11 +271,7 @@ fn twist(
     let key = line.key.clone();
     slot.on_click(move |event: &ClickEvent, _, cx| {
         this.update(cx, |this: &mut FinderDemo, cx| {
-            // Finder opens the whole subtree when Option is down.
-            match (event.modifiers().alt, into) {
-                (true, Some(into)) => this.disclose_tree(&key, into, !open),
-                _ => this.disclose(&key, !open),
-            }
+            this.disclose_at(at, &key, into, !open, event.modifiers().alt);
             cx.notify();
         })
         .ok();

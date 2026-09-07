@@ -79,8 +79,24 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn disclose_tree(&mut self, key: &SharedString, into: &'static str, open: bool) {
-        self.disclose_all(&[(key.clone(), into)], open, true);
+    /// The twist clicked on the row at `at`, spliced into the listing the way a key press is.
+    pub(crate) fn disclose_at(
+        &mut self,
+        at: usize,
+        key: &SharedString,
+        into: Option<&'static str>,
+        open: bool,
+        deep: bool,
+    ) {
+        let was = self.expanded.rev();
+        // Finder opens the whole subtree when Option is down.
+        match into.filter(|_| deep) {
+            Some(into) => self.disclose_all(&[(key.clone(), into)], open, true),
+            None => self.disclose(key, open),
+        }
+        if let Some(into) = into {
+            self.disclosed(was, vec![(at, key.clone(), open.then_some(into))]);
+        }
     }
 
     /// Opens or shuts every folder named, and under a deep disclose everything below them, once.
