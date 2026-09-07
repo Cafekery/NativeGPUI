@@ -1,7 +1,4 @@
 //! Mounted volumes and the standard folders, for the sidebar and the status bar.
-//!
-//! `mounted` lists what Finder's Locations shows, with the capacity the status bar reports;
-//! `standard` gives the user's Desktop, Documents, Downloads, … as they exist.
 
 use std::path::PathBuf;
 

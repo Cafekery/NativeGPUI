@@ -1,11 +1,5 @@
-//! What Finder calls a file: its uniform type identifier and the localized kind string.
-//!
-//! Contract: [`kind_of`] is cheap enough to call per row while sorting 20 000 entries — cache
-//! per extension. The uniform type identifier and package-ness come from the
-//! UniformTypeIdentifiers framework (`UTType`); the label prefers Launch Services'
-//! deprecated-but-still-present `LSCopyKindStringForTypeInfo`, which tracks Finder's actual Kind
-//! column far more closely than `UTType.localizedDescription`. [`kind_of_path`] asks Spotlight
-//! for the exact string Finder shows for one real file, which wins when it has an answer.
+//! What Finder calls a file: its uniform type identifier and the localized kind string, cached
+//! per extension so a listing can ask per row.
 
 use std::collections::HashMap;
 use std::ffi::c_void;

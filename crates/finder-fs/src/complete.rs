@@ -203,8 +203,7 @@ mod tests {
         root
     }
 
-    /// The first couple of `list_dir_with_timeout` calls in a process pay for the OS spinning up
-    /// its thread machinery; later ones are warm.
+    /// The first calls in a process pay for the OS spinning up its thread machinery.
     fn warm() {
         for _ in 0..5 {
             complete("/", None, 1);
@@ -316,9 +315,7 @@ mod tests {
         let db = t1.elapsed();
         assert!(a.iter().any(|c| c.display.contains("Developer")));
         assert!(!b.is_empty());
-        // Warm, this is low-single-digit ms in isolation; under `cargo test`'s parallelism the
-        // scheduler alone can eat that, so the assertion only catches a real regression (falling
-        // back to the index because the timeout tripped costs 50ms).
+        // Loose: the assertion only catches a fall back to the index, which costs 50ms.
         assert!(da < Duration::from_millis(40), "{da:?}");
         assert!(db < Duration::from_millis(40), "{db:?}");
     }

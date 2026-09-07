@@ -1,10 +1,5 @@
-//! Reading one directory.
-//!
-//! Contract: [`list_dir`] returns every entry of `dir`, hidden ones included, in directory order,
-//! with the attributes an [`Entry`] carries filled in one pass. The fast path is
-//! `getattrlistbulk(2)` (what Finder and `ls -l` use), so a 20 000-file folder costs
-//! milliseconds rather than a `stat` per file; [`list_dir_batched`] hands the same entries over
-//! in batches so a view can paint the first rows before the last are read.
+//! Reading one directory: every entry, hidden ones included, in directory order, with an
+//! [`Entry`]'s attributes filled in one `getattrlistbulk(2)` pass rather than a `stat` per file.
 
 use std::ffi::CString;
 use std::io;

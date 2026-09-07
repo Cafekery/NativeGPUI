@@ -351,8 +351,7 @@ pub fn sealed(path: &Path, entry: &Entry, home: &Path) -> bool {
     entry.kind == EntryKind::Directory && class_of(path, entry, home) != Class::Descend
 }
 
-/// Opening a photo or media library's package puts a privacy prompt on the user's screen; Finder
-/// is entitled to look inside, this crawl is not, so it does not even weigh them.
+/// Opening a photo or media library's package puts a privacy prompt on the user's screen.
 fn guarded(path: &Path) -> bool {
     path.extension().is_some_and(|extension| {
         matches!(
@@ -366,12 +365,8 @@ fn guarded(path: &Path) -> bool {
     })
 }
 
-/// The folders macOS asks the user about on first access: Desktop, Documents, Downloads, and the
-/// media homes whose Music/TV/Photos folders sit behind the media-library prompt. A walk into
-/// them at launch stacks prompts, so they are crawled only as roots, once the app has been let in.
-/// An iOS Simulator device: a UUID-named folder holding `device.plist`. Its `data` is a whole
-/// iOS home, hundreds of thousands of entries deep, with Photos and Music library layouts that
-/// macOS guards behind the media-library prompt; wherever Xcode keeps it, it is not the user's.
+/// An iOS Simulator device: a UUID-named folder holding `device.plist`, whose `data` is a whole
+/// iOS home behind the media-library prompt macOS puts on the user's own.
 fn simulator(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().as_bytes();
     let uuid_shaped = name.len() == 36
@@ -382,14 +377,13 @@ fn simulator(path: &Path) -> bool {
     uuid_shaped && path.join("device.plist").is_file()
 }
 
-/// `~/Library`: other apps' state, which macOS guards as "data from other apps". Walking it
-/// raises the media-library prompt (Music's AppleMediaServices, iTunesCloud and AMP folders sit
-/// right under it) and a blocked-access notice for every sandboxed app. Finder hides it anyway;
-/// a visit lists it like any folder.
+/// `~/Library`: walking it raises the media-library prompt and a blocked-access notice for
+/// every sandboxed app. A visit lists it like any folder.
 fn sandboxed(path: &Path, home: &Path) -> bool {
     in_a_home(path, home) && path.file_name().unwrap_or_default().as_bytes() == b"Library"
 }
 
+/// The folders macOS prompts about on first access, crawled only as roots, once let in.
 fn private(path: &Path, home: &Path) -> bool {
     in_a_home(path, home)
         && matches!(
@@ -398,9 +392,8 @@ fn private(path: &Path, home: &Path) -> bool {
         )
 }
 
-/// Directly inside a home folder: this app's, or any other account's. A crawl of `/` reaches every
-/// home on the Mac, and a read of one macOS guards blocks in `opendir` behind a consent prompt no
-/// one answers, which parks the whole walk.
+/// Directly inside a home folder, this app's or another account's: a guarded read blocks in
+/// `opendir` behind a consent prompt no one answers, which parks the whole walk.
 fn in_a_home(path: &Path, home: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;

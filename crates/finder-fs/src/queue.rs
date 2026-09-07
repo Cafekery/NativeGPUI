@@ -387,7 +387,7 @@ impl Journal {
     }
 }
 
-/// Matches Finder's Edit-menu wording (checked via `plutil -p .../Finder.app/.../Localizable.strings`).
+/// Finder's own Edit-menu wording.
 fn label_for(op: &Op) -> String {
     match op {
         Op::Move { items, .. } => describe("Move", items),

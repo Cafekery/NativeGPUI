@@ -1,8 +1,5 @@
 //! What Spotlight knows about one file: the attributes Finder's preview pane lists under
-//! Information.
-//!
-//! Contract: [`meta`] opens the item and copies a dozen attributes, so it costs a Spotlight
-//! round trip per file — ask once per selection, off the main thread.
+//! Information, at a round trip per file.
 
 use std::ffi::c_void;
 use std::path::Path;
