@@ -81,6 +81,11 @@ impl Sheet {
     }
 }
 
+/// Whether a name is in use: `Path::exists` follows a link and reads a broken one as free.
+fn taken(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 /// `op` split into the items that land cleanly and the ones a name collides on.
 pub(crate) enum Split {
     Clean(Op),
@@ -96,7 +101,7 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     let mut clean = Vec::new();
     let mut conflicted = VecDeque::new();
     for item in items {
-        if Sheet::dest_of(&into, &item).exists() {
+        if taken(&Sheet::dest_of(&into, &item)) {
             conflicted.push_back(item);
         } else {
             clean.push(item);

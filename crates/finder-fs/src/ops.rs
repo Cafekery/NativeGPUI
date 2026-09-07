@@ -167,6 +167,12 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether a name is in use: a broken symlink holds its name as firmly as a file does, which
+/// `Path::exists` does not see because it follows the link.
+fn taken(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 /// Splits `name` the way Finder does: no extension for dot-files or a trailing dot.
 fn split_name(name: &str) -> (&str, Option<&str>) {
     match name.rsplit_once('.') {
@@ -190,7 +196,7 @@ fn keep_both_path(path: &Path) -> PathBuf {
     let mut n = 2;
     loop {
         let candidate = dir.join(with_ext(&format!("{stem} {n}"), ext));
-        if !candidate.exists() {
+        if !taken(&candidate) {
             return candidate;
         }
         n += 1;
@@ -203,13 +209,13 @@ fn duplicate_path(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let (stem, ext) = split_name(&name);
     let first = dir.join(with_ext(&format!("{stem} copy"), ext));
-    if !first.exists() {
+    if !taken(&first) {
         return first;
     }
     let mut n = 2;
     loop {
         let candidate = dir.join(with_ext(&format!("{stem} copy {n}"), ext));
-        if !candidate.exists() {
+        if !taken(&candidate) {
             return candidate;
         }
         n += 1;
@@ -314,7 +320,7 @@ fn place_one(
     conflict: Conflict,
     is_move: bool,
 ) -> io::Result<Placed> {
-    if !dest.exists() {
+    if !taken(&dest) {
         transfer(fm, src, &dest, is_move)?;
         return Ok(Placed::at(dest));
     }
@@ -545,7 +551,7 @@ fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
     check_name(&name)?;
     let fm = NSFileManager::defaultManager();
     let mut dest = into.join(&name);
-    if dest.exists() {
+    if taken(&dest) {
         dest = keep_both_path(&dest);
     }
     if is_dir {
@@ -686,6 +692,38 @@ mod tests {
         assert_eq!(done.results, vec![into.join("a 2.txt")]);
         assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "existing");
         assert_eq!(fs::read_to_string(into.join("a 2.txt")).unwrap(), "one");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dangling_link_holds_the_name_it_sits_on() {
+        let dir = temp_dir("dangling");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        touch(&dir.join("a.txt"), "one");
+        for name in ["a.txt", "a 2.txt"] {
+            std::os::unix::fs::symlink(into.join("gone"), into.join(name)).unwrap();
+        }
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![into.join("a 3.txt")]);
+        assert_eq!(fs::read_to_string(into.join("a 3.txt")).unwrap(), "one");
+        assert!(
+            fs::symlink_metadata(into.join("a.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link that was there is still there"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
