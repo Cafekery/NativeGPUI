@@ -3,7 +3,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -221,7 +221,7 @@ fn run_split_job(
         if shared.cancelled.lock().unwrap().remove(&id.0) {
             return RunOutcome::Cancelled(batch_done(results, undos));
         }
-        let size = walk_size(item);
+        let size = ops::walk_size(item);
         match ops::perform(item_op(&op, item.clone()), conflict, |_| {}) {
             Ok(done) => {
                 results.extend(done.results);
@@ -294,24 +294,11 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
     }
 }
 
-fn walk_size(path: &Path) -> u64 {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => return 0,
-    };
-    if !meta.is_dir() {
-        return meta.len();
-    }
-    std::fs::read_dir(path)
-        .map(|entries| entries.flatten().map(|e| walk_size(&e.path())).sum())
-        .unwrap_or(0)
-}
-
 /// Sums `items` on a background thread; gives up and reports 0 if that takes longer than `budget`.
 fn total_size(items: Vec<PathBuf>, budget: Duration) -> u64 {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let total: u64 = items.iter().map(|p| walk_size(p)).sum();
+        let total: u64 = items.iter().map(|p| ops::walk_size(p)).sum();
         let _ = tx.send(total);
     });
     rx.recv_timeout(budget).unwrap_or(0)

@@ -12,10 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSDictionary, NSError, NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError,
-    NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
-    NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSString, NSURL,
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSDictionary, NSError,
+    NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError, NSFileReadNoPermissionError,
+    NSFileReadNoSuchFileError, NSFileWriteFileExistsError, NSFileWriteInvalidFileNameError,
+    NSFileWriteNoPermissionError, NSFileWriteOutOfSpaceError, NSFileWriteVolumeReadOnlyError,
+    NSString, NSURL,
 };
+
+use crate::volumes;
 
 mod deep;
 
@@ -140,6 +144,87 @@ fn io_error(err: Retained<NSError>) -> io::Error {
     io::Error::new(kind, message)
 }
 
+/// The bytes an item takes, itself and everything under it.
+pub(crate) fn walk_size(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| walk_size(&entry.path()))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// What a volume, rather than the item, refused.
+#[derive(Clone, Copy)]
+enum Refusal {
+    ReadOnly,
+    NoSpace,
+}
+
+fn refusal_of(err: &NSError) -> Option<Refusal> {
+    if err.domain().to_string() != "NSCocoaErrorDomain" {
+        return None;
+    }
+    match err.code() {
+        code if code == NSFileWriteVolumeReadOnlyError => Some(Refusal::ReadOnly),
+        code if code == NSFileWriteOutOfSpaceError => Some(Refusal::NoSpace),
+        _ => None,
+    }
+}
+
+fn byte_string(bytes: u64) -> String {
+    let formatter = NSByteCountFormatter::new();
+    formatter.setCountStyle(NSByteCountFormatterCountStyle::File);
+    formatter.stringFromByteCount(bytes as i64).to_string()
+}
+
+/// The volume `path` is on: the deepest mount point it sits under.
+fn volume_of(path: &Path) -> Option<volumes::Volume> {
+    volumes::mounted()
+        .into_iter()
+        .filter(|volume| path.starts_with(&volume.path) && !volume.name.is_empty())
+        .max_by_key(|volume| volume.path.as_os_str().len())
+}
+
+/// Finder names the volume the item was going to and how much more it would have taken;
+/// `NSFileManager`'s own string names the boot volume whatever the destination was.
+fn refusal_message(
+    refusal: Refusal,
+    item: &str,
+    dest: &Path,
+    is_move: bool,
+    needed: u64,
+) -> Option<String> {
+    let volume = volume_of(dest)?;
+    let name = volume.name;
+    Some(match refusal {
+        Refusal::ReadOnly => {
+            let verb = if is_move { "moved" } else { "copied" };
+            format!(
+                "The item \u{201c}{item}\u{201d} can't be {verb} because the volume \u{201c}{name}\u{201d} is read only."
+            )
+        }
+        Refusal::NoSpace => {
+            let verb = if is_move { "move" } else { "copy" };
+            let short = match needed.saturating_sub(volume.available) {
+                0 => String::new(),
+                short => format!(" You need an additional {}.", byte_string(short)),
+            };
+            format!(
+                "There isn't enough space on \u{201c}{name}\u{201d} to {verb} \u{201c}{item}\u{201d}.{short}"
+            )
+        }
+    })
+}
+
 /// Whether the file system refused a path rather than the item at it: `NSFileManager` builds an
 /// absolute path per item and gives up once one passes `PATH_MAX`.
 fn past_path_max(err: &NSError) -> bool {
@@ -161,12 +246,19 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
         fm.copyItemAtURL_toURL_error(&su, &du)
     };
     match landed {
+        Ok(()) => Ok(()),
         Err(err) if past_path_max(&err) => {
             let _ = deep::remove(dst);
             deep::transfer(src, dst, is_move)
         }
-        other => other.map_err(io_error),
+        Err(err) => Err(volume_refusal(&err, src, dst, is_move).unwrap_or_else(|| io_error(err))),
     }
+}
+
+fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
+    let item = src.file_name().unwrap_or_default().to_string_lossy();
+    let message = refusal_message(refusal_of(err)?, &item, dest, is_move, walk_size(src))?;
+    Some(io::Error::other(message))
 }
 
 fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
@@ -1389,6 +1481,48 @@ mod tests {
         );
 
         deep_sh(&tree, 249, "chmod 700 d250");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_volume_refusal_names_the_volume_it_was_aimed_at() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root is not refused by a volume's mode");
+            return;
+        }
+        let dir = temp_dir("volume");
+        let file = dir.join("m.txt");
+        touch(&file, "x");
+        let boot = volume_of(Path::new("/")).expect("the boot volume is mounted");
+
+        let err = perform(
+            Op::Copy {
+                items: vec![file.clone()],
+                into: PathBuf::from("/"),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .expect_err("the system volume is read only");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "The item \u{201c}m.txt\u{201d} can't be copied because the volume \u{201c}{}\u{201d} is read only.",
+                boot.name
+            )
+        );
+        assert!(!Path::new("/m.txt").exists());
+
+        let full = refusal_message(Refusal::NoSpace, "m.txt", &dir, false, u64::MAX)
+            .expect("the temporary folder is on a mounted volume");
+        assert!(
+            full.starts_with(&format!(
+                "There isn't enough space on \u{201c}{}\u{201d} to copy \u{201c}m.txt\u{201d}.",
+                volume_of(&dir).unwrap().name
+            )) && full.contains("You need an additional "),
+            "{full}"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
