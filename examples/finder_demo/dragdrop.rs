@@ -76,25 +76,29 @@ pub(crate) fn flashed(fill: Hsla) -> Hsla {
     }
 }
 
-/// A folder under a drag springs open where the pointer rests on it: `twist` is how far into the
-/// row the disclosure triangle ends, where the hold discloses in place instead of opening.
+/// A folder under a drag springs open where the pointer rests on it: `band` is how far into the
+/// row the disclosure triangle ends and how far the name beside it reaches, the strip Finder
+/// treats as the row. A hold over the triangle discloses in place instead of opening.
 pub(crate) fn drop_hover<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
     into: &'static str,
-    twist: Option<f32>,
+    band: Option<(f32, f32)>,
     carried: Arc<HashSet<SharedString>>,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     target.on_drag_move(move |event: &DragMoveEvent<D>, _, cx| {
         let at = event.event.position;
-        let over =
-            (event.bounds.contains(&at) && !carries(&carried, event.drag(cx), &key)).then(|| {
-                twist.is_some_and(|band| {
-                    let band = event.bounds.left() + px(band);
-                    at.x > band - px(TWIST_W) && at.x <= band
-                })
-            });
+        let over = (event.bounds.contains(&at) && !carries(&carried, event.drag(cx), &key))
+            .then(|| match band {
+                Some((twist, name)) => {
+                    let twist = event.bounds.left() + px(twist);
+                    (at.x > twist - px(TWIST_W) && at.x <= event.bounds.left() + px(name))
+                        .then(|| at.x <= twist)
+                }
+                None => Some(false),
+            })
+            .flatten();
         this.update(cx, |demo: &mut FinderDemo, cx| {
             demo.hover_folder(&key, into, over, cx);
         })
@@ -102,7 +106,8 @@ pub(crate) fn drop_hover<D: Grabbed>(
     })
 }
 
-/// A folder takes the rows dropped on it, lighting up while they are over it.
+/// A folder takes the rows dropped on it, lighting up while they are over it. A target that
+/// lights from `drop_row` takes the drop only where it is lit.
 pub(crate) fn drop_lands<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
@@ -132,6 +137,9 @@ pub(crate) fn drop_lands<D: Grabbed>(
                 // Finder copies instead of moving while Option is held.
                 let copy = window.modifiers().alt;
                 this.update(cx, |demo: &mut FinderDemo, cx| {
+                    if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
+                        return;
+                    }
                     let keys = demo.drag_keys(&grabbed);
                     demo.drop_into(into, &keys, copy, cx);
                     cx.notify();
@@ -146,7 +154,7 @@ pub(crate) fn drop_target<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
     into: &'static str,
-    twist: Option<f32>,
+    band: Option<(f32, f32)>,
     carried: Arc<HashSet<SharedString>>,
     lit: Lit,
     this: WeakEntity<FinderDemo>,
@@ -159,7 +167,7 @@ pub(crate) fn drop_target<D: Grabbed>(
         lit,
         this.clone(),
     );
-    drop_hover::<D>(target, key, into, twist, carried, this)
+    drop_hover::<D>(target, key, into, band, carried, this)
 }
 
 /// A folder held under a drag: the row it is, where it opens, and when the hold began.
