@@ -346,6 +346,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         (self.sort, self.ascending) = by;
+        self.resync_toolbar();
         if self
             .folders
             .get(id)
@@ -408,6 +409,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         (self.sort, self.ascending) = by;
+        self.resync_toolbar();
         let (mut folders, shape, walk) = sorted;
         let mut moved = false;
         for (id, count) in was {

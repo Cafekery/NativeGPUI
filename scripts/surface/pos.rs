@@ -8,7 +8,7 @@ use native_gpui::{
 
 use native_gpui::{NativeRoot, focus_gpui, native_root, window_options};
 
-use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus};
+use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus, on_menu_state};
 
 use native_gpui::{
     ButtonBezel, CheckState, LabelAlign, MenuEntry, MenuOrigin, MenuView, native_button,
@@ -43,4 +43,6 @@ use native_gpui::tokens::{
     srgb, system_color, system_font, window_background,
 };
 
-fn main() {}
+fn main() {
+    let _ = MenuCommand::checked;
+}

@@ -51,6 +51,7 @@ impl Render for FinderDemo {
         if !self.toolbar {
             self.install_toolbar(window, cx);
         }
+        menus::remember(self);
         if self.host.is_none() {
             self.host = ns_window(window);
         }

@@ -137,13 +137,13 @@ pub(crate) fn finish_toolbar_items(window: &Window) {
     }
 }
 
-pub(crate) fn group_menu(sort: Column, ascending: bool) -> Vec<MenuEntry> {
+pub(crate) fn group_menu(sort: Column, ascending: bool, grouped: bool) -> Vec<MenuEntry> {
     let mut entries = vec![
-        MenuEntry::item("None").checked(true),
+        MenuEntry::item("None").checked(!grouped),
         MenuEntry::separator(),
     ];
     for (column, title) in GROUPINGS {
-        entries.push(MenuEntry::item(*title).checked(*column == Some(sort)));
+        entries.push(MenuEntry::item(*title).checked(grouped && *column == Some(sort)));
     }
     entries.push(MenuEntry::separator());
     entries.push(MenuEntry::item("Ascending").checked(ascending));
@@ -249,8 +249,13 @@ impl FinderDemo {
                     .ok();
                 }),
                 ToolbarItem::space(),
-                ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.ascending))
-                    .tool_tip("Change the item grouping (hold down Option to change the sort)"),
+                ToolbarItem::menu(
+                    GROUP_ID,
+                    "",
+                    "Group",
+                    group_menu(self.sort, self.ascending, self.grouped),
+                )
+                .tool_tip("Change the item grouping (hold down Option to change the sort)"),
                 ToolbarItem::space(),
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
                     .tool_tip("See the progress of file operations")
@@ -292,6 +297,11 @@ impl FinderDemo {
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
         }
         self.toolbar = true;
+    }
+
+    /// The Group menu carries the sort and the grouping, so a change rebuilds it the next frame.
+    pub(crate) fn resync_toolbar(&mut self) {
+        self.toolbar = false;
     }
 
     pub(crate) fn share_items(&self) -> Vec<String> {
