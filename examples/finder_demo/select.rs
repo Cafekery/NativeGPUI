@@ -28,21 +28,19 @@ impl FinderDemo {
 
     pub(crate) fn disclose_selected(&mut self, open: bool, deep: bool) {
         let lines = self.lines(true);
-        let keys: Vec<SharedString> = if self.selected.is_empty() {
-            self.cursor.iter().cloned().collect()
-        } else {
-            lines
-                .iter()
-                .filter(|line| self.selected.contains(&line.key))
-                .map(|line| line.key.clone())
-                .collect()
-        };
-        let folders: Vec<(SharedString, &'static str)> = lines
-            .iter()
-            .filter(|line| keys.contains(&line.key))
-            .filter(|line| line.row.discloses)
-            .filter_map(|line| line.row.opens.map(|into| (line.key.clone(), into)))
-            .collect();
+        let chosen = self.selected.snapshot();
+        let cursor = self.cursor.clone().filter(|_| chosen.is_empty());
+        let mut keys: Vec<SharedString> = Vec::new();
+        let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
+        for line in lines.iter().filter(|line| match &cursor {
+            Some(cursor) => *cursor == line.key,
+            None => chosen.contains(&line.key),
+        }) {
+            keys.push(line.key.clone());
+            if let Some(into) = line.row.opens.filter(|_| line.row.discloses) {
+                folders.push((line.key.clone(), into));
+            }
+        }
         let expandable = folders
             .iter()
             .filter(|(key, _)| self.expanded.contains(key) != open)
