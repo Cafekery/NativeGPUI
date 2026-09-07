@@ -38,6 +38,12 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
         Op::Trash(items) | Op::DeleteImmediately(items) | Op::Duplicate(items) => parents(items),
         Op::Rename { path, .. } => parents(std::slice::from_ref(path)),
         Op::NewFolder { into, .. } | Op::NewFile { into, .. } => vec![into.clone()],
+        Op::PutBack(items) => items
+            .iter()
+            .flat_map(|restore| [&restore.item, &restore.to])
+            .filter_map(|path| path.parent().map(PathBuf::from))
+            .collect(),
+        Op::Batch(ops) => ops.iter().flat_map(touched).collect(),
     }
 }
 

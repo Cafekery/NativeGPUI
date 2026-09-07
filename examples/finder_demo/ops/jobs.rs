@@ -61,6 +61,14 @@ fn describe(op: &Op) -> String {
         Op::Rename { name, .. } => format!("Renaming to \"{name}\""),
         Op::NewFolder { name, .. } => format!("Creating \"{name}\""),
         Op::NewFile { name, .. } => format!("Creating \"{name}\""),
+        Op::PutBack(items) => verb_items(
+            "Putting Back",
+            &items
+                .iter()
+                .map(|restore| restore.to.clone())
+                .collect::<Vec<_>>(),
+        ),
+        Op::Batch(ops) => ops.first().map(describe).unwrap_or_default(),
     }
 }
 

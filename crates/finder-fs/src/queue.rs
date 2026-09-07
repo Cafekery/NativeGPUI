@@ -225,7 +225,11 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
         | Op::Duplicate(items)
         | Op::Trash(items)
         | Op::DeleteImmediately(items) => Some(items),
-        Op::Rename { .. } | Op::NewFolder { .. } | Op::NewFile { .. } => None,
+        Op::Rename { .. }
+        | Op::NewFolder { .. }
+        | Op::NewFile { .. }
+        | Op::PutBack(_)
+        | Op::Batch(_) => None,
     }
 }
 
@@ -242,7 +246,11 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
         Op::Duplicate(_) => Op::Duplicate(vec![item]),
         Op::Trash(_) => Op::Trash(vec![item]),
         Op::DeleteImmediately(_) => Op::DeleteImmediately(vec![item]),
-        Op::Rename { .. } | Op::NewFolder { .. } | Op::NewFile { .. } => {
+        Op::Rename { .. }
+        | Op::NewFolder { .. }
+        | Op::NewFile { .. }
+        | Op::PutBack(_)
+        | Op::Batch(_) => {
             unreachable!("only called for splittable ops")
         }
     }
@@ -270,7 +278,9 @@ fn aggregate_undo(op: &Op, original_items: &[PathBuf], results: &[PathBuf]) -> O
         Op::DeleteImmediately(_)
         | Op::Rename { .. }
         | Op::NewFolder { .. }
-        | Op::NewFile { .. } => None,
+        | Op::NewFile { .. }
+        | Op::PutBack(_)
+        | Op::Batch(_) => None,
     }
 }
 
@@ -401,7 +411,13 @@ fn label_for(op: &Op) -> String {
         Op::Rename { name, .. } => format!("Rename of \"{name}\""),
         Op::NewFolder { .. } => "New Folder".to_string(),
         Op::NewFile { .. } => "New File".to_string(),
+        Op::PutBack(items) => describe("Put Back", &put_back_paths(items)),
+        Op::Batch(ops) => ops.first().map(label_for).unwrap_or_default(),
     }
+}
+
+fn put_back_paths(items: &[ops::Restore]) -> Vec<PathBuf> {
+    items.iter().map(|restore| restore.to.clone()).collect()
 }
 
 fn describe(verb: &str, items: &[PathBuf]) -> String {
