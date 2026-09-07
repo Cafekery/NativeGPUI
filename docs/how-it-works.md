@@ -86,9 +86,9 @@ Popovers, sheets and the share picker are their own `NSWindow`s. `native_anchor(
 
 ## The gpui pin
 
-`gpui` and `gpui_platform` are git dependencies on gpui's upstream repository at one revision, and `[patch]` replaces `gpui_macos` with a fork whose sources are that same revision plus its own patches (currently: accepting browser, promise and image drags). The two `rev`s in `Cargo.toml` belong together: moving one without the other yields two `gpui`s that do not unify, and `cargo tree -i gpui` must show exactly one.
+`gpui` and `gpui_platform` are git dependencies on gpui's upstream repository at one revision, and `[patch]` replaces `gpui_macos` with a fork whose sources are that same revision plus its own patches (currently: accepting browser, promise and image drags, and drawing the frame an input event dirtied inside that event with a present-inside-transaction flush). The two `rev`s in `Cargo.toml` belong together: moving one without the other yields two `gpui`s that do not unify, and `cargo tree -i gpui` must show exactly one.
 
-Earlier revisions of this crate carried gpui 0.2.2 in `vendor/gpui` with three changes. One, a deadlock across `resignKeyWindow`, is upstream now. The other two are not carried at this pin; they touch `gpui` itself, the renderer and `gpui_macos`, so they belong upstream or in the platform forks rather than here:
+Earlier revisions of this crate carried gpui 0.2.2 in `vendor/gpui` with three changes. One, a deadlock across `resignKeyWindow`, is upstream now. The other two touch `gpui` itself, the renderer and `gpui_macos`, so they belong upstream or in the platform forks rather than here; the fork carries both as `patches/0002`:
 
 1. **Present inside the transaction.** The Metal layer had `presentsWithTransaction` on for every frame, `commit`, `waitUntilScheduled`, `present`, then `[CATransaction flush]`, so a hosted view and the GPUI row it sits on reached the screen in the same refresh. Upstream enables it only for the frames it draws on activation and from `displayLayer:`.
 2. **Input-driven frames.** The frame an input event dirtied was drawn inside that event rather than at the next display-link tick, so a 125 Hz trackpad never straddled the 120 Hz tick. Upstream draws at the tick.

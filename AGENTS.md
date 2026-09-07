@@ -22,7 +22,7 @@ A window is two surfaces, never three: the sidebar pane is vibrancy (`SidebarOpt
 
 ## Presentation
 
-Keeping a hosted view on the same frame as the GPUI row it sits on takes two changes to gpui: presenting the drawable inside the Core Animation transaction and flushing it every frame, and drawing the frame an input event dirtied inside that event rather than at the display-link tick (the trackpad reports at 125 Hz against a 120 Hz display; a frame drawn only at the tick alternates between zero and two events whenever the clocks cross). Neither is in gpui at the current pin. They belong upstream or in the platform forks, never in this crate; until they land, hosted views trail their rows by 0–2 refreshes while scrolling.
+Keeping a hosted view on the same frame as the GPUI row it sits on takes two changes to gpui: presenting the drawable inside the Core Animation transaction and flushing it every frame, and drawing the frame an input event dirtied inside that event rather than at the display-link tick (the trackpad reports at 125 Hz against a 120 Hz display; a frame drawn only at the tick alternates between zero and two events whenever the clocks cross). Neither is in upstream gpui at the current pin. They belong upstream or in the platform forks, never in this crate. The `gpui_macos` fork carries both as `patches/0002`.
 
 ## Platform facts
 
