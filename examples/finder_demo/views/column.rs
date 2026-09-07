@@ -3,13 +3,15 @@
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
-    UniformListScrollHandle, Window, canvas, div, opaque_grey, prelude::*, px, uniform_list,
+    UniformListScrollHandle, Window, canvas, div, opaque_grey, prelude::*, px, transparent_black,
+    uniform_list,
 };
 use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
-use crate::data::{Face, Line};
+use crate::data::{Face, Line, split_key};
+use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
@@ -29,6 +31,10 @@ const PILL_RADIUS: f32 = 7.;
 const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
 const COL_MIN: f32 = 100.;
+
+/// The outline a whole column takes while a drop would land in the folder it shows.
+const AREA_ALPHA: f32 = 0.3;
+const AREA_EDGE: f32 = 2.;
 
 pub(crate) struct Rung {
     pub(crate) folder: &'static str,
@@ -144,6 +150,7 @@ impl FinderDemo {
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
         let this_menu = this.clone();
+        let this_drop = this.clone();
         let hit_scroll = handle.clone();
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y);
@@ -153,11 +160,14 @@ impl FinderDemo {
                 .flatten()
         };
         let renaming = self.renaming.clone();
+        let resting = self.drop_row().cloned();
+        let springing = self.spring_flash().cloned();
         let cursor = self.cursor.clone();
         let ql_icon = self.ql_icon.clone();
         let chosen = self.selected.snapshot();
         let alone = rung.selected.clone();
         let label = palette.label;
+        let (highlight, highlight_text) = (palette.selection, palette.selection_text);
         let (fill, selection_text) = if emphasized {
             (palette.selection, palette.selection_text)
         } else {
@@ -181,8 +191,15 @@ impl FinderDemo {
                     .map(|row| {
                         let line = rows[row].clone();
                         let is_selected = picked(row);
-                        let joins_above = row > 0 && picked(row - 1);
-                        let joins_below = picked(row + 1);
+                        // A folder the drag rests on takes the selection's pill, dark part-way
+                        // through the flash it gives before it springs.
+                        let dropping = resting.as_ref() == Some(&line.key);
+                        let pill = match springing.as_ref() == Some(&line.key) {
+                            true => flashed(highlight),
+                            false => highlight,
+                        };
+                        let joins_above = !dropping && row > 0 && picked(row - 1);
+                        let joins_below = !dropping && picked(row + 1);
                         let this = this.clone();
                         let clicked = line.clone();
                         let name = div()
@@ -197,8 +214,12 @@ impl FinderDemo {
                             .items_center()
                             .pl(px(ICON_X))
                             .pr(px(CHEVRON_TRAIL - (CHEVRON - 3.5) / 2.))
-                            .text_color(if is_selected { selection_text } else { label })
-                            .when(is_selected, |cell| {
+                            .text_color(match (dropping, is_selected) {
+                                (true, _) => highlight_text,
+                                (false, true) => selection_text,
+                                (false, false) => label,
+                            })
+                            .when(is_selected || dropping, |cell| {
                                 cell.child(
                                     div()
                                         .absolute()
@@ -214,7 +235,7 @@ impl FinderDemo {
                                             pill.rounded_bl(px(PILL_RADIUS))
                                                 .rounded_br(px(PILL_RADIUS))
                                         })
-                                        .bg(fill),
+                                        .bg(if dropping { pill } else { fill }),
                                 )
                             })
                             .child(art_at(
@@ -230,7 +251,7 @@ impl FinderDemo {
                                     .child(line.row.display.clone())
                             });
                         if line.row.opens.is_some() {
-                            let color = if is_selected && emphasized {
+                            let color = if dropping || (is_selected && emphasized) {
                                 SystemColor::AlternateSelectedControlText
                             } else {
                                 SystemColor::SecondaryLabel
@@ -240,20 +261,42 @@ impl FinderDemo {
                                     .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
                             );
                         }
-                        cell.on_click(move |event: &ClickEvent, window, cx| {
-                            let (extend, toggle, twice) = click_kind(event);
-                            let line = clicked.clone();
-                            this.update(cx, |this: &mut FinderDemo, cx| {
-                                let listing = this.column_listing(folder);
-                                this.pick_in(&listing, &line, extend, toggle);
-                                if twice {
-                                    this.open(&line, window, cx);
+                        let cell = cell
+                            .on_click({
+                                let this = this.clone();
+                                move |event: &ClickEvent, window, cx| {
+                                    let (extend, toggle, twice) = click_kind(event);
+                                    let line = clicked.clone();
+                                    this.update(cx, |this: &mut FinderDemo, cx| {
+                                        let listing = this.column_listing(folder);
+                                        this.pick_in(&listing, &line, extend, toggle);
+                                        if twice {
+                                            this.open(&line, window, cx);
+                                        }
+                                        this.column_arrived(window, cx);
+                                    })
+                                    .ok();
                                 }
-                                this.column_arrived(window, cx);
                             })
-                            .ok();
-                        })
-                        .into_any_element()
+                            .on_drag(
+                                RowDrag {
+                                    key: line.key.clone(),
+                                },
+                                move |_, _, _, cx| cx.new(|_| DragGhost),
+                            );
+                        match line.row.opens {
+                            Some(into) => drop_target::<RowDrag>(
+                                cell,
+                                line.key.clone(),
+                                into,
+                                None,
+                                chosen.clone(),
+                                Lit::Drawn,
+                                this,
+                            )
+                            .into_any_element(),
+                            None => cell.into_any_element(),
+                        }
                     })
                     .collect()
             },
@@ -266,6 +309,29 @@ impl FinderDemo {
             &handle.0.borrow().base_handle,
             0.,
         );
+        // A drop anywhere but on a folder row of the column lands in the folder it shows, and
+        // Finder outlines the whole column for it. The edge is drawn under the rows, so their
+        // own drop lands first.
+        let edge = match self.spring.is_some() {
+            true => transparent_black(),
+            false => Hsla {
+                a: AREA_ALPHA,
+                ..system_color(SystemColor::ControlAccent)
+            },
+        };
+        let area = drop_lands::<RowDrag>(
+            div()
+                .id(("ng.finder.column.area", index))
+                .absolute()
+                .inset_0()
+                .border(px(AREA_EDGE))
+                .border_color(transparent_black()),
+            SharedString::from(folder),
+            folder,
+            self.selected.snapshot(),
+            Lit::Outline(edge),
+            this_drop,
+        );
         let column = div()
             .id(("ng.finder.column", index))
             .w(px(self.column_width(folder) - GRIP_W))
@@ -274,9 +340,28 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .pt(px(TOP_GAP))
+            .child(area)
             .child(list)
             .children(bar.map(|bar| div().absolute().top_0().bottom_0().right_0().child(bar)));
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
+    }
+
+    /// A folder sprung in the browser opens as its own column, the way a click on it would.
+    pub(crate) fn column_open(
+        &mut self,
+        key: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((holder, _)) = split_key(key) else {
+            return;
+        };
+        let listing = self.column_listing(holder);
+        let Some(line) = listing.iter().find(|line| &line.key == key).cloned() else {
+            return;
+        };
+        self.pick_in(&listing, &line, false, false);
+        self.column_arrived(window, cx);
     }
 
     fn on_column_grip(&mut self, x: f32, cx: &mut Context<Self>) {
