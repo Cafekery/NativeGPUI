@@ -34,8 +34,6 @@ pub(crate) struct Keys {
 /// Everything the rows a frame draws are built from: while this holds, so do they.
 #[derive(PartialEq)]
 pub(crate) struct Stamp {
-    folders: u64,
-    expanded: u64,
     here: &'static str,
     sort: Column,
     ascending: bool,
@@ -49,11 +47,17 @@ pub(crate) struct Stamp {
 /// The band slots built for one listing, beside that listing.
 type Bands = (Arc<Vec<Line>>, Arc<Vec<Slot>>);
 
-/// A listing as built, and how many of the folder's rows went into it.
+/// A disclose to splice into the tree listing: where it lands, the key that must still be
+/// there, and the folder to open under it, or `None` to shut what is open there.
+pub(crate) type Edit = (usize, SharedString, Option<&'static str>);
+
+/// A listing as built, how many of the folder's rows went into it, and where the folders it
+/// discloses sit in it.
 #[derive(Clone)]
 struct Built {
     lines: Arc<Vec<Line>>,
     used: Option<usize>,
+    at: Arc<Vec<(usize, &'static str)>>,
 }
 
 /// The cursor's key, and the line it names while that listing holds one.
@@ -63,6 +67,13 @@ type Cursor = (SharedString, Option<Line>);
 #[derive(Default)]
 pub(crate) struct Listings {
     stamp: Option<Stamp>,
+    /// The revisions of the listings and of `expanded` the cache was filled under.
+    folders: u64,
+    expanded: u64,
+    /// The discloses and landings that carry the tree listing to those revisions.
+    edits: Vec<Edit>,
+    edited: u64,
+    landed: u64,
     tree: Option<Built>,
     flat: Option<Built>,
     slots: Option<Bands>,
@@ -91,13 +102,21 @@ impl Keys {
 
     /// Every key in one revision, so a disclosed subtree rebuilds the rows behind it once.
     pub(crate) fn extend(&mut self, keys: impl IntoIterator<Item = SharedString>) {
-        self.rev = next_rev();
-        Arc::make_mut(&mut self.keys).extend(keys);
+        let set = Arc::make_mut(&mut self.keys);
+        let was = set.len();
+        set.extend(keys);
+        if set.len() != was {
+            self.rev = next_rev();
+        }
     }
 
     pub(crate) fn retain(&mut self, keep: impl FnMut(&SharedString) -> bool) {
-        self.rev = next_rev();
-        Arc::make_mut(&mut self.keys).retain(keep);
+        let set = Arc::make_mut(&mut self.keys);
+        let was = set.len();
+        set.retain(keep);
+        if set.len() != was {
+            self.rev = next_rev();
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -197,22 +216,38 @@ impl FinderDemo {
             };
             built
                 .as_ref()
+                .filter(|_| !tree || listings.edits.is_empty())
                 .filter(|built| built.used == rows)
                 .map(|built| built.lines.clone())
         };
         if let Some(lines) = fresh {
             return lines;
         }
+        let mut edits: Vec<Edit> = match tree {
+            true => self.listings().edits.drain(..).collect(),
+            false => Vec::new(),
+        };
+        edits.sort_by_key(|(at, _, _)| *at);
         let taken = self.take(tree);
-        let built = self
-            .extended(taken, self.here(), tree, rows)
-            .unwrap_or_else(|| Built {
-                lines: Arc::new(self.build_lines(tree)),
+        let built = match taken {
+            Some(built) if !edits.is_empty() && built.used == rows => self.spliced(built, &edits),
+            taken => self.extended(taken, self.here(), tree, rows),
+        }
+        .unwrap_or_else(|| {
+            let (lines, at) = self.build_lines(tree);
+            Built {
+                lines: Arc::new(lines),
                 used: rows,
-            });
+                at: Arc::new(at),
+            }
+        });
         let mut listings = self.listings();
         match tree {
-            true => listings.tree = Some(built.clone()),
+            true => {
+                listings.edited = listings.expanded;
+                listings.landed = listings.folders;
+                listings.tree = Some(built.clone());
+            }
             false => listings.flat = Some(built.clone()),
         }
         built.lines
@@ -236,8 +271,12 @@ impl FinderDemo {
         let built = Built {
             lines: Arc::new(lines),
             used: self.folders.get(id).map(|folder| folder.rows.len()),
+            at: Arc::default(),
         };
         let mut listings = self.listings();
+        listings.edits.clear();
+        listings.edited = listings.expanded;
+        listings.landed = listings.folders;
         listings.tree = Some(built.clone());
         listings.flat = Some(built);
     }
@@ -274,16 +313,116 @@ impl FinderDemo {
         let rows = rows?;
         let used = built.used.filter(|used| rows > *used)?;
         let lines = Arc::make_mut(&mut built.lines);
-        self.collect_from(id, used, 0, tree, lines);
+        let at = Arc::make_mut(&mut built.at);
+        self.collect_from(id, used, 0, tree, lines, at);
         built.used = Some(rows);
         Some(built)
+    }
+
+    /// A disclose the tree listing is carried through rather than built again, once the frame
+    /// that drew it is gone and the lines it names are still where they were.
+    fn spliced(&self, built: Built, edits: &[Edit]) -> Option<Built> {
+        let old = built.lines;
+        if edits
+            .iter()
+            .any(|(at, key, _)| old.get(*at).is_none_or(|line| &line.key != key))
+        {
+            return None;
+        }
+        let grown: usize = edits
+            .iter()
+            .filter_map(|(_, _, into)| *into)
+            .filter_map(|into| self.folders.get(into))
+            .map(|folder| folder.rows.len())
+            .sum();
+        let old = Arc::try_unwrap(old).unwrap_or_else(|shared| (*shared).clone());
+        let mut out: Vec<Line> = Vec::with_capacity(old.len() + grown);
+        let mut marks: Vec<(usize, &'static str)> =
+            Vec::with_capacity(built.at.len() + edits.len());
+        let mut held = built.at.iter().peekable();
+        let mut src = old.into_iter();
+        let mut at = 0;
+        for (index, _, into) in edits {
+            if *index < at {
+                continue;
+            }
+            let base = out.len();
+            while let Some((held_at, held_id)) = held.next_if(|(held_at, _)| *held_at < *index) {
+                if *held_at >= at {
+                    marks.push((base + held_at - at, held_id));
+                }
+            }
+            out.extend(src.by_ref().take(index + 1 - at));
+            let depth = out.last()?.depth;
+            at = index + 1;
+            while src
+                .as_slice()
+                .first()
+                .is_some_and(|line| line.depth > depth)
+            {
+                src.next();
+                at += 1;
+            }
+            while held.next_if(|(held_at, _)| *held_at < at).is_some() {}
+            if let Some(into) = into {
+                marks.push((out.len() - 1, into));
+                self.collect(into, depth + 1, true, &mut out, &mut marks);
+            }
+        }
+        let base = out.len();
+        for (held_at, held_id) in held {
+            if *held_at >= at {
+                marks.push((base + held_at - at, held_id));
+            }
+        }
+        out.extend(src);
+        Some(Built {
+            lines: Arc::new(out),
+            used: built.used,
+            at: Arc::new(marks),
+        })
+    }
+
+    /// A listing that landed under the rows disclosing it, spliced in where they sit. Anything
+    /// else that moved leaves the cache to see the change and empty itself.
+    pub(crate) fn landed(&self, id: &'static str) {
+        let mut listings = self.cache.borrow_mut();
+        if listings.landed + 1 != self.folders.changed() || listings.edited != self.expanded.rev() {
+            return;
+        }
+        let Some(built) = listings.tree.as_ref() else {
+            return;
+        };
+        let edits: Vec<Edit> = built
+            .at
+            .iter()
+            .filter(|(_, held)| *held == id)
+            .filter_map(|(at, _)| {
+                built
+                    .lines
+                    .get(*at)
+                    .map(|line| (*at, line.key.clone(), Some(id)))
+            })
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        listings.landed += 1;
+        listings.edits.extend(edits);
+    }
+
+    /// The discloses a key press made, to splice into the tree listing the frame it drew held.
+    pub(crate) fn disclosed(&self, was: u64, edits: Vec<Edit>) {
+        let mut listings = self.cache.borrow_mut();
+        if listings.expanded == was && listings.edits.is_empty() && listings.tree.is_some() {
+            listings.edited = self.expanded.rev();
+            listings.edits = edits;
+        }
     }
 
     /// The cache every listing this frame comes out of, emptied when what it holds is stale.
     fn listings(&self) -> RefMut<'_, Listings> {
         let stamp = Stamp {
-            folders: self.folders.changed(),
-            expanded: self.expanded.rev(),
             here: self.here(),
             sort: self.sort,
             ascending: self.ascending,
@@ -293,12 +432,37 @@ impl FinderDemo {
             filter: self.type_filter.clone(),
             hits: self.hits_rev,
         };
+        let folders = self.folders.changed();
+        let expanded = self.expanded.rev();
         let mut listings = self.cache.borrow_mut();
         if listings.stamp.as_ref() != Some(&stamp) {
             *listings = Listings {
                 stamp: Some(stamp),
+                folders,
+                expanded,
+                edited: expanded,
+                landed: folders,
                 ..Default::default()
             };
+            return listings;
+        }
+        if listings.folders != folders {
+            listings.folders = folders;
+            listings.flat = None;
+            listings.columns.clear();
+            listings.cursor = None;
+            if listings.landed != folders {
+                listings.edits.clear();
+                listings.tree = None;
+            }
+        }
+        if listings.expanded != expanded {
+            listings.expanded = expanded;
+            listings.cursor = None;
+            if listings.edited != expanded {
+                listings.edits.clear();
+                listings.tree = None;
+            }
         }
         listings
     }
@@ -319,10 +483,12 @@ impl FinderDemo {
             .extended(taken, folder, false, rows)
             .unwrap_or_else(|| {
                 let mut lines = Vec::new();
-                self.collect(folder, 0, false, &mut lines);
+                let mut at = Vec::new();
+                self.collect(folder, 0, false, &mut lines, &mut at);
                 Built {
                     lines: Arc::new(lines),
                     used: rows,
+                    at: Arc::new(at),
                 }
             });
         self.listings().columns.insert(folder, built.clone());
@@ -341,13 +507,14 @@ impl FinderDemo {
         self.column_listing(chain[focused].folder)
     }
 
-    fn build_lines(&self, tree: bool) -> Vec<Line> {
+    fn build_lines(&self, tree: bool) -> (Vec<Line>, Vec<(usize, &'static str)>) {
         let mut out = Vec::new();
+        let mut at = Vec::new();
         if self.tag_listing.is_none() {
-            self.collect(self.here(), 0, tree, &mut out);
+            self.collect(self.here(), 0, tree, &mut out, &mut at);
         }
         if !self.results() {
-            return out;
+            return (out, at);
         }
         // The index's hits are ranked best first; what only the listing knows trails behind.
         let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
@@ -364,11 +531,18 @@ impl FinderDemo {
             out.into_iter()
                 .filter(|line| !ranked.contains(line.key.as_ref())),
         );
-        merged
+        (merged, Vec::new())
     }
 
-    pub(crate) fn collect(&self, id: &'static str, depth: usize, tree: bool, out: &mut Vec<Line>) {
-        self.collect_from(id, 0, depth, tree, out);
+    fn collect(
+        &self,
+        id: &'static str,
+        depth: usize,
+        tree: bool,
+        out: &mut Vec<Line>,
+        at: &mut Vec<(usize, &'static str)>,
+    ) {
+        self.collect_from(id, 0, depth, tree, out, at);
     }
 
     /// The listing's rows from `from` on, filtered and disclosed the way a frame draws them.
@@ -379,6 +553,7 @@ impl FinderDemo {
         depth: usize,
         tree: bool,
         out: &mut Vec<Line>,
+        at: &mut Vec<(usize, &'static str)>,
     ) {
         let Some(folder) = self.folders.get(id) else {
             return;
@@ -395,14 +570,17 @@ impl FinderDemo {
             .filter(|row| type_filter.is_empty() || fold(&row.name).contains(&type_filter));
 
         for row in rows {
-            let open = tree && self.expanded.contains(&row.path);
+            let open = row
+                .opens
+                .filter(|_| tree && self.expanded.contains(&row.path));
             out.push(Line {
                 key: row.path.clone(),
                 row: row.clone(),
                 depth,
             });
-            if let Some(into) = row.opens.filter(|_| open) {
-                self.collect(into, depth + 1, tree, out);
+            if let Some(into) = open {
+                at.push((out.len() - 1, into));
+                self.collect(into, depth + 1, tree, out, at);
             }
         }
     }

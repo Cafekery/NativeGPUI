@@ -9,6 +9,7 @@ use gpui::{Context, ScrollStrategy, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::data::Line;
+use crate::listing::Edit;
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
@@ -35,22 +36,26 @@ impl FinderDemo {
             Some(cursor) => *cursor == line.key,
             None => chosen.contains(&line.key),
         };
-        let folders: Vec<(SharedString, &'static str)> = lines
-            .iter()
-            .filter(|line| picked(line))
-            .filter_map(|line| {
-                line.row
-                    .opens
-                    .filter(|_| line.row.discloses)
-                    .map(|into| (line.key.clone(), into))
-            })
-            .collect();
+        let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
+        let mut edits: Vec<Edit> = Vec::new();
+        for (at, line) in lines.iter().enumerate() {
+            let Some(into) = line.row.opens.filter(|_| line.row.discloses) else {
+                continue;
+            };
+            if !picked(line) {
+                continue;
+            }
+            folders.push((line.key.clone(), into));
+            edits.push((at, line.key.clone(), open.then_some(into)));
+        }
         let expandable = folders
             .iter()
             .filter(|(key, _)| self.expanded.contains(key) != open)
             .count();
         if expandable > 0 || (deep && open) {
+            let was = self.expanded.rev();
             self.disclose_all(&folders, open, deep);
+            self.disclosed(was, edits);
             return;
         }
         if open {

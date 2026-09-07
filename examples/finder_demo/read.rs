@@ -276,6 +276,7 @@ impl FinderDemo {
         }
         if done {
             self.folders.finish(id);
+            self.landed(id);
         }
         if done && sorted_by != (self.sort, self.ascending) {
             self.sort_folder(id);
