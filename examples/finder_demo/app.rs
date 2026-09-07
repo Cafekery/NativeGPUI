@@ -85,6 +85,8 @@ pub(crate) struct FinderDemo {
     pub(crate) preview_expanded: bool,
     pub(crate) list_focused: bool,
     pub(crate) list_room: f32,
+    /// The preview pane's height at the last layout: what caps the hero's box.
+    pub(crate) pane_h: f32,
     /// The list's width beside the pane at the last layout; what it gains or loses goes to Name.
     pub(crate) list_span: f32,
     pub(crate) path_bar_shown: bool,
@@ -197,6 +199,7 @@ impl FinderDemo {
             preview_expanded: false,
             list_focused: false,
             list_room: 0.,
+            pane_h: 0.,
             list_span: f32::NAN,
             path_bar_shown: true,
             status_bar_shown: false,

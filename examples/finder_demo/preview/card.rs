@@ -48,9 +48,15 @@ const GAP_ICON_LABEL: f32 = 10.5;
 
 const BOTTOM_INSET: f32 = 16.;
 
-const GAP_TOP: f32 = 45.;
+const GAP_TOP: f32 = 10.;
 
-const GAP_SQUARE_TEXT: f32 = 62.;
+const GAP_HERO_TEXT: f32 = 27.;
+
+/// The hero's box is this much taller than it is wide, whatever the picture in it.
+const HERO_TALL: f32 = 1.31;
+
+/// The most of the pane's height that box may take.
+const HERO_CAP: f32 = 0.5;
 
 const HEADER_ICON: f32 = 48.;
 
@@ -199,7 +205,7 @@ impl FinderDemo {
                 hero: if self.view == GALLERY_VIEW {
                     row_art(row, HEADER_ICON, self.scale, true)
                 } else {
-                    poster_art(row, content, self.scale, Poster::Card)
+                    poster_art(row, content, self.hero_h(content), self.scale, Poster::Card)
                 },
                 title: row.name.clone(),
                 subtitle: kind_line(row),
@@ -213,12 +219,18 @@ impl FinderDemo {
         self.card_element(card, palette, content, finder)
     }
 
+    /// The hero's box: as tall as the pane is wide and then some, capped by the pane's height, so
+    /// what is under it sits where the width alone puts it and no picture moves it.
+    pub(crate) fn hero_h(&self, content: f32) -> f32 {
+        (content * HERO_TALL).min(self.pane_h * HERO_CAP)
+    }
+
     /// Finder's own answer while it is still adding a selection up, under the last hero it drew.
     fn many_card(&self, content: f32) -> Card {
         let side = if self.view == GALLERY_VIEW {
             HEADER_ICON
         } else {
-            content
+            content.min(self.hero_h(content))
         };
         let hero = match self.stats.as_ref() {
             Some(stats) => self.stack_hero(&stats.head, side),
@@ -373,7 +385,7 @@ impl FinderDemo {
             top = top.child(div().h(px(GAP_TOP)).flex_none()).child(
                 div()
                     .w(px(content))
-                    .h(px(content))
+                    .h(px(self.hero_h(content)))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -381,7 +393,7 @@ impl FinderDemo {
                     .overflow_hidden()
                     .child(card.hero),
             );
-            lower = lower.mt(px(GAP_SQUARE_TEXT)).child(name).child(kind);
+            lower = lower.mt(px(GAP_HERO_TEXT)).child(name).child(kind);
         }
         lower = lower.child(
             div()
