@@ -258,6 +258,9 @@ fn common_parent(items: &[PathBuf]) -> Option<PathBuf> {
 
 /// Mirrors the per-op undo shapes in `ops.rs` for a batch split into single-item calls.
 fn aggregate_undo(op: &Op, original_items: &[PathBuf], results: &[PathBuf]) -> Option<Op> {
+    if results.is_empty() {
+        return None;
+    }
     match op {
         Op::Move { .. } | Op::Trash(_) => common_parent(original_items).map(|into| Op::Move {
             items: results.to_vec(),

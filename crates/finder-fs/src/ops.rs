@@ -181,29 +181,30 @@ fn duplicate_path(path: &Path) -> PathBuf {
     }
 }
 
-/// Places `src` at `dest`, resolving a conflict at `dest` if one already exists there.
+/// Places `src` at `dest`, resolving a conflict at `dest` if one already exists there; `None`
+/// when the conflict was skipped and nothing moved.
 fn place_one(
     fm: &NSFileManager,
     src: &Path,
     dest: PathBuf,
     conflict: Conflict,
     is_move: bool,
-) -> io::Result<PathBuf> {
+) -> io::Result<Option<PathBuf>> {
     if !dest.exists() {
         transfer(fm, src, &dest, is_move)?;
-        return Ok(dest);
+        return Ok(Some(dest));
     }
     match conflict {
-        Conflict::Skip => Ok(src.to_path_buf()),
+        Conflict::Skip => Ok(None),
         Conflict::KeepBoth => {
             let dest = keep_both_path(&dest);
             transfer(fm, src, &dest, is_move)?;
-            Ok(dest)
+            Ok(Some(dest))
         }
         Conflict::Replace => {
             remove_path(fm, &dest)?;
             transfer(fm, src, &dest, is_move)?;
-            Ok(dest)
+            Ok(Some(dest))
         }
         Conflict::Merge if src.is_dir() && dest.is_dir() => {
             for entry in std::fs::read_dir(src)? {
@@ -214,12 +215,12 @@ fn place_one(
             if is_move {
                 std::fs::remove_dir(src)?;
             }
-            Ok(dest)
+            Ok(Some(dest))
         }
         Conflict::Merge => {
             remove_path(fm, &dest)?;
             transfer(fm, src, &dest, is_move)?;
-            Ok(dest)
+            Ok(Some(dest))
         }
     }
 }
@@ -247,14 +248,16 @@ fn move_or_copy(
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
         let dest = into.join(name);
-        results.push(place_one(&fm, item, dest, conflict, is_move)?);
+        results.extend(place_one(&fm, item, dest, conflict, is_move)?);
         progress(Progress {
             done: i + 1,
             total,
             current: Some(item.clone()),
         });
     }
-    let undo = if is_move {
+    let undo = if results.is_empty() {
+        None
+    } else if is_move {
         common_parent(&items).map(|orig| Op::Move {
             items: results.clone(),
             into: orig,
@@ -547,8 +550,39 @@ mod tests {
             no_progress,
         )
         .unwrap();
-        assert_eq!(done.results, vec![dir.join("a.txt")]);
+        assert!(done.results.is_empty(), "nothing landed");
         assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "existing");
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_skipped_copy_has_nothing_to_undo() {
+        let dir = temp_dir("skip-undo");
+        let into = dir.join("dest");
+        fs::create_dir_all(&into).unwrap();
+        let source = dir.join("a.txt");
+        touch(&source, "MY ONLY COPY");
+        touch(&into.join("a.txt"), "existing");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![source.clone()],
+                into: into.clone(),
+            },
+            Conflict::Skip,
+            no_progress,
+        )
+        .unwrap();
+        assert!(
+            done.undo.is_none(),
+            "undoing a skip would trash the source it never touched"
+        );
+        if let Some(undo) = done.undo {
+            perform(undo, Conflict::Replace, no_progress).unwrap();
+        }
+        assert_eq!(fs::read_to_string(&source).unwrap(), "MY ONLY COPY");
 
         let _ = fs::remove_dir_all(&dir);
     }
