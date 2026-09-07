@@ -65,6 +65,8 @@ struct Marks {
     renaming: Option<SharedString>,
     cursor: Option<SharedString>,
     ql_icon: Anchor,
+    /// The folder the drag rests on this frame, whose highlight draws over the stripe.
+    dropping: Option<SharedString>,
     /// The row whose drop highlight is dark this frame, part-way through its springing flash.
     springing: Option<SharedString>,
 }
@@ -127,6 +129,7 @@ impl FinderDemo {
             renaming: self.renaming.clone(),
             cursor: self.cursor.clone(),
             ql_icon: self.ql_icon.clone(),
+            dropping: self.drop_row().cloned(),
             springing: self.spring_flash().cloned(),
         };
 
@@ -389,6 +392,12 @@ fn row(
         (false, true) => Some(look.stripe),
         (false, false) => None,
     };
+    let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
+        match marks.springing.as_ref() == Some(&line.key) {
+            true => flashed(look.selection),
+            false => look.selection,
+        }
+    });
     let mut row = div()
         .id(("ng.finder.row", at))
         .w_full()
@@ -401,6 +410,7 @@ fn row(
         .text_color(text)
         .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
         .children(fill.map(pill))
+        .children(dropping.map(pill))
         .child(name_cell(line, at, look, marks, lit, this.clone()));
     for spec in &look.columns {
         row = row.child(detail_cell(spec, line, look, detail));
@@ -416,22 +426,16 @@ fn row(
             move |_, _, _, cx| cx.new(|_| DragGhost),
         );
     match line.row.opens {
-        Some(into) => {
-            let fill = match marks.springing.as_ref() == Some(&line.key) {
-                true => flashed(look.selection),
-                false => look.selection,
-            };
-            drop_target::<RowDrag>(
-                row,
-                line.key.clone(),
-                into,
-                Some(ICON_X + line.depth as f32 * INDENT),
-                marks.selected.clone(),
-                Lit::Fill(fill),
-                this,
-            )
-            .into_any_element()
-        }
+        Some(into) => drop_target::<RowDrag>(
+            row,
+            line.key.clone(),
+            into,
+            Some(ICON_X + line.depth as f32 * INDENT),
+            marks.selected.clone(),
+            Lit::Drawn,
+            this,
+        )
+        .into_any_element(),
         None => row.into_any_element(),
     }
 }

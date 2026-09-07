@@ -60,12 +60,11 @@ pub(crate) fn carries<D: Grabbed>(
     }
 }
 
-/// How a drop target lights up: Finder fills a row and outlines a whole column, and a view that
-/// draws the highlight itself, from `drop_row`, needs no style of its own.
+/// How a drop target lights up: Finder outlines a whole column, and a view that draws the
+/// highlight itself, from `drop_row`, needs no style of its own.
 #[derive(Clone, Copy)]
 pub(crate) enum Lit {
     Drawn,
-    Fill(Hsla),
     Outline(Hsla),
 }
 
@@ -118,7 +117,6 @@ pub(crate) fn drop_lands<D: Grabbed>(
             let key = key.clone();
             move |style, grab: &D, _, _| match (carries(&carried, grab, &key), lit) {
                 (true, _) | (false, Lit::Drawn) => style,
-                (false, Lit::Fill(fill)) => style.bg(fill),
                 (false, Lit::Outline(edge)) => style.border_color(edge),
             }
         })
