@@ -2,7 +2,7 @@
 //! order Finder sorts a listing in.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -11,7 +11,8 @@ use gpui::{Context, Window};
 
 use crate::app::FinderDemo;
 use crate::data::{self, Column, Line, Row, intern, intern_path};
-use crate::view::COLUMN_VIEW;
+use crate::listing::{Shape, Walk};
+use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{index, listing, preview};
 
 const BATCH: usize = 512;
@@ -37,6 +38,9 @@ struct Mail {
 /// A folder put in order off the main thread: its rows, and the lines built from them where the
 /// listing is drawn as it is read.
 type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
+
+/// Every listing put in order off the main thread, under the shape the one on screen was built in.
+type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
 
 /// Whether a failed read means the folder itself is gone: deleted, replaced by a file, or on a
 /// volume that went away.
@@ -359,11 +363,68 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's re-sort: every listing in memory takes the new order, and the arrow follows the
-    /// rows rather than running ahead of them.
+    /// Finder's re-sort: every listing in memory takes the new order, put in it off the main
+    /// thread with the one on screen built there too, whatever shape it is drawn in. The arrow
+    /// follows the rows rather than running ahead of them.
     pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
-        for id in self.folders.cached() {
-            self.sort_folder(id, by, cx);
+        let held: Vec<(&'static str, Vec<Arc<Row>>)> = self
+            .folders
+            .cached()
+            .into_iter()
+            .filter_map(|id| self.folders.get(id).map(|folder| (id, folder.rows.clone())))
+            .collect();
+        let was: Vec<(&'static str, usize)> =
+            held.iter().map(|(id, rows)| (*id, rows.len())).collect();
+        let shape = self.shape_sorted(self.view == LIST_VIEW, by);
+        cx.spawn(async move |this, cx| {
+            let sorted = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut folders: HashMap<&'static str, Vec<Arc<Row>>> =
+                        held.into_iter().collect();
+                    for rows in folders.values_mut() {
+                        rows.sort_by(|a, b| order(by.0, by.1, a, b));
+                    }
+                    let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
+                    (folders, shape, walk)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.resorted(by, &was, sorted, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A re-sort that landed: every listing takes the order made for it and the lines built
+    /// beside them, unless a read moved one while it ran, which sorts what is there now instead.
+    fn resorted(
+        &mut self,
+        by: (Column, bool),
+        was: &[(&'static str, usize)],
+        sorted: Resorted,
+        cx: &mut Context<Self>,
+    ) {
+        (self.sort, self.ascending) = by;
+        let (mut folders, shape, walk) = sorted;
+        let mut moved = false;
+        for (id, count) in was {
+            let Some(rows) = folders.remove(id) else {
+                continue;
+            };
+            match self.folders.get_mut(id) {
+                Some(folder) if folder.rows.len() == *count => folder.rows = rows,
+                Some(_) => {
+                    moved = true;
+                    self.sort_folder(id, by, cx);
+                }
+                None => moved = true,
+            }
+        }
+        if !moved {
+            self.shaped(&shape, walk);
         }
     }
 
