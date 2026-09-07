@@ -5,9 +5,9 @@ pub(crate) mod conflicts;
 pub(crate) mod jobs;
 pub(crate) mod undo;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use finder_fs::ops::{Conflict, Op};
+use finder_fs::ops::{Conflict, Op, locked};
 use gpui::{Context, SharedString};
 
 use crate::app::FinderDemo;
@@ -48,8 +48,12 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
 }
 
 impl FinderDemo {
-    /// Every operation runs through the queue; a colliding name shows the conflict sheet first.
+    /// Every operation runs through the queue; a locked item is asked about and a colliding name
+    /// shows the conflict sheet first.
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
+        let Some(op) = self.confirm_unlock(op) else {
+            return;
+        };
         match conflicts::split(op, after) {
             conflicts::Split::Clean(op) => self.submit_op(op, Conflict::KeepBoth, after, cx),
             conflicts::Split::Conflicted { clean, sheet } => {
@@ -89,6 +93,75 @@ impl FinderDemo {
             self.renaming = self.cursor.clone();
         }
         cx.notify();
+    }
+
+    /// Finder asks before it clears a lock: one question per locked item, with Apply to All once
+    /// more than one of them is locked. What the answer refuses stays where it is.
+    fn confirm_unlock(&self, op: Op) -> Option<Op> {
+        let (items, deleting) = match &op {
+            Op::Trash(items) => (items.clone(), false),
+            Op::DeleteImmediately(items) => (items.clone(), true),
+            _ => return Some(op),
+        };
+        let total = items.iter().filter(|item| locked(item)).count();
+        if total == 0 {
+            return Some(op);
+        }
+        let mut kept = Vec::with_capacity(items.len());
+        let mut for_all = None;
+        for item in items {
+            if !locked(&item) {
+                kept.push(item);
+                continue;
+            }
+            let (yes, all) = match for_all {
+                Some(yes) => (yes, true),
+                None => self.ask_unlock(&item, deleting, total > 1),
+            };
+            if all {
+                for_all = Some(yes);
+            }
+            if yes {
+                kept.push(item);
+            }
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        Some(match deleting {
+            true => Op::DeleteImmediately(kept),
+            false => Op::Trash(kept),
+        })
+    }
+
+    /// Finder's locked-item question, and whether the answer stands for every other locked item.
+    fn ask_unlock(&self, item: &Path, deleting: bool, offer_all: bool) -> (bool, bool) {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return (false, false);
+        };
+        let name = item.file_name().unwrap_or_default().to_string_lossy();
+        let (question, action) = match deleting {
+            true => ("delete it", "Delete"),
+            false => ("move it to the Trash", "Move to Trash"),
+        };
+        let alert = objc2_app_kit::NSAlert::new(mtm);
+        alert.setMessageText(&objc2_foundation::NSString::from_str(&format!(
+            "The item \u{201c}{name}\u{201d} is locked. Are you sure you want to {question}?"
+        )));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(action));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Cancel"));
+        if offer_all {
+            alert.setShowsSuppressionButton(true);
+            if let Some(button) = alert.suppressionButton() {
+                button.setTitle(&objc2_foundation::NSString::from_str("Apply to All"));
+            }
+        }
+        let answer = alert.runModal();
+        let all = offer_all
+            && alert
+                .suppressionButton()
+                .is_some_and(|button| button.state() == objc2_app_kit::NSControlStateValueOn);
+        (answer == objc2_app_kit::NSAlertFirstButtonReturn, all)
     }
 
     /// Finder's error sheet: what the file system said, on the window it happened in.
