@@ -82,7 +82,7 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), cx));
             }
-            Act::Sort(column) => self.sort_by(column),
+            Act::Sort(column) => self.sort_by(column, cx),
             Act::Open => self.open_here(window, cx),
             Act::OpenWindow => self.open_in_window(window, cx),
             Act::Trash => self.trash_selection(cx),
@@ -216,14 +216,12 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn sort_by(&mut self, column: Column) {
-        if self.sort == column {
-            self.ascending = !self.ascending;
-        } else {
-            self.sort = column;
-            self.ascending = true;
-        }
-        self.resort();
+    pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
+        let ascending = match self.sort == column {
+            true => !self.ascending,
+            false => true,
+        };
+        self.resort((column, ascending), cx);
     }
 
     fn toggle_column(&mut self, column: Column) {
