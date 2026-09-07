@@ -237,7 +237,7 @@ fn tile(
     let room = cell - 2. * LABEL_INSET - if dots > 0. { dots + 2. } else { 0. };
     let caption = match editor {
         Some(editor) => {
-            let fit = line.row.name.chars().count() as f32 * LABEL_FONT * 0.58 + 24.;
+            let fit = line.row.display.chars().count() as f32 * LABEL_FONT * 0.58 + 24.;
             div().w(px(fit.min(room))).child(editor)
         }
         None => div()
@@ -254,7 +254,7 @@ fn tile(
                 look.label
             })
             .when(selected, |pill| pill.bg(look.selection))
-            .child(elide(&line.row.name, room - 8.)),
+            .child(elide(&line.row.display, room - 8.)),
     };
 
     div()

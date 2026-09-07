@@ -227,7 +227,7 @@ impl FinderDemo {
                             } else {
                                 name.text_ellipsis()
                                     .whitespace_nowrap()
-                                    .child(line.row.name.clone())
+                                    .child(line.row.display.clone())
                             });
                         if line.row.opens.is_some() {
                             let color = if is_selected && emphasized {
@@ -302,7 +302,7 @@ impl FinderDemo {
         let lines = self.column_listing(folder);
         let size = px(ROW_H - 8.);
         let widest = lines.iter().fold(0_f32, |widest, line| {
-            widest.max(text_width(window, line.row.name.clone(), size))
+            widest.max(text_width(window, line.row.display.clone(), size))
         });
         let width = (LABEL_X + widest + PREVIEW_INSET).max(COL_MIN);
         self.column_widths.insert(folder, width);

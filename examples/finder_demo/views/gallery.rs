@@ -126,7 +126,11 @@ impl FinderDemo {
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
                     .child(row_art(&line.row, strip.icon, scale, true))
                     .on_click(pick_on_click(&line, this.clone()));
-                native_callout(("ng.finder.strip.tip", index), line.row.name.clone(), cell)
+                native_callout(
+                    ("ng.finder.strip.tip", index),
+                    line.row.display.clone(),
+                    cell,
+                )
             }));
 
         div()

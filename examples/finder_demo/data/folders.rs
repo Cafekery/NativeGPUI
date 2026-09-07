@@ -28,7 +28,11 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
     let (mount, volume) = volume_of(id);
     let rest = id.strip_prefix(mount.trim_end_matches('/')).unwrap_or("");
     let mut crumbs = vec![volume];
-    crumbs.extend(rest.split('/').filter(|part| !part.is_empty()).map(intern));
+    crumbs.extend(
+        rest.split('/')
+            .filter(|part| !part.is_empty())
+            .map(|part| intern(&finder_fs::name::display(part))),
+    );
     Folder {
         title: crumbs.last().copied().unwrap_or(volume),
         parent: Path::new(id).parent().map(intern_path),
