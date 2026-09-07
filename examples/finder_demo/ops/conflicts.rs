@@ -1,6 +1,7 @@
 //! Finder's conflict sheet: Merge between folders, Apply to All when more than one name goes.
 
 use std::collections::VecDeque;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -38,9 +39,16 @@ impl Choice {
     }
 }
 
+/// The operation the sheet is resolving conflicts for.
+enum Kind {
+    Move,
+    Copy,
+    Rename(String),
+}
+
 /// One item still needing a decision, and what to do once every conflict is resolved.
 pub(crate) struct Sheet {
-    copy: bool,
+    kind: Kind,
     into: PathBuf,
     after: After,
     current: PathBuf,
@@ -57,10 +65,13 @@ impl Sheet {
 
     fn build_op(&self, items: Vec<PathBuf>) -> Op {
         let into = self.into.clone();
-        if self.copy {
-            Op::Copy { items, into }
-        } else {
-            Op::Move { items, into }
+        match &self.kind {
+            Kind::Move => Op::Move { items, into },
+            Kind::Copy => Op::Copy { items, into },
+            Kind::Rename(name) => Op::Rename {
+                path: self.current.clone(),
+                name: name.clone(),
+            },
         }
     }
 
@@ -86,6 +97,17 @@ fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+/// Whether both paths name the one item: a rename that only changes a name's case finds the item
+/// itself standing at the destination on a case-insensitive volume.
+fn same_item(one: &Path, other: &Path) -> bool {
+    let id = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .map(|meta| (meta.dev(), meta.ino()))
+            .ok()
+    };
+    matches!((id(one), id(other)), (Some(one), Some(other)) if one == other)
+}
+
 /// `op` split into the items that land cleanly and the ones a name collides on.
 pub(crate) enum Split {
     Clean(Op),
@@ -93,9 +115,10 @@ pub(crate) enum Split {
 }
 
 pub(crate) fn split(op: Op, after: After) -> Split {
-    let (items, into, copy) = match op {
-        Op::Move { items, into } => (items, into, false),
-        Op::Copy { items, into } => (items, into, true),
+    let (items, into, kind) = match op {
+        Op::Move { items, into } => (items, into, Kind::Move),
+        Op::Copy { items, into } => (items, into, Kind::Copy),
+        Op::Rename { path, name } => return rename_split(path, name, after),
         other => return Split::Clean(other),
     };
     let mut clean = Vec::new();
@@ -108,31 +131,27 @@ pub(crate) fn split(op: Op, after: After) -> Split {
         }
     }
     if conflicted.is_empty() {
-        let op = if copy {
-            Op::Copy { items: clean, into }
-        } else {
-            Op::Move { items: clean, into }
+        let op = match kind {
+            Kind::Copy => Op::Copy { items: clean, into },
+            _ => Op::Move { items: clean, into },
         };
         return Split::Clean(op);
     }
-    let clean_op = (!clean.is_empty()).then(|| {
-        if copy {
-            Op::Copy {
-                items: clean,
-                into: into.clone(),
-            }
-        } else {
-            Op::Move {
-                items: clean,
-                into: into.clone(),
-            }
-        }
+    let clean_op = (!clean.is_empty()).then(|| match kind {
+        Kind::Copy => Op::Copy {
+            items: clean,
+            into: into.clone(),
+        },
+        _ => Op::Move {
+            items: clean,
+            into: into.clone(),
+        },
     });
     let total = conflicted.len();
     let current = conflicted.pop_front().unwrap();
     let dest = Sheet::dest_of(&into, &current);
     let sheet = Sheet {
-        copy,
+        kind,
         into,
         after,
         current,
@@ -145,6 +164,26 @@ pub(crate) fn split(op: Op, after: After) -> Split {
         clean: clean_op,
         sheet,
     }
+}
+
+/// A rename onto a name another item holds asks the same question a move does.
+fn rename_split(path: PathBuf, name: String, after: After) -> Split {
+    let into = path.parent().map(PathBuf::from).unwrap_or_default();
+    let dest = into.join(&name);
+    if !taken(&dest) || same_item(&dest, &path) {
+        return Split::Clean(Op::Rename { path, name });
+    }
+    let sheet = Sheet {
+        kind: Kind::Rename(name),
+        into,
+        after,
+        current: path,
+        dest,
+        remaining: VecDeque::new(),
+        total: 1,
+        apply_to_all: false,
+    };
+    Split::Conflicted { clean: None, sheet }
 }
 
 fn modified_seconds(path: &Path) -> f64 {
