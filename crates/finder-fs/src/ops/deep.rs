@@ -1,0 +1,291 @@
+//! The transfer `NSFileManager` gives up on: past `PATH_MAX` every step names one component
+//! against the descriptor of the directory it sits in, so a tree deeper than a path can hold
+//! still copies, moves and clears away.
+
+use std::ffi::{CStr, CString, OsStr};
+use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path};
+use std::ptr;
+
+/// A directory made to hold the children before its own mode says who may.
+const WHILE_FILLING: libc::mode_t = 0o700;
+
+fn last_error() -> io::Error {
+    io::Error::last_os_error()
+}
+
+fn name_of(name: &OsStr) -> io::Result<CString> {
+    CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the name contains a NUL"))
+}
+
+fn split(path: &Path) -> io::Result<(&Path, CString)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
+    Ok((path.parent().unwrap_or(Path::new("/")), name_of(name)?))
+}
+
+fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
+    if fd < 0 {
+        return Err(last_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn open_dir_at(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
+    owned(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    })
+}
+
+/// The directory at `path`, opened one component at a time so no call ever sees the whole path.
+fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+    let start = if path.is_absolute() { c"/" } else { c"." };
+    let mut dir = owned(unsafe {
+        libc::open(
+            start.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    })?;
+    for part in path.components() {
+        dir = match part {
+            Component::Normal(name) => open_dir_at(&dir, &name_of(name)?)?,
+            Component::ParentDir => open_dir_at(&dir, c"..")?,
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => dir,
+        };
+    }
+    Ok(dir)
+}
+
+fn stat_at(dir: &OwnedFd, name: &CStr) -> io::Result<libc::stat> {
+    let mut meta = unsafe { std::mem::zeroed::<libc::stat>() };
+    if unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            &mut meta,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(last_error());
+    }
+    Ok(meta)
+}
+
+fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
+    let listing = dir.try_clone()?;
+    let handle = unsafe { libc::fdopendir(listing.into_raw_fd()) };
+    if handle.is_null() {
+        return Err(last_error());
+    }
+    let mut names = Vec::new();
+    let mut failed = None;
+    loop {
+        unsafe { *libc::__error() = 0 };
+        let entry = unsafe { libc::readdir(handle) };
+        if entry.is_null() {
+            let err = last_error();
+            if err.raw_os_error() != Some(0) {
+                failed = Some(err);
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name != c"." && name != c".." {
+            names.push(name.to_owned());
+        }
+    }
+    unsafe { libc::closedir(handle) };
+    match failed {
+        Some(err) => Err(err),
+        None => Ok(names),
+    }
+}
+
+/// Everything `copyfile(3)` carries besides the bytes: mode, times, owner, ACL and xattrs.
+fn copy_state(from: &OwnedFd, into: &OwnedFd, with_data: bool) -> io::Result<()> {
+    let mut flags = libc::COPYFILE_STAT | libc::COPYFILE_XATTR | libc::COPYFILE_ACL;
+    if with_data {
+        flags |= libc::COPYFILE_DATA;
+    }
+    if unsafe {
+        libc::fcopyfile(
+            from.as_raw_fd(),
+            into.as_raw_fd(),
+            ptr::null_mut(),
+            flags as libc::copyfile_flags_t,
+        )
+    } != 0
+    {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+fn copy_link(
+    sdir: &OwnedFd,
+    sname: &CStr,
+    ddir: &OwnedFd,
+    dname: &CStr,
+    size: i64,
+) -> io::Result<()> {
+    let mut target = vec![0u8; size.max(1024) as usize + 1];
+    let read = unsafe {
+        libc::readlinkat(
+            sdir.as_raw_fd(),
+            sname.as_ptr(),
+            target.as_mut_ptr().cast(),
+            target.len(),
+        )
+    };
+    if read < 0 {
+        return Err(last_error());
+    }
+    target.truncate(read as usize);
+    let target = CString::new(target)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the link contains a NUL"))?;
+    if unsafe { libc::symlinkat(target.as_ptr(), ddir.as_raw_fd(), dname.as_ptr()) } != 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+fn make_dir(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
+    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), WHILE_FILLING) } != 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+fn unlink_at(dir: &OwnedFd, name: &CStr, flags: libc::c_int) -> io::Result<()> {
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } != 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+fn copy_file(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Result<()> {
+    let from = owned(unsafe {
+        libc::openat(
+            sdir.as_raw_fd(),
+            sname.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    })?;
+    let into = owned(unsafe {
+        libc::openat(
+            ddir.as_raw_fd(),
+            dname.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+            libc::c_uint::from(WHILE_FILLING),
+        )
+    })?;
+    copy_state(&from, &into, true)
+}
+
+/// Everything inside `from` into `into`. A descriptor per level would run a deep tree into the
+/// open-file limit long before `PATH_MAX`, so the pair is let go of on the way down and found
+/// again through `..`, which the mode a filled directory is still waiting for allows.
+fn fill_dir(from: OwnedFd, into: OwnedFd) -> io::Result<(OwnedFd, OwnedFd)> {
+    let (mut from, mut into) = (from, into);
+    for name in names_in(&from)? {
+        let meta = stat_at(&from, &name)?;
+        match meta.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => {
+                make_dir(&into, &name)?;
+                let child = (open_dir_at(&from, &name)?, open_dir_at(&into, &name)?);
+                drop(from);
+                drop(into);
+                let (child_from, child_into) = fill_dir(child.0, child.1)?;
+                from = open_dir_at(&child_from, c"..")?;
+                into = open_dir_at(&child_into, c"..")?;
+                copy_state(&child_from, &child_into, false)?;
+            }
+            libc::S_IFLNK => copy_link(&from, &name, &into, &name, meta.st_size)?,
+            _ => copy_file(&from, &name, &into, &name)?,
+        }
+    }
+    Ok((from, into))
+}
+
+fn copy_at(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Result<()> {
+    let meta = stat_at(sdir, sname)?;
+    match meta.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => {
+            make_dir(ddir, dname)?;
+            let from = open_dir_at(sdir, sname)?;
+            let into = open_dir_at(ddir, dname)?;
+            let (from, into) = fill_dir(from, into)?;
+            copy_state(&from, &into, false)
+        }
+        libc::S_IFLNK => copy_link(sdir, sname, ddir, dname, meta.st_size),
+        _ => copy_file(sdir, sname, ddir, dname),
+    }
+}
+
+/// Empties `dir`, holding as few descriptors at any depth as `fill_dir` does.
+fn empty_dir(dir: OwnedFd) -> io::Result<OwnedFd> {
+    let mut dir = dir;
+    for name in names_in(&dir)? {
+        if stat_at(&dir, &name)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            unlink_at(&dir, &name, 0)?;
+            continue;
+        }
+        let inside = open_dir_at(&dir, &name)?;
+        drop(dir);
+        let inside = empty_dir(inside)?;
+        dir = open_dir_at(&inside, c"..")?;
+        drop(inside);
+        unlink_at(&dir, &name, libc::AT_REMOVEDIR)?;
+    }
+    Ok(dir)
+}
+
+fn remove_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
+    if stat_at(dir, name)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        return unlink_at(dir, name, 0);
+    }
+    drop(empty_dir(open_dir_at(dir, name)?)?);
+    unlink_at(dir, name, libc::AT_REMOVEDIR)
+}
+
+/// Removes `path`, however deep what is under it goes.
+pub(super) fn remove(path: &Path) -> io::Result<()> {
+    let (dir, name) = split(path)?;
+    remove_at(&open_dir(dir)?, &name)
+}
+
+/// `src` to `dst`, leaving nothing at `dst` if it could not all get there.
+pub(super) fn transfer(src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
+    let (sdir, sname) = split(src)?;
+    let (ddir, dname) = split(dst)?;
+    let (sdir, ddir) = (open_dir(sdir)?, open_dir(ddir)?);
+    if is_move
+        && unsafe {
+            libc::renameat(
+                sdir.as_raw_fd(),
+                sname.as_ptr(),
+                ddir.as_raw_fd(),
+                dname.as_ptr(),
+            )
+        } == 0
+    {
+        return Ok(());
+    }
+    if let Err(err) = copy_at(&sdir, &sname, &ddir, &dname) {
+        let _ = remove_at(&ddir, &dname);
+        return Err(err);
+    }
+    if is_move {
+        remove_at(&sdir, &sname)?;
+    }
+    Ok(())
+}

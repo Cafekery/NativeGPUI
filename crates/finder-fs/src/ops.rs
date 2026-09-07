@@ -14,8 +14,10 @@ use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSDictionary, NSError, NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError,
     NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
-    NSFileWriteNoPermissionError, NSString, NSURL,
+    NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSString, NSURL,
 };
+
+mod deep;
 
 /// The most bytes a name can carry on the volumes Finder writes to.
 const NAME_MAX: usize = 255;
@@ -138,14 +140,33 @@ fn io_error(err: Retained<NSError>) -> io::Error {
     io::Error::new(kind, message)
 }
 
+/// Whether the file system refused a path rather than the item at it: `NSFileManager` builds an
+/// absolute path per item and gives up once one passes `PATH_MAX`.
+fn past_path_max(err: &NSError) -> bool {
+    let too_long = |err: &NSError| {
+        err.domain().to_string() == "NSPOSIXErrorDomain" && err.code() as i32 == libc::ENAMETOOLONG
+    };
+    err.domain().to_string() == "NSCocoaErrorDomain"
+        && err.code() == NSFileWriteInvalidFileNameError
+        && err.underlyingErrors().iter().any(|under| too_long(&under))
+}
+
+/// A transfer only ever lands on a free name, so a half-landed tree is ours to clear away and
+/// try again for against directory descriptors, which no depth of tree can overrun.
 fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
     let (su, du) = (url(src), url(dst));
-    if is_move {
+    let landed = if is_move {
         fm.moveItemAtURL_toURL_error(&su, &du)
     } else {
         fm.copyItemAtURL_toURL_error(&su, &du)
+    };
+    match landed {
+        Err(err) if past_path_max(&err) => {
+            let _ = deep::remove(dst);
+            deep::transfer(src, dst, is_move)
+        }
+        other => other.map_err(io_error),
     }
-    .map_err(io_error)
 }
 
 fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
@@ -1230,6 +1251,144 @@ mod tests {
         );
 
         purge(&first.results);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Runs `script` in the directory `levels` down a `deep_tree`, which no path can name.
+    fn deep_sh(root: &Path, levels: usize, script: &str) -> String {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "cd \"$1\" && for i in $(seq 1 $2); do cd d$i || exit 1; done && {script}"
+            ))
+            .arg("sh")
+            .arg(root)
+            .arg(levels.to_string())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{script}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A tree whose leaf is past `PATH_MAX`, built by a shell that walks in as it goes.
+    fn deep_tree(root: &Path, levels: usize) {
+        let ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(
+                "mkdir -p \"$1\" && cd \"$1\" && for i in $(seq 1 $2); do mkdir d$i && cd d$i || exit 1; done && echo leaf > leaf.txt",
+            )
+            .arg("sh")
+            .arg(root)
+            .arg(levels.to_string())
+            .status()
+            .unwrap();
+        assert!(ok.success(), "could not build the fixture");
+    }
+
+    /// The open-file limit a launchd process gets, put back on the way out: a walk that holds a
+    /// descriptor per level runs out of them long before it runs out of path.
+    struct FewDescriptors(libc::rlimit);
+
+    impl FewDescriptors {
+        fn new() -> FewDescriptors {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+            let few = libc::rlimit {
+                rlim_cur: limit.rlim_cur.min(128),
+                rlim_max: limit.rlim_max,
+            };
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &few) };
+            FewDescriptors(limit)
+        }
+    }
+
+    impl Drop for FewDescriptors {
+        fn drop(&mut self) {
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) };
+        }
+    }
+
+    #[test]
+    fn a_tree_deeper_than_a_path_transfers_whole() {
+        let dir = temp_dir("deep");
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let tree = src.join("Deep");
+        deep_tree(&tree, 300);
+        touch(&tree.join("beside.txt"), "beside");
+        std::os::unix::fs::symlink("beside.txt", tree.join("link")).unwrap();
+
+        let few = FewDescriptors::new();
+        let done = perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dst.join("Deep")]);
+        assert_eq!(deep_sh(&dst.join("Deep"), 300, "cat leaf.txt"), "leaf");
+        assert_eq!(
+            fs::read_link(dst.join("Deep").join("link")).unwrap(),
+            Path::new("beside.txt"),
+            "the link came over as a link"
+        );
+        assert_eq!(
+            deep_sh(&tree, 300, "cat leaf.txt"),
+            "leaf",
+            "the source is still whole"
+        );
+
+        perform(
+            Op::Rename {
+                path: dst.join("Deep"),
+                name: "Moved".into(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(deep_sh(&dst.join("Moved"), 300, "cat leaf.txt"), "leaf");
+        drop(few);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deep_copy_that_fails_leaves_nothing_behind() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root walks into a directory whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("deep-fails");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 249, "chmod 000 d250");
+
+        perform(
+            Op::Copy {
+                items: vec![tree.clone()],
+                into: dst.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .expect_err("a directory that cannot be read cannot be copied");
+        assert!(
+            !taken(&dst.join("Deep")),
+            "a copy that failed left a part of the tree behind"
+        );
+
+        deep_sh(&tree, 249, "chmod 700 d250");
         let _ = fs::remove_dir_all(&dir);
     }
 
