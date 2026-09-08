@@ -68,9 +68,9 @@ fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
     Some(row(id, title, glyph_of(&path)))
 }
 
-/// The glyph Finder gives a folder it knows by name; every other folder wears a plain one, a
-/// custom icon and a package included.
-fn glyph_of(path: &std::path::Path) -> Glyph {
+/// The glyph Finder gives a folder it knows by name; a pinned bundle wears the one its kind gets,
+/// every other folder a plain one, a custom icon included.
+fn glyph_of(path: &Path) -> Glyph {
     use finder_fs::volumes::Standard::*;
     let standard = [
         (Applications, Glyph::Artwork("SidebarApplicationsFolder")),
@@ -98,6 +98,31 @@ fn glyph_of(path: &std::path::Path) -> Glyph {
         _ if in_home("Public") => Glyph::Symbol("figure.walk.diamond"),
         _ if in_home("Library") => Glyph::Symbol("building.classical.columns"),
         _ if in_home("Applications") => Glyph::Artwork("SidebarApplicationsFolder"),
+        _ => pinned_glyph(path),
+    }
+}
+
+/// An app is the one bundle Finder names without its extension; every other package keeps it.
+fn pinned_title(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy();
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("app") => stem.to_owned(),
+        _ => name.into_owned(),
+    }
+}
+
+/// What Finder gives a pinned bundle: an app wears the Applications artwork rather than its own
+/// icon, and any other package the square it gives a kind it has no drawing for.
+fn pinned_glyph(path: &Path) -> Glyph {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    match name.rsplit_once('.') {
+        Some((_, ext)) if ext.eq_ignore_ascii_case("app") => {
+            Glyph::Artwork("SidebarApplicationsFolder")
+        }
+        Some(_) if finder_fs::kind::is_package_name(&name) => Glyph::Symbol("questionmark.square"),
         _ => Glyph::Symbol("folder"),
     }
 }
@@ -272,13 +297,9 @@ pub(crate) fn groups() -> Vec<Group> {
             if !path.is_dir() || group.rows.iter().any(|row| row.id == id) {
                 continue;
             }
-            let title = path
-                .file_name()
-                .unwrap_or(path.as_os_str())
-                .to_string_lossy();
             group
                 .rows
-                .push(row(id, title.into_owned(), glyph_of(&path)));
+                .push(row(id, pinned_title(&path), glyph_of(&path)));
         }
     }
     groups
