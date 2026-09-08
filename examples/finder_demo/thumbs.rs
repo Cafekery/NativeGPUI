@@ -159,13 +159,15 @@ pub(crate) fn thumb(
         (size * scale).round().max(1.) as u32,
         icon,
     );
+    if visible {
+        DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
+    }
     if let Some(image) = THUMBS.with(|thumbs| thumbs.borrow().get(&key).cloned()) {
         return Some(image);
     }
     if !visible {
         return None;
     }
-    DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
     if ASKED.with(|asked| asked.borrow().contains(&key)) {
         return largest(&row.path, icon);
     }
