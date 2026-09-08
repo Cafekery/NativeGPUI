@@ -261,6 +261,7 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
         Op::Move { items, .. }
         | Op::Copy { items, .. }
         | Op::Duplicate(items)
+        | Op::MakeAlias(items)
         | Op::Trash(items)
         | Op::DeleteImmediately(items) => Some(items),
         Op::Rename { .. }
@@ -282,6 +283,7 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
             into: into.clone(),
         },
         Op::Duplicate(_) => Op::Duplicate(vec![item]),
+        Op::MakeAlias(_) => Op::MakeAlias(vec![item]),
         Op::Trash(_) => Op::Trash(vec![item]),
         Op::DeleteImmediately(_) => Op::DeleteImmediately(vec![item]),
         Op::Rename { .. }
@@ -403,6 +405,7 @@ fn label_for(op: &Op) -> String {
         Op::Move { items, .. } => describe("Move", items),
         Op::Copy { items, .. } => describe("Copy", items),
         Op::Duplicate(items) => describe("Duplicate", items),
+        Op::MakeAlias(items) => describe("Make Alias of", items),
         Op::Trash(items) => format!("{} to Trash", describe("Move", items)),
         Op::DeleteImmediately(items) => describe("Delete", items),
         Op::Rename { name, .. } => format!("Rename of \"{name}\""),
