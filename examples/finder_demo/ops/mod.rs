@@ -35,7 +35,10 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
             dirs.push(into.clone());
             dirs
         }
-        Op::Trash(items) | Op::DeleteImmediately(items) | Op::Duplicate(items) => parents(items),
+        Op::Trash(items)
+        | Op::DeleteImmediately(items)
+        | Op::Duplicate(items)
+        | Op::MakeAlias(items) => parents(items),
         Op::Rename { path, .. } => parents(std::slice::from_ref(path)),
         Op::NewFolder { into, .. } | Op::NewFile { into, .. } => vec![into.clone()],
         Op::PutBack(items) => items
@@ -165,6 +168,33 @@ impl FinderDemo {
     }
 
     /// Finder's error sheet: what the file system said, on the window it happened in.
+    /// Finder's destructive-command sheet: the work runs only if the user takes the first button.
+    pub(crate) fn confirm(
+        &self,
+        text: &str,
+        detail: &str,
+        button: &str,
+        cx: &mut Context<Self>,
+        run: impl Fn(&gpui::AsyncApp) + 'static,
+    ) {
+        let (Some(mtm), Some(window)) = (objc2::MainThreadMarker::new(), self.host.clone()) else {
+            return;
+        };
+        let alert = objc2_app_kit::NSAlert::new(mtm);
+        alert.setMessageText(&objc2_foundation::NSString::from_str(text));
+        alert.setInformativeText(&objc2_foundation::NSString::from_str(detail));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(button));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Cancel"));
+        let async_cx = cx.to_async();
+        // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
+        let handler = block2::RcBlock::new(move |response: objc2_app_kit::NSModalResponse| {
+            if response == objc2_app_kit::NSAlertFirstButtonReturn {
+                run(&async_cx);
+            }
+        });
+        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+    }
+
     pub(crate) fn complain(&self, text: &str) {
         let Some(mtm) = objc2::MainThreadMarker::new() else {
             return;

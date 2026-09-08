@@ -543,6 +543,25 @@ impl FinderDemo {
         }
     }
 
+    /// Finder's ⌃⌘T: the chosen folders join Favorites, where a drop onto it would put them.
+    pub(crate) fn add_to_sidebar(&mut self) {
+        let paths: Vec<std::path::PathBuf> = self.paths();
+        if paths.is_empty() {
+            return;
+        }
+        let index = self
+            .sidebar_groups
+            .iter()
+            .position(|group| group.id == FAVOURITES)
+            .map_or(0, |at| self.sidebar_rows[at].len());
+        self.pin(&SidebarDrop {
+            paths,
+            group: FAVOURITES.into(),
+            index,
+            onto: None,
+        });
+    }
+
     fn store_rows(&self, group: usize) {
         prefs::set_sidebar_rows(self.sidebar_groups[group].id, &self.sidebar_rows[group]);
     }

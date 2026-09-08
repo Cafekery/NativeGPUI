@@ -1,13 +1,18 @@
 //! The menu bar Finder carries, read off the real one: the same rows, order and key equivalents.
 
 use std::cell::Cell;
+use std::path::Path;
 
 use finder_fs::volumes::{self, Standard};
 use gpui::{Action, App, Context, Div, InteractiveElement, Window, actions};
-use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, on_menu_state, prepend_menu};
+use native_gpui::{
+    MenuCommand, MenuSection, add_menu, extend_menu, on_menu_state, prepend_menu,
+    set_toolbar_search_active,
+};
 
 use crate::app::FinderDemo;
 use crate::chrome::sheet::GoSheet;
+use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
@@ -27,14 +32,22 @@ actions!(
         DeselectAll,
         Duplicate,
         DuplicateExactly,
+        EjectSelection,
+        EmptyTrash,
+        FindHere,
         Forward,
         GetInfo,
+        AddToSidebar,
         GoApplications,
+        GoComputer,
         GoDesktop,
         GoDocuments,
         GoDownloads,
         GoHome,
+        GoICloud,
+        GoNetwork,
         GoToFolder,
+        GoUtilities,
         GoRecent0,
         GoRecent1,
         GoRecent2,
@@ -46,9 +59,12 @@ actions!(
         NewTextFile,
         NewTab,
         NewWindow,
+        MakeAlias,
         OpenSelection,
         QuickLook,
+        OpenInNewTab,
         OpenInNewWindow,
+        ShowOriginal,
         RenameSelection,
         SelectAll,
         ShowInspector,
@@ -112,23 +128,33 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::new("New Folder with Selection", NewFolderWithSelection).key("cmd-ctrl-n"),
             MenuCommand::separator(),
             MenuCommand::new("Open", OpenSelection).key("cmd-o"),
-            MenuCommand::new("Open in New Window", OpenInNewWindow).key("cmd-ctrl-o"),
+            MenuCommand::new("Open in New Tab", OpenInNewTab).key("cmd-ctrl-o"),
+            MenuCommand::new("Open in New Window", OpenInNewWindow).key("cmd-alt-o"),
             MenuCommand::separator(),
             MenuCommand::new("Get Info", GetInfo).key("cmd-i"),
             MenuCommand::new("Show Inspector", ShowInspector).key("cmd-alt-i"),
             MenuCommand::new("Rename", RenameSelection),
             MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
             MenuCommand::new("Duplicate Exactly", DuplicateExactly)
-                .key("cmd-alt-d")
+                .key("cmd-alt-shift-d")
                 .option_alternate(),
+            MenuCommand::new("Make Alias", MakeAlias).key("cmd-ctrl-a"),
             MenuCommand::new("Quick Look", QuickLook).key("cmd-y"),
+            MenuCommand::separator(),
+            MenuCommand::new("Show Original", ShowOriginal).key("cmd-r"),
+            MenuCommand::new("Add to Sidebar", AddToSidebar).key("cmd-ctrl-t"),
             MenuCommand::separator(),
             MenuCommand::new("Move to Trash", Trash).key("cmd-backspace"),
             MenuCommand::new("Delete Immediately…", DeleteImmediately)
                 .key("cmd-alt-backspace")
                 .option_alternate(),
+            MenuCommand::new("Eject", EjectSelection).key("cmd-e"),
             MenuCommand::separator(),
         ],
+    );
+    extend_menu(
+        MenuSection::App,
+        [MenuCommand::new("Empty Trash…", EmptyTrash).key("cmd-shift-backspace")],
     );
     extend_menu(
         MenuSection::Edit,
@@ -137,6 +163,8 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::new("Move Item Here", MoveHere).key("cmd-alt-v"),
             MenuCommand::new("Copy as Pathname", CopyPath).key("cmd-alt-c"),
             MenuCommand::new("Deselect All", DeselectAll).key("cmd-alt-a"),
+            MenuCommand::separator(),
+            MenuCommand::new("Search", FindHere).key("cmd-f"),
         ],
     );
     prepend_menu(
@@ -150,15 +178,24 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::submenu(
                 "Sort By",
                 [
-                    MenuCommand::new("Name", SortByName).key("cmd-ctrl-1"),
-                    MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-2"),
-                    MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-3"),
-                    MenuCommand::new("Size", SortBySize).key("cmd-ctrl-5"),
+                    MenuCommand::new("Name", SortByName).key("cmd-ctrl-alt-1"),
+                    MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-alt-2"),
+                    MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-alt-5"),
+                    MenuCommand::new("Size", SortBySize).key("cmd-ctrl-alt-6"),
                 ],
             ),
             MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
             MenuCommand::new("Show View Options", ShowViewOptions).key("cmd-j"),
             MenuCommand::new("Clean Up", CleanUp),
+            MenuCommand::submenu(
+                "Clean Up By",
+                [
+                    MenuCommand::new("Name", SortByName).key("cmd-alt-1"),
+                    MenuCommand::new("Kind", SortByKind).key("cmd-alt-2"),
+                    MenuCommand::new("Date Modified", SortByModified).key("cmd-alt-5"),
+                    MenuCommand::new("Size", SortBySize).key("cmd-alt-6"),
+                ],
+            ),
             MenuCommand::separator(),
             MenuCommand::new("Show Preview", TogglePreview).key("cmd-shift-p"),
             MenuCommand::new("Show Path Bar", TogglePathBar).key("cmd-alt-p"),
@@ -204,7 +241,11 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Desktop", GoDesktop).key("cmd-shift-d"),
         MenuCommand::new("Downloads", GoDownloads).key("cmd-alt-l"),
         MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
+        MenuCommand::new("Computer", GoComputer).key("cmd-shift-c"),
+        MenuCommand::new("Network", GoNetwork).key("cmd-shift-k"),
+        MenuCommand::new("iCloud Drive", GoICloud).key("cmd-shift-i"),
         MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
+        MenuCommand::new("Utilities", GoUtilities).key("cmd-shift-u"),
         MenuCommand::separator(),
         MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
         MenuCommand::separator(),
@@ -221,7 +262,13 @@ impl FinderDemo {
 
     fn go_place(&mut self, which: Standard, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = volumes::standard(which) {
-            self.go(intern_path(&path), window, cx);
+            self.go_to(&path, window, cx);
+        }
+    }
+
+    fn go_to(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if path.is_dir() {
+            self.go(intern_path(path), window, cx);
         }
     }
 
@@ -256,8 +303,32 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
                 this.run_menu(Act::Open, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenInNewTab, window, cx| {
+                if let Some(id) = this.chosen_folders().first().copied() {
+                    this.open_tab(id, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &OpenInNewWindow, window, cx| {
                 this.run_menu(Act::OpenWindow, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MakeAlias, window, cx| {
+                this.run_menu(Act::MakeAlias, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowOriginal, window, cx| {
+                this.show_original(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &AddToSidebar, _, cx| {
+                this.add_to_sidebar();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &EjectSelection, window, cx| {
+                this.eject_selection(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &EmptyTrash, _, cx| {
+                this.empty_trash(cx);
+            }))
+            .on_action(cx.listener(|_, _: &FindHere, window, _| {
+                set_toolbar_search_active(window, SEARCH_ID, true);
             }))
             .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
                 let demo = cx.entity();
@@ -364,6 +435,20 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &GoApplications, window, cx| {
                 this.go_place(Standard::Applications, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoComputer, window, cx| {
+                this.go_to(Path::new("/"), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoNetwork, window, cx| {
+                this.go_to(Path::new("/Network"), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoUtilities, window, cx| {
+                this.go_to(Path::new("/System/Applications/Utilities"), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoICloud, window, cx| {
+                if let Some(drive) = finder_fs::icloud::drive() {
+                    this.go_to(&drive, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &GoRecent0, window, cx| {
                 this.go_recent(0, window, cx);

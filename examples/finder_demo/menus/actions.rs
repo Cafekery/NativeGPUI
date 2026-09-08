@@ -1,9 +1,10 @@
 //! What a menu pick does: every contextual row and every File-menu command lands here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, Window};
+use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
 
 use super::context;
 use crate::app::FinderDemo;
@@ -30,6 +31,7 @@ pub(crate) enum Act {
     Trash,
     Rename,
     Duplicate,
+    MakeAlias,
     Copy,
     Cut,
     Paste,
@@ -43,6 +45,26 @@ pub(crate) enum Act {
     Eject(&'static str),
     CopyPathname(&'static str),
     Toggle(Column),
+}
+
+/// What an alias file or a symlink points at, as Finder's Show Original follows it. Resolving a
+/// file that is neither hands back the file itself, which is nothing to show.
+fn original_of(path: &Path) -> Option<PathBuf> {
+    if let Ok(target) = std::fs::read_link(path) {
+        let joined = match target.is_absolute() {
+            true => target,
+            false => path.parent()?.join(target),
+        };
+        return joined.canonicalize().ok();
+    }
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    let resolved = NSURL::URLByResolvingAliasFileAtURL_options_error(
+        &url,
+        NSURLBookmarkResolutionOptions::WithoutUI | NSURLBookmarkResolutionOptions::WithoutMounting,
+    )
+    .ok()?;
+    let original = PathBuf::from(resolved.path()?.to_string());
+    (original != path.canonicalize().ok()?).then_some(original)
 }
 
 /// Open in Terminal: the user's `TERM_PROGRAM` if a GUI launch carries one, else Terminal.app.
@@ -94,6 +116,7 @@ impl FinderDemo {
             Act::Trash => self.trash_selection(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
             Act::Duplicate => self.duplicate_selection(cx),
+            Act::MakeAlias => self.make_alias(cx),
             Act::Copy => self.copy_selection(cx),
             Act::Cut => self.cut_selection(cx),
             Act::Paste => self.paste(false, cx),
@@ -183,6 +206,62 @@ impl FinderDemo {
         if !items.is_empty() {
             self.run_op(Op::Duplicate(items), After::Select, cx);
         }
+    }
+
+    /// Finder's ⌃⌘A: a bookmark file beside each chosen item.
+    pub(crate) fn make_alias(&mut self, cx: &mut Context<Self>) {
+        let items = self.paths();
+        if !items.is_empty() {
+            self.run_op(Op::MakeAlias(items), After::Select, cx);
+        }
+    }
+
+    /// Finder's ⌘R: the folder holding what the chosen alias points at, with it selected.
+    pub(crate) fn show_original(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(original) = self.paths().first().and_then(|path| original_of(path)) else {
+            return;
+        };
+        self.show_enclosing(crate::data::intern_path(&original), window, cx);
+    }
+
+    /// Finder's ⌘E: the chosen volume leaves, or the one the window is looking at.
+    pub(crate) fn eject_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let roots = crate::data::volume_roots();
+        let mut wanted = self.chosen_folders();
+        wanted.push(self.here());
+        let Some(volume) = wanted.into_iter().find(|id| roots.contains(id)) else {
+            return;
+        };
+        self.eject(volume, window, cx);
+    }
+
+    /// Finder's ⇧⌘⌫, which asks before it erases anything.
+    pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
+        let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
+            return;
+        };
+        let items: Vec<PathBuf> = finder_fs::list::list_dir(&trash)
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| entry.path_in(&trash))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let this = cx.entity().downgrade();
+        self.confirm(
+            "Are you sure you want to permanently erase the items in the Trash?",
+            "You can’t undo this action.",
+            "Empty Trash",
+            cx,
+            move |cx| {
+                let mut cx = cx.clone();
+                this.update(&mut cx, |this: &mut FinderDemo, cx| {
+                    this.run_op(Op::DeleteImmediately(items.clone()), After::Nothing, cx);
+                })
+                .ok();
+            },
+        );
     }
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
