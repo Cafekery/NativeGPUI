@@ -221,11 +221,15 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     let reps = source.representations();
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
     let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(points, points));
-    for rep in reps.iter() {
-        // One point size only: 16pt@2x and 32pt@1x are both 32px but are different drawings.
-        if rep.size().width == chosen {
-            image.addRepresentation(&rep);
-        }
+    // One point size only: 16pt@2x and 32pt@1x are both 32px but are different drawings. Of that
+    // size take the finest rep alone and let AppKit resample it: the bundle's 1x drawing at 18pt
+    // is sheared, so a 1x screen given both would draw the broken one.
+    if let Some(finest) = reps
+        .iter()
+        .filter(|rep| rep.size().width == chosen)
+        .max_by_key(|rep| rep.pixelsWide())
+    {
+        image.addRepresentation(&finest);
     }
     // The bundle's images arrive with `isTemplate` false, so nothing would tint them.
     image.setTemplate(true);
@@ -482,12 +486,12 @@ mod tests {
             .expect("CoreTypes.bundle is world-readable and ships SidebarAirDrop");
         assert!(image.isTemplate());
         assert_eq!(image.size(), NSSize::new(17., 17.));
-        let points: Vec<f64> = image
+        let reps: Vec<(f64, isize)> = image
             .representations()
             .iter()
-            .map(|rep| rep.size().width)
+            .map(|rep| (rep.size().width, rep.pixelsWide()))
             .collect();
-        assert_eq!(points, vec![18., 18.], "both scales of one point size");
+        assert_eq!(reps, vec![(18., 36)], "one point size, at its finest");
         assert!(build_core_types_template("SidebarNoSuchThing", 17.).is_none());
     }
 }
