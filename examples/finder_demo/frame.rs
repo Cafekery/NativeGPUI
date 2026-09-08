@@ -263,10 +263,7 @@ impl FinderDemo {
             .top(if banded { px(0.) } else { top })
             .flex()
             .flex_col()
-            .overflow_hidden()
-            .when(!banded && self.view != ICON_VIEW, |column| {
-                column.border_t_1().border_color(palette.separator)
-            });
+            .overflow_hidden();
         // The list stops at the pane until its columns no longer fit, then runs on beneath it.
         let pane = self.pane_w();
         let band = (self.list_room - pane).max(self.list_content_w());
