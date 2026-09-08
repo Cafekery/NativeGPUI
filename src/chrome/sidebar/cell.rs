@@ -195,17 +195,19 @@ fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSIm
     built
 }
 
+/// Ties go to the larger: a template scaled down keeps its shape where one scaled up softens.
 fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> Option<f64> {
     available.into_iter().fold(None, |held, candidate| {
         let better = held.is_none_or(|held: f64| {
             let (a, b) = ((candidate - wanted).abs(), (held - wanted).abs());
-            a < b || (a == b && candidate < held)
+            a < b || (a == b && candidate > held)
         });
         Some(if better { candidate } else { held? })
     })
 }
 
-/// A [`CORE_TYPES_BUNDLE`] resource as a template image, at the representation nearest `points`.
+/// A [`CORE_TYPES_BUNDLE`] resource as a template image `points` across, drawn from the
+/// representation nearest that size.
 pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
     build_core_types_template(resource, points.to_f64())
 }
@@ -215,7 +217,7 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     let source = bundle.imageForResource(&NSString::from_str(name))?;
     let reps = source.representations();
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
-    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(chosen, chosen));
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(points, points));
     for rep in reps.iter() {
         // One point size only: 16pt@2x and 32pt@1x are both 32px but are different drawings.
         if rep.size().width == chosen {
@@ -440,16 +442,16 @@ mod tests {
 
     #[test]
     fn the_core_types_bundle_yields_a_sized_template() {
-        let image = build_core_types_template("SidebarAirDrop", 19.)
+        let image = build_core_types_template("SidebarAirDrop", 17.)
             .expect("CoreTypes.bundle is world-readable and ships SidebarAirDrop");
         assert!(image.isTemplate());
-        assert_eq!(image.size(), NSSize::new(18., 18.));
+        assert_eq!(image.size(), NSSize::new(17., 17.));
         let points: Vec<f64> = image
             .representations()
             .iter()
             .map(|rep| rep.size().width)
             .collect();
         assert_eq!(points, vec![18., 18.], "both scales of one point size");
-        assert!(build_core_types_template("SidebarNoSuchThing", 19.).is_none());
+        assert!(build_core_types_template("SidebarNoSuchThing", 17.).is_none());
     }
 }

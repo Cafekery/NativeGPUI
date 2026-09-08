@@ -14,7 +14,7 @@ use crate::data::{intern, intern_path, volume_roots};
 use crate::prefs;
 use crate::tags::finder_color_rgb;
 
-pub(crate) const SIDEBAR_W: f32 = 184.;
+pub(crate) const SIDEBAR_W: f32 = 192.;
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
 
@@ -277,8 +277,9 @@ impl FinderDemo {
             cx,
             SidebarOptions {
                 thickness: px(SIDEBAR_W),
-                min_thickness: px(150.),
-                max_thickness: px(320.),
+                min_thickness: px(120.),
+                max_thickness: px(0.),
+                content_min_thickness: px(crate::preview::LIST_MIN_W),
                 reorderable: true,
                 backdrop: Some(Material::Card),
                 ..SidebarOptions::default()

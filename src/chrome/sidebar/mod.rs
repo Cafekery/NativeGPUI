@@ -171,7 +171,7 @@ impl SidebarRowSize {
         match style {
             NSTableViewRowSizeStyle::Small => 15.,
             NSTableViewRowSizeStyle::Large => 21.,
-            _ => 19.,
+            _ => 17.,
         }
     }
 }
@@ -181,6 +181,8 @@ impl SidebarRowSize {
 pub struct SidebarOptions {
     pub thickness: Pixels,
     pub min_thickness: Pixels,
+    /// The widest a drag may make the sidebar; at or below `min_thickness` the only cap is what
+    /// `content_min_thickness` leaves, as Finder's sidebar has it.
     pub max_thickness: Pixels,
     pub toolbar: bool,
     pub collapsed: bool,
@@ -190,6 +192,8 @@ pub struct SidebarOptions {
     /// Re-parent [`crate::Layer::Below`] containers into the content pane and mirror GPUI's frame.
     pub adopt_below_layer: bool,
     pub reorderable: bool,
+    /// Smallest the content pane may be squeezed to, which is what caps a drag on the divider.
+    pub content_min_thickness: Pixels,
     /// Window-spanning vibrancy beneath both panes; only the sidebar strip is left showing it.
     pub backdrop: Option<Material>,
 }
@@ -207,6 +211,7 @@ impl Default for SidebarOptions {
             align: PaneAlign::WindowAligned,
             adopt_below_layer: true,
             reorderable: false,
+            content_min_thickness: px(0.),
             backdrop: Some(Material::Card),
         }
     }
@@ -828,6 +833,7 @@ impl PaneShared {
         self.metrics.set(metrics);
         if self.published.get() != metrics {
             self.published.set(metrics);
+            let gpui = self.gpui.clone();
             self.cx
                 .borrow()
                 .spawn(async move |cx| {
@@ -835,6 +841,12 @@ impl PaneShared {
                         app.set_global(metrics);
                         window.refresh();
                     });
+                    // A divider drag runs AppKit's own event loop, in which gpui's display link
+                    // never ticks: unasked, the content would reflow only on mouse-up.
+                    if let Some(layer) = gpui.layer() {
+                        layer.setNeedsDisplay();
+                        layer.displayIfNeeded();
+                    }
                 })
                 .detach();
         }
@@ -1179,7 +1191,9 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     // `behavior` is read-only, so this factory is the only way to get `Sidebar`.
     let sidebar_item = NSSplitViewItem::sidebarWithViewController(&sidebar_vc);
     sidebar_item.setMinimumThickness(options.min_thickness.to_f64());
-    sidebar_item.setMaximumThickness(options.max_thickness.to_f64());
+    if options.max_thickness > options.min_thickness {
+        sidebar_item.setMaximumThickness(options.max_thickness.to_f64());
+    }
     sidebar_item.setCanCollapse(true);
     sidebar_item.setAllowsFullHeightLayout(true);
 
@@ -1213,6 +1227,9 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     let content_vc = NSViewController::init(NSViewController::alloc(mtm));
     content_vc.setView(&pane);
     let content_item = NSSplitViewItem::splitViewItemWithViewController(&content_vc);
+    if options.content_min_thickness > px(0.) {
+        content_item.setMinimumThickness(options.content_min_thickness.to_f64());
+    }
 
     let split = NSSplitViewController::init(NSSplitViewController::alloc(mtm));
     split.addSplitViewItem(&sidebar_item);
