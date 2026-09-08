@@ -1,6 +1,6 @@
 //! Finder's sidebar: this Mac's Favorites, the volumes it has mounted, and the user's own tags.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{SharedString, Window, prelude::*, px};
 use native_gpui::Material;
@@ -102,44 +102,135 @@ fn glyph_of(path: &std::path::Path) -> Glyph {
     }
 }
 
-/// The sidebar as this Mac has it: the standard folders, every mounted volume, the user's tags.
-pub(crate) fn groups() -> Vec<Group> {
+fn folder_row(path: &Path, name: Option<&str>) -> Option<Row> {
+    let title = match name {
+        Some(name) => name.to_owned(),
+        None => path.file_name()?.to_string_lossy().into_owned(),
+    };
+    Some(row(intern_path(path), title, glyph_of(path)))
+}
+
+fn volume_row(volume: &finder_fs::volumes::Volume) -> Row {
+    let glyph = match (volume.network, volume.ejectable) {
+        (true, _) => Glyph::Symbol("externaldrive.connected.to.line.below"),
+        (_, true) => Glyph::Symbol("externaldrive"),
+        _ => Glyph::Symbol("internaldrive"),
+    };
+    Row {
+        eject: volume.ejectable,
+        ..row(intern_path(&volume.path), volume.name.clone(), glyph)
+    }
+}
+
+fn icloud_drive() -> Option<Row> {
+    let drive = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home)?
+        .join("Library/Mobile Documents/com~apple~CloudDocs");
+    drive
+        .is_dir()
+        .then(|| row(intern_path(&drive), "iCloud Drive", Glyph::Symbol("icloud")))
+}
+
+fn trash_row() -> Option<Row> {
+    let trash = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash)?;
+    Some(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")))
+}
+
+/// The Favorites Finder keeps for this user, in the user's order.
+fn favourites() -> Vec<Row> {
     use finder_fs::volumes::Standard::*;
 
-    let favourites = [Applications, Desktop, Documents, Downloads, Home]
-        .into_iter()
-        .filter_map(place)
-        .collect();
+    let listed = finder_fs::sidebar::favorites().map(|items| {
+        items
+            .iter()
+            .filter(|item| item.visible)
+            .filter_map(|item| folder_row(item.path.as_deref()?, item.name.as_deref()))
+            .collect::<Vec<Row>>()
+    });
+    match listed {
+        Some(rows) if !rows.is_empty() => rows,
+        _ => [Applications, Desktop, Documents, Downloads, Home]
+            .into_iter()
+            .filter_map(place)
+            .collect(),
+    }
+}
 
-    let mut locations = Vec::new();
-    if let Some(home) = finder_fs::volumes::standard(Home) {
-        let drive = home.join("Library/Mobile Documents/com~apple~CloudDocs");
-        if drive.is_dir() {
-            locations.push(row(
-                intern_path(&drive),
-                "iCloud Drive",
-                Glyph::Symbol("icloud"),
-            ));
+/// Whether Finder is set to show the class of volume this one belongs to.
+fn shown(list: &finder_fs::sidebar::Locations, volume: &finder_fs::volumes::Volume) -> bool {
+    let names = |item: &&finder_fs::sidebar::Item| {
+        item.path.as_deref() == Some(volume.path.as_path())
+            || (item.path.is_none() && item.name.as_deref() == Some(volume.name.as_str()))
+    };
+    if list.items.iter().filter(names).any(|item| !item.visible) {
+        return false;
+    }
+    match (volume.network, volume.ejectable) {
+        (true, _) => list.network,
+        (_, true) => list.ejectable,
+        _ => list.hard_drives,
+    }
+}
+
+/// Finder's Locations: the rows of its volume list that are here now, Trash last as Finder has it.
+fn locations() -> Vec<Row> {
+    use finder_fs::sidebar::Special;
+
+    let mounted = finder_fs::volumes::mounted();
+    let Some(list) = finder_fs::sidebar::locations() else {
+        return default_locations(&mounted);
+    };
+    let mut rows: Vec<Row> = Vec::new();
+    let mut placed: Vec<&Path> = Vec::new();
+    let mut trash = None;
+    for item in list.items.iter().filter(|item| item.visible) {
+        match item.special {
+            Some(Special::ICloudDrive) => rows.extend(icloud_drive()),
+            Some(Special::Home) => rows.extend(
+                finder_fs::volumes::standard(finder_fs::volumes::Standard::Home)
+                    .and_then(|home| folder_row(&home, None)),
+            ),
+            Some(Special::AirDrop) => {
+                rows.push(row("airdrop", "AirDrop", Glyph::Artwork("SidebarAirDrop")))
+            }
+            Some(Special::Network) => {
+                rows.push(row("/Network", "Network", Glyph::Symbol("network")))
+            }
+            Some(Special::Trash) => trash = trash_row(),
+            Some(Special::Computer | Special::RemoteDisc) => {}
+            None => {
+                if let Some(volume) = mounted.iter().find(|volume| {
+                    item.path.as_deref() == Some(volume.path.as_path())
+                        || (item.path.is_none() && item.name.as_deref() == Some(&volume.name))
+                }) {
+                    rows.push(volume_row(volume));
+                    placed.push(&volume.path);
+                }
+            }
         }
     }
-    for volume in finder_fs::volumes::mounted() {
-        let id = intern_path(&volume.path);
-        let glyph = match (volume.network, volume.ejectable) {
-            (true, _) => Glyph::Symbol("externaldrive.connected.to.line.below"),
-            (_, true) => Glyph::Symbol("externaldrive"),
-            _ => Glyph::Symbol("internaldrive"),
-        };
-        locations.push(Row {
-            eject: volume.ejectable,
-            ..row(id, volume.name, glyph)
-        });
+    for volume in &mounted {
+        if !placed.contains(&volume.path.as_path()) && shown(&list, volume) {
+            rows.push(volume_row(volume));
+        }
     }
-    if std::path::Path::new("/Network").is_dir() {
-        locations.push(row("/Network", "Network", Glyph::Symbol("network")));
+    rows.extend(trash);
+    rows
+}
+
+fn default_locations(mounted: &[finder_fs::volumes::Volume]) -> Vec<Row> {
+    let mut rows: Vec<Row> = icloud_drive().into_iter().collect();
+    rows.extend(mounted.iter().map(volume_row));
+    if Path::new("/Network").is_dir() {
+        rows.push(row("/Network", "Network", Glyph::Symbol("network")));
     }
-    if let Some(trash) = finder_fs::volumes::standard(Trash) {
-        locations.push(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")));
-    }
+    rows.extend(trash_row());
+    rows
+}
+
+/// The sidebar as Finder has it for this user: their Favorites, their Locations, their tags.
+pub(crate) fn groups() -> Vec<Group> {
+    let favourites = favourites();
+    let locations = locations();
 
     let mut tags: Vec<Row> = finder_fs::tags::all()
         .into_iter()
