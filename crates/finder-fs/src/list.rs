@@ -18,6 +18,8 @@ const VDIR: u32 = 2;
 const VLNK: u32 = 5;
 /// `kHasBundle`, a bit in classic `FndrDirInfo.frFlags` (big-endian, offset 8 of `ATTR_CMN_FNDRINFO`).
 const HAS_BUNDLE: u16 = 0x2000;
+/// `SF_DATALESS`, the flag a File Provider leaves on an item whose data it has evicted.
+const SF_DATALESS: u32 = 0x4000_0000;
 
 const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
     | libc::ATTR_CMN_NAME
@@ -129,7 +131,7 @@ pub fn list_dir_batched(
         let mut off = 0usize;
         for _ in 0..n {
             let len = u32::from_ne_bytes(buf[off..off + 4].try_into().unwrap()) as usize;
-            if let Some(entry) = parse_entry(&buf[off..off + len]) {
+            if let Some(entry) = parse_entry(&buf[off..off + len], dir) {
                 pending.push(entry);
                 if pending.len() >= batch {
                     on_batch(std::mem::take(&mut pending));
@@ -164,7 +166,7 @@ fn read_timespec(b: &[u8]) -> SystemTime {
 /// One `getattrlistbulk` record: length-prefixed, `attribute_set_t returned` next, then the
 /// requested attributes packed in ascending bit order (`FSOPT_PACK_INVAL_ATTRS` omits absent
 /// ones entirely, so the offsets are only known by walking `returned` bit by bit).
-fn parse_entry(record: &[u8]) -> Option<Entry> {
+fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut p = 4usize;
     let returned_common = u32::from_ne_bytes(record[p..p + 4].try_into().unwrap());
     let returned_dir = u32::from_ne_bytes(record[p + 8..p + 12].try_into().unwrap());
@@ -243,6 +245,17 @@ fn parse_entry(record: &[u8]) -> Option<Entry> {
     if kind == EntryKind::Directory {
         size = 0;
     }
+    // An evicted file is a `.name.icloud` placeholder holding the size of what it stands in for;
+    // Finder lists it under the name it will have again once it is downloaded.
+    let mut dataless = flags & SF_DATALESS != 0;
+    let name = match crate::icloud::placeholder_name(&name) {
+        Some(real) => {
+            size = crate::icloud::placeholder_size(&dir.join(&name)).unwrap_or(size);
+            dataless = true;
+            real.to_owned()
+        }
+        None => name,
+    };
     let hidden = name.starts_with('.') || flags & libc::UF_HIDDEN != 0;
     let package = kind == EntryKind::Directory
         && (fndrinfo.is_some_and(|fi| u16::from_be_bytes([fi[8], fi[9]]) & HAS_BUNDLE != 0)
@@ -257,6 +270,7 @@ fn parse_entry(record: &[u8]) -> Option<Entry> {
         added,
         hidden,
         package,
+        dataless,
         file_id,
         children,
     })
@@ -349,6 +363,27 @@ mod tests {
                 modified
             );
         }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_evicted_file_is_listed_under_the_name_it_stands_in_for() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-icloud-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+             <key>NSURLNameKey</key><string>report.pdf</string>\
+             <key>NSURLFileSizeKey</key><integer>4096</integer></dict></plist>";
+        fs::write(dir.join(".report.pdf.icloud"), plist).unwrap();
+
+        let entries = list_dir(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.name, "report.pdf");
+        assert!(entry.dataless);
+        assert!(!entry.hidden);
+        assert_eq!(entry.size, 4096);
 
         fs::remove_dir_all(&dir).unwrap();
     }
