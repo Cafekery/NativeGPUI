@@ -249,6 +249,7 @@ mod tests {
             added: None,
             hidden: false,
             package: false,
+            dataless: false,
             file_id: 0,
             children: None,
         }

@@ -26,6 +26,8 @@ pub struct Entry {
     pub hidden: bool,
     /// A directory Finder shows as a file: an app, a bundle, a document package.
     pub package: bool,
+    /// Evicted from this Mac: iCloud holds the data and Finder badges the row with a cloud.
+    pub dataless: bool,
     /// The volume's file id (inode), stable across renames; 0 when unknown, as it is for an
     /// entry the index answered from memory.
     pub file_id: u64,
