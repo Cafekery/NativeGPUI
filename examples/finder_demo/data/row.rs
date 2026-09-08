@@ -13,7 +13,7 @@ use native_gpui::tokens::{FileType, has_custom_icon};
 use super::face::{Face, face_of};
 use super::format::{byte_string, reference_seconds};
 use super::paths::{intern, intern_path, join};
-use super::volumes::special;
+use super::volumes::{special, volume_at};
 
 #[derive(Clone)]
 pub(crate) struct Line {
@@ -167,8 +167,37 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
     rows
 }
 
+/// A mounted volume, which is the entry of no listing the demo reads: the boot volume is under
+/// no folder at all, and the rest wear a name the mount point need not carry.
+fn volume_row(id: &'static str) -> Option<Row> {
+    let volume = volume_at(id)?;
+    let meta = std::fs::metadata(id).ok()?;
+    Some(Row {
+        name: volume.name.into(),
+        display: volume.name.into(),
+        path: id.into(),
+        size: byte_string(volume.capacity).into(),
+        bytes: volume.capacity,
+        modified_at: meta.modified().ok().map_or(0., reference_seconds),
+        created_at: meta.created().ok().map_or(0., reference_seconds),
+        kind: "Volume".into(),
+        face: Face::Volume,
+        hidden: false,
+        opens: Some(id),
+        discloses: true,
+        artwork: Some(FileType::Path(id)),
+    })
+}
+
 /// One line for the item at `id`, for the menus that act on a folder rather than on a row.
 pub(crate) fn path_line(id: &'static str) -> Option<Line> {
+    if let Some(row) = volume_row(id) {
+        return Some(Line {
+            key: row.path.clone(),
+            row: Arc::new(row),
+            depth: 0,
+        });
+    }
     let path = Path::new(id);
     let dir = path.parent().map_or("/", intern_path);
     let name = path.file_name()?.to_string_lossy().into_owned();

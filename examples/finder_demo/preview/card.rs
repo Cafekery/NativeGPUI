@@ -17,7 +17,7 @@ use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
 use finder_fs::meta::Meta;
 
-use crate::data::{Face, Line, Row, byte_string, stamp};
+use crate::data::{Face, Line, Row, byte_string, stamp, volume_at};
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
@@ -176,10 +176,13 @@ fn info_rows(
         _ => meta.unwrap_or(&none),
     };
     let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}\u{d7}{h}"));
-    let mut all: Vec<(&'static str, SharedString, bool)> = vec![
-        ("Created", stamp(row.created_at), false),
-        ("Modified", stamp(row.modified_at), false),
-    ];
+    let mut all: Vec<(&'static str, SharedString, bool)> = Vec::new();
+    if let Some(volume) = volume_at(&row.path) {
+        all.push(("Capacity", byte_string(volume.capacity).into(), false));
+        all.push(("Available", byte_string(volume.available).into(), false));
+    }
+    all.push(("Created", stamp(row.created_at), false));
+    all.push(("Modified", stamp(row.modified_at), false));
     let mut add = |label, value: Option<SharedString>, under_more| {
         all.extend(value.map(|value| (label, value, under_more)));
     };
