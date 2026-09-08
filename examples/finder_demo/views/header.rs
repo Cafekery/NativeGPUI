@@ -159,7 +159,7 @@ fn cell_body(
                 .right(px(SORT_INSET))
                 .top(px(SORT_TOP))
                 .child(
-                    native_symbol(sort_id, arrow, 9., FontWeight::MEDIUM)
+                    native_symbol(sort_id, arrow, 9., FontWeight::NORMAL)
                         .tint(SystemColor::HeaderText),
                 ),
         );
@@ -316,7 +316,6 @@ impl FinderDemo {
         dragged: Option<Column>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let last = self.list_columns.len().saturating_sub(1);
         let column = match index {
             Some(index) => self.list_columns[index].column,
             None => Column::Name,
@@ -342,21 +341,15 @@ impl FinderDemo {
         if dragged == Some(column) {
             cell = cell.child(overlay(palette.surface).child(overlay(wash)));
         }
-        let interior = match index {
-            Some(index) => index < last,
-            None => true,
-        };
-        if interior {
-            cell = cell.child(
-                div()
-                    .absolute()
-                    .right_0()
-                    .top(px(SEP_TOP))
-                    .w(px(1.))
-                    .h(px(SEP_H))
-                    .child(native_rule(("ng.finder.header.sep", slot))),
-            );
-        }
+        cell = cell.child(
+            div()
+                .absolute()
+                .right_0()
+                .top(px(SEP_TOP))
+                .w(px(1.))
+                .h(px(SEP_H))
+                .child(native_rule(("ng.finder.header.sep", slot))),
+        );
         let with_menu = |cell: AnyElement| {
             menus::attach(
                 ("ng.finder.header.menu", slot),
