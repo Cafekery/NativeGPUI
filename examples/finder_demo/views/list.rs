@@ -39,6 +39,9 @@ const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
 
+/// The cloud Finder puts at the trailing edge of an evicted item's name.
+const CLOUD_ART: f32 = 13.;
+
 const PILL_INSET: f32 = 10.;
 const PILL_PAD_X: f32 = 8.;
 const PILL_PAD_Y: f32 = 3.;
@@ -381,6 +384,17 @@ fn name_cell(
         .and_then(|carried| tag_dots(carried))
     {
         name = name.child(div().ml(px(TAG_DOTS_GAP)).child(dots));
+    }
+    if line.row.dataless {
+        name = name.child(div().flex_1());
+        if let Some(cloud) = small_glyph(
+            "icloud",
+            CLOUD_ART,
+            FontWeight::NORMAL,
+            SystemColor::SecondaryLabel,
+        ) {
+            name = name.child(div().pr(px(CELL_TRAIL)).child(cloud));
+        }
     }
     name
 }

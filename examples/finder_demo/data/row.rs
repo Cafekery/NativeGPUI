@@ -51,6 +51,8 @@ pub(crate) struct Row {
     /// Whether the list can disclose it in place. Finder gives an alias no triangle, however
     /// its target opens.
     pub(crate) discloses: bool,
+    /// Evicted to iCloud: Finder badges the row with a cloud and downloads it when it opens.
+    pub(crate) dataless: bool,
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
@@ -122,6 +124,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
             _ => entry.is_dir().then(|| intern(&path)),
         },
         discloses: entry.is_dir(),
+        dataless: entry.dataless,
         artwork: artwork_of(entry, &path, &kind.uti, index),
         path: path.into(),
     }
@@ -197,8 +200,28 @@ fn volume_row(id: &'static str) -> Option<Row> {
         hidden: false,
         opens: Some(id),
         discloses: true,
+        dataless: false,
         artwork: Some(FileType::Path(id)),
     })
+}
+
+/// iCloud Drive's app folders, which Finder lists there and the directory does not hold: each
+/// one is an app's own container, under the name the app published it with.
+pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
+    finder_fs::icloud::app_folders()
+        .into_iter()
+        .filter_map(|folder| {
+            let dir = intern_path(folder.documents.parent()?);
+            let entry = finder_fs::list::list_dir(Path::new(dir))
+                .ok()?
+                .into_iter()
+                .find(|entry| entry.name == "Documents")?;
+            let mut row = row_of(dir, &entry, index);
+            row.name = folder.name.clone().into();
+            row.display = folder.name.into();
+            Some(Arc::new(row))
+        })
+        .collect()
 }
 
 /// One line for the item at `id`, for the menus that act on a folder rather than on a row.

@@ -235,6 +235,11 @@ impl FinderDemo {
                 mail.done = true;
                 return;
             }
+            if finder_fs::icloud::is_drive(dir) {
+                let apps = data::icloud_rows(index);
+                all.extend(apps.iter().cloned());
+                post(apps);
+            }
             sort(&mut all);
             let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
             let mut mail = filling.lock().unwrap();
