@@ -31,22 +31,32 @@ impl FinderDemo {
     pub(crate) fn disclose_selected(&mut self, open: bool, deep: bool) {
         let lines = self.lines(true);
         let chosen = self.selected.snapshot();
-        let cursor = self.cursor.clone().filter(|_| chosen.is_empty());
-        let picked = |line: &Line| match &cursor {
-            Some(cursor) => *cursor == line.key,
-            None => chosen.contains(&line.key),
+        let one = match chosen.len() {
+            0 => self.cursor.clone(),
+            1 => chosen.iter().next().cloned(),
+            _ => None,
         };
+        // One row named on its own is found by its key: asking every row whether it discloses
+        // reaches the `Row` behind each of them, which a listing this long cannot afford.
+        let only = one
+            .as_ref()
+            .and_then(|key| lines.iter().position(|line| &line.key == key));
         let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
         let mut edits: Vec<Edit> = Vec::new();
-        for (at, line) in lines.iter().enumerate() {
-            let Some(into) = line.row.opens.filter(|_| line.row.discloses) else {
-                continue;
-            };
-            if !picked(line) {
-                continue;
+        let mut take = |at: usize, line: &Line| {
+            if let Some(into) = line.row.opens.filter(|_| line.row.discloses) {
+                folders.push((line.key.clone(), into));
+                edits.push((at, line.key.clone(), open.then_some(into)));
             }
-            folders.push((line.key.clone(), into));
-            edits.push((at, line.key.clone(), open.then_some(into)));
+        };
+        if let Some(at) = only {
+            take(at, &lines[at]);
+        } else if one.is_none() {
+            for (at, line) in lines.iter().enumerate() {
+                if line.row.opens.is_some() && chosen.contains(&line.key) {
+                    take(at, line);
+                }
+            }
         }
         let expandable = folders
             .iter()
@@ -61,13 +71,9 @@ impl FinderDemo {
         if open {
             return;
         }
-        let mut only = lines.iter().enumerate().filter(|(_, line)| picked(line));
-        let Some((index, _)) = only.next() else {
+        let Some(index) = only else {
             return;
         };
-        if only.next().is_some() {
-            return;
-        }
         let depth = lines[index].depth;
         if depth == 0 {
             return;
