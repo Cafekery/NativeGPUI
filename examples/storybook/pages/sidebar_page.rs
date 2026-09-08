@@ -87,6 +87,7 @@ impl State {
             row_size: ROW_SIZES[self.row_size].1,
             align: ALIGNS[self.align].1,
             adopt_below_layer: SidebarOptions::default().adopt_below_layer,
+            content_min_thickness: SidebarOptions::default().content_min_thickness,
             backdrop: BACKDROPS[self.backdrop].1,
         }
     }
