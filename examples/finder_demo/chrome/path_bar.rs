@@ -6,6 +6,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{place_art, small_glyph};
+use crate::chrome::surface::BAR_TINT;
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
@@ -119,6 +120,7 @@ impl FinderDemo {
             .h(px(PATH_H))
             .flex_none()
             .relative()
+            .bg(BAR_TINT)
             .child(
                 div()
                     .absolute()
