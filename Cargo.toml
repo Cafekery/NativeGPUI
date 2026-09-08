@@ -68,4 +68,4 @@ lto = false
 incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "b7dab9cff29ba3960d5759f565357cb631af8049" }
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "56406e5ce0700393483e2e57e40e46d3f2fc87c7" }
