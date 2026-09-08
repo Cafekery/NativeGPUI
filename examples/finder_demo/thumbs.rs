@@ -31,6 +31,8 @@ thread_local! {
     /// The largest raster landed per file, drawn scaled while a new size is generated.
     static LARGEST: RefCell<Landed> = RefCell::new(HashMap::new());
     static DRAWN: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
+    /// What came back empty, and when it may be asked for again.
+    static RETRY: RefCell<HashMap<Thumb, (u32, Instant)>> = RefCell::new(HashMap::new());
     static FRAMES: Cell<u64> = const { Cell::new(0) };
     static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
 }
@@ -40,6 +42,8 @@ static DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static LANDED: Mutex<Vec<(Thumb, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
 
 const SWEEP: Duration = Duration::from_millis(250);
+const RETRY_AFTER: Duration = Duration::from_millis(250);
+const RETRIES: u32 = 5;
 
 pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
@@ -49,12 +53,27 @@ pub(crate) fn thumbnails_landed() -> usize {
 pub(crate) fn collect_thumbnails() {
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
     for (key, image) in landed {
-        // What came back empty stays asked: Quick Look draws nothing for this file, and the
-        // sweep re-arms whatever scrolled away.
-        if let Some(image) = image {
-            keep(&key, &image);
-            THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
-        }
+        let Some(image) = image else {
+            retry(&key);
+            continue;
+        };
+        keep(&key, &image);
+        THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
+    }
+}
+
+/// An empty delivery is a cancelled generation as often as a file with no picture: ask again,
+/// backing off, rather than leaving a row on its type icon for as long as it is on screen.
+fn retry(key: &Thumb) {
+    let tries = RETRY.with(|retry| {
+        let mut retry = retry.borrow_mut();
+        let (tries, again) = retry.entry(key.clone()).or_insert((0, Instant::now()));
+        *tries = (*tries + 1).min(RETRIES + 1);
+        *again = Instant::now() + RETRY_AFTER * (1 << (*tries - 1));
+        *tries
+    });
+    if tries <= RETRIES {
+        ASKED.with(|asked| asked.borrow_mut().remove(key));
     }
 }
 
@@ -162,6 +181,14 @@ pub(crate) fn thumb(
 
 /// One request per file and size, so a frame does not pile waiters behind work in flight.
 fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
+    if RETRY.with(|retry| {
+        retry
+            .borrow()
+            .get(&key)
+            .is_some_and(|(_, again)| Instant::now() < *again)
+    }) {
+        return;
+    }
     if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
         return;
     }
