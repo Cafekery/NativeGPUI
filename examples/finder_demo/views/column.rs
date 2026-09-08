@@ -3,10 +3,9 @@
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
-    UniformListScrollHandle, Window, canvas, div, opaque_grey, prelude::*, px, transparent_black,
-    uniform_list,
+    UniformListScrollHandle, Window, canvas, div, prelude::*, px, transparent_black, uniform_list,
 };
-use native_gpui::tokens::{Appearance, SystemColor, current_appearance, system_color};
+use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
@@ -42,10 +41,7 @@ pub(crate) struct Rung {
 }
 
 fn divider() -> Hsla {
-    match current_appearance() {
-        Appearance::Dark => opaque_grey(0., 1.),
-        Appearance::Light => opaque_grey(230. / 255., 1.),
-    }
+    system_color(SystemColor::Separator)
 }
 
 impl FinderDemo {
