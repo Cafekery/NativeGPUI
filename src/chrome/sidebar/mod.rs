@@ -207,7 +207,7 @@ impl Default for SidebarOptions {
             align: PaneAlign::WindowAligned,
             adopt_below_layer: true,
             reorderable: false,
-            backdrop: Some(Material::WindowBackground),
+            backdrop: Some(Material::Card),
         }
     }
 }
@@ -759,6 +759,7 @@ struct PaneShared {
     gpui: Retained<NSView>,
     align: PaneAlign,
     adopt_below: bool,
+    unbacked: bool,
     intended_gpui: Cell<NSRect>,
     metrics: Cell<SidebarMetrics>,
     published: Cell<SidebarMetrics>,
@@ -906,6 +907,9 @@ define_class!(
 
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, dirty: NSRect) {
+            if !self.ivars().unbacked {
+                return;
+            }
             tokens::WINDOW_BACKGROUND.ns_color().setFill();
             NSBezierPath::fillRect(dirty);
         }
@@ -1183,6 +1187,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         gpui: gpui.clone(),
         align: options.align,
         adopt_below: options.adopt_below_layer,
+        unbacked: options.backdrop.is_none(),
         intended_gpui: Cell::new(NSRect::new(
             NSPoint::new(f64::NAN, f64::NAN),
             NSSize::new(f64::NAN, f64::NAN),

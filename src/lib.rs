@@ -9,10 +9,10 @@
 //!
 //! Two layers: [`Layer::Above`] is a subview of GPUI's Metal view, draws over GPUI content and
 //! takes input; [`Layer::Below`] is a sibling beneath it, so GPUI composites over it and it can
-//! never receive input. A window has one background colour, [`tokens::WINDOW_BACKGROUND`], and
-//! one exception, the sidebar's vibrancy. The value passed to a component must be the state its
-//! `on_change` writes, since a component pushes its value on every paint. Long lists must use
-//! `uniform_list`, so only visible rows place a view.
+//! never receive input. A window is one surface, the sidebar's window-spanning backdrop material;
+//! [`tokens::WINDOW_BACKGROUND`] is what a window without one paints. The value passed to a
+//! component must be the state its `on_change` writes, since a component pushes its value on every
+//! paint. Long lists must use `uniform_list`, so only visible rows place a view.
 //!
 //! A control this crate does not have is an ordinary `Element` whose `request_layout` asks AppKit
 //! for the size and whose `paint` derives the key with [`element_key`], calls

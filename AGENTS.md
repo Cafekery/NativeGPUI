@@ -10,7 +10,7 @@ Behaviour-preserving refactors only. Keep the public surface (`scripts/surface.s
 
 ## One background
 
-A window is two surfaces, never three: the sidebar pane is vibrancy (`SidebarOptions::backdrop`), everything else is one opaque colour, `tokens::WINDOW_BACKGROUND`. With `sidebar::NativeSidebar` the crate paints the content side, band included, so an app paints no background at all; without a sidebar, paint `tokens::window_background()` and nothing else. A `Layer::Below` material shows only where GPUI painted nothing. `NSWindow.backgroundColor` is inert here.
+A window is one surface, not two: `SidebarOptions::backdrop` spans it and both panes show that material, so with `sidebar::NativeSidebar` the crate paints nothing and an app paints no background at all; only a sidebar installed with `backdrop: None`, or a window without a sidebar, is the opaque `tokens::WINDOW_BACKGROUND`. A `Layer::Below` material shows only where GPUI painted nothing. `NSWindow.backgroundColor` is inert here.
 
 ## Two layers
 
