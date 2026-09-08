@@ -13,6 +13,9 @@ use crate::listing::Edit;
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
+/// How long a run of typing stays live, so the next character joins it rather than starts a run.
+const TYPING: Duration = Duration::from_secs(1);
+
 /// How far under a row Option-disclose walks, and how many folders one window holds open.
 const DEEP_LEVELS: usize = 16;
 const DEEP_FOLDERS: usize = 5_000;
@@ -236,7 +239,7 @@ impl FinderDemo {
         let now = Instant::now();
         if self
             .typed_at
-            .is_some_and(|at| now.duration_since(at) > Duration::from_secs(1))
+            .is_some_and(|at| now.duration_since(at) > TYPING)
         {
             self.typed.clear();
             self.type_filter = None;
@@ -263,6 +266,10 @@ impl FinderDemo {
                 }
             }
         }
+    }
+
+    pub(crate) fn typing(&self) -> bool {
+        self.typed_at.is_some_and(|at| at.elapsed() <= TYPING)
     }
 
     pub(crate) fn clear_type_filter(&mut self) {
