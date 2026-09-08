@@ -61,27 +61,55 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
     }
 }
 
-fn place(which: finder_fs::volumes::Standard, glyph: Glyph) -> Option<Row> {
+fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
     let path = finder_fs::volumes::standard(which)?;
     let id = intern_path(&path);
     let title = path.file_name()?.to_string_lossy().into_owned();
-    Some(row(id, title, glyph))
+    Some(row(id, title, glyph_of(&path)))
+}
+
+/// The glyph Finder gives a folder it knows by name; every other folder wears a plain one, a
+/// custom icon and a package included.
+fn glyph_of(path: &std::path::Path) -> Glyph {
+    use finder_fs::volumes::Standard::*;
+    let standard = [
+        (Applications, Glyph::Artwork("SidebarApplicationsFolder")),
+        (Desktop, Glyph::Symbol("menubar.dock.rectangle")),
+        (Documents, Glyph::Symbol("doc")),
+        (Downloads, Glyph::Symbol("arrow.down.circle")),
+        (Home, Glyph::Symbol("house")),
+        (Movies, Glyph::Symbol("film")),
+        (Music, Glyph::Artwork("SidebarMusicFolder")),
+        (Pictures, Glyph::Symbol("photo")),
+    ];
+    for (which, glyph) in standard {
+        if finder_fs::volumes::standard(which).is_some_and(|it| it == path) {
+            return glyph;
+        }
+    }
+    let home = finder_fs::volumes::standard(Home).unwrap_or_default();
+    let in_home = |leaf: &str| path == home.join(leaf);
+    match path.to_string_lossy().as_ref() {
+        "/Applications" => Glyph::Artwork("SidebarApplicationsFolder"),
+        "/Applications/Utilities" => Glyph::Symbol("wrench.and.screwdriver.fill"),
+        "/Library" | "/System/Library" => Glyph::Symbol("building.classical.columns"),
+        "/Users" => Glyph::Symbol("person.crop.circle"),
+        _ if in_home("Developer") => Glyph::Symbol("hammer"),
+        _ if in_home("Public") => Glyph::Symbol("figure.walk.diamond"),
+        _ if in_home("Library") => Glyph::Symbol("building.classical.columns"),
+        _ if in_home("Applications") => Glyph::Artwork("SidebarApplicationsFolder"),
+        _ => Glyph::Symbol("folder"),
+    }
 }
 
 /// The sidebar as this Mac has it: the standard folders, every mounted volume, the user's tags.
 pub(crate) fn groups() -> Vec<Group> {
     use finder_fs::volumes::Standard::*;
 
-    let favourites = [
-        (Applications, Glyph::Artwork("SidebarApplicationsFolder")),
-        (Desktop, Glyph::Symbol("menubar.dock.rectangle")),
-        (Documents, Glyph::Symbol("doc")),
-        (Downloads, Glyph::Symbol("arrow.down.circle")),
-        (Home, Glyph::Symbol("house")),
-    ]
-    .into_iter()
-    .filter_map(|(which, glyph)| place(which, glyph))
-    .collect();
+    let favourites = [Applications, Desktop, Documents, Downloads, Home]
+        .into_iter()
+        .filter_map(place)
+        .collect();
 
     let mut locations = Vec::new();
     if let Some(home) = finder_fs::volumes::standard(Home) {
@@ -159,7 +187,7 @@ pub(crate) fn groups() -> Vec<Group> {
                 .to_string_lossy();
             group
                 .rows
-                .push(row(id, title.into_owned(), Glyph::Symbol("folder")));
+                .push(row(id, title.into_owned(), glyph_of(&path)));
         }
     }
     groups
