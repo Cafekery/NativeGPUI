@@ -119,7 +119,6 @@ impl FinderDemo {
             .h(px(PATH_H))
             .flex_none()
             .relative()
-            .bg(palette.surface)
             .child(
                 div()
                     .absolute()

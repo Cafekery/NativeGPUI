@@ -255,7 +255,6 @@ impl FinderDemo {
         // The path bar takes height from the list, not from the pane, which runs to the corner.
         let foot = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
-        let opaque = matches!(self.view, ICON_VIEW | LIST_VIEW | COLUMN_VIEW);
         let mut surface = div()
             .absolute()
             .left_0()
@@ -265,7 +264,6 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when(opaque, |surface| surface.bg(palette.surface))
             .when(!banded && self.view != ICON_VIEW, |column| {
                 column.border_t_1().border_color(palette.separator)
             });
