@@ -1,8 +1,9 @@
 //! The small element helpers every view shares.
 
 use gpui::{
-    App, ClickEvent, ElementId, FontWeight, IntoElement, MouseDownEvent, Pixels, ScrollHandle,
-    SharedString, Styled, TextRun, WeakEntity, Window, hsla, point,
+    App, ClickEvent, Div, ElementId, FontWeight, Hsla, IntoElement, MouseDownEvent, Pixels,
+    ScrollHandle, SharedString, Styled, TextRun, WeakEntity, Window, div, hsla, point, prelude::*,
+    px,
 };
 use native_gpui::tokens;
 use native_gpui::{NativeScroller, native_scroller};
@@ -30,6 +31,41 @@ pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: P
             .shape_line(text, size, &[run], None)
             .width,
     )
+}
+
+/// Finder strokes two points of the row a contextual menu is open on.
+const RING_W: f32 = 2.;
+/// Over the selection's own fill the stroke turns white and steps a point in, so a rim of the
+/// fill stays outside it.
+const RING_INSET: f32 = 1.;
+
+/// The outline Finder draws on the row a menu is open on: the selection pill's shape, stroked
+/// rather than filled. `run` is `(joins above, joins below)`, so a block of selected rows is one
+/// ring; `inside` is whether it lands on the emphasized fill.
+pub(crate) fn menu_ring(
+    colour: Hsla,
+    pane_inset: f32,
+    radius: f32,
+    run: (bool, bool),
+    inside: bool,
+) -> Div {
+    let step = if inside { RING_INSET } else { 0. };
+    let (above, below) = run;
+    div()
+        .absolute()
+        .left(px(pane_inset + step))
+        .right(px(pane_inset + step))
+        .top(px(if above { 0. } else { step }))
+        .bottom(px(if below { 0. } else { step }))
+        .border_l(px(RING_W))
+        .border_r(px(RING_W))
+        .border_color(colour)
+        .when(!above, |ring| {
+            ring.border_t(px(RING_W)).rounded_t(px(radius - step))
+        })
+        .when(!below, |ring| {
+            ring.border_b(px(RING_W)).rounded_b(px(radius - step))
+        })
 }
 
 /// `(extend, toggle, twice)`: Shift, Cmd and a double click.

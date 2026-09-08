@@ -778,6 +778,7 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         build: None,
         origin: MenuOrigin::default(),
         on_select: None,
+        on_close: None,
     }
 }
 /// What a context menu hands back: the index of the row the user picked.
@@ -786,6 +787,9 @@ type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// A menu built where the click landed, in the element's own coordinates.
 type EntryBuilder = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry>>;
 
+/// What a closing menu hands back: nothing but the moment, picked or dismissed.
+type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
 pub struct NativeContextMenu {
     id: ElementId,
     child: AnyElement,
@@ -793,6 +797,7 @@ pub struct NativeContextMenu {
     build: Option<EntryBuilder>,
     origin: MenuOrigin,
     on_select: Option<SelectHandler>,
+    on_close: Option<CloseHandler>,
 }
 
 impl NativeContextMenu {
@@ -818,6 +823,13 @@ impl NativeContextMenu {
 
     pub fn origin(mut self, origin: MenuOrigin) -> Self {
         self.origin = origin;
+        self
+    }
+
+    /// Runs the moment the menu goes away, picked or dismissed: what the click marked, such as
+    /// the row Finder outlines while its menu is up, stops drawing here.
+    pub fn on_close(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_close = Some(Rc::new(handler));
         self
     }
 
@@ -884,6 +896,7 @@ impl Element for NativeContextMenu {
 
         if let Some(handler) = self.on_select.take() {
             let build = self.build.take();
+            let closed = self.on_close.take();
             if !self.entries.is_empty() || build.is_some() {
                 let entries = std::mem::take(&mut self.entries);
                 let origin = self.origin;
@@ -917,6 +930,7 @@ impl Element for NativeContextMenu {
                     }
                     let anchor = anchor.clone();
                     let handler = handler.clone();
+                    let closed = closed.clone();
                     SHOWING.set(true);
                     // Deferred: the tracking loop services GPUI's display link, and entering it
                     // under GPUI's `App` borrow panics on the next frame.
@@ -924,6 +938,9 @@ impl Element for NativeContextMenu {
                         .spawn(async move |cx| {
                             let picked = show_menu(&anchor, location, &entries);
                             SHOWING.set(false);
+                            if let Some(closed) = closed {
+                                let _ = cx.update(|window, app| closed(window, app));
+                            }
                             let Some(index) = picked else {
                                 return;
                             };

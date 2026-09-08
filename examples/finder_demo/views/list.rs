@@ -18,7 +18,7 @@ use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::tags::tag_dots;
-use crate::ui::{axis_locked, pick_on_click, pick_on_press, rename_field, text_width};
+use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
 /// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
@@ -73,6 +73,9 @@ struct Marks {
     expanded: Arc<HashSet<SharedString>>,
     tags: HashMap<SharedString, Vec<usize>>,
     renaming: Option<SharedString>,
+    /// The row an open contextual menu belongs to, which the ring traces along with the rest of
+    /// what the menu would act on.
+    menu_row: Option<SharedString>,
     cursor: Option<SharedString>,
     ql_icon: Anchor,
     /// The folder the drag rests on this frame, whose highlight draws over the stripe.
@@ -151,6 +154,7 @@ impl FinderDemo {
             expanded: self.expanded.snapshot(),
             tags: self.tags.clone(),
             renaming: self.renaming.clone(),
+            menu_row: self.menu_row.clone(),
             cursor: self.cursor.clone(),
             ql_icon: self.ql_icon.clone(),
             dropping: self.drop_row().cloned(),
@@ -451,6 +455,10 @@ fn row(
     this: WeakEntity<FinderDemo>,
 ) -> AnyElement {
     let is_selected = marks.selected.contains(&line.key);
+    // The ring traces what the menu acts on: the row it was raised on, or the whole selection
+    // when that row is one of the selected.
+    let aimed =
+        |row: &SharedString| *row == line.key || (is_selected && marks.selected.contains(row));
     let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
         match marks.springing.as_ref() == Some(&line.key) {
             true => flashed(look.selection),
@@ -486,6 +494,21 @@ fn row(
         .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
         .children(fill.map(|(fill, run)| pill(fill, run)))
         .children(dropping.map(|fill| pill(fill, Run::default())))
+        .children(marks.menu_row.as_ref().filter(|row| aimed(row)).map(|_| {
+            let over = is_selected && look.focused;
+            let colour = if over {
+                look.selection_text
+            } else {
+                look.selection
+            };
+            menu_ring(
+                colour,
+                PANE_INSET,
+                ROW_PILL_RADIUS,
+                (run.above, run.join.is_some()),
+                over,
+            )
+        }))
         .child(name_cell(line, at, look, marks, lit, this.clone()));
     for spec in &look.columns {
         row = row.child(detail_cell(spec, line, look, detail));
