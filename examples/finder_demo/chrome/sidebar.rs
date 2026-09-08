@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use gpui::{SharedString, Window, prelude::*, px};
+use native_gpui::Material;
 use native_gpui::sidebar::{
     NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
     sidebar_group, sidebar_item,
 };
-use native_gpui::{Material, MenuEntry};
 
 use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, volume_roots};
@@ -144,6 +144,10 @@ pub(crate) fn groups() -> Vec<Group> {
         },
     ];
     for group in &mut groups {
+        let removed = prefs::removed(group.id);
+        group
+            .rows
+            .retain(|row| !removed.iter().any(|gone| gone == row.id));
         for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
             let id = intern_path(&path);
             if !path.is_dir() || group.rows.iter().any(|row| row.id == id) {
@@ -161,69 +165,11 @@ pub(crate) fn groups() -> Vec<Group> {
     groups
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Act {
-    Nothing,
-    Remove,
-}
-
-/// Finder's menu on a sidebar tag row: what it opens, what it forgets, and the colour it wears.
-fn tag_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
-    let name = id.strip_prefix("tag:").filter(|name| !name.is_empty())?;
-    let mut acts = vec![Act::Nothing; 7];
-    acts[2] = Act::Remove;
-    acts.extend(std::iter::repeat_n(
-        Act::Nothing,
-        1 + crate::tags::tags().len(),
-    ));
-    let entries = [
-        MenuEntry::item("Open in New Tab")
-            .symbol("arrow.up.forward.app")
-            .disabled(),
-        MenuEntry::separator(),
-        MenuEntry::item("Remove from Sidebar").symbol("xmark"),
-        MenuEntry::item(format!("Delete Tag \u{201c}{name}\u{201d}\u{2026}"))
-            .symbol("xmark")
-            .disabled(),
-        MenuEntry::separator(),
-        MenuEntry::item(format!("Rename \u{201c}{name}\u{201d}"))
-            .symbol("pencil")
-            .disabled(),
-        MenuEntry::separator(),
-    ]
-    .into_iter()
-    .chain([MenuEntry::item("No Color").disabled()])
-    .chain(crate::tags::tags().iter().map(|tag| {
-        let entry = MenuEntry::item(tag.name.clone()).disabled();
-        match finder_color_rgb(tag.color) {
-            Some(color) => entry.dot(color),
-            None => entry,
-        }
-    }))
-    .collect();
-    Some((acts, entries))
-}
-
-/// Finder's menu on a row the user pinned: what it opens, and the pin it forgets.
-fn pinned_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
-    let pinned = [FAVOURITES, LOCATIONS]
+/// A row the user dragged in: the only row of a Mac's sidebar Finder lets you rename.
+pub(crate) fn pinned(id: &str) -> bool {
+    [FAVOURITES, LOCATIONS]
         .iter()
-        .any(|group| prefs::pinned(group).iter().any(|kept| kept == id.as_ref()));
-    if !pinned {
-        return None;
-    }
-    let entries = vec![
-        MenuEntry::item("Open in New Tab")
-            .symbol("arrow.up.forward.app")
-            .disabled(),
-        MenuEntry::separator(),
-        MenuEntry::item("Remove from Sidebar").symbol("xmark"),
-    ];
-    Some((vec![Act::Nothing, Act::Nothing, Act::Remove], entries))
-}
-
-fn row_menu(id: &SharedString) -> Option<(Vec<Act>, Vec<MenuEntry>)> {
-    tag_menu(id).or_else(|| pinned_menu(id))
+        .any(|group| prefs::pinned(group).iter().any(|kept| kept == id))
 }
 
 /// Each group's rows in the order the user left them last launch, with anything new after them.
@@ -337,15 +283,14 @@ impl FinderDemo {
         }));
         let demo = cx.entity().downgrade();
         sidebar.on_menu(
-            |id| row_menu(id).map(|menu| menu.1).unwrap_or_default(),
-            move |id, index, _, cx| {
-                if row_menu(id).is_none_or(|menu| menu.0.get(index) != Some(&Act::Remove)) {
+            |id| crate::menus::sidebar(id).entries,
+            move |id, index, window, cx| {
+                let picked = crate::menus::sidebar(id).acts.get(index).copied();
+                let Some(act) = picked else {
                     return;
-                }
-                let id = id.clone();
+                };
                 demo.update(cx, |this: &mut FinderDemo, cx| {
-                    this.remove_from_sidebar(&id);
-                    cx.notify();
+                    this.run_menu(act, window, cx);
                 })
                 .ok();
             },
@@ -358,20 +303,30 @@ impl FinderDemo {
         self.warm_icons();
     }
 
-    fn remove_from_sidebar(&mut self, id: &SharedString) {
+    pub(crate) fn remove_from_sidebar(&mut self, id: &str) {
         for group in [FAVOURITES, LOCATIONS] {
             let pinned = prefs::pinned(group);
             let keep: Vec<&str> = pinned
                 .iter()
                 .map(String::as_str)
-                .filter(|kept| *kept != id.as_ref())
+                .filter(|kept| *kept != id)
                 .collect();
             if keep.len() != pinned.len() {
                 prefs::set_pinned(group, &keep);
             }
         }
+        if let Some(group) = self
+            .sidebar_groups
+            .iter()
+            .find(|group| group.rows.iter().any(|row| row.id == id))
+        {
+            let mut removed = prefs::removed(group.id);
+            removed.push(id.to_owned());
+            let keep: Vec<&str> = removed.iter().map(String::as_str).collect();
+            prefs::set_removed(group.id, &keep);
+        }
         for rows in &mut self.sidebar_rows {
-            rows.retain(|row| *row != id.as_ref());
+            rows.retain(|row| *row != id);
         }
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
@@ -472,11 +427,10 @@ impl FinderDemo {
         prefs::set_sidebar_rows(self.sidebar_groups[group].id, &self.sidebar_rows[group]);
     }
 
-    fn eject(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        let path = std::path::PathBuf::from(id.as_ref());
-        let url = objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(
-            id.as_ref(),
-        ));
+    pub(crate) fn eject(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let path = std::path::PathBuf::from(id);
+        let url =
+            objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(id));
         if let Err(error) =
             objc2_app_kit::NSWorkspace::sharedWorkspace().unmountAndEjectDeviceAtURL_error(&url)
         {
@@ -485,7 +439,7 @@ impl FinderDemo {
         }
         let left = volume_roots().contains(&intern_path(&path));
         self.refresh_sidebar();
-        if left && self.here().starts_with(id.as_ref()) {
+        if left && self.here().starts_with(id) {
             if let Some(home) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home) {
                 self.go(intern_path(&home), window, cx);
             }

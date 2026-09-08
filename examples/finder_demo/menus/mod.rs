@@ -15,7 +15,7 @@ pub(crate) use self::bar::{
     Back, CopyNames, Cut, Forward, MoveHere, NewTab, Paste, SelectAll, ZoomIn, ZoomOut, go_rows,
     install, remember,
 };
-pub(crate) use self::context::{background, crumb, header, item};
+pub(crate) use self::context::{background, crumb, header, item, sidebar};
 use crate::app::FinderDemo;
 use crate::data::Line;
 

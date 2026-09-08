@@ -120,6 +120,15 @@ pub(crate) fn set_pinned(group: &str, paths: &[&str]) {
     write_list(&format!("pinned.{group}"), paths);
 }
 
+/// The rows the user took out of a sidebar group, which this Mac would otherwise keep offering.
+pub(crate) fn removed(group: &str) -> Vec<String> {
+    read_list(&format!("removed.{group}"))
+}
+
+pub(crate) fn set_removed(group: &str, ids: &[&str]) {
+    write_list(&format!("removed.{group}"), ids);
+}
+
 pub(crate) fn view() -> Option<usize> {
     read(VIEW).map(|v| v as usize)
 }
