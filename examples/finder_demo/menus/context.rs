@@ -21,7 +21,21 @@ thread_local! {
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-const OPTIONAL: [Column; 3] = [Column::Modified, Column::Size, Column::Kind];
+/// Finder's column list for a local folder, in its order; the ones this demo has no column for
+/// show the way Finder shows the ones it cannot fill.
+const COLUMNS: [(&str, Option<Column>); 11] = [
+    ("Date Modified", Some(Column::Modified)),
+    ("Date Created", None),
+    ("Date Last Opened", None),
+    ("Date Added", None),
+    ("Size", Some(Column::Size)),
+    ("Kind", Some(Column::Kind)),
+    ("Last Modified By", None),
+    ("Shared By", None),
+    ("Version", None),
+    ("Comments", None),
+    ("Tags", None),
+];
 
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];
 
@@ -258,12 +272,14 @@ fn holds(path: &Path) -> bool {
 /// The list header's menu: the optional columns, checked when they are shown.
 pub(crate) fn header(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
-    for column in OPTIONAL {
-        let shown = demo.list_columns.iter().any(|spec| spec.column == column);
-        menu.item(
-            MenuEntry::item(column_title(column)).checked(shown),
-            Act::Toggle(column),
-        );
+    for (title, column) in COLUMNS {
+        match column {
+            Some(column) => {
+                let shown = demo.list_columns.iter().any(|spec| spec.column == column);
+                menu.item(MenuEntry::item(title).checked(shown), Act::Toggle(column));
+            }
+            None => menu.item(MenuEntry::item(title).disabled(), Act::Nothing),
+        }
     }
     menu
 }
