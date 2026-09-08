@@ -29,6 +29,8 @@ pub struct Entry {
     /// The volume's file id (inode), stable across renames; 0 when unknown, as it is for an
     /// entry the index answered from memory.
     pub file_id: u64,
+    /// How many entries a directory holds, hidden ones included, where the volume counts them.
+    pub children: Option<u32>,
 }
 
 impl Entry {

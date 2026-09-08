@@ -250,6 +250,7 @@ mod tests {
             hidden: false,
             package: false,
             file_id: 0,
+            children: None,
         }
     }
 

@@ -17,20 +17,22 @@ use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolOb
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceName, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
-    NSAttributedStringNSStringDrawing, NSBitmapFormat, NSBitmapImageRep, NSColor,
-    NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightBlack,
+    NSAttributedStringNSStringDrawing, NSBitmapFormat, NSBitmapImageRep, NSBundleImageExtension,
+    NSColor, NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightBlack,
     NSFontWeightBold, NSFontWeightHeavy, NSFontWeightLight, NSFontWeightMedium,
     NSFontWeightRegular, NSFontWeightSemibold, NSFontWeightThin, NSFontWeightUltraLight,
     NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSImageSymbolScale,
     NSKernAttributeName, NSLigatureAttributeName, NSScreen, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSDictionary, NSDistributedNotificationCenter,
-    NSKeyValueObservingOptions, NSNotification, NSNotificationCenter, NSNumber,
-    NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect, NSSize, NSString, ns_string,
+    MainThreadMarker, NSArray, NSAttributedString, NSBundle, NSDictionary,
+    NSDistributedNotificationCenter, NSKeyValueObservingOptions, NSNotification,
+    NSNotificationCenter, NSNumber, NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect,
+    NSSize, NSString, ns_string,
 };
 
 use crate::bridge::host::ControlSize;
+use crate::chrome::sidebar::CORE_TYPES_BUNDLE;
 use crate::system::color::from_nscolor;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -782,7 +784,7 @@ fn rasterize_symbol(
     let h = ((points.height * scale as f64).round() as usize).max(1);
 
     // A semantic tint resolves at raster time, picking up the ambient appearance if none is set.
-    let rgba = with_appearance(appearance, || draw(&image, points, w, h))?;
+    let rgba = with_appearance(appearance, || draw(&[&image], points, w, h))?;
 
     Some(Symbol {
         image: Arc::new(RenderImage::new(vec![Frame::new(
@@ -798,6 +800,9 @@ fn rasterize_symbol(
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum FileType<'a> {
     Folder,
+    /// A folder holding at least one item the user can see, which Finder draws with a sheet of
+    /// paper between its flaps.
+    FullFolder,
     /// A filename extension without the dot, e.g. `"zip"`.
     Extension(&'a str),
     /// A uniform type identifier, e.g. `"public.plain-text"`.
@@ -810,6 +815,7 @@ impl FileType<'_> {
     fn tag(self) -> String {
         match self {
             FileType::Folder => "uti:public.folder".into(),
+            FileType::FullFolder => "uti:public.folder+full".into(),
             FileType::Uti(uti) => format!("uti:{uti}"),
             FileType::Extension(extension) => format!("ext:{extension}"),
             FileType::Path(path) => format!("path:{path}"),
@@ -919,7 +925,7 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
             let path = NSString::from_str(path);
             unsafe { msg_send![&*workspace, iconForFile: &*path] }
         }
-        FileType::Folder => {
+        FileType::Folder | FileType::FullFolder => {
             let content = ut_type(false, "public.folder")?;
             unsafe { msg_send![&*workspace, iconForContentType: &*content] }
         }
@@ -939,7 +945,12 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
     let w = ((points.width * scale as f64).round() as usize).max(1);
     let h = ((points.height * scale as f64).round() as usize).max(1);
 
-    let rgba = draw(&image, points, w, h)?;
+    let mut stack = vec![image];
+    if kind == FileType::FullFolder {
+        stack.extend(folder_parts(points.width)?);
+    }
+    let layers: Vec<&NSImage> = stack.iter().map(|layer| &**layer).collect();
+    let rgba = draw(&layers, points, w, h)?;
 
     Some(Symbol {
         image: Arc::new(RenderImage::new(vec![Frame::new(
@@ -955,7 +966,24 @@ fn size_of_points(points: NSSize) -> Size<Pixels> {
     size(px(points.width as f32), px(points.height as f32))
 }
 
-pub(crate) fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
+/// The parts the full folder wears over the empty one: the sheet, then the flap that overlaps it.
+/// CoreTypes draws each folder size separately, so the art has to be asked for by size, not scaled.
+fn folder_parts(points: f64) -> Option<[Retained<NSImage>; 2]> {
+    let drawn = [16., 32., 128., 256., 512.];
+    let at = drawn
+        .into_iter()
+        .find(|drawn| *drawn >= points)
+        .unwrap_or(512.) as u32;
+    let bundle = NSBundle::bundleWithPath(&NSString::from_str(CORE_TYPES_BUNDLE))?;
+    let part = |name: &str| {
+        bundle.imageForResource(&NSString::from_str(&format!(
+            "FolderComponent_{name}/image_{at}"
+        )))
+    };
+    Some([part("PaperSheet")?, part("FrontFlap")?])
+}
+
+pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
     let rep = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(),
@@ -979,7 +1007,9 @@ pub(crate) fn draw(image: &NSImage, points: NSSize, w: usize, h: usize) -> Optio
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
-    image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), points));
+    for image in images {
+        image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), points));
+    }
     context.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
 
@@ -1072,6 +1102,23 @@ mod tests {
         let hue = hue.expect("the folder is not a grey document sheet");
         assert!((190.0..215.0).contains(&hue), "folder hue {hue}");
         assert!(share > 0.8, "folder blue covers only {share}");
+    }
+
+    #[test]
+    fn a_full_folder_shows_a_sheet_of_paper() {
+        let paper = |kind| {
+            let icon = file_icon(kind, px(128.)).expect("a declared type has an icon");
+            let bytes = icon.image.as_bytes(0).expect("one frame").to_vec();
+            bytes
+                .chunks_exact(4)
+                .filter(|px| px[3] > 200 && px[..3].iter().all(|c| *c > 240))
+                .count()
+        };
+        assert_eq!(paper(FileType::Folder), 0, "the empty folder shows paper");
+        assert!(
+            paper(FileType::FullFolder) > 0,
+            "the full folder shows none"
+        );
     }
 
     #[test]

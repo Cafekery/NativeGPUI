@@ -54,7 +54,16 @@ pub(crate) struct Row {
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
-fn artwork_of(entry: &Entry, path: &str, uti: &str) -> Option<FileType<'static>> {
+/// Finder's full-folder artwork: a folder the volume counts entries in, and the index — where it
+/// has read the folder — sees a visible one among them.
+fn folder_full(entry: &Entry, path: &str, index: &Index) -> bool {
+    entry.children.is_some_and(|held| held > 0)
+        && index
+            .visible_children(Path::new(path))
+            .is_none_or(|seen| seen > 0)
+}
+
+fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<FileType<'static>> {
     // An alias wears the icon of what it points at, badged; the system draws that for the link.
     if entry.package || entry.kind == EntryKind::Symlink {
         return Some(FileType::Path(intern(path)));
@@ -63,7 +72,10 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str) -> Option<FileType<'static>>
         if special().contains(path) || has_custom_icon(Path::new(path)) {
             return Some(FileType::Path(intern(path)));
         }
-        return Some(FileType::Folder);
+        return Some(match folder_full(entry, path, index) {
+            true => FileType::FullFolder,
+            false => FileType::Folder,
+        });
     }
     Some(match entry.extension() {
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
@@ -110,7 +122,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
             _ => entry.is_dir().then(|| intern(&path)),
         },
         discloses: entry.is_dir(),
-        artwork: artwork_of(entry, &path, &kind.uti),
+        artwork: artwork_of(entry, &path, &kind.uti, index),
         path: path.into(),
     }
 }
