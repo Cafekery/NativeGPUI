@@ -36,19 +36,32 @@ pub(crate) fn attach(
 fn menu_at(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
-    build: impl Fn(&FinderDemo, Point<Pixels>) -> Menu + 'static,
+    build: impl Fn(&mut FinderDemo, Point<Pixels>) -> Menu + 'static,
     child: impl IntoElement,
 ) -> NativeContextMenu {
     let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
     let built = acts.clone();
     let demo = this.clone();
+    let closing = this.clone();
     native_context_menu(id, child)
         .entries_at(move |at, _, cx| {
             let menu = demo
-                .update(cx, |demo: &mut FinderDemo, _| build(demo, at))
+                .update(cx, |demo: &mut FinderDemo, cx| {
+                    let menu = build(demo, at);
+                    cx.notify();
+                    menu
+                })
                 .unwrap_or_default();
             *built.borrow_mut() = menu.acts;
             menu.entries
+        })
+        .on_close(move |_, cx| {
+            closing
+                .update(cx, |demo: &mut FinderDemo, cx| {
+                    demo.menu_row = None;
+                    cx.notify();
+                })
+                .ok();
         })
         .on_select(picks(acts, this))
 }
@@ -61,15 +74,56 @@ pub(crate) fn backdrop(
     menu_at(id, this, |demo, _| background(demo), child)
 }
 
-/// One menu for a whole view, for the row `hit` names.
+/// One menu for a whole view, for the row `hit` names. Finder's list and column views outline
+/// that row while the menu is up and leave the selection alone.
 pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
     hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
     child: impl IntoElement,
 ) -> NativeContextMenu {
-    let build = move |demo: &FinderDemo, at| match hit(demo, at) {
-        Some(line) => item(&demo.selected, &line),
+    row_menu(
+        id,
+        this,
+        hit,
+        |demo, line| demo.menu_row = Some(line.key.clone()),
+        child,
+    )
+}
+
+/// The icon view's menu: Finder selects the tile it was raised on instead of outlining it, and
+/// the tile keeps that selection once the menu is gone.
+pub(crate) fn tiles_menu(
+    id: impl Into<ElementId>,
+    this: WeakEntity<FinderDemo>,
+    hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    row_menu(
+        id,
+        this,
+        hit,
+        |demo, line| {
+            if !demo.selected.contains(&line.key) {
+                demo.pick(line, false, false);
+            }
+        },
+        child,
+    )
+}
+
+fn row_menu(
+    id: impl Into<ElementId>,
+    this: WeakEntity<FinderDemo>,
+    hit: impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + 'static,
+    mark: impl Fn(&mut FinderDemo, &Line) + 'static,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    let build = move |demo: &mut FinderDemo, at| match hit(demo, at) {
+        Some(line) => {
+            mark(demo, &line);
+            item(&demo.selected, &line)
+        }
         None => Menu::default(),
     };
     menu_at(id, this, build, child)

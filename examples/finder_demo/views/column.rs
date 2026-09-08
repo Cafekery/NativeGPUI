@@ -14,7 +14,7 @@ use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed}
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, rename_field, scroller, text_width};
+use crate::ui::{click_kind, menu_ring, rename_field, scroller, text_width};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -159,6 +159,7 @@ impl FinderDemo {
         let resting = self.drop_row().cloned();
         let springing = self.spring_flash().cloned();
         let cursor = self.cursor.clone();
+        let menu_row = self.menu_row.clone();
         let ql_icon = self.ql_icon.clone();
         let chosen = self.selected.snapshot();
         let alone = rung.selected.clone();
@@ -196,6 +197,11 @@ impl FinderDemo {
                         };
                         let joins_above = !dropping && row > 0 && picked(row - 1);
                         let joins_below = !dropping && picked(row + 1);
+                        // The ring traces what the menu acts on: the row it was raised on, or
+                        // the whole selection when that row is one of the selected.
+                        let aimed = menu_row.as_ref().is_some_and(|aim| {
+                            *aim == line.key || (is_selected && chosen.contains(aim))
+                        });
                         let this = this.clone();
                         let clicked = line.clone();
                         let name = div()
@@ -233,6 +239,16 @@ impl FinderDemo {
                                         })
                                         .bg(if dropping { pill } else { fill }),
                                 )
+                            })
+                            .when(aimed, |cell| {
+                                let over = is_selected && emphasized;
+                                cell.child(menu_ring(
+                                    if over { selection_text } else { highlight },
+                                    PILL_INSET,
+                                    PILL_RADIUS,
+                                    (joins_above, joins_below),
+                                    over,
+                                ))
                             })
                             .child(art_at(
                                 row_art(&line.row, ICON, scale, true),

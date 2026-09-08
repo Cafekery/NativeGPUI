@@ -15,7 +15,7 @@ use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
 use crate::dragdrop::{Grabbed, carries, drop_hover};
-use crate::menus::rows_menu;
+use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
 use crate::ui::{pick_on_click, pick_on_press, rename_field};
@@ -508,6 +508,6 @@ impl FinderDemo {
                 })
                 .ok();
             });
-        rows_menu("ng.finder.icons.menu", this_menu, hit, canvas).into_any_element()
+        tiles_menu("ng.finder.icons.menu", this_menu, hit, canvas).into_any_element()
     }
 }

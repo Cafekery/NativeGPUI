@@ -64,6 +64,9 @@ pub(crate) struct FinderDemo {
     pub(crate) cursor: Option<SharedString>,
     pub(crate) anchor: Option<SharedString>,
     pub(crate) renaming: Option<SharedString>,
+    /// The row a contextual menu is open on: Finder outlines it, and the whole selection when the
+    /// row is part of one, until the menu closes.
+    pub(crate) menu_row: Option<SharedString>,
     /// ⌘X's mark: these rows dim until a paste moves them or the mark clears.
     pub(crate) cut: Keys,
     pub(crate) cache: RefCell<Listings>,
@@ -179,6 +182,7 @@ impl FinderDemo {
             cursor: None,
             anchor: None,
             renaming: None,
+            menu_row: None,
             cut: Keys::default(),
             cache: RefCell::default(),
             stats: None,
