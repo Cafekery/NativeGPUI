@@ -9,7 +9,7 @@ use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSEvent, NSEventType, NSWindow, NSWindowDelegate, NSWorkspace};
+use objc2_app_kit::{NSEvent, NSEventType, NSWindow, NSWindowDelegate};
 use objc2_foundation::{
     MainThreadMarker, NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
 };
@@ -18,6 +18,7 @@ use objc2_quick_look_ui::{
 };
 
 use crate::bridge::appkit::gpui_view;
+use crate::system::thumbnails;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum QuickLookKey {
@@ -82,11 +83,14 @@ define_class!(
         fn source_frame(
             &self,
             _panel: Option<&QLPreviewPanel>,
-            _item: Option<&ProtocolObject<dyn QLPreviewItem>>,
+            item: Option<&ProtocolObject<dyn QLPreviewItem>>,
         ) -> NSRect {
-            STATE
-                .with_borrow(|state| state.source)
-                .unwrap_or(NSRect::ZERO)
+            match showing(item) {
+                Some(_) => STATE
+                    .with_borrow(|state| state.source)
+                    .unwrap_or(NSRect::ZERO),
+                None => NSRect::ZERO,
+            }
         }
 
         #[unsafe(method_id(previewPanel:transitionImageForPreviewItem:contentRect:))]
@@ -94,9 +98,9 @@ define_class!(
             &self,
             _panel: Option<&QLPreviewPanel>,
             item: Option<&ProtocolObject<dyn QLPreviewItem>>,
-            _content_rect: *mut NSRect,
+            content_rect: *mut NSRect,
         ) -> Option<Retained<AnyObject>> {
-            icon_of(item)
+            thumbnail_of(item, content_rect)
         }
     }
 );
@@ -107,9 +111,30 @@ fn item_at(index: NSInteger) -> Option<Retained<ProtocolObject<dyn QLPreviewItem
     Some(ProtocolObject::from_retained(url))
 }
 
-fn icon_of(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<Retained<AnyObject>> {
-    let path = unsafe { item?.previewItemURL()?.path()? };
-    let image = NSWorkspace::sharedWorkspace().iconForFile(&path);
+/// The item the app says the panel is showing, so only that one zooms out of a row.
+fn showing(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<PathBuf> {
+    let path = PathBuf::from(unsafe { item?.previewItemURL()?.path()? }.to_string());
+    STATE
+        .with_borrow(|state| state.items.get(state.current) == Some(&path))
+        .then_some(path)
+}
+
+/// The raster the row drew, worn at the size it is drawn at: the picture zooms, not a type icon.
+fn thumbnail_of(
+    item: Option<&ProtocolObject<dyn QLPreviewItem>>,
+    content_rect: *mut NSRect,
+) -> Option<Retained<AnyObject>> {
+    let path = showing(item)?;
+    let source = STATE.with_borrow(|state| state.source)?;
+    let image = thumbnails::cached_image(&path)?;
+    let raster = image.size();
+    let zoom =
+        (source.size.width / raster.width.max(1.)).min(source.size.height / raster.height.max(1.));
+    let size = NSSize::new(raster.width * zoom, raster.height * zoom);
+    image.setSize(size);
+    if !content_rect.is_null() {
+        unsafe { *content_rect = NSRect::new(NSPoint::new(0., 0.), size) };
+    }
     Some(Retained::into_super(Retained::into_super(image)))
 }
 
