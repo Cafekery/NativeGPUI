@@ -562,3 +562,15 @@ fn a_failed_write_leaves_the_snapshot_that_landed() {
     assert_eq!(Index::open(&store).search("late", None, 4).len(), 1);
     let _ = fs::remove_file(&store);
 }
+
+#[test]
+fn visible_children_skips_the_hidden_and_the_unread() {
+    let temp = tree("visible");
+    let root = &temp.0;
+    let index = crawled(root);
+
+    assert_eq!(index.visible_children(root), Some(5));
+    assert_eq!(index.visible_children(&root.join("a/b/c")), Some(1));
+    assert_eq!(index.visible_children(&root.join("locked")), None);
+    assert_eq!(index.visible_children(&root.join("nowhere")), None);
+}

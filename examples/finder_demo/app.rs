@@ -250,6 +250,7 @@ impl FinderDemo {
     pub(crate) fn warm_icons(&self) {
         let kinds = [
             FileType::Folder,
+            FileType::FullFolder,
             FileType::Path("/"),
             FileType::Extension("app"),
         ];

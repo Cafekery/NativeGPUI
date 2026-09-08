@@ -233,7 +233,7 @@ fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
     let h = (fit.height.round() as usize).clamp(1, max_pixels.max(1));
     let points = NSSize::new(w as f64, h as f64);
-    let rgba = tokens::draw(image, points, w, h)?;
+    let rgba = tokens::draw(&[image], points, w, h)?;
     let buf = RgbaImage::from_raw(w as u32, h as u32, tokens::to_bgra_straight(&rgba))?;
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
 }
@@ -332,7 +332,8 @@ mod tests {
         assert_eq!(size.height as u32, u32::from(raster.size(0).height));
 
         let side = size.width as usize;
-        let drawn = tokens::draw(&image, NSSize::new(size.width, size.height), side, side).unwrap();
+        let drawn =
+            tokens::draw(&[&image], NSSize::new(size.width, size.height), side, side).unwrap();
         let raster = raster.as_bytes(0).unwrap();
         // A raster is BGRA, what the image draws is RGBA: the middle pixel is the fill colour.
         let at = (side * side / 2 + side / 2) * 4;

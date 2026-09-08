@@ -594,6 +594,7 @@ impl Tree {
             hidden: node.flags & HIDDEN != 0,
             package: node.flags & PACKAGE != 0,
             file_id: 0,
+            children: (node.state & LISTED != 0).then(|| self.children(id).count() as u32),
         }
     }
 

@@ -104,7 +104,7 @@ pub fn list_dir_batched(
         reserved: 0,
         commonattr: COMMON_ATTRS,
         volattr: 0,
-        dirattr: 0,
+        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
         fileattr: libc::ATTR_FILE_DATALENGTH,
         forkattr: 0,
     };
@@ -167,6 +167,7 @@ fn read_timespec(b: &[u8]) -> SystemTime {
 fn parse_entry(record: &[u8]) -> Option<Entry> {
     let mut p = 4usize;
     let returned_common = u32::from_ne_bytes(record[p..p + 4].try_into().unwrap());
+    let returned_dir = u32::from_ne_bytes(record[p + 8..p + 12].try_into().unwrap());
     let returned_file = u32::from_ne_bytes(record[p + 12..p + 16].try_into().unwrap());
     p += 20;
 
@@ -219,6 +220,13 @@ fn parse_entry(record: &[u8]) -> Option<Entry> {
         added = Some(read_timespec(take(record, &mut p, 16)));
     }
 
+    let mut children = None;
+    if returned_dir & libc::ATTR_DIR_ENTRYCOUNT != 0 {
+        children = Some(u32::from_ne_bytes(
+            take(record, &mut p, 4).try_into().unwrap(),
+        ));
+    }
+
     let mut size = 0u64;
     if returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
         size = u64::from_ne_bytes(take(record, &mut p, 8).try_into().unwrap());
@@ -250,6 +258,7 @@ fn parse_entry(record: &[u8]) -> Option<Entry> {
         hidden,
         package,
         file_id,
+        children,
     })
 }
 
@@ -273,6 +282,8 @@ mod tests {
         fs::write(dir.join(".dotfile"), b"x").unwrap();
         fs::write(dir.join("hidden-flag"), b"x").unwrap();
         fs::create_dir(dir.join("subdir")).unwrap();
+        fs::create_dir(dir.join("stuffed")).unwrap();
+        fs::write(dir.join("stuffed/only-child"), b"x").unwrap();
         fs::create_dir(dir.join("Foo.app")).unwrap();
         fs::write(dir.join("héllo-日本語.txt"), b"x").unwrap();
         symlink(dir.join("plain.txt"), dir.join("a-symlink")).unwrap();
@@ -284,7 +295,7 @@ mod tests {
         assert!(status.success());
 
         let entries = list_dir(&dir).unwrap();
-        assert_eq!(entries.len(), 7);
+        assert_eq!(entries.len(), 8);
         let map = by_name(&entries);
 
         let plain = map["plain.txt"];
@@ -308,6 +319,9 @@ mod tests {
         assert_eq!(subdir.kind, EntryKind::Directory);
         assert_eq!(subdir.size, 0);
         assert!(!subdir.package);
+        assert_eq!(subdir.children, Some(0));
+        assert_eq!(map["stuffed"].children, Some(1));
+        assert_eq!(plain.children, None);
 
         let app = map["Foo.app"];
         assert_eq!(app.kind, EntryKind::Directory);

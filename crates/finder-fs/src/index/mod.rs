@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::entry::Entry;
 use crate::list::list_dir;
 use crawl::Walk;
-use store::{COMPLETE, LISTED, PACKAGE, Tree, VISITED};
+use store::{COMPLETE, HIDDEN, LISTED, PACKAGE, Tree, VISITED};
 
 pub use crawl::off_limits;
 
@@ -128,6 +128,21 @@ impl Index {
             return None;
         }
         Some(tree.children(id).map(|child| tree.entry(child)).collect())
+    }
+
+    /// How many entries of `dir` Finder would show, or `None` where the index has not read it.
+    pub fn visible_children(&self, dir: &Path) -> Option<usize> {
+        let tree = self.read();
+        let id = resolve(&tree, dir)?;
+        let node = tree.nodes[id as usize];
+        if !node.is_dir() || node.flags & PACKAGE != 0 || node.state & LISTED == 0 {
+            return None;
+        }
+        Some(
+            tree.children(id)
+                .filter(|&child| tree.nodes[child as usize].flags & HIDDEN == 0)
+                .count(),
+        )
     }
 
     /// Recursive logical bytes, once the whole subtree has been crawled.
