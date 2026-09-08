@@ -12,6 +12,8 @@ struct Mounted {
     mount: String,
     name: &'static str,
     available: u64,
+    capacity: u64,
+    format: &'static str,
 }
 
 fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
@@ -27,6 +29,8 @@ pub(crate) fn refresh_volumes() {
             mount: volume.path.to_string_lossy().into_owned(),
             name: intern(&volume.name),
             available: volume.available,
+            capacity: volume.capacity,
+            format: intern(&volume.format),
         })
         .collect();
     *volumes_seen().write().unwrap() = mounted;
@@ -75,6 +79,29 @@ pub(crate) fn available_bytes(id: &str) -> u64 {
         .iter()
         .find(|volume| volume.mount == mount)
         .map_or(0, |volume| volume.available)
+}
+
+/// What a volume is, which no directory entry of it carries.
+pub(crate) struct VolumeInfo {
+    pub(crate) name: &'static str,
+    pub(crate) capacity: u64,
+    pub(crate) available: u64,
+    pub(crate) format: &'static str,
+}
+
+/// The volume mounted exactly at `id`, as of the last [`refresh_volumes`].
+pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
+    volumes_seen()
+        .read()
+        .unwrap()
+        .iter()
+        .find(|volume| volume.mount == id)
+        .map(|volume| VolumeInfo {
+            name: volume.name,
+            capacity: volume.capacity,
+            available: volume.available,
+            format: volume.format,
+        })
 }
 
 /// The folders whose artwork is their own, so they draw as Finder draws them.

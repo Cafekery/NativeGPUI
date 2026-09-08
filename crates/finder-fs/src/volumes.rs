@@ -9,7 +9,8 @@ use objc2_foundation::{
     NSArray, NSDictionary, NSFileManager, NSNumber, NSString, NSURL, NSURLResourceKey,
     NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeAvailableCapacityKey,
     NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey,
-    NSURLVolumeNameKey, NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
+    NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey, NSURLVolumeTotalCapacityKey,
+    NSVolumeEnumerationOptions,
 };
 
 #[derive(Clone, Debug)]
@@ -20,6 +21,8 @@ pub struct Volume {
     pub network: bool,
     pub capacity: u64,
     pub available: u64,
+    /// The file system as Finder names it, e.g. `APFS (Encrypted)`.
+    pub format: String,
 }
 
 fn keys() -> Retained<NSArray<NSURLResourceKey>> {
@@ -32,6 +35,7 @@ fn keys() -> Retained<NSArray<NSURLResourceKey>> {
             NSURLVolumeTotalCapacityKey,
             NSURLVolumeAvailableCapacityForImportantUsageKey,
             NSURLVolumeAvailableCapacityKey,
+            NSURLVolumeLocalizedFormatDescriptionKey,
         ])
     }
 }
@@ -109,6 +113,8 @@ fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
         network: !bool_value(&values, unsafe { NSURLVolumeIsLocalKey }),
         capacity: u64_value(&values, unsafe { NSURLVolumeTotalCapacityKey }).unwrap_or(0),
         available,
+        format: string_value(&values, unsafe { NSURLVolumeLocalizedFormatDescriptionKey })
+            .unwrap_or_default(),
     })
 }
 

@@ -10,7 +10,7 @@ use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::window_options;
 
 use crate::art::row_art;
-use crate::data::{Line, byte_string, day_string};
+use crate::data::{Line, Row, VolumeInfo, byte_string, day_string, volume_at};
 
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
@@ -90,11 +90,38 @@ impl Info {
     }
 }
 
+/// Finder's General block for a volume: what it is made of and how much of it is left, in
+/// place of the size and the folder a file would show.
+fn volume_fields(volume: &VolumeInfo, row: &Row) -> Vec<(&'static str, SharedString)> {
+    vec![
+        ("Kind", row.kind.clone()),
+        ("Created", day_string(row.created_at).into()),
+        ("Modified", day_string(row.modified_at).into()),
+        ("Format", volume.format.into()),
+        ("Capacity", byte_string(volume.capacity).into()),
+        ("Available", byte_string(volume.available).into()),
+        (
+            "Used",
+            byte_string(volume.capacity.saturating_sub(volume.available)).into(),
+        ),
+    ]
+}
+
 impl Render for Info {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let row = &self.line.row;
         let scale = window.scale_factor();
         let size_text: SharedString = row.size.clone();
+        let fields = match volume_at(&row.path) {
+            Some(volume) => volume_fields(&volume, row),
+            None => vec![
+                ("Kind", row.kind.clone()),
+                ("Size", size_text.clone()),
+                ("Where", self.where_.clone()),
+                ("Created", day_string(row.created_at).into()),
+                ("Modified", day_string(row.modified_at).into()),
+            ],
+        };
         body()
             .child(
                 div()
@@ -138,15 +165,11 @@ impl Render for Info {
             )
             .child(Self::section("General", true))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(Self::field("Kind", row.kind.clone()))
-                    .child(Self::field("Size", size_text))
-                    .child(Self::field("Where", self.where_.clone()))
-                    .child(Self::field("Created", day_string(row.created_at).into()))
-                    .child(Self::field("Modified", day_string(row.modified_at).into())),
+                div().flex().flex_col().gap(px(2.)).children(
+                    fields
+                        .into_iter()
+                        .map(|(label, value)| Self::field(label, value)),
+                ),
             )
             .child(Self::section("More Info", false))
             .child(Self::section("Name & Extension", false))

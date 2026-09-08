@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
-use crate::data::{Folder, Line, intern_path, split_key};
+use crate::data::{Folder, Line, intern, intern_path, split_key, volume_at};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
@@ -118,11 +118,19 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(parent) = Path::new(id).parent().map(intern_path) else {
-            return;
+        // The boot volume sits in no folder: Finder reveals it among the volumes, which is the
+        // listing /Volumes is.
+        let (parent, key) = match Path::new(id).parent() {
+            Some(parent) => (intern_path(parent), SharedString::from(id)),
+            None => match volume_at(id) {
+                Some(volume) => (
+                    intern("/Volumes"),
+                    SharedString::from(format!("/Volumes/{}", volume.name)),
+                ),
+                None => return,
+            },
         };
         self.go(parent, window, cx);
-        let key = SharedString::from(id);
         self.selected = std::iter::once(key.clone()).collect();
         self.cursor = Some(key.clone());
         self.anchor = Some(key.clone());

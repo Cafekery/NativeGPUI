@@ -208,16 +208,13 @@ fn place_row(id: &SharedString) -> Menu {
             .into_owned(),
     };
     let held = holds(path);
-    // The boot volume is no entry of a folder, so the demo has no line of it to show or read.
-    let named = path.file_name().is_some();
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(at));
     if held {
-        let enclosing = MenuEntry::item("Show in Enclosing Folder");
-        match named {
-            true => menu.item(enclosing, Act::Enclosing(at)),
-            false => menu.item(enclosing.disabled(), Act::Nothing),
-        }
+        menu.item(
+            MenuEntry::item("Show in Enclosing Folder"),
+            Act::Enclosing(at),
+        );
     }
     if volume.as_ref().is_some_and(|volume| volume.ejectable) {
         menu.separator();
@@ -234,11 +231,7 @@ fn place_row(id: &SharedString) -> Menu {
         Act::RemoveFromSidebar(at),
     );
     menu.separator();
-    let info = MenuEntry::item("Get Info");
-    match named {
-        true => menu.item(info, Act::GetInfoAt(at)),
-        false => menu.item(info.disabled(), Act::Nothing),
-    }
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(at));
     if path == Path::new("/") {
         menu.item(MenuEntry::item("Manage Storage…").disabled(), Act::Nothing);
     }
