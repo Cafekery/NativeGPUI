@@ -3,6 +3,7 @@
 
 pub mod complete;
 pub mod entry;
+pub mod icloud;
 pub mod index;
 pub mod kind;
 pub mod list;
