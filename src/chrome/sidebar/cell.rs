@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use gpui::{Pixels, SharedString};
 use objc2::rc::Retained;
@@ -15,7 +16,9 @@ use objc2_app_kit::{
     NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSOutlineView, NSTableCellView,
     NSTextAlignment, NSTextField, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
 };
-use objc2_foundation::{MainThreadMarker, NSBundle, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+};
 
 use super::model::Node;
 use super::{BADGE_GAP, CORE_TYPES_BUNDLE, Shared, SidebarIcon, SidebarRowSize};
@@ -301,25 +304,58 @@ fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-/// Finder draws a selected tag row's label in the tag's own colour, never the accent one.
-fn tint_cell(cell: &SidebarCell, selected: bool) {
+/// What Finder's sidebar label loses when its window is no longer key.
+const INACTIVE_LABEL_ALPHA: f64 = 0.47;
+
+/// macOS 27 fades a source-list label with its window's key state; macOS 26 leaves it at full
+/// strength, so there the label carries the fade itself.
+pub(super) fn label_fades_itself() -> bool {
+    static SELF_FADE: OnceLock<bool> = OnceLock::new();
+    *SELF_FADE.get_or_init(|| {
+        NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            < 27
+    })
+}
+
+/// Finder draws a selected tag row's label in the tag's own colour, never the accent one, and
+/// fades every label with the window's key state.
+fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
+    let group = cell.ivars().group;
+    let fade = label_fades_itself() && !key && !group;
     let tint = cell.ivars().tint.borrow().clone().filter(|_| selected);
-    title.setTextColor(Some(tint.as_deref().unwrap_or(&NSColor::labelColor())));
+    let colour = match tint {
+        Some(tag) => tag,
+        // An explicit colour costs a selected row the accent AppKit would have substituted.
+        None if fade && selected => NSColor::controlAccentColor(),
+        None => NSColor::labelColor(),
+    };
+    let colour = match fade {
+        true => colour.colorWithAlphaComponent(INACTIVE_LABEL_ALPHA),
+        false => colour,
+    };
+    title.setTextColor(Some(&colour));
 }
 
 pub(super) fn tint_selected_rows(outline: &NSOutlineView) {
+    let key = key_window(outline);
     for row in 0..outline.numberOfRows() {
         let Some(view) = outline.viewAtColumn_row_makeIfNecessary(0, row, false) else {
             continue;
         };
         if view.isKindOfClass(SidebarCell::class()) {
             let cell = unsafe { Retained::cast_unchecked::<SidebarCell>(view) };
-            tint_cell(&cell, outline.isRowSelected(row));
+            tint_cell(&cell, outline.isRowSelected(row), key);
         }
     }
+}
+
+fn key_window(view: &NSOutlineView) -> bool {
+    view.window().is_some_and(|window| window.isKeyWindow())
 }
 
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
@@ -406,7 +442,7 @@ pub(super) fn row_view(
         SidebarRowSize::icon_points(outline.effectiveRowSizeStyle()),
     );
     let row = unsafe { outline.rowForItem(Some(item)) };
-    tint_cell(&cell, outline.isRowSelected(row));
+    tint_cell(&cell, outline.isRowSelected(row), key_window(outline));
     Some(unsafe { Retained::cast_unchecked::<NSView>(cell) })
 }
 

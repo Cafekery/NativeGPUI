@@ -10,8 +10,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
+use block2::StackBlock;
 use gpui::{AnyWindowHandle, App, AsyncWindowContext, Global, Pixels, SharedString, Window, px};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
@@ -24,12 +26,13 @@ use objc2_app_kit::{
     NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle,
     NSTableViewRowSizeStyle, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
+    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
     NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNumber, NSObject, NSPoint,
-    NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
+    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
 use objc2_quartz_core::CAAutoresizingMask;
 
@@ -40,7 +43,7 @@ use crate::materials::RawMaterial;
 use crate::tokens;
 
 pub use self::cell::system_template;
-use self::cell::{SidebarCell, row_view};
+use self::cell::{SidebarCell, label_fades_itself, row_view, tint_selected_rows};
 use self::diff::{SavedState, apply_diff, expand_groups, plan_diff, reveal};
 pub use self::dragdrop::drag_files;
 use self::dragdrop::{
@@ -365,6 +368,52 @@ struct SidebarState {
     views: Views,
     shared: Rc<Shared>,
     pane_shared: Rc<PaneShared>,
+    key_observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
+}
+
+impl Drop for SidebarState {
+    fn drop(&mut self) {
+        let center = NSNotificationCenter::defaultCenter();
+        for observer in self.key_observers.drain(..) {
+            unsafe { center.removeObserver(observer.as_ref()) };
+        }
+    }
+}
+
+/// Repaints the labels a window's key state fades, on the versions that do not fade them.
+fn observe_key_state(
+    window: &NSWindow,
+    shared: &Rc<Shared>,
+) -> Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>> {
+    if !label_fades_itself() {
+        return Vec::new();
+    }
+    let center = NSNotificationCenter::defaultCenter();
+    unsafe {
+        [
+            NSWindowDidBecomeKeyNotification,
+            NSWindowDidResignKeyNotification,
+        ]
+    }
+    .into_iter()
+    .map(|name| {
+        let shared = shared.clone();
+        let block = StackBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(outline) = shared.outline.borrow().clone() {
+                tint_selected_rows(&outline);
+            }
+        })
+        .copy();
+        unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(name),
+                Some(window),
+                None,
+                &block,
+            )
+        }
+    })
+    .collect()
 }
 
 #[derive(Clone)]
@@ -1318,6 +1367,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     pane_shared.align(&pane);
     outline.sizeLastColumnToFit();
 
+    let key_observers = observe_key_state(&ns_window, &shared);
     let state = SidebarState {
         views: Views {
             outline,
@@ -1335,6 +1385,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         },
         shared,
         pane_shared,
+        key_observers,
     };
     NativeSidebar(Rc::new(state))
 }
