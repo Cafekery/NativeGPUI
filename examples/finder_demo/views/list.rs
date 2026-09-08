@@ -28,7 +28,12 @@ pub(crate) const ICON_X: f32 = 26.;
 pub(crate) const INDENT: f32 = 15.;
 pub(crate) const TWIST_W: f32 = 15.;
 pub(crate) const ROW_FONT: f32 = 14.;
-pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
+pub(crate) const ROW_PILL_RADIUS: f32 = 6.;
+const SELECTION_JOIN_ALPHA: f32 = 0.1;
+const SELECTION_JOIN_SHADE: f32 = 0.05;
+const SELECTION_JOIN_LEAD: f32 = 15.;
+const SELECTION_JOIN_TRAIL: f32 = 6.;
+const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
@@ -51,6 +56,8 @@ struct Look {
     stripe: Hsla,
     selection: Hsla,
     selection_text: Hsla,
+    selection_detail: Hsla,
+    selection_join: Hsla,
     focused: bool,
     dates: Font,
     searching: bool,
@@ -69,6 +76,14 @@ struct Marks {
     dropping: Option<SharedString>,
     /// The row whose drop highlight is dark this frame, part-way through its springing flash.
     springing: Option<SharedString>,
+}
+
+/// Where a row sits in a run of adjacent selected rows: whether the row above joins it, and the
+/// hairline to the row below when that one joins too.
+#[derive(Clone, Copy, Default)]
+struct Run {
+    above: bool,
+    join: Option<Hsla>,
 }
 
 /// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
@@ -115,6 +130,12 @@ impl FinderDemo {
             stripe: palette.stripe,
             selection: palette.selection,
             selection_text: palette.selection_text,
+            selection_detail: palette.selection_text.opacity(SELECTION_DETAIL_ALPHA),
+            selection_join: match palette.focused {
+                true => tokens::system_color(SystemColor::AlternateSelectedControlText)
+                    .opacity(SELECTION_JOIN_ALPHA),
+                false => tokens::system_color(SystemColor::Shadow).opacity(SELECTION_JOIN_SHADE),
+            },
             focused: palette.focused,
             dates: tokens::system_font_tabular(FontWeight::NORMAL),
             // Finder's search results show a path where the Kind column sits.
@@ -140,6 +161,18 @@ impl FinderDemo {
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let list = uniform_list("ng.finder.list", pads + count, move |range, window, _| {
+            let selected = |index: usize| {
+                index.checked_sub(pads).is_some_and(|at| {
+                    let at = match slots.as_ref().map(|slots| slots.get(at)) {
+                        Some(Some(Slot::Row(at))) => *at,
+                        Some(_) => return false,
+                        None => at,
+                    };
+                    lines
+                        .get(at)
+                        .is_some_and(|line| marks.selected.contains(&line.key))
+                })
+            };
             range
                 .map(|index| {
                     let Some(at) = index.checked_sub(pads) else {
@@ -157,7 +190,11 @@ impl FinderDemo {
                         Some(Slot::Row(at)) => *at,
                         None => at,
                     };
-                    row(&lines[at], at, &look, &marks, window, this.clone())
+                    let run = Run {
+                        above: index.checked_sub(1).is_some_and(&selected),
+                        join: selected(index + 1).then_some(look.selection_join),
+                    };
+                    row(&lines[at], at, run, &look, &marks, window, this.clone())
                 })
                 .collect::<Vec<_>>()
         })
@@ -224,16 +261,30 @@ impl FinderDemo {
     }
 }
 
-/// Finder's selection pill, inset from both edges so it never runs under the pane.
-fn pill(fill: Hsla) -> Div {
+/// Finder's selection pill, inset from both edges so it never runs under the pane. A run of
+/// adjacent selected rows is one block: only its ends round, and a hairline marks each join.
+fn pill(fill: Hsla, run: Run) -> Div {
+    let radius = |end: bool| px(if end { ROW_PILL_RADIUS } else { 0. });
     div()
         .absolute()
         .left(px(PANE_INSET))
         .right(px(PANE_INSET))
         .top_0()
         .bottom_0()
-        .rounded(px(ROW_PILL_RADIUS))
+        .rounded_t(radius(!run.above))
+        .rounded_b(radius(run.join.is_none()))
         .bg(fill)
+        .when_some(run.join, |pill, colour| {
+            pill.child(
+                div()
+                    .absolute()
+                    .left(px(SELECTION_JOIN_LEAD))
+                    .right(px(SELECTION_JOIN_TRAIL))
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(colour),
+            )
+        })
 }
 
 fn twist(
@@ -379,6 +430,7 @@ fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
 fn row(
     line: &Line,
     at: usize,
+    run: Run,
     look: &Look,
     marks: &Marks,
     window: &Window,
@@ -398,13 +450,13 @@ fn row(
         look.label
     };
     let detail = if lit {
-        look.selection_text
+        look.selection_detail
     } else {
         look.secondary
     };
     let fill = match (is_selected, at % 2 == 1) {
-        (true, _) => Some(look.selection),
-        (false, true) => Some(look.stripe),
+        (true, _) => Some((look.selection, run)),
+        (false, true) => Some((look.stripe, Run::default())),
         (false, false) => None,
     };
     let mut row = div()
@@ -418,8 +470,8 @@ fn row(
         .text_size(px(ROW_FONT))
         .text_color(text)
         .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
-        .children(fill.map(pill))
-        .children(dropping.map(pill))
+        .children(fill.map(|(fill, run)| pill(fill, run)))
+        .children(dropping.map(|fill| pill(fill, Run::default())))
         .child(name_cell(line, at, look, marks, lit, this.clone()));
     for spec in &look.columns {
         row = row.child(detail_cell(spec, line, look, detail));
