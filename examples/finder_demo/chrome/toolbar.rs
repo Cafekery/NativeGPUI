@@ -16,7 +16,7 @@ use crate::app::FinderDemo;
 use crate::data::Column;
 use crate::tags::{finder_color, tags};
 
-pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
+pub(crate) const SORTINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
     (Some(Column::Kind), "Kind"),
     (None, "Date Last Opened"),
@@ -24,6 +24,19 @@ pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Modified), "Date Modified"),
     (None, "Date Created"),
     (Some(Column::Size), "Size"),
+];
+
+/// Finder's Group menu: the sort's rows, plus the two only a grouping has.
+pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
+    (Some(Column::Name), "Name"),
+    (Some(Column::Kind), "Kind"),
+    (None, "Application"),
+    (None, "Date Last Opened"),
+    (None, "Date Added"),
+    (Some(Column::Modified), "Date Modified"),
+    (None, "Date Created"),
+    (Some(Column::Size), "Size"),
+    (None, "Tags"),
 ];
 
 pub(crate) const AIRDROP_ART: f32 = 18.;
@@ -137,17 +150,18 @@ pub(crate) fn finish_toolbar_items(window: &Window) {
     }
 }
 
-pub(crate) fn group_menu(sort: Column, ascending: bool, grouped: bool) -> Vec<MenuEntry> {
+pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
     let mut entries = vec![
         MenuEntry::item("None").checked(!grouped),
         MenuEntry::separator(),
     ];
     for (column, title) in GROUPINGS {
-        entries.push(MenuEntry::item(*title).checked(grouped && *column == Some(sort)));
+        let row = MenuEntry::item(*title).checked(grouped && *column == Some(sort));
+        entries.push(match column {
+            Some(_) => row,
+            None => row.disabled(),
+        });
     }
-    entries.push(MenuEntry::separator());
-    entries.push(MenuEntry::item("Ascending").checked(ascending));
-    entries.push(MenuEntry::item("Descending").checked(!ascending));
     entries
 }
 
@@ -172,7 +186,7 @@ pub(crate) fn action_menu() -> Vec<MenuEntry> {
         MenuEntry::item("Sort By")
             .symbol("arrow.up.arrow.down")
             .submenu(
-                GROUPINGS
+                SORTINGS
                     .iter()
                     .map(|(_, title)| MenuEntry::item(*title))
                     .chain([MenuEntry::separator(), MenuEntry::item("Tags")]),
@@ -204,6 +218,7 @@ impl FinderDemo {
         let tag = this.clone();
         let query = this.clone();
         let jobs = this.clone();
+        let group = this.clone();
 
         set_toolbar(
             window,
@@ -249,13 +264,13 @@ impl FinderDemo {
                     .ok();
                 }),
                 ToolbarItem::space(),
-                ToolbarItem::menu(
-                    GROUP_ID,
-                    "",
-                    "Group",
-                    group_menu(self.sort, self.ascending, self.grouped),
-                )
-                .tool_tip("Change the item grouping (hold down Option to change the sort)"),
+                ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
+                    .tool_tip("Change the item grouping (hold down Option to change the sort)")
+                    .on_select(move |index, _, cx| {
+                        group
+                            .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
+                            .ok();
+                    }),
                 ToolbarItem::space(),
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
                     .tool_tip("See the progress of file operations")
@@ -302,6 +317,20 @@ impl FinderDemo {
     /// The Group menu carries the sort and the grouping, so a change rebuilds it the next frame.
     pub(crate) fn resync_toolbar(&mut self) {
         self.toolbar = false;
+    }
+
+    /// A pick in the toolbar's Group menu, which counts its separator: "None" is the row above it.
+    fn group_by(&mut self, index: usize, cx: &mut Context<Self>) {
+        match index.checked_sub(2).map(|at| GROUPINGS.get(at)) {
+            None => self.grouped = false,
+            Some(Some((Some(column), _))) => {
+                self.grouped = true;
+                self.resort((*column, self.ascending), cx);
+            }
+            Some(_) => return,
+        }
+        self.resync_toolbar();
+        cx.notify();
     }
 
     pub(crate) fn share_items(&self) -> Vec<String> {
