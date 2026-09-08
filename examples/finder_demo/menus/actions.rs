@@ -38,6 +38,9 @@ pub(crate) enum Act {
     OpenTab(&'static str),
     OpenWindowAt(&'static str),
     Enclosing(&'static str),
+    RemoveFromSidebar(&'static str),
+    RenameAt(&'static str),
+    Eject(&'static str),
     CopyPathname(&'static str),
     Toggle(Column),
 }
@@ -101,6 +104,12 @@ impl FinderDemo {
                 open_finder_window(id, 1, cx);
             }
             Act::Enclosing(id) => self.show_enclosing(id, window, cx),
+            Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id),
+            Act::RenameAt(id) => {
+                self.show_enclosing(id, window, cx);
+                self.renaming = Some(id.into());
+            }
+            Act::Eject(id) => self.eject(id, window, cx),
             Act::CopyPathname(id) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()))
             }
@@ -203,13 +212,23 @@ impl FinderDemo {
         }
     }
 
-    /// A second window, handed to AppKit as a tab of this one.
+    /// A second window, handed to AppKit as a tab of this one; a tag opens as its listing, since
+    /// no window stands in one.
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
+        let start = match id.starts_with("tag:") {
+            true => self.here(),
+            false => id,
+        };
         cx.defer(move |cx| {
-            let tab = open_finder_window(id, 1, cx);
-            tab.update(cx, |_, tab, cx| native_gpui::add_tab(host, tab, cx))
-                .ok();
+            let tab = open_finder_window(start, 1, cx);
+            tab.update(cx, |demo: &mut FinderDemo, tab, cx| {
+                native_gpui::add_tab(host, tab, cx);
+                if start != id {
+                    demo.show_tag(id, tab, cx);
+                }
+            })
+            .ok();
         });
     }
 
