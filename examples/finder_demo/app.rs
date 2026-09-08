@@ -53,6 +53,8 @@ pub(crate) struct FinderDemo {
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
+    /// The query the rows on screen are filtered by; `query` is what has been typed since.
+    pub(crate) filtered: String,
     /// Finder's scope bar: `scope_bar::THIS_MAC` or `scope_bar::THIS_FOLDER`.
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
@@ -169,6 +171,7 @@ impl FinderDemo {
             name_w: NAME_MIN_W,
             header_drag: None,
             query: String::new(),
+            filtered: String::new(),
             scope: prefs::search_scope().unwrap_or(scope_bar::THIS_FOLDER),
             expanded: Keys::default(),
             expanding: HashMap::new(),

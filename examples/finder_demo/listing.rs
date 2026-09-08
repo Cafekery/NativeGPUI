@@ -355,7 +355,7 @@ impl FinderDemo {
         (self.tag_listing.is_none()
             && !self.results()
             && self.expanded.is_empty()
-            && self.query.trim().is_empty()
+            && self.filtered.trim().is_empty()
             && self.type_filter.is_none())
         .then_some(self.show_hidden)
     }
@@ -385,7 +385,7 @@ impl FinderDemo {
             ascending: by.1,
             grouped: self.grouped,
             hidden: self.show_hidden,
-            query: self.query.clone(),
+            query: self.filtered.clone(),
             filter: self.type_filter.clone(),
             hits: self.hits_rev,
         }
@@ -405,6 +405,17 @@ impl FinderDemo {
             expanded: self.expanded.clone(),
             hits: self.hits.clone(),
         }
+    }
+
+    /// The shape a query not yet on screen would draw in, so a filter builds its lines off the
+    /// main thread the way a re-sort builds its own.
+    pub(crate) fn shape_filtered(&self, query: &str, hits: &[Arc<Row>], rev: u64) -> Shape {
+        let mut shape = self.shape(self.view == LIST_VIEW);
+        shape.stamp.query = query.to_owned();
+        shape.stamp.hits = rev;
+        shape.results = self.tag_listing.is_some() || !(query.is_empty() || hits.is_empty());
+        shape.hits = hits.to_vec();
+        shape
     }
 
     /// Take the listing a sort built, where the window is still drawing the shape it was built

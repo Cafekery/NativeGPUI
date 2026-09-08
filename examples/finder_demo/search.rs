@@ -1,21 +1,27 @@
 //! Finder's search field: this folder's rows filter, and the index adds the rest of the subtree.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::chrome::scope_bar;
-use crate::data;
+use crate::data::{self, Row};
 use crate::listing::next_rev;
 use crate::{index, prefs};
 
 /// Rows a search or a tag listing shows at most.
 const HITS: usize = 200;
 
+/// What a keystroke waits for the next one before the folder is filtered again.
+const SETTLE: Duration = Duration::from_millis(120);
+
 impl FinderDemo {
     pub(crate) fn searching(&self) -> bool {
-        !self.query.trim().is_empty() && !self.hits.is_empty()
+        !self.filtered.trim().is_empty() && !self.hits.is_empty()
     }
 
     /// Rows found elsewhere on the disk: the search field's hits, or a tag's files.
@@ -28,24 +34,35 @@ impl FinderDemo {
         self.run_search(cx);
     }
 
+    /// Finder filters as the field is typed into, so the rows a query names are found and their
+    /// lines built off the main thread, and a keystroke that supersedes one drops it where it is.
     fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
-        self.hits.clear();
-        self.hits_rev = next_rev();
-        let query = self.query.trim().to_string();
         cx.notify();
-        if query.is_empty() {
-            return;
-        }
+        let wanted = self.query.trim().to_string();
+        // The keystroke that starts a query and the one that empties the field answer at once;
+        // the rest wait for the typing to stop.
+        let settled =
+            !wanted.is_empty() && !(self.filtered.is_empty() && wanted.chars().nth(1).is_none());
         let under = match self.scope {
             scope_bar::THIS_MAC => None,
             _ => Some(PathBuf::from(self.here())),
         };
-        let wanted = query.clone();
         cx.spawn(async move |this, cx| {
+            if settled {
+                cx.background_executor().timer(SETTLE).await;
+            }
+            let current = this.read_with(cx, |this, _| this.query.trim() == wanted);
+            if !current.unwrap_or(false) {
+                return;
+            }
+            let query = wanted.clone();
             let hits = cx
                 .background_executor()
                 .spawn(async move {
+                    if query.is_empty() {
+                        return Vec::new();
+                    }
                     let index = index();
                     index
                         .search(&query, under.as_deref(), HITS)
@@ -54,12 +71,36 @@ impl FinderDemo {
                         .collect::<Vec<_>>()
                 })
                 .await;
+            let rev = next_rev();
+            let taken = this.update(cx, |this, _| {
+                (this.query.trim() == wanted).then(|| {
+                    (
+                        this.shape_filtered(&wanted, &hits, rev),
+                        this.folders.held(),
+                    )
+                })
+            });
+            let Ok(Some((shape, held))) = taken else {
+                return;
+            };
+            let filtered = cx
+                .background_executor()
+                .spawn(async move {
+                    let folders: HashMap<&'static str, Vec<Arc<Row>>> = held.into_iter().collect();
+                    let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
+                    (shape, walk)
+                })
+                .await;
             this.update(cx, |this, cx| {
-                if this.query.trim() == wanted {
-                    this.hits = hits;
-                    this.hits_rev = next_rev();
-                    cx.notify();
+                if this.query.trim() != wanted {
+                    return;
                 }
+                let (shape, walk) = filtered;
+                this.filtered = wanted;
+                this.hits = hits;
+                this.hits_rev = rev;
+                this.shaped(&shape, walk);
+                cx.notify();
             })
             .ok();
         })

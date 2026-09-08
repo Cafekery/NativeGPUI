@@ -368,12 +368,7 @@ impl FinderDemo {
     /// thread with the one on screen built there too, whatever shape it is drawn in. The arrow
     /// follows the rows rather than running ahead of them.
     pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
-        let held: Vec<(&'static str, Vec<Arc<Row>>)> = self
-            .folders
-            .cached()
-            .into_iter()
-            .filter_map(|id| self.folders.get(id).map(|folder| (id, folder.rows.clone())))
-            .collect();
+        let held = self.folders.held();
         let was: Vec<(&'static str, usize)> =
             held.iter().map(|(id, rows)| (*id, rows.len())).collect();
         let shape = self.shape_sorted(self.view == LIST_VIEW, by);
