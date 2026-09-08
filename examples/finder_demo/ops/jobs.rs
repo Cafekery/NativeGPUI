@@ -56,6 +56,7 @@ fn describe(op: &Op) -> String {
         Op::Move { items, .. } => verb_items("Moving", items),
         Op::Copy { items, .. } => verb_items("Copying", items),
         Op::Duplicate(items) => verb_items("Duplicating", items),
+        Op::MakeAlias(items) => verb_items("Making Aliases of", items),
         Op::Trash(items) => verb_items("Moving", items),
         Op::DeleteImmediately(items) => verb_items("Deleting", items),
         Op::Rename { name, .. } => format!("Renaming to \"{name}\""),

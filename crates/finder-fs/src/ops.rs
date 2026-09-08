@@ -16,7 +16,8 @@ use objc2_foundation::{
     NSError, NSFileAttributeKey, NSFileManager, NSFileNoSuchFileError, NSFilePathErrorKey,
     NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileWriteFileExistsError,
     NSFileWriteInvalidFileNameError, NSFileWriteNoPermissionError, NSFileWriteOutOfSpaceError,
-    NSFileWriteVolumeReadOnlyError, NSString, NSURL,
+    NSFileWriteVolumeReadOnlyError, NSString, NSURL, NSURLBookmarkCreationOptions,
+    NSURLBookmarkFileCreationOptions,
 };
 
 use crate::volumes;
@@ -43,6 +44,8 @@ pub enum Op {
         name: String,
     },
     Duplicate(Vec<PathBuf>),
+    /// Finder's Make Alias: a bookmark file beside each item, not a symlink.
+    MakeAlias(Vec<PathBuf>),
     NewFolder {
         into: PathBuf,
         name: String,
@@ -100,6 +103,7 @@ fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Re
         Op::DeleteImmediately(items) => delete(items, progress),
         Op::Rename { path, name } => rename(path, name, conflict),
         Op::Duplicate(items) => duplicate(items, progress),
+        Op::MakeAlias(items) => make_alias(items, progress),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
         Op::PutBack(items) => put_back(items, progress),
@@ -777,6 +781,54 @@ fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Res
     Ok(Done { results, undo })
 }
 
+/// `name alias`, `name alias 2`, … beside `path`, whichever is free; Finder keeps the extension
+/// inside the name it appends to.
+fn alias_path(path: &Path) -> PathBuf {
+    let dir = path.parent().unwrap_or_else(|| Path::new(""));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let first = dir.join(format!("{name} alias"));
+    if !taken(&first) {
+        return first;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = dir.join(format!("{name} alias {n}"));
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+fn make_alias(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+    let total = items.len();
+    let mut results = Vec::with_capacity(total);
+    for (i, item) in items.iter().enumerate() {
+        let dest = alias_path(item);
+        let bookmark = url(item)
+            .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+                NSURLBookmarkCreationOptions::SuitableForBookmarkFile,
+                None,
+                None,
+            )
+            .map_err(io_error)?;
+        NSURL::writeBookmarkData_toURL_options_error(
+            &bookmark,
+            &url(&dest),
+            NSURLBookmarkFileCreationOptions::default(),
+        )
+        .map_err(io_error)?;
+        results.push(dest);
+        progress(Progress {
+            done: i + 1,
+            total,
+            current: Some(item.clone()),
+        });
+    }
+    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    Ok(Done { results, undo })
+}
+
 fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
     check_name(&name)?;
     let fm = NSFileManager::defaultManager();
@@ -814,6 +866,7 @@ fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use objc2_foundation::NSURLBookmarkResolutionOptions;
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -1705,6 +1758,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again.results, vec![dir.join("doc copy 2.txt")]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_alias_is_a_bookmark_file_beside_its_target() {
+        let dir = temp_dir("alias");
+        let file = dir.join("doc.txt");
+        touch(&file, "content");
+
+        let done = perform(
+            Op::MakeAlias(vec![file.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![dir.join("doc.txt alias")]);
+        let alias = &done.results[0];
+        assert!(fs::symlink_metadata(alias).unwrap().is_file());
+        let resolved = NSURL::URLByResolvingAliasFileAtURL_options_error(
+            &url(alias),
+            NSURLBookmarkResolutionOptions::WithoutUI,
+        )
+        .unwrap();
+        assert_eq!(path_from(&resolved), file.canonicalize().unwrap());
+
+        let again = perform(Op::MakeAlias(vec![file]), Conflict::Replace, no_progress).unwrap();
+        assert_eq!(again.results, vec![dir.join("doc.txt alias 2")]);
 
         let _ = fs::remove_dir_all(&dir);
     }
