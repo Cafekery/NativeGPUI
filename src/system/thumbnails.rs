@@ -11,7 +11,8 @@ use block2::RcBlock;
 use gpui::{Pixels, RenderImage};
 use image::{Frame, RgbaImage};
 use objc2::AnyThread;
-use objc2_app_kit::NSImage;
+use objc2::rc::Retained;
+use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
 use objc2_foundation::{NSError, NSSize, NSString, NSURL};
 use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
@@ -72,6 +73,62 @@ pub fn cached_thumbnail(
 ) -> Option<Arc<RenderImage>> {
     let key = Key::new(path, size, scale, icon);
     STATE.lock().unwrap().cache.get(&key).cloned().flatten()
+}
+
+/// The largest raster cached for `path`, as an image AppKit can draw at its own pixel size.
+pub(crate) fn cached_image(path: &Path) -> Option<Retained<NSImage>> {
+    let raster = largest_cached(path)?;
+    let size = raster.size(0);
+    let (w, h) = (
+        u32::from(size.width) as usize,
+        u32::from(size.height) as usize,
+    );
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w as isize,
+            h as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            NSBitmapFormat::AlphaNonpremultiplied,
+            (w * 4) as isize,
+            32,
+        )
+    }?;
+    let src = raster.as_bytes(0)?;
+    let dst = rep.bitmapData();
+    if dst.is_null() || src.len() < w * h * 4 {
+        return None;
+    }
+    let stride = rep.bytesPerRow() as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let (from, to) = (&src[(y * w + x) * 4..], unsafe {
+                dst.add(y * stride + x * 4)
+            });
+            for (at, channel) in [from[2], from[1], from[0], from[3]].into_iter().enumerate() {
+                unsafe { *to.add(at) = channel };
+            }
+        }
+    }
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(w as f64, h as f64));
+    image.addRepresentation(&rep);
+    Some(image)
+}
+
+fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
+    let state = STATE.lock().unwrap();
+    state
+        .cache
+        .iter()
+        .filter(|(key, _)| key.path == path)
+        .filter_map(|(key, image)| Some((key.pixels, image.clone()?)))
+        .max_by_key(|(pixels, _)| *pixels)
+        .map(|(_, image)| image)
 }
 
 /// Request a thumbnail (or, failing that, an icon) for `path`, delivered to `done` once
@@ -252,6 +309,36 @@ mod tests {
 
         assert!(cached_thumbnail(&path, Pixels::from(32.0), 2.0, true).is_some());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cached_raster_becomes_an_image_of_the_same_pixels() {
+        let dir = std::env::temp_dir().join(format!("ng-thumb-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.png");
+        write_png(&path, 64);
+        let (tx, rx) = mpsc::channel();
+        thumbnail(&path, Pixels::from(32.0), 2.0, false, move |image| {
+            tx.send(image).unwrap();
+        });
+        let raster = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("thumbnail within 2s")
+            .expect("a png always thumbnails");
+        let image = cached_image(&path).expect("the cache has it");
+        let size = image.size();
+        assert_eq!(size.width as u32, u32::from(raster.size(0).width));
+        assert_eq!(size.height as u32, u32::from(raster.size(0).height));
+
+        let side = size.width as usize;
+        let drawn = tokens::draw(&image, NSSize::new(size.width, size.height), side, side).unwrap();
+        let raster = raster.as_bytes(0).unwrap();
+        // A raster is BGRA, what the image draws is RGBA: the middle pixel is the fill colour.
+        let at = (side * side / 2 + side / 2) * 4;
+        assert_eq!(drawn[at], raster[at + 2]);
+        assert_eq!(drawn[at + 1], raster[at + 1]);
+        assert_eq!(drawn[at + 2], raster[at]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
