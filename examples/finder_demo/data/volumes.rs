@@ -130,8 +130,10 @@ pub(super) fn special() -> &'static HashSet<String> {
         }
         for path in [
             "/",
+            "/Applications/Utilities",
             "/Library",
             "/System",
+            "/System/Library",
             "/Users",
             "/Users/Shared",
             "/Volumes",
