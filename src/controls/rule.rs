@@ -1,6 +1,6 @@
 //! `NSBox` as a solid fill that survives a `Layer::Above` material: a divider or a hairline.
 
-use gpui::{App, ElementId, Style, Window, relative};
+use gpui::{App, ElementId, Hsla, Style, Window, relative};
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{MainThreadOnly, define_class, msg_send};
@@ -8,6 +8,7 @@ use objc2_app_kit::{NSBox, NSBoxType, NSResponder, NSTitlePosition, NSView};
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect};
 
 use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::system::color::to_nscolor;
 use crate::system::tokens::SystemColor;
 
 /// Fills the box it is given, so the box is the rule.
@@ -15,18 +16,26 @@ pub fn native_rule(id: impl Into<ElementId>) -> NativeRule {
     NativeRule {
         id: id.into(),
         color: SystemColor::Separator,
+        tint: None,
     }
 }
 
 pub struct NativeRule {
     id: ElementId,
     color: SystemColor,
+    tint: Option<Hsla>,
 }
 
 impl NativeRule {
     /// A role, so the rule follows an appearance change.
     pub fn color(mut self, color: SystemColor) -> Self {
         self.color = color;
+        self
+    }
+
+    /// A literal fill instead of the role, for what no `SystemColor` names.
+    pub fn tint(mut self, tint: impl Into<Hsla>) -> Self {
+        self.tint = Some(tint.into());
         self
     }
 
@@ -39,7 +48,10 @@ impl NativeRule {
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
         let rule = slot.place(Layer::Above, |mtm, _| Rule::new(mtm));
-        let color = self.color.ns_color();
+        let color = match self.tint {
+            Some(tint) => to_nscolor(tint),
+            None => self.color.ns_color(),
+        };
         if !rule.fillColor().isEqual(Some(&**color)) {
             rule.setFillColor(&color);
         }
