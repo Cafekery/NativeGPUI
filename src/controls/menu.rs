@@ -745,6 +745,13 @@ impl MenuSink {
     }
 }
 
+thread_local! {
+    /// One transient menu at a time. A row's context menu sits inside the backdrop's, so one
+    /// right-click reaches both, and the second would open as the click dismissing the first
+    /// lands.
+    static SHOWING: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Blocks in AppKit's menu tracking loop until the menu closes; the caller must not hold a GPUI
 /// borrow.
 fn show_menu(anchor: &Container, location: NSPoint, entries: &[MenuEntry]) -> Option<usize> {
@@ -888,6 +895,7 @@ impl Element for NativeContextMenu {
                     let contextual = event.button == MouseButton::Right
                         || (event.button == MouseButton::Left && event.modifiers.control);
                     if !contextual
+                        || SHOWING.get()
                         || !bounds.contains(&event.position)
                         || !mask.contains(&event.position)
                     {
@@ -909,11 +917,14 @@ impl Element for NativeContextMenu {
                     }
                     let anchor = anchor.clone();
                     let handler = handler.clone();
+                    SHOWING.set(true);
                     // Deferred: the tracking loop services GPUI's display link, and entering it
                     // under GPUI's `App` borrow panics on the next frame.
                     async_cx
                         .spawn(async move |cx| {
-                            let Some(index) = show_menu(&anchor, location, &entries) else {
+                            let picked = show_menu(&anchor, location, &entries);
+                            SHOWING.set(false);
+                            let Some(index) = picked else {
                                 return;
                             };
                             let _ = cx.update(|window, app| handler(index, window, app));
