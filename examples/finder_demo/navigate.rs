@@ -231,12 +231,17 @@ impl FinderDemo {
         if self.view == COLUMN_VIEW {
             return;
         }
-        let folders: Vec<&'static str> = self
+        let chosen: Vec<crate::data::Line> = self
             .lines(self.view == LIST_VIEW)
             .iter()
             .filter(|line| self.selected.contains(&line.key))
-            .filter_map(|line| line.row.opens)
+            .cloned()
             .collect();
+        // Finder opens what iCloud has evicted by asking for it back.
+        for line in chosen.iter().filter(|line| line.row.dataless) {
+            let _ = finder_fs::icloud::download(Path::new(line.key.as_ref()));
+        }
+        let folders: Vec<&'static str> = chosen.iter().filter_map(|line| line.row.opens).collect();
         let mut folders = folders.into_iter();
         if let Some(first) = folders.next() {
             self.go(first, window, cx);
