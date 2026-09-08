@@ -168,4 +168,12 @@ impl Folders {
     pub(crate) fn cached(&self) -> Vec<&'static str> {
         self.order.clone()
     }
+
+    /// Every listing in memory, to walk off the main thread.
+    pub(crate) fn held(&self) -> Vec<(&'static str, Vec<Arc<Row>>)> {
+        self.cached()
+            .into_iter()
+            .filter_map(|id| self.get(id).map(|folder| (id, folder.rows.clone())))
+            .collect()
+    }
 }

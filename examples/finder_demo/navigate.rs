@@ -177,6 +177,7 @@ impl FinderDemo {
         self.cursor = None;
         self.anchor = None;
         self.query.clear();
+        self.filtered.clear();
         self.hits.clear();
         self.tag_listing = None;
         self.inspecting = None;
