@@ -1301,7 +1301,9 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     }
 
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
-    ns_window.setTitlebarAppearsTransparent(true);
+    // Under a transparent titlebar AppKit draws no toolbar background, and toolbar item glass with
+    // nothing to sit on renders darker than the window behind it.
+    ns_window.setTitlebarAppearsTransparent(false);
 
     // Collected before `setContentViewController:` orphans the host's below-containers.
     let orphans: Vec<Retained<NSView>> = if options.adopt_below_layer {
