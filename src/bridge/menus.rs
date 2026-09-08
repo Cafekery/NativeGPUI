@@ -541,6 +541,33 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
 }
 
+/// AppKit matches a key equivalent against the characters an event carries, so a named key is
+/// the character it types: `"backspace"` as a title never matches ⌫.
+fn equivalent_key(key: &str) -> Option<String> {
+    let named = match key {
+        "backspace" => '\u{8}',
+        "delete" => '\u{f728}',
+        "enter" => '\r',
+        "tab" => '\t',
+        "escape" => '\u{1b}',
+        "space" => ' ',
+        "up" => '\u{f700}',
+        "down" => '\u{f701}',
+        "left" => '\u{f702}',
+        "right" => '\u{f703}',
+        "home" => '\u{f729}',
+        "end" => '\u{f72b}',
+        "pageup" => '\u{f72c}',
+        "pagedown" => '\u{f72d}',
+        _ => {
+            let mut chars = key.chars();
+            let single = chars.next().filter(|_| chars.next().is_none())?;
+            single.to_ascii_lowercase()
+        }
+    };
+    Some(named.to_string())
+}
+
 fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
     let keystroke = Keystroke::parse(chord).ok()?;
     let mut mask = NSEventModifierFlags::empty();
@@ -555,7 +582,7 @@ fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
             mask |= flag;
         }
     }
-    Some((keystroke.key.clone(), mask))
+    Some((equivalent_key(&keystroke.key)?, mask))
 }
 
 fn set_state(row: &NSMenuItem, on: bool) {
@@ -651,5 +678,19 @@ impl CommandSink {
             commands.push(action);
             commands.len() as isize - 1
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::equivalent_key;
+
+    #[test]
+    fn a_named_key_is_the_character_it_types() {
+        assert_eq!(equivalent_key("backspace").as_deref(), Some("\u{8}"));
+        assert_eq!(equivalent_key("up").as_deref(), Some("\u{f700}"));
+        assert_eq!(equivalent_key("N").as_deref(), Some("n"));
+        assert_eq!(equivalent_key("/").as_deref(), Some("/"));
+        assert_eq!(equivalent_key("f13"), None);
     }
 }
