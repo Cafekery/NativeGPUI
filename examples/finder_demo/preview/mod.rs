@@ -208,7 +208,7 @@ impl FinderDemo {
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
         let metrics = self.metrics();
         let viewport = window.viewport_size();
-        self.list_focused = self.focus.is_focused(window);
+        self.list_focused = self.focus.is_focused(window) && window.is_window_active();
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
         let top = metrics.top - px(tab_bar_height(window));
