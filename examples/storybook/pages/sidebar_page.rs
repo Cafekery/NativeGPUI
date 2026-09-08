@@ -65,7 +65,10 @@ impl Default for State {
             expand_groups: defaults.expand_groups,
             reorderable: defaults.reorderable,
             row_size: 0,
-            backdrop: 0,
+            backdrop: BACKDROPS
+                .iter()
+                .position(|(_, material)| *material == defaults.backdrop)
+                .unwrap_or(0),
             align: 0,
         }
     }

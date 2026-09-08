@@ -1,4 +1,4 @@
-//! The one-background rule: every opaque surface in a window resolves to one colour.
+//! The one-background rule: a window is one material, and what a window without one paints.
 
 use crate::Demo;
 use crate::ui::*;
@@ -39,9 +39,9 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
 
     stack(vec![
         note(
-            "Two surfaces, never three. A sidebar pane in vibrancy, and everything else — the \
-             toolbar band, the content pane under it, and whatever the app draws in the body — in \
-             one colour.",
+            "One surface, not two. The backdrop material spans the window; the sidebar pane's \
+             own vibrancy sits over it and the content side is left unpainted, so the toolbar \
+             band, the pane under it and the app's body are all that one material.",
         ),
         section(
             "This window",
@@ -50,13 +50,12 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     Some(m) => format!(
                         "All three are on screen right now. The sidebar strip is {:.0}pt wide and \
                          the toolbar band {:.0}pt tall — read off the installed pane, not \
-                         constants. The crate paints the band and the content pane the same \
-                         colour, which is why the top edge of this text column has no line above \
-                         it.",
+                         constants. The crate paints neither the band nor the content pane, which \
+                         is why the top edge of this text column has no line above it.",
                         m.thickness.to_f64(),
                         m.top.to_f64()
                     ),
-                    None => "No sidebar is installed in this window, so the crate paints nothing \
+                    None => "No sidebar is installed in this window, so there is no backdrop \
                              and an app would paint tokens::window_background() itself."
                         .into(),
                 }),
@@ -162,7 +161,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ],
         ),
         section(
-            "Why it has to be a colour and not a material",
+            "Why a colour cannot stand in for the material",
             vec![
                 caption(
                     "A material's value tracks whatever it samples; a colour's does not. Both \
@@ -204,7 +203,8 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                      60 reads 44, while windowBackgroundColor reads 30 over both. The \
                      window-spanning backdrop samples behind the window, so what it tracks is the \
                      desktop — a band on that and a body on a colour cannot be reconciled by any \
-                     constant, because only one of them moves.",
+                     constant, because only one of them moves, which is why the body is on the \
+                     same material.",
                 ),
                 caption(
                     "A second, cheaper tell that a surface is the first kind: it is \
@@ -224,8 +224,9 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             "What an app paints",
             vec![
                 caption(
-                    "With a sidebar the crate paints the window, band included, so an app should \
-                     paint no background at all. Without one, paint the token and nothing else.",
+                    "With a sidebar the backdrop spans the window, band included, so an app \
+                     should paint no background at all. Without one, paint the token and nothing \
+                     else.",
                 ),
                 mono(
                     "native_root(div().size_full().child(body))                          // sidebar",
@@ -268,7 +269,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "surfaces in a window",
-                "two — a sidebar in vibrancy, everything else in one colour".into(),
+                "one — the backdrop material, with the sidebar's own vibrancy over it".into(),
             ),
             (
                 "hand-picked grey on the dial",
