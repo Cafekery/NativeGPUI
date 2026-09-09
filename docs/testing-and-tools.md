@@ -49,12 +49,12 @@ Downloads, removable and network volumes, file-provider domains, and `NSAppDataU
 "data from other apps".
 
 The grant follows the identifier and the certificate in the signature, never the file name, so copy a
-bundle (`ditto dist/FinderDemo.app /tmp/ngv/Probe.app`) instead of re-bundling or re-signing it: a copy
+bundle (`ditto "dist/Found'er.app" /tmp/ngv/Probe.app`) instead of re-bundling or re-signing it: a copy
 shares the grant, a hand-made or ad-hoc bundle is a new app and asks again. A test launch that must not
 ask at all gets a home of its own:
 
 ```sh
-open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_CRAWL=1 dist/FinderDemo.app
+open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_CRAWL=1 "dist/Found'er.app"
 ```
 
 ## Capturing the screen
