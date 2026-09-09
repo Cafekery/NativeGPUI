@@ -91,8 +91,8 @@ pub(crate) fn rows_menu(
     )
 }
 
-/// The icon view's menu: Finder selects the tile it was raised on instead of outlining it, and
-/// the tile keeps that selection once the menu is gone.
+/// The icon and gallery views' menu: Finder selects the tile or filmstrip frame it was raised on
+/// instead of outlining it, and that tile keeps the selection once the menu is gone.
 pub(crate) fn tiles_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
