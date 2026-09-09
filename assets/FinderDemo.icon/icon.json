@@ -1,25 +1,38 @@
 {
-  "fill": {
-    "linear-gradient": [
-      "extended-srgb:1.00000,0.71373,0.49804,1.00000",
-      "extended-srgb:0.52941,0.30196,0.12941,1.00000"
-    ]
-  },
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:1.00000,0.71373,0.49804,1.00000",
+          "extended-srgb:0.52941,0.30196,0.12941,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.54118,0.34118,0.18824,1.00000",
+          "extended-srgb:0.20000,0.10588,0.04314,1.00000"
+        ]
+      }
+    }
+  ],
   "groups": [
     {
-      "name": "Face",
       "layers": [
         {
+          "glass": false,
           "image-name": "mouth.svg",
-          "name": "mouth",
-          "glass": false
+          "name": "mouth"
         },
         {
+          "glass": false,
           "image-name": "eyes.svg",
-          "name": "eyes",
-          "glass": false
+          "name": "eyes"
         }
       ],
+      "name": "Face",
       "shadow": {
         "kind": "neutral",
         "opacity": 0.5
@@ -31,23 +44,23 @@
       }
     },
     {
-      "name": "Head",
       "layers": [
         {
+          "glass": false,
           "image-name": "head.svg",
-          "name": "head",
-          "glass": false
+          "name": "head"
         }
       ],
+      "name": "Head",
       "shadow": {
         "kind": "neutral",
         "opacity": 0.5
       },
+      "specular": true,
       "translucency": {
         "enabled": false,
         "value": 0.5
-      },
-      "specular": true
+      }
     }
   ],
   "supported-platforms": {
