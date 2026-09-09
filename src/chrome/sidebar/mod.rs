@@ -27,8 +27,8 @@ use objc2_app_kit::{
     NSTableViewRowSizeStyle, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
     NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSWindowDidResignKeyNotification, NSWindowDidUpdateNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
@@ -368,15 +368,34 @@ struct SidebarState {
     views: Views,
     shared: Rc<Shared>,
     pane_shared: Rc<PaneShared>,
-    key_observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
+    observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
 impl Drop for SidebarState {
     fn drop(&mut self) {
         let center = NSNotificationCenter::defaultCenter();
-        for observer in self.key_observers.drain(..) {
+        for observer in self.observers.drain(..) {
             unsafe { center.removeObserver(observer.as_ref()) };
         }
+    }
+}
+
+/// Keeps AppKit's toolbar hairline hidden: the pocket that draws it is built with the window's
+/// first frame, after every layout the pane has run.
+fn observe_pocket_hairline(
+    window: &NSWindow,
+    pane: &NSView,
+) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let pane = pane.retain();
+    let block =
+        StackBlock::new(move |_: NonNull<NSNotification>| hide_pocket_hairline(&pane)).copy();
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowDidUpdateNotification),
+            Some(window),
+            None,
+            &block,
+        )
     }
 }
 
@@ -1001,6 +1020,39 @@ define_class!(
     }
 );
 
+/// AppKit lays a hairline across the top of a pane it cannot track as a scroll view, under the
+/// toolbar background a non-transparent titlebar draws. Finder's window has none.
+fn hide_pocket_hairline(pane: &NSView) {
+    let Some(split) = (unsafe { pane.superview().and_then(|wrapper| wrapper.superview()) }) else {
+        return;
+    };
+    fn hide_rules(view: &NSView) {
+        for sub in view.subviews().iter() {
+            if sub.frame().size.height <= 1.
+                && sub
+                    .class()
+                    .name()
+                    .to_string_lossy()
+                    .contains("FillColorView")
+            {
+                sub.setHidden(true);
+            } else {
+                hide_rules(&sub);
+            }
+        }
+    }
+    for view in split.subviews().iter() {
+        if view
+            .class()
+            .name()
+            .to_string_lossy()
+            .contains("NSTitlebarBackgroundView")
+        {
+            hide_rules(&view);
+        }
+    }
+}
+
 impl ContentPane {
     fn new(mtm: MainThreadMarker, frame: NSRect, shared: Rc<PaneShared>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(shared);
@@ -1393,7 +1445,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     pane_shared.align(&pane);
     outline.sizeLastColumnToFit();
 
-    let key_observers = observe_key_state(&ns_window, &shared);
+    let mut observers = observe_key_state(&ns_window, &shared);
+    observers.push(observe_pocket_hairline(&ns_window, &pane));
     let state = SidebarState {
         views: Views {
             outline,
@@ -1411,7 +1464,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         },
         shared,
         pane_shared,
-        key_observers,
+        observers,
     };
     NativeSidebar(Rc::new(state))
 }
