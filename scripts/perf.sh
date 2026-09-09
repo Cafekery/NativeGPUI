@@ -73,8 +73,8 @@ probe scroll "$(unique_fps "$cap" 0.9 2.2)" "${FPS_MIN_SCROLL:-100}"
 # Resizing: the right edge dragged 200 pt in 120 steps over about a second. The demo autosaves its
 # frame, so each run would otherwise start 200 pt wider than the last until it hangs off the display.
 defaults delete dev.cafekery.nativegpui.finder_demo "NSWindow Frame ng.finder.window" >/dev/null 2>&1
-pid=$(launch "$finder" FinderDemo) || { echo "no finder window"; exit 1; }
-sleep 1.5; place FinderDemo
+pid=$(launch "$finder" "Found'er") || { echo "no finder window"; exit 1; }
+sleep 1.5; place "Found'er"
 win=$(window_of "$pid"); wid=${win%%	*}; IFS=, read -r wx wy ww wh <<<"${win#*	}"
 cap=/tmp/ng-perf-resize.txt; rm -f "$cap"
 NPCAP_HZ=120 "$tools/npcap2" "$wid" 3 "$cap" 0 0 $(((ww + 200) * 2)) $((wh * 2)) 0 0 1200 80 >/dev/null 2>&1 &

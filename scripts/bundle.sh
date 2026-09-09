@@ -13,7 +13,11 @@ fi
 cd "$(dirname "$0")/.." || exit 1
 
 title=$(python3 -c "import sys; print(sys.argv[1].replace('_',' ').title().replace(' ',''))" "$name")
-app="dist/$title.app"
+# The name the app wears. The example's own name stays the code's: the bundle id, and the icon
+# document and asset the icon keys name, are built from it and outlive any renaming.
+product=$title
+[ "$name" = finder_demo ] && product="Found'er"
+app="dist/$product.app"
 bundle_id="dev.cafekery.nativegpui.$name"
 
 build=(cargo build --release --example "$name")
@@ -25,7 +29,7 @@ bin="target/release/examples/$name"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin" "$app/Contents/MacOS/$title"
+cp "$bin" "$app/Contents/MacOS/$product"
 
 # Icon Composer's document, compiled the way Xcode would: the layered icon lands in Assets.car
 # and the flattened .icns beside it, for anything that still reads one.
@@ -49,12 +53,12 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>	<string>en</string>
-	<key>CFBundleExecutable</key>		<string>$title</string>
+	<key>CFBundleExecutable</key>		<string>$product</string>
 	<key>CFBundleIdentifier</key>		<string>$bundle_id</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-	<key>CFBundleName</key>			<string>$title</string>
+	<key>CFBundleName</key>			<string>$product</string>
 $icon_keys
-	<key>CFBundleDisplayName</key>		<string>$title</string>
+	<key>CFBundleDisplayName</key>		<string>$product</string>
 	<key>CFBundlePackageType</key>		<string>APPL</string>
 	<key>CFBundleShortVersionString</key>	<string>0.1.0</string>
 	<key>CFBundleVersion</key>		<string>1</string>
@@ -63,13 +67,13 @@ $icon_keys
 	<key>NSPrincipalClass</key>		<string>NSApplication</string>
 	<key>NSSupportsAutomaticTermination</key><true/>
 	<key>NSSupportsSuddenTermination</key>	<true/>
-	<key>NSDesktopFolderUsageDescription</key>	<string>$title lists your Desktop the way Finder does.</string>
-	<key>NSDocumentsFolderUsageDescription</key>	<string>$title lists your Documents the way Finder does.</string>
-	<key>NSDownloadsFolderUsageDescription</key>	<string>$title lists your Downloads the way Finder does.</string>
-	<key>NSRemovableVolumesUsageDescription</key>	<string>$title lists connected disks under Locations.</string>
-	<key>NSNetworkVolumesUsageDescription</key>	<string>$title lists mounted network shares under Locations.</string>
-	<key>NSFileProviderDomainUsageDescription</key>	<string>$title lists cloud folders such as iCloud Drive.</string>
-	<key>NSAppDataUsageDescription</key>		<string>$title lists other apps' data folders while browsing your Library.</string>
+	<key>NSDesktopFolderUsageDescription</key>	<string>$product lists your Desktop the way Finder does.</string>
+	<key>NSDocumentsFolderUsageDescription</key>	<string>$product lists your Documents the way Finder does.</string>
+	<key>NSDownloadsFolderUsageDescription</key>	<string>$product lists your Downloads the way Finder does.</string>
+	<key>NSRemovableVolumesUsageDescription</key>	<string>$product lists connected disks under Locations.</string>
+	<key>NSNetworkVolumesUsageDescription</key>	<string>$product lists mounted network shares under Locations.</string>
+	<key>NSFileProviderDomainUsageDescription</key>	<string>$product lists cloud folders such as iCloud Drive.</string>
+	<key>NSAppDataUsageDescription</key>		<string>$product lists other apps' data folders while browsing your Library.</string>
 </dict>
 </plist>
 PLIST
