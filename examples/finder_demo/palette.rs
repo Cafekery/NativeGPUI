@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
 use block2::StackBlock;
-use gpui::Hsla;
-use native_gpui::tokens::{self, SystemColor, system_color};
+use gpui::{Hsla, hsla};
+use native_gpui::tokens::{self, Appearance, SystemColor, system_color};
 use objc2_app_kit::NSColor;
 
 pub(crate) struct Palette {
@@ -39,6 +39,15 @@ impl Palette {
             },
             focused,
         }
+    }
+}
+
+/// What AppKit rules a browser's columns off each other with, measured from `NSBrowser` in both
+/// appearances: black in the dark one, where its own separator is grey, and 230 in the light one.
+pub(crate) fn browser_rule() -> Hsla {
+    match tokens::current_appearance() {
+        Appearance::Dark => hsla(0., 0., 0., 1.),
+        Appearance::Light => hsla(0., 0., 230. / 255., 1.),
     }
 }
 

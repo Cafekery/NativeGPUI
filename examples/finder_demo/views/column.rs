@@ -41,7 +41,7 @@ pub(crate) struct Rung {
 }
 
 fn divider() -> Hsla {
-    system_color(SystemColor::Separator)
+    crate::palette::browser_rule()
 }
 
 impl FinderDemo {
