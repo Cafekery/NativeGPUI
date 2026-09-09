@@ -23,9 +23,9 @@ const PREVIEW_INSET: f32 = 10.;
 const ICON_X: f32 = 13.;
 pub(crate) const ICON: f32 = 18.;
 const LABEL_X: f32 = 35.5;
-const CHEVRON_TRAIL: f32 = 16.5;
-const CHEVRON: f32 = 7.;
-const PILL_INSET: f32 = 10.;
+const CHEVRON_TRAIL: f32 = 14.5;
+const CHEVRON: f32 = 6.5;
+const PILL_INSET: f32 = 7.25;
 const PILL_RADIUS: f32 = 7.;
 const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
@@ -174,6 +174,8 @@ impl FinderDemo {
             )
         };
 
+        // A row is as wide as its column: the list measures its items with no width of its own.
+        let content_w = self.column_width(folder) - GRIP_W;
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let list = uniform_list(
             ("ng.finder.column.rows", index),
@@ -210,6 +212,7 @@ impl FinderDemo {
                             .overflow_hidden();
                         let mut cell = div()
                             .id(("ng.finder.column.row", row))
+                            .w(px(content_w))
                             .h(px(ROW_H))
                             .relative()
                             .flex()
