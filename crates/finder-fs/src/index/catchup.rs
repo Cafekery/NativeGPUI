@@ -178,7 +178,7 @@ fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
 
 /// A path the crawl refuses on its name the catch-up must not open either: a visit can leave a
 /// TCC-gated folder in the index, and reading it again unasked puts the prompt back on screen.
-fn open_to_us(path: &Path, home: &Path) -> bool {
+pub(super) fn open_to_us(path: &Path, home: &Path) -> bool {
     !path.ancestors().any(|part| crawl::off_limits(part, home))
 }
 
