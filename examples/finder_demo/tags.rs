@@ -22,6 +22,13 @@ pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
     TAGS.get_or_init(finder_fs::tags::favorites)
 }
 
+/// Every tag the user has, in Finder's order. Reading them runs a query against Finder's key
+/// value store, so it is read once and warmed off the main thread while the window opens.
+pub(crate) fn all() -> &'static [finder_fs::tags::Tag] {
+    static ALL: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
+    ALL.get_or_init(finder_fs::tags::all)
+}
+
 /// The system colour behind a tag colour index (1 grey … 7 orange), `None` for 0 (no colour).
 fn tag_system_color(color: u8) -> Option<SystemColor> {
     Some(match color {
