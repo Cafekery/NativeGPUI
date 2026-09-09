@@ -95,7 +95,7 @@ fn main() {
         .detach();
         cx.spawn(async move |cx| {
             warm.spawn(async { data::refresh_volumes() }).await;
-            let _ = cx.update(|cx| cx.refresh_windows());
+            cx.update(|cx| cx.refresh_windows());
         })
         .detach();
         open_finder_window(intern_path(&home()), 0, cx);
