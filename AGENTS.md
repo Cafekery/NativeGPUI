@@ -26,7 +26,7 @@ Keeping a hosted view on the same frame as the GPUI row it sits on takes two cha
 
 ## Platform facts
 
-* The menu bar and GPUI's keymap are exclusive: binding a chord in GPUI takes it away from macOS. A GPUI app has no menu bar until `install_menus`.
+* The menu bar and GPUI's keymap are exclusive: binding a chord in GPUI takes it away from macOS. A GPUI app has no menu bar until `install_menus`. The bar is asked before any responder, so a row whose chord Cocoa's field editor claims — ⌘ or ⌥ with delete or an arrow — is disabled while text is being typed, or it takes the keystroke off the text.
 * A component's value must be the state its `on_change` writes; a literal wipes the control a frame after each keystroke.
 * Read a control's value synchronously inside the AppKit action; dispatch the handler deferred. GPUI holds its `App` borrow at fire time.
 * Never diff a property AppKit normalises or owns (`keyEquivalent = "\r"` reads back empty, `NSPopUpButton.integerValue` is cell state). Compare against your own last-written intent.

@@ -10,12 +10,14 @@ use std::rc::Rc;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem};
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, Sel};
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
-    NSMenuItem,
+    NSMenuItem, NSText,
 };
-use objc2_foundation::{MainThreadMarker, NSBundle, NSNumber, NSObject, NSProcessInfo, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSString,
+};
 
 /// One of the standard menus, as a place for an app's own rows.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -541,6 +543,30 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
 }
 
+/// Whether what the keyboard is pointed at is a text editor: a field editor is what AppKit puts
+/// in front of an `NSTextField` while it is being typed into.
+fn editing_text() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    NSApplication::sharedApplication(mtm)
+        .keyWindow()
+        .and_then(|window| window.firstResponder())
+        .is_some_and(|responder| responder.isKindOfClass(NSText::class()))
+}
+
+/// Whether a field editor claims this row's key equivalent. Cocoa's standard bindings give the
+/// editor ⌘ and ⌥ with delete and the arrows, and a menu that answered those first would take
+/// the keystroke off the text being typed.
+fn edits_text(item: &NSMenuItem) -> bool {
+    const DELETE: &str = "\u{8}";
+    const ARROWS: [&str; 4] = ["\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}"];
+    let key = item.keyEquivalent().to_string();
+    let held = item.keyEquivalentModifierMask() - NSEventModifierFlags::Shift;
+    let alone = held == NSEventModifierFlags::Command || held == NSEventModifierFlags::Option;
+    alone && (key == DELETE || ARROWS.contains(&key.as_str()))
+}
+
 /// AppKit matches a key equivalent against the characters an event carries, so a named key is
 /// the character it types: `"backspace"` as a title never matches ⌫.
 fn equivalent_key(key: &str) -> Option<String> {
@@ -646,6 +672,9 @@ define_class!(
             let Some(item) = (unsafe { sender.as_ref() }) else {
                 return Bool::YES;
             };
+            if editing_text() && edits_text(item) {
+                return Bool::NO;
+            }
             let check = STATE.with_borrow(|slot| slot.clone());
             if let Some(on) = check.zip(action_of(item)).and_then(|(check, action)| check(&*action))
             {
