@@ -80,7 +80,24 @@ fn main() {
             }
         })
         .detach();
-        data::refresh_volumes();
+        // The snapshot is hundreds of megabytes, the tags are a query against Finder's key value
+        // store and the volume scan asks every disk for its purgeable space: none of it belongs in
+        // front of the window, so all three land while it opens.
+        let warm = cx.background_executor().clone();
+        warm.spawn(async {
+            let _ = index();
+        })
+        .detach();
+        warm.spawn(async {
+            tags::all();
+            tags::tags();
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            warm.spawn(async { data::refresh_volumes() }).await;
+            let _ = cx.update(|cx| cx.refresh_windows());
+        })
+        .detach();
         open_finder_window(intern_path(&home()), 0, cx);
         crawl(cx);
         cx.activate(true);

@@ -257,14 +257,13 @@ pub(crate) fn groups() -> Vec<Group> {
     let favourites = favourites();
     let locations = locations();
 
-    let mut tags: Vec<Row> = finder_fs::tags::all()
-        .into_iter()
+    let mut tags: Vec<Row> = crate::tags::all()
+        .iter()
         .map(|tag| {
-            let color = tag.color;
             row(
                 intern(&format!("tag:{}", tag.name)),
-                tag.name,
-                Glyph::Tag(color),
+                tag.name.clone(),
+                Glyph::Tag(tag.color),
             )
         })
         .collect();
@@ -493,7 +492,7 @@ impl FinderDemo {
 
     /// Finder's drop on a tag row: the files keep the tags they had and gain this one.
     fn tag_dropped(&mut self, tag: &str, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
-        let Some(tag) = finder_fs::tags::all().into_iter().find(|it| it.name == tag) else {
+        let Some(tag) = crate::tags::all().iter().find(|it| it.name == tag) else {
             return;
         };
         let favourite = crate::tags::tags()
