@@ -36,6 +36,7 @@ Keeping a hosted view on the same frame as the GPUI row it sits on takes two cha
 * GPUI content over a blur of GPUI content needs a second window: one Metal layer is either under a material or over it. The Finder demo's preview pane is a `glass` frosting the rows in the main window, and a borderless, non-activating, transparent child window over it carries only the card.
 * Cursor rects and GPUI's cursor styles apply only in the key window. A window that can never be key (the pane's child panel) gets its `cursor_region` cursor from the chrome host's own `mouseMoved:`.
 * A hosted field in a window that is not key edits nothing, however it was made first responder: a field asked to edit takes key for its window first, and whoever put it in a child panel hands key back to the main window when the edit ends.
+* A divider drag runs AppKit's own event loop, in which gpui's display link never ticks: the pane publishes its new metrics and draws that frame inside the move, or the content trails the divider by a refresh. The settled rect is the split item's wrapper's; the pane's own frame catches up a turn later, and insets read off that lag shimmer.
 * GPUI's Metal layer carries CA's width/height-sizable autoresizing mask. AppKit already sizes a layer-backed view's layer from the view, so the mask only matters when the view does not fill its superview, and then CA adds the superview's resize delta a second time (old + 2x delta) and every frame displays scaled. The sidebar pane clears the mask when it adopts the view.
 
 ## Verifying

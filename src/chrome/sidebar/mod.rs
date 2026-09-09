@@ -831,8 +831,12 @@ impl PaneShared {
         self.align_count.set(self.align_count.get() + 1);
 
         let cv_size = content_view.frame().size;
+        // The split item's wrapper, not the pane: a divider drag moves the wrapper and resizes
+        // the pane it holds a turn later, and insets read off that lag make the content's far
+        // edge shimmer for a refresh at every step of the drag.
+        let host = unsafe { pane.superview() }.unwrap_or_else(|| pane.retain());
         // The pane's own `frame.origin.x` reads 0 while it sits a sidebar's width in.
-        let pane_in_cv = pane.convertRect_toView(pane.bounds(), Some(&content_view));
+        let pane_in_cv = host.convertRect_toView(host.bounds(), Some(&content_view));
         let safe = pane.safeAreaInsets();
 
         let wanted = match self.align {
@@ -880,25 +884,30 @@ impl PaneShared {
             collapsed: pane_in_cv.origin.x <= 1.0,
         };
         self.metrics.set(metrics);
-        if self.published.get() != metrics {
-            self.published.set(metrics);
-            let gpui = self.gpui.clone();
-            self.cx
-                .borrow()
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| {
-                        app.set_global(metrics);
-                        window.refresh();
-                    });
-                    // A divider drag runs AppKit's own event loop, in which gpui's display link
-                    // never ticks: unasked, the content would reflow only on mouse-up.
-                    if let Some(layer) = gpui.layer() {
-                        layer.setNeedsDisplay();
-                        layer.displayIfNeeded();
-                    }
-                })
-                .detach();
+        if self.published.get() == metrics {
+            return;
         }
+        self.published.set(metrics);
+        // A divider drag runs AppKit's own event loop, in which gpui's display link never ticks,
+        // and the pane has already moved: the frame the new metrics lay out is drawn here, inside
+        // the move, so it reaches the screen in the transaction that carries the divider.
+        if self
+            .cx
+            .try_borrow_mut()
+            .is_ok_and(|mut cx| publish(&mut cx, metrics))
+        {
+            draw_now(&self.gpui);
+            return;
+        }
+        // gpui holds its app while it draws: a move made there lands on the next turn instead.
+        let gpui = self.gpui.clone();
+        self.cx
+            .borrow()
+            .spawn(async move |cx| {
+                publish(cx, metrics);
+                draw_now(&gpui);
+            })
+            .detach();
     }
 
     fn sync_below(&self, pane: &NSView, gpui_frame: NSRect) {
@@ -907,6 +916,21 @@ impl PaneShared {
                 view.setFrame(gpui_frame);
             }
         }
+    }
+}
+
+fn publish(cx: &mut AsyncWindowContext, metrics: SidebarMetrics) -> bool {
+    cx.update(|window, app| {
+        app.set_global(metrics);
+        window.refresh();
+    })
+    .is_ok()
+}
+
+fn draw_now(gpui: &NSView) {
+    if let Some(layer) = gpui.layer() {
+        layer.setNeedsDisplay();
+        layer.displayIfNeeded();
     }
 }
 
