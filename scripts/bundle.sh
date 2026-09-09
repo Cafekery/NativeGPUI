@@ -27,6 +27,22 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$title"
 
+# Icon Composer's document, compiled the way Xcode would: the layered icon lands in Assets.car
+# and the flattened .icns beside it, for anything that still reads one.
+icon="assets/$title.icon"
+icon_keys=
+if [ -d "$icon" ]; then
+  if xcrun actool --output-format human-readable-text --app-icon "$title" \
+    --output-partial-info-plist "$PWD/$app/Contents/Resources/icon.plist" --target-device mac \
+    --minimum-deployment-target 26.0 --platform macosx \
+    --compile "$PWD/$app/Contents/Resources" "$PWD/$icon" >/dev/null; then
+    icon_keys=$'\t<key>CFBundleIconFile</key>\t\t<string>'$title$'</string>\n\t<key>CFBundleIconName</key>\t\t<string>'$title'</string>'
+  else
+    echo "warning: actool could not compile $icon" >&2
+  fi
+  rm -f "$app/Contents/Resources/icon.plist"
+fi
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,6 +53,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 	<key>CFBundleIdentifier</key>		<string>$bundle_id</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key>			<string>$title</string>
+$icon_keys
 	<key>CFBundleDisplayName</key>		<string>$title</string>
 	<key>CFBundlePackageType</key>		<string>APPL</string>
 	<key>CFBundleShortVersionString</key>	<string>0.1.0</string>
