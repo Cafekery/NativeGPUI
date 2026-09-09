@@ -1,6 +1,3 @@
-//! The arena the index answers from: one fixed-size node per entry, names interned once, a
-//! directory's children a linked list in listing order.
-
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
@@ -21,7 +18,6 @@ pub const LISTED: u8 = 1 << 0;
 pub const VISITED: u8 = 1 << 1;
 pub const COMPLETE: u8 = 1 << 2;
 
-/// Doubling a vector of millions of entries costs more resident memory than the index itself.
 const CHUNK: usize = 1 << 19;
 
 fn reserve<T>(items: &mut Vec<T>, more: usize) {
@@ -44,7 +40,7 @@ pub struct Node {
     pub state: u8,
     pub depth: u8,
     /// The snapshot writes these structs as bytes, so the tail has to be a field: padding the
-    /// compiler inserts is never written and reading it back would be reading uninitialized memory.
+    /// compiler inserts is never written.
     pub pad: [u8; 1],
 }
 
@@ -78,11 +74,10 @@ fn kind_bits(kind: EntryKind) -> u8 {
     }
 }
 
-/// A time the volume does not record. Zero is 1970 and negative is older than that, so a
-/// missing time needs a value of its own.
+/// A time the volume does not record; zero is 1970 and negative is older still.
 pub const NO_TIME: i64 = i64::MIN;
 
-/// Seconds from the UNIX epoch, signed: a file older than 1970 keeps its date.
+/// Seconds from the UNIX epoch, signed, so a file older than 1970 keeps its date.
 pub fn secs(t: SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(since) => since.as_secs() as i64,
@@ -99,11 +94,8 @@ pub fn time(s: i64) -> SystemTime {
     .unwrap_or(UNIX_EPOCH)
 }
 
-/// The number of intern tables. Growing one costs a shard of a rehash, not a whole one.
 const SHARDS: usize = 64;
 
-/// Every distinct name once, with a letter set per name so a search can reject most of them
-/// without looking at their bytes.
 #[derive(Default)]
 pub struct Names {
     pub blob: Vec<u8>,
@@ -121,8 +113,8 @@ fn hash(bytes: &[u8]) -> u32 {
     (h ^ (h >> 32)) as u32
 }
 
-/// What a search matches against: ASCII as it stands, anything else case-, width- and
-/// diacritic-folded, so "cafe" and "café" are one string however either is composed.
+/// Case-, width- and diacritic-folded, so "cafe" and "café" are one string however either is
+/// composed.
 pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
     match bytes.is_ascii() {
         true => Cow::Borrowed(bytes),
@@ -130,17 +122,13 @@ pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
     }
 }
 
-/// Set on a name whose bytes are not ASCII, so a search folds only those. A query never sets it:
-/// it is folded before its own mask is taken, and an ASCII query matches a folded name.
+/// Set on a non-ASCII name; a query never sets it, being folded before its own mask is taken.
 pub const NEEDS_FOLD: u64 = 1 << 28;
 
-/// Set on a name starting with a dot. Spotlight indexes neither a dot-file nor anything inside a
-/// dot-folder, so neither turns up in Finder's search; `~/Library` carries the hidden flag and is
-/// indexed all the same, which is why this reads the name rather than the flag.
+/// Spotlight indexes neither a dot-file nor anything inside a dot-folder, but does index
+/// `~/Library`, which carries the hidden flag.
 pub const DOTTED: u64 = 1 << 29;
 
-/// Which pairs of neighbouring bytes a name holds, hashed into 32 buckets: a query whose pairs
-/// a name does not all hold cannot be in it, which throws out far more names than its letters do.
 pub fn grams(bytes: &[u8]) -> u32 {
     let folded = folded(bytes);
     let mut m = 0;
@@ -151,8 +139,6 @@ pub fn grams(bytes: &[u8]) -> u32 {
     m
 }
 
-/// What a name is filtered by, and what a query asks of it: the letters, the pairs, and — for a
-/// name — the two flags a query never sets.
 pub fn mask_of(bytes: &[u8]) -> u64 {
     letters(bytes) as u64 | (grams(bytes) as u64) << 32
 }
@@ -228,7 +214,7 @@ impl Names {
         reserve(&mut self.mask, 1);
         self.blob.extend_from_slice(bytes);
         self.ends.push(self.blob.len() as u32);
-        self.mask.push(mask_of(bytes) | fold_bit(bytes) as u64);
+        self.mask.push(mask_of(bytes) | fold_bit(bytes));
         self.tables[shard][slot] = id;
         self.counts[shard] += 1;
         id
@@ -269,12 +255,11 @@ impl Names {
         table
     }
 
-    /// Rebuilds what the snapshot does not carry: the letter sets and the intern tables.
     pub fn reindex(&mut self) {
         self.mask = (0..self.ends.len() as u32)
             .map(|id| {
                 let bytes = self.bytes(id);
-                mask_of(bytes) | fold_bit(bytes) as u64
+                mask_of(bytes) | fold_bit(bytes)
             })
             .collect();
         let hashes: Vec<u32> = (0..self.ends.len() as u32)
@@ -301,21 +286,16 @@ impl Names {
     }
 }
 
-/// What one crawled root was left in: enough to ask FSEvents for the changes since, and a cheap
-/// second opinion when the log cannot answer.
 #[derive(Clone, Debug)]
 pub struct Root {
     pub path: PathBuf,
     /// The FSEvents id this root's subtree is current to.
     pub event_id: u64,
-    /// The root directory's own mtime when it was last read.
     pub modified: i64,
 }
 
 pub struct Relist {
     dir: u32,
-    /// The children before the relist, by name, so a name still there keeps its node. Sorted and
-    /// taken from in place: a directory of 20 000 entries is one allocation, not a hash table.
     old: Vec<(u32, u32)>,
     ids: Vec<u32>,
 }
@@ -378,7 +358,6 @@ impl Tree {
         self.roots.iter().find(|root| root.path == path)
     }
 
-    /// Records what a finished walk leaves a root at, replacing any earlier state for it.
     pub fn set_root(&mut self, path: &Path, event_id: u64, modified: i64) {
         match self.roots.iter_mut().find(|root| root.path == path) {
             Some(root) => (root.event_id, root.modified) = (event_id, modified),
@@ -390,7 +369,6 @@ impl Tree {
         }
     }
 
-    /// Whether the index has read this directory's entries.
     pub fn listed(&self, path: &Path) -> bool {
         self.find(path).is_some_and(|id| {
             let node = self.nodes[id as usize];
@@ -401,7 +379,6 @@ impl Tree {
         })
     }
 
-    /// The node for an absolute path, if the index has one.
     pub fn find(&self, path: &Path) -> Option<u32> {
         let mut cur = ROOT;
         for part in path.components() {
@@ -436,7 +413,6 @@ impl Tree {
         })
     }
 
-    /// The node for `path`, creating the directories on the way as unvisited stubs.
     pub fn ensure(&mut self, path: &Path) -> u32 {
         let mut cur = ROOT;
         for part in path.components() {
@@ -524,8 +500,6 @@ impl Tree {
         }
     }
 
-    /// A directory's children rewritten in batches: the old list stays whole for readers until
-    /// [`Tree::end_relist`] swaps in the new one.
     pub fn start_relist(&self, dir: u32) -> Relist {
         let mut old: Vec<(u32, u32)> = self
             .children(dir)
@@ -576,15 +550,11 @@ impl Tree {
         self.nodes[id as usize].size += bytes;
     }
 
-    /// Whether enough of the tree is tombstones to be worth rebuilding it.
     pub fn worth_compacting(&self) -> bool {
         let dead = self.nodes.iter().filter(|node| node.deleted()).count();
         dead * 8 > self.nodes.len()
     }
 
-    /// Drops the tombstoned nodes and the names nothing is left pointing at, renumbering what
-    /// stays. A tombstone is never reused, so a machine that churns files grows the snapshot
-    /// without bound, and every launch reads the dead weight back.
     pub fn compact(&mut self) {
         for id in 0..self.nodes.len() {
             let mut cur = self.nodes[id].first_child;
@@ -611,8 +581,7 @@ impl Tree {
         let mut moved = vec![NONE; self.nodes.len()];
         let mut kept = 0;
         for id in 0..self.nodes.len() {
-            // A node whose parent went with a tombstone goes too: a parent is always an earlier
-            // node, so by here its own fate is known.
+            // A parent is always an earlier node, so by here its own fate is known.
             let orphan = id != ROOT as usize && moved[self.nodes[id].parent as usize] == NONE;
             if self.nodes[id].deleted() || orphan {
                 continue;
@@ -661,8 +630,7 @@ impl Tree {
         }
     }
 
-    /// Folds every subtree's bytes into its directory and marks the subtrees the crawl finished.
-    /// A child's index is always above its parent's, so one reverse pass is a bottom-up walk.
+    // A child's index is always above its parent's, so one reverse pass is a bottom-up walk.
     pub fn recompute(&mut self) {
         for node in &mut self.nodes {
             if node.is_dir() && node.flags & PACKAGE == 0 {
@@ -697,7 +665,6 @@ impl Tree {
         self.bytes = self.nodes[ROOT as usize].size;
     }
 
-    /// Adds `delta` to every directory above `id`, for a change already applied below.
     pub fn propagate(&mut self, id: u32, delta: i64) {
         let mut cur = self.nodes[id as usize].parent;
         while cur != NONE {
