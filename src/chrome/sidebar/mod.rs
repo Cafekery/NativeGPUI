@@ -903,27 +903,35 @@ impl PaneShared {
             collapsed: pane_in_cv.origin.x <= 1.0,
         };
         self.metrics.set(metrics);
-        if self.published.get() == metrics {
+        let same = self.published.get() == metrics;
+        if same && in_place {
             return;
         }
         self.published.set(metrics);
         // A divider drag runs AppKit's own event loop, in which gpui's display link never ticks,
         // and the pane has already moved: the frame the new metrics lay out is drawn here, inside
         // the move, so it reaches the screen in the transaction that carries the divider.
-        if self
+        let landed = self
             .cx
             .try_borrow_mut()
-            .is_ok_and(|mut cx| publish(&mut cx, metrics))
-        {
-            draw_now(&self.gpui);
+            .is_ok_and(|mut cx| publish(&mut cx, metrics));
+        if landed {
+            if !same {
+                draw_now(&self.gpui);
+            }
             return;
         }
-        // gpui holds its app while it draws: a move made there lands on the next turn instead.
+        // gpui holds its app while it draws, and its own resize handler drops a size it cannot
+        // take then: a window manager snapping the window as it opens lands inside the first
+        // draw. The metrics and the size both go in on the next turn instead.
         let gpui = self.gpui.clone();
         self.cx
             .borrow()
             .spawn(async move |cx| {
-                publish(cx, metrics);
+                let _ = cx.update(|window, app| {
+                    app.set_global(metrics);
+                    window.bounds_changed(app);
+                });
                 draw_now(&gpui);
             })
             .detach();
