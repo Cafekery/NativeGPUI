@@ -272,6 +272,12 @@ impl Index {
 
     fn write(&self) -> RwLockWriteGuard<'_, Tree> {
         self.dirty.store(true, Ordering::Release);
+        // A save holds the tree for as long as writing it takes. `RwLock` is fair, so a writer
+        // that queues behind the save puts every later reader behind the writer, and the window's
+        // next frame waits out the whole write: a crawl thread stands aside until the save lands.
+        while self.saving.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         for _ in 0..YIELDS {
             if self.waiting.load(Ordering::Acquire) == 0 {
                 break;
