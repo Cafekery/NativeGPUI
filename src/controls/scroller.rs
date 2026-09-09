@@ -99,11 +99,16 @@ impl NativeScroller {
         }
 
         let wanted = (self.value.clamp(0., 1.), self.proportion.clamp(0., 1.));
-        if held.0.get() != Some(wanted) {
+        let was = held.0.get();
+        if was != Some(wanted) {
             scroller.setKnobProportion(wanted.1);
             scroller.setDoubleValue(wanted.0);
             held.0.set(Some(wanted));
-            scroller.flash();
+            // An overlay scroller shows itself when the content moves under it, never because
+            // the content grew: a listing that is still landing draws no scroller in Finder.
+            if was.is_some_and(|(value, _)| value != wanted.0) {
+                scroller.flash();
+            }
         }
 
         let handler = self.on_change.take().map(|handler| -> NativeDispatch {
@@ -154,6 +159,13 @@ define_class!(
     struct Scroller;
 
     impl Scroller {
+        // AppKit's own answer is `self == NSScroller`, so a subclass is refused the overlay style
+        // and drawn as the legacy one however the system is set.
+        #[unsafe(method(isCompatibleWithOverlayScrollers))]
+        fn compatible_with_overlay_scrollers() -> bool {
+            true
+        }
+
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             if self.alphaValue() <= 0. {
@@ -200,6 +212,9 @@ impl Scroller {
         // A scroller AppKit did not make for a scroll view starts disabled, and draws nothing.
         this.setEnabled(true);
         this.setScrollerStyle(NSScroller::preferredScrollerStyle(mtm));
+        if this.scrollerStyle() == NSScrollerStyle::Overlay {
+            this.setAlphaValue(0.);
+        }
         unsafe {
             NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
                 &this,
