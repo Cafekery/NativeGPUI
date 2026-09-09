@@ -169,7 +169,11 @@ impl Index {
     pub fn note_changed(&self, dirs: &[PathBuf]) {
         let home = crawl::home();
         for dir in dirs {
-            self.refresh(dir, &home);
+            // Watching a home reports every write under `~/Library`; reading one back unasked is
+            // the prompt the crawl already refuses to raise.
+            if catchup::open_to_us(dir, &home) {
+                self.refresh(dir, &home);
+            }
         }
     }
 
