@@ -604,3 +604,65 @@ fn a_reopened_snapshot_drops_what_was_deleted() {
     assert!(fs::metadata(&store).unwrap().len() < whole);
     let _ = fs::remove_file(&store);
 }
+
+#[test]
+fn search_leaves_out_what_spotlight_does_not_index() {
+    let temp = tree("hidden-search");
+    let root = &temp.0;
+    let index = crawled(root);
+
+    let dotted = root.join(".config/inner");
+    fs::create_dir_all(&dotted).unwrap();
+    fs::write(dotted.join("marker.txt"), b"").unwrap();
+    fs::write(root.join(".marker"), b"").unwrap();
+    fs::write(root.join("marker.txt"), b"").unwrap();
+    crawl(&index, root);
+
+    let hits = index.search("marker", None, 10);
+    let found: Vec<&Path> = hits.iter().map(|hit| hit.path.as_path()).collect();
+    assert_eq!(found, [root.join("marker.txt").as_path()]);
+}
+
+#[test]
+fn search_takes_every_word_and_puts_the_whole_name_first() {
+    let temp = tree("words-search");
+    let root = &temp.0;
+    let index = crawled(root);
+
+    fs::write(root.join("report.txt"), b"").unwrap();
+    fs::write(root.join("report-of-the-year.txt"), b"").unwrap();
+    fs::write(root.join("year-of-the-donkey.txt"), b"").unwrap();
+    crawl(&index, root);
+
+    // The name that is the query, then the one that starts with it.
+    let order: Vec<String> = index
+        .search("report", None, 10)
+        .iter()
+        .map(|hit| hit.entry.name.clone())
+        .collect();
+    assert_eq!(order, ["report.txt", "report-of-the-year.txt"]);
+
+    // Every word has to be in the name, wherever it falls.
+    let order: Vec<String> = index
+        .search("report year", None, 10)
+        .iter()
+        .map(|hit| hit.entry.name.clone())
+        .collect();
+    assert_eq!(order, ["report-of-the-year.txt"]);
+    assert!(index.search("report donkey", None, 10).is_empty());
+}
+
+#[test]
+fn a_file_added_after_a_search_is_found_by_the_next_one() {
+    let temp = tree("tail-search");
+    let root = &temp.0;
+    let index = crawled(root);
+    assert_eq!(index.search("afterwards", None, 10).len(), 0);
+
+    fs::write(root.join("afterwards.txt"), b"").unwrap();
+    index.note_changed(&[root.clone()]);
+
+    let hits = index.search("afterwards", None, 10);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, root.join("afterwards.txt"));
+}

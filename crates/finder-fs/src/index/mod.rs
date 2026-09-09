@@ -7,6 +7,7 @@
 
 mod catchup;
 mod crawl;
+mod lookup;
 mod search;
 mod snapshot;
 mod store;
@@ -61,6 +62,9 @@ pub struct Stats {
 pub struct Index {
     store: PathBuf,
     tree: RwLock<Tree>,
+    /// Which nodes wear which name, for search. Derived, so it is built on the first query and
+    /// again whenever the tree has moved too far from it.
+    lookup: RwLock<lookup::Lookup>,
     /// Readers waiting. A stream of crawl threads taking the write lock starves a reader of
     /// `RwLock` indefinitely, so a writer waits its turn behind anyone already asking to read.
     waiting: AtomicUsize,
@@ -76,6 +80,7 @@ impl Index {
         Arc::new(Index {
             store: store.to_path_buf(),
             tree: RwLock::new(snapshot::load(store).unwrap_or_default()),
+            lookup: RwLock::new(lookup::Lookup::default()),
             waiting: AtomicUsize::new(0),
             crawling: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
@@ -152,6 +157,31 @@ impl Index {
         (node.is_dir() && node.state & COMPLETE != 0).then_some(node.size)
     }
 
+    /// Builds what search reads, off the caller's thread: the first query then answers from a
+    /// table instead of building one.
+    pub fn warm(self: &Arc<Self>) {
+        let index = self.clone();
+        std::thread::spawn(move || {
+            let tree = index.read();
+            drop(index.lookup(&tree));
+        });
+    }
+
+    /// The table search reads, built again where the tree has moved past the one in hand.
+    fn lookup(&self, tree: &Tree) -> RwLockReadGuard<'_, lookup::Lookup> {
+        let lookup = self.lookup.read().unwrap_or_else(|held| held.into_inner());
+        if !lookup.stale(tree) {
+            return lookup;
+        }
+        drop(lookup);
+        let mut building = self.lookup.write().unwrap_or_else(|held| held.into_inner());
+        if building.stale(tree) {
+            *building = lookup::Lookup::build(tree);
+        }
+        drop(building);
+        self.lookup.read().unwrap_or_else(|held| held.into_inner())
+    }
+
     /// Name search, optionally scoped `under` a directory, best hits first.
     pub fn search(&self, query: &str, under: Option<&Path>, limit: usize) -> Vec<Hit> {
         let tree = self.read();
@@ -162,7 +192,8 @@ impl Index {
             },
             None => None,
         };
-        search::search(&tree, query, under, limit)
+        let lookup = self.lookup(&tree);
+        search::search(&tree, &lookup, query, under, limit)
     }
 
     /// Re-reads exactly these directories and carries the size change up to the roots.
