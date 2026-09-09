@@ -5,7 +5,7 @@ use native_gpui::native_slider;
 use native_gpui::tokens;
 
 use crate::app::FinderDemo;
-use crate::chrome::surface::BAR_TINT;
+use crate::chrome::surface::bar_tint;
 use crate::data::{available_bytes, byte_string};
 use crate::palette::Palette;
 use crate::prefs;
@@ -38,7 +38,7 @@ impl FinderDemo {
             .flex_none()
             .flex()
             .items_center()
-            .bg(BAR_TINT)
+            .when_some(bar_tint(), |bar, tint| bar.bg(tint))
             .px(px(12.))
             .border_t_1()
             .border_color(palette.separator)
