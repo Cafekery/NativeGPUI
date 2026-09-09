@@ -16,5 +16,5 @@ pub(crate) use self::row::{
     Column, Line, Row, hit_row, icloud_rows, path_line, rows_of, tagged_rows,
 };
 pub(crate) use self::volumes::{
-    VolumeInfo, available_bytes, refresh_volumes, volume_at, volume_roots,
+    VolumeInfo, available_bytes, network_roots, refresh_volumes, volume_at, volume_roots,
 };

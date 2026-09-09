@@ -53,6 +53,11 @@ impl Render for FinderDemo {
             self.install_toolbar(window, cx);
         }
         menus::remember(self);
+        let title = self.title();
+        if self.titled != title {
+            window.set_window_title(&title);
+            self.titled = title;
+        }
         if self.host.is_none() {
             self.host = ns_window(window);
         }
@@ -245,7 +250,7 @@ impl FinderDemo {
             path_bar,
         } = column;
         // The scope bar shares the hosted band with the toolbar, so it grows the top inset.
-        let scope_h = if self.searching() {
+        let scope_h = if self.in_search() {
             scope_bar::SCOPE_H
         } else {
             0.

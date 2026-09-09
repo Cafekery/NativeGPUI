@@ -14,6 +14,7 @@ struct Mounted {
     available: u64,
     capacity: u64,
     format: &'static str,
+    network: bool,
 }
 
 fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
@@ -31,6 +32,7 @@ pub(crate) fn refresh_volumes() {
             available: volume.available,
             capacity: volume.capacity,
             format: intern(&volume.format),
+            network: volume.network,
         })
         .collect();
     *volumes_seen().write().unwrap() = mounted;
@@ -66,6 +68,17 @@ pub(crate) fn volume_roots() -> Vec<&'static str> {
         .read()
         .unwrap()
         .iter()
+        .map(|volume| intern(&volume.mount))
+        .collect()
+}
+
+/// The mount points of the volumes that are not this Mac's own: what the Network scope searches.
+pub(crate) fn network_roots() -> Vec<&'static str> {
+    volumes_seen()
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|volume| volume.network)
         .map(|volume| intern(&volume.mount))
         .collect()
 }

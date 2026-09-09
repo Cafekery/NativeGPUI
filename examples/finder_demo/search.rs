@@ -20,6 +20,12 @@ impl FinderDemo {
         !self.filtered.trim().is_empty() && !self.hits.is_empty()
     }
 
+    /// Whether the window is in Finder's search state, which its scope bar and title follow: the
+    /// field holds a query, whether or not it found anything.
+    pub(crate) fn in_search(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
     /// Rows found elsewhere on the disk: the search field's hits, or a tag's files.
     pub(crate) fn results(&self) -> bool {
         self.tag_listing.is_some() || self.searching()
@@ -36,9 +42,12 @@ impl FinderDemo {
         self.tag_listing = None;
         cx.notify();
         let wanted = self.query.trim().to_string();
-        let under = match self.scope {
-            scope_bar::THIS_MAC => None,
-            _ => Some(PathBuf::from(self.here())),
+        // Finder searches one folder, or every network volume, or the whole Mac.
+        let everywhere = self.scope == scope_bar::THIS_MAC;
+        let under: Vec<PathBuf> = match self.scope {
+            scope_bar::THIS_MAC => Vec::new(),
+            scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
+            _ => vec![PathBuf::from(self.here())],
         };
         cx.spawn(async move |this, cx| {
             let query = wanted.clone();
@@ -49,8 +58,16 @@ impl FinderDemo {
                         return Vec::new();
                     }
                     let index = index();
-                    index
-                        .search(&query, under.as_deref(), HITS)
+                    let mut found = match everywhere {
+                        true => index.search(&query, None, HITS),
+                        false => under
+                            .iter()
+                            .flat_map(|root| index.search(&query, Some(root), HITS))
+                            .collect(),
+                    };
+                    found.sort_by(|a, b| b.score.cmp(&a.score));
+                    found.truncate(HITS);
+                    found
                         .iter()
                         .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
                         .collect::<Vec<_>>()
