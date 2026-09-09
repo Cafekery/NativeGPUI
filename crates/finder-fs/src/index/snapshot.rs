@@ -72,7 +72,10 @@ pub fn load(path: &Path) -> Option<Tree> {
     if !sound(&tree) {
         return None;
     }
-    tree.names.reindex();
+    match tree.worth_compacting() {
+        true => tree.compact(),
+        false => tree.names.reindex(),
+    }
     Some(tree)
 }
 

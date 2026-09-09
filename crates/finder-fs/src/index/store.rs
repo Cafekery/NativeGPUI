@@ -535,6 +535,91 @@ impl Tree {
         self.nodes[id as usize].size += bytes;
     }
 
+    /// Whether enough of the tree is tombstones to be worth rebuilding it.
+    pub fn worth_compacting(&self) -> bool {
+        let dead = self.nodes.iter().filter(|node| node.deleted()).count();
+        dead * 8 > self.nodes.len()
+    }
+
+    /// Drops the tombstoned nodes and the names nothing is left pointing at, renumbering what
+    /// stays. A tombstone is never reused, so a machine that churns files grows the snapshot
+    /// without bound, and every launch reads the dead weight back.
+    pub fn compact(&mut self) {
+        for id in 0..self.nodes.len() {
+            let mut cur = self.nodes[id].first_child;
+            let mut prev = NONE;
+            let mut left = self.nodes.len();
+            while cur != NONE && left > 0 {
+                left -= 1;
+                let next = self.nodes[cur as usize].next_sibling;
+                if !self.nodes[cur as usize].deleted() {
+                    match prev {
+                        NONE => self.nodes[id].first_child = cur,
+                        prev => self.nodes[prev as usize].next_sibling = cur,
+                    }
+                    prev = cur;
+                }
+                cur = next;
+            }
+            match prev {
+                NONE => self.nodes[id].first_child = NONE,
+                prev => self.nodes[prev as usize].next_sibling = NONE,
+            }
+        }
+
+        let mut moved = vec![NONE; self.nodes.len()];
+        let mut kept = 0;
+        for id in 0..self.nodes.len() {
+            // A node whose parent went with a tombstone goes too: a parent is always an earlier
+            // node, so by here its own fate is known.
+            let orphan = id != ROOT as usize && moved[self.nodes[id].parent as usize] == NONE;
+            if self.nodes[id].deleted() || orphan {
+                continue;
+            }
+            moved[id] = kept as u32;
+            self.nodes[kept] = self.nodes[id];
+            self.name_of[kept] = self.name_of[id];
+            kept += 1;
+        }
+        self.nodes.truncate(kept);
+        self.name_of.truncate(kept);
+        let at = |id: u32| match id {
+            NONE => NONE,
+            id => moved[id as usize],
+        };
+        for id in 0..self.nodes.len() {
+            let node = &mut self.nodes[id];
+            node.parent = at(node.parent);
+            node.first_child = at(node.first_child);
+            node.next_sibling = at(node.next_sibling);
+        }
+
+        let mut renamed = vec![NONE; self.names.len()];
+        for &name in &self.name_of {
+            renamed[name as usize] = 0;
+        }
+        let was = std::mem::take(&mut self.names.ends);
+        let mut ends = Vec::with_capacity(was.len());
+        let mut blob = 0;
+        for (name, &end) in was.iter().enumerate() {
+            if renamed[name] == NONE {
+                continue;
+            }
+            let start = if name == 0 { 0 } else { was[name - 1] as usize };
+            renamed[name] = ends.len() as u32;
+            // A name's new home is never above its old one, so the blob shifts down in place.
+            self.names.blob.copy_within(start..end as usize, blob);
+            blob += end as usize - start;
+            ends.push(blob as u32);
+        }
+        self.names.blob.truncate(blob);
+        self.names.ends = ends;
+        self.names.reindex();
+        for name in &mut self.name_of {
+            *name = renamed[*name as usize];
+        }
+    }
+
     /// Folds every subtree's bytes into its directory and marks the subtrees the crawl finished.
     /// A child's index is always above its parent's, so one reverse pass is a bottom-up walk.
     pub fn recompute(&mut self) {
