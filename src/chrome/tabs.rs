@@ -8,7 +8,10 @@ use gpui::{Action, AnyWindowHandle, App, AsyncApp, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
+use objc2_app_kit::{
+    NSApplication, NSSplitViewController, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowTabbingMode,
+};
 use objc2_foundation::{MainThreadMarker, NSSize};
 
 use crate::bridge::appkit::gpui_view;
@@ -35,11 +38,13 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     teach_new_tab(mtm);
 }
 
-/// Stop the tab bar `points` short of the window's trailing edge, so it ends where a full-height
-/// pane begins and carries its New Tab button there, as Finder's bar ends at the preview pane.
-/// Cheap to call every frame; it takes effect once the bar exists.
+/// Stop the toolbar's background and the tab bar `points` short of the window's trailing edge, so
+/// they end where a full-height pane begins and the pane's own material runs up behind the
+/// toolbar, as Finder's does. Cheap to call every frame.
 pub fn set_trailing_inset(window: &Window, points: f32) {
-    let Some(accessory) = tab_bar_accessory(&ns_window_of(window)) else {
+    let ns_window = ns_window_of(window);
+    inset_toolbar_background(&ns_window, points.max(0.));
+    let Some(accessory) = tab_bar_accessory(&ns_window) else {
         return;
     };
     adopt_inset(&accessory);
@@ -159,6 +164,34 @@ thread_local! {
 }
 
 const INSET_CLASS: &CStr = c"NGTabBarInsetView";
+
+/// The toolbar's background is a view of the split view's, drawn over the pane the content item
+/// holds; narrowing it is what leaves the pane's own material showing under the toolbar.
+fn inset_toolbar_background(window: &NSWindow, points: f32) {
+    let Some(split) = window
+        .contentViewController()
+        .and_then(|controller| controller.downcast::<NSSplitViewController>().ok())
+        .map(|controller| controller.splitView())
+    else {
+        return;
+    };
+    let width = split.frame().size.width - f64::from(points);
+    for view in split.subviews().iter() {
+        if !view
+            .class()
+            .name()
+            .to_string_lossy()
+            .contains("NSTitlebarBackgroundView")
+        {
+            continue;
+        }
+        let mut frame = view.frame();
+        if (frame.size.width - width).abs() > 0.5 {
+            frame.size.width = width;
+            view.setFrame(frame);
+        }
+    }
+}
 
 /// The titlebar accessory AppKit gives the tab bar, if this window is showing one.
 fn tab_bar_accessory(window: &NSWindow) -> Option<Retained<NSView>> {
