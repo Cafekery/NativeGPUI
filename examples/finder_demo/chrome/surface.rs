@@ -15,6 +15,14 @@ pub(crate) fn bar_tint() -> Option<Hsla> {
         .then(|| hsla(0., 0., 1., 0.038))
 }
 
+/// macOS 26's Finder rules a column or gallery view off the toolbar; macOS 27's does not.
+pub(crate) fn toolbar_rule() -> bool {
+    NSProcessInfo::processInfo()
+        .operatingSystemVersion()
+        .majorVersion
+        < 27
+}
+
 /// The pane's glass: it starts a radius left of the pane, so only its window-side corners round.
 pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
     div()
