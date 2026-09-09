@@ -1,5 +1,3 @@
-//! The icon (grid) view.
-
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -57,12 +55,9 @@ impl Look {
     }
 }
 
-/// A tile's row and where the grid puts it.
 type Tile = (SharedString, Point<Pixels>);
 
-/// Where every tile of one listing sits, and how tall that makes the grid.
 pub(crate) struct Layout {
-    /// Weak, so a layout from the last frame is not a second owner of a listing still growing.
     lines: Weak<Vec<Line>>,
     columns: usize,
     cell: f32,
@@ -74,7 +69,6 @@ pub(crate) struct Layout {
 #[derive(Default)]
 pub(crate) struct Grid {
     placed: HashMap<SharedString, Point<Pixels>>,
-    /// Bumped by every drag that lands, so the layout built from the old places is rebuilt.
     moved: u64,
     layout: Option<Rc<Layout>>,
     dragging: Option<SharedString>,
@@ -107,7 +101,6 @@ impl Grid {
         self.dragging = None;
     }
 
-    /// Where the tiles sit, rebuilt only when the rows, the grid's shape or a drag move them.
     fn layout(&mut self, lines: &Arc<Vec<Line>>, columns: usize, cell: f32) -> Rc<Layout> {
         let held = self.layout.clone().filter(|built| {
             std::ptr::eq(built.lines.as_ptr(), Arc::as_ptr(lines))
@@ -139,7 +132,6 @@ impl Grid {
         built
     }
 
-    /// Scroll the tile whole into `visible`, the width left of the pane.
     pub(crate) fn reveal(
         &self,
         key: &SharedString,
@@ -287,7 +279,6 @@ fn tile(
         )
 }
 
-/// Which tile a point in the grid's own scrolled coordinates lands on.
 fn tile_at(
     layout: &[(SharedString, Point<Pixels>)],
     at: Point<Pixels>,

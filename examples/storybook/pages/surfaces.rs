@@ -1,5 +1,3 @@
-//! The transient surfaces: `NSPopover`, a real `NSWindow` sheet, and `NSSharingServicePicker`.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window, div, prelude::*, px, size};

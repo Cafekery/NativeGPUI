@@ -1,6 +1,3 @@
-//! What the demo carries between launches: AppKit autosaves the frame, the sidebar sits in the
-//! demo's store, the rest in user defaults.
-
 use std::collections::HashMap;
 
 use objc2::rc::Retained;
@@ -35,7 +32,7 @@ fn write(key: &str, value: f64) {
     defaults().setDouble_forKey(value, &NSString::from_str(key));
 }
 
-/// The sidebar file, read whole: user defaults would follow the Mac's home, not the demo's.
+/// Read whole from the demo's store: user defaults would follow the Mac's home, not the demo's.
 fn sidebar_file() -> HashMap<String, Vec<String>> {
     let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
     let Some(data) = NSData::dataWithContentsOfFile(&path) else {
@@ -111,7 +108,6 @@ pub(crate) fn set_sidebar_rows(group: &str, rows: &[&str]) {
     write_list(&format!("rows.{group}"), rows);
 }
 
-/// The folders the user dragged into a sidebar group, which no listing of this Mac would give it.
 pub(crate) fn pinned(group: &str) -> Vec<String> {
     read_list(&format!("pinned.{group}"))
 }
@@ -120,7 +116,6 @@ pub(crate) fn set_pinned(group: &str, paths: &[&str]) {
     write_list(&format!("pinned.{group}"), paths);
 }
 
-/// The rows the user took out of a sidebar group, which this Mac would otherwise keep offering.
 pub(crate) fn removed(group: &str) -> Vec<String> {
     read_list(&format!("removed.{group}"))
 }
@@ -186,7 +181,6 @@ fn column_key(column: Column) -> &'static str {
     }
 }
 
-/// The list view's per-folder column width, `None` for a folder that has never been resized.
 pub(crate) fn list_column_width(folder: &str, column: Column) -> Option<f32> {
     read(&format!("{}.{folder}", column_key(column))).map(|v| v as f32)
 }

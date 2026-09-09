@@ -1,5 +1,3 @@
-//! macOS 26 liquid glass: `NSGlassEffectView`, batched by `NSGlassEffectContainerView`.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::Location;
@@ -42,8 +40,6 @@ fn tint_color(color: Hsla) -> Retained<NSColor> {
     })
 }
 
-/// The containers whose children are painting right now, innermost last; a panel joins the
-/// innermost one.
 struct OpenContainer {
     content: Retained<NSView>,
     layer: Layer,
@@ -78,7 +74,6 @@ pub struct Glass {
 }
 
 impl Glass {
-    /// Frost the GPUI content painted beneath the panel (the default).
     pub fn frosting_gpui(mut self) -> Self {
         self.layer = Layer::Above;
         self

@@ -22,11 +22,9 @@ const TILE_H: f32 = 90.;
 #[cfg(feature = "private-api")]
 #[derive(Default)]
 pub struct State {
-    /// Index into [`GlassVariant::ALL`].
     pub variant: usize,
     /// Index into the *accepted* subvariants of the current variant, not [`GlassSubvariant::ALL`].
     pub subvariant: usize,
-    /// Index into [`GlassInteractionState::ALL`].
     pub interaction: usize,
     pub subdued: bool,
     pub scrim: bool,

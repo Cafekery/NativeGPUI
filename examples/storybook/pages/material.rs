@@ -1,5 +1,3 @@
-//! The `NSVisualEffectView` catalogue and the knobs that change how one draws.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, ElementId, Window, prelude::*, px};

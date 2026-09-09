@@ -1,5 +1,3 @@
-//! One frame of the window: the surfaces the view sits on, and everything drawn over them.
-
 use std::env;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -37,7 +35,6 @@ pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?.window()
 }
 
-/// What the view drew this frame: the rows, the header band above them, the path bar below.
 struct Column {
     rows: AnyElement,
     headers: Option<AnyElement>,
@@ -141,8 +138,8 @@ impl Render for FinderDemo {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
-                                // The sidebar is an NSView: this takes first responder back to
-                                // the GPUI view so bare keys reach on_key.
+                                // The sidebar is an NSView: this takes first responder back to the
+                                // GPUI view so bare keys reach on_key.
                                 native_gpui::focus_gpui(window);
                                 window.focus(&this.focus, cx);
                             }),
@@ -181,7 +178,6 @@ impl Render for FinderDemo {
     }
 }
 
-/// `NG_FRAME_TRACE=1`: how long this window spent building each frame, and over how much.
 fn trace_frame(demo: &FinderDemo, began: Instant) {
     static ON: OnceLock<bool> = OnceLock::new();
     if !ON.get_or_init(|| env::var("NG_FRAME_TRACE").is_ok()) {
@@ -220,7 +216,6 @@ impl FinderDemo {
         });
     }
 
-    /// The rows' own scroller; the browser's columns carry theirs and the gallery has none.
     fn scroller_bar(&self) -> Option<NativeScroller> {
         match self.view {
             LIST_VIEW => {
@@ -258,8 +253,7 @@ impl FinderDemo {
         let scope_bar = (scope_h > 0.).then(|| self.scope_bar(cx));
         let above = metrics.top;
         let top = above + px(scope_h);
-        // The path bar takes height from the list, not from the pane, which runs to the corner,
-        // and Finder's rows stop short of whatever is under them.
+        // The path bar takes height from the list, not from the pane, which runs to the corner.
         let bar = if path_bar.is_some() { PATH_H } else { 0. };
         let foot = bar
             + if self.view == LIST_VIEW {

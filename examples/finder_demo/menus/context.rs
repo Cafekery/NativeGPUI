@@ -1,5 +1,3 @@
-//! Which rows each context shows, in the order Finder shows them.
-
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::Path;
@@ -17,12 +15,11 @@ use crate::view::ICON_VIEW;
 use crate::views::header::column_title;
 
 thread_local! {
-    /// Which dot the tag row was clicked on, read once the row reports its pick.
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-/// Finder's column list for a local folder, in its order; the ones this demo has no column for
-/// show the way Finder shows the ones it cannot fill.
+/// Finder's column list for a local folder, in its order; a `None` shows the way Finder shows a
+/// column it cannot fill.
 const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Date Modified", Some(Column::Modified)),
     ("Date Created", None),
@@ -39,7 +36,6 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
 
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];
 
-/// A right-click on empty space.
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("New Folder"), Act::NewFolder);
@@ -158,8 +154,7 @@ pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
     menu
 }
 
-/// A right-click on a sidebar row: Finder's menu for the kind of place the row names, and
-/// nothing at all on a group header.
+/// Finder's menu for the kind of place the row names, and nothing at all on a group header.
 pub(crate) fn sidebar(id: &SharedString) -> Menu {
     match id.strip_prefix("tag:") {
         Some(name) => tag_row(id, name),
@@ -168,8 +163,7 @@ pub(crate) fn sidebar(id: &SharedString) -> Menu {
     }
 }
 
-/// Finder's menu on a tag row: what it opens, what it forgets, and the colour it wears. The
-/// "All Tags…" row carries nothing but the first line.
+/// Finder's menu on a tag row; the "All Tags…" row carries nothing but the first line.
 fn tag_row(id: &SharedString, name: &str) -> Menu {
     let mut menu = Menu::default();
     let at = intern(id);
@@ -206,7 +200,6 @@ fn tag_row(id: &SharedString, name: &str) -> Menu {
     menu
 }
 
-/// Finder's menu on the rest of the sidebar: a folder, a volume, or a place that is neither.
 fn place_row(id: &SharedString) -> Menu {
     let at = intern(id);
     let path = Path::new(at);
@@ -261,15 +254,14 @@ fn place_row(id: &SharedString) -> Menu {
     menu
 }
 
-/// Whether a folder holds the row: the Trash, iCloud Drive and Network are places Finder offers
-/// neither an enclosing folder nor a Dock tile for.
+/// The Trash, iCloud Drive and Network are places Finder offers neither an enclosing folder nor a
+/// Dock tile for.
 fn holds(path: &Path) -> bool {
     !(volumes::standard(volumes::Standard::Trash).is_some_and(|trash| trash == path)
         || crate::home().join("Library/Mobile Documents/com~apple~CloudDocs") == path
         || path == Path::new("/Network"))
 }
 
-/// The list header's menu: the optional columns, checked when they are shown.
 pub(crate) fn header(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     for (title, column) in COLUMNS {
@@ -310,7 +302,6 @@ fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
         .collect()
 }
 
-/// The swatch the tag row reported, taken once by the pick that follows it.
 pub(super) fn picked_swatch() -> Option<usize> {
     SWATCH.with(Cell::take)
 }

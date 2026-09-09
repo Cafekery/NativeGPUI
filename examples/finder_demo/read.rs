@@ -1,6 +1,3 @@
-//! Reading folders off the disk: what a frame asked for, what the watcher says changed, and the
-//! order Finder sorts a listing in.
-
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -23,27 +20,19 @@ const TICK: Duration = Duration::from_millis(120);
 
 const VOLUMES_EVERY: u64 = 40;
 
-/// The rows arriving from one directory read, and whether they replace what is on screen.
 #[derive(Default)]
 struct Mail {
     batches: Vec<(Vec<Arc<Row>>, bool)>,
-    /// The sorted listing as lines, and whether hidden rows are in it.
     lines: Option<(bool, Vec<Line>)>,
     listed: bool,
     done: bool,
-    /// The read failed because the folder is no longer there.
     gone: bool,
 }
 
-/// A folder put in order off the main thread: its rows, and the lines built from them where the
-/// listing is drawn as it is read.
 type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
 
-/// Every listing put in order off the main thread, under the shape the one on screen was built in.
 type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
 
-/// Whether a failed read means the folder itself is gone: deleted, replaced by a file, or on a
-/// volume that went away.
 fn gone(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -80,7 +69,6 @@ fn folders_first() -> bool {
     })
 }
 
-/// The window's tick: the watcher's reports, the volume snapshot, the thumbnails that landed.
 pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |this, cx| {
         let mut seen = 0;
@@ -133,7 +121,6 @@ pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
 }
 
 impl FinderDemo {
-    /// Everything the last frame asked for and did not have, plus where the watcher points.
     pub(crate) fn pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.vanished.take() {
             match self.here() == id {
@@ -154,7 +141,6 @@ impl FinderDemo {
         self.follow();
     }
 
-    /// What a summary was asked about: a new selection or a fresh listing needs another one.
     pub(crate) fn stats_key(&self) -> (u64, usize) {
         (self.selected.rev(), self.focused_lines().len())
     }
@@ -191,7 +177,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Reads `id` off the main thread: the index's copy first when it has one, then the disk's.
     pub(crate) fn read_folder(&mut self, id: &'static str, cx: &mut Context<Self>) {
         if !id.starts_with('/') || !self.folders.start(id) {
             return;
@@ -319,8 +304,6 @@ impl FinderDemo {
         }
     }
 
-    /// One folder put in the order asked for off the main thread, with the listing built from it
-    /// where it is the one on screen: a listing this size cannot be sorted inside a frame.
     fn sort_folder(&mut self, id: &'static str, by: (Column, bool), cx: &mut Context<Self>) {
         let Some(rows) = self.folders.get(id).map(|folder| folder.rows.clone()) else {
             return;
@@ -346,8 +329,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// A sort that landed: the rows take the order it made and the listing built beside them,
-    /// unless a read moved the folder while it ran, which sorts what is there now instead.
     fn sorted(
         &mut self,
         id: &'static str,
@@ -375,9 +356,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's re-sort: every listing in memory takes the new order, put in it off the main
-    /// thread with the one on screen built there too, whatever shape it is drawn in. The arrow
-    /// follows the rows rather than running ahead of them.
     pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
         let held = self.folders.held();
         let was: Vec<(&'static str, usize)> =
@@ -405,8 +383,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// A re-sort that landed: every listing takes the order made for it and the lines built
-    /// beside them, unless a read moved one while it ran, which sorts what is there now instead.
     fn resorted(
         &mut self,
         by: (Column, bool),
@@ -440,7 +416,6 @@ impl FinderDemo {
         }
     }
 
-    /// Watch what is on screen and nothing else.
     fn follow(&mut self) {
         let moved = (self.expanded.rev(), self.here(), self.target(), self.view);
         if self.followed == Some(moved) {
@@ -453,8 +428,8 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
-        // An FSEvents stream reports the whole subtree, so a folder inside a watched one needs
-        // no watch of its own.
+        // An FSEvents stream reports the whole subtree, so a folder inside a watched one needs no
+        // watch of its own.
         let inside = |id: &str| {
             Path::new(id)
                 .ancestors()

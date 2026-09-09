@@ -1,5 +1,3 @@
-//! Crawls the roots that never prompt for permission and prints what the index cost.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,7 +85,6 @@ fn main() {
             let _ = tx.send(());
             return;
         }
-        // The weigh phase reports no directory: the entries the user can see are all in by then.
         if progress.current.is_none() && !listed.swap(true, Ordering::Relaxed) {
             println!(
                 "\rtree       {:>8.2} s  {} entries listed",

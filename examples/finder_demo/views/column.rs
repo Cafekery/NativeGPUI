@@ -1,5 +1,3 @@
-//! The column (browser) view.
-
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
@@ -31,7 +29,6 @@ const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
 const COL_MIN: f32 = 100.;
 
-/// The outline a whole column takes while a drop would land in the folder it shows.
 const AREA_ALPHA: f32 = 0.3;
 const AREA_EDGE: f32 = 2.;
 
@@ -199,8 +196,6 @@ impl FinderDemo {
                         };
                         let joins_above = !dropping && row > 0 && picked(row - 1);
                         let joins_below = !dropping && picked(row + 1);
-                        // The ring traces what the menu acts on: the row it was raised on, or
-                        // the whole selection when that row is one of the selected.
                         let aimed = menu_row.as_ref().is_some_and(|aim| {
                             *aim == line.key || (is_selected && chosen.contains(aim))
                         });
@@ -324,9 +319,9 @@ impl FinderDemo {
             &handle.0.borrow().base_handle,
             0.,
         );
-        // A drop anywhere but on a folder row of the column lands in the folder it shows, and
-        // Finder outlines the whole column for it. The edge is drawn under the rows, so their
-        // own drop lands first.
+        // A drop anywhere but on a folder row lands in the folder the column shows, and Finder
+        // outlines the whole column for it; the edge is drawn under the rows, so their own drop
+        // lands first.
         let edge = match self.spring.is_some() {
             true => transparent_black(),
             false => Hsla {
@@ -389,7 +384,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// What this column was dragged to, what was saved for it, or Finder's default.
     pub(crate) fn column_width(&self, folder: &'static str) -> f32 {
         self.column_widths
             .get(folder)
@@ -397,7 +391,6 @@ impl FinderDemo {
             .unwrap_or_else(|| prefs::column_view_width(folder).unwrap_or(COL_W))
     }
 
-    /// Fits a browser column to its longest currently-loaded name, the standard divider gesture.
     fn fit_browser_column(&mut self, folder: &'static str, window: &Window) {
         let lines = self.column_listing(folder);
         let size = px(ROW_H - 8.);

@@ -1,6 +1,3 @@
-//! iCloud Drive as Finder shows it: the folder CloudDocs keeps on disk, the app folders that
-//! live beside it rather than inside it, and the items iCloud has evicted.
-
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -11,14 +8,11 @@ use objc2_foundation::{
     NSPropertyListSerialization, NSString, NSURL,
 };
 
-/// The container every other one is shown beside.
 const CLOUD_DOCS: &str = "com~apple~CloudDocs";
 
-/// What an evicted file leaves on disk in place of its data.
 const PLACEHOLDER: &str = ".icloud";
 
-/// A folder Finder lists inside iCloud Drive that is not inside it on disk: one app's own
-/// container, under the name the app published it with.
+/// An app's own container, under the name the app published it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppFolder {
     pub name: String,
@@ -29,7 +23,6 @@ fn containers() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Mobile Documents"))
 }
 
-/// `~/Library/Mobile Documents/com~apple~CloudDocs`, whether or not the account has one.
 pub fn drive() -> Option<PathBuf> {
     Some(containers()?.join(CLOUD_DOCS))
 }
@@ -38,8 +31,6 @@ pub fn is_drive(dir: &Path) -> bool {
     drive().is_some_and(|drive| drive == dir)
 }
 
-/// The app folders Finder shows in iCloud Drive: a container that published its Documents folder
-/// and has something in it, named as its app named it.
 pub fn app_folders() -> Vec<AppFolder> {
     let Some(containers) = containers() else {
         return Vec::new();
@@ -64,14 +55,12 @@ pub fn app_folders() -> Vec<AppFolder> {
     folders
 }
 
-/// Finder shows a published container once it holds anything at all, a hidden file included,
-/// and never while its Documents folder is empty.
+/// Finder shows a published container once it holds anything at all, a hidden file included.
 fn holds_anything(documents: &Path) -> bool {
     std::fs::read_dir(documents).is_ok_and(|mut read| read.next().is_some())
 }
 
-/// The name an app published its container under, if it published it at all. CloudDocs records
-/// both beside the container it manages, keyed by the bundle the container belongs to.
+/// CloudDocs records a container's published name beside it, keyed by the owning bundle.
 fn published(id: &str) -> Option<String> {
     let plist = PathBuf::from(std::env::var_os("HOME")?)
         .join("Library/Application Support/CloudDocs/session/containers")
@@ -108,12 +97,11 @@ fn read_plist(path: &Path) -> Option<Retained<NSDictionary<NSString, AnyObject>>
     Some(unsafe { Retained::cast_unchecked(dict) })
 }
 
-/// The name an evicted item is shown under: `.report.pdf.icloud` on disk is `report.pdf`.
+/// An evicted item is shown under its real name: `.report.pdf.icloud` on disk is `report.pdf`.
 pub fn placeholder_name(name: &str) -> Option<&str> {
     name.strip_prefix('.')?.strip_suffix(PLACEHOLDER)
 }
 
-/// The size the placeholder records for the data it stands in for.
 pub fn placeholder_size(path: &Path) -> Option<u64> {
     let dict = read_plist(path)?;
     let size = dict
@@ -122,7 +110,6 @@ pub fn placeholder_size(path: &Path) -> Option<u64> {
     Some(size.unsignedLongLongValue())
 }
 
-/// Asks iCloud for an evicted item's data, as opening it in Finder does.
 pub fn download(path: &Path) -> io::Result<()> {
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     NSFileManager::defaultManager()

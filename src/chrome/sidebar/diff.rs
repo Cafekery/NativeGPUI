@@ -1,6 +1,3 @@
-//! What changes when the caller hands the sidebar a new set of items: the smallest set of row
-//! insertions, removals and moves that takes the outline view from the old tree to the new one.
-
 use objc2_app_kit::NSTableViewAnimationOptions;
 use objc2_foundation::{NSIndexSet, NSInteger, NSMutableIndexSet, NSPoint};
 

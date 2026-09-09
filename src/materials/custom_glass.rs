@@ -1,8 +1,3 @@
-//! Liquid glass assembled from the private layers `NSGlassEffectView` composes: a
-//! `CABackdropLayer` sampling what is behind it, a signed-distance-field layer for the shape, and
-//! the `glassBackground` filter. Every class is resolved at runtime; a missing one degrades to a
-//! stock `NSGlassEffectView`, and `NATIVE_GPUI_NO_PRIVATE_GLASS` forces that fallback.
-
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::sync::LazyLock;
@@ -163,7 +158,6 @@ impl GlassRecipe {
         }
     }
 
-    /// [`GlassRecipe::regular`] in a light appearance.
     pub fn regular_light() -> Self {
         Self {
             face_white: 1.03,
@@ -212,7 +206,6 @@ impl GlassRecipe {
         }
     }
 
-    /// A soft droplet: no blur, deep refraction, its own shadow.
     pub fn blob() -> Self {
         Self {
             corner_radius: 300.,

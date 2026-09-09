@@ -1,5 +1,3 @@
-//! The sidebar's tree as the crate keeps it: one node per row, keyed by the id the caller gave.
-
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

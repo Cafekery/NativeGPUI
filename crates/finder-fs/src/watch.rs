@@ -1,6 +1,4 @@
-//! Change notifications: FSEvents streams for the folders on screen, and the catch-up stream the
-//! index uses to learn what changed while the app was not running. An FSEvents stream is
-//! immutable, so `watch`/`unwatch` recreate it from the last event id seen.
+//! An FSEvents stream is immutable, so `watch`/`unwatch` recreate it from the last event id seen.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -24,18 +22,14 @@ use objc2_core_services::{
     kFSEventStreamEventFlagUserDropped, kFSEventStreamEventIdSinceNow,
 };
 
-/// One batch from a stream: what changed, and what the stream could not describe change by change.
 #[derive(Clone, Debug, Default)]
 pub struct Replay {
-    /// Directories whose contents changed.
     pub dirs: Vec<PathBuf>,
     /// Subtrees to read again whole: the log dropped events, or a volume came or went.
     pub rescan: Vec<PathBuf>,
-    /// The highest event id in the batch.
     pub event_id: u64,
-    /// Everything that happened while the app was away has now been reported.
     pub history_done: bool,
-    /// The event ids restarted: no saved id means anything any more.
+    /// FSEvents ids restarted: no saved id means anything any more.
     pub wrapped: bool,
 }
 
@@ -52,9 +46,8 @@ struct Shared {
     changed: Condvar,
     since: AtomicU64,
     shutdown: AtomicBool,
-    /// The watcher thread's `CFRunLoop`, as an address, while an FSEvents stream is scheduled on
-    /// it and `CFRunLoopRun` is blocking; `None` while idle so a stray wake-up can't poison the
-    /// next run.
+    /// Set while `CFRunLoopRun` is blocking; `None` while idle so a stray wake-up can't poison
+    /// the next run.
     run_loop: Mutex<Option<usize>>,
 }
 
@@ -130,8 +123,6 @@ impl Drop for Watcher {
     }
 }
 
-/// Every directory changed after `event_id` under `roots`, then live changes, so a caller holding
-/// a snapshot from the last run learns what it missed instead of reading the disk again.
 pub fn since(
     event_id: u64,
     roots: Vec<PathBuf>,
@@ -166,9 +157,6 @@ struct Context {
     on_change: Box<dyn Fn(Replay) + Send + 'static>,
 }
 
-/// The watcher thread's body: idles on `shared.changed` while there is nothing to watch, and
-/// otherwise runs one FSEvents stream at a time, recreating it whenever `watch`/`unwatch` change
-/// the path set.
 fn run(shared: Arc<Shared>, on_change: Box<dyn Fn(Replay) + Send + 'static>) {
     let run_loop = CFRunLoop::current().expect("watcher thread has a run loop");
     let run_loop_addr = (&*run_loop) as *const CFRunLoop as usize;
@@ -289,8 +277,7 @@ mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::Duration;
 
-    /// FSEvents streams share the daemon and one CFRunLoop each; running these concurrently with
-    /// the crate's disk-heavy tests starves a stream's callbacks past the timeouts. Serialize them.
+    // Disk-heavy tests running alongside starve an FSEvents stream's callbacks past the timeouts.
     fn serial() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))

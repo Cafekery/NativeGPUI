@@ -1,5 +1,3 @@
-//! Finder's ⌘J panel: the view's own settings, floating over the window it belongs to.
-
 use gpui::{
     App, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
     WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
@@ -102,7 +100,6 @@ impl Render for ViewOptions {
     }
 }
 
-/// Finder keeps one panel and brings it forward again, so the demo does too.
 pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
     let demo = demo.downgrade();
     let _ = cx.open_window(

@@ -226,8 +226,7 @@ fn report(window: &Window) {
         ("over the material, on nothing else", bare_at, &gpui, true),
     ];
     for (what, at, want, exact) in rows {
-        // `hitTest:` takes its point in the receiver's superview space, so this is asked of GPUI's
-        // view rather than of the content view, whose superview is the window frame view.
+        // `hitTest:` takes its point in the receiver's superview space.
         let hit: *mut NSView = unsafe { objc2::msg_send![&*gpui, hitTest: at] };
         let name = if hit.is_null() {
             "nil".to_string()
@@ -268,8 +267,7 @@ fn main() -> ExitCode {
                         origin: point(px(0.), px(0.)),
                         size: size(px(280.), px(160.)),
                     })),
-                    // gpui starts its display link only once occlusion reports visible, so
-                    // `show: false` never renders a frame.
+                    // gpui starts its display link only once occlusion reports visible.
                     focus: false,
                     ..window_options()
                 },

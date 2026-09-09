@@ -1,5 +1,3 @@
-//! The keys the list itself handles: everything the menu bar's commands do not claim.
-
 use gpui::{Context, KeyDownEvent, ScrollStrategy, Window, point, px};
 use native_gpui::{quick_look_close, quick_look_visible};
 

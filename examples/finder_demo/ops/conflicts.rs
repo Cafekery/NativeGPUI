@@ -1,5 +1,3 @@
-//! Finder's conflict sheet: Merge between folders, Apply to All when more than one name goes.
-
 use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -19,7 +17,6 @@ const SHEET_W: f32 = 460.;
 const ICON: f32 = 64.;
 const ITEM_ICON: f32 = 32.;
 
-/// The sheet's own choice, `Stop` never reaches `ops::Conflict`.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Choice {
     KeepBoth,
@@ -39,14 +36,12 @@ impl Choice {
     }
 }
 
-/// The operation the sheet is resolving conflicts for.
 enum Kind {
     Move,
     Copy,
     Rename(String),
 }
 
-/// One item still needing a decision, and what to do once every conflict is resolved.
 pub(crate) struct Sheet {
     kind: Kind,
     into: PathBuf,
@@ -97,8 +92,8 @@ fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// Whether both paths name the one item: a rename that only changes a name's case finds the item
-/// itself standing at the destination on a case-insensitive volume.
+/// A rename that only changes a name's case finds the item itself at the destination on a
+/// case-insensitive volume.
 fn same_item(one: &Path, other: &Path) -> bool {
     let id = |path: &Path| {
         std::fs::symlink_metadata(path)
@@ -108,7 +103,6 @@ fn same_item(one: &Path, other: &Path) -> bool {
     matches!((id(one), id(other)), (Some(one), Some(other)) if one == other)
 }
 
-/// `op` split into the items that land cleanly and the ones a name collides on.
 pub(crate) enum Split {
     Clean(Op),
     Conflicted { clean: Option<Op>, sheet: Sheet },
@@ -167,7 +161,6 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     }
 }
 
-/// A rename onto a name another item holds asks the same question a move does.
 fn rename_split(path: PathBuf, name: String, after: After) -> Split {
     let into = path.parent().map(PathBuf::from).unwrap_or_default();
     let dest = into.join(&name);
@@ -203,7 +196,6 @@ pub(super) fn item_icon(path: &Path, size: f32) -> AnyElement {
         .unwrap_or_else(|| div().into_any_element())
 }
 
-/// One side of Finder's "which one do you want to keep" comparison.
 fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
     let name = path
         .file_name()
@@ -241,7 +233,7 @@ fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
 }
 
 impl FinderDemo {
-    /// Finder's "An item named…" sheet: Keep Both / Stop / Replace, and Merge between folders.
+    /// Finder's "An item named…" sheet: Merge is offered only between folders.
     pub(crate) fn conflict_sheet(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(sheet) = &self.conflict else {
             return div().into_any_element();

@@ -135,7 +135,6 @@ fn appkit_text_strip(text: &str, point_size: f64, color: &NSColor, scale: f64) -
     }
 }
 
-/// One symbol the probe draws, and the colouring it asks for.
 type Sample = (&'static str, fn() -> SymbolColor);
 
 const SYMBOLS: &[Sample] = &[

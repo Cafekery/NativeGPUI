@@ -1,5 +1,3 @@
-//! `NSPopUpButton` in both styles, and a real `NSMenu` hung off a GPUI-drawn region.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Modifiers, SharedString, Window, div, prelude::*, px};

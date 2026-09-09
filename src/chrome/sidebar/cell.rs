@@ -1,6 +1,3 @@
-//! The rows the outline view draws: one recycled `NSTableCellView` per shape, and the artwork a
-//! row wears.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -179,10 +176,8 @@ fn make_cell(
     cell
 }
 
-/// A tag dot, by the colour it is filled with and whether it is the pair every tag wears.
 type Dots = HashMap<(Option<(u8, u8, u8)>, bool), Retained<NSImage>>;
 
-/// A CoreTypes template, by name and whole-point size: `None` for a name the bundle lacks.
 type Templates = HashMap<(SharedString, u32), Option<Retained<NSImage>>>;
 
 fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSImage>> {
@@ -209,8 +204,6 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
     })
 }
 
-/// A [`CORE_TYPES_BUNDLE`] resource as a template image `points` across, drawn from the
-/// representation nearest that size.
 pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
     build_core_types_template(resource, points.to_f64())
 }
@@ -248,9 +241,7 @@ fn ring_path(at: NSRect) -> Retained<NSBezierPath> {
     ring
 }
 
-/// Finder's tag dot: a disc in the tag's own colour when it has one, a template-tinted ring when
-/// it does not, a pair of rings for every tag at once. Drawn rather than an SF Symbol, which the
-/// cell would baseline-align, not centre.
+/// Drawn rather than an SF Symbol, which the cell would baseline-align, not centre.
 fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     let color = match icon {
         SidebarIcon::Dot(color) => *color,

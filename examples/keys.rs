@@ -170,8 +170,7 @@ fn descend(view: &NSView, out: &mut Vec<Retained<NSView>>) {
     }
 }
 
-/// `isKindOfClass` rather than a downcast: objc2 offers no checked cast for a main-thread-only
-/// class.
+/// `isKindOfClass`: objc2 offers no checked cast for a main-thread-only class.
 fn as_kind<T: objc2::Message + objc2::ClassType>(view: &Retained<NSView>) -> Option<Retained<T>> {
     if view.isKindOfClass(T::class()) {
         Some(unsafe { Retained::cast_unchecked::<T>(view.clone()) })
@@ -330,7 +329,6 @@ struct Suite {
     rows: Vec<Row>,
     controls_passed: usize,
     name: String,
-    /// Every frontmost test compares against this, the process name being non-unique.
     pid: u32,
 }
 
@@ -390,9 +388,8 @@ impl Suite {
         format!("{:?}|{}", self.alpha_text(), self.selection())
     }
 
-    /// Put the field into a known state through GPUI, so the crate's own text sync owns the
-    /// value. The selection is verified rather than just written: `makeFirstResponder:` selects
-    /// the whole string, and the field editor is not always installed yet.
+    /// `makeFirstResponder:` selects the whole string, and the field editor is not always
+    /// installed yet, so the selection is read back rather than assumed.
     async fn arm(&mut self, cx: &mut AsyncApp, text: &str, caret: usize) {
         self.controls.window.makeFirstResponder(None);
         let owned = text.to_owned();
@@ -426,7 +423,6 @@ impl Suite {
         }
     }
 
-    /// Hand one whole AppleScript to `scripts/keys.sh` and return what it printed.
     async fn run_script(&mut self, cx: &mut AsyncApp, script: String) -> String {
         self.seq += 1;
         let scpt = self.dir.join("req.applescript");
@@ -473,9 +469,8 @@ impl Suite {
             format!("{tool} ku:cmd,alt,ctrl,shift,fn")
         };
         fs::write(self.dir.join("req.cliclick"), &tool).ok();
-        // One script, because checking from Rust and then sending leaves a window in which this
-        // types into whatever the user focused meanwhile. On `unix id`, not the process name: a
-        // stale copy of this binary satisfies a name comparison.
+        // One script: checking from Rust and then sending leaves a window in which this types
+        // into whatever the user focused meanwhile.
         let pid = self.pid;
         let script = format!(
             "tell application \"System Events\"\n\
@@ -499,12 +494,10 @@ impl Suite {
         }
     }
 
-    /// A keystroke System Events can express: a letter, or a letter with modifiers.
     async fn send(&mut self, cx: &mut AsyncApp, key: &str, body: &str) -> Sent {
         self.deliver(cx, key, body, "").await
     }
 
-    /// A keystroke that needs a real CGEvent: anything in the navigation cluster.
     async fn press(&mut self, cx: &mut AsyncApp, key: &str, tool: &str) -> Sent {
         self.deliver(cx, key, "delay 0.02", tool).await
     }
@@ -702,7 +695,6 @@ impl Suite {
         });
     }
 
-    /// For a row whose expectation is only "this moved".
     fn expect_change(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
         let inverted = self.sabotage == Sabotage::Want;
         let changed = pre != post;
@@ -724,7 +716,6 @@ impl Suite {
         });
     }
 
-    /// The negative control: what the keystroke must leave alone.
     fn expect_stable(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
         let inverted = self.sabotage == Sabotage::Want;
         let stable = pre == post;
@@ -761,7 +752,6 @@ impl Suite {
         });
     }
 
-    /// The centre of a view, in the top-left-origin screen space the click tools take.
     fn point_of(&self, view: &NSView) -> (f64, f64) {
         let in_window = view.convertRect_toView(view.bounds(), None);
         let on_screen = self.controls.window.convertRectToScreen(in_window);

@@ -1,4 +1,4 @@
-//! A live editor for [`GlassRecipe`]: every input of the private `glassBackground` filter on a dial.
+//! A live editor for every input of the private `glassBackground` filter.
 
 use crate::Demo;
 use crate::ui::*;
@@ -28,7 +28,6 @@ pub struct State {
 }
 
 #[cfg(feature = "private-api")]
-/// One preset the page offers, and the recipe behind it.
 type Preset = (&'static str, fn() -> GlassRecipe);
 
 #[cfg(feature = "private-api")]

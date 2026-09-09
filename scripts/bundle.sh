@@ -31,8 +31,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$product"
 
-# Icon Composer's document, compiled the way Xcode would: the layered icon lands in Assets.car
-# and the flattened .icns beside it, for anything that still reads one.
+# Compiled the way Xcode would: the layered icon lands in Assets.car, the flattened .icns beside it.
 icon="assets/$title.icon"
 icon_keys=
 if [ -d "$icon" ]; then
@@ -78,9 +77,8 @@ $icon_keys
 </plist>
 PLIST
 
-# TCC keys a grant to the app's designated requirement. Ad-hoc signing makes that requirement the
-# cdhash, which every rebuild changes, so every rebuild is a new app that has to be granted again; a
-# real identity makes it identifier-plus-certificate, which survives rebuilds.
+# TCC keys a grant to the designated requirement: ad-hoc signing makes that the cdhash, which every
+# rebuild changes, while a real identity makes it identifier-plus-certificate, which survives.
 identity=${NG_CODESIGN_IDENTITY:-}
 self_signed="NativeGPUI Dev"
 keychain="$HOME/Library/Keychains/nativegpui-dev.keychain-db"
@@ -91,9 +89,8 @@ find_identity() {
     sed -n 's/^ *[0-9]*) [0-9A-F]* "\(.*\)"$/\1/p' | grep -m1 "$1"
 }
 
-# No identity on this Mac: keep one of ours in a keychain of its own, with a password the script
-# knows so later builds sign unattended. codesign resolves a name only through the user's keychain
-# search list, and only an unlocked keychain whose key allows codesign signs without a dialog.
+# codesign resolves a name only through the user's keychain search list, and only an unlocked
+# keychain whose key allows codesign signs without a dialog.
 own_identity() {
   local dir status
   [ -f "$keychain" ] || security create-keychain -p "$keychain_password" "$keychain" || return 1

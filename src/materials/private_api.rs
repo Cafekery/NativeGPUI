@@ -1,7 +1,3 @@
-//! Runtime-gated sends for undocumented AppKit selectors: a selector the runtime does not
-//! declare with the expected shape is not sent, so a macOS that drops one leaves the object at
-//! its public behaviour.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 

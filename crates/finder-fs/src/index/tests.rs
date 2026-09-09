@@ -8,7 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::{Index, Progress};
 
 const MANY: usize = 2000;
-/// Deeper than the byte a node's depth is kept in.
 const DEEP_LEVELS: usize = 300;
 const MANY_BYTES: u64 = (MANY * 10) as u64;
 const DEEP_BYTES: u64 = 4 + 40 + 400;
@@ -25,7 +24,6 @@ impl Drop for Temp {
     }
 }
 
-/// Nested directories, a package, a symlink loop, an unreadable directory, thousands of files.
 fn tree(name: &str) -> Temp {
     let root = std::env::temp_dir().join(format!("finder-fs-index-{name}"));
     let _ = fs::remove_dir_all(&root);
@@ -57,8 +55,6 @@ fn tree(name: &str) -> Temp {
     Temp(fs::canonicalize(&root).unwrap())
 }
 
-/// The snapshot a finished crawl writes lands outside the tree under test, so a second crawl
-/// does not count it.
 fn crawled(root: &Path) -> Arc<Index> {
     let index = Index::open(&store(
         &root.file_name().unwrap_or_default().to_string_lossy(),
@@ -77,14 +73,12 @@ fn sync(index: &Arc<Index>, root: &Path) {
     rx.recv_timeout(Duration::from_secs(120)).unwrap();
 }
 
-/// A store outside the tree under test, so writing it is not itself a change to catch up on.
 fn store(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("finder-fs-store-{name}.bin"));
     let _ = fs::remove_file(&path);
     path
 }
 
-/// The directories the crate has read under `root` since `mark`.
 fn reads_under(root: &Path, mark: usize) -> Vec<PathBuf> {
     crate::list::READS.lock().unwrap()[mark..]
         .iter()
@@ -136,7 +130,6 @@ fn children_and_sizes() {
     assert_eq!(index.folder_size(&root.join("a")), Some(DEEP_BYTES));
     assert_eq!(index.folder_size(&root.join("a/b/c")), Some(400));
 
-    // A package is one entry whose size is its whole interior.
     assert!(index.children(&root.join("Demo.app")).is_none());
     assert_eq!(index.folder_size(&root.join("Demo.app")), Some(APP_BYTES));
     let app = index
@@ -147,13 +140,11 @@ fn children_and_sizes() {
         .unwrap();
     assert!(app.package && app.size == APP_BYTES);
 
-    // The symlink is one entry, never a directory the crawl walked into.
     assert_eq!(names(&index, &root.join("ring")), ["back"]);
     let hits = index.search("back", None, 10);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].entry.kind, crate::EntryKind::Symlink);
 
-    // Unreadable: no listing, but the crawl passed through it and the tree still totals.
     assert!(index.children(&root.join("locked")).is_none());
     assert_eq!(index.folder_size(&root.join("locked")), Some(0));
     let total = index.folder_size(root).unwrap();
@@ -162,12 +153,10 @@ fn children_and_sizes() {
 
     let stats = index.stats();
     assert_eq!(stats.files as usize, MANY + 6);
-    // The seven directories under and including the root, plus the stubs above it.
     let above = root.components().count() as u64 - 2;
     assert_eq!(stats.dirs, above + 7);
     assert!(stats.crawled_at.is_some());
 
-    // Crawling again updates in place rather than doubling the tree.
     crawl(&index, root);
     let again = index.stats();
     assert_eq!(
@@ -207,7 +196,6 @@ fn search_ranks_and_scopes() {
     assert_eq!(hits[0].path, root.join("a/one.txt"));
     assert_eq!(hits[0].entry.size, 4);
 
-    // Prefix beats word start beats substring, and a shallower path beats a deeper one.
     let dir = root.join("rank");
     fs::create_dir_all(dir.join("deep")).unwrap();
     fs::write(dir.join("target.txt"), b"").unwrap();
@@ -235,7 +223,6 @@ fn search_ranks_and_scopes() {
             .search("target", Some(Path::new("/nowhere")), 10)
             .is_empty()
     );
-    // Never inside a package.
     assert!(index.search("Info.plist", None, 10).is_empty());
 }
 
@@ -392,7 +379,6 @@ fn snapshot_round_trip() {
     assert_eq!(reopened.search("three", None, 4).len(), 1);
     assert!(reopened.children(&root.join("Demo.app")).is_none());
 
-    // A snapshot the index cannot read is not one it trusts.
     fs::write(&store, b"NGVIDX03 and nothing else").unwrap();
     assert_eq!(Index::open(&store).stats().files, 0);
 }
@@ -409,7 +395,6 @@ fn a_cold_sync_crawls_the_whole_tree() {
 
     assert_eq!(index.children(&root.join("many")).unwrap().len(), MANY);
     assert_eq!(index.stats().files as usize, MANY + 6);
-    // Every directory of the fixture, the unreadable one included.
     assert!(reads_under(root, mark).len() >= 8);
     let _ = fs::remove_file(&store);
 }
@@ -486,12 +471,10 @@ fn an_event_id_the_log_cannot_hold_forces_a_full_crawl() {
     let now = crate::watch::latest_event_id();
     assert_eq!(super::catchup::plan(&tree, roots, now).warm, roots);
 
-    // An id no counter has reached yet: a restored snapshot, or ids that wrapped under it.
     let plan = super::catchup::plan(&tree, roots, 1);
     assert_eq!(plan.cold, roots);
     assert!(plan.warm.is_empty() && plan.since_when == 0);
 
-    // A root the snapshot has never recorded is cold whatever the log says.
     let other = vec![root.join("a")];
     assert_eq!(super::catchup::plan(&tree, &other, now).cold, other);
     drop(tree);
@@ -527,8 +510,6 @@ fn a_snapshot_keeps_the_id_of_the_tree_it_holds() {
     index.note_changed(&[root.join("many")]);
     index.save();
 
-    // The change is in the snapshot and the id is still the one the crawl finished at: an id
-    // newer than the tree would tell the next launch to replay from after the change it missed.
     let reopened = Index::open(&store);
     assert_eq!(reopened.search("late", None, 4).len(), 1);
     assert_eq!(reopened.stats().event_id, landed);
@@ -545,7 +526,6 @@ fn a_failed_write_leaves_the_snapshot_that_landed() {
     crawl(&index, root);
     let landed = fs::read(&store).unwrap();
 
-    // A directory where the temp file goes: the save fails before it can rename anything.
     let temp_path = store.with_extension("tmp");
     let _ = fs::remove_file(&temp_path);
     fs::create_dir_all(&temp_path).unwrap();
@@ -556,7 +536,6 @@ fn a_failed_write_leaves_the_snapshot_that_landed() {
     assert_eq!(fs::read(&store).unwrap(), landed);
     assert_eq!(Index::open(&store).search("late", None, 4).len(), 0);
 
-    // The change the failed save could not write is still owed, and the next one carries it.
     fs::remove_dir(&temp_path).unwrap();
     index.save();
     assert_eq!(Index::open(&store).search("late", None, 4).len(), 1);
@@ -634,7 +613,6 @@ fn search_takes_every_word_and_puts_the_whole_name_first() {
     fs::write(root.join("year-of-the-donkey.txt"), b"").unwrap();
     crawl(&index, root);
 
-    // The name that is the query, then the one that starts with it.
     let order: Vec<String> = index
         .search("report", None, 10)
         .iter()
@@ -642,7 +620,6 @@ fn search_takes_every_word_and_puts_the_whole_name_first() {
         .collect();
     assert_eq!(order, ["report.txt", "report-of-the-year.txt"]);
 
-    // Every word has to be in the name, wherever it falls.
     let order: Vec<String> = index
         .search("report year", None, 10)
         .iter()

@@ -1,6 +1,3 @@
-//! The undocumented `NSGlassEffectView` knobs, behind `private-api`; each selector is resolved
-//! at runtime and only the knobs that move pixels are exposed.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -88,7 +85,6 @@ impl GlassVariant {
         }
     }
 
-    /// The subvariants that draw under this variant.
     pub fn subvariants(self) -> &'static [GlassSubvariant] {
         use GlassSubvariant as S;
         const HOMESCREEN: &[GlassSubvariant] =

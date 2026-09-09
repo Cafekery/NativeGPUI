@@ -1,5 +1,3 @@
-//! Finder's ⌘I window: one per item, or one summary for a selection past [`COMBINE_OVER`].
-
 use std::path::Path;
 
 use gpui::{
@@ -15,10 +13,9 @@ use crate::data::{Line, Row, VolumeInfo, byte_string, day_string, volume_at};
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
-/// A selection past this size gets one combined window rather than one window per item.
 const COMBINE_OVER: usize = 3;
 
-/// The window's body, inset under the title bar AppKit draws over it.
+/// Inset under the title bar AppKit draws over it.
 fn body() -> Div {
     div()
         .size_full()
@@ -90,8 +87,6 @@ impl Info {
     }
 }
 
-/// Finder's General block for a volume: what it is made of and how much of it is left, in
-/// place of the size and the folder a file would show.
 fn volume_fields(volume: &VolumeInfo, row: &Row) -> Vec<(&'static str, SharedString)> {
     vec![
         ("Kind", row.kind.clone()),
@@ -225,7 +220,6 @@ pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static st
     }
 }
 
-/// One window for the whole selection: combined size, the kinds present, and where they are.
 struct Combined {
     lines: Vec<Line>,
     where_: SharedString,

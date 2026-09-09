@@ -1,5 +1,3 @@
-//! The small element helpers every view shares.
-
 use gpui::{
     App, ClickEvent, Div, ElementId, FontWeight, Hsla, IntoElement, MouseDownEvent, Pixels,
     ScrollHandle, SharedString, Styled, TextRun, WeakEntity, Window, div, hsla, point, prelude::*,
@@ -14,7 +12,6 @@ use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::frame::ns_window;
 
-/// How wide `text` shapes at `size` in the system font: what the column and crumb fits measure.
 pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: Pixels) -> f32 {
     let text = text.into();
     let run = TextRun {
@@ -35,13 +32,11 @@ pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: P
 
 /// Finder strokes two points of the row a contextual menu is open on.
 const RING_W: f32 = 2.;
-/// Over the selection's own fill the stroke turns white and steps a point in, so a rim of the
-/// fill stays outside it.
+/// Over the selection's own fill the stroke turns white and steps a point in.
 const RING_INSET: f32 = 1.;
 
-/// The outline Finder draws on the row a menu is open on: the selection pill's shape, stroked
-/// rather than filled. `run` is `(joins above, joins below)`, so a block of selected rows is one
-/// ring; `inside` is whether it lands on the emphasized fill.
+/// `run` is `(joins above, joins below)`, so a block of selected rows is one ring; `inside` is
+/// whether it lands on the emphasized fill.
 pub(crate) fn menu_ring(
     colour: Hsla,
     pane_inset: f32,
@@ -80,7 +75,6 @@ pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
     }
 }
 
-/// Finder's row click: it picks the row, and the second one opens it.
 pub(crate) fn pick_on_click(
     line: &Line,
     this: WeakEntity<FinderDemo>,
@@ -157,14 +151,13 @@ pub(crate) fn rename_field(
         })
 }
 
-/// Hand key back to the main window after a field in the pane's panel took it.
 pub(crate) fn key_to_parent(window: &Window) {
     if let Some(parent) = ns_window(window).and_then(|panel| panel.parentWindow()) {
         parent.makeKeyWindow();
     }
 }
 
-/// The trailing-edge scroller, or nothing while it all fits; `inset` is content above the rows.
+/// `inset` is content above the rows.
 pub(crate) fn scroller(
     id: impl Into<ElementId>,
     handle: &ScrollHandle,
@@ -188,7 +181,6 @@ pub(crate) fn scroller(
     )
 }
 
-/// A scroll container that ignores the other axis, so nested scrollers own one axis each.
 pub(crate) fn axis_locked<E: Styled>(mut element: E) -> E {
     element.style().restrict_scroll_to_axis = Some(true);
     element

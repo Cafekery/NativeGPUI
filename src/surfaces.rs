@@ -1,5 +1,3 @@
-//! The transient surfaces: popovers, sheets and the system share picker.
-
 use std::cell::{Cell, RefCell};
 use std::panic::Location;
 use std::ptr::NonNull;
@@ -56,7 +54,6 @@ impl SurfaceAnchor {
     }
 }
 
-/// Record `child`'s painted bounds into `anchor`, so a surface can point at it.
 pub fn native_anchor(anchor: &SurfaceAnchor, child: impl IntoElement) -> NativeAnchor {
     NativeAnchor {
         anchor: anchor.clone(),
@@ -157,10 +154,8 @@ impl SurfaceEdge {
     }
 }
 
-/// What the share picker reports as the user moves through it.
 type PickerHandler = dyn Fn(SharePickerEvent, &mut Window, &mut App);
 
-/// A handler a surface runs on the window it belongs to.
 type SurfaceHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[doc(hidden)]
@@ -173,7 +168,8 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSurfaceActions"]
-    /// The action sink for controls a surface owns; `setTarget:` is weak, so the surface retains it.
+    /// The action sink for controls a surface owns; `setTarget:` is weak, so the surface retains
+    /// it.
     #[ivars = ActionIvars]
     pub struct SurfaceActions;
 
@@ -228,7 +224,6 @@ impl SurfaceActions {
     }
 }
 
-/// How a popover decides to close.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum PopoverBehavior {
     #[default]

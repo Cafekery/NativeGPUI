@@ -1,5 +1,3 @@
-//! The rows a frame draws: built once from the listings on screen, kept until they move.
-
 use std::cell::RefMut;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -13,7 +11,6 @@ use crate::app::FinderDemo;
 use crate::data::{Column, Line, Row, group_of};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
-/// What a grouped list draws: Finder's band header, or the row at that index.
 pub(crate) enum Slot {
     Header(SharedString),
     Row(usize),
@@ -24,14 +21,12 @@ pub(crate) fn next_rev() -> u64 {
     NEXT.fetch_add(1, Atomic::Relaxed)
 }
 
-/// A set of row keys a frame shares rather than copies, under a revision its caches compare.
 #[derive(Clone)]
 pub(crate) struct Keys {
     keys: Arc<HashSet<SharedString>>,
     rev: u64,
 }
 
-/// Everything the rows a frame draws are built from: while this holds, so do they.
 #[derive(PartialEq)]
 pub(crate) struct Stamp {
     here: &'static str,
@@ -44,14 +39,10 @@ pub(crate) struct Stamp {
     hits: u64,
 }
 
-/// A listing as it comes out of a walk: the lines, and where the folders it discloses sit.
 pub(crate) type Walk = (Vec<Line>, Vec<(usize, &'static str)>);
 
-/// Where a walk finds a folder's rows: the listings in memory, or a copy held off the main thread.
 type Held<'a> = dyn Fn(&'static str) -> Option<&'a [Arc<Row>]> + 'a;
 
-/// Everything a listing is shaped by apart from the rows themselves, taken by value so a sort can
-/// build off the main thread what the frame after it would otherwise build on it.
 pub(crate) struct Shape {
     stamp: Stamp,
     tree: bool,
@@ -61,15 +52,10 @@ pub(crate) struct Shape {
     hits: Vec<Arc<Row>>,
 }
 
-/// The band slots built for one listing, beside that listing.
 type Bands = (Arc<Vec<Line>>, Arc<Vec<Slot>>);
 
-/// A disclose to splice into the tree listing: where it lands, the key that must still be
-/// there, and the folder to open under it, or `None` to shut what is open there.
 pub(crate) type Edit = (usize, SharedString, Option<&'static str>);
 
-/// A listing as built, how many of the folder's rows went into it, and where the folders it
-/// discloses sit in it.
 #[derive(Clone)]
 struct Built {
     lines: Arc<Vec<Line>>,
@@ -77,17 +63,13 @@ struct Built {
     at: Arc<Vec<(usize, &'static str)>>,
 }
 
-/// The cursor's key, and the line it names while that listing holds one.
 type Cursor = (SharedString, Option<Line>);
 
-/// The rows, bands and browser listings a frame draws, kept until [`Stamp`] moves.
 #[derive(Default)]
 pub(crate) struct Listings {
     stamp: Option<Stamp>,
-    /// The revisions of the listings and of `expanded` the cache was filled under.
     folders: u64,
     expanded: u64,
-    /// The discloses and landings that carry the tree listing to those revisions.
     edits: Vec<Edit>,
     edited: u64,
     landed: u64,
@@ -117,7 +99,6 @@ impl Keys {
         Arc::make_mut(&mut self.keys).remove(key)
     }
 
-    /// Every key in one revision, so a disclosed subtree rebuilds the rows behind it once.
     pub(crate) fn extend(&mut self, keys: impl IntoIterator<Item = SharedString>) {
         let set = Arc::make_mut(&mut self.keys);
         let was = set.len();
@@ -180,7 +161,6 @@ pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
 }
 
 impl Shape {
-    /// The listing a frame would build from these rows: the same walk, wherever it runs.
     pub(crate) fn build(&self, held: &Held<'_>) -> Walk {
         let mut out = Vec::new();
         let mut at = Vec::new();
@@ -219,7 +199,6 @@ impl Shape {
         self.collect_from(held, id, 0, depth, out, at);
     }
 
-    /// The listing's rows from `from` on, filtered and disclosed the way a frame draws them.
     fn collect_from(
         &self,
         held: &Held<'_>,
@@ -260,7 +239,6 @@ impl Shape {
 }
 
 impl FinderDemo {
-    /// The rows a grouped list draws, with Finder's band headers between them.
     pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Option<Arc<Vec<Slot>>> {
         if !self.grouped {
             return None;
@@ -350,7 +328,6 @@ impl FinderDemo {
         built.lines
     }
 
-    /// Whether a listing is drawn as it is read, and with it whether hidden rows are drawn.
     pub(crate) fn plain(&self) -> Option<bool> {
         (self.tag_listing.is_none()
             && !self.results()
@@ -360,7 +337,6 @@ impl FinderDemo {
         .then_some(self.show_hidden)
     }
 
-    /// Take the lines a read built, so the frame they land under does not build them again.
     pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
         if id != self.here() || self.plain() != Some(hidden) {
             return;
@@ -395,7 +371,6 @@ impl FinderDemo {
         self.shape_sorted(tree, (self.sort, self.ascending))
     }
 
-    /// The shape a frame draws the listing in, taken so a sort can build it under that shape.
     pub(crate) fn shape_sorted(&self, tree: bool, by: (Column, bool)) -> Shape {
         Shape {
             stamp: self.stamp(by),
@@ -407,8 +382,6 @@ impl FinderDemo {
         }
     }
 
-    /// The shape a query not yet on screen would draw in, so a filter builds its lines off the
-    /// main thread the way a re-sort builds its own.
     pub(crate) fn shape_filtered(&self, query: &str, hits: &[Arc<Row>], rev: u64) -> Shape {
         let mut shape = self.shape(self.view == LIST_VIEW);
         shape.stamp.query = query.to_owned();
@@ -418,8 +391,6 @@ impl FinderDemo {
         shape
     }
 
-    /// Take the listing a sort built, where the window is still drawing the shape it was built
-    /// for, so the frame the new order lands under does not build it again.
     pub(crate) fn shaped(&self, shape: &Shape, walk: Walk) {
         if shape.stamp != self.stamp((self.sort, self.ascending))
             || shape.tree != (self.view == LIST_VIEW)
@@ -445,8 +416,6 @@ impl FinderDemo {
         }
     }
 
-    /// Lifts the cached listing out, so extending it does not copy what the cache still holds.
-    /// A read hands one vector to both listings, and only its last holder can be carried through.
     fn take(&self, tree: bool) -> Option<Built> {
         let mut listings = self.listings();
         listings.slots = None;
@@ -468,7 +437,6 @@ impl FinderDemo {
         taken
     }
 
-    /// How many rows of the folder on screen a listing is built from; `None` where hits shape it.
     fn appendable(&self) -> Option<usize> {
         if self.tag_listing.is_some() || self.results() {
             return None;
@@ -478,7 +446,6 @@ impl FinderDemo {
             .map(|folder| folder.rows.len())
     }
 
-    /// The rows a listing gained since it was built, appended to what was built.
     fn extended(
         &self,
         built: Option<Built>,
@@ -497,8 +464,6 @@ impl FinderDemo {
         Some(built)
     }
 
-    /// A disclose the tree listing is carried through rather than built again, once the frame
-    /// that drew it is gone and the lines it names are still where they were.
     fn spliced(&self, built: Built, edits: &[Edit]) -> Option<Built> {
         let shape = self.shape(true);
         let old = built.lines;
@@ -562,8 +527,6 @@ impl FinderDemo {
         })
     }
 
-    /// A listing that landed under the rows disclosing it, spliced in where they sit. Anything
-    /// else that moved leaves the cache to see the change and empty itself.
     pub(crate) fn landed(&self, id: &'static str) {
         let mut listings = self.cache.borrow_mut();
         if listings.landed + 1 != self.folders.changed() || listings.edited != self.expanded.rev() {
@@ -590,7 +553,6 @@ impl FinderDemo {
         listings.edits.extend(edits);
     }
 
-    /// The discloses a key press made, to splice into the tree listing the frame it drew held.
     pub(crate) fn disclosed(&self, was: u64, edits: Vec<Edit>) {
         let mut listings = self.cache.borrow_mut();
         if listings.expanded == was && listings.edits.is_empty() && listings.tree.is_some() {
@@ -599,7 +561,6 @@ impl FinderDemo {
         }
     }
 
-    /// The cache every listing this frame comes out of, emptied when what it holds is stale.
     fn listings(&self) -> RefMut<'_, Listings> {
         let stamp = self.stamp((self.sort, self.ascending));
         let folders = self.folders.changed();
@@ -682,7 +643,6 @@ impl FinderDemo {
         self.shape(tree).build(&self.held())
     }
 
-    /// The rows of a folder as the listings in memory hold them.
     fn held<'a>(&'a self) -> impl Fn(&'static str) -> Option<&'a [Arc<Row>]> + 'a {
         |id| self.folders.get(id).map(|folder| folder.rows.as_slice())
     }

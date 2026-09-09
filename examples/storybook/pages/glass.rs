@@ -1,5 +1,3 @@
-//! Public liquid glass: one panel with its knobs, then the container that batches many panels.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Hsla, Window, div, hsla, prelude::*, px, rgb};
@@ -25,7 +23,6 @@ pub struct State {
     pub tint_on: bool,
     pub tint: Hsla,
     pub spacing: f64,
-    /// Index into [`COUNTS`].
     pub panels: usize,
 }
 
@@ -352,7 +349,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
-/// GPUI-drawn stripes for a specimen to sit on.
 pub fn stripes(width: f32, height: f32, child: AnyElement) -> AnyElement {
     let count = (width / (2. * STRIPE)).ceil() as usize;
     div()

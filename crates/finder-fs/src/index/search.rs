@@ -1,9 +1,3 @@
-//! Name search. Every interned name is matched against the query on all cores, and a name that
-//! matches reaches its nodes through the lookup table rather than a walk over the tree, so a
-//! query costs what it matches. A name starting with the query outranks one that merely holds it,
-//! so the pass that compares heads alone answers first, and the rest is read only when it comes
-//! up short.
-
 use std::borrow::Cow;
 use std::thread;
 
@@ -19,11 +13,9 @@ const EXACT: u8 = 4;
 const LOW: u64 = 0x0101_0101_0101_0101;
 const HIGH: u64 = 0x8080_8080_8080_8080;
 
-/// Fewer names than this are not worth splitting across threads.
 const CHUNK: usize = 1 << 15;
 
-/// A query byte matches case-insensitively as `byte | fold == query`: only the two letter
-/// ranges can land on a lowercase letter, so the fold needs no branch and no table.
+/// A query byte matches case-insensitively as `byte | fold == query`.
 fn fold_of(byte: u8) -> u8 {
     match byte.is_ascii_lowercase() {
         true => 0x20,
@@ -59,7 +51,6 @@ fn class_at(name: &[u8], at: usize, query: &[u8], folds: &[u8]) -> u8 {
     }
 }
 
-/// Every position of `query` in `name`, eight bytes at a time, best class first.
 fn class_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
     let Some(last) = name.len().checked_sub(query.len()) else {
         return 0;
@@ -96,7 +87,6 @@ fn class_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
     best
 }
 
-/// The head of a name against the query: what a search asks first.
 fn head_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
     match name.len() >= query.len() && matches_at(name, 0, query, folds) {
         true => PREFIX,
@@ -104,7 +94,6 @@ fn head_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
     }
 }
 
-/// One word of the query, with the case folds its bytes take.
 struct Word {
     bytes: Vec<u8>,
     folds: Vec<u8>,
@@ -127,8 +116,6 @@ impl Word {
     }
 }
 
-/// A name earns the class its first word does, but only if every other word is in it too, and a
-/// name that is the query rather than merely starting with it earns more.
 fn classed(words: &[Word], name: &[u8], first: impl Fn(&Word, &[u8]) -> u8) -> u8 {
     let class = first(&words[0], name);
     if class == 0 {
@@ -143,16 +130,13 @@ fn classed(words: &[Word], name: &[u8], first: impl Fn(&Word, &[u8]) -> u8) -> u
     }
 }
 
-/// A hit on its way to the top: the score it ranks by, the name it wears, the node it is.
 type Found = (u32, u32, u32);
 
 struct Query<'a> {
     tree: &'a Tree,
     lookup: &'a Lookup,
-    /// The first word: what the head buckets are looked up by.
     bytes: &'a [u8],
     wanted: u64,
-    /// The user's home, so their own files outrank the system's.
     home: Option<u32>,
     under: Option<u32>,
     limit: usize,
@@ -160,7 +144,6 @@ struct Query<'a> {
 }
 
 impl Query<'_> {
-    /// The name as a search reads it: its own bytes, folded only where they are not ASCII.
     fn name(&self, id: u32, mask: u64) -> Cow<'_, [u8]> {
         let bytes = self.tree.names.bytes(id);
         match mask & NEEDS_FOLD == 0 {
@@ -169,17 +152,14 @@ impl Query<'_> {
         }
     }
 
-    /// Score first, then name, then the node itself: total, so a query answers the same way
-    /// however many threads it was spread across.
     fn order(&self, a: &Found, b: &Found) -> std::cmp::Ordering {
         b.0.cmp(&a.0)
             .then_with(|| self.tree.names.bytes(a.1).cmp(self.tree.names.bytes(b.1)))
             .then_with(|| a.2.cmp(&b.2))
     }
 
-    /// Where a hit stands: `None` where Finder's own search would not show it at all — a
-    /// dot-file, or anything inside a dot-folder or a package, none of which Spotlight indexes —
-    /// and otherwise whether it is one of the user's own files rather than the system's.
+    /// `None` where Finder's own search would not show it at all: a dot-file, or anything inside
+    /// a dot-folder or a package, none of which Spotlight indexes.
     fn placed(&self, id: u32) -> Option<bool> {
         let masks = self.tree.names.masks();
         let dotted = |id: u32| masks[self.tree.name_of[id as usize] as usize] & DOTTED != 0;
@@ -199,14 +179,11 @@ impl Query<'_> {
         Some(home)
     }
 
-    /// Keeps `id` if it can still make the top `limit`, raising the cutoff as the list fills.
     fn keep(&self, best: &mut Vec<Found>, cutoff: &mut u32, id: u32, name: u32, class: u8) {
         let node = &self.tree.nodes[id as usize];
         if node.deleted() {
             return;
         }
-        // Class first, so the pass over the heads alone can answer; then the user's own files,
-        // the shallower path, and the name the query is more of.
         let score = |home: bool| {
             (class as u32) << 28
                 | (home as u32) << 27
@@ -235,7 +212,6 @@ impl Query<'_> {
         }
     }
 
-    /// The nodes of every name in `ids` that the query classes.
     fn ids(&self, ids: &[u32], class: &(impl Fn(&[u8]) -> u8 + Sync)) -> Vec<Found> {
         let masks = self.tree.names.masks();
         let mut best = Vec::with_capacity(self.cap + 1);
@@ -256,7 +232,6 @@ impl Query<'_> {
         best
     }
 
-    /// The nodes the table does not cover yet, which a crawl in flight keeps adding to.
     fn tail(&self, class: &impl Fn(&[u8]) -> u8) -> Vec<Found> {
         let masks = self.tree.names.masks();
         let mut best = Vec::with_capacity(self.cap + 1);
@@ -279,7 +254,6 @@ impl Query<'_> {
         best
     }
 
-    /// Splits `ids` across every core, gathers what each finds, and ranks the lot.
     fn spread(&self, ids: &[u32], class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
         let cores = thread::available_parallelism().map_or(1, |cores| cores.get());
         let threads = cores.min(ids.len().div_ceil(CHUNK)).max(1);
@@ -296,8 +270,6 @@ impl Query<'_> {
                 .flatten()
                 .collect()
         });
-        // Names interned since the table was built are not in its buckets, and the nodes past
-        // its own end are not in its groups.
         let fresh: Vec<u32> =
             (self.lookup.every().len() as u32..self.tree.names.len() as u32).collect();
         best.extend(self.ids(&fresh, class));
@@ -307,12 +279,10 @@ impl Query<'_> {
         best
     }
 
-    /// The names the query can only be the head of: a bucket slice, not the whole table.
     fn heads(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
         self.spread(self.lookup.heads(self.bytes), class)
     }
 
-    /// Every name there is.
     fn all(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
         self.spread(self.lookup.every(), class)
     }

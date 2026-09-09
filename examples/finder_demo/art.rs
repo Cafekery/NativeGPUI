@@ -1,5 +1,3 @@
-//! What a row draws: its thumbnail where Quick Look has one, its type's icon otherwise.
-
 use std::sync::Arc;
 
 use gpui::{
@@ -11,7 +9,6 @@ use native_gpui::tokens::{FileType, SymbolColor, SystemColor, sf_symbol_colored}
 use crate::data::{Face, Row};
 use crate::thumbs::thumb;
 
-/// Finder's row icon: Quick Look's thumbnail where there is one, the type's icon until it lands.
 pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyElement {
     match thumb(row, size, scale, visible, true) {
         Some(image) => picture(image, size),
@@ -19,7 +16,6 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     }
 }
 
-/// Finder's large preview art: the picture at its own aspect, keylined on its rect, not the box.
 pub(crate) fn poster_art(
     row: &Row,
     width: f32,
@@ -68,7 +64,6 @@ fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// Which preview a poster is: a hero is keylined light and rounded wider than a card.
 #[derive(Clone, Copy)]
 pub(crate) enum Poster {
     Hero,
@@ -124,7 +119,6 @@ fn poster(
 /// Where an icon landed on screen, for the Quick Look panel to zoom out of and back into.
 pub(crate) type Anchor = std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
 
-/// `art` as drawn, recording where it lands when its row is the one Quick Look would open.
 pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyElement {
     let Some(anchor) = anchor else {
         return art;
@@ -152,7 +146,7 @@ pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// The artwork a folder wears in the chrome: `public.volume` has none, so a volume draws `/`'s.
+/// `public.volume` has no artwork of its own, so a volume draws `/`'s.
 pub(crate) fn place_art(volume: bool, size: f32) -> AnyElement {
     let (kind, face) = match volume {
         true => (FileType::Path("/"), Face::Volume),

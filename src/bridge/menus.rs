@@ -1,7 +1,5 @@
-//! The standard macOS menu bar. Every row carries one of AppKit's own selectors and no target, so
-//! macOS supplies the key equivalent, localisation, enabling and the Show/Hide title flips. A GPUI
-//! app has no menu bar until [`install_menus`], so until then ⌘W, ⌘Q, ⌘M, ⌘H and the Edit menu
-//! reach nothing; and a chord bound in GPUI's keymap never reaches the bar.
+//! Every row carries one of AppKit's own selectors and no target, so macOS supplies the key
+//! equivalent, localisation, enabling and the Show/Hide title flips.
 
 use std::cell::RefCell;
 
@@ -19,7 +17,6 @@ use objc2_foundation::{
     MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSString,
 };
 
-/// One of the standard menus, as a place for an app's own rows.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum MenuSection {
     App,
@@ -43,8 +40,7 @@ impl MenuSection {
     }
 }
 
-/// An app-provided row: a title, an optional `KeyBinding`-style chord (`"cmd-shift-n"`), and the
-/// [`Action`] it dispatches. The chord is the item's key equivalent, not a GPUI keymap binding.
+/// The chord is the item's key equivalent, not a GPUI keymap binding.
 pub struct MenuCommand {
     title: String,
     chord: Option<String>,
@@ -66,7 +62,6 @@ impl MenuCommand {
         }
     }
 
-    /// The check mark Finder puts beside the sort, the grouping and the view a window is in.
     pub fn checked(mut self, on: bool) -> Self {
         self.checked = on;
         self
@@ -78,7 +73,6 @@ impl MenuCommand {
         self
     }
 
-    /// A row that opens a menu of its own instead of dispatching.
     pub fn submenu(title: impl Into<String>, rows: impl IntoIterator<Item = MenuCommand>) -> Self {
         Self {
             title: title.into(),
@@ -188,7 +182,7 @@ struct Unhandled;
 
 /// gpui's app delegate answers Cut/Copy/Paste/Undo/Redo/Select All by looking the sender's tag
 /// up in a table only `App::set_menus` fills, and on a miss re-locks a mutex it holds, freezing
-/// the process. One throwaway action makes index 0 exist; every row here keeps tag 0.
+/// the process.
 fn reserve_gpui_menu_slot(cx: &mut App) {
     cx.set_menus(vec![Menu {
         name: "".into(),
@@ -197,8 +191,8 @@ fn reserve_gpui_menu_slot(cx: &mut App) {
     }]);
 }
 
-/// Install the standard bar once, before opening a window. A second call is a no-op. Never call
-/// `App::set_menus` afterwards: it replaces the bar with rows wired to gpui's own handler.
+/// Never call `App::set_menus` after this: it replaces the bar with rows wired to gpui's own
+/// handler.
 pub fn install_menus(cx: &mut App) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -420,7 +414,6 @@ pub fn install_menus(cx: &mut App) {
     app.setHelpMenu(Some(&help));
 }
 
-/// Append a menu of the app's own, between View and Window.
 pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     let Some((mtm, bar)) = bar() else {
         return;
@@ -437,7 +430,6 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     bar.insertItem_atIndex(&host, before);
 }
 
-/// Refill a menu the app added, so its rows can follow state.
 pub fn set_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     let Some((mtm, bar)) = bar() else {
         return;
@@ -454,12 +446,10 @@ pub fn set_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     }
 }
 
-/// Put rows at the top of one of the standard menus, above what it already carries.
 pub fn prepend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
     rows_into(section, commands, true);
 }
 
-/// Put rows inside one of the standard menus.
 pub fn extend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
     rows_into(section, commands, false);
 }
@@ -543,8 +533,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
 }
 
-/// Whether what the keyboard is pointed at is a text editor: a field editor is what AppKit puts
-/// in front of an `NSTextField` while it is being typed into.
+/// A field editor is what AppKit puts in front of an `NSTextField` while it is being typed into.
 fn editing_text() -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -555,9 +544,8 @@ fn editing_text() -> bool {
         .is_some_and(|responder| responder.isKindOfClass(NSText::class()))
 }
 
-/// Whether a field editor claims this row's key equivalent. Cocoa's standard bindings give the
-/// editor ⌘ and ⌥ with delete and the arrows, and a menu that answered those first would take
-/// the keystroke off the text being typed.
+/// Cocoa's standard bindings give the field editor ⌘ and ⌥ with delete and the arrows, and a menu
+/// that answered those first would take the keystroke off the text being typed.
 fn edits_text(item: &NSMenuItem) -> bool {
     const DELETE: &str = "\u{8}";
     const ARROWS: [&str; 4] = ["\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}"];
@@ -618,12 +606,11 @@ fn set_state(row: &NSMenuItem, on: bool) {
     });
 }
 
-/// Answers whether a row is checked, asked for each one as its menu opens.
 type MenuState = dyn Fn(&dyn Action) -> Option<bool>;
 
-/// Follow the app's state with the check marks on its rows: AppKit validates every row as its menu
-/// opens, and each `Some` answer is that row's state. The closure runs inside AppKit's menu
-/// tracking, where gpui holds its `App`, so it must read state of its own.
+/// AppKit validates every row as its menu opens, and each `Some` answer is that row's state. The
+/// closure runs inside AppKit's menu tracking, where gpui holds its `App`, so it must read state
+/// of its own.
 pub fn on_menu_state(check: impl Fn(&dyn Action) -> Option<bool> + 'static) {
     STATE.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
 }

@@ -1,6 +1,3 @@
-//! Reading one directory: every entry, hidden ones included, in directory order, with an
-//! [`Entry`]'s attributes filled in one `getattrlistbulk(2)` pass rather than a `stat` per file.
-
 use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
@@ -16,7 +13,8 @@ const ATTR_CMN_ERROR: libc::attrgroup_t = 0x2000_0000;
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
-/// `kHasBundle`, a bit in classic `FndrDirInfo.frFlags` (big-endian, offset 8 of `ATTR_CMN_FNDRINFO`).
+/// `kHasBundle`, a bit in classic `FndrDirInfo.frFlags` (big-endian, offset 8 of
+/// `ATTR_CMN_FNDRINFO`).
 const HAS_BUNDLE: u16 = 0x2000;
 /// `SF_DATALESS`, the flag a File Provider leaves on an item whose data it has evicted.
 const SF_DATALESS: u32 = 0x4000_0000;
@@ -42,10 +40,8 @@ impl Drop for FdGuard {
     }
 }
 
-/// The directory's own descriptor. `O_DIRECTORY` already rejects a non-directory target, so a
-/// symlink to a directory still opens (matching `read_dir`) while a symlink to a file correctly
-/// fails with `ENOTDIR`. A path past `PATH_MAX` cannot be opened whole, so it is walked one
-/// component at a time with `openat`, which is never handed more than one name.
+/// A path past `PATH_MAX` cannot be opened whole, so it is walked one component at a time with
+/// `openat`, which is never handed more than one name.
 fn open_dir(dir: &Path) -> io::Result<FdGuard> {
     let path = CString::new(dir.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -71,26 +67,20 @@ fn open_dir(dir: &Path) -> io::Result<FdGuard> {
     at.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
 }
 
-/// Whether `path` is a directory at any depth: `Path::is_dir` stats the whole path, which a path
-/// past `PATH_MAX` cannot be.
 pub fn is_dir(path: &Path) -> bool {
     open_dir(path).is_ok()
 }
 
-/// Every entry of `dir`. Errors are the directory's own (missing, unreadable); a single entry
-/// that vanishes mid-read is skipped, not fatal.
 pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     let mut out = Vec::new();
     list_dir_batched(dir, usize::MAX, |batch| out.extend(batch))?;
     Ok(out)
 }
 
-/// Every directory opened, so a test can hold the index to reading only what it claims to.
 #[cfg(test)]
 pub(crate) static READS: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
-/// [`list_dir`] delivered in batches of at most `batch` entries, in order.
 pub fn list_dir_batched(
     dir: &Path,
     batch: usize,
@@ -163,9 +153,9 @@ fn read_timespec(b: &[u8]) -> SystemTime {
     }
 }
 
-/// One `getattrlistbulk` record: length-prefixed, `attribute_set_t returned` next, then the
-/// requested attributes packed in ascending bit order (`FSOPT_PACK_INVAL_ATTRS` omits absent
-/// ones entirely, so the offsets are only known by walking `returned` bit by bit).
+/// A `getattrlistbulk` record packs the requested attributes in ascending bit order
+/// (`FSOPT_PACK_INVAL_ATTRS` omits absent ones entirely, so the offsets are only known by walking
+/// `returned` bit by bit).
 fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut p = 4usize;
     let returned_common = u32::from_ne_bytes(record[p..p + 4].try_into().unwrap());
@@ -425,8 +415,6 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
-    /// A directory far past `PATH_MAX`, built one component at a time because `mkdir` cannot be
-    /// handed the whole path either.
     fn deep_dir(root: &Path, levels: usize) -> PathBuf {
         fs::create_dir(root).unwrap();
         let mut path = root.to_path_buf();

@@ -1,5 +1,3 @@
-//! Finder's status bar: what the folder holds, what is chosen, and the room left on the volume.
-
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use native_gpui::native_slider;
 use native_gpui::tokens;
@@ -18,7 +16,6 @@ impl FinderDemo {
         let count = self.lines(false).len();
         let chosen = self.selected.len();
         let available = byte_string(available_bytes(self.here()));
-        // Adding the selection up walks every chosen row, so the size joins the line once it lands.
         let size = self
             .stats
             .as_ref()

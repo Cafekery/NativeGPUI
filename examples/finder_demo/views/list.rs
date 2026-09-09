@@ -1,5 +1,3 @@
-//! The list view, and the row every other view's list is measured against.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -21,7 +19,6 @@ use crate::tags::tag_dots;
 use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
-/// Finder's two list icon sizes; ⌘= and ⌘- toggle between them.
 pub(crate) const ICON_SIZE: f32 = 32.;
 pub(crate) const ICON_SMALL: f32 = 16.;
 pub(crate) const ICON_X: f32 = 26.;
@@ -35,14 +32,13 @@ const SELECTION_JOIN_LEAD: f32 = 30.;
 const SELECTION_JOIN_TRAIL: f32 = 6.;
 const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
-/// Finder's rows stop this far above the path bar, and the last row of all stops the same
-/// distance above that again, so the end of a list never touches the bar.
+/// Finder's rows stop this far above the path bar, and the last row the same distance above that
+/// again.
 pub(crate) const LIST_FOOT_GAP: f32 = 5.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
 
-/// The cloud Finder puts at the trailing edge of an evicted item's name.
 const CLOUD_ART: f32 = 13.;
 
 const PILL_INSET: f32 = 10.;
@@ -51,7 +47,6 @@ const PILL_PAD_Y: f32 = 3.;
 const PILL_FONT: f32 = 11.;
 const PILL_RADIUS: f32 = 6.;
 
-/// Everything the rows of one frame draw with, so a row builder takes one of these.
 struct Look {
     icon: f32,
     row_h: f32,
@@ -76,26 +71,19 @@ struct Marks {
     expanded: Arc<HashSet<SharedString>>,
     tags: HashMap<SharedString, Vec<usize>>,
     renaming: Option<SharedString>,
-    /// The row an open contextual menu belongs to, which the ring traces along with the rest of
-    /// what the menu would act on.
     menu_row: Option<SharedString>,
     cursor: Option<SharedString>,
     ql_icon: Anchor,
-    /// The folder the drag rests on this frame, whose highlight draws over the stripe.
     dropping: Option<SharedString>,
-    /// The row whose drop highlight is dark this frame, part-way through its springing flash.
     springing: Option<SharedString>,
 }
 
-/// Where a row sits in a run of adjacent selected rows: whether the row above joins it, and the
-/// hairline to the row below when that one joins too.
 #[derive(Clone, Copy, Default)]
 struct Run {
     above: bool,
     join: Option<Hsla>,
 }
 
-/// A column's text for a row, to draw or to measure for the divider's double-click-to-fit.
 pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
     match column {
         Column::Name => line.row.display.clone(),
@@ -105,7 +93,6 @@ pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
     }
 }
 
-/// The Name column's leading room before its text: the twist, the indent, the icon, the gap.
 pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
     ICON_X + line.depth as f32 * INDENT + icon + LABEL_GAP
 }
@@ -115,7 +102,6 @@ pub(crate) fn row_h(icon: f32) -> f32 {
 }
 
 impl FinderDemo {
-    /// The list's top content inset: `(blank leading rows, how far the list frame is lifted)`.
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         // Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
         let scope_h = if self.in_search() { SCOPE_H } else { 0. };
@@ -125,8 +111,6 @@ impl FinderDemo {
         (rows, rows as f32 * row_h - inset)
     }
 
-    /// How far the list hangs below the clip so its trailing blank row leaves `LIST_FOOT_GAP`
-    /// under the last real one. Rows drawn down there are the clip's, not the path bar's.
     pub(crate) fn list_tail(&self) -> f32 {
         self.row_h() - LIST_FOOT_GAP
     }
@@ -176,7 +160,6 @@ impl FinderDemo {
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
-        // One blank row past the end, for the gap the list stops on.
         let items = pads + count + 1;
         let list = uniform_list("ng.finder.list", items, move |range, window, _| {
             let selected = |index: usize| {
@@ -193,8 +176,6 @@ impl FinderDemo {
             };
             range
                 .map(|index| {
-                    // Blank above the first row and below the last: the header's room, and the
-                    // gap the list ends on.
                     let Some(at) = index.checked_sub(pads).filter(|at| *at < count) else {
                         return div()
                             .id(("ng.finder.pad", index))
@@ -236,7 +217,6 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Which row a point in the list's own coordinates lands on, for the one menu the rows share.
     fn row_at(
         &self,
         pads: usize,
@@ -256,7 +236,6 @@ impl FinderDemo {
         }
     }
 
-    /// The type-select fallback's pill, bottom-right of the list, while a filter is live.
     pub(crate) fn type_filter_pill(
         &self,
         palette: &Palette,
@@ -282,8 +261,8 @@ impl FinderDemo {
     }
 }
 
-/// Finder's selection pill, inset from both edges so it never runs under the pane. A run of
-/// adjacent selected rows is one block: only its ends round, and a hairline marks each join.
+/// Finder's selection pill: a run of adjacent selected rows is one block, only its ends rounded,
+/// with a hairline at each join.
 fn pill(fill: Hsla, run: Run) -> Div {
     let radius = |end: bool| px(if end { ROW_PILL_RADIUS } else { 0. });
     div()
@@ -350,7 +329,6 @@ fn twist(
     })
 }
 
-/// The Name column: the twist, the icon, the name or the field renaming it, and the tag dots.
 fn name_cell(
     line: &Line,
     at: usize,
@@ -447,8 +425,7 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
     }
 }
 
-/// The strip of a folder row a drag lands on: Finder takes the disclosure triangle, the icon and
-/// the name it labels, and no more of the row than that.
+/// Finder takes the disclosure triangle, the icon and the name it labels, and no more of the row.
 fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
     let twist = ICON_X + line.depth as f32 * INDENT;
     let name = twist
@@ -469,8 +446,6 @@ fn row(
     this: WeakEntity<FinderDemo>,
 ) -> AnyElement {
     let is_selected = marks.selected.contains(&line.key);
-    // The ring traces what the menu acts on: the row it was raised on, or the whole selection
-    // when that row is one of the selected.
     let aimed =
         |row: &SharedString| *row == line.key || (is_selected && marks.selected.contains(row));
     let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {

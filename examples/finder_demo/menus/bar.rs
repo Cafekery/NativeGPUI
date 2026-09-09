@@ -1,5 +1,3 @@
-//! The menu bar Finder carries, read off the real one: the same rows, order and key equivalents.
-
 use std::cell::Cell;
 use std::path::Path;
 
@@ -90,8 +88,8 @@ actions!(
 );
 
 thread_local! {
-    /// The view, sort and grouping the check marks follow, since a row is validated where the
-    /// window they belong to cannot be read.
+    /// A row is validated where the window it belongs to cannot be read, so the check marks follow
+    /// this.
     static STATE: Cell<(usize, Column, bool)> = const { Cell::new((LIST_VIEW, Column::Name, false)) };
 }
 
@@ -207,7 +205,6 @@ pub(crate) fn install(_cx: &mut App) {
     add_menu("Go", go_rows(&[]));
 }
 
-/// Finder's Go menu, with the folders the window has been through under Recent Folders.
 pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
     let recent_rows: Vec<MenuCommand> = recents
         .iter()
@@ -252,7 +249,6 @@ fn go_head() -> Vec<MenuCommand> {
     ]
 }
 
-/// One handler per row: everything the bar dispatches, in the order the menus list it.
 impl FinderDemo {
     fn go_recent(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.recents.get(index).map(|(id, _)| *id) {

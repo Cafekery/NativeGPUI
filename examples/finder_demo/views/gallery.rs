@@ -1,5 +1,3 @@
-//! The gallery view: the selection large, every item in a strip along the bottom.
-
 use std::ops::Range;
 
 use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
@@ -17,7 +15,6 @@ const STRIP_RADIUS: f32 = 8.;
 const HERO_INSET: f32 = 61.;
 const HERO_MAX: f32 = 512.;
 
-/// The strip's cell, gap and margin at one of Finder's three thumbnail sizes (32, 48, 64).
 #[derive(Clone, Copy)]
 struct Strip {
     icon: f32,
@@ -44,7 +41,6 @@ impl Strip {
         STRIP_INSET + index as f32 * (self.cell + self.gap)
     }
 
-    /// The cells `room` wide of strip shows at this offset, a cell either side for a short scroll.
     fn seen(self, offset: f32, room: f32, count: usize) -> Range<usize> {
         let first = ((-offset - STRIP_INSET) / (self.cell + self.gap)).floor() - 1.;
         let first = (first.max(0.) as usize).min(count);
@@ -99,7 +95,6 @@ impl FinderDemo {
             }
             demo.lines(false).get(index as usize).cloned()
         };
-        // Only the cells on screen are built; the strip's whole width is one empty child.
         let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
         let strip_row = div()
             .id("ng.finder.filmstrip")

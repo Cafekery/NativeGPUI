@@ -1,5 +1,3 @@
-//! The card the pane draws: one row's hero, kind, dates and tags, or a selection's stack.
-
 use std::sync::Arc;
 
 use gpui::{
@@ -53,10 +51,8 @@ const GAP_TOP: f32 = 10.;
 
 const GAP_HERO_TEXT: f32 = 27.;
 
-/// The hero's box is this much taller than it is wide, whatever the picture in it.
 const HERO_TALL: f32 = 1.31;
 
-/// The most of the pane's height that box may take.
 const HERO_CAP: f32 = 0.5;
 
 const HEADER_ICON: f32 = 48.;
@@ -163,7 +159,6 @@ fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
     }
 }
 
-/// A row's Information block, and whether Spotlight knows more than it lists closed.
 fn info_rows(
     row: &Row,
     meta: Option<&Meta>,
@@ -299,7 +294,6 @@ impl FinderDemo {
         self.card_element(card, palette, content, finder)
     }
 
-    /// What the summary weighed a folder or package at, which the row itself cannot size.
     fn weighed(&self) -> Option<u64> {
         self.stats
             .as_ref()
@@ -308,7 +302,6 @@ impl FinderDemo {
             .filter(|bytes| *bytes > 0)
     }
 
-    /// The hero's box: as tall as the pane is wide and then some, capped by the pane's height.
     pub(crate) fn hero_h(&self, content: f32) -> f32 {
         (content * HERO_TALL).min(self.pane_h * HERO_CAP)
     }

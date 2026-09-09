@@ -1,5 +1,3 @@
-//! Finder's path bar: the trail of folders under the list, each a click, drop and menu target.
-
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, Window, div, prelude::*, px};
 use native_gpui::native_rule;
 use native_gpui::tokens::{self, SystemColor};
@@ -86,7 +84,6 @@ impl FinderDemo {
                 }
             }
             let segment = segment.when_some(target, |crumb_row, id| {
-                // ⌥-click opens the crumb in a new window and closes this one.
                 crumb_row
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if is_alt_click(event) {
@@ -134,7 +131,7 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Which crumbs keep their name: Finder drops them from the left until the trail fits.
+    /// Finder drops crumbs from the left until the trail fits.
     fn crumb_labels(&self, crumbs: &[&str], window: &Window) -> Vec<bool> {
         let mut named = vec![true; crumbs.len()];
         let size = tokens::small_system_font_size();

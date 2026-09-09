@@ -1,4 +1,3 @@
-//! Component browser: native macOS sidebar, GPUI content, one page per module in `pages/`.
 //! `NG_PAGE=<id>` opens straight onto a page.
 
 mod pages;
@@ -182,7 +181,6 @@ pub fn page_of(id: &str) -> &'static Page {
     PAGES.iter().find(|p| p.id == id).unwrap_or(&PAGES[0])
 }
 
-/// Opens a second window with its own host, for the pages that configure the window itself.
 pub fn popout<V: 'static + Render>(
     cx: &mut App,
     origin: (f32, f32),
@@ -259,7 +257,6 @@ impl Demo {
         }
     }
 
-    /// Frames rendered in the last second and the longest gap between two of them.
     fn frame_stats(&mut self) -> String {
         let now = Instant::now();
         while self

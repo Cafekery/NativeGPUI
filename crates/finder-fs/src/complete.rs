@@ -1,6 +1,3 @@
-//! Path completion for the Go to Folder sheet: instant filesystem completion, falling back to
-//! the whole-index fuzzy name search once the typed text has no `/` left to anchor a directory.
-
 use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
@@ -19,9 +16,6 @@ pub struct Completion {
     pub display: String,
 }
 
-/// Completions for what the user has typed so far, best first, at most `limit`.
-/// `index` may be `None` (no index yet): then only direct children of the typed directory are
-/// offered.
 pub fn complete(typed: &str, index: Option<&Index>, limit: usize) -> Vec<Completion> {
     if typed.is_empty() || limit == 0 {
         return Vec::new();
@@ -94,8 +88,7 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
         .collect()
 }
 
-/// `list_dir`; on a network mount it is abandoned (not cancelled: the thread finishes on its own)
-/// if the volume has not answered within `TIMEOUT`.
+/// A network mount that has not answered within `TIMEOUT` is abandoned, its thread left to finish.
 fn list_dir_with_timeout(dir: &Path) -> Option<Vec<Entry>> {
     if is_local(dir) {
         return list_dir(dir).ok();
@@ -154,8 +147,6 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// `~` to the caller's home, `~user` to that user's, both followed by the rest of the string
-/// unchanged; anything else (including an unknown user) passes through untouched.
 fn expand_tilde(typed: &str) -> String {
     let Some(rest) = typed.strip_prefix('~') else {
         return typed.to_string();
@@ -203,7 +194,6 @@ mod tests {
         root
     }
 
-    /// The first calls in a process pay for the OS spinning up its thread machinery.
     fn warm() {
         for _ in 0..5 {
             complete("/", None, 1);
@@ -316,7 +306,6 @@ mod tests {
         let db = t1.elapsed();
         assert!(a.iter().any(|c| c.display.contains("Developer")));
         assert!(!b.is_empty());
-        // Loose: the assertion only catches a fall back to the index, which costs 50ms.
         assert!(da < Duration::from_millis(40), "{da:?}");
         assert!(db < Duration::from_millis(40), "{db:?}");
     }

@@ -1,5 +1,3 @@
-//! Conversion between `NSColor` and gpui's `Hsla`.
-
 use gpui::{Hsla, Rgba};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSColorSpace};

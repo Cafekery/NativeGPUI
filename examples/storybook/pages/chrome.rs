@@ -709,7 +709,6 @@ fn cursor_strip(cx: &mut Context<Demo>) -> AnyElement {
         .flex()
         .flex_wrap()
         .gap_2()
-        // Repaint on pointer move, so the readout below tracks the cursor.
         .on_mouse_move(cx.listener(|_: &mut Demo, _: &MouseMoveEvent, _, cx| cx.notify()))
         .children(swatches)
         .into_any_element()

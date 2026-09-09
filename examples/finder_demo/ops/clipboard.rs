@@ -1,5 +1,3 @@
-//! Finder's clipboard: ⌘C writes names and file URLs, ⌘X marks, ⌘V moves or copies.
-
 use std::cell::Cell;
 use std::path::PathBuf;
 
@@ -20,7 +18,7 @@ impl FinderDemo {
         self.copy_selection(cx);
     }
 
-    /// Finder's ⌘C: the names as text and the files as file URLs; it also clears the ⌘X mark.
+    /// Finder's ⌘C writes the names as text and the files as file URLs, and clears the ⌘X mark.
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         self.clear_cut(cx);
         let keys = self.chosen_keys();
@@ -42,7 +40,6 @@ impl FinderDemo {
         board.writeObjects(&NSArray::from_retained_slice(&items));
     }
 
-    /// ⌘X: the selection copies to the pasteboard and is marked cut until pasted or cleared.
     pub(crate) fn cut_selection(&mut self, cx: &mut Context<Self>) {
         let keys = self.chosen_keys();
         if keys.is_empty() {
@@ -53,7 +50,7 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Esc, or another Copy/Cut: Finder clears the cut mark without touching disk.
+    /// Finder clears the cut mark without touching disk.
     pub(crate) fn clear_cut(&mut self, cx: &mut Context<Self>) {
         if self.cut.is_empty() {
             return;
@@ -62,7 +59,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// ⌘V moves a cut selection into the folder on screen and copies a copied one; ⌥⌘V moves.
     pub(crate) fn paste(&mut self, force_move: bool, cx: &mut Context<Self>) {
         let items = read_pasteboard();
         if items.is_empty() {
@@ -104,7 +100,7 @@ fn read_pasteboard() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Whether the pasteboard holds files, kept until its change count moves: reading it is IPC.
+/// Cached until the pasteboard's change count moves: reading it is IPC.
 pub(crate) fn can_paste() -> bool {
     thread_local! {
         static ANSWERED: Cell<(isize, bool)> = const { Cell::new((-1, false)) };

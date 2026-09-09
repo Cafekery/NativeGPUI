@@ -1,6 +1,3 @@
-//! Hosted AppKit controls: ordinary GPUI elements that place a pooled view into their bounds and
-//! push only the properties that changed.
-
 mod button;
 mod image;
 mod label;
@@ -52,7 +49,6 @@ pub(crate) fn axis(reported: f64) -> Length {
     }
 }
 
-/// A style sized by a control's `fittingSize`.
 pub(crate) fn fitted(fitting: NSSize) -> Style {
     Style {
         size: size(axis(fitting.width), axis(fitting.height)),

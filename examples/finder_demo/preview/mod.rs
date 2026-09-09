@@ -1,5 +1,3 @@
-//! Finder's preview pane: a glass frosting the rows, and a child window carrying the card.
-
 mod card;
 mod stats;
 
@@ -32,7 +30,6 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 const GRIP_W: f32 = 6.;
 
 pub(crate) const INSET: f32 = 10.;
-/// The parent's resize edge, left uncovered by the card window.
 const RESIZE_EDGE: f32 = 6.;
 
 /// The card's own window: one Metal layer cannot both blur GPUI content and paint over the blur.
@@ -44,7 +41,6 @@ pub(crate) struct PreviewWindow {
 
 pub(crate) struct PreviewPane {
     finder: Entity<FinderDemo>,
-    /// The pane's right edge in screen points while the grip is held.
     drag: Option<f32>,
 }
 
@@ -226,8 +222,8 @@ impl FinderDemo {
             return;
         }
 
-        // The card window stops short of the parent's resize edges: a child window over them
-        // would take the drag.
+        // The card window stops short of the parent's resize edges: a child window over them would
+        // take the drag.
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),

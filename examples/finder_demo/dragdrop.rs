@@ -1,5 +1,3 @@
-//! What a drag carries and where a drop lands: Finder's move, Option-copy and spring-loading.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -16,26 +14,22 @@ use crate::ops::After;
 use crate::view::COLUMN_VIEW;
 use crate::views::list::TWIST_W;
 
-/// What the springing delay preference adds to, and the delay Finder treats as none at all:
-/// below it a hold waits a flash longer, not shorter.
+/// The delay Finder treats as none at all: below it a hold waits a flash longer, not shorter.
 const SPRING_FLOOR: f32 = 0.2;
 const SPRING_NONE: f32 = 0.15;
 
-/// One step of the flash a held folder gives before it springs, and the steps it takes: the row
-/// goes dark, plain, dark, and then the folder opens.
+/// A held folder flashes before it springs: the row goes dark, plain, dark, and then it opens.
 const FLASH: Duration = Duration::from_millis(100);
 const FLASHES: u32 = 3;
 
-/// What a drop highlight's lightness falls to while the folder flashes before it springs.
 const FLASH_DIM: f32 = 0.83;
 
-/// What a row drag carries: the row the pointer grabbed, standing for the whole selection.
+/// The row the pointer grabbed, standing for the whole selection.
 #[derive(Clone)]
 pub(crate) struct RowDrag {
     pub(crate) key: SharedString,
 }
 
-/// The row a drag grabbed, whichever view it started in.
 pub(crate) trait Grabbed: 'static {
     fn key(&self) -> &SharedString;
 }
@@ -46,8 +40,7 @@ impl Grabbed for RowDrag {
     }
 }
 
-/// Whether a drag carries this row, and so never targets it: Finder drops nothing onto itself,
-/// nor into anything it is carrying.
+/// Finder drops nothing onto itself, nor into anything it is carrying.
 pub(crate) fn carries<D: Grabbed>(
     selected: &HashSet<SharedString>,
     grab: &D,
@@ -60,15 +53,12 @@ pub(crate) fn carries<D: Grabbed>(
     }
 }
 
-/// How a drop target lights up: Finder outlines a whole column, and a view that draws the
-/// highlight itself, from `drop_row`, needs no style of its own.
 #[derive(Clone, Copy)]
 pub(crate) enum Lit {
     Drawn,
     Outline(Hsla),
 }
 
-/// A drop highlight mid-flash: Finder darkens the fill rather than dropping it.
 pub(crate) fn flashed(fill: Hsla) -> Hsla {
     Hsla {
         l: fill.l * FLASH_DIM,
@@ -76,9 +66,8 @@ pub(crate) fn flashed(fill: Hsla) -> Hsla {
     }
 }
 
-/// A folder under a drag springs open where the pointer rests on it: `band` is how far into the
-/// row the disclosure triangle ends and how far the name beside it reaches, the strip Finder
-/// treats as the row. A hold over the triangle discloses in place instead of opening.
+/// `band` is the strip Finder treats as the row; a hold over the disclosure triangle discloses in
+/// place instead of opening.
 pub(crate) fn drop_hover<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
@@ -106,8 +95,6 @@ pub(crate) fn drop_hover<D: Grabbed>(
     })
 }
 
-/// A folder takes the rows dropped on it, lighting up while they are over it. A target that
-/// lights from `drop_row` takes the drop only where it is lit.
 pub(crate) fn drop_lands<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
@@ -149,7 +136,6 @@ pub(crate) fn drop_lands<D: Grabbed>(
         })
 }
 
-/// A folder row: it takes the drop, and springs open under a drag that rests on it.
 pub(crate) fn drop_target<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
@@ -170,21 +156,17 @@ pub(crate) fn drop_target<D: Grabbed>(
     drop_hover::<D>(target, key, into, band, carried, this)
 }
 
-/// A folder held under a drag: the row it is, where it opens, and when the hold began.
 pub(crate) struct Spring {
     pub(crate) key: SharedString,
     into: &'static str,
-    /// Whether the hold is over the row's twist, which discloses in place instead of opening.
     twist: bool,
     since: Instant,
     /// Set by Space, which springs whatever the springing delay is, and even where it is off.
     forced: bool,
-    /// Set once the hold has sprung, so a pointer that stays put springs the row only once.
     spent: bool,
 }
 
 impl Spring {
-    /// What this hold waits before it flashes, or `None` where it can never spring at all.
     fn delay(&self) -> Option<Duration> {
         match (self.spent, self.forced) {
             (true, _) => None,
@@ -193,15 +175,13 @@ impl Spring {
         }
     }
 
-    /// Which flash the hold has reached, `None` while it is still waiting the delay out.
     fn flash(&self) -> Option<u32> {
         let held = self.since.elapsed().checked_sub(self.delay()?)?;
         Some((held.as_millis() / FLASH.as_millis()) as u32)
     }
 }
 
-/// macOS's springing preferences, read once: how long a folder waits, or `None` where the user
-/// turned springing off.
+/// macOS's springing preference, read once; `None` where the user turned springing off.
 fn springing_delay() -> Option<Duration> {
     static DELAY: OnceLock<Option<Duration>> = OnceLock::new();
     *DELAY.get_or_init(|| {
@@ -239,7 +219,6 @@ impl Render for DragGhost {
 
 impl FinderDemo {
     /// Finder's spring-loading: a folder held under a drag flashes twice, then opens on its own.
-    /// Leaving the row before it does cancels the hold.
     pub(crate) fn hover_folder(
         &mut self,
         key: &SharedString,
@@ -274,8 +253,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// A hold, one frame on: it flashes while it waits, then opens the folder it rests on. Over
-    /// the twist that is a disclosure in place, anywhere else the window walks in.
     pub(crate) fn spring_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.spring.is_some() && !cx.has_active_drag() {
             self.spring = None;
@@ -305,8 +282,6 @@ impl FinderDemo {
         }
     }
 
-    /// The fill a folder the drag rests on draws with, where the view lights it from state
-    /// rather than from a hover style: dark part-way through the flash, plain otherwise.
     pub(crate) fn drop_fill(&self, key: &SharedString, fill: Hsla) -> Option<Hsla> {
         let hold = self.spring.as_ref()?;
         (hold.key == *key).then(|| match self.spring_flash() == Some(key) {
@@ -315,12 +290,10 @@ impl FinderDemo {
         })
     }
 
-    /// The folder the drag rests on this frame, for a view that draws its highlight itself.
     pub(crate) fn drop_row(&self) -> Option<&SharedString> {
         Some(&self.spring.as_ref()?.key)
     }
 
-    /// The row whose drop highlight is dark this frame, part-way through its flash.
     pub(crate) fn spring_flash(&self) -> Option<&SharedString> {
         let spring = self.spring.as_ref()?;
         (spring.flash()? % 2 == 0).then_some(&spring.key)
@@ -335,7 +308,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's Escape: the drag is called off where it stands, and nothing is dropped.
     pub(crate) fn cancel_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !cx.stop_active_drag(window) {
             return false;
@@ -365,7 +337,6 @@ impl FinderDemo {
         }
     }
 
-    /// The rows a drag carries: the whole selection when the grabbed row is in it.
     pub(crate) fn drag_keys(&self, grabbed: &SharedString) -> Vec<SharedString> {
         match self.selected.contains(grabbed) {
             true => self.selected.iter().cloned().collect(),
@@ -373,7 +344,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's drop: the dragged rows move into `into`, or copy there while Option is held.
     pub(crate) fn drop_into(
         &mut self,
         into: &'static str,

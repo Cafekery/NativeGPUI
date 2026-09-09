@@ -1,5 +1,3 @@
-//! Finder's two overlays: the Go to Folder sheet and Quick Look.
-
 use finder_fs::sort::fold;
 use gpui::{AnyElement, Context, FontWeight, WeakEntity, Window, div, prelude::*, px};
 use native_gpui::tokens;
@@ -13,11 +11,8 @@ use crate::ui::{focus_gpui, key_to_parent, native_text_field};
 use crate::{home, index};
 
 const SHEET_W: f32 = 520.;
-/// How many paths the sheet offers under the field.
 const CHOICES: usize = 8;
 
-/// What the Go to Folder sheet holds: what was typed, that with the completion of the component
-/// being typed on the end of it, and the paths offered under the field.
 #[derive(Clone)]
 pub(crate) struct GoSheet {
     typed: String,
@@ -35,8 +30,8 @@ impl GoSheet {
     }
 }
 
-/// A completion in the form the path was typed in: `complete` shortens the home folder to `~`,
-/// which belongs only where that is how the typing started.
+/// `complete` shortens the home folder to `~`, which belongs only where the typing started that
+/// way.
 fn as_typed(typed: &str, display: String) -> String {
     match display.strip_prefix('~') {
         Some(rest) if !typed.starts_with('~') => format!("{}{rest}", home().to_string_lossy()),
@@ -44,9 +39,6 @@ fn as_typed(typed: &str, display: String) -> String {
     }
 }
 
-/// The best completion, when it carries on from what was typed: the name's own spelling comes
-/// with it, as a completion inserted over the typed text does, and only once a component has
-/// been started.
 fn inline(typed: &str, choices: &[String]) -> Option<String> {
     let best = choices.first()?;
     let (head, tail) = best.split_at_checked(typed.len())?;
@@ -54,8 +46,8 @@ fn inline(typed: &str, choices: &[String]) -> Option<String> {
 }
 
 impl FinderDemo {
-    /// A keystroke in the sheet. The completion sits at the end of the field, so what is typed
-    /// after it replaces it and a delete takes all of it, the way a selected completion behaves.
+    /// The completion sits at the end of the field, so typing replaces it and a delete takes all of
+    /// it, the way a selected completion behaves.
     fn go_typing(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(sheet) = self.go_sheet.as_ref() else {
             return;
@@ -101,7 +93,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Return in the sheet: a folder is walked to, a file is revealed in the folder holding it.
     fn go_typed(&mut self, typed: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.folder_at_path(typed) {
             self.go(id, window, cx);
@@ -113,8 +104,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's ⇧⌘G sheet: a path field that completes the component being typed and walks the
-    /// window when it resolves.
     pub(crate) fn go_sheet(
         &self,
         sheet: &GoSheet,

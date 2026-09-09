@@ -1,12 +1,9 @@
-//! The window's two materials: the pane's glass over the rows, and the toolbar's band.
-
 use gpui::{AnyElement, Hsla, Pixels, div, hsla, prelude::*, px};
 use native_gpui::{Blending, Layer, Material, glass, material, native_rule};
 use objc2_foundation::NSProcessInfo;
 
-/// macOS 27's Finder lifts its bars off the window material by a tint no `NSColor` names: white at
-/// this alpha over the dark material, and nothing at all over the light one. macOS 26's bars are
-/// the material itself.
+/// macOS 27's Finder lifts its bars off the window material by a tint no `NSColor` names; macOS
+/// 26's bars are the material itself.
 pub(crate) fn bar_tint() -> Option<Hsla> {
     (NSProcessInfo::processInfo()
         .operatingSystemVersion()
@@ -23,7 +20,6 @@ pub(crate) fn toolbar_rule() -> bool {
         < 27
 }
 
-/// The pane's glass: it starts a radius left of the pane, so only its window-side corners round.
 pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
     div()
         .absolute()
@@ -57,7 +53,6 @@ pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-/// One material over the toolbar, scope and header bands, running on under the floating sidebar.
 pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
     div()
         .absolute()
@@ -72,7 +67,7 @@ pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
                 .blending(Blending::WithinWindow)
                 .size_full(),
         )
-        // Over the material: a within-window material all but swallows a tint painted under it.
+        // A within-window material all but swallows a tint painted under it.
         .when_some(bar_tint(), |band, tint| {
             band.child(
                 div()

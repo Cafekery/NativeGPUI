@@ -1,5 +1,3 @@
-//! The root wrapper that commits every hosted view once the tree has painted.
-
 use std::panic::Location;
 
 use gpui::{
@@ -11,7 +9,6 @@ use gpui::{
 use crate::bridge::appkit::focus_gpui;
 use crate::bridge::host::NativeHost;
 
-/// Wrap a window's root element in this, once.
 pub fn native_root(child: impl IntoElement) -> NativeRoot {
     NativeRoot {
         child: child.into_any_element(),
@@ -86,10 +83,8 @@ impl IntoElement for NativeRoot {
     }
 }
 
-/// Window options a native-looking app wants: a non-opaque window, so `Layer::Below` materials
-/// and a real sidebar can sample the desktop, and a transparent titlebar. GPUI's content view
-/// then covers the traffic lights and any toolbar; inset opaque chrome by
-/// `frame.height - contentLayoutRect.height`.
+/// A non-opaque window, so `Layer::Below` materials and a real sidebar can sample the desktop,
+/// and a transparent titlebar.
 pub fn window_options() -> WindowOptions {
     WindowOptions {
         window_background: WindowBackgroundAppearance::Transparent,

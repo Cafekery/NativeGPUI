@@ -1,6 +1,3 @@
-//! The file system behind the Finder demo. Nothing here knows about GPUI or AppKit views: it
-//! reads directories, keeps a whole-Mac index, watches for changes and performs file operations.
-
 pub mod complete;
 pub mod entry;
 pub mod icloud;

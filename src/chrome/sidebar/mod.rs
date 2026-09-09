@@ -1,5 +1,3 @@
-//! A system-drawn macOS sidebar: an `NSSplitViewItem` shell installed around GPUI's view.
-
 mod cell;
 mod diff;
 mod dragdrop;
@@ -51,7 +49,6 @@ use self::dragdrop::{
 };
 use self::model::Model;
 
-/// Gap between a row's label and its trailing count badge, in points.
 pub const BADGE_GAP: f64 = 6.0;
 
 pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bundle";
@@ -120,7 +117,6 @@ impl SidebarItem {
         self
     }
 
-    /// Whether files dropped on the row itself, rather than between rows, are the row's to keep.
     pub fn accepts_drops(mut self, accepts: bool) -> Self {
         self.drops = accepts;
         self
@@ -143,7 +139,6 @@ impl SidebarItem {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-/// How GPUI's view is framed inside the content pane.
 pub enum PaneAlign {
     #[default]
     WindowAligned,
@@ -180,12 +175,11 @@ impl SidebarRowSize {
 }
 
 #[derive(Clone, Debug)]
-/// Configuration honoured on the first [`NativeSidebar::install`] for a window.
 pub struct SidebarOptions {
     pub thickness: Pixels,
     pub min_thickness: Pixels,
     /// The widest a drag may make the sidebar; at or below `min_thickness` the only cap is what
-    /// `content_min_thickness` leaves, as Finder's sidebar has it.
+    /// `content_min_thickness` leaves.
     pub max_thickness: Pixels,
     pub toolbar: bool,
     pub collapsed: bool,
@@ -234,7 +228,6 @@ pub struct SidebarMetrics {
 impl Global for SidebarMetrics {}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-/// What one [`NativeSidebar::update`] wrote to AppKit.
 pub struct SidebarDiff {
     pub unchanged: bool,
     pub reloaded_items: usize,
@@ -280,7 +273,6 @@ pub struct RowLayout {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-/// Files dropped on the sidebar: what they were, the group they landed in, and where in it.
 pub struct SidebarDrop {
     pub paths: Vec<PathBuf>,
     pub group: SharedString,
@@ -311,7 +303,6 @@ struct Shared {
     on_eject: RefCell<Option<EjectHandler>>,
     on_drop_paths: RefCell<Option<DropHandler>>,
     on_menu: RefCell<Option<(MenuHandler, MenuPickHandler)>>,
-    /// The row the open contextual menu was raised on, so its pick knows what it acts on.
     menu_row: RefCell<Option<SharedString>>,
     /// Non-zero while we drive the selection ourselves, so the round-trip does not echo.
     suppress: Cell<u32>,
@@ -399,7 +390,6 @@ fn observe_pocket_hairline(
     }
 }
 
-/// Repaints the labels a window's key state fades, on the versions that do not fade them.
 fn observe_key_state(
     window: &NSWindow,
     shared: &Rc<Shared>,
@@ -436,7 +426,6 @@ fn observe_key_state(
 }
 
 #[derive(Clone)]
-/// A handle on the window's sidebar. Cheap to clone; every clone is the same sidebar.
 pub struct NativeSidebar(Rc<SidebarState>);
 
 #[derive(Default)]
@@ -444,7 +433,6 @@ struct Sidebars(HashMap<AnyWindowHandle, NativeSidebar>);
 impl Global for Sidebars {}
 
 impl NativeSidebar {
-    /// Install the shell, or return the one already there; a second call ignores `options`.
     pub fn install(window: &mut Window, cx: &mut App, options: SidebarOptions) -> Self {
         if let Some(existing) = Self::get(window, cx) {
             return existing;
@@ -463,7 +451,6 @@ impl NativeSidebar {
             .cloned()
     }
 
-    /// Push the row model, diffed against what the outline view already shows.
     pub fn update(&self, items: &[SidebarItem]) -> SidebarDiff {
         let state = &*self.0;
         state.pane_shared.clone().align(&state.views.pane);
@@ -523,7 +510,6 @@ impl NativeSidebar {
         *self.0.shared.on_select.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// The menu a right-click on a row drops, and what one of its rows runs when picked.
     pub fn on_menu(
         &self,
         entries: impl Fn(&SharedString) -> Vec<MenuEntry> + 'static,
@@ -537,7 +523,6 @@ impl NativeSidebar {
         *self.0.shared.on_reorder.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Files dropped on a group: the sidebar draws the insertion line, the app keeps the row.
     /// Only folders insert; a file dropped between rows is refused, as Finder refuses it.
     pub fn on_drop_paths(&self, handler: impl Fn(&SidebarDrop, &mut Window, &mut App) + 'static) {
         *self.0.shared.on_drop_paths.borrow_mut() = Some(Rc::new(handler));
@@ -548,7 +533,6 @@ impl NativeSidebar {
         *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Collapse or expand with AppKit's own animation.
     pub fn toggle(&self) {
         unsafe { self.0.views.split.toggleSidebar(None) };
     }
@@ -667,7 +651,6 @@ impl NativeSidebar {
         unsafe { state.views.outline.isItemExpanded(Some(&item)) }
     }
 
-    /// Vertical scroll offset of the row list, in points.
     pub fn scroll_offset(&self) -> f32 {
         self.0.views.scroll.contentView().bounds().origin.y as f32
     }
@@ -923,7 +906,7 @@ impl PaneShared {
         }
         // gpui holds its app while it draws, and its own resize handler drops a size it cannot
         // take then: a window manager snapping the window as it opens lands inside the first
-        // draw. The metrics and the size both go in on the next turn instead.
+        // draw.
         let gpui = self.gpui.clone();
         self.cx
             .borrow()
@@ -984,7 +967,6 @@ impl SidebarOutline {
 }
 
 define_class!(
-    /// Clips GPUI's oversized child to the pane and re-aligns it on every geometry change.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSidebarContentPane"]

@@ -1,5 +1,3 @@
-//! What a menu pick does: every contextual row and every File-menu command lands here.
-
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op};
@@ -47,8 +45,8 @@ pub(crate) enum Act {
     Toggle(Column),
 }
 
-/// What an alias file or a symlink points at, as Finder's Show Original follows it. Resolving a
-/// file that is neither hands back the file itself, which is nothing to show.
+/// Resolving a file that is neither an alias nor a symlink hands back the file itself, which is
+/// nothing to show.
 fn original_of(path: &Path) -> Option<PathBuf> {
     if let Ok(target) = std::fs::read_link(path) {
         let joined = match target.is_absolute() {
@@ -67,7 +65,7 @@ fn original_of(path: &Path) -> Option<PathBuf> {
     (original != path.canonicalize().ok()?).then_some(original)
 }
 
-/// Open in Terminal: the user's `TERM_PROGRAM` if a GUI launch carries one, else Terminal.app.
+/// The user's `TERM_PROGRAM` if a GUI launch carries one, else Terminal.app.
 fn open_terminal(path: &str) {
     let app = std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "Terminal".to_owned());
     let _ = std::process::Command::new("open")
@@ -145,7 +143,6 @@ impl FinderDemo {
         self.make_folder("untitled folder", Vec::new(), cx);
     }
 
-    /// Finder's ⌃⌘N: the chosen rows move into a folder made for them.
     pub(crate) fn new_folder_with_selection(&mut self, cx: &mut Context<Self>) {
         let chosen = self.paths();
         if chosen.is_empty() {
@@ -208,7 +205,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's ⌃⌘A: a bookmark file beside each chosen item.
     pub(crate) fn make_alias(&mut self, cx: &mut Context<Self>) {
         let items = self.paths();
         if !items.is_empty() {
@@ -216,7 +212,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's ⌘R: the folder holding what the chosen alias points at, with it selected.
     pub(crate) fn show_original(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(original) = self.paths().first().and_then(|path| original_of(path)) else {
             return;
@@ -224,7 +219,6 @@ impl FinderDemo {
         self.show_enclosing(crate::data::intern_path(&original), window, cx);
     }
 
-    /// Finder's ⌘E: the chosen volume leaves, or the one the window is looking at.
     pub(crate) fn eject_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let roots = crate::data::volume_roots();
         let mut wanted = self.chosen_folders();
@@ -235,7 +229,6 @@ impl FinderDemo {
         self.eject(volume, window, cx);
     }
 
-    /// Finder's ⇧⌘⌫, which asks before it erases anything.
     pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
         let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
             return;
@@ -272,7 +265,6 @@ impl FinderDemo {
         self.remove_selection(Op::DeleteImmediately, cx);
     }
 
-    /// The chosen rows leave the listing with the operation that takes them off it.
     fn remove_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, cx: &mut Context<Self>) {
         let items = self.paths();
         if items.is_empty() {
@@ -291,8 +283,8 @@ impl FinderDemo {
         }
     }
 
-    /// A second window, handed to AppKit as a tab of this one; a tag opens as its listing, since
-    /// no window stands in one.
+    /// Handed to AppKit as a tab of this one; a tag opens as its listing, since no window stands in
+    /// one.
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
         let start = match id.starts_with("tag:") {

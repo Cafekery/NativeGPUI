@@ -29,7 +29,6 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSProcessInfo, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-/// Stands in for the app's own name in the table below.
 const APP: &str = "{}";
 
 /// title, key equivalent, modifier chord, selector. A separator is a title of `-`; a submenu host
@@ -450,7 +449,6 @@ fn registered_menus(bar: &NSMenu, name: &str) {
     }
 }
 
-/// Whether the ENABLED column can report a false at all.
 fn controls(mtm: MainThreadMarker, bar: &NSMenu) {
     let Some(file) = submenu(bar, "File") else {
         verdict("control.file_menu", false, "no File menu to plant in");

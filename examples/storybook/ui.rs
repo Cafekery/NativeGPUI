@@ -1,5 +1,3 @@
-//! Layout helpers every page shares.
-
 use gpui::{AnyElement, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 
