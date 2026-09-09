@@ -13,7 +13,7 @@ use crate::app::FinderDemo;
 use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
-use crate::{index, listing, preview};
+use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 512;
 
@@ -199,6 +199,7 @@ impl FinderDemo {
         let mail = Arc::new(Mutex::new(Mail::default()));
         let filling = mail.clone();
         let sorted_by = (self.sort, self.ascending);
+        let art = self.art_size();
         let plain = self.plain();
         let read = cx.background_executor().spawn(async move {
             let dir = Path::new(id);
@@ -209,6 +210,7 @@ impl FinderDemo {
             let mut all: Vec<Arc<Row>> = Vec::new();
             if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
                 let mut rows = data::rows_of(id, &known, index);
+                icons::warm(&rows, art);
                 sort(&mut rows);
                 let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                 let mut mail = filling.lock().unwrap();
@@ -216,6 +218,7 @@ impl FinderDemo {
                 mail.lines = lines;
             }
             let post = |mut rows: Vec<Arc<Row>>| {
+                icons::warm(&rows, art);
                 let mut mail = filling.lock().unwrap();
                 let replace = !mail.listed;
                 mail.listed = true;
