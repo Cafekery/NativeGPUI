@@ -1,5 +1,3 @@
-//! Finder's search field: this folder's rows filter, and the index adds the rest of the subtree.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +10,6 @@ use crate::data::{self, Row};
 use crate::listing::next_rev;
 use crate::{index, prefs};
 
-/// Rows a search or a tag listing shows at most.
 const HITS: usize = 200;
 
 impl FinderDemo {
@@ -20,13 +17,11 @@ impl FinderDemo {
         !self.filtered.trim().is_empty() && !self.hits.is_empty()
     }
 
-    /// Whether the window is in Finder's search state, which its scope bar and title follow: the
-    /// field holds a query, whether or not it found anything.
+    /// Finder is in its search state whenever the field holds a query, found anything or not.
     pub(crate) fn in_search(&self) -> bool {
         !self.query.trim().is_empty()
     }
 
-    /// Rows found elsewhere on the disk: the search field's hits, or a tag's files.
     pub(crate) fn results(&self) -> bool {
         self.tag_listing.is_some() || self.searching()
     }
@@ -36,13 +31,10 @@ impl FinderDemo {
         self.run_search(cx);
     }
 
-    /// Finder filters as the field is typed into, so the rows a query names are found and their
-    /// lines built off the main thread, and a keystroke that supersedes one drops it where it is.
     fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
         cx.notify();
         let wanted = self.query.trim().to_string();
-        // Finder searches one folder, or every network volume, or the whole Mac.
         let everywhere = self.scope == scope_bar::THIS_MAC;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
@@ -65,7 +57,7 @@ impl FinderDemo {
                             .flat_map(|root| index.search(&query, Some(root), HITS))
                             .collect(),
                     };
-                    found.sort_by(|a, b| b.score.cmp(&a.score));
+                    found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
                     found.truncate(HITS);
                     found
                         .iter()
@@ -109,7 +101,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Finder's tag rows: the files Spotlight says carry the tag, in a listing titled with it.
     pub(crate) fn show_tag(
         &mut self,
         id: &'static str,
@@ -153,7 +144,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Finder's scope bar: which segment is picked, per folder for the session, everywhere after.
     pub(crate) fn set_scope(&mut self, scope: usize, cx: &mut Context<Self>) {
         if self.scope == scope {
             return;
