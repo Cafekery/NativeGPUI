@@ -7,6 +7,7 @@ use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
 use crate::app::FinderDemo;
 use crate::prefs;
+use crate::views::column::ICON as COLUMN_ICON;
 use crate::views::header::PANE_INSET;
 use crate::views::icon::cell;
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
@@ -70,6 +71,17 @@ impl FinderDemo {
                 from + (to - from) * gpui::ease_in_out(t)
             }
             None => self.list_icon,
+        }
+    }
+
+    /// The size the view on screen draws a row's artwork at: what a listing draws its icons for
+    /// while it is still being read.
+    pub(crate) fn art_size(&self) -> f32 {
+        match self.view {
+            ICON_VIEW => self.icon_size as f32,
+            GALLERY_VIEW => self.strip_icon,
+            COLUMN_VIEW => COLUMN_ICON,
+            _ => self.list_icon_now(),
         }
     }
 

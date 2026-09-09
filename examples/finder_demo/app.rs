@@ -14,7 +14,6 @@ use gpui::{
     UniformListScrollHandle,
 };
 use native_gpui::sidebar::NativeSidebar;
-use native_gpui::tokens::FileType;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
@@ -250,16 +249,12 @@ impl FinderDemo {
         this
     }
 
-    /// Ask for the artwork every folder wears up front, so no frame is the first to want it.
+    /// Draw the artwork every window needs before its first frame, and ask for the sizes past
+    /// the list's while it draws them.
     pub(crate) fn warm_icons(&self) {
-        let kinds = [
-            FileType::Folder,
-            FileType::FullFolder,
-            FileType::Path("/"),
-            FileType::Extension("app"),
-        ];
-        for kind in kinds {
-            for size in [ICON_SMALL, ICON_SIZE, PREVIEW_W - 1. - 2. * INSET] {
+        crate::icons::draw_stand_ins(ICON_SMALL);
+        for kind in crate::icons::STAND_INS {
+            for size in [ICON_SIZE, PREVIEW_W - 1. - 2. * INSET] {
                 crate::icons::icon(kind, size);
             }
         }

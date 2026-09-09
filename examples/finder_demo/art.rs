@@ -51,6 +51,7 @@ fn slot(width: f32, height: f32) -> Div {
 
 fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
     kind.and_then(|kind| crate::icons::icon(kind, size))
+        .or_else(|| crate::icons::icon(face.stand_in(), size))
         .map(|symbol| symbol.img().into_any_element())
         .unwrap_or_else(|| glyph(face, size))
 }

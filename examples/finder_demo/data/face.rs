@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use native_gpui::tokens::{SymbolColor, SystemColor};
+use native_gpui::tokens::{FileType, SymbolColor, SystemColor};
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::NSString;
 
@@ -46,6 +46,18 @@ impl Face {
             F::Disk => "externaldrive.fill",
             F::Program => "app.fill",
             F::Web => "safari.fill",
+        }
+    }
+
+    /// The artwork a row wears while its own type's is still being drawn: the system's own
+    /// generic folder or document, never the SF glyph, which is only what is left when even that
+    /// has not landed.
+    pub(crate) fn stand_in(self) -> FileType<'static> {
+        match self {
+            F::Folder => FileType::Folder,
+            F::Volume | F::Disk => FileType::Path("/"),
+            F::Program => FileType::Extension("app"),
+            _ => FileType::Uti("public.data"),
         }
     }
 
