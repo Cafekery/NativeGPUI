@@ -8,7 +8,7 @@ use native_gpui::native_callout;
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
 use crate::data::Line;
-use crate::menus::rows_menu;
+use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::ui::pick_on_click;
 
@@ -148,7 +148,7 @@ impl FinderDemo {
                     .justify_center()
                     .children(hero),
             )
-            .child(rows_menu("ng.finder.strip.menu", this, hit, strip_row))
+            .child(tiles_menu("ng.finder.strip.menu", this, hit, strip_row))
             .into_any_element()
     }
 
