@@ -27,6 +27,7 @@ use crate::preview::LIST_MIN_W;
 use crate::ui::{axis_locked, scroller};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
 use crate::views::header::HEADER_H;
+use crate::views::list::LIST_FOOT_GAP;
 
 pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
@@ -218,7 +219,7 @@ impl FinderDemo {
     fn scroller_bar(&self) -> Option<NativeScroller> {
         match self.view {
             LIST_VIEW => {
-                let inset = self.list_inset().0 as f32 * self.row_h();
+                let inset = self.list_inset().0 as f32 * self.row_h() + self.list_tail();
                 scroller(
                     "ng.finder.scroller",
                     &self.scroll.0.borrow().base_handle,
@@ -252,8 +253,15 @@ impl FinderDemo {
         let scope_bar = (scope_h > 0.).then(|| self.scope_bar(cx));
         let above = metrics.top;
         let top = above + px(scope_h);
-        // The path bar takes height from the list, not from the pane, which runs to the corner.
-        let foot = if path_bar.is_some() { PATH_H } else { 0. };
+        // The path bar takes height from the list, not from the pane, which runs to the corner,
+        // and Finder's rows stop short of whatever is under them.
+        let bar = if path_bar.is_some() { PATH_H } else { 0. };
+        let foot = bar
+            + if self.view == LIST_VIEW {
+                LIST_FOOT_GAP
+            } else {
+                0.
+            };
         let banded = headers.is_some();
         let mut surface = div()
             .absolute()

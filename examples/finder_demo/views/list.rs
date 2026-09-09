@@ -35,6 +35,9 @@ const SELECTION_JOIN_LEAD: f32 = 30.;
 const SELECTION_JOIN_TRAIL: f32 = 6.;
 const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
+/// Finder's rows stop this far above the path bar, and the last row of all stops the same
+/// distance above that again, so the end of a list never touches the bar.
+pub(crate) const LIST_FOOT_GAP: f32 = 5.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
@@ -122,6 +125,12 @@ impl FinderDemo {
         (rows, rows as f32 * row_h - inset)
     }
 
+    /// How far the list hangs below the clip so its trailing blank row leaves `LIST_FOOT_GAP`
+    /// under the last real one. Rows drawn down there are the clip's, not the path bar's.
+    pub(crate) fn list_tail(&self) -> f32 {
+        self.row_h() - LIST_FOOT_GAP
+    }
+
     pub(crate) fn list_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let lines = self.lines(true);
         let this = cx.entity().downgrade();
@@ -167,7 +176,9 @@ impl FinderDemo {
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
-        let list = uniform_list("ng.finder.list", pads + count, move |range, window, _| {
+        // One blank row past the end, for the gap the list stops on.
+        let items = pads + count + 1;
+        let list = uniform_list("ng.finder.list", items, move |range, window, _| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
                     let at = match slots.as_ref().map(|slots| slots.get(at)) {
@@ -182,7 +193,9 @@ impl FinderDemo {
             };
             range
                 .map(|index| {
-                    let Some(at) = index.checked_sub(pads) else {
+                    // Blank above the first row and below the last: the header's room, and the
+                    // gap the list ends on.
+                    let Some(at) = index.checked_sub(pads).filter(|at| *at < count) else {
                         return div()
                             .id(("ng.finder.pad", index))
                             .h(px(look.row_h))
@@ -213,6 +226,7 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .mt(px(-lift))
+            .mb(px(-self.list_tail()))
             .child(rows_menu(
                 "ng.finder.list.menu",
                 cx.entity().downgrade(),
