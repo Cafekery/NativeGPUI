@@ -574,3 +574,33 @@ fn visible_children_skips_the_hidden_and_the_unread() {
     assert_eq!(index.visible_children(&root.join("locked")), None);
     assert_eq!(index.visible_children(&root.join("nowhere")), None);
 }
+
+#[test]
+fn a_reopened_snapshot_drops_what_was_deleted() {
+    let temp = tree("compact");
+    let root = &temp.0;
+    let store = store("compact");
+    let index = Index::open(&store);
+    crawl(&index, root);
+    let whole = fs::metadata(&store).unwrap().len();
+
+    fs::remove_dir_all(root.join("many")).unwrap();
+    index.note_changed(&[root.join("many"), root.clone()]);
+    index.save();
+
+    let index = Index::open(&store);
+    assert_eq!(
+        names(&index, root),
+        [".hidden", "Demo.app", "a", "locked", "ring"]
+    );
+    assert_eq!(names(&index, &root.join("a/b/c")), ["three.txt"]);
+    assert!(index.children(&root.join("many")).is_none());
+    assert_eq!(index.search("file0001", None, 4).len(), 0);
+    assert_eq!(index.search("three", None, 4).len(), 1);
+    assert_eq!(index.folder_size(&root.join("a")), Some(DEEP_BYTES));
+
+    index.note_changed(&[root.clone()]);
+    index.save();
+    assert!(fs::metadata(&store).unwrap().len() < whole);
+    let _ = fs::remove_file(&store);
+}
