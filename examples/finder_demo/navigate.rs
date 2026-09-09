@@ -66,11 +66,20 @@ impl FinderDemo {
         self.target().to_string()
     }
 
-    pub(crate) fn retitle(&self, window: &mut Window) {
-        match self.tag_listing.map(tag_title) {
-            Some(title) => window.set_window_title(&title),
-            None => window.set_window_title(&finder_fs::name::display(&self.crumb_path())),
+    /// The window's title. A search takes it over the way Finder's does, naming what it is
+    /// scoped to rather than the folder the window is still standing in.
+    pub(crate) fn title(&self) -> String {
+        if self.in_search() {
+            return format!("Searching \u{201c}{}\u{201d}", self.scope_name());
         }
+        match self.tag_listing.map(tag_title) {
+            Some(title) => title.to_string(),
+            None => finder_fs::name::display(&self.crumb_path()).into_owned(),
+        }
+    }
+
+    pub(crate) fn retitle(&self, window: &mut Window) {
+        window.set_window_title(&self.title());
     }
 
     /// The folder each breadcrumb stands for, the volume first.

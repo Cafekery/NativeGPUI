@@ -118,7 +118,7 @@ impl FinderDemo {
     /// The list's top content inset: `(blank leading rows, how far the list frame is lifted)`.
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         // Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
-        let scope_h = if self.searching() { SCOPE_H } else { 0. };
+        let scope_h = if self.in_search() { SCOPE_H } else { 0. };
         let inset = f32::from(self.metrics().top) + scope_h + HEADER_H + LIST_TOP_GAP;
         let row_h = self.row_h();
         let rows = (inset / row_h).ceil() as usize;

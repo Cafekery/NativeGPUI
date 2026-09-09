@@ -52,9 +52,11 @@ pub(crate) struct FinderDemo {
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) query: String,
+    /// The title the window is wearing, so a frame sets it only when it has moved on.
+    pub(crate) titled: String,
     /// The query the rows on screen are filtered by; `query` is what has been typed since.
     pub(crate) filtered: String,
-    /// Finder's scope bar: `scope_bar::THIS_MAC` or `scope_bar::THIS_FOLDER`.
+    /// Finder's scope bar: `scope_bar::THIS_MAC`, `THIS_FOLDER` or `NETWORK`.
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
     /// Folders an Option-disclose waits on, each with its depth under the row it started from.
@@ -159,6 +161,7 @@ impl FinderDemo {
         let queue = Queue::new(move |event| queue_sink.lock().unwrap().push(event));
         read::spawn_queue_tick(cx);
         let mut this = Self {
+            titled: String::new(),
             folders: Folders::default(),
             sidebar: None,
             sidebar_rows: sidebar::stored_rows(&groups),
