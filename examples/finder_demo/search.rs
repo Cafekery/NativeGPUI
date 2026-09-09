@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{Context, SharedString, Window};
 
@@ -15,9 +14,6 @@ use crate::{index, prefs};
 
 /// Rows a search or a tag listing shows at most.
 const HITS: usize = 200;
-
-/// What a keystroke waits for the next one before the folder is filtered again.
-const SETTLE: Duration = Duration::from_millis(120);
 
 impl FinderDemo {
     pub(crate) fn searching(&self) -> bool {
@@ -40,22 +36,11 @@ impl FinderDemo {
         self.tag_listing = None;
         cx.notify();
         let wanted = self.query.trim().to_string();
-        // The keystroke that starts a query and the one that empties the field answer at once;
-        // the rest wait for the typing to stop.
-        let settled =
-            !wanted.is_empty() && !(self.filtered.is_empty() && wanted.chars().nth(1).is_none());
         let under = match self.scope {
             scope_bar::THIS_MAC => None,
             _ => Some(PathBuf::from(self.here())),
         };
         cx.spawn(async move |this, cx| {
-            if settled {
-                cx.background_executor().timer(SETTLE).await;
-            }
-            let current = this.read_with(cx, |this, _| this.query.trim() == wanted);
-            if !current.unwrap_or(false) {
-                return;
-            }
             let query = wanted.clone();
             let hits = cx
                 .background_executor()

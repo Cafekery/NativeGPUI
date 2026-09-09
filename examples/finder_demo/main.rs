@@ -85,7 +85,7 @@ fn main() {
         // front of the window, so all three land while it opens.
         let warm = cx.background_executor().clone();
         warm.spawn(async {
-            let _ = index();
+            index().warm();
         })
         .detach();
         warm.spawn(async {
