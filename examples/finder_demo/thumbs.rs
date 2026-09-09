@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui::{RenderImage, SharedString, px};
+use gpui::{App, Entity, RenderImage, SharedString, px};
 use native_gpui::thumbnails;
 
+use crate::app::FinderDemo;
 use crate::data::{Face, Row};
 
 /// The kinds Quick Look draws a page or picture for; every other type keeps its icon.
@@ -34,14 +35,20 @@ thread_local! {
     /// What came back empty, and when it may be asked for again.
     static RETRY: RefCell<HashMap<Thumb, (u32, Instant)>> = RefCell::new(HashMap::new());
     static FRAMES: Cell<u64> = const { Cell::new(0) };
+    /// Whether a task is already looking for what Quick Look has finished.
+    static WATCHING: Cell<bool> = const { Cell::new(false) };
     static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
 }
 
 /// Thumbnails land on a background queue; the window drains them on its next tick.
 static DELIVERED: AtomicUsize = AtomicUsize::new(0);
+/// Generations asked for and not yet landed: while any are, the window looks for them often.
+static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static LANDED: Mutex<Vec<(Thumb, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
 
 const SWEEP: Duration = Duration::from_millis(250);
+const WATCH: Duration = Duration::from_millis(8);
+const GIVE_UP: u32 = 250;
 const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
 
@@ -49,9 +56,46 @@ pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
 }
 
+/// Whether a thumbnail is still being drawn for a row on screen.
+pub(crate) fn pending() -> bool {
+    INFLIGHT.load(Ordering::Relaxed) > 0
+}
+
+/// Draw what Quick Look finishes as it finishes it: the window's own tick is a tenth of a second
+/// apart, which a landed thumbnail otherwise waits out before anyone looks at it.
+pub(crate) fn watch_thumbnails(demo: &Entity<FinderDemo>, cx: &mut App) {
+    if !pending() || WATCHING.with(|watching| watching.replace(true)) {
+        return;
+    }
+    let demo = demo.downgrade();
+    cx.spawn(async move |cx| {
+        let mut quiet = 0;
+        loop {
+            cx.background_executor().timer(WATCH).await;
+            let landed = collect_thumbnails();
+            // A generation whose handler is never called would leave this looking for ever.
+            quiet = if landed { 0 } else { quiet + 1 };
+            let done = !pending() || quiet > GIVE_UP;
+            let alive = demo
+                .update(cx, |_, cx| {
+                    if landed {
+                        cx.notify();
+                    }
+                })
+                .is_ok();
+            if done || !alive {
+                break;
+            }
+        }
+        WATCHING.with(|watching| watching.set(false));
+    })
+    .detach();
+}
+
 /// Move what the generator delivered into the map the rows draw from. Main thread only.
-pub(crate) fn collect_thumbnails() {
+pub(crate) fn collect_thumbnails() -> bool {
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
+    let any = !landed.is_empty();
     for (key, image) in landed {
         let Some(image) = image else {
             retry(&key);
@@ -60,6 +104,7 @@ pub(crate) fn collect_thumbnails() {
         keep(&key, &image);
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
     }
+    any
 }
 
 /// An empty delivery is a cancelled generation as often as a file with no picture: ask again,
@@ -194,8 +239,10 @@ fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
     if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
         return;
     }
+    INFLIGHT.fetch_add(1, Ordering::Relaxed);
     thumbnails::thumbnail(path, px(size), scale, icon, move |image| {
         LANDED.lock().unwrap().push((key, image));
         DELIVERED.fetch_add(1, Ordering::Relaxed);
+        INFLIGHT.fetch_sub(1, Ordering::Relaxed);
     });
 }

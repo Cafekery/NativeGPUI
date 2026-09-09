@@ -148,6 +148,9 @@ impl FinderDemo {
         crate::icons::draw_wanted(&cx.entity(), cx);
         crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
+        // A row asks for its thumbnail as the list lays itself out, which is after this runs.
+        let demo = cx.entity();
+        cx.defer(move |cx| crate::thumbs::watch_thumbnails(&demo, cx));
         self.follow();
     }
 
