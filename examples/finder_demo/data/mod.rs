@@ -1,6 +1,3 @@
-//! The real file system as the demo sees it: interned absolute paths for ids, cached listings, and
-//! the system formatters that turn entries into rows.
-
 mod face;
 mod folders;
 mod format;

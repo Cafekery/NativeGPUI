@@ -1,6 +1,3 @@
-//! `NSTextField` as a static label: sharp text over a `Layer::Above` material, which blurs every
-//! GPUI pixel under it.
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -87,7 +84,6 @@ impl NativeLabel {
         self
     }
 
-    /// Digits all one width, in the same face.
     pub fn tabular(mut self, tabular: bool) -> Self {
         self.tabular = tabular;
         self
@@ -122,7 +118,6 @@ impl NativeLabel {
         self.weight.0.to_bits().hash(&mut hasher);
         self.tabular.hash(&mut hasher);
         let font = self.font();
-        // The height does not depend on the text, so the cache key leaves it out.
         let fitting = fitting_size_keyed("NSTextField(label)", hasher.finish(), |mtm| {
             let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
             probe.setFont(Some(&font));

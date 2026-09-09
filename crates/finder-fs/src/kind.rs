@@ -1,6 +1,3 @@
-//! What Finder calls a file: its uniform type identifier and the localized kind string, cached
-//! per extension so a listing can ask per row.
-
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
@@ -40,8 +37,7 @@ unsafe fn take_string(ptr: *mut c_void) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Finder's Kind string for a bare extension, straight from Launch Services. Deprecated by
-/// Apple in favor of `UTType`, but still the closest public match to what Finder shows.
+/// Deprecated in favour of `UTType`, but still the closest public match to Finder's Kind string.
 fn ls_label(ext: &str) -> Option<String> {
     if ext.is_empty() {
         return None;
@@ -55,8 +51,7 @@ fn ls_label(ext: &str) -> Option<String> {
     unsafe { take_string(out) }
 }
 
-/// Finder's Kind string for one real file, from Spotlight's `kMDItemKind`. `None` if the item
-/// doesn't exist, its volume isn't indexed, or Spotlight hasn't caught up to it yet.
+/// `None` if the item is missing, its volume isn't indexed, or Spotlight hasn't caught up to it.
 fn spotlight_label(path: &Path) -> Option<String> {
     let path_str = path.to_str()?;
     let ns_path = NSString::from_str(path_str);
@@ -75,9 +70,7 @@ fn spotlight_label(path: &Path) -> Option<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Kind {
-    /// e.g. `public.plain-text`, `com.apple.application-bundle`, `public.folder`.
     pub uti: Arc<str>,
-    /// Finder's localized label, e.g. `Plain Text`, `Application`, `Folder`.
     pub label: Arc<str>,
 }
 
@@ -130,8 +123,7 @@ fn label_for(ty: &UTType, ext: &str) -> Arc<str> {
         .into()
 }
 
-/// A directory-flavored resolution for `ext`, if the extension names a real (non-synthesized)
-/// package or bundle type — this is how `.app`, `.framework`, `.xcodeproj` etc. resolve.
+/// A real, non-synthesized package or bundle type: how `.app`, `.framework`, `.xcodeproj` resolve.
 fn package_variant(ns_ext: &NSString) -> Option<Retained<UTType>> {
     let dir = directory_type()?;
     let ty = UTType::typeWithFilenameExtension_conformingToType(ns_ext, &dir)?;
@@ -196,9 +188,6 @@ pub fn kind_for_extension(ext: &str) -> Kind {
     kind
 }
 
-/// The kind of one real file on disk. Prefers Spotlight's answer for this exact file over the
-/// extension-only lookup [`kind_for_extension`] uses; caches under the same per-extension key,
-/// so a good Spotlight answer for one file also benefits every later same-extension lookup.
 pub fn kind_of_path(path: &Path) -> Kind {
     let ext = path
         .file_name()
@@ -221,7 +210,6 @@ pub fn kind_of_path(path: &Path) -> Kind {
     kind
 }
 
-/// Whether a directory with this name is a package Finder shows as a file.
 pub fn is_package_name(name: &str) -> bool {
     let Some((_, ext)) = name.rsplit_once('.') else {
         return false;

@@ -76,8 +76,8 @@ fn class_of(view: &NSView) -> String {
     obj.class().name().to_string_lossy().into_owned()
 }
 
-/// Ancestry rather than a name match: AppKit builds a private
-/// `_NSCoreHostingView<NSGlassEffectContainerView.RootView>`, whose name contains the container's.
+/// AppKit builds a private `_NSCoreHostingView<NSGlassEffectContainerView.RootView>`, whose
+/// name contains the container's, so this walks ancestry instead of matching names.
 fn is_kind(view: &NSView, name: &str) -> bool {
     let obj: &AnyObject = view.as_ref();
     let mut class = Some(obj.class());
@@ -173,8 +173,7 @@ fn report(window: &Window) {
     );
 
     // The container is unflipped while the clip above it and its `contentView` below it are
-    // flipped, so a missing conversion mirrors y about the content view's midline and this point
-    // is the one that would then reach the member.
+    // flipped: a missing conversion mirrors y about the content view's midline.
     let mirror_at = NSPoint::new(panel_at.x, content.bounds().size.height - panel_at.y);
     if covers(&panel, &content, mirror_at) || covers(&knob, &content, mirror_at) {
         fail("the mirrored member point lands on a hosted view; move the member or the window");
@@ -194,8 +193,7 @@ fn report(window: &Window) {
         ("over bare GPUI inside the container", empty_at, &gpui, true),
     ];
     for (what, at, want, exact) in rows {
-        // `hitTest:` takes its point in the receiver's superview space, so this is asked of GPUI's
-        // view rather than of the content view, whose superview is the window frame view.
+        // `hitTest:` takes its point in the receiver's superview space.
         let hit: *mut NSView = unsafe { objc2::msg_send![&*gpui, hitTest: at] };
         let name = if hit.is_null() {
             "nil".to_string()
@@ -236,8 +234,7 @@ fn main() -> ExitCode {
                         origin: point(px(0.), px(0.)),
                         size: size(px(260.), px(200.)),
                     })),
-                    // gpui starts its display link only once occlusion reports visible, so
-                    // `show: false` never renders a frame.
+                    // gpui starts its display link only once occlusion reports visible.
                     focus: false,
                     ..window_options()
                 },

@@ -1,5 +1,3 @@
-//! `NSButton` in all three of its guises: push button, checkbox, radio.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window, div, prelude::*};

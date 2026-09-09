@@ -1,6 +1,3 @@
-//! File operations with Finder's semantics: copies and moves through NSFileManager (packages,
-//! metadata and permissions intact), Trash with Put Back, and an undo journal.
-
 use std::ffi::CString;
 use std::io;
 use std::os::macos::fs::MetadataExt as _;
@@ -24,7 +21,6 @@ use crate::volumes;
 
 mod deep;
 
-/// The most bytes a name can carry on the volumes Finder writes to.
 const NAME_MAX: usize = 255;
 
 #[derive(Clone, Debug)]
@@ -54,13 +50,10 @@ pub enum Op {
         into: PathBuf,
         name: String,
     },
-    /// Puts each item back at the path it came from, over whatever stands there now.
     PutBack(Vec<Restore>),
-    /// Several operations as one step, in order.
     Batch(Vec<Op>),
 }
 
-/// An item and the path it belongs at.
 #[derive(Clone, Debug)]
 pub struct Restore {
     pub item: PathBuf,
@@ -148,7 +141,6 @@ fn io_error(err: Retained<NSError>) -> io::Error {
     io::Error::new(kind, message)
 }
 
-/// The bytes an item takes, itself and everything under it.
 pub(crate) fn walk_size(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
@@ -166,7 +158,6 @@ pub(crate) fn walk_size(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// What a volume, rather than the item, refused.
 #[derive(Clone, Copy)]
 enum Refusal {
     ReadOnly,
@@ -190,7 +181,6 @@ fn byte_string(bytes: u64) -> String {
     formatter.stringFromByteCount(bytes as i64).to_string()
 }
 
-/// The volume `path` is on: the deepest mount point it sits under.
 fn volume_of(path: &Path) -> Option<volumes::Volume> {
     volumes::mounted()
         .into_iter()
@@ -198,8 +188,7 @@ fn volume_of(path: &Path) -> Option<volumes::Volume> {
         .max_by_key(|volume| volume.path.as_os_str().len())
 }
 
-/// Finder names the volume the item was going to and how much more it would have taken;
-/// `NSFileManager`'s own string names the boot volume whatever the destination was.
+/// `NSFileManager`'s own message names the boot volume whatever the destination was.
 fn refusal_message(
     refusal: Refusal,
     item: &str,
@@ -229,8 +218,7 @@ fn refusal_message(
     })
 }
 
-/// Whether the file system refused a path rather than the item at it: `NSFileManager` builds an
-/// absolute path per item and gives up once one passes `PATH_MAX`.
+/// `NSFileManager` builds an absolute path per item and gives up once one passes `PATH_MAX`.
 fn past_path_max(err: &NSError) -> bool {
     let too_long = |err: &NSError| {
         err.domain().to_string() == "NSPOSIXErrorDomain" && err.code() as i32 == libc::ENAMETOOLONG
@@ -240,8 +228,6 @@ fn past_path_max(err: &NSError) -> bool {
         && err.underlyingErrors().iter().any(|under| too_long(&under))
 }
 
-/// A transfer only ever lands on a free name, so a half-landed tree is ours to clear away and
-/// try again for against directory descriptors, which no depth of tree can overrun.
 fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
     let (su, du) = (url(src), url(dst));
     let landed = if is_move {
@@ -259,8 +245,6 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
     }
 }
 
-/// The refusal `NSFileManager` would have raised where the deep walk saw the file system refuse,
-/// so a message reads the same however deep the tree was.
 fn deep_error(err: io::Error, src: &Path, dest: &Path, is_move: bool) -> io::Error {
     let Some(refused) = err.raw_os_error().and_then(|code| cocoa_error(code, dest)) else {
         return err;
@@ -294,7 +278,6 @@ fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     fm.removeItemAtURL_error(&url(path)).map_err(io_error)
 }
 
-/// Finder's name field: one component of the enclosing folder, never a path.
 fn check_name(name: &str) -> io::Result<()> {
     let refuse = |advice: &str| {
         Err(io::Error::new(
@@ -311,14 +294,13 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether the item carries Finder's Locked flag, which stops it being trashed or deleted.
-/// Finder asks before it clears one; `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
+/// Finder's Locked flag stops an item being trashed or deleted; Finder asks before it clears one,
+/// and `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
 pub fn locked(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
 }
 
-/// Clears the Locked flag from the item and, for a folder, from everything under it: a locked
-/// child refuses the folder it sits in.
+/// A locked child refuses the folder it sits in.
 fn unlock(path: &Path) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     let flags = meta.st_flags();
@@ -337,14 +319,13 @@ fn unlock(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether a name is in use: a broken symlink holds its name as firmly as a file does, which
-/// `Path::exists` does not see because it follows the link.
+/// A broken symlink still holds its name, which `Path::exists` misses because it follows links.
 fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// Whether both paths name the one item: a rename that only changes a name's case finds the item
-/// itself standing at the destination on a case-insensitive volume.
+/// On a case-insensitive volume, a rename that only changes a name's case finds the item itself
+/// standing at the destination.
 fn same_item(one: &Path, other: &Path) -> bool {
     let id = |path: &Path| {
         std::fs::symlink_metadata(path)
@@ -369,7 +350,6 @@ fn with_ext(stem: &str, ext: Option<&str>) -> String {
     }
 }
 
-/// `name 2`, `name 3`, … beside `path`, whichever is free.
 fn keep_both_path(path: &Path) -> PathBuf {
     let dir = path.parent().unwrap_or_else(|| Path::new(""));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -384,7 +364,6 @@ fn keep_both_path(path: &Path) -> PathBuf {
     }
 }
 
-/// `name copy`, `name copy 2`, … beside `path`, whichever is free.
 fn duplicate_path(path: &Path) -> PathBuf {
     let dir = path.parent().unwrap_or_else(|| Path::new(""));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -408,7 +387,6 @@ fn c_path(path: &Path) -> io::Result<CString> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the path contains a NUL"))
 }
 
-/// A free sibling of `dest`: a transfer lands here first, so `dest` is never missing.
 fn staging_path(dest: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = dest.parent().unwrap_or_else(|| Path::new("."));
@@ -419,8 +397,6 @@ fn staging_path(dest: &Path) -> PathBuf {
     ))
 }
 
-/// Swaps two paths in one step, or in two renames on a volume without `RENAME_SWAP`; `staged`
-/// holds what stood at `dest` either way.
 fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
     let (from, to) = (c_path(staged)?, c_path(dest)?);
     if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } == 0 {
@@ -448,8 +424,7 @@ fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
         .unwrap_or_else(|| path.to_path_buf()))
 }
 
-/// A refusal a lock explains is retried once the lock is off, the way Finder carries on after
-/// its "the item is locked" question.
+/// Finder carries on past its "the item is locked" question, so a lock is cleared and retried.
 fn past_the_lock<T>(
     path: &Path,
     refused: io::Error,
@@ -475,7 +450,6 @@ fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     }
 }
 
-/// Where an item landed, and what it displaced getting there.
 struct Placed {
     dest: Option<PathBuf>,
     displaced: Vec<Restore>,
@@ -490,9 +464,6 @@ impl Placed {
     }
 }
 
-/// Lands `src` where `dest` already stands without `dest` ever going missing: the transfer goes
-/// to a sibling and the two are exchanged, so a transfer that fails leaves `dest` untouched. What
-/// stood there goes to the Trash, and comes back with the undo.
 fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> io::Result<Placed> {
     let staged = staging_path(&dest);
     if let Err(err) = transfer(fm, src, &staged, is_move) {
@@ -519,8 +490,6 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> i
     })
 }
 
-/// Places `src` at `dest`, resolving a conflict at `dest` if one already exists there; no
-/// destination when the conflict was skipped and nothing moved.
 fn place_one(
     fm: &NSFileManager,
     src: &Path,
@@ -532,8 +501,8 @@ fn place_one(
         transfer(fm, src, &dest, is_move)?;
         return Ok(Placed::at(dest));
     }
-    // The item standing at the destination is the item going there: Finder leaves a move where it
-    // is and makes a copy into the same folder a Duplicate.
+    // Finder leaves a move onto itself where it is, and makes a copy into the same folder a
+    // Duplicate.
     if same_item(src, &dest) {
         if is_move {
             return Ok(Placed::at(dest));
@@ -626,8 +595,6 @@ fn move_or_copy(
     Ok(Done { results, undo })
 }
 
-/// What takes a finished transfer back: each item to the path it came from, or the Trash for a
-/// copy, and then whatever a Replace displaced goes back on top of it.
 fn undo_of_transfer(
     is_move: bool,
     home: Vec<Restore>,
@@ -781,8 +748,7 @@ fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Res
     Ok(Done { results, undo })
 }
 
-/// `name alias`, `name alias 2`, … beside `path`, whichever is free; Finder keeps the extension
-/// inside the name it appends to.
+/// Finder keeps the extension inside the name it appends `alias` to.
 fn alias_path(path: &Path) -> PathBuf {
     let dir = path.parent().unwrap_or_else(|| Path::new(""));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -883,7 +849,6 @@ mod tests {
 
     fn no_progress(_: Progress) {}
 
-    /// The paths an op's undo would put back: what a Replace displaced into the Trash.
     fn displaced(op: &Op) -> Vec<PathBuf> {
         match op {
             Op::PutBack(items) => items.iter().map(|item| item.item.clone()).collect(),
@@ -1478,7 +1443,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Runs `script` in the directory `levels` down a `deep_tree`, which no path can name.
     fn deep_sh(root: &Path, levels: usize, script: &str) -> String {
         let out = std::process::Command::new("sh")
             .arg("-c")
@@ -1494,7 +1458,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A tree whose leaf is past `PATH_MAX`, built by a shell that walks in as it goes.
     fn deep_tree(root: &Path, levels: usize) {
         let ok = std::process::Command::new("sh")
             .arg("-c")
@@ -1509,8 +1472,6 @@ mod tests {
         assert!(ok.success(), "could not build the fixture");
     }
 
-    /// The open-file limit a launchd process gets, put back on the way out: a walk that holds a
-    /// descriptor per level runs out of them long before it runs out of path.
     struct FewDescriptors(libc::rlimit);
 
     impl FewDescriptors {

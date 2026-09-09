@@ -1,6 +1,3 @@
-//! The outline view's data source and delegate callbacks, one free function each: the delegate
-//! classes are built by a macro and only forward to these.
-
 use std::rc::Rc;
 
 use objc2::rc::Retained;

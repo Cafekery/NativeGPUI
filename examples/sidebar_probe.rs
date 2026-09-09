@@ -100,7 +100,6 @@ const EDGE_BORDER: [f64; 5] = [1., 2., 3., 5., 12.];
 const EDGE_ANIM: (f32, f32, f32, f32) = (690., 292., 22., 22.);
 const EDGE_ANIM_AIM: (f64, f64) = (700., 303.);
 
-/// Where GPUI's logical (0,0) is drawn, in window-content top-left points.
 fn draw_origin(sidebar: &NativeSidebar) -> (f64, f64) {
     let pane = sidebar.pane_rect();
     let gpui = sidebar.gpui_frame();
@@ -730,7 +729,6 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             click_at(window_to_global(sidebar, dx, at.y));
             edge.wait = 14;
         }
-        // Capture pose: paint the targets and post nothing.
         100 => {}
         _ => {
             edge_table(edge, sidebar);
@@ -853,7 +851,6 @@ impl Demo {
         );
 
         let sidebar = NativeSidebar::install(window, cx, options);
-        // Idempotence: a second install must not stack a second split controller.
         let again = NativeSidebar::install(window, cx, SidebarOptions::default());
         println!(
             "idempotent: subviews of window contentView = {}, second install same handle = {}",

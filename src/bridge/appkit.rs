@@ -1,5 +1,3 @@
-//! The ObjC surface the crate needs: reaching GPUI's view, and one container class.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -14,8 +12,7 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 define_class!(
-    /// A flipped container, so subview frames are GPUI's top-left coordinates verbatim, that
-    /// declines mouse points landing on nothing but itself.
+    /// A flipped container, so subview frames are GPUI's top-left coordinates verbatim.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGContainer"]
@@ -72,8 +69,8 @@ pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {
     )
 }
 
-/// Give keyboard focus back to GPUI. AppKit's first responder and GPUI's focus are independent:
-/// a hosted field keeps first responder after a click elsewhere.
+/// AppKit's first responder and GPUI's focus are independent: a hosted field keeps first
+/// responder after a click elsewhere.
 pub fn focus_gpui(window: &Window) {
     let view = gpui_view(window);
     if let Some(ns_window) = view.window() {
@@ -83,10 +80,8 @@ pub fn focus_gpui(window: &Window) {
 
 const KEY_PATH_CLASS: &CStr = c"NGKeyPathView";
 
-/// Subclass GPUI's view instance so `performKeyEquivalent:` and `keyDown:` behave like a plain
-/// `NSView`'s while a hosted control is first responder. GPUI's overrides otherwise swallow
-/// function keys into the field editor as legacy ASCII and dead-end the keys `NSWindow` would
-/// have used to activate the focused control.
+/// GPUI's overrides swallow function keys into the field editor as legacy ASCII and dead-end the
+/// keys `NSWindow` would have used to activate the focused control.
 pub fn adopt_key_path(view: &NSView) {
     let current = view.class();
     if current.name() == KEY_PATH_CLASS {
@@ -171,8 +166,7 @@ pub fn rects_equal(a: NSRect, b: NSRect) -> bool {
         && a.size.height == b.size.height
 }
 
-/// A control's preferred size, asked of AppKit once per class and cached. A `0.0` axis is AppKit
-/// declaring that axis free.
+/// A `0.0` axis is AppKit declaring that axis free.
 pub fn fitting_size(
     class: &'static str,
     measure: impl FnOnce(MainThreadMarker) -> NSSize,
@@ -180,8 +174,6 @@ pub fn fitting_size(
     fitting_size_keyed(class, 0, measure)
 }
 
-/// [`fitting_size`] for controls whose preferred size depends on their own properties; `key`
-/// hashes those inputs.
 pub fn fitting_size_keyed(
     class: &'static str,
     key: u64,

@@ -1,5 +1,3 @@
-//! `NSTextField`, `NSSecureTextField` and `NSSearchField`.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -73,7 +71,6 @@ pub struct NativeTextField {
     placeholder: SharedString,
     enabled: bool,
     stretch: bool,
-    /// Take the keyboard on appearing, selecting these characters.
     editing: Option<std::ops::Range<usize>>,
     on_change: Option<NativeHandler>,
     on_submit: Option<NativeHandler>,

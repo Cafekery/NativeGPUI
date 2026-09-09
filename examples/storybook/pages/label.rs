@@ -1,5 +1,3 @@
-//! `native_label` and `native_rule`: real AppKit text ordered above a material.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, Window, div, prelude::*, px};

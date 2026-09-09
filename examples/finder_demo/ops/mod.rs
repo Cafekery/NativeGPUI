@@ -1,5 +1,3 @@
-//! Every file operation the window starts, and what it says when the file system refuses.
-
 pub(crate) mod clipboard;
 pub(crate) mod conflicts;
 pub(crate) mod jobs;
@@ -13,7 +11,6 @@ use gpui::{Context, SharedString};
 use crate::app::FinderDemo;
 use crate::data::{intern_path, split_key};
 
-/// What a finished operation leaves behind it.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum After {
     Nothing,
@@ -21,7 +18,6 @@ pub(crate) enum After {
     Rename,
 }
 
-/// The folders an operation changes, which are read again once it lands.
 pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
     let parents = |items: &[PathBuf]| {
         items
@@ -51,8 +47,6 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
 }
 
 impl FinderDemo {
-    /// Every operation runs through the queue; a locked item is asked about and a colliding name
-    /// shows the conflict sheet first.
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
         let Some(op) = self.confirm_unlock(op) else {
             return;
@@ -99,7 +93,7 @@ impl FinderDemo {
     }
 
     /// Finder asks before it clears a lock: one question per locked item, with Apply to All once
-    /// more than one of them is locked. What the answer refuses stays where it is.
+    /// more than one of them is locked.
     fn confirm_unlock(&self, op: Op) -> Option<Op> {
         let (items, deleting) = match &op {
             Op::Trash(items) => (items.clone(), false),
@@ -167,8 +161,6 @@ impl FinderDemo {
         (answer == objc2_app_kit::NSAlertFirstButtonReturn, all)
     }
 
-    /// Finder's error sheet: what the file system said, on the window it happened in.
-    /// Finder's destructive-command sheet: the work runs only if the user takes the first button.
     pub(crate) fn confirm(
         &self,
         text: &str,
@@ -209,8 +201,7 @@ impl FinderDemo {
         }
     }
 
-    /// The rename lands on disk; the row comes back with the folder's next read. A typed `/`
-    /// is stored as `:`, which is the byte Finder draws as a slash.
+    /// A typed `/` is stored as `:`, the byte Finder draws as a slash.
     pub(crate) fn rename(&mut self, key: &SharedString, name: &str, cx: &mut Context<Self>) {
         let Some((_, old)) = split_key(key) else {
             return;

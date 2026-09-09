@@ -1,9 +1,6 @@
-//! What Finder draws for a name, which is not always what the directory stores.
-
 use std::borrow::Cow;
 
-/// The name as Finder draws it: `:` is the path separator Finder shows a `/` for, and a control
-/// character other than a tab — a newline in a name — is a `?` rather than a second line.
+/// Finder draws a stored `:` as `/`, and a control character other than tab as `?`.
 pub fn display(name: &str) -> Cow<'_, str> {
     let mapped = |c: char| c == ':' || (c.is_control() && c != '\t');
     if !name.chars().any(mapped) {

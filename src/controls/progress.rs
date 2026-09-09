@@ -1,5 +1,3 @@
-//! `NSProgressIndicator` (bar and spinner) and `NSLevelIndicator`.
-
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
@@ -126,7 +124,6 @@ impl NativeProgress {
 
 hosted_element!(NativeProgress);
 
-/// The circular indeterminate indicator, always animating.
 pub fn native_spinner(id: impl Into<ElementId>) -> NativeSpinner {
     NativeSpinner {
         id: id.into(),

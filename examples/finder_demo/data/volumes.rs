@@ -1,5 +1,3 @@
-//! The mounted volumes as of the last snapshot, and the folders Finder gives their own artwork.
-
 use std::collections::HashSet;
 use std::sync::{OnceLock, RwLock};
 
@@ -22,7 +20,7 @@ fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
     SEEN.get_or_init(Default::default)
 }
 
-/// Re-reads the mounted volumes; enumerating them costs milliseconds, so no frame may call it.
+/// Enumerating the mounted volumes costs milliseconds, so no frame may call this.
 pub(crate) fn refresh_volumes() {
     let mounted = volumes::mounted()
         .iter()
@@ -48,7 +46,6 @@ fn boot_name() -> &'static str {
     })
 }
 
-/// The mount point `path` sits on, and that volume's name.
 pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
     let under =
         |mount: &str| mount == "/" || path == mount || path.starts_with(&format!("{mount}/"));
@@ -62,7 +59,6 @@ pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
         .unwrap_or(("/", boot_name()))
 }
 
-/// The volumes' mount points, root first, for the sidebar's Locations.
 pub(crate) fn volume_roots() -> Vec<&'static str> {
     volumes_seen()
         .read()
@@ -72,7 +68,6 @@ pub(crate) fn volume_roots() -> Vec<&'static str> {
         .collect()
 }
 
-/// The mount points of the volumes that are not this Mac's own: what the Network scope searches.
 pub(crate) fn network_roots() -> Vec<&'static str> {
     volumes_seen()
         .read()
@@ -83,7 +78,6 @@ pub(crate) fn network_roots() -> Vec<&'static str> {
         .collect()
 }
 
-/// The bytes free on the volume `id` sits on, as of the last [`refresh_volumes`].
 pub(crate) fn available_bytes(id: &str) -> u64 {
     let (mount, _) = volume_of(id);
     volumes_seen()
@@ -94,7 +88,6 @@ pub(crate) fn available_bytes(id: &str) -> u64 {
         .map_or(0, |volume| volume.available)
 }
 
-/// What a volume is, which no directory entry of it carries.
 pub(crate) struct VolumeInfo {
     pub(crate) name: &'static str,
     pub(crate) capacity: u64,
@@ -102,7 +95,6 @@ pub(crate) struct VolumeInfo {
     pub(crate) format: &'static str,
 }
 
-/// The volume mounted exactly at `id`, as of the last [`refresh_volumes`].
 pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
     volumes_seen()
         .read()
@@ -117,7 +109,7 @@ pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
         })
 }
 
-/// The folders whose artwork is their own, so they draw as Finder draws them.
+/// The folders Finder draws with their own artwork.
 pub(super) fn special() -> &'static HashSet<String> {
     static PLACES: OnceLock<HashSet<String>> = OnceLock::new();
     PLACES.get_or_init(|| {

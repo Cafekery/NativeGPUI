@@ -1,5 +1,3 @@
-//! What sits around the view: the toolbar, the bars, the sidebar, and the window's sheets.
-
 pub(crate) mod path_bar;
 pub(crate) mod scope_bar;
 pub(crate) mod sheet;

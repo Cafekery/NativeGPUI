@@ -1,5 +1,3 @@
-//! The system's own colours, fonts, symbols and file-type icons, for the parts gpui draws itself.
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr;
@@ -54,7 +52,6 @@ impl Appearance {
             .expect("the two base appearances always resolve")
     }
 
-    /// Collapse any appearance onto one of the two worlds.
     pub fn of(appearance: &NSAppearance) -> Appearance {
         let names = NSArray::from_slice(&[Appearance::Light.ns_name(), Appearance::Dark.ns_name()]);
         match appearance.bestMatchFromAppearancesWithNames(&names) {
@@ -512,7 +509,6 @@ pub fn small_system_font_size() -> Pixels {
     px(NSFont::smallSystemFontSize() as f32)
 }
 
-/// The font size that belongs to a [`ControlSize`].
 pub fn system_font_size_for(size: ControlSize) -> Pixels {
     px(NSFont::systemFontSizeForControlSize(size.into()) as f32)
 }
@@ -658,7 +654,6 @@ pub fn advance_delta(
     Some(gpui_advance(cx, family, size, weight, ch)? - appkit_advance(family, size, weight, ch)?)
 }
 
-/// How a symbol's layers get their colour.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SymbolColor {
     Label,
@@ -728,7 +723,6 @@ pub fn sf_symbol(name: &str, size: Pixels, weight: FontWeight) -> Option<Symbol>
     sf_symbol_colored(name, size, weight, &SymbolColor::Label)
 }
 
-/// [`sf_symbol`] with an explicit colour configuration.
 pub fn sf_symbol_colored(
     name: &str,
     size: Pixels,
@@ -796,7 +790,6 @@ fn rasterize_symbol(
     })
 }
 
-/// Which system icon to fetch.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum FileType<'a> {
     Folder,

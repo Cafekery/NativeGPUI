@@ -1,5 +1,3 @@
-//! The system Quick Look panel, kept in step with the selection while it is up.
-
 use std::path::PathBuf;
 
 use gpui::{Context, KeyDownEvent, Keystroke, Modifiers, Window, prelude::*};
@@ -12,7 +10,6 @@ use crate::data::Line;
 use crate::view::LIST_VIEW;
 
 impl FinderDemo {
-    /// Space: the panel over the selection, zooming out of the cursor's icon.
     pub(crate) fn toggle_quick_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if quick_look_visible() {
             quick_look_close();
@@ -79,7 +76,6 @@ impl FinderDemo {
         self.ql_shown = Some((cursor, source));
     }
 
-    /// The panel's arrow keys move the selection the way the same keys do in the window.
     fn quick_look_key(&mut self, key: QuickLookKey, window: &mut Window, cx: &mut Context<Self>) {
         let key = match key {
             QuickLookKey::Up => "up",

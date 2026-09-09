@@ -1,5 +1,3 @@
-//! Finder's contextual menus: which rows each context shows, and what a pick runs.
-
 mod actions;
 mod bar;
 mod context;
@@ -19,7 +17,6 @@ pub(crate) use self::context::{background, crumb, header, item, sidebar};
 use crate::app::FinderDemo;
 use crate::data::Line;
 
-/// Hangs `menu` on `child` as its context menu, running what the pick names.
 pub(crate) fn attach(
     id: impl Into<ElementId>,
     menu: Menu,
@@ -31,8 +28,6 @@ pub(crate) fn attach(
         .on_select(picks(Rc::new(RefCell::new(menu.acts)), this))
 }
 
-/// A menu built where the right-click landed rather than on every frame: a hosted view per
-/// painted row is what a long listing cannot afford.
 fn menu_at(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
@@ -74,8 +69,8 @@ pub(crate) fn backdrop(
     menu_at(id, this, |demo, _| background(demo), child)
 }
 
-/// One menu for a whole view, for the row `hit` names. Finder's list and column views outline
-/// that row while the menu is up and leave the selection alone.
+/// Finder's list and column views outline the hit row while the menu is up and leave the selection
+/// alone.
 pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
@@ -91,8 +86,8 @@ pub(crate) fn rows_menu(
     )
 }
 
-/// The icon and gallery views' menu: Finder selects the tile or filmstrip frame it was raised on
-/// instead of outlining it, and that tile keeps the selection once the menu is gone.
+/// Finder's icon and gallery views select the tile the menu was raised on, and it keeps the
+/// selection once the menu is gone.
 pub(crate) fn tiles_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
@@ -142,7 +137,7 @@ fn picks(
     }
 }
 
-/// Entries and their actions in step, since a pick reports its depth-first position.
+/// A pick reports its depth-first position, so entries and acts must stay in step.
 #[derive(Default)]
 pub(crate) struct Menu {
     pub(crate) entries: Vec<MenuEntry>,

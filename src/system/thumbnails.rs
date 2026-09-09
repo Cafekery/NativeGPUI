@@ -1,7 +1,3 @@
-//! Real thumbnails and icons for files, via `QLThumbnailGenerator`: an LRU cache keyed by path,
-//! mtime and pixel size, requests for one key coalesced, and at most 8 generations at once so
-//! scrolling a large folder queues rather than floods the thumbnailing daemon.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -30,8 +26,6 @@ type Callback = Box<dyn FnOnce(Option<Arc<RenderImage>>) + Send>;
 struct Key {
     path: PathBuf,
     mtime: Option<SystemTime>,
-    // The final pixel dimension, so two (size, scale) pairs that land on the same raster share
-    // a cache entry.
     pixels: u32,
     icon: bool,
 }
@@ -169,8 +163,6 @@ pub fn thumbnail(
     }
 }
 
-/// Drop queued (not yet started) requests for paths outside `paths`, so scrolling past a file
-/// does not leave its thumbnail generation queued behind everything still on screen.
 pub fn cancel_thumbnails_outside(paths: &[PathBuf]) {
     let keep: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
     let stranded: Vec<Callback> = {

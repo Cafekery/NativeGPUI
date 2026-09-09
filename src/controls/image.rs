@@ -1,5 +1,3 @@
-//! A stock AppKit image hosted above GPUI, for the bands whose material sits over the Metal layer.
-
 use gpui::{App, ElementId, FontWeight, Style, Window, px};
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
@@ -22,7 +20,6 @@ pub fn native_image(id: impl Into<ElementId>, name: &str) -> NativeImage {
     }
 }
 
-/// An SF Symbol at a point size and weight, hosted like [`native_image`].
 pub fn native_symbol(
     id: impl Into<ElementId>,
     name: &str,

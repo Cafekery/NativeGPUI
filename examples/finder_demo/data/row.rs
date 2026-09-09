@@ -1,5 +1,3 @@
-//! One listing row, built off the main thread from a directory entry.
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -35,29 +33,23 @@ pub(crate) struct Row {
     pub(crate) name: SharedString,
     /// The name as Finder draws it, which is not always the name the directory stores.
     pub(crate) display: SharedString,
-    /// The file's absolute path: the row's identity everywhere the demo names it.
     pub(crate) path: SharedString,
     pub(crate) size: SharedString,
     pub(crate) bytes: u64,
     pub(crate) modified_at: f64,
     pub(crate) created_at: f64,
-    /// Finder's localized kind, e.g. `PDF document`.
     pub(crate) kind: SharedString,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
-    /// The folder this row opens: a directory the user can walk into, or an alias's target,
-    /// never a package.
+    /// A directory the user can walk into, or an alias's target, never a package.
     pub(crate) opens: Option<&'static str>,
-    /// Whether the list can disclose it in place. Finder gives an alias no triangle, however
-    /// its target opens.
+    /// Finder gives an alias no triangle, however its target opens.
     pub(crate) discloses: bool,
     /// Evicted to iCloud: Finder badges the row with a cloud and downloads it when it opens.
     pub(crate) dataless: bool,
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
-/// Finder's full-folder artwork: a folder the volume counts entries in, and the index — where it
-/// has read the folder — sees a visible one among them.
 fn folder_full(entry: &Entry, path: &str, index: &Index) -> bool {
     entry.children.is_some_and(|held| held > 0)
         && index
@@ -85,7 +77,7 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<Fil
     })
 }
 
-/// Where an alias leads: Finder opens it at the folder it points at, wherever that is.
+/// Finder opens an alias at the folder it points at, wherever that is.
 fn target_folder(path: &str) -> Option<&'static str> {
     let path = Path::new(path);
     path.is_dir()
@@ -130,7 +122,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
     }
 }
 
-/// One directory's entries as rows. Runs off the main thread, so nothing here may touch a view.
+/// Runs off the main thread, so nothing here may touch a view.
 pub(crate) fn rows_of(dir: &'static str, entries: &[Entry], index: &Index) -> Vec<Arc<Row>> {
     entries
         .iter()
@@ -143,7 +135,6 @@ pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
     Arc::new(row_of(dir, entry, index))
 }
 
-/// Every file Spotlight says carries `tag`, as rows; an empty tag asks for every tagged file.
 pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     let query = match tag.is_empty() {
         true => "kMDItemUserTags == '*'".to_string(),
@@ -182,8 +173,8 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
     rows
 }
 
-/// A mounted volume, which is the entry of no listing the demo reads: the boot volume is under
-/// no folder at all, and the rest wear a name the mount point need not carry.
+/// The boot volume is under no folder at all, and the rest wear a name the mount point need not
+/// carry.
 fn volume_row(id: &'static str) -> Option<Row> {
     let volume = volume_at(id)?;
     let meta = std::fs::metadata(id).ok()?;
@@ -205,8 +196,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
     })
 }
 
-/// iCloud Drive's app folders, which Finder lists there and the directory does not hold: each
-/// one is an app's own container, under the name the app published it with.
+/// iCloud Drive's app folders, which Finder lists there and the directory does not hold.
 pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
     finder_fs::icloud::app_folders()
         .into_iter()
@@ -224,7 +214,6 @@ pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
         .collect()
 }
 
-/// One line for the item at `id`, for the menus that act on a folder rather than on a row.
 pub(crate) fn path_line(id: &'static str) -> Option<Line> {
     if let Some(row) = volume_row(id) {
         return Some(Line {

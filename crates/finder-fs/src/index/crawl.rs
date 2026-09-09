@@ -1,6 +1,3 @@
-//! The background walk: a small pool over one depth-first stack, roots taken in order, package
-//! and skipped subtrees weighed for their bytes only once the visible tree is in.
-
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt as _;
@@ -57,8 +54,6 @@ pub struct Crawl {
     walk: Walk,
 }
 
-/// What one walk is asked for: the subtrees to read, the roots whose state it refreshes when it is
-/// over, and the FSEvents id the tree will then be current to.
 pub struct Walk {
     pub crawl: Vec<PathBuf>,
     pub record: Vec<PathBuf>,
@@ -220,7 +215,6 @@ impl Crawl {
         self.report(Some(task.path));
     }
 
-    /// A package or a skipped tree: sum its files onto `task.node` and record nothing else.
     fn weigh(&self, task: Task) {
         let Ok(entries) = list_dir(&task.path) else {
             return;
@@ -313,7 +307,6 @@ impl Crawl {
     }
 }
 
-/// A directory's own mtime, as the snapshot records it for a root.
 pub fn modified(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -336,8 +329,6 @@ fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
     Class::Descend
 }
 
-/// Whether the crawl refuses this path on its name alone, without an entry to look at: another
-/// volume's tree, a folder macOS puts a prompt on the screen for, another app's state.
 pub fn off_limits(path: &Path, home: &Path) -> bool {
     elsewhere(path)
         || guarded(path)
@@ -346,7 +337,6 @@ pub fn off_limits(path: &Path, home: &Path) -> bool {
         || simulator(path)
 }
 
-/// Whether the crawl will leave this child's contents out of the index.
 pub fn sealed(path: &Path, entry: &Entry, home: &Path) -> bool {
     entry.kind == EntryKind::Directory && class_of(path, entry, home) != Class::Descend
 }
@@ -365,8 +355,8 @@ fn guarded(path: &Path) -> bool {
     })
 }
 
-/// An iOS Simulator device: a UUID-named folder holding `device.plist`, whose `data` is a whole
-/// iOS home behind the media-library prompt macOS puts on the user's own.
+/// An iOS Simulator device: a UUID-named folder holding `device.plist`, whose `data` sits behind
+/// the media-library prompt macOS puts on the user's own home.
 fn simulator(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().as_bytes();
     let uuid_shaped = name.len() == 36
@@ -377,8 +367,8 @@ fn simulator(path: &Path) -> bool {
     uuid_shaped && path.join("device.plist").is_file()
 }
 
-/// `~/Library`: walking it raises the media-library prompt and a blocked-access notice for
-/// every sandboxed app. A visit lists it like any folder.
+/// Walking `~/Library` raises the media-library prompt and a blocked-access notice for
+/// every sandboxed app.
 fn sandboxed(path: &Path, home: &Path) -> bool {
     in_a_home(path, home) && path.file_name().unwrap_or_default().as_bytes() == b"Library"
 }
@@ -392,8 +382,7 @@ fn private(path: &Path, home: &Path) -> bool {
         )
 }
 
-/// Directly inside a home folder, this app's or another account's: a guarded read blocks in
-/// `opendir` behind a consent prompt no one answers, which parks the whole walk.
+/// A guarded read blocks in `opendir` behind a consent prompt no one answers.
 fn in_a_home(path: &Path, home: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
@@ -405,7 +394,6 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-/// Volume metadata and the trash: their bytes count, their contents are not indexed.
 fn weigh_only(path: &Path, home: &Path) -> bool {
     let name = path.file_name().unwrap_or_default();
     if matches!(
@@ -417,8 +405,8 @@ fn weigh_only(path: &Path, home: &Path) -> bool {
     !home.as_os_str().is_empty() && path == home.join(".Trash")
 }
 
-/// Not this tree: the firmlinked volume roots (`/System/Volumes/Data` is `/` again), devices,
-/// the swap files, and anything mounted over a network.
+/// The firmlinked volume roots (`/System/Volumes/Data` is `/` again), devices, the swap files,
+/// and anything mounted over a network.
 fn elsewhere(path: &Path) -> bool {
     if matches!(
         path.as_os_str().as_bytes(),

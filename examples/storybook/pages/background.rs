@@ -1,4 +1,4 @@
-//! The one-background rule: a window is one material, and what a window without one paints.
+//! The one-background rule: a window is one material.
 
 use crate::Demo;
 use crate::ui::*;
@@ -20,7 +20,6 @@ const LIGHT_TONE: u32 = 0x3c3c3c;
 const HAND_PICKED: f64 = 37.;
 
 pub struct State {
-    /// 0…255.
     pub grey: f64,
 }
 

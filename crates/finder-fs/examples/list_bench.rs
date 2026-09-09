@@ -1,5 +1,3 @@
-//! Timing harness: `list_dir` vs `read_dir` + `metadata`, on folders of 20 000 and 100 000 files.
-
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -17,7 +15,7 @@ fn median(mut times: Vec<Duration>) -> Duration {
 }
 
 fn time_it(f: impl Fn()) -> Duration {
-    f(); // warm run, discarded
+    f();
     let runs: Vec<Duration> = (0..5)
         .map(|_| {
             let start = Instant::now();

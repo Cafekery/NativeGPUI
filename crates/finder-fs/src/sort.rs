@@ -1,5 +1,3 @@
-//! Finder's Name column order.
-
 use objc2_core_foundation::{
     CFIndex, CFLocale, CFMutableString, CFRange, CFRetained, CFString, CFStringBuiltInEncodings,
     CFStringCompareFlags, CFStringNormalizationForm, kCFAllocatorNull,
@@ -22,16 +20,15 @@ const FOLD_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInse
     .union(CFStringCompareFlags::CompareDiacriticInsensitive);
 
 // `CompareNonliteral` matches canonically equivalent text, so a name stored NFD answers to a
-// prefix typed NFC, and `CompareDiacriticInsensitive` answers a prefix typed without the accent
-// at all, which is what Finder selects on; `CompareAnchored` holds the match to the start.
+// prefix typed NFC, `CompareDiacriticInsensitive` answers a prefix typed without the accent at
+// all, and `CompareAnchored` holds the match to the start.
 const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareNonliteral)
     .union(CFStringCompareFlags::CompareDiacriticInsensitive)
     .union(CFStringCompareFlags::CompareAnchored);
 
-// SAFETY: the returned CFString borrows `s`'s bytes and must not outlive it; we never let it
-// escape the caller's stack frame.
+// SAFETY: the returned CFString borrows `s`'s bytes and never escapes the caller's stack frame.
 unsafe fn borrow_cf_str(s: &str) -> CFRetained<CFString> {
     CFString::with_bytes_no_copy(
         None,
@@ -64,8 +61,7 @@ pub fn starts_with(name: &str, prefix: &str) -> bool {
     unsafe { name_cf.find_with_options(Some(&prefix_cf), range, PREFIX_OPTIONS, &mut found) }
 }
 
-/// The form Finder searches in: case, width and diacritics folded away, decomposed first so a
-/// name stored either way folds onto the same bytes.
+/// Case, width and diacritics folded away, decomposed first so either storage form folds alike.
 pub fn fold(s: &str) -> String {
     if s.is_ascii() {
         return s.to_ascii_lowercase();
@@ -79,7 +75,6 @@ pub fn fold(s: &str) -> String {
     folded.to_string()
 }
 
-/// Sorts `names` into Finder's Name order, converting each to a `CFString` once.
 pub fn sort_names(names: &mut [String]) {
     let cf_strings: Vec<CFRetained<CFString>> =
         names.iter().map(|s| unsafe { borrow_cf_str(s) }).collect();
@@ -168,7 +163,6 @@ mod tests {
             "file".to_string(),
         ];
         sort_names(&mut names);
-        // matches -[NSString localizedStandardCompare:] with the current locale
         assert_eq!(names, vec!["_underscore", ".hidden", "file"]);
     }
 
@@ -185,7 +179,6 @@ mod tests {
         sort_names(&mut names);
         let elapsed = start.elapsed();
         println!("sorted 20000 names in {:?}", elapsed);
-        // Loose: a wall-clock measurement on a machine also running the other tests.
         assert!(elapsed.as_millis() < 200, "took {:?}", elapsed);
     }
 }

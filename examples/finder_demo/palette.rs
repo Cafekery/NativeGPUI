@@ -42,8 +42,7 @@ impl Palette {
     }
 }
 
-/// What AppKit rules a browser's columns off each other with, measured from `NSBrowser` in both
-/// appearances: black in the dark one, where its own separator is grey, and 230 in the light one.
+/// Measured from `NSBrowser`: black in the dark appearance, 230 in the light one.
 pub(crate) fn browser_rule() -> Hsla {
     match tokens::current_appearance() {
         Appearance::Dark => hsla(0., 0., 0., 1.),
@@ -58,7 +57,7 @@ pub(crate) fn alternating_row() -> Option<Hsla> {
         let colors = NSColor::alternatingContentBackgroundColors();
         *slot.borrow_mut() = colors.iter().nth(1).and_then(|color| tokens::srgb(&color));
     });
-    // Read inside an explicit drawing appearance; an ambient read is right in only one of them.
+    // An ambient read is right in only one appearance, so read inside an explicit one.
     tokens::current_appearance()
         .ns_appearance()
         .performAsCurrentDrawingAppearance(&block);

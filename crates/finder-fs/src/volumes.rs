@@ -1,5 +1,3 @@
-//! Mounted volumes and the standard folders, for the sidebar and the status bar.
-
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
@@ -71,8 +69,8 @@ fn u64_value(
         .map(|n| n.longLongValue().max(0) as u64)
 }
 
-/// Free space. `…ForImportantUsage` reads 0 on exFAT and FAT32 rather than being absent, so a
-/// zero from either key means "this file system does not say" and `statfs` answers instead.
+/// `…ForImportantUsage` reads 0 on exFAT and FAT32 rather than being absent, so a zero from
+/// either key means "this file system does not say" and `statfs` answers instead.
 fn available_at(
     values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
     path: &Path,

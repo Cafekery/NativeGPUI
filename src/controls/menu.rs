@@ -1,5 +1,3 @@
-//! `NSPopUpButton` and real `NSMenu`s: pop-up, pull-down and context menus.
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -68,7 +66,6 @@ impl MenuEntry {
         Self::Separator
     }
 
-    /// A row of your own `NSView`, never reported.
     pub fn view(view: MenuView) -> Self {
         Self::View(view)
     }
@@ -80,7 +77,6 @@ impl MenuEntry {
         self
     }
 
-    /// Finder's tag rows: a disc in the tag's own colour rather than an SF Symbol.
     pub fn dot(mut self, color: (u8, u8, u8)) -> Self {
         if let Self::Item { dot, .. } = &mut self {
             *dot = Some(color);
@@ -231,7 +227,6 @@ impl MenuView {
         )
     }
 
-    /// A strip of round colour swatches at Finder's tag metrics.
     pub fn swatches(colors: impl IntoIterator<Item = Hsla>) -> Self {
         let colors: Vec<Hsla> = colors.into_iter().collect();
         let mut hasher = DefaultHasher::new();
@@ -332,7 +327,6 @@ fn symbol_image(name: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
 }
 
-/// Which image a row wears, as a string: an `NSImage` cannot say what it was made from.
 fn image_key(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<String> {
     match (symbol, dot) {
         (Some(name), _) => Some(name.to_owned()),
@@ -388,8 +382,6 @@ fn nsstring_is(text: &NSString, want: &str) -> bool {
 }
 
 /// Brings `menu` in line with `entries` in place: `removeAllItems` would close an open menu.
-/// Each item's tag is its depth-first position, submenu rows included; `action` goes on exactly
-/// the rows that can report one.
 pub(crate) fn sync_menu(
     mtm: MainThreadMarker,
     menu: &NSMenu,
@@ -746,9 +738,6 @@ impl MenuSink {
 }
 
 thread_local! {
-    /// One transient menu at a time. A row's context menu sits inside the backdrop's, so one
-    /// right-click reaches both, and the second would open as the click dismissing the first
-    /// lands.
     static SHOWING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -781,13 +770,10 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         on_close: None,
     }
 }
-/// What a context menu hands back: the index of the row the user picked.
 type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
-/// A menu built where the click landed, in the element's own coordinates.
 type EntryBuilder = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry>>;
 
-/// What a closing menu hands back: nothing but the moment, picked or dismissed.
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub struct NativeContextMenu {
@@ -811,8 +797,6 @@ impl NativeContextMenu {
         self
     }
 
-    /// The rows the menu shows, built when the click lands from where in this element it landed,
-    /// so one menu can serve every row of a container.
     pub fn entries_at(
         mut self,
         build: impl Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry> + 'static,
@@ -826,8 +810,6 @@ impl NativeContextMenu {
         self
     }
 
-    /// Runs the moment the menu goes away, picked or dismissed: what the click marked, such as
-    /// the row Finder outlines while its menu is up, stops drawing here.
     pub fn on_close(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_close = Some(Rc::new(handler));
         self

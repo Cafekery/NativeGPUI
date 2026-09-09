@@ -1,6 +1,3 @@
-//! Finder's Space: the system Quick Look panel over the app's own files, with its zoom from the
-//! item's icon. The app hands over paths and, for the current item, where its icon is.
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 

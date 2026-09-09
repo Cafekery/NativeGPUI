@@ -1,5 +1,3 @@
-//! `NSStepper`, `NSColorWell`, `NSDatePicker` and `NSPathControl`.
-
 use std::any::Any;
 use std::rc::Rc;
 
@@ -21,7 +19,6 @@ use crate::bridge::host::{
 use crate::controls::fitted;
 use crate::system::color::{from_nscolor, to_nscolor};
 
-/// What a small control hands back when its value changes.
 type Handler<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
 
 /// A reader's `None` means the control had nothing to report.

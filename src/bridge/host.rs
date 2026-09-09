@@ -1,5 +1,3 @@
-//! The per-window pool of AppKit views and the bridge that carries their events into GPUI.
-
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,8 +16,6 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSRect, NSString};
 
 use crate::bridge::appkit::{Container, adopt_key_path, gpui_view, rects_equal, to_rect};
 
-/// The pool key of an element: a hash of GPUI's own element identity, so a hosted view follows
-/// its element through reorders and scrolling.
 pub fn element_key(id: Option<&GlobalElementId>) -> u64 {
     let mut hasher = DefaultHasher::new();
     id.expect("native components always return an ElementId")
@@ -57,7 +53,6 @@ impl From<ControlSize> for NSControlSize {
     }
 }
 
-/// What a control reports when it fires.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NativeValue {
     None,
@@ -67,8 +62,7 @@ pub enum NativeValue {
     Text(String),
 }
 
-/// Which `NSControl` accessor an action reads. `Int` is `integerValue`, which on a pop-up is the
-/// cell state rather than the selection; selections go through [`NativeHost::on_event`].
+/// `Int` is `integerValue`, which on a pop-up is the cell state rather than the selection.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ValueKind {
     None,
@@ -139,8 +133,7 @@ pub struct TargetIvars {
 }
 
 define_class!(
-    /// The target/action sink for every control in one window. `setTarget:` is weak, so the host
-    /// retains it for the window's lifetime.
+    /// `setTarget:` is weak, so the host retains it for the window's lifetime.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGTarget"]
@@ -159,8 +152,7 @@ define_class!(
                 return;
             };
             let value = read(unsafe { &*sender });
-            // Deferred: an action can fire while GPUI already holds its `App` borrow, and a
-            // synchronous update would drop the event.
+            // Deferred: an action can fire while GPUI already holds its `App` borrow.
             ivars
                 .cx
                 .spawn(async move |cx| {
@@ -182,7 +174,6 @@ impl Target {
     }
 }
 
-/// Point a control's action at the host.
 pub fn wire(control: &NSControl, target: &Target, key: u64) {
     control.setTag(key as isize);
     unsafe {
@@ -196,9 +187,8 @@ struct TerminusIvars {
 }
 
 define_class!(
-    /// Both ends of the key view loop. GPUI's view never accepts first responder, so Tab could
-    /// never leave the hosted views without a member that hands focus back to it. Zero-sized:
-    /// a hidden view is dropped from the loop, an empty one takes no mouse.
+    /// GPUI's view never accepts first responder, so Tab could never leave the hosted views
+    /// without a member that hands focus back to it.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGKeyViewTerminus"]
@@ -213,7 +203,8 @@ define_class!(
 
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> bool {
-            // `makeFirstResponder:` assigns after this returns, so a nested call would be overwritten.
+            // `makeFirstResponder:` assigns after this returns, so a nested call would be
+            // overwritten.
             unsafe {
                 let _: () = msg_send![
                     self,
@@ -277,7 +268,6 @@ struct HostState {
     generation: u64,
 }
 
-/// The per-window pool of hosted AppKit views. Cheap to clone.
 #[derive(Clone)]
 pub struct NativeHost(Rc<RefCell<HostState>>);
 
@@ -350,7 +340,6 @@ impl NativeHost {
         self.len() == 0
     }
 
-    /// The pool keys `layer`'s container stacks, back to front, read from AppKit.
     pub fn stacking(&self, layer: Layer) -> Vec<u64> {
         let state = self.0.borrow();
         let container: &NSView = match layer {
@@ -369,7 +358,6 @@ impl NativeHost {
             .collect()
     }
 
-    /// The pool keys in key view loop order, walked from AppKit's `nextKeyView` links.
     pub fn key_loop(&self) -> Vec<u64> {
         let state = self.0.borrow();
         let start: &NSView = &state.terminus;
@@ -391,8 +379,7 @@ impl NativeHost {
         keys
     }
 
-    /// Reserve `key`'s view for this frame, creating it on first sight. `bounds` and `mask` are
-    /// in logical points from the top-left of the content view.
+    /// `bounds` and `mask` are in logical points from the top-left of the content view.
     pub fn place<V: Message + AsRef<NSView> + 'static>(
         &self,
         key: u64,
@@ -404,8 +391,6 @@ impl NativeHost {
         self.place_in(key, layer, None, bounds, mask, new)
     }
 
-    /// [`NativeHost::place`] under a parent of the component's own, such as a glass container's
-    /// content view.
     pub fn place_in<V: Message + AsRef<NSView> + 'static>(
         &self,
         key: u64,
@@ -488,7 +473,6 @@ impl NativeHost {
         view
     }
 
-    /// Register or clear the handler a control's action dispatches to. Call every paint.
     pub fn on_change(&self, key: u64, kind: ValueKind, handler: Option<NativeHandler>) {
         let dispatch = handler.map(|handler| -> NativeDispatch {
             Rc::new(move |value, window, cx| {
@@ -500,14 +484,10 @@ impl NativeHost {
         self.on_event(key, kind.reader(), dispatch);
     }
 
-    /// [`NativeHost::on_change`] with a custom fire-time reader, for values that are not one of
-    /// [`ValueKind`]'s or only exist while the action is on the stack.
     pub fn on_event(&self, key: u64, read: NativeRead, handler: Option<NativeDispatch>) {
         self.on_event_channel(key, key, read, handler);
     }
 
-    /// A second event channel for one view: `tag` is what the control reports from `-tag` when it
-    /// fires this channel, `owner` the pool key whose lifetime it follows.
     pub fn on_event_channel(
         &self,
         owner: u64,
@@ -533,8 +513,6 @@ impl NativeHost {
         }
     }
 
-    /// Retire views not placed this frame, restack when paint order changed, and rechain the key
-    /// view loop.
     pub fn commit(&self) {
         let state = &mut *self.0.borrow_mut();
         let generation = state.generation;
@@ -597,7 +575,6 @@ impl NativeHost {
     }
 }
 
-/// What a hosted element's `paint` works with once the pool key, host and clip mask are derived.
 pub struct Slot<'a> {
     pub id: &'a GlobalElementId,
     pub key: u64,
@@ -625,8 +602,6 @@ impl Slot<'_> {
     }
 }
 
-/// Implements `Element` and `IntoElement` for a leaf control that has an `id: ElementId` field,
-/// `fn layout(&self) -> Style` and `fn paint(&mut self, slot: Slot, window, cx)`.
 macro_rules! hosted_element {
     ($ty:ty) => {
         impl gpui::Element for $ty {

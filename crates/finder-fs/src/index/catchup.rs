@@ -1,6 +1,3 @@
-//! The launch catch-up: FSEvents replays what changed while the app was not running, and only
-//! those directories are read again. A root the snapshot has no state for is crawled as before.
-
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,10 +9,8 @@ use super::store::Tree;
 use super::{Index, Progress};
 use crate::watch::{self, Replay};
 
-/// How long a replay may take before the catch-up leaves the rest for the next launch.
 const REPLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Which roots the snapshot can be caught up on, and from which event id.
 #[derive(Debug, Default, PartialEq)]
 pub struct Plan {
     pub warm: Vec<PathBuf>,
@@ -23,7 +18,6 @@ pub struct Plan {
     pub since_when: u64,
 }
 
-/// What the replayed events add up to.
 #[derive(Default)]
 struct Batch {
     dirs: BTreeSet<PathBuf>,
@@ -64,7 +58,6 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
     });
 }
 
-/// A root is warm when the snapshot holds its tree and an event id the log still reaches.
 pub(super) fn plan(tree: &Tree, roots: &[PathBuf], now: u64) -> Plan {
     let mut plan = Plan {
         since_when: u64::MAX,
@@ -88,7 +81,6 @@ pub(super) fn plan(tree: &Tree, roots: &[PathBuf], now: u64) -> Plan {
     plan
 }
 
-/// Runs the catch-up stream until it says it has reported everything it missed.
 fn replay(plan: &Plan) -> (Batch, bool) {
     let (tx, rx) = mpsc::channel();
     let _watcher = watch::since(plan.since_when, plan.warm.clone(), move |replay| {
@@ -115,7 +107,6 @@ fn collect(batch: &mut Batch, replay: Replay) -> bool {
     replay.history_done
 }
 
-/// Re-reads what the log named and hands the crawl the roots and subtrees it could not.
 fn reconcile(
     index: &Arc<Index>,
     plan: &Plan,
@@ -163,8 +154,6 @@ fn reconcile(
     }
 }
 
-/// The directory to read again: the path when the index has listed it, its parent when it is
-/// new or gone, and nothing at all for a path the crawl never opened.
 fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
     if !open_to_us(path, home) {
         return None;
@@ -176,8 +165,7 @@ fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
     tree.listed(parent).then(|| parent.to_path_buf())
 }
 
-/// A path the crawl refuses on its name the catch-up must not open either: a visit can leave a
-/// TCC-gated folder in the index, and reading it again unasked puts the prompt back on screen.
+/// Reading a TCC-gated folder again unasked puts its prompt back on screen.
 pub(super) fn open_to_us(path: &Path, home: &Path) -> bool {
     !path.ancestors().any(|part| crawl::off_limits(part, home))
 }
@@ -199,7 +187,6 @@ mod tests {
         assert!(!open_to_us(Path::new("/System/Volumes/Data/Users"), &home));
     }
 
-    /// What a crawl of `/` walks into: another account's home, guarded exactly as ours is.
     #[test]
     fn a_home_that_is_not_ours_is_never_opened() {
         let home = PathBuf::from("/Users/tester");

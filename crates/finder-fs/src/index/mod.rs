@@ -1,10 +1,3 @@
-//! The whole-Mac index: every reachable directory read once, kept current by FSEvents, persisted
-//! between launches, and answering the questions a listing alone cannot — a folder's recursive
-//! size, a name search across the disk, a listing before the disk has been asked.
-//!
-//! A finished walk saves itself: the crawl is the expensive state, so it is on disk before
-//! anything can ask the app to quit.
-
 mod catchup;
 mod crawl;
 mod lookup;
@@ -27,9 +20,7 @@ use store::{COMPLETE, HIDDEN, LISTED, PACKAGE, Tree, VISITED};
 
 pub use crawl::off_limits;
 
-/// Entries written under one lock: a 20 000-file directory costs a reader a few milliseconds.
 const BATCH: usize = 4096;
-/// How long a writer stands aside for a waiting reader before taking its turn anyway.
 const YIELDS: usize = 64;
 
 #[derive(Clone, Debug, Default)]
@@ -62,14 +53,11 @@ pub struct Stats {
 pub struct Index {
     store: PathBuf,
     tree: RwLock<Tree>,
-    /// Which nodes wear which name, for search. Derived, so it is built on the first query and
-    /// again whenever the tree has moved too far from it.
     lookup: RwLock<lookup::Lookup>,
-    /// Readers waiting. A stream of crawl threads taking the write lock starves a reader of
-    /// `RwLock` indefinitely, so a writer waits its turn behind anyone already asking to read.
+    /// A stream of writers starves a reader of `RwLock` indefinitely, so a writer waits its turn
+    /// behind anyone already asking to read.
     waiting: AtomicUsize,
     crawling: AtomicBool,
-    /// Whether the tree holds a change the snapshot on disk does not.
     dirty: AtomicBool,
     saving: AtomicBool,
     writing: Mutex<()>,
@@ -90,8 +78,6 @@ impl Index {
     }
 
     /// Walks `roots` in order until every subtree is in; a call made while one runs is ignored.
-    /// Packages and skipped trees (caches, trash, volume metadata) are weighed for their bytes
-    /// last, so the entries the user can see are known first.
     pub fn crawl(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
@@ -111,8 +97,6 @@ impl Index {
         );
     }
 
-    /// The launch walk: roots the snapshot already holds are brought up to date from the FSEvents
-    /// log instead of read again, and only what the log names, or has never been seen, is crawled.
     pub fn sync(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
@@ -124,7 +108,6 @@ impl Index {
         catchup::spawn(self, roots, progress);
     }
 
-    /// The directory's entries as the index last read them, or `None` if it has not read it.
     pub fn children(&self, dir: &Path) -> Option<Vec<Entry>> {
         let tree = self.read();
         let id = resolve(&tree, dir)?;
@@ -135,7 +118,7 @@ impl Index {
         Some(tree.children(id).map(|child| tree.entry(child)).collect())
     }
 
-    /// How many entries of `dir` Finder would show, or `None` where the index has not read it.
+    /// How many entries of `dir` Finder would show, hidden ones left out.
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
         let id = resolve(&tree, dir)?;
@@ -150,15 +133,12 @@ impl Index {
         )
     }
 
-    /// Recursive logical bytes, once the whole subtree has been crawled.
     pub fn folder_size(&self, dir: &Path) -> Option<u64> {
         let tree = self.read();
         let node = tree.nodes[resolve(&tree, dir)? as usize];
         (node.is_dir() && node.state & COMPLETE != 0).then_some(node.size)
     }
 
-    /// Builds what search reads, off the caller's thread: the first query then answers from a
-    /// table instead of building one.
     pub fn warm(self: &Arc<Self>) {
         let index = self.clone();
         std::thread::spawn(move || {
@@ -167,7 +147,6 @@ impl Index {
         });
     }
 
-    /// The table search reads, built again where the tree has moved past the one in hand.
     fn lookup(&self, tree: &Tree) -> RwLockReadGuard<'_, lookup::Lookup> {
         let lookup = self.lookup.read().unwrap_or_else(|held| held.into_inner());
         if !lookup.stale(tree) {
@@ -182,7 +161,6 @@ impl Index {
         self.lookup.read().unwrap_or_else(|held| held.into_inner())
     }
 
-    /// Name search, optionally scoped `under` a directory, best hits first.
     pub fn search(&self, query: &str, under: Option<&Path>, limit: usize) -> Vec<Hit> {
         let tree = self.read();
         let under = match under {
@@ -196,20 +174,16 @@ impl Index {
         search::search(&tree, &lookup, query, under, limit)
     }
 
-    /// Re-reads exactly these directories and carries the size change up to the roots.
     pub fn note_changed(&self, dirs: &[PathBuf]) {
         let home = crawl::home();
         for dir in dirs {
-            // Watching a home reports every write under `~/Library`; reading one back unasked is
-            // the prompt the crawl already refuses to raise.
+            // Reading back a watched write under `~/Library` raises a TCC prompt.
             if catchup::open_to_us(dir, &home) {
                 self.refresh(dir, &home);
             }
         }
     }
 
-    /// One directory read again, answering with the subdirectories the index has never been into
-    /// and so still owes a walk.
     fn refresh(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
         let listed = list_dir(dir);
         let Some(id) = resolve(&self.read(), dir) else {
@@ -251,8 +225,6 @@ impl Index {
             .collect()
     }
 
-    /// Writes the snapshot to a temp file and renames it over `store`, if the tree has changed
-    /// since the last one landed.
     pub fn save(&self) {
         let _writing = self.writing.lock().unwrap_or_else(|held| held.into_inner());
         if !self.dirty.swap(false, Ordering::SeqCst) {
@@ -275,7 +247,6 @@ impl Index {
         }
     }
 
-    /// Waits out a save already under way, for at most `budget`, and never starts one.
     pub fn settle(&self, budget: Duration) {
         let deadline = Instant::now() + budget;
         while self.saving.load(Ordering::Acquire) && Instant::now() < deadline {
@@ -303,9 +274,7 @@ impl Index {
 
     fn write(&self) -> RwLockWriteGuard<'_, Tree> {
         self.dirty.store(true, Ordering::Release);
-        // A save holds the tree for as long as writing it takes. `RwLock` is fair, so a writer
-        // that queues behind the save puts every later reader behind the writer, and the window's
-        // next frame waits out the whole write: a crawl thread stands aside until the save lands.
+        // `RwLock` is fair, so a writer queued behind a save puts every later reader behind it too.
         while self.saving.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -319,7 +288,6 @@ impl Index {
     }
 }
 
-/// A directory's children, written in batches so no reader waits on a big one.
 fn relist(index: &Index, dir: u32, entries: &[Entry], sealed: &[bool]) -> Vec<u32> {
     let mut state = index.read().start_relist(dir);
     for (batch, sealed) in entries.chunks(BATCH).zip(sealed.chunks(BATCH)) {
@@ -328,7 +296,6 @@ fn relist(index: &Index, dir: u32, entries: &[Entry], sealed: &[bool]) -> Vec<u3
     index.write().end_relist(state)
 }
 
-/// Paths reach the index as the crawl canonicalized them, so a symlinked path gets one retry.
 fn resolve(tree: &Tree, path: &Path) -> Option<u32> {
     tree.find(path)
         .or_else(|| tree.find(&std::fs::canonicalize(path).ok()?))

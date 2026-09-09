@@ -1,5 +1,3 @@
-//! A Finder front end: real macOS chrome over the real file system, `NG_QUIT=<frames>` to exit.
-
 mod app;
 mod art;
 mod chrome;
@@ -80,9 +78,6 @@ fn main() {
             }
         })
         .detach();
-        // The snapshot is hundreds of megabytes, the tags are a query against Finder's key value
-        // store and the volume scan asks every disk for its purgeable space: none of it belongs in
-        // front of the window, so all three land while it opens.
         let warm = cx.background_executor().clone();
         warm.spawn(async {
             index().warm();
@@ -108,7 +103,6 @@ fn home() -> PathBuf {
     volumes::standard(volumes::Standard::Home).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Where the demo keeps what it writes for itself: the index, and the sidebar the user arranged.
 pub(crate) fn store() -> PathBuf {
     let store = home().join("Library/Application Support/FinderDemo");
     std::fs::create_dir_all(&store).ok();
@@ -136,8 +130,8 @@ fn crawl(cx: &mut App) {
             .spawn(async move { index().sync(roots, |_| {}) })
             .detach();
     }
-    // The TCC-gated folders are left out of the walk; Desktop, Documents and Downloads join once
-    // a visit has listed them. The media homes never do: their service asks again every launch.
+    // TCC-gated folders are left out of the walk: Desktop, Documents and Downloads join once a
+    // visit has listed them, the media homes never, since their service asks again every launch.
     let launched = std::time::SystemTime::now();
     let follow = cx.background_executor().clone();
     cx.background_executor()

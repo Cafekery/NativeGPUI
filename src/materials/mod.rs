@@ -1,5 +1,3 @@
-//! Vibrancy and macOS 26 liquid glass.
-
 #[cfg(feature = "private-api")]
 mod custom_glass;
 mod glass;

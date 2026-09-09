@@ -1,6 +1,3 @@
-//! What the card and the status bar say about a selection, counted once per change off the
-//! main thread: a disclosed home folder is millions of rows.
-
 use std::collections::{HashMap, HashSet};
 
 use gpui::SharedString;
@@ -8,29 +5,23 @@ use gpui::SharedString;
 use super::card::STACK_LAYERS;
 use crate::data::{Face, Line, Row, day_string};
 
-/// Finder's "Calculating…", for a summary a background pass has not finished.
 pub(super) const CALCULATING: &str = "Calculating\u{2026}";
 
-/// The most rows one summary walks; a bigger selection is described by that much of it.
 const STATS_CAP: usize = 4_000_000;
 
 pub(crate) struct Stats {
-    /// The selection's revision and the number of rows it was matched against.
     pub(crate) key: (u64, usize),
     pub(crate) items: usize,
     pub(crate) folders: usize,
-    /// A folder weighs what the index says it weighs; a file weighs itself.
     pub(crate) bytes: u64,
-    /// The rows' own sizes, which is what the status bar adds up.
     pub(crate) flat_bytes: u64,
     pub(crate) created: (f64, f64),
     pub(crate) modified: (f64, f64),
     pub(crate) tags: Vec<usize>,
-    /// The first rows of the selection, for the stacked hero.
     pub(crate) head: Vec<Line>,
 }
 
-/// One pass over the chosen rows. Runs off the main thread, so nothing here may touch a view.
+/// Runs off the main thread, so nothing here may touch a view.
 pub(crate) fn summarize(
     key: (u64, usize),
     lines: &[Line],
@@ -88,7 +79,6 @@ fn total_bytes(row: &Row) -> u64 {
     }
 }
 
-/// The card's date line: one day, or the two ends of the selection's range.
 pub(super) fn span((lo, hi): (f64, f64)) -> SharedString {
     let (lo, hi) = (day_string(lo), day_string(hi));
     SharedString::from(if lo == hi {

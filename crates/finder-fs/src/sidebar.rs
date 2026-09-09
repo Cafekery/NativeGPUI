@@ -1,8 +1,5 @@
-//! Finder's own sidebar lists: the Favorites the user keeps and the Locations Finder shows.
-//!
-//! Both are keyed archives of plain Foundation objects under
-//! `~/Library/Application Support/com.apple.sharedfilelist`, one item per row, each holding a
-//! bookmark and the properties Finder hangs on it.
+//! Finder's sidebar lists are keyed archives of plain Foundation objects under
+//! `~/Library/Application Support/com.apple.sharedfilelist`, one item per row.
 
 use std::path::PathBuf;
 
@@ -23,7 +20,6 @@ const FAVORITES: &str = "com.apple.LSSharedFileList.FavoriteItems";
 
 const VOLUMES: &str = "com.apple.LSSharedFileList.FavoriteVolumes";
 
-/// A Locations row that stands for something other than a mounted volume.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Special {
     Computer,
@@ -52,21 +48,18 @@ impl Special {
 }
 
 #[derive(Clone, Debug)]
-/// One row of a list, in the order the user left it.
 pub struct Item {
-    /// Whether Finder draws the row: a row the user unticked stays in the list, hidden.
+    /// A row the user unticked stays in the list, hidden.
     pub visible: bool,
     pub path: Option<PathBuf>,
-    /// The name Finder stores for the row, which a renamed or pathless row has and others do not.
+    /// Set for a renamed or pathless row, absent otherwise.
     pub name: Option<String>,
     pub special: Option<Special>,
     pub volume: bool,
-    /// The volume the system booted from.
     pub root: bool,
 }
 
 #[derive(Clone, Debug)]
-/// The Locations list: its rows and the three classes of volume Finder is set to show.
 pub struct Locations {
     pub items: Vec<Item>,
     pub hard_drives: bool,
@@ -119,8 +112,7 @@ fn decode(bytes: &[u8]) -> Option<Retained<NSDictionary>> {
         NSKeyedUnarchiver::initForReadingFromData_error(NSKeyedUnarchiver::alloc(), &data)
     }
     .ok()?;
-    // The lists archive only Foundation containers, so secure coding would reject nothing and
-    // demanding it would fail every decode: the classes are not known ahead of time.
+    // The archived classes are not known ahead of time, so secure coding would fail every decode.
     unsafe { unarchiver.setRequiresSecureCoding(false) };
     let root = unsafe { unarchiver.decodeObjectForKey(&NSString::from_str("root")) }?;
     root.downcast::<NSDictionary>().ok()

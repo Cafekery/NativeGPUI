@@ -1,5 +1,3 @@
-//! Which of Finder's four views the window is in, and the sizes that view draws at.
-
 use std::time::Instant;
 
 use gpui::{Context, Window};
@@ -63,7 +61,6 @@ impl FinderDemo {
         self.preview && self.view != COLUMN_VIEW
     }
 
-    /// The list's icon size this frame, mid-flight while a zoom animates.
     pub(crate) fn list_icon_now(&self) -> f32 {
         match self.list_zoom {
             Some((from, to, started)) => {
@@ -74,8 +71,6 @@ impl FinderDemo {
         }
     }
 
-    /// The size the view on screen draws a row's artwork at: what a listing draws its icons for
-    /// while it is still being read.
     pub(crate) fn art_size(&self) -> f32 {
         match self.view {
             ICON_VIEW => self.icon_size as f32,
@@ -137,7 +132,7 @@ impl FinderDemo {
         }
     }
 
-    /// Tiles per row: the width beside the sidebar, pane included, since the grid scrolls under it.
+    /// The grid scrolls under the sidebar, so the pane's width still counts as room.
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)

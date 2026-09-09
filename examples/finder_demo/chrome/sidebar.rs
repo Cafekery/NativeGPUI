@@ -1,5 +1,3 @@
-//! Finder's sidebar: this Mac's Favorites, the volumes it has mounted, and the user's own tags.
-
 use std::path::{Path, PathBuf};
 
 use gpui::{SharedString, Window, prelude::*, px};
@@ -21,9 +19,7 @@ pub(crate) const LOCATIONS: &str = "g-locations";
 pub(crate) enum Glyph {
     Symbol(&'static str),
     Artwork(&'static str),
-    /// A tag's dot: filled in Finder's own colour for that index, an outline for no colour.
     Tag(u8),
-    /// The pair of rings on Finder's "All Tags…" row.
     AllTags,
 }
 
@@ -38,7 +34,6 @@ impl Glyph {
     }
 }
 
-/// A sidebar row: what it opens (a path, or a `tag:` name that opens nothing) and how it looks.
 pub(crate) struct Row {
     pub(crate) id: &'static str,
     pub(crate) title: SharedString,
@@ -68,8 +63,8 @@ fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
     Some(row(id, title, glyph_of(&path)))
 }
 
-/// The glyph Finder gives a folder it knows by name; a pinned bundle wears the one its kind gets,
-/// every other folder a plain one, a custom icon included.
+/// The glyph Finder gives a folder it knows by name; every other folder gets a plain one, a custom
+/// icon included.
 fn glyph_of(path: &Path) -> Glyph {
     use finder_fs::volumes::Standard::*;
     let standard = [
@@ -114,8 +109,8 @@ fn pinned_title(path: &Path) -> String {
     }
 }
 
-/// What Finder gives a pinned bundle: an app wears the Applications artwork rather than its own
-/// icon, and any other package the square it gives a kind it has no drawing for.
+/// Finder gives a pinned app the Applications artwork rather than its own icon, and any other
+/// package the square it gives a kind it has no drawing for.
 fn pinned_glyph(path: &Path) -> Glyph {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match name.rsplit_once('.') {
@@ -160,7 +155,6 @@ fn trash_row() -> Option<Row> {
     Some(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")))
 }
 
-/// The Favorites Finder keeps for this user, in the user's order.
 fn favourites() -> Vec<Row> {
     use finder_fs::volumes::Standard::*;
 
@@ -180,7 +174,6 @@ fn favourites() -> Vec<Row> {
     }
 }
 
-/// Whether Finder is set to show the class of volume this one belongs to.
 fn shown(list: &finder_fs::sidebar::Locations, volume: &finder_fs::volumes::Volume) -> bool {
     let names = |item: &&finder_fs::sidebar::Item| {
         item.path.as_deref() == Some(volume.path.as_path())
@@ -252,7 +245,6 @@ fn default_locations(mounted: &[finder_fs::volumes::Volume]) -> Vec<Row> {
     rows
 }
 
-/// The sidebar as Finder has it for this user: their Favorites, their Locations, their tags.
 pub(crate) fn groups() -> Vec<Group> {
     let favourites = favourites();
     let locations = locations();
@@ -311,7 +303,6 @@ pub(crate) fn pinned(id: &str) -> bool {
         .any(|group| prefs::pinned(group).iter().any(|kept| kept == id))
 }
 
-/// Each group's rows in the order the user left them last launch, with anything new after them.
 pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
     groups
         .iter()
@@ -355,7 +346,6 @@ impl FinderDemo {
             .collect()
     }
 
-    /// Rebuilds around the volumes mounted now, keeping the order the user set.
     pub(crate) fn refresh_sidebar(&mut self) {
         crate::data::refresh_volumes();
         self.sidebar_groups = groups();

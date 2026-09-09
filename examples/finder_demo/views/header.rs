@@ -1,5 +1,3 @@
-//! The list view's column-header band, and the two drags that reorder and resize it.
-
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Window, div,
     prelude::*, px,
@@ -168,13 +166,11 @@ fn cell_body(
 }
 
 impl FinderDemo {
-    /// The columns beside it changed: Name fills the span again rather than by a resize delta.
     pub(crate) fn refit_name_column(&mut self) {
         self.list_span = f32::NAN;
         self.fit_name_column();
     }
 
-    /// The Name column takes whatever width the window gives or takes, down to its minimum.
     pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room
             - if self.preview_shown() {
@@ -493,7 +489,6 @@ impl FinderDemo {
         }
     }
 
-    /// Loads this folder's saved widths, or the built-in default for any column it never resized.
     pub(crate) fn load_column_widths(&mut self) {
         let here = self.here();
         self.name_w = prefs::list_column_width(here, Column::Name).unwrap_or(NAME_MIN_W);

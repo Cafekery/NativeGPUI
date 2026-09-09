@@ -1,7 +1,3 @@
-//! The transfer `NSFileManager` gives up on: past `PATH_MAX` every step names one component
-//! against the descriptor of the directory it sits in, so a tree deeper than a path can hold
-//! still copies, moves and clears away.
-
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
@@ -9,7 +5,6 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 use std::ptr;
 
-/// A directory made to hold the children before its own mode says who may.
 const WHILE_FILLING: libc::mode_t = 0o700;
 
 fn last_error() -> io::Error {
@@ -45,7 +40,6 @@ fn open_dir_at(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
     })
 }
 
-/// The directory at `path`, opened one component at a time so no call ever sees the whole path.
 fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     let start = if path.is_absolute() { c"/" } else { c"." };
     let mut dir = owned(unsafe {
@@ -110,7 +104,6 @@ fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
     }
 }
 
-/// Everything `copyfile(3)` carries besides the bytes: mode, times, owner, ACL and xattrs.
 fn copy_state(from: &OwnedFd, into: &OwnedFd, with_data: bool) -> io::Result<()> {
     let mut flags = libc::COPYFILE_STAT | libc::COPYFILE_XATTR | libc::COPYFILE_ACL;
     if with_data {
@@ -191,9 +184,8 @@ fn copy_file(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::
     copy_state(&from, &into, true)
 }
 
-/// Everything inside `from` into `into`. A descriptor per level would run a deep tree into the
-/// open-file limit long before `PATH_MAX`, so the pair is let go of on the way down and found
-/// again through `..`, which the mode a filled directory is still waiting for allows.
+/// A descriptor per level would run a deep tree into the open-file limit long before `PATH_MAX`,
+/// so each pair is let go of on the way down and found again through `..`.
 fn fill_dir(from: OwnedFd, into: OwnedFd) -> io::Result<(OwnedFd, OwnedFd)> {
     let (mut from, mut into) = (from, into);
     for name in names_in(&from)? {
@@ -231,7 +223,6 @@ fn copy_at(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Re
     }
 }
 
-/// Empties `dir`, holding as few descriptors at any depth as `fill_dir` does.
 fn empty_dir(dir: OwnedFd) -> io::Result<OwnedFd> {
     let mut dir = dir;
     for name in names_in(&dir)? {
@@ -257,13 +248,11 @@ fn remove_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
     unlink_at(dir, name, libc::AT_REMOVEDIR)
 }
 
-/// Removes `path`, however deep what is under it goes.
 pub(super) fn remove(path: &Path) -> io::Result<()> {
     let (dir, name) = split(path)?;
     remove_at(&open_dir(dir)?, &name)
 }
 
-/// `src` to `dst`, leaving nothing at `dst` if it could not all get there.
 pub(super) fn transfer(src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
     let (sdir, sname) = split(src)?;
     let (ddir, dname) = split(dst)?;

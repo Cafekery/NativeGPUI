@@ -1,6 +1,3 @@
-//! What Spotlight knows about one file: the attributes Finder's preview pane lists under
-//! Information, at a round trip per file.
-
 use std::ffi::c_void;
 use std::path::Path;
 
@@ -22,10 +19,9 @@ extern "C" {
     fn MDItemCopyAttribute(item: *mut c_void, name: *const c_void) -> *mut c_void;
 }
 
-/// The attributes the preview card draws, each missing where Spotlight has none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
-    /// When the camera or the encoder made the content, which is not when the file was written.
+    /// When the camera or encoder made the content, not when the file was written.
     pub content_created: Option<f64>,
     pub last_used: Option<f64>,
     pub pixels: Option<(u64, u64)>,
@@ -122,8 +118,7 @@ fn pair(item: &Item, width: &str, height: &str) -> Option<(u64, u64)> {
     (width > 0. && height > 0.).then_some((width as u64, height as u64))
 }
 
-/// Spotlight's attributes for one real file. Empty where the item doesn't exist, its volume
-/// isn't indexed, or Spotlight hasn't caught up to it yet.
+/// Empty where the item is missing, its volume isn't indexed, or Spotlight hasn't caught up.
 pub fn meta(path: &Path) -> Meta {
     let Some(text) = path.to_str() else {
         return Meta::default();

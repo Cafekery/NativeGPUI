@@ -1,5 +1,3 @@
-//! Where the window is: the folder on screen, the trail behind it, and every way of leaving it.
-
 use std::path::{Path, PathBuf};
 
 use gpui::{Context, SharedString, Window};
@@ -11,7 +9,6 @@ use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{home, open_finder_window};
 
-/// What a typed path names: `~` for the home folder, and no trailing separator.
 pub(crate) fn typed_path(text: &str) -> PathBuf {
     let text = text.trim();
     let full = match text.strip_prefix('~') {
@@ -56,7 +53,6 @@ impl FinderDemo {
             .unwrap_or(holder)
     }
 
-    /// The folder `text` names, absolute or under `~`, if it is one.
     pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
         let path = typed_path(text);
         finder_fs::list::is_dir(&path).then(|| intern_path(&path))
@@ -66,8 +62,8 @@ impl FinderDemo {
         self.target().to_string()
     }
 
-    /// The window's title. A search takes it over the way Finder's does, naming what it is
-    /// scoped to rather than the folder the window is still standing in.
+    /// A search takes the title over the way Finder's does, naming what it is scoped to rather than
+    /// the folder the window still stands in.
     pub(crate) fn title(&self) -> String {
         if self.in_search() {
             return format!("Searching \u{201c}{}\u{201d}", self.scope_name());
@@ -82,7 +78,6 @@ impl FinderDemo {
         window.set_window_title(&self.title());
     }
 
-    /// The folder each breadcrumb stands for, the volume first.
     pub(crate) fn crumb_ids(&self) -> Vec<&'static str> {
         let deep = self
             .folders
@@ -127,8 +122,8 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The boot volume sits in no folder: Finder reveals it among the volumes, which is the
-        // listing /Volumes is.
+        // The boot volume sits in no folder: Finder reveals it among the volumes, the listing
+        // /Volumes is.
         let (parent, key) = match Path::new(id).parent() {
             Some(parent) => (intern_path(parent), SharedString::from(id)),
             None => match volume_at(id) {
@@ -146,7 +141,7 @@ impl FinderDemo {
         self.reveal_next = Some(key);
     }
 
-    /// A folder deleted under the window: Finder drops the listing and shows the nearest folder
+    /// Finder drops the listing of a folder deleted under the window and shows the nearest folder
     /// above it that is still there.
     pub(crate) fn folder_gone(&mut self, id: &'static str, cx: &mut Context<Self>) {
         cx.notify();

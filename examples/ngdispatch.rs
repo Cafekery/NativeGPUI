@@ -86,8 +86,7 @@ fn report(counters: &Counters, elapsed: f64) -> ! {
     std::process::exit(code)
 }
 
-/// The stall guard, on a thread of its own: inside `render` it would stop running under exactly
-/// the stall it reports.
+/// On a thread of its own: inside `render` it would stop running under the stall it reports.
 fn watchdog(counters: Arc<Counters>, started: Instant) {
     thread::spawn(move || {
         thread::sleep(STALL);

@@ -1,6 +1,3 @@
-//! Finder tags: the user's named colours from Finder's preferences, and the tags on a file,
-//! read and written through the URL resource key Finder uses.
-
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::io;
@@ -19,11 +16,12 @@ use objc2_foundation::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag {
     pub name: String,
-    /// Finder's label colour index: 0 none, 1 grey, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7 orange.
+    /// Finder's label colour index: 0 none, 1 grey, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7
+    /// orange.
     pub color: u8,
 }
 
-/// Finder's seven built-in tags, in the order Finder lists them, unrenamed.
+/// Finder's seven built-in tags, in the order Finder lists them.
 const STANDARD: [(&str, u8); 7] = [
     ("Red", 6),
     ("Orange", 7),
@@ -44,7 +42,6 @@ fn standard() -> Vec<Tag> {
         .collect()
 }
 
-/// Every tag the user has, in the order Finder's sidebar lists them.
 pub fn all() -> Vec<Tag> {
     match finder_tags().filter(|tags| !tags.is_empty()) {
         Some(tags) => tags,

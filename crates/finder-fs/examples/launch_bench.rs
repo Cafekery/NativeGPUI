@@ -1,8 +1,4 @@
-//! What a launch over one scratch tree costs: `crawl` walks it every time, `sync` reads the
-//! snapshot and only what FSEvents says changed.
-//!
-//! `launch_bench <tree> <store> crawl|sync [touch <dir>]` — one process per run, so the wall
-//! clock, the CPU and the peak RSS are the run's own.
+//! `launch_bench <tree> <store> crawl|sync [touch <dir>]`
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

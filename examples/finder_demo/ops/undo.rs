@@ -1,5 +1,3 @@
-//! Finder's Undo and Redo: the Edit menu's own items, retitled off the queue's journal.
-
 use std::cell::{Cell, RefCell};
 
 use finder_fs::ops::Conflict;
@@ -34,7 +32,7 @@ struct SinkIvars {
 }
 
 define_class!(
-    /// Answers the Edit menu's stock Undo/Redo rows, which nothing else in the chain does.
+    /// Nothing else in the responder chain answers the Edit menu's stock Undo/Redo rows.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGUndoRedoSink"]
@@ -88,8 +86,8 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Retargets the Edit menu's Undo/Redo rows, right after `install_menus`; a second call is a
-/// no-op, the rows no longer carrying the titles it searches for.
+/// Call right after `install_menus`: a second call is a no-op, the rows no longer carrying the
+/// titles it searches for.
 pub(crate) fn install_undo_redo(cx: &mut App) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -120,7 +118,6 @@ thread_local! {
     static SINK: RefCell<Option<Retained<UndoRedoSink>>> = const { RefCell::new(None) };
 }
 
-/// The Edit menu's Undo/Redo titles and enabled state, off the journal's current stacks.
 pub(crate) fn refresh_edit_menu(journal: &Journal) {
     ITEMS.with(|shared| {
         let items = shared.borrow();
@@ -158,7 +155,7 @@ impl FinderDemo {
         self.submit(undoable.redo, Conflict::Replace, After::Select, false, cx);
     }
 
-    /// Wires ⌘Z / ⇧⌘Z's actions (fired by the Edit menu's retargeted rows) into this window.
+    /// ⌘Z / ⇧⌘Z's actions are fired by the Edit menu's retargeted rows.
     pub(crate) fn wire_undo_redo(&self, element: Div, cx: &mut Context<Self>) -> Div {
         element
             .on_action(cx.listener(|this, _: &UndoOp, _, cx| this.perform_undo(cx)))

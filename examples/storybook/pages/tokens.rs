@@ -1,5 +1,3 @@
-//! The system's own colours, fonts and symbols — the parts GPUI draws itself.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{
@@ -39,7 +37,6 @@ const FILE_TYPES: &[(&str, FileType<'static>)] = &[
 
 const ABSENT_UTI: &str = "com.apple.icon";
 
-/// One symbol the page draws, and the colouring it asks for.
 type Sample = (&'static str, fn() -> SymbolColor);
 
 const SYMBOLS: &[Sample] = &[

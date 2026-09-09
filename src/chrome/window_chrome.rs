@@ -1,6 +1,3 @@
-//! The window itself: its corners, toolbar, flags, cursor, and the native coordinate recipe
-//! [`native_rect`] -> [`native_window_rect`] -> [`native_screen_rect`].
-
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::Location;
@@ -44,12 +41,10 @@ pub fn native_rect(bounds: Bounds<Pixels>) -> NSRect {
     to_rect(bounds)
 }
 
-/// A GPUI element's `bounds` in window base coordinates.
 pub fn native_window_rect(host: &NSView, bounds: Bounds<Pixels>) -> NSRect {
     host.convertRect_toView(native_rect(bounds), None)
 }
 
-/// A GPUI element's `bounds` in screen coordinates.
 pub fn native_screen_rect(host: &NSView, bounds: Bounds<Pixels>) -> NSRect {
     let window = host
         .window()
@@ -88,7 +83,6 @@ struct Callout {
     text: SharedString,
 }
 
-/// The one popover a window shows its callouts through, and the label inside it.
 #[derive(Clone)]
 struct CalloutView {
     popover: Retained<NSPopover>,
@@ -418,7 +412,6 @@ impl ChromeHost {
             .is_some_and(|shown| shown.key == key)
     }
 
-    /// A shown callout rides its rect through a scroll, and gives up when the rect leaves the mouse.
     fn follow_callout(&self, callout: &Callout) {
         if !self.shows(callout.key) {
             return;
@@ -444,7 +437,6 @@ impl ChromeHost {
         let shown = self.ivars().shown.borrow().is_some();
         match hovered {
             None => self.hide_callout(),
-            // One already up moves to the next rect without waiting again.
             Some(callout) if shown => self.show_callout(&callout),
             Some(_) => unsafe {
                 let _: () = msg_send![
@@ -545,7 +537,6 @@ impl CalloutView {
         self.popover.setContentSize(size);
     }
 
-    /// The callout names the cell under the mouse, so every point over it belongs to that cell.
     fn disown_mouse(&self) {
         if let Some(window) = self
             .popover
@@ -564,7 +555,6 @@ fn contains(rect: NSRect, point: NSPoint) -> bool {
         && point.y <= rect.origin.y + rect.size.height
 }
 
-/// Install-or-get. Everything public in this module funnels through here.
 fn chrome(window: &Window) -> Retained<ChromeHost> {
     let view = gpui_view(window);
     let class = ChromeHost::class();
@@ -710,7 +700,6 @@ impl ToolbarSegment {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-/// How a [`ToolbarItem::Group`] tracks clicks.
 pub enum ToolbarSelection {
     #[default]
     SelectOne,
@@ -729,7 +718,6 @@ impl From<ToolbarSelection> for NSToolbarItemGroupSelectionMode {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-/// What a [`ToolbarItem::Group`] does when the toolbar runs out of room.
 pub enum ToolbarGroupWidth {
     #[default]
     Automatic,
@@ -748,7 +736,6 @@ impl From<ToolbarGroupWidth> for NSToolbarItemGroupControlRepresentation {
 }
 
 #[derive(Clone)]
-/// One toolbar item, which AppKit draws — so each gets the current system treatment.
 pub enum ToolbarItem {
     Symbol {
         id: String,
@@ -1408,7 +1395,6 @@ impl ToolbarDelegate {
         Some(item)
     }
 
-    /// Push current state onto items AppKit already built; selection is diffed against the live one.
     fn refresh(&self) {
         let items = self.ivars().items.borrow();
         let built = self.ivars().built.borrow();
@@ -1474,7 +1460,6 @@ impl ToolbarDelegate {
         }
     }
 
-    /// The window's split view, which is what [`crate::sidebar::NativeSidebar`] installs.
     fn split_view(&self) -> Option<Retained<NSSplitView>> {
         let window = self.ivars().window.load()?;
         let controller = window
@@ -1518,7 +1503,6 @@ pub fn set_toolbar(
         slot.get_or_insert_with(|| ToolbarDelegate::new(mtm, &ns_window, window.to_async(cx)))
             .clone()
     };
-    // Replaced every call: the handlers close over the caller's current state.
     *delegate.ivars().items.borrow_mut() = items.to_vec();
 
     let toolbar = {
@@ -1611,7 +1595,6 @@ pub fn toolbar_description(window: &Window) -> String {
     lines.join("\n")
 }
 
-/// The view a [`ToolbarItem::View`] built, so a caller can write new state into it.
 pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> {
     let ns_window = ns_window_of(window);
     ns_window
@@ -1622,7 +1605,6 @@ pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> 
         .and_then(|item| item.view())
 }
 
-/// Expand a [`ToolbarItem::Search`] to its preferred width and focus it, or collapse it back.
 pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
     let ns_window = ns_window_of(window);
     let Some(toolbar) = ns_window.toolbar() else {
@@ -1681,7 +1663,6 @@ extern "C" {
     fn CGWindowLevelForKey(key: i32) -> i32;
 }
 
-/// The system's current value for a named window level.
 pub fn window_level(level: WindowLevel) -> isize {
     // `CGWindowLevelKey`, in header order.
     let key = match level {
@@ -1770,7 +1751,6 @@ pub fn set_window_flags(window: &Window, flags: WindowFlags) {
     ns_window.setAppearance(appearance.as_deref());
 }
 
-/// Put every flag back the way it was when this module first touched the window.
 pub fn restore_window_flags(window: &Window) {
     let host = chrome(window);
     let borrowed = host.ivars().baseline.borrow();
@@ -1864,7 +1844,6 @@ impl Cursor {
     }
 }
 
-/// Give a GPUI element a real system cursor over its own bounds, wrapping `child` transparently.
 pub fn cursor_region(
     id: impl Into<ElementId>,
     cursor: Cursor,
@@ -1972,7 +1951,6 @@ impl IntoElement for CursorRegion {
     }
 }
 
-/// Give a GPUI element the system tooltip over its own bounds, wrapping `child` transparently.
 pub fn native_tooltip(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -2077,8 +2055,7 @@ impl IntoElement for NativeTooltip {
     }
 }
 
-/// Name a GPUI element in a callout over its own bounds, wrapping `child` transparently: the
-/// system popover, pointing down at the element, after the same wait Finder's gallery strip uses.
+/// The system popover, pointing down at the element, after the wait Finder's gallery strip uses.
 pub fn native_callout(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -2183,7 +2160,6 @@ impl IntoElement for NativeCallout {
     }
 }
 
-/// The current `NSCursor`'s class, hot spot and image size, for verifying a [`cursor_region`].
 pub fn current_cursor_description() -> String {
     let cursor = NSCursor::currentCursor();
     let hot = cursor.hotSpot();

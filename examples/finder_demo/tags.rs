@@ -1,5 +1,3 @@
-//! Finder's tags: the colours it fills a dot or a swatch with, and the dots a row wears.
-
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -22,14 +20,13 @@ pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
     TAGS.get_or_init(finder_fs::tags::favorites)
 }
 
-/// Every tag the user has, in Finder's order. Reading them runs a query against Finder's key
-/// value store, so it is read once and warmed off the main thread while the window opens.
+/// Reading every tag runs a query against Finder's key value store, so it is read once and warmed
+/// off the main thread.
 pub(crate) fn all() -> &'static [finder_fs::tags::Tag] {
     static ALL: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
     ALL.get_or_init(finder_fs::tags::all)
 }
 
-/// The system colour behind a tag colour index (1 grey … 7 orange), `None` for 0 (no colour).
 fn tag_system_color(color: u8) -> Option<SystemColor> {
     Some(match color {
         1 => SystemColor::SystemGray,
@@ -47,8 +44,7 @@ pub(crate) fn finder_edge(color: u8) -> Hsla {
     tag_system_color(color).map_or(gpui::white(), system_color)
 }
 
-/// What Finder fills a dot with: its system colour lifted toward white on the display's own
-/// primaries, which is where Finder's fills land exactly.
+/// Finder's dot fill: its system colour lifted toward white on the display's own primaries.
 pub(crate) fn finder_color(color: u8) -> Hsla {
     let Some(system) = tag_system_color(color) else {
         return gpui::white();
@@ -70,7 +66,6 @@ pub(crate) fn finder_color(color: u8) -> Hsla {
     lightened.unwrap_or_else(|| system_color(system))
 }
 
-/// [`finder_color`] as the sRGB bytes the sidebar draws its dot with, `None` for no colour.
 pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
     tag_system_color(color)?;
     let rgba = gpui::Rgba::from(finder_color(color));
@@ -119,7 +114,7 @@ pub(crate) fn tag_dots_w(count: usize) -> f32 {
     }
 }
 
-/// Finder's stack: the newest tag leftmost and over the ones before it, three dots at most.
+/// Finder stacks the newest tag leftmost and over the ones before it, three dots at most.
 pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
     let shown = &tags[tags.len().saturating_sub(TAG_DOTS_MAX)..];
     if shown.is_empty() {
@@ -148,7 +143,6 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-/// The tags a file carries that the demo's tag menus know, as their indices.
 pub(crate) fn row_tags(path: &str) -> Vec<usize> {
     finder_fs::tags::of(Path::new(path))
         .iter()

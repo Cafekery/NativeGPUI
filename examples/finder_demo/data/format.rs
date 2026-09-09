@@ -1,5 +1,3 @@
-//! The system formatters, which cost tens of microseconds a call: every one of them caches.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::thread::LocalKey;
@@ -17,8 +15,7 @@ use super::row::{Column, Row};
 
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 
-/// A date as `NSDate` counts them, from 2001. Signed both ways: a file older than 1970 keeps
-/// its date, and 2001-01-01 is zero rather than "no date".
+/// Seconds as `NSDate` counts them, from 2001; signed both ways, so a pre-1970 file keeps its date.
 pub(super) fn reference_seconds(at: SystemTime) -> f64 {
     match at.duration_since(UNIX_EPOCH) {
         Ok(since) => since.as_secs_f64() - UNIX_TO_REFERENCE,
@@ -28,7 +25,6 @@ pub(super) fn reference_seconds(at: SystemTime) -> f64 {
 
 type Cache = LocalKey<RefCell<HashMap<i64, SharedString>>>;
 
-/// One formatted string per minute, shared by every row that falls in it.
 fn per_minute(
     seconds: f64,
     seen: &'static Cache,
@@ -53,7 +49,6 @@ fn formatted(formatter: &NSDateFormatter, seconds: f64) -> SharedString {
     )
 }
 
-/// Finder's date column: the short relative form.
 pub(crate) fn date_text(seconds: f64) -> SharedString {
     thread_local! {
         static FORMATTER: Retained<NSDateFormatter> = {
@@ -70,8 +65,6 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
     })
 }
 
-/// The preview card's date: Finder's relative short form for today and yesterday, the full form
-/// with a weekday for anything older.
 pub(crate) fn stamp(seconds: f64) -> SharedString {
     thread_local! {
         static FORMATTER: Retained<NSDateFormatter> = {

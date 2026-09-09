@@ -1,6 +1,3 @@
-//! What the sidebar takes from a drag: rows reordered inside it, and files dropped onto or
-//! between them.
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -30,7 +27,6 @@ pub(super) fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u
     text.to_string().parse().ok()
 }
 
-/// The file URLs a drag carries, empty for any other drag.
 pub(super) fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
     let pasteboard = info.draggingPasteboard();
     let Some(items) = pasteboard.pasteboardItems() else {
@@ -46,7 +42,6 @@ pub(super) fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<Pa
         .collect()
 }
 
-/// Where files land: a group and a row index in it. Never onto a row, which owns no files here.
 pub(super) fn file_drop_target(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,

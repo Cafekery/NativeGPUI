@@ -1,5 +1,3 @@
-//! Finder's toolbar: the window's real `NSToolbar`, and the artwork AppKit does not carry.
-
 use block2::RcBlock;
 use gpui::{Context, Window, px};
 use native_gpui::sidebar::system_template;
@@ -26,7 +24,6 @@ pub(crate) const SORTINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Size), "Size"),
 ];
 
-/// Finder's Group menu: the sort's rows, plus the two only a grouping has.
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
     (Some(Column::Kind), "Kind"),
@@ -124,7 +121,6 @@ pub(crate) fn group_glyph() -> Retained<NSImage> {
     image
 }
 
-/// Properties written onto the `NSToolbarItem`s after AppKit has built them.
 pub(crate) fn finish_toolbar_items(window: &Window) {
     let Some(toolbar) = chrome_host(window).window().and_then(|w| w.toolbar()) else {
         return;
@@ -314,7 +310,6 @@ impl FinderDemo {
         self.toolbar = true;
     }
 
-    /// The Group menu carries the sort and the grouping, so a change rebuilds it the next frame.
     pub(crate) fn resync_toolbar(&mut self) {
         self.toolbar = false;
     }

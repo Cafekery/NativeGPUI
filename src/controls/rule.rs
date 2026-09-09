@@ -1,5 +1,3 @@
-//! `NSBox` as a solid fill that survives a `Layer::Above` material: a divider or a hairline.
-
 use gpui::{App, ElementId, Hsla, Style, Window, relative};
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
@@ -27,13 +25,11 @@ pub struct NativeRule {
 }
 
 impl NativeRule {
-    /// A role, so the rule follows an appearance change.
     pub fn color(mut self, color: SystemColor) -> Self {
         self.color = color;
         self
     }
 
-    /// A literal fill instead of the role, for what no `SystemColor` names.
     pub fn tint(mut self, tint: impl Into<Hsla>) -> Self {
         self.tint = Some(tint.into());
         self
@@ -61,7 +57,6 @@ impl NativeRule {
 hosted_element!(NativeRule);
 
 define_class!(
-    /// A fill that declines every mouse point, so a divider does not eat the drag aimed at it.
     #[unsafe(super(NSBox, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGRule"]

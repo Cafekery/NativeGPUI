@@ -1,5 +1,3 @@
-//! AppKit window tabs: the bar under the toolbar, `New Tab`, and the actions AppKit routes.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
@@ -26,8 +24,8 @@ fn ns_window_of(window: &Window) -> Retained<NSWindow> {
         .expect("GPUI's view is in its window")
 }
 
-/// Show AppKit's own tab bar on this window, grouped by `WindowOptions::tabbing_identifier`.
-/// `newWindowForTab:` (File > New Tab, ⌘T) dispatches `action` the way a menu row would.
+/// Grouped by `WindowOptions::tabbing_identifier`; `newWindowForTab:` (File > New Tab, ⌘T)
+/// dispatches `action` the way a menu row would.
 pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     let ns_window = ns_window_of(window);
     let mtm = MainThreadMarker::from(&*ns_window);
@@ -40,7 +38,7 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
 
 /// Stop the toolbar's background and the tab bar `points` short of the window's trailing edge, so
 /// they end where a full-height pane begins and the pane's own material runs up behind the
-/// toolbar, as Finder's does. Cheap to call every frame.
+/// toolbar, as Finder's does.
 pub fn set_trailing_inset(window: &Window, points: f32) {
     let ns_window = ns_window_of(window);
     inset_toolbar_background(&ns_window, points.max(0.));
@@ -56,13 +54,11 @@ pub fn set_trailing_inset(window: &Window, points: f32) {
     }
 }
 
-/// How much height AppKit's tab bar takes under the toolbar here, 0 when this window shows none.
 pub fn tab_bar_height(window: &Window) -> f32 {
     tab_bar_accessory(&ns_window_of(window))
         .map_or(0., |accessory| accessory.frame().size.height as f32)
 }
 
-/// Open `tab` beside `window` in its tab bar, selected.
 pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
     let Ok(host) = window.update(cx, |_, window, _| ns_window_of(window)) else {
         return;
@@ -125,7 +121,7 @@ extern "C" fn toggle_tab_bar(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
 
 /// AppKit decides once, when it first builds a window's tab bar, whether that bar carries the
 /// New Tab button, and gpui builds the bar while it creates the window: nothing the responder
-/// chain learns afterwards brings the button back, so the app delegate answers from launch.
+/// chain learns afterwards brings the button back.
 pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
     if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
         let delegate: &AnyObject = delegate.as_ref();
@@ -133,7 +129,6 @@ pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
     }
 }
 
-/// Teach a responder class `newWindowForTab:`. A second call is a no-op: the class has it.
 fn answer_new_tab(class: &AnyClass) {
     let imp: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) = new_window_for_tab;
     unsafe {
@@ -193,7 +188,6 @@ fn inset_toolbar_background(window: &NSWindow, points: f32) {
     }
 }
 
-/// The titlebar accessory AppKit gives the tab bar, if this window is showing one.
 fn tab_bar_accessory(window: &NSWindow) -> Option<Retained<NSView>> {
     window
         .titlebarAccessoryViewControllers()
@@ -209,7 +203,6 @@ fn tab_bar(accessory: &NSView) -> Option<Retained<NSView>> {
         .find(|view| view.class().name() == c"NSTabBar")
 }
 
-/// Subclass the accessory instance so the inset is re-applied after every layout AppKit runs:
 /// AppKit sizes the bar to the whole titlebar again on each resize and each tab change.
 fn adopt_inset(accessory: &NSView) {
     if accessory.class().name() == INSET_CLASS {

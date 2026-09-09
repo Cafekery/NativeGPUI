@@ -1,5 +1,3 @@
-//! What is chosen and where the cursor is: Finder's click rules, its type-select, its twists.
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -13,10 +11,8 @@ use crate::listing::Edit;
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
-/// How long a run of typing stays live, so the next character joins it rather than starts a run.
 const TYPING: Duration = Duration::from_secs(1);
 
-/// How far under a row Option-disclose walks, and how many folders one window holds open.
 const DEEP_LEVELS: usize = 16;
 const DEEP_FOLDERS: usize = 5_000;
 
@@ -39,8 +35,6 @@ impl FinderDemo {
             1 => chosen.iter().next().cloned(),
             _ => None,
         };
-        // One row named on its own is found by its key: asking every row whether it discloses
-        // reaches the `Row` behind each of them, which a listing this long cannot afford.
         let only = one
             .as_ref()
             .and_then(|key| lines.iter().position(|line| &line.key == key));
@@ -88,7 +82,6 @@ impl FinderDemo {
         }
     }
 
-    /// The twist clicked on the row at `at`, spliced into the listing the way a key press is.
     pub(crate) fn disclose_at(
         &mut self,
         at: usize,
@@ -108,7 +101,6 @@ impl FinderDemo {
         }
     }
 
-    /// Opens or shuts every folder named, and under a deep disclose everything below them, once.
     fn disclose_all(&mut self, folders: &[(SharedString, &'static str)], open: bool, deep: bool) {
         if open {
             let mut opened: Vec<SharedString> = Vec::with_capacity(folders.len());
@@ -146,7 +138,6 @@ impl FinderDemo {
         }
     }
 
-    /// The chosen rows, in the order the view lists them.
     pub(crate) fn chosen_lines(&self) -> Vec<Line> {
         self.focused_lines()
             .iter()
@@ -162,7 +153,6 @@ impl FinderDemo {
             .collect()
     }
 
-    /// The folders among the chosen rows, which are the ones a window or tab can open.
     pub(crate) fn chosen_folders(&self) -> Vec<&'static str> {
         self.chosen_lines()
             .iter()
@@ -170,7 +160,6 @@ impl FinderDemo {
             .collect()
     }
 
-    /// Discloses every folder in memory under `id` and asks for the listings that are not.
     fn expand_under(&mut self, id: &'static str, depth: usize, opened: &mut Vec<SharedString>) {
         let home = crate::home();
         let mut walk = vec![(id, depth)];
@@ -202,7 +191,6 @@ impl FinderDemo {
         }
     }
 
-    /// The listing a walk was waiting on: disclose what it holds and go on down.
     pub(crate) fn expand_landed(&mut self, id: &'static str) {
         if let Some(depth) = self.expanding.remove(id) {
             let mut opened: Vec<SharedString> = Vec::new();

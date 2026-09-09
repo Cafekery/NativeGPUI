@@ -1,5 +1,3 @@
-//! `NSVisualEffectView`: the vibrancy materials macOS draws its own chrome with.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::Location;
@@ -24,7 +22,6 @@ use super::private_api;
 use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{Layer, NativeHost, element_key};
 
-/// The supported materials, named for their role.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Material {
     /// Maps to `UnderWindowBackground`; AppKit's `WindowBackground` is opaque.

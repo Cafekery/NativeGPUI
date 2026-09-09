@@ -1,6 +1,3 @@
-//! One ordered queue for every file operation, plus the undo/redo journal behind Edit menu
-//! wording like "Undo Move of 3 Items".
-
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
@@ -31,7 +28,6 @@ pub enum Event {
         item: PathBuf,
     },
     Finished(JobId, io::Result<Done>),
-    /// A batch that stopped at an item: what landed before it is in `done`, undo and all.
     Failed {
         job: JobId,
         done: Done,
@@ -39,7 +35,6 @@ pub enum Event {
     },
     Paused,
     Resumed,
-    /// A job stopped between items: what landed before it stopped is in `done`, undo and all.
     Cancelled {
         job: JobId,
         done: Done,
@@ -119,7 +114,7 @@ impl Queue {
         self.shared.emit(Event::Resumed);
     }
 
-    /// Skips `job` if it hasn't started; a job already running finishes its current item first.
+    /// A job already running finishes its current item first.
     pub fn cancel(&self, job: JobId) {
         let mut state = self.shared.state.lock().unwrap();
         if let Some(pos) = state.jobs.iter().position(|j| j.id == job) {
@@ -204,7 +199,6 @@ fn run_job(shared: &Shared, id: JobId, op: Op, conflict: Conflict) -> RunOutcome
     }
 }
 
-/// Runs a multi-item op one item at a time so pause/cancel can act between items.
 fn run_split_job(
     shared: &Shared,
     id: JobId,
@@ -246,7 +240,6 @@ fn run_split_job(
     RunOutcome::Done(Ok(batch_done(results, undos)))
 }
 
-/// A split batch undoes item by item, in the order the items ran.
 fn batch_done(results: Vec<PathBuf>, mut undos: Vec<Op>) -> Done {
     let undo = match undos.len() {
         0 => None,
@@ -296,7 +289,6 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
     }
 }
 
-/// Sums `items` on a background thread; gives up and reports 0 if that takes longer than `budget`.
 fn total_size(items: Vec<PathBuf>, budget: Duration) -> u64 {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -306,8 +298,6 @@ fn total_size(items: Vec<PathBuf>, budget: Duration) -> u64 {
     rx.recv_timeout(budget).unwrap_or(0)
 }
 
-/// Bytes/sec over the last second of completed items, falling back to the job's wall clock
-/// until there are two samples to compare.
 struct Meter {
     start: Instant,
     done_bytes: u64,
@@ -399,7 +389,6 @@ impl Journal {
     }
 }
 
-/// Finder's own Edit-menu wording.
 fn label_for(op: &Op) -> String {
     match op {
         Op::Move { items, .. } => describe("Move", items),
@@ -436,8 +425,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    /// An HFS+ RAM disk: copying onto it is a real byte copy, unlike an APFS-to-APFS copy on
-    /// this Mac, which `copyfile(3)` turns into a sub-millisecond clone regardless of size.
+    /// An HFS+ RAM disk: an APFS-to-APFS copy is a `copyfile(3)` clone, not a byte copy.
     struct RamDisk {
         device: String,
         mount: PathBuf,

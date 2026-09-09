@@ -1,6 +1,3 @@
-//! The on-disk index: the header, the name blob and the two arrays, read back with one `read`
-//! each. Little-endian and native layout, so it is a cache for this machine, not a format.
-
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
@@ -79,7 +76,6 @@ pub fn load(path: &Path) -> Option<Tree> {
     Some(tree)
 }
 
-/// The roots section: an `event_id`, an mtime and a length-prefixed path each, back to back.
 fn read_roots(mut bytes: &[u8]) -> Option<Vec<Root>> {
     let mut roots = Vec::new();
     while !bytes.is_empty() {

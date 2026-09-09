@@ -1,5 +1,3 @@
-//! `NSButton` as checkbox, radio and push button, and `NSSegmentedControl`.
-
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
@@ -20,7 +18,6 @@ use crate::bridge::host::{
 use crate::controls::fitted;
 use crate::system::tokens::SystemColor;
 
-/// A fitting size cached per content, since a title moves it.
 fn measured(
     class: &'static str,
     inputs: impl Hash,
@@ -37,7 +34,6 @@ fn sync_title(button: &NSButton, wanted: &str) {
     }
 }
 
-/// Mac checkboxes are tri-state.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum CheckState {
     Off,
@@ -389,12 +385,10 @@ hosted_element!(NativeButton);
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum TrackingMode {
-    /// Exactly one segment stays selected.
     #[default]
     SelectOne,
     /// Any number of segments can be on; `on_change` still reports a single index.
     SelectAny,
-    /// Nothing stays selected; each click is a press.
     Momentary,
 }
 
@@ -485,8 +479,6 @@ impl NativeSegmented {
         self
     }
 
-    /// Overrides the selected segment's fill, a quiet tint in place of the accent colour — the
-    /// way Finder's own search-scope segments read.
     pub fn selected_bezel_color(mut self, color: SystemColor) -> Self {
         self.selected_bezel = Some(color);
         self

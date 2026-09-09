@@ -501,8 +501,8 @@ fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_co
     }
 }
 
-/// Menu tracking runs the run loop in `NSEventTrackingRunLoopMode`, so the timer has to be added
-/// for the common modes or it never fires while the menu is up.
+/// Menu tracking runs the run loop in `NSEventTrackingRunLoopMode`: a timer added only for the
+/// default mode never fires while the menu is up.
 fn schedule_submenu_reveal(window_number: isize, after: f64) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         let Some(mtm) = MainThreadMarker::new() else {

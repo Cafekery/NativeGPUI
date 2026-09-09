@@ -1,6 +1,3 @@
-//! `NSScroller` over GPUI content: the overlay knob, the fade it drives itself, and the legacy
-//! style System Settings can pin on.
-
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -24,7 +21,6 @@ use crate::bridge::host::{
 };
 use crate::controls::fitted;
 
-/// How long an overlay scroller stays up after the last move, and how long it takes to go.
 const LINGER: f64 = 1.0;
 const FADE: f64 = 0.35;
 

@@ -1,5 +1,3 @@
-//! The thumbnails Quick Look draws for a row: asked for once, swept when the row scrolls away.
-
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,36 +11,27 @@ use native_gpui::thumbnails;
 use crate::app::FinderDemo;
 use crate::data::{Face, Row};
 
-/// The kinds Quick Look draws a page or picture for; every other type keeps its icon.
 const RENDERABLE: &[&str] = &[
     "pdf", "png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp", "mov", "mp4",
     "m4v", "key", "pages", "numbers",
 ];
 
-/// A file, its pixel side, and whether Quick Look drew it as an icon: what one thumbnail is.
 type Thumb = (SharedString, u32, bool);
 
-/// A file and whether Quick Look drew it as an icon, against the largest raster it has landed.
 type Landed = HashMap<(SharedString, bool), (u32, Arc<RenderImage>)>;
 
 thread_local! {
     static THUMBS: RefCell<HashMap<Thumb, Arc<RenderImage>>> = RefCell::new(HashMap::new());
-    /// Every thumbnail asked for, so a row on screen for a hundred frames asks once.
     static ASKED: RefCell<HashSet<Thumb>> = RefCell::new(HashSet::new());
-    /// The largest raster landed per file, drawn scaled while a new size is generated.
     static LARGEST: RefCell<Landed> = RefCell::new(HashMap::new());
     static DRAWN: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
-    /// What came back empty, and when it may be asked for again.
     static RETRY: RefCell<HashMap<Thumb, (u32, Instant)>> = RefCell::new(HashMap::new());
     static FRAMES: Cell<u64> = const { Cell::new(0) };
-    /// Whether a task is already looking for what Quick Look has finished.
     static WATCHING: Cell<bool> = const { Cell::new(false) };
     static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
 }
 
-/// Thumbnails land on a background queue; the window drains them on its next tick.
 static DELIVERED: AtomicUsize = AtomicUsize::new(0);
-/// Generations asked for and not yet landed: while any are, the window looks for them often.
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static LANDED: Mutex<Vec<(Thumb, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
 
@@ -56,13 +45,10 @@ pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
 }
 
-/// Whether a thumbnail is still being drawn for a row on screen.
 pub(crate) fn pending() -> bool {
     INFLIGHT.load(Ordering::Relaxed) > 0
 }
 
-/// Draw what Quick Look finishes as it finishes it: the window's own tick is a tenth of a second
-/// apart, which a landed thumbnail otherwise waits out before anyone looks at it.
 pub(crate) fn watch_thumbnails(demo: &Entity<FinderDemo>, cx: &mut App) {
     if !pending() || WATCHING.with(|watching| watching.replace(true)) {
         return;
@@ -92,7 +78,7 @@ pub(crate) fn watch_thumbnails(demo: &Entity<FinderDemo>, cx: &mut App) {
     .detach();
 }
 
-/// Move what the generator delivered into the map the rows draw from. Main thread only.
+/// Main thread only.
 pub(crate) fn collect_thumbnails() -> bool {
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
     let any = !landed.is_empty();
@@ -107,8 +93,8 @@ pub(crate) fn collect_thumbnails() -> bool {
     any
 }
 
-/// An empty delivery is a cancelled generation as often as a file with no picture: ask again,
-/// backing off, rather than leaving a row on its type icon for as long as it is on screen.
+/// An empty delivery is a cancelled generation as often as a file with no picture, so ask again,
+/// backing off.
 fn retry(key: &Thumb) {
     let tries = RETRY.with(|retry| {
         let mut retry = retry.borrow_mut();
@@ -122,7 +108,6 @@ fn retry(key: &Thumb) {
     }
 }
 
-/// Record a raster as the one a later size draws from until its own lands.
 fn keep(key: &Thumb, image: &Arc<RenderImage>) {
     LARGEST.with(|largest| {
         let mut largest = largest.borrow_mut();
@@ -149,7 +134,6 @@ pub(crate) fn frame_drawn() {
     FRAMES.with(|frames| frames.set(frames.get() + 1));
 }
 
-/// Drop the generations queued for rows that have scrolled away, once a frame has been drawn.
 pub(crate) fn sweep_thumbnails() {
     let now = Instant::now();
     let frames = FRAMES.with(|frames| frames.get());
@@ -188,7 +172,6 @@ fn renderable(row: &Row) -> bool {
     })
 }
 
-/// The thumbnail a row draws from, once one has landed; a row on screen asks for one.
 pub(crate) fn thumb(
     row: &Row,
     size: f32,
@@ -226,7 +209,6 @@ pub(crate) fn thumb(
     largest(&row.path, icon)
 }
 
-/// One request per file and size, so a frame does not pile waiters behind work in flight.
 fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
     if RETRY.with(|retry| {
         retry

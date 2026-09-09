@@ -172,8 +172,7 @@ fn main() -> ExitCode {
                         origin: point(px(0.), px(0.)),
                         size: size(px(64.), px(48.)),
                     })),
-                    // gpui starts its display link only once occlusion reports visible, so
-                    // `show: false` never renders a frame.
+                    // gpui starts its display link only once occlusion reports visible.
                     focus: false,
                     ..window_options()
                 },
@@ -187,8 +186,7 @@ fn main() -> ExitCode {
             )
             .unwrap();
 
-        // A `notify` raised during render is swallowed, so the frames have to be asked for from
-        // outside it.
+        // A `notify` raised during render is swallowed.
         cx.spawn(async move |cx: &mut AsyncApp| {
             for _ in 0..SCRIPT.len() + 4 {
                 cx.background_executor()
