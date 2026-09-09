@@ -108,7 +108,7 @@ const SHARDS: usize = 64;
 pub struct Names {
     pub blob: Vec<u8>,
     pub ends: Vec<u32>,
-    mask: Vec<u32>,
+    mask: Vec<u64>,
     tables: Vec<Vec<u32>>,
     counts: Vec<u32>,
 }
@@ -130,6 +130,33 @@ pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
     }
 }
 
+/// Set on a name whose bytes are not ASCII, so a search folds only those. A query never sets it:
+/// it is folded before its own mask is taken, and an ASCII query matches a folded name.
+pub const NEEDS_FOLD: u64 = 1 << 28;
+
+/// Set on a name starting with a dot. Spotlight indexes neither a dot-file nor anything inside a
+/// dot-folder, so neither turns up in Finder's search; `~/Library` carries the hidden flag and is
+/// indexed all the same, which is why this reads the name rather than the flag.
+pub const DOTTED: u64 = 1 << 29;
+
+/// Which pairs of neighbouring bytes a name holds, hashed into 32 buckets: a query whose pairs
+/// a name does not all hold cannot be in it, which throws out far more names than its letters do.
+pub fn grams(bytes: &[u8]) -> u32 {
+    let folded = folded(bytes);
+    let mut m = 0;
+    for pair in folded.windows(2) {
+        let (a, b) = (pair[0] | 0x20, pair[1] | 0x20);
+        m |= 1 << ((a as u32).wrapping_mul(31).wrapping_add(b as u32) & 31);
+    }
+    m
+}
+
+/// What a name is filtered by, and what a query asks of it: the letters, the pairs, and — for a
+/// name — the two flags a query never sets.
+pub fn mask_of(bytes: &[u8]) -> u64 {
+    letters(bytes) as u64 | (grams(bytes) as u64) << 32
+}
+
 pub fn letters(bytes: &[u8]) -> u32 {
     let mut m = 0;
     for &b in folded(bytes).iter() {
@@ -140,6 +167,17 @@ pub fn letters(bytes: &[u8]) -> u32 {
         };
     }
     m
+}
+
+fn fold_bit(bytes: &[u8]) -> u64 {
+    let fold = match bytes.is_ascii() {
+        true => 0,
+        false => NEEDS_FOLD,
+    };
+    match bytes.first() {
+        Some(b'.') => fold | DOTTED,
+        _ => fold,
+    }
 }
 
 impl Names {
@@ -165,7 +203,7 @@ impl Names {
         &self.blob[start..self.ends[id] as usize]
     }
 
-    pub fn masks(&self) -> &[u32] {
+    pub fn masks(&self) -> &[u64] {
         &self.mask
     }
 
@@ -190,7 +228,7 @@ impl Names {
         reserve(&mut self.mask, 1);
         self.blob.extend_from_slice(bytes);
         self.ends.push(self.blob.len() as u32);
-        self.mask.push(letters(bytes));
+        self.mask.push(mask_of(bytes) | fold_bit(bytes) as u64);
         self.tables[shard][slot] = id;
         self.counts[shard] += 1;
         id
@@ -234,7 +272,10 @@ impl Names {
     /// Rebuilds what the snapshot does not carry: the letter sets and the intern tables.
     pub fn reindex(&mut self) {
         self.mask = (0..self.ends.len() as u32)
-            .map(|id| letters(self.bytes(id)))
+            .map(|id| {
+                let bytes = self.bytes(id);
+                mask_of(bytes) | fold_bit(bytes) as u64
+            })
             .collect();
         let hashes: Vec<u32> = (0..self.ends.len() as u32)
             .map(|id| hash(self.bytes(id)))
