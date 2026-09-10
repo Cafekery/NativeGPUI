@@ -19,7 +19,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 ## Small features
 
 - [ ] File ▸ Find by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
-- [ ] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
+- [x] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
 - [ ] Edit ▸ Copy as Link (⌥⌃⌘C)
 - [ ] Edit ▸ Paste Exactly (⇧⌥⌘V), which keeps the copy's own timestamps
 - [ ] Edit ▸ Show Clipboard

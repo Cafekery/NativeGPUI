@@ -109,11 +109,11 @@ impl FinderDemo {
             }
             Act::GetInfo => {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, None, cx));
+                cx.defer(move |cx| crate::info::open(&demo, None, false, cx));
             }
             Act::GetInfoAt(id) => {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, Some(id), cx));
+                cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
             Act::Sort(column) => self.sort_by(column, cx),
             Act::Open => self.open_here(window, cx),
