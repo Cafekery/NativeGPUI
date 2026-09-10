@@ -149,7 +149,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         }),
         Act::Swatch,
     );
-    menu.item(MenuEntry::item("Tags…").disabled(), Act::Nothing);
+    menu.item(MenuEntry::item("Tags…"), Act::Tags);
     menu
 }
 

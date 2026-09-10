@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use gpui::{AnyElement, Context, Hsla, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, Context, Hsla, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
 use objc2_core_foundation::CGFloat;
@@ -38,6 +38,10 @@ fn tag_system_color(color: u8) -> Option<SystemColor> {
         7 => SystemColor::SystemOrange,
         _ => return None,
     })
+}
+
+pub(crate) fn tag_ns_color(color: u8) -> Option<objc2::rc::Retained<NSColor>> {
+    tag_system_color(color).map(|system| system.ns_color())
 }
 
 pub(crate) fn finder_edge(color: u8) -> Hsla {
@@ -150,16 +154,6 @@ pub(crate) fn row_tags(path: &str) -> Vec<usize> {
         .collect()
 }
 
-fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) {
-    let path = PathBuf::from(key.as_ref());
-    let wanted: Vec<finder_fs::tags::Tag> = tags.iter().map(|index| finder_tag(*index)).collect();
-    cx.background_executor()
-        .spawn(async move {
-            finder_fs::tags::set(&path, &wanted).ok();
-        })
-        .detach();
-}
-
 impl FinderDemo {
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self
@@ -193,26 +187,5 @@ impl FinderDemo {
             .ok();
         })
         .detach();
-    }
-
-    pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
-        let chosen = self.selected.snapshot();
-        for key in chosen.iter() {
-            let next = match self
-                .tags
-                .get(key)
-                .and_then(|carried| carried.first().copied())
-            {
-                Some(index) if index + 1 >= tags().len() => None,
-                Some(index) => Some(index + 1),
-                None => Some(0),
-            };
-            let wanted: Vec<usize> = next.into_iter().collect();
-            match wanted.is_empty() {
-                true => self.tags.remove(key),
-                false => self.tags.insert(key.clone(), wanted.clone()),
-            };
-            write_tags(key, &wanted, cx);
-        }
     }
 }

@@ -22,6 +22,7 @@ mod quicklook;
 mod read;
 mod search;
 mod select;
+mod tag_editor;
 mod tags;
 mod thumbs;
 mod ui;

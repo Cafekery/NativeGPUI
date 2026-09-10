@@ -231,14 +231,11 @@ impl FinderDemo {
                     }),
                 ToolbarItem::share(SHARE_ID, "Share", self.share_items())
                     .tool_tip("Share the selected items"),
-                ToolbarItem::symbol(TAG_ID, "tag", "Edit Tags")
+                ToolbarItem::symbol(TAG_ID, "tag", "Add Tags")
                     .tool_tip("Edit Tags")
-                    .on_click(move |_, cx| {
-                        tag.update(cx, |this: &mut Self, cx| {
-                            this.cycle_tag(cx);
-                            cx.notify();
-                        })
-                        .ok();
+                    .on_click(move |window, cx| {
+                        tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
+                            .ok();
                     }),
                 ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                     .tool_tip("Perform tasks with the selected items")
