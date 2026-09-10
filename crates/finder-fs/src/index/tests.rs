@@ -650,3 +650,29 @@ fn a_file_added_after_a_search_is_found_by_the_next_one() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, root.join("afterwards.txt"));
 }
+
+fn eventually(check: impl Fn() -> bool) -> bool {
+    (0..50).any(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        check()
+    })
+}
+
+#[test]
+fn a_followed_index_keeps_up_with_the_disk() {
+    let temp = tree("follow");
+    let root = &temp.0;
+    let index = crawled(root);
+    let _following = index.follow(vec![root.clone()]);
+    let found = |name: &str| index.search(name, None, 10).len();
+
+    fs::write(root.join("a/b/fresh.txt"), b"").unwrap();
+    assert!(eventually(|| found("fresh") == 1));
+
+    fs::create_dir(root.join("newdir")).unwrap();
+    fs::write(root.join("newdir/inside.txt"), b"").unwrap();
+    assert!(eventually(|| found("inside") == 1));
+
+    fs::remove_file(root.join("a/b/fresh.txt")).unwrap();
+    assert!(eventually(|| found("fresh") == 0));
+}

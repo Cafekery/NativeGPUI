@@ -11,7 +11,7 @@ use crate::listing::next_rev;
 use crate::{index, prefs};
 
 const HITS: usize = 200;
-const ALL_HITS: usize = 1_000_000;
+const ALL_HITS: usize = usize::MAX;
 /// Stands where a `tag:` id would, for the one listing that is not a tag.
 pub(crate) const RECENTS: &str = "recents";
 

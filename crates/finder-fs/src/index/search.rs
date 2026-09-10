@@ -224,7 +224,7 @@ impl Query<'_> {
         class: &(impl Fn(&[u8]) -> u8 + Sync),
     ) -> Vec<Found> {
         let masks = self.tree.names.masks();
-        let mut best = Vec::with_capacity(self.cap + 1);
+        let mut best = Vec::new();
         let mut cutoff = 0;
         for id in ids {
             let mask = masks[id as usize];
@@ -244,7 +244,7 @@ impl Query<'_> {
 
     fn tail(&self, class: &impl Fn(&[u8]) -> u8) -> Vec<Found> {
         let masks = self.tree.names.masks();
-        let mut best = Vec::with_capacity(self.cap + 1);
+        let mut best = Vec::new();
         let mut cutoff = 0;
         let mut last = (u32::MAX, 0u8);
         for id in self.lookup.tail()..self.tree.name_of.len() {
