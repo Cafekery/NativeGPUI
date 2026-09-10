@@ -274,18 +274,12 @@ impl FinderDemo {
         let top = above + px(scope_h);
         // The path bar takes height from the list, not from the pane, which runs to the corner.
         let bar = if path_bar.is_some() { PATH_H } else { 0. };
-        let foot = bar
-            + if self.view == LIST_VIEW {
-                LIST_FOOT_GAP
-            } else {
-                0.
-            };
         let banded = headers.is_some();
         let mut surface = div()
             .absolute()
             .left_0()
             .right_0()
-            .bottom(px(foot))
+            .bottom(px(bar))
             .top(if banded { px(0.) } else { top })
             .flex()
             .flex_col()
@@ -378,17 +372,17 @@ impl FinderDemo {
                         .child(headers),
                 )
             }))
-            .children(self.scroller_bar().map(|bar| {
+            .children(self.scroller_bar().map(|scroller| {
                 div()
                     .absolute()
                     .top(top + px(if banded { HEADER_H } else { 0. }))
-                    .bottom(px(foot))
+                    .bottom(px(bar))
                     .right(px(pane))
-                    .child(bar)
+                    .child(scroller)
             }))
             .children(
                 (self.view == LIST_VIEW)
-                    .then(|| self.type_filter_pill(palette, pane, foot))
+                    .then(|| self.type_filter_pill(palette, pane, bar + LIST_FOOT_GAP))
                     .flatten(),
             )
             .into_any_element()

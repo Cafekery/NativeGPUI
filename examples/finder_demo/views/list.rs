@@ -31,8 +31,6 @@ const SELECTION_JOIN_LEAD: f32 = 30.;
 const SELECTION_JOIN_TRAIL: f32 = 6.;
 const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
-/// Finder's rows stop this far above the path bar, and the last row the same distance above that
-/// again.
 pub(crate) const LIST_FOOT_GAP: f32 = 5.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
