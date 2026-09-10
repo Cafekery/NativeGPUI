@@ -9,6 +9,7 @@ use native_gpui::{
 };
 
 use crate::app::FinderDemo;
+use crate::chrome::criteria_bar::Criterion;
 use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
@@ -34,6 +35,7 @@ actions!(
         EjectSelection,
         EmptyTrash,
         FindHere,
+        FindByName,
         Forward,
         GetInfo,
         GetSummaryInfo,
@@ -183,6 +185,8 @@ pub(crate) fn install(cx: &mut App) {
                 .key("cmd-alt-backspace")
                 .option_alternate(),
             MenuCommand::new("Eject", EjectSelection).key("cmd-e"),
+            MenuCommand::separator(),
+            MenuCommand::new("Find by Name…", FindByName).key("cmd-ctrl-shift-f"),
             MenuCommand::separator(),
         ],
     );
@@ -373,6 +377,11 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|_, _: &FindHere, window, _| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
+            }))
+            .on_action(cx.listener(|this, _: &FindByName, window, cx| {
+                this.criteria = vec![Criterion::name()];
+                set_toolbar_search_active(window, SEARCH_ID, true);
+                this.run_search(cx);
             }))
             .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
                 let demo = cx.entity();
