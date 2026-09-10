@@ -90,6 +90,7 @@ actions!(
         UpInNewWindow,
         SelectStartupDisk,
         CycleWindows,
+        ShowProgressWindow,
         ViewColumns,
         ViewGallery,
         ViewIcons,
@@ -150,6 +151,7 @@ fn cycle_windows(_: &CycleWindows, cx: &mut App) {
 pub(crate) fn install(cx: &mut App) {
     cx.on_action(cycle_windows);
     cx.on_action(crate::clipboard_window::show);
+    cx.on_action(crate::progress_window::show);
     on_menu_state(checked);
     prepend_menu(
         MenuSection::File,
@@ -198,7 +200,10 @@ pub(crate) fn install(cx: &mut App) {
     );
     extend_menu(
         MenuSection::Window,
-        [MenuCommand::new("Cycle Through Windows", CycleWindows).key("cmd-`")],
+        [
+            MenuCommand::new("Cycle Through Windows", CycleWindows).key("cmd-`"),
+            MenuCommand::new("Show Progress Window", ShowProgressWindow),
+        ],
     );
     extend_menu(
         MenuSection::Edit,
