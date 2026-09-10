@@ -31,6 +31,7 @@ pub(crate) enum Act {
     Duplicate,
     MakeAlias,
     QuickLook,
+    OpenWith(&'static str),
     Copy,
     Cut,
     Paste,
@@ -117,6 +118,14 @@ impl FinderDemo {
             Act::Duplicate => self.duplicate_selection(cx),
             Act::MakeAlias => self.make_alias(cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
+            Act::OpenWith(app) => {
+                let files: Vec<PathBuf> = self
+                    .chosen_keys()
+                    .iter()
+                    .map(|key| PathBuf::from(key.as_ref()))
+                    .collect();
+                crate::openwith::open_with(&files, Path::new(app));
+            }
             Act::Copy => self.copy_selection(cx),
             Act::Cut => self.cut_selection(cx),
             Act::Paste => self.paste(false, cx),

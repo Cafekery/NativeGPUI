@@ -12,6 +12,7 @@ mod listing;
 mod menus;
 mod meta;
 mod navigate;
+mod openwith;
 mod ops;
 mod options;
 mod palette;
