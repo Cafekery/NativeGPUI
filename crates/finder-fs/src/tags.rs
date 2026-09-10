@@ -274,6 +274,28 @@ pub fn toggle(paths: &[std::path::PathBuf], tag: &Tag) -> io::Result<()> {
     Ok(())
 }
 
+/// The tag editor's edit: `add` goes on every item that lacks it and `remove` comes off every item,
+/// in place, so an item keeps the order and the tags the edit never named.
+pub fn apply(paths: &[std::path::PathBuf], add: &[Tag], remove: &[String]) -> io::Result<()> {
+    for path in paths {
+        let before = of(path);
+        let mut tags: Vec<Tag> = before
+            .iter()
+            .filter(|tag| !remove.contains(&tag.name))
+            .cloned()
+            .collect();
+        for tag in add {
+            if !tags.iter().any(|held| held.name == tag.name) {
+                tags.push(tag.clone());
+            }
+        }
+        if tags != before {
+            set(path, &tags)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +370,28 @@ mod toggle_tests {
         toggle(&both, &red).unwrap();
         assert_eq!(names(&a), ["Reviewed"]);
         assert!(names(&b).is_empty());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_edit_touches_only_the_tags_it_names() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-apply-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let tag = |name: &str| Tag {
+            name: name.into(),
+            color: 0,
+        };
+        set(&a, &[tag("Reviewed"), tag("Draft"), tag("Red")]).unwrap();
+        set(&b, &[tag("Draft")]).unwrap();
+        let both = [a.clone(), b.clone()];
+
+        apply(&both, &[tag("Blue")], &["Draft".into()]).unwrap();
+        assert_eq!(names(&a), ["Reviewed", "Red", "Blue"]);
+        assert_eq!(names(&b), ["Blue"]);
 
         fs::remove_dir_all(&dir).ok();
     }
