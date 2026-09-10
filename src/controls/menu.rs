@@ -435,6 +435,13 @@ fn sync_level(
         else {
             if let MenuEntry::View(view) = entry {
                 sync_view(mtm, &item, view);
+                // A row view fires its item's action itself, so it needs the target a title gets.
+                if let Some((target, selector)) = action {
+                    unsafe {
+                        item.setTarget(Some(target));
+                        item.setAction(Some(selector));
+                    }
+                }
             }
             continue;
         };
