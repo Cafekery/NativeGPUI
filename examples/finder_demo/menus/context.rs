@@ -104,7 +104,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     );
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
-    menu.item(MenuEntry::item("Quick Look").disabled(), Act::Nothing);
+    menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
     menu.item(
         MenuEntry::item(match many {
             true => format!("Cut {chosen} Items"),
