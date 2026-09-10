@@ -156,6 +156,51 @@ fn lookup(ext: &str) -> (Kind, bool) {
     (Kind { uti, label }, false)
 }
 
+/// The kind table from a past run. Resolving one costs a Spotlight round trip against a real
+/// file, so the labels are worth keeping between launches; they only move when macOS does.
+pub fn load_kinds(from: &Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(from) else {
+        return 0;
+    };
+    let mut cache = cache().write().unwrap();
+    let mut packages = package_names().write().unwrap();
+    let mut read = 0;
+    for line in text.lines() {
+        let mut parts = line.split('\t');
+        let (Some(ext), Some(uti), Some(label), Some(package)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        cache.entry(ext.to_string()).or_insert(Kind {
+            uti: uti.into(),
+            label: label.into(),
+        });
+        if package == "1" {
+            packages.insert(ext.to_string());
+        }
+        read += 1;
+    }
+    read
+}
+
+pub fn save_kinds(to: &Path) -> usize {
+    let cache = cache().read().unwrap();
+    let packages = package_names().read().unwrap();
+    let mut text = String::with_capacity(cache.len() * 48);
+    for (ext, kind) in cache.iter() {
+        if ext.contains('\t') || kind.label.contains('\t') {
+            continue;
+        }
+        let package = u8::from(packages.contains(ext));
+        text.push_str(&format!("{ext}\t{}\t{}\t{package}\n", kind.uti, kind.label));
+    }
+    match std::fs::write(to, text) {
+        Ok(()) => cache.len(),
+        Err(_) => 0,
+    }
+}
+
 fn package_names() -> &'static RwLock<std::collections::HashSet<String>> {
     static NAMES: OnceLock<RwLock<std::collections::HashSet<String>>> = OnceLock::new();
     NAMES.get_or_init(Default::default)
