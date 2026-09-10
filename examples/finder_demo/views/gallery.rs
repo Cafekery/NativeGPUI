@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
-use native_gpui::native_callout;
+use native_gpui::{native_callout, native_scroll_bars};
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
@@ -143,7 +143,15 @@ impl FinderDemo {
                     .justify_center()
                     .children(hero),
             )
-            .child(tiles_menu("ng.finder.strip.menu", this, hit, strip_row))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(tiles_menu("ng.finder.strip.menu", this, hit, strip_row))
+                    .child(div().absolute().inset_0().child(
+                        native_scroll_bars("ng.finder.strip.scroll_bars").horizontal(&self.strip),
+                    )),
+            )
             .into_any_element()
     }
 

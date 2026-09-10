@@ -11,6 +11,9 @@ use native_gpui::system::tokens::WINDOW_BACKGROUND;
 // probe: deleted; `supports_corner_radius` replaces it.
 use native_gpui::window_chrome::corner_radius_selector;
 
+// probe: deleted; `native_scroll_bars` puts AppKit's scroll view over the content instead.
+use native_gpui::native_scroller;
+
 fn main() {
     // probe: deleted; it was `srgb(&self.ns_color())` with both halves public.
     let _ = native_gpui::tokens::SystemColor::Label.resolve_ambient();

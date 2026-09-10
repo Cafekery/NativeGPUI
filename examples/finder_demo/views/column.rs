@@ -3,6 +3,7 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
     UniformListScrollHandle, Window, canvas, div, prelude::*, px, transparent_black, uniform_list,
 };
+use native_gpui::native_scroll_bars;
 use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::app::FinderDemo;
@@ -12,7 +13,7 @@ use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed}
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, menu_ring, rename_field, scroller, text_width};
+use crate::ui::{click_kind, menu_ring, rename_field, text_width};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -314,11 +315,8 @@ impl FinderDemo {
         .flex_1()
         .track_scroll(&handle);
 
-        let bar = scroller(
-            ("ng.finder.column.scroller", index),
-            &handle.0.borrow().base_handle,
-            0.,
-        );
+        let bars = native_scroll_bars(("ng.finder.column.scroll_bars", index))
+            .vertical(&handle.0.borrow().base_handle);
         // A drop anywhere but on a folder row lands in the folder the column shows, and Finder
         // outlines the whole column for it; the edge is drawn under the rows, so their own drop
         // lands first.
@@ -352,7 +350,15 @@ impl FinderDemo {
             .pt(px(TOP_GAP))
             .child(area)
             .child(list)
-            .children(bar.map(|bar| div().absolute().top_0().bottom_0().right_0().child(bar)));
+            .child(
+                div()
+                    .absolute()
+                    .top(px(TOP_GAP))
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .child(bars),
+            );
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
@@ -496,7 +502,7 @@ impl FinderDemo {
         }
 
         let this = cx.entity();
-        div()
+        let browser = div()
             .id("ng.finder.columns")
             .flex_1()
             .flex()
@@ -526,7 +532,16 @@ impl FinderDemo {
             ))
             .overflow_x_scroll()
             .track_scroll(&self.column_scroll)
-            .children(columns)
+            .children(columns);
+        // Beside the browser, not in it: a child of a scrolled element scrolls away with it.
+        div()
+            .flex_1()
+            .relative()
+            .flex()
+            .child(browser)
+            .child(div().absolute().inset_0().child(
+                native_scroll_bars("ng.finder.columns.scroll_bars").horizontal(&self.column_scroll),
+            ))
             .into_any_element()
     }
 

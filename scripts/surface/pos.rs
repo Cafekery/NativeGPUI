@@ -14,7 +14,7 @@ use native_gpui::{
     ButtonBezel, CheckState, LabelAlign, MenuEntry, MenuOrigin, MenuView, native_button,
     native_checkbox, native_color_well, native_context_menu, native_date_picker, native_label,
     native_level, native_path_control, native_popup, native_progress, native_radio, native_rule,
-    native_scroller, native_search_field, native_secure_field, native_segmented, native_slider,
+    native_scroll_bars, native_search_field, native_secure_field, native_segmented, native_slider,
     native_spinner, native_stepper, native_switch, native_text_field,
 };
 
