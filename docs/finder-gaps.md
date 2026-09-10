@@ -17,7 +17,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 ## Small features
 
-- [ ] File ▸ Find by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
+- [x] File ▸ Find by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
 - [x] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
 - [ ] Edit ▸ Copy as Link (⌥⌃⌘C): Finder keeps it disabled on a local file and on an iCloud Drive
   file alike, so what it copies is unconfirmed

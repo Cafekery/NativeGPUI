@@ -28,6 +28,14 @@ pub(crate) struct Criterion {
 }
 
 impl Criterion {
+    /// The row Finder's Find by Name opens with: the name, containing what is typed.
+    pub(crate) fn name() -> Self {
+        Self {
+            field: 1,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn holds(&self, row: &Row) -> bool {
         match FIELDS[self.field.min(FIELDS.len() - 1)] {
             "Name" => {
