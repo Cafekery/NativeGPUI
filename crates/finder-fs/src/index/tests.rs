@@ -585,7 +585,7 @@ fn a_reopened_snapshot_drops_what_was_deleted() {
 }
 
 #[test]
-fn search_leaves_out_what_spotlight_does_not_index() {
+fn search_ranks_hidden_files_after_shown_ones() {
     let temp = tree("hidden-search");
     let root = &temp.0;
     let index = crawled(root);
@@ -599,7 +599,14 @@ fn search_leaves_out_what_spotlight_does_not_index() {
 
     let hits = index.search("marker", None, 10);
     let found: Vec<&Path> = hits.iter().map(|hit| hit.path.as_path()).collect();
-    assert_eq!(found, [root.join("marker.txt").as_path()]);
+    assert_eq!(
+        found,
+        [
+            root.join("marker.txt").as_path(),
+            dotted.join("marker.txt").as_path(),
+            root.join(".marker").as_path(),
+        ]
+    );
 }
 
 #[test]

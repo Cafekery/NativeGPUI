@@ -159,25 +159,24 @@ impl Query<'_> {
             .then_with(|| a.2.cmp(&b.2))
     }
 
-    /// `None` where Finder's own search would not show it at all: a dot-file, or anything inside
-    /// a dot-folder or a package, none of which Spotlight indexes.
-    fn placed(&self, id: u32) -> Option<bool> {
+    /// `Some((hidden, under the home))`, hidden being a dot-file or anything inside a dot-folder;
+    /// `None` inside a package, which is one item to a search as it is to Finder.
+    fn placed(&self, id: u32) -> Option<(bool, bool)> {
         let masks = self.tree.names.masks();
         let dotted = |id: u32| masks[self.tree.name_of[id as usize] as usize] & DOTTED != 0;
-        if dotted(id) {
-            return None;
-        }
+        let mut hidden = dotted(id);
         let mut home = false;
         let mut at = self.tree.nodes[id as usize].parent;
         while at != NONE && at != ROOT {
             let up = &self.tree.nodes[at as usize];
-            if up.flags & PACKAGE != 0 || dotted(at) {
+            if up.flags & PACKAGE != 0 {
                 return None;
             }
+            hidden |= dotted(at);
             home |= Some(at) == self.home;
             at = up.parent;
         }
-        Some(home)
+        Some((hidden, home))
     }
 
     fn keep(&self, best: &mut Vec<Found>, cutoff: &mut u32, id: u32, name: u32, class: u8) {
@@ -185,23 +184,25 @@ impl Query<'_> {
         if node.deleted() {
             return;
         }
-        let score = |home: bool| {
-            (class as u32) << 28
+        // A hidden hit ranks below every shown one, so dot-folder clutter never buries a match.
+        let score = |shown: bool, home: bool| {
+            (shown as u32) << 31
+                | (class as u32) << 28
                 | (home as u32) << 27
                 | (255 - node.depth as u32) << 19
                 | (u16::MAX as u32
                     - self.tree.names.bytes(name).len().min(u16::MAX as usize) as u32)
         };
-        if score(true) < *cutoff {
+        if score(true, true) < *cutoff {
             return;
         }
         if self.under.is_some_and(|root| !self.tree.is_under(id, root)) {
             return;
         }
-        let Some(home) = self.lookup.placed(id).unwrap_or_else(|| self.placed(id)) else {
+        let Some((hidden, home)) = self.lookup.placed(id).unwrap_or_else(|| self.placed(id)) else {
             return;
         };
-        let score = score(home);
+        let score = score(!hidden, home);
         if score < *cutoff {
             return;
         }
