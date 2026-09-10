@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use finder_fs::ops::{Conflict, Op};
 use finder_fs::queue::{Event, JobId};
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 use native_gpui::tokens;
 use native_gpui::{Material, material, native_button, native_progress};
 
@@ -76,7 +76,15 @@ impl FinderDemo {
         let rows: Vec<AnyElement> = self
             .jobs
             .iter()
-            .map(|job| self.job_row(job, palette, cx))
+            .map(|job| {
+                let (demo, id) = (cx.entity(), job.id);
+                job_row(job, palette, move |cx| {
+                    demo.update(cx, |this, cx| {
+                        this.queue.cancel(id);
+                        cx.notify();
+                    })
+                })
+            })
             .collect();
         let paused = self.jobs.iter().any(|job| job.paused);
         div()
@@ -133,54 +141,6 @@ impl FinderDemo {
                                 )
                             }),
                     ),
-            )
-            .into_any_element()
-    }
-
-    fn job_row(&self, job: &JobRow, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let fraction = if job.total_bytes > 0 {
-            job.done_bytes as f64 / job.total_bytes as f64
-        } else {
-            0.
-        };
-        let caption = if job.total_bytes > 0 {
-            format!(
-                "{} of {} \u{2014} {}/s",
-                byte_string(job.done_bytes),
-                byte_string(job.total_bytes),
-                byte_string(job.bytes_per_sec as u64)
-            )
-        } else {
-            "Preparing\u{2026}".to_string()
-        };
-        let id = job.id;
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .text_size(px(11.))
-                    .child(SharedString::from(job.label.clone()))
-                    .child(
-                        div()
-                            .id(("ng.finder.jobs.cancel", id.raw()))
-                            .text_color(palette.secondary)
-                            .child("Cancel")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.queue.cancel(id);
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(native_progress(("ng.finder.jobs.bar", id.raw()), fraction))
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(palette.secondary)
-                    .child(SharedString::from(caption)),
             )
             .into_any_element()
     }
@@ -289,4 +249,55 @@ impl FinderDemo {
         }
         cx.notify();
     }
+}
+
+/// One operation's row: what it is doing, how far it has got, and a Cancel that `on_cancel` carries
+/// to whichever window owns it.
+pub(crate) fn job_row(
+    job: &JobRow,
+    palette: &Palette,
+    on_cancel: impl Fn(&mut App) + 'static,
+) -> AnyElement {
+    let fraction = if job.total_bytes > 0 {
+        job.done_bytes as f64 / job.total_bytes as f64
+    } else {
+        0.
+    };
+    let caption = if job.total_bytes > 0 {
+        format!(
+            "{} of {} \u{2014} {}/s",
+            byte_string(job.done_bytes),
+            byte_string(job.total_bytes),
+            byte_string(job.bytes_per_sec as u64)
+        )
+    } else {
+        "Preparing\u{2026}".to_string()
+    };
+    let id = job.id;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .text_size(px(11.))
+                .child(SharedString::from(job.label.clone()))
+                .child(
+                    div()
+                        .id(("ng.finder.jobs.cancel", id.raw()))
+                        .text_color(palette.secondary)
+                        .child("Cancel")
+                        .on_click(move |_, _, cx| on_cancel(cx)),
+                ),
+        )
+        .child(native_progress(("ng.finder.jobs.bar", id.raw()), fraction))
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(palette.secondary)
+                .child(SharedString::from(caption)),
+        )
+        .into_any_element()
 }
