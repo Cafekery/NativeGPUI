@@ -41,6 +41,7 @@ actions!(
         GetInfo,
         GetSummaryInfo,
         AddToSidebar,
+        GoAirDrop,
         GoApplications,
         GoComputer,
         GoDesktop,
@@ -302,6 +303,7 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
         MenuCommand::new("Library", GoLibrary).option_only(),
         MenuCommand::new("Computer", GoComputer).key("cmd-shift-c"),
+        MenuCommand::new("AirDrop", GoAirDrop).key("cmd-shift-r"),
         MenuCommand::new("Network", GoNetwork).key("cmd-shift-k"),
         MenuCommand::new("iCloud Drive", GoICloud).key("cmd-shift-i"),
         MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
@@ -529,6 +531,7 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &GoUtilities, window, cx| {
                 this.go_to(Path::new("/System/Applications/Utilities"), window, cx);
             }))
+            .on_action(cx.listener(|this, _: &GoAirDrop, _, _| this.airdrop_selection()))
             .on_action(cx.listener(|this, _: &GoICloud, window, cx| {
                 if let Some(drive) = finder_fs::icloud::drive() {
                     this.go_to(&drive, window, cx);

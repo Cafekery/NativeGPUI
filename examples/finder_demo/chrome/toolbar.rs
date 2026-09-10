@@ -160,6 +160,7 @@ impl FinderDemo {
         let this = cx.entity().downgrade();
         let nav = this.clone();
         let view = this.clone();
+        let airdrop = this.clone();
         let tag = this.clone();
         let query = this.clone();
         let jobs = this.clone();
@@ -191,7 +192,12 @@ impl FinderDemo {
                 }),
                 ToolbarItem::flexible_space(),
                 ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
-                    .tool_tip("Share the selected items using AirDrop"),
+                    .tool_tip("Share the selected items using AirDrop")
+                    .on_click(move |_, cx| {
+                        airdrop
+                            .update(cx, |this: &mut Self, _| this.airdrop_selection())
+                            .ok();
+                    }),
                 ToolbarItem::group(
                     VIEW_ID,
                     "View",
