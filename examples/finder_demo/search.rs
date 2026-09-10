@@ -11,6 +11,7 @@ use crate::listing::next_rev;
 use crate::{index, prefs};
 
 const HITS: usize = 200;
+const ALL_HITS: usize = 1_000_000;
 /// Stands where a `tag:` id would, for the one listing that is not a tag.
 pub(crate) const RECENTS: &str = "recents";
 
@@ -49,63 +50,73 @@ impl FinderDemo {
             scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
             _ => vec![PathBuf::from(self.here())],
         };
+        // The best few land at once and every match follows, as Finder's results fill in.
         cx.spawn(async move |this, cx| {
-            let query = wanted.clone();
-            let hits = cx
-                .background_executor()
-                .spawn(async move {
-                    if query.is_empty() {
-                        return Vec::new();
-                    }
-                    let index = index();
-                    let mut found = match everywhere {
-                        true => index.search(&query, None, HITS),
-                        false => under
+            for limit in [HITS, ALL_HITS] {
+                let query = wanted.clone();
+                let (under, criteria) = (under.clone(), criteria.clone());
+                let (hits, complete) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        if query.is_empty() {
+                            return (Vec::new(), true);
+                        }
+                        let index = index();
+                        let mut found = match everywhere {
+                            true => index.search(&query, None, limit),
+                            false => under
+                                .iter()
+                                .flat_map(|root| index.search(&query, Some(root), limit))
+                                .collect(),
+                        };
+                        let complete = found.len() < limit;
+                        found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
+                        let rows = found
                             .iter()
-                            .flat_map(|root| index.search(&query, Some(root), HITS))
-                            .collect(),
-                    };
-                    found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-                    found
-                        .iter()
-                        .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
-                        .filter(|row| criteria.iter().all(|it| it.holds(row)))
-                        .take(HITS)
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            let rev = next_rev();
-            let taken = this.update(cx, |this, _| {
-                (this.query.trim() == wanted).then(|| {
-                    (
-                        this.shape_filtered(&wanted, &hits, rev),
-                        this.folders.held(),
-                    )
-                })
-            });
-            let Ok(Some((shape, held))) = taken else {
-                return;
-            };
-            let filtered = cx
-                .background_executor()
-                .spawn(async move {
-                    let folders: HashMap<&'static str, Vec<Arc<Row>>> = held.into_iter().collect();
-                    let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
-                    (shape, walk)
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.query.trim() != wanted {
+                            .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
+                            .filter(|row| criteria.iter().all(|it| it.holds(row)))
+                            .take(limit)
+                            .collect::<Vec<_>>();
+                        (rows, complete)
+                    })
+                    .await;
+                let rev = next_rev();
+                let taken = this.update(cx, |this, _| {
+                    (this.query.trim() == wanted).then(|| {
+                        (
+                            this.shape_filtered(&wanted, &hits, rev),
+                            this.folders.held(),
+                        )
+                    })
+                });
+                let Ok(Some((shape, held))) = taken else {
                     return;
+                };
+                let filtered = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let folders: HashMap<&'static str, Vec<Arc<Row>>> =
+                            held.into_iter().collect();
+                        let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
+                        (shape, walk)
+                    })
+                    .await;
+                let shown = this.update(cx, |this, cx| {
+                    if this.query.trim() != wanted {
+                        return false;
+                    }
+                    let (shape, walk) = filtered;
+                    this.filtered = wanted.clone();
+                    this.hits = hits;
+                    this.hits_rev = rev;
+                    this.shaped(&shape, walk);
+                    cx.notify();
+                    true
+                });
+                if complete || !matches!(shown, Ok(true)) {
+                    break;
                 }
-                let (shape, walk) = filtered;
-                this.filtered = wanted;
-                this.hits = hits;
-                this.hits_rev = rev;
-                this.shaped(&shape, walk);
-                cx.notify();
-            })
-            .ok();
+            }
         })
         .detach();
     }
