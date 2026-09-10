@@ -30,21 +30,17 @@ pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: P
     )
 }
 
-/// Finder strokes two points of the row a contextual menu is open on.
 const RING_W: f32 = 2.;
-/// Over the selection's own fill the stroke turns white and steps a point in.
 const RING_INSET: f32 = 1.;
 
-/// `run` is `(joins above, joins below)`, so a block of selected rows is one ring; `inside` is
-/// whether it lands on the emphasized fill.
 pub(crate) fn menu_ring(
     colour: Hsla,
     pane_inset: f32,
     radius: f32,
     run: (bool, bool),
-    inside: bool,
+    on_selection: bool,
 ) -> Div {
-    let step = if inside { RING_INSET } else { 0. };
+    let step = if on_selection { RING_INSET } else { 0. };
     let (above, below) = run;
     div()
         .absolute()
@@ -63,7 +59,6 @@ pub(crate) fn menu_ring(
         })
 }
 
-/// `(extend, toggle, twice)`: Shift, Cmd and a double click.
 pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
     match event {
         ClickEvent::Mouse(mouse) => (
@@ -94,7 +89,6 @@ pub(crate) fn pick_on_click(
     }
 }
 
-/// A press picks an unchosen row before its drag starts; Shift and Command wait for the click.
 pub(crate) fn pick_on_press(
     line: &Line,
     this: WeakEntity<FinderDemo>,
@@ -157,7 +151,6 @@ pub(crate) fn key_to_parent(window: &Window) {
     }
 }
 
-/// `inset` is content above the rows.
 pub(crate) fn scroller(
     id: impl Into<ElementId>,
     handle: &ScrollHandle,

@@ -27,15 +27,15 @@ pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (None, "Tags"),
 ];
 
-pub(crate) const AIRDROP_ART: f32 = 18.;
-pub(crate) const AIRDROP_BOX: f64 = 21.;
-pub(crate) const GRID_W: f64 = 18.;
-pub(crate) const GRID_H: f64 = 17.5;
-pub(crate) const GRID_RULE_H: f64 = 1.5;
-pub(crate) const GRID_CELL: f64 = 5.;
-pub(crate) const GRID_GAP: f64 = 1.5;
-pub(crate) const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
-pub(crate) const GRID_BOX_W: f64 = 22.;
+const AIRDROP_ART: f32 = 18.;
+const AIRDROP_BOX: f64 = 21.;
+const GRID_W: f64 = 18.;
+const GRID_H: f64 = 17.5;
+const GRID_RULE_H: f64 = 1.5;
+const GRID_CELL: f64 = 5.;
+const GRID_GAP: f64 = 1.5;
+const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
+const GRID_BOX_W: f64 = 22.;
 
 pub(crate) const NAV_ID: &str = "ng.finder.nav";
 pub(crate) const AIRDROP_ID: &str = "ng.finder.airdrop";
@@ -47,15 +47,16 @@ pub(crate) const ACTION_ID: &str = "ng.finder.action";
 pub(crate) const SEARCH_ID: &str = "ng.finder.search";
 pub(crate) const JOBS_ID: &str = "ng.finder.jobs";
 
-pub(crate) const VIEW_LABELS: &[&str] = &["as Icons", "as List", "as Columns", "as Gallery"];
-pub(crate) const VIEW_SYMBOLS: &[&str] = &[
+const VIEW_LABELS: &[&str] = &["as Icons", "as List", "as Columns", "as Gallery"];
+const VIEW_SYMBOLS: &[&str] = &[
     "square.grid.2x2",
     "list.bullet",
     "rectangle.split.3x1",
     "squares.below.rectangle",
 ];
-pub(crate) const SEARCH_W: f32 = 240.;
-pub(crate) fn airdrop_glyph() -> Option<Retained<NSImage>> {
+const SEARCH_W: f32 = 240.;
+
+fn airdrop_glyph() -> Option<Retained<NSImage>> {
     let art = system_template("SidebarAirDrop", px(AIRDROP_ART))?;
     // `RcBlock`, never `StackBlock`: the image re-runs the handler on every appearance change.
     let handler = RcBlock::new(move |_: NSRect| -> Bool {
@@ -75,7 +76,7 @@ pub(crate) fn airdrop_glyph() -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-pub(crate) fn group_glyph() -> Retained<NSImage> {
+fn group_glyph() -> Retained<NSImage> {
     let handler = RcBlock::new(move |_: NSRect| -> Bool {
         let inset = (GRID_BOX_W - GRID_W) / 2.;
         NSColor::blackColor().setStroke();
@@ -272,7 +273,6 @@ impl FinderDemo {
         self.toolbar_for = (self.selected.rev(), self.cursor.clone());
     }
 
-    /// Finder's Action menu is its context menu for the selection, or for the folder without one.
     fn action_rows(&self) -> Menu {
         match self
             .cursor_line()
@@ -287,8 +287,8 @@ impl FinderDemo {
         self.toolbar = false;
     }
 
-    /// A pick in the toolbar's Group menu, which counts its separator: "None" is the row above it.
     fn group_by(&mut self, index: usize, cx: &mut Context<Self>) {
+        // Row 0 is "None", row 1 its separator.
         match index.checked_sub(2).map(|at| GROUPINGS.get(at)) {
             None => self.grouped = false,
             Some(Some((Some(column), _))) => {

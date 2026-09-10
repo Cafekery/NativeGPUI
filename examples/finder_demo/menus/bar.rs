@@ -105,8 +105,7 @@ actions!(
 );
 
 thread_local! {
-    /// A row is validated where the window it belongs to cannot be read, so the check marks follow
-    /// this.
+    /// Menu validation cannot read the window, so check marks follow this mirror.
     static STATE: Cell<(usize, Column, bool)> = const { Cell::new((LIST_VIEW, Column::Name, false)) };
 }
 
@@ -132,9 +131,6 @@ fn checked(action: &dyn Action) -> Option<bool> {
         .map(|(_, on)| on)
 }
 
-/// AppKit's own Cycle Through Windows is private, so this walks the Finder windows itself in the
-/// order they opened. The helper panels are windows too but never take a turn, and it answers from
-/// any window, a panel included.
 fn cycle_windows(_: &CycleWindows, cx: &mut App) {
     let windows: Vec<AnyWindowHandle> = cx
         .windows()
@@ -268,7 +264,7 @@ pub(crate) fn install(cx: &mut App) {
 }
 
 pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
-    let recent_rows: Vec<MenuCommand> = recents
+    let mut recent_rows: Vec<MenuCommand> = recents
         .iter()
         .take(5)
         .enumerate()
@@ -280,7 +276,6 @@ pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
             _ => MenuCommand::new(title.clone(), GoRecent4),
         })
         .collect();
-    let mut recent_rows = recent_rows;
     if !recent_rows.is_empty() {
         recent_rows.push(MenuCommand::separator());
     }
@@ -405,9 +400,8 @@ impl FinderDemo {
                 set_toolbar_search_active(window, SEARCH_ID, true);
                 this.run_search(cx);
             }))
-            .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
-                let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, None, false, cx));
+            .on_action(cx.listener(|this, _: &GetInfo, window, cx| {
+                this.run_menu(Act::GetInfo, window, cx);
             }))
             .on_action(cx.listener(|_, _: &GetSummaryInfo, _, cx| {
                 let demo = cx.entity();
@@ -464,9 +458,8 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &SortBySize, window, cx| {
                 this.run_menu(Act::Sort(Column::Size), window, cx);
             }))
-            .on_action(cx.listener(|_, _: &ShowViewOptions, _, cx| {
-                let demo = cx.entity();
-                cx.defer(move |cx| crate::options::open(&demo, cx));
+            .on_action(cx.listener(|this, _: &ShowViewOptions, window, cx| {
+                this.run_menu(Act::ViewOptions, window, cx);
             }))
             .on_action(cx.listener(|this, _: &UseGroups, _, cx| {
                 this.grouped = !this.grouped;
@@ -576,12 +569,7 @@ impl FinderDemo {
                 this.slideshow(window, cx);
             }))
             .on_action(cx.listener(|this, _: &Print, _, _| {
-                let files: Vec<std::path::PathBuf> = this
-                    .chosen_keys()
-                    .iter()
-                    .map(|key| std::path::PathBuf::from(key.as_ref()))
-                    .collect();
-                if let Err(error) = crate::openwith::print(&files) {
+                if let Err(error) = crate::openwith::print(&this.paths()) {
                     this.complain(&error);
                 }
             }))

@@ -15,7 +15,6 @@ use super::row::{Column, Row};
 
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 
-/// Seconds as `NSDate` counts them, from 2001; signed both ways, so a pre-1970 file keeps its date.
 pub(super) fn reference_seconds(at: SystemTime) -> f64 {
     match at.duration_since(UNIX_EPOCH) {
         Ok(since) => since.as_secs_f64() - UNIX_TO_REFERENCE,
@@ -83,7 +82,6 @@ pub(crate) fn stamp(seconds: f64) -> SharedString {
     })
 }
 
-/// The band Finder files a row under while Use Groups is on.
 pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {
     match sort {
         Column::Name => match row.name.chars().next() {

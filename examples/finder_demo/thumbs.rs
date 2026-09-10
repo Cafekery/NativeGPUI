@@ -93,8 +93,7 @@ pub(crate) fn collect_thumbnails() -> bool {
     any
 }
 
-/// An empty delivery is a cancelled generation as often as a file with no picture, so ask again,
-/// backing off.
+/// An empty delivery is often a cancelled generation, so ask again, backing off.
 fn retry(key: &Thumb) {
     let tries = RETRY.with(|retry| {
         let mut retry = retry.borrow_mut();

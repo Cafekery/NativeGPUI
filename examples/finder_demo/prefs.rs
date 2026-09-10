@@ -17,7 +17,7 @@ const ICON: &str = "ng.finder.icon";
 const LIST_ICON: &str = "ng.finder.list.icon";
 const STRIP_ICON: &str = "ng.finder.strip.icon";
 
-fn defaults() -> objc2::rc::Retained<NSUserDefaults> {
+fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
 }
 
@@ -32,7 +32,6 @@ fn write(key: &str, value: f64) {
     defaults().setDouble_forKey(value, &NSString::from_str(key));
 }
 
-/// Read whole from the demo's store: user defaults would follow the Mac's home, not the demo's.
 fn sidebar_file() -> HashMap<String, Vec<String>> {
     let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
     let Some(data) = NSData::dataWithContentsOfFile(&path) else {

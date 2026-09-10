@@ -154,8 +154,7 @@ impl Render for FinderDemo {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
-                                // The sidebar is an NSView: this takes first responder back to the
-                                // GPUI view so bare keys reach on_key.
+                                // The sidebar is an NSView; bare keys only reach on_key from GPUI's.
                                 native_gpui::focus_gpui(window);
                                 window.focus(&this.focus, cx);
                             }),
@@ -262,8 +261,6 @@ impl FinderDemo {
             headers,
             path_bar,
         } = column;
-        // The scope and criteria bars share the hosted band with the toolbar, so they grow the
-        // top inset.
         let scope_h = if self.in_search() {
             self.search_bars_h()
         } else {

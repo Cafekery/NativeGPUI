@@ -15,7 +15,6 @@ const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
 const COMBINE_OVER: usize = 3;
 
-/// Inset under the title bar AppKit draws over it.
 fn body() -> Div {
     div()
         .size_full()
@@ -174,8 +173,6 @@ impl Render for Info {
     }
 }
 
-/// One window per chosen item, cascaded down the screen; `at` opens on a folder instead, and
-/// `summary` puts any selection in one window, as Get Summary Info does.
 pub(crate) fn open(
     demo: &Entity<crate::app::FinderDemo>,
     at: Option<&'static str>,

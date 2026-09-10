@@ -11,11 +11,8 @@ thread_local! {
     static WANTED: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
 }
 
-/// Whether the folder wears an icon of its own. The answer is a `getxattr` against a path the
-/// kernel has usually never resolved, which costs milliseconds, so a row draws the plain folder
-/// until the answer lands.
 pub(crate) fn custom_icon(path: &SharedString) -> bool {
-    if let Some(&found) = SEEN.with(|seen| seen.borrow().get(path).copied()).as_ref() {
+    if let Some(found) = SEEN.with(|seen| seen.borrow().get(path).copied()) {
         return found;
     }
     WANTED.with(|wanted| wanted.borrow_mut().insert(path.clone()));

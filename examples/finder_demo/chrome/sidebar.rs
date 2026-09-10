@@ -63,8 +63,6 @@ fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
     Some(row(id, title, glyph_of(&path)))
 }
 
-/// The glyph Finder gives a folder it knows by name; every other folder gets a plain one, a custom
-/// icon included.
 fn glyph_of(path: &Path) -> Glyph {
     use finder_fs::volumes::Standard::*;
     let standard = [
@@ -97,7 +95,6 @@ fn glyph_of(path: &Path) -> Glyph {
     }
 }
 
-/// Finder names an app and a smart folder without their extensions; every other name keeps it.
 fn pinned_title(path: &Path) -> String {
     let name = path
         .file_name()
@@ -111,8 +108,6 @@ fn pinned_title(path: &Path) -> String {
     }
 }
 
-/// Finder gives a pinned app the Applications artwork rather than its own icon, a smart folder its
-/// gear folder, and any other package the square it gives a kind it has no drawing for.
 fn pinned_glyph(path: &Path) -> Glyph {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match name.rsplit_once('.') {
@@ -192,7 +187,6 @@ fn shown(list: &finder_fs::sidebar::Locations, volume: &finder_fs::volumes::Volu
     }
 }
 
-/// Finder's Locations: the rows of its volume list that are here now, Trash last as Finder has it.
 fn locations() -> Vec<Row> {
     use finder_fs::sidebar::Special;
 
@@ -301,7 +295,6 @@ pub(crate) fn groups() -> Vec<Group> {
     groups
 }
 
-/// A row the user dragged in: the only row of a Mac's sidebar Finder lets you rename.
 pub(crate) fn pinned(id: &str) -> bool {
     [FAVOURITES, LOCATIONS]
         .iter()
@@ -485,8 +478,7 @@ impl FinderDemo {
         self.store_rows(group);
     }
 
-    /// Finder's drop on a tag row: the files keep the tags they had and gain this one.
-    fn tag_dropped(&mut self, tag: &str, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+    fn tag_dropped(&mut self, tag: &str, paths: &[PathBuf], cx: &mut Context<Self>) {
         let Some(tag) = crate::tags::all().iter().find(|it| it.name == tag) else {
             return;
         };
@@ -558,13 +550,12 @@ impl FinderDemo {
         }
     }
 
-    /// Finder's ⌃⌘T: the chosen folders join Favorites, where a drop onto it would put them.
     pub(crate) fn add_to_sidebar(&mut self) {
         let paths = self.paths();
         self.pin_favourite(paths);
     }
 
-    pub(crate) fn pin_favourite(&mut self, paths: Vec<std::path::PathBuf>) {
+    pub(crate) fn pin_favourite(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
@@ -586,7 +577,6 @@ impl FinderDemo {
     }
 
     pub(crate) fn eject(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let path = std::path::PathBuf::from(id);
         let url =
             objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(id));
         if let Err(error) =
@@ -595,7 +585,7 @@ impl FinderDemo {
             self.complain(&error.localizedDescription().to_string());
             return;
         }
-        let left = volume_roots().contains(&intern_path(&path));
+        let left = volume_roots().contains(&intern(id));
         self.refresh_sidebar();
         if left && self.here().starts_with(id) {
             if let Some(home) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home) {

@@ -18,8 +18,6 @@ thread_local! {
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-/// Finder's column list for a local folder, in its order; a `None` shows the way Finder shows a
-/// column it cannot fill.
 const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Date Modified", Some(Column::Modified)),
     ("Date Created", None),
@@ -69,7 +67,6 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     menu
 }
 
-/// A right-click on a row: Finder names the row, or counts the selection when the row is in it.
 pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let chosen = selected.len();
     let many = chosen > 1 && selected.contains(&line.key);
@@ -127,27 +124,14 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
     menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
-    menu.item(
-        MenuEntry::item(match many {
-            true => format!("Cut {chosen} Items"),
-            false => "Cut".to_string(),
-        }),
-        Act::Cut,
-    );
-    menu.item(
-        MenuEntry::item(match many {
-            true => format!("Copy {chosen} Items"),
-            false => "Copy".to_string(),
-        }),
-        Act::Copy,
-    );
+    menu.item(MenuEntry::item(counted("Cut", many, chosen)), Act::Cut);
+    menu.item(MenuEntry::item(counted("Copy", many, chosen)), Act::Copy);
     if can_paste() {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
     }
     menu.separator();
     menu.item(MenuEntry::item("Share…"), Act::Share);
     menu.separator();
-    // Finder names each dot for what picking it does: Remove once every chosen item carries it.
     let chosen_tags: Vec<Vec<usize>> = match selected.contains(&line.key) {
         true => selected
             .iter()
@@ -173,7 +157,6 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu
 }
 
-/// A right-click on a path-bar crumb: everything acts on that folder, not on the selection.
 pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(id));
@@ -192,7 +175,6 @@ pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
     menu
 }
 
-/// Finder's menu for the kind of place the row names, and nothing at all on a group header.
 pub(crate) fn sidebar(id: &SharedString) -> Menu {
     match id.strip_prefix("tag:") {
         Some(name) => tag_row(id, name),
@@ -201,7 +183,6 @@ pub(crate) fn sidebar(id: &SharedString) -> Menu {
     }
 }
 
-/// Finder's menu on a tag row; the "All Tags…" row carries nothing but the first line.
 fn tag_row(id: &SharedString, name: &str) -> Menu {
     let mut menu = Menu::default();
     let at = intern(id);
@@ -296,8 +277,6 @@ fn place_row(id: &SharedString) -> Menu {
     menu
 }
 
-/// The Trash, iCloud Drive and Network are places Finder offers neither an enclosing folder nor a
-/// Dock tile for.
 fn holds(path: &Path) -> bool {
     !(volumes::standard(volumes::Standard::Trash).is_some_and(|trash| trash == path)
         || crate::home().join("Library/Mobile Documents/com~apple~CloudDocs") == path
@@ -322,6 +301,13 @@ fn plural(title: &str, many: bool) -> String {
     match many {
         true => format!("{title}s"),
         false => title.to_string(),
+    }
+}
+
+fn counted(verb: &str, many: bool, chosen: usize) -> String {
+    match many {
+        true => format!("{verb} {chosen} Items"),
+        false => verb.to_string(),
     }
 }
 

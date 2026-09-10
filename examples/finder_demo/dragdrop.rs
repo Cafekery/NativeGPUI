@@ -14,17 +14,14 @@ use crate::ops::After;
 use crate::view::COLUMN_VIEW;
 use crate::views::list::TWIST_W;
 
-/// The delay Finder treats as none at all: below it a hold waits a flash longer, not shorter.
 const SPRING_FLOOR: f32 = 0.2;
 const SPRING_NONE: f32 = 0.15;
 
-/// A held folder flashes before it springs: the row goes dark, plain, dark, and then it opens.
 const FLASH: Duration = Duration::from_millis(100);
 const FLASHES: u32 = 3;
 
 const FLASH_DIM: f32 = 0.83;
 
-/// The row the pointer grabbed, standing for the whole selection.
 #[derive(Clone)]
 pub(crate) struct RowDrag {
     pub(crate) key: SharedString,
@@ -40,7 +37,6 @@ impl Grabbed for RowDrag {
     }
 }
 
-/// Finder drops nothing onto itself, nor into anything it is carrying.
 pub(crate) fn carries<D: Grabbed>(
     selected: &HashSet<SharedString>,
     grab: &D,
@@ -66,8 +62,6 @@ pub(crate) fn flashed(fill: Hsla) -> Hsla {
     }
 }
 
-/// `band` is the strip Finder treats as the row; a hold over the disclosure triangle discloses in
-/// place instead of opening.
 pub(crate) fn drop_hover<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
@@ -121,7 +115,6 @@ pub(crate) fn drop_lands<D: Grabbed>(
                     return;
                 }
                 let grabbed = grab.key().clone();
-                // Finder copies instead of moving while Option is held.
                 let copy = window.modifiers().alt;
                 this.update(cx, |demo: &mut FinderDemo, cx| {
                     if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
@@ -161,7 +154,6 @@ pub(crate) struct Spring {
     into: &'static str,
     twist: bool,
     since: Instant,
-    /// Set by Space, which springs whatever the springing delay is, and even where it is off.
     forced: bool,
     spent: bool,
 }
@@ -181,7 +173,6 @@ impl Spring {
     }
 }
 
-/// macOS's springing preference, read once; `None` where the user turned springing off.
 fn springing_delay() -> Option<Duration> {
     static DELAY: OnceLock<Option<Duration>> = OnceLock::new();
     *DELAY.get_or_init(|| {
@@ -218,7 +209,6 @@ impl Render for DragGhost {
 }
 
 impl FinderDemo {
-    /// Finder's spring-loading: a folder held under a drag flashes twice, then opens on its own.
     pub(crate) fn hover_folder(
         &mut self,
         key: &SharedString,
@@ -257,7 +247,7 @@ impl FinderDemo {
         if self.spring.is_some() && !cx.has_active_drag() {
             self.spring = None;
         }
-        let Some(spring) = &self.spring else {
+        let Some(spring) = &mut self.spring else {
             return;
         };
         if spring.delay().is_none() {
@@ -267,9 +257,6 @@ impl FinderDemo {
             window.request_animation_frame();
             return;
         }
-        let Some(spring) = &mut self.spring else {
-            return;
-        };
         spring.spent = true;
         let (key, into, twist) = (spring.key.clone(), spring.into, spring.twist);
         match twist {
@@ -299,7 +286,6 @@ impl FinderDemo {
         (spring.flash()? % 2 == 0).then_some(&spring.key)
     }
 
-    /// Finder's Space: the folder under the drag springs at once.
     pub(crate) fn spring_now(&mut self, cx: &mut Context<Self>) {
         if let Some(spring) = &mut self.spring {
             spring.since = Instant::now();
@@ -317,7 +303,6 @@ impl FinderDemo {
         true
     }
 
-    /// A row drag reaching the sidebar becomes an AppKit file drag: the sidebar is an NSView.
     pub(crate) fn drag_to_sidebar(
         &mut self,
         event: &DragMoveEvent<RowDrag>,

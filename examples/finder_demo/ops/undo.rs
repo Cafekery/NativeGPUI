@@ -32,7 +32,6 @@ struct SinkIvars {
 }
 
 define_class!(
-    /// Nothing else in the responder chain answers the Edit menu's stock Undo/Redo rows.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGUndoRedoSink"]
@@ -84,10 +83,10 @@ thread_local! {
     static STATE: Cell<(bool, bool)> = const { Cell::new((false, false)) };
     static ITEMS: RefCell<Option<(Retained<NSMenuItem>, Retained<NSMenuItem>)>> =
         const { RefCell::new(None) };
+    static SINK: RefCell<Option<Retained<UndoRedoSink>>> = const { RefCell::new(None) };
 }
 
-/// Call right after `install_menus`: a second call is a no-op, the rows no longer carrying the
-/// titles it searches for.
+/// Call right after `install_menus`, while the Edit menu still has its stock Undo and Redo rows.
 pub(crate) fn install_undo_redo(cx: &mut App) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -112,10 +111,6 @@ pub(crate) fn install_undo_redo(cx: &mut App) {
     }
     SINK.with(|shared| *shared.borrow_mut() = Some(sink));
     ITEMS.with(|shared| *shared.borrow_mut() = Some((undo_item, redo_item)));
-}
-
-thread_local! {
-    static SINK: RefCell<Option<Retained<UndoRedoSink>>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn refresh_edit_menu(journal: &Journal) {
@@ -155,7 +150,6 @@ impl FinderDemo {
         self.submit(undoable.redo, Conflict::Replace, After::Select, false, cx);
     }
 
-    /// ⌘Z / ⇧⌘Z's actions are fired by the Edit menu's retargeted rows.
     pub(crate) fn wire_undo_redo(&self, element: Div, cx: &mut Context<Self>) -> Div {
         element
             .on_action(cx.listener(|this, _: &UndoOp, _, cx| this.perform_undo(cx)))

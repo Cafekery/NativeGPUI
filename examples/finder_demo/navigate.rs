@@ -22,8 +22,6 @@ pub(crate) fn typed_path(text: &str) -> PathBuf {
     })
 }
 
-/// The folder that shows `id`, and the key `id` is chosen by in it. The boot volume sits in no
-/// folder: Finder reveals it among the volumes, the listing /Volumes is.
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
     match Path::new(id).parent() {
         Some(parent) => Some((intern_path(parent), SharedString::from(id))),
@@ -45,7 +43,6 @@ impl FinderDemo {
         self.folders.get(self.here())
     }
 
-    /// The folder an operation lands in: where the cursor points, else the folder on screen.
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
         let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
@@ -76,8 +73,6 @@ impl FinderDemo {
         self.target().to_string()
     }
 
-    /// A search takes the title over the way Finder's does, naming what it is scoped to rather than
-    /// the folder the window still stands in.
     pub(crate) fn title(&self) -> String {
         if self.in_search() {
             return format!("Searching \u{201c}{}\u{201d}", self.scope_name());
@@ -133,7 +128,6 @@ impl FinderDemo {
         self.arrive(window, cx);
     }
 
-    /// Finder's Show in Enclosing Folder: the parent folder, with the crumb chosen in it.
     pub(crate) fn show_enclosing(
         &mut self,
         id: &'static str,
@@ -147,7 +141,6 @@ impl FinderDemo {
         self.choose_revealed(key);
     }
 
-    /// Finder's Enclosing Folder in New Window: the same, in a window of its own.
     pub(crate) fn enclosing_in_new_window(&self, cx: &mut Context<Self>) {
         let Some((parent, key)) = enclosing(self.here()) else {
             return;
@@ -166,8 +159,6 @@ impl FinderDemo {
         self.reveal_next = Some(key);
     }
 
-    /// Finder drops the listing of a folder deleted under the window and shows the nearest folder
-    /// above it that is still there.
     pub(crate) fn folder_gone(&mut self, id: &'static str, cx: &mut Context<Self>) {
         cx.notify();
         let inside = |path: &str| {
@@ -262,28 +253,24 @@ impl FinderDemo {
         if self.view == COLUMN_VIEW {
             return;
         }
-        let chosen: Vec<crate::data::Line> = self
+        let chosen: Vec<Line> = self
             .lines(self.view == LIST_VIEW)
             .iter()
             .filter(|line| self.selected.contains(&line.key))
             .cloned()
             .collect();
-        // Finder opens what iCloud has evicted by asking for it back.
         for line in chosen.iter().filter(|line| line.row.dataless) {
             let _ = finder_fs::icloud::download(Path::new(line.key.as_ref()));
         }
         let folders: Vec<&'static str> = chosen.iter().filter_map(|line| line.row.opens).collect();
-        if folders.is_empty() {
+        let Some((first, rest)) = folders.split_first() else {
             if let Some(saved) = chosen.iter().find(|line| crate::smart::is_saved(&line.key)) {
                 self.go(intern(&saved.key), window, cx);
             }
             return;
-        }
-        let mut folders = folders.into_iter();
-        if let Some(first) = folders.next() {
-            self.go(first, window, cx);
-        }
-        for (extra, id) in folders.enumerate() {
+        };
+        self.go(first, window, cx);
+        for (extra, id) in rest.iter().enumerate() {
             open_finder_window(id, extra + 1, cx);
         }
     }

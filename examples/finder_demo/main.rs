@@ -52,9 +52,8 @@ use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
 const SAVE_EVERY: Duration = Duration::from_secs(180);
 
-/// How many of the disk's extensions to have Spotlight name at launch.
 const KINDS_WARM: usize = 400;
-/// What a quit can spend on a save already under way; gpui gives shutdown handlers about 200 ms.
+/// gpui gives shutdown handlers about 200 ms.
 const QUIT_WAIT: Duration = Duration::from_millis(150);
 
 fn main() {
@@ -76,7 +75,7 @@ fn main() {
             KeyBinding::new("cmd-shift-=", ZoomIn, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
         ]);
-        // The preview pane is a child window; the app ends with the Finder window, not the pane.
+        // Helper windows such as the preview pane do not keep the app alive.
         cx.on_window_closed(|cx, _| {
             if !cx
                 .windows()
@@ -100,8 +99,6 @@ fn main() {
         warm.spawn(async {
             let table = store().join("kinds.tsv");
             finder_fs::kind::load_kinds(&table);
-            // A kind's label comes from Spotlight, one round trip per extension against a file
-            // that exists, so the ones this disk actually holds are warmed once and kept.
             for path in index().extensions(KINDS_WARM) {
                 finder_fs::kind::kind_of_path(&path);
             }
@@ -134,7 +131,6 @@ pub(crate) fn index() -> &'static Arc<Index> {
     INDEX.get_or_init(|| Index::open(&store().join("index.bin")))
 }
 
-/// The index catches up from the FSEvents log rather than walking again, and saves as it goes.
 fn crawl(cx: &mut App) {
     let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
     roots.extend(
@@ -144,7 +140,6 @@ fn crawl(cx: &mut App) {
             .filter(|path| path != Path::new("/")),
     );
     let executor = cx.background_executor().clone();
-    // `NG_NO_CRAWL=1` keeps the index idle, to tell the crawl's disk walk apart from the view's.
     if env::var_os("NG_NO_CRAWL").is_none() {
         static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
         FOLLOWING.get_or_init(|| index().follow(roots.clone()));
@@ -152,8 +147,7 @@ fn crawl(cx: &mut App) {
             .spawn(async move { index().sync(roots, |_| {}) })
             .detach();
     }
-    // TCC-gated folders are left out of the walk: Desktop, Documents and Downloads join once a
-    // visit has listed them, the media homes never, since their service asks again every launch.
+    // TCC-gated folders join the crawl only once a visit has listed them, so no prompt is raised.
     let launched = std::time::SystemTime::now();
     let follow = cx.background_executor().clone();
     cx.background_executor()

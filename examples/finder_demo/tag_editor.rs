@@ -17,14 +17,13 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSPoint, NSRange, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
-use crate::tags::{all, row_tags, tag_ns_color};
+use crate::tags::{all, tag_ns_color};
 
 const WIDTH: f64 = 252.;
 const ROW: f64 = 22.;
 const ROWS: usize = 12;
 const HEAD: f64 = 74.;
 
-/// The open editor: what it edits, and the tags those items shared when it last wrote them.
 pub(crate) struct TagEditor {
     popover: NativePopover,
     field: Retained<NSTokenField>,
@@ -88,7 +87,6 @@ fn tag_named(name: &str) -> Tag {
 }
 
 impl FinderDemo {
-    /// Finder's tag editor: the tags every chosen item shares as tokens, and the known tags below.
     pub(crate) fn edit_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tag_editor.is_some() {
             self.commit_tags(cx);
@@ -97,11 +95,7 @@ impl FinderDemo {
             }
             return;
         }
-        let paths: Vec<PathBuf> = self
-            .chosen_keys()
-            .iter()
-            .map(|key| PathBuf::from(key.as_ref()))
-            .collect();
+        let paths = self.paths();
         let Some(first) = paths.first() else {
             return;
         };
@@ -191,7 +185,6 @@ impl FinderDemo {
         let (Some(popover), Some(field)) = (popover, built.take()) else {
             return;
         };
-        // Finder's editor opens ready to type after the tags already there, not over them.
         if let Some(window) = field.window() {
             window.makeFirstResponder(Some(&field));
             if let Some(editor) = field.currentEditor() {
@@ -216,8 +209,7 @@ impl FinderDemo {
         });
     }
 
-    /// Writes what the field changed since the last write: a tag the edit never touched stays on
-    /// every item that carries it.
+    /// Writes only the change since the last write, so a tag not every item shares stays put.
     fn commit_tags(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = &self.tag_editor else {
             return;
@@ -237,29 +229,12 @@ impl FinderDemo {
             return;
         }
         let paths = editor.paths.clone();
-        cx.spawn(async move |this, cx| {
-            let carried = cx
-                .background_executor()
-                .spawn(async move {
-                    finder_fs::tags::apply(&paths, &add, &remove).ok();
-                    paths
-                        .iter()
-                        .map(|path| {
-                            let key = path.to_string_lossy().into_owned();
-                            let tags = row_tags(&key);
-                            (key, tags)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                for (key, tags) in carried {
-                    this.tags.insert(key.into(), tags);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.retag(
+            paths,
+            move |paths| {
+                finder_fs::tags::apply(paths, &add, &remove).ok();
+            },
+            cx,
+        );
     }
 }

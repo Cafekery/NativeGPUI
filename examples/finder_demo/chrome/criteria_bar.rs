@@ -18,7 +18,6 @@ const OTHER_W: f32 = 127.;
 const FIELDS: [&str; 2] = ["Kind", "Name"];
 const TESTS: [&str; 4] = ["contains", "begins with", "ends with", "is"];
 
-/// One row of Finder's search criteria: what to test, and what it has to be.
 #[derive(Clone, Default)]
 pub(crate) struct Criterion {
     pub(crate) field: usize,
@@ -28,7 +27,6 @@ pub(crate) struct Criterion {
 }
 
 impl Criterion {
-    /// The row Finder's Find by Name opens with: the name, containing what is typed.
     pub(crate) fn name() -> Self {
         Self {
             field: 1,
@@ -37,23 +35,19 @@ impl Criterion {
     }
 
     pub(crate) fn holds(&self, row: &Row) -> bool {
-        match FIELDS[self.field.min(FIELDS.len() - 1)] {
-            "Name" => {
-                let name = row.name.to_lowercase();
-                let wanted = self.text.to_lowercase();
-                match TESTS[self.test.min(TESTS.len() - 1)] {
-                    "begins with" => name.starts_with(&wanted),
-                    "ends with" => name.ends_with(&wanted),
-                    "is" => name == wanted,
-                    _ => name.contains(&wanted),
-                }
-            }
-            // Finder's kinds overlap, so this asks what the type conforms to rather than sorting
-            // each file into one of them.
-            _ => match self.kind {
+        if !self.names() {
+            return match self.kind {
                 Category::Other => row.kind.to_lowercase().contains(&self.text.to_lowercase()),
                 kind => finder_fs::kind::conforms(&row.uti, kind),
-            },
+            };
+        }
+        let name = row.name.to_lowercase();
+        let wanted = self.text.to_lowercase();
+        match TESTS[self.test.min(TESTS.len() - 1)] {
+            "begins with" => name.starts_with(&wanted),
+            "ends with" => name.ends_with(&wanted),
+            "is" => name == wanted,
+            _ => name.contains(&wanted),
         }
     }
 
@@ -61,7 +55,6 @@ impl Criterion {
         FIELDS[self.field.min(FIELDS.len() - 1)] == "Name"
     }
 
-    /// The row as Finder's Spotlight clause, or none when it narrows nothing.
     pub(crate) fn raw_query(&self) -> Option<String> {
         if self.names() {
             let (before, after) = match TESTS[self.test.min(TESTS.len() - 1)] {
@@ -133,7 +126,9 @@ impl FinderDemo {
                     .on_change(move |index, _, cx| {
                         let index = *index;
                         field
-                            .update(cx, |this, cx| this.set_criterion_field(row, index, cx))
+                            .update(cx, |this, cx| {
+                                this.edit_criterion(row, cx, |it| it.field = index)
+                            })
                             .ok();
                     }),
             )
@@ -151,8 +146,10 @@ impl FinderDemo {
                         .control_size(ControlSize::Small)
                         .on_change(move |index, _, cx| {
                             let index = *index;
-                            test.update(cx, |this, cx| this.set_criterion_test(row, index, cx))
-                                .ok();
+                            test.update(cx, |this, cx| {
+                                this.edit_criterion(row, cx, |it| it.test = index)
+                            })
+                            .ok();
                         }),
                 )
             }))
@@ -163,8 +160,10 @@ impl FinderDemo {
                         .control_size(ControlSize::Small)
                         .on_change(move |index, _, cx| {
                             let kind = Category::ALL[(*index).min(Category::ALL.len() - 1)];
-                            pick.update(cx, |this, cx| this.set_criterion(row, kind, cx))
-                                .ok();
+                            pick.update(cx, |this, cx| {
+                                this.edit_criterion(row, cx, |it| it.kind = kind)
+                            })
+                            .ok();
                         }),
                 )
             }))
@@ -174,8 +173,10 @@ impl FinderDemo {
                         .control_size(ControlSize::Small)
                         .on_change(move |text: &String, _, cx| {
                             let text = text.clone();
-                            edit.update(cx, |this, cx| this.set_criterion_text(row, text, cx))
-                                .ok();
+                            edit.update(cx, |this, cx| {
+                                this.edit_criterion(row, cx, |it| it.text = text)
+                            })
+                            .ok();
                         }),
                 )
             }))
@@ -206,30 +207,14 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    fn set_criterion_field(&mut self, row: usize, field: usize, cx: &mut Context<Self>) {
+    fn edit_criterion(
+        &mut self,
+        row: usize,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Criterion),
+    ) {
         if let Some(criterion) = self.criteria.get_mut(row) {
-            criterion.field = field;
-        }
-        self.run_search(cx);
-    }
-
-    fn set_criterion_test(&mut self, row: usize, test: usize, cx: &mut Context<Self>) {
-        if let Some(criterion) = self.criteria.get_mut(row) {
-            criterion.test = test;
-        }
-        self.run_search(cx);
-    }
-
-    fn set_criterion(&mut self, row: usize, kind: Category, cx: &mut Context<Self>) {
-        if let Some(criterion) = self.criteria.get_mut(row) {
-            criterion.kind = kind;
-        }
-        self.run_search(cx);
-    }
-
-    fn set_criterion_text(&mut self, row: usize, text: String, cx: &mut Context<Self>) {
-        if let Some(criterion) = self.criteria.get_mut(row) {
-            criterion.text = text;
+            edit(criterion);
         }
         self.run_search(cx);
     }

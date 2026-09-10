@@ -50,7 +50,6 @@ fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElemen
         .unwrap_or_else(|| glyph(face, size))
 }
 
-/// Quick Look's icon mode bakes the keyline, corner radius and shadow into the raster.
 fn picture(image: Arc<RenderImage>, size: f32) -> AnyElement {
     square(size)
         .child(
@@ -100,7 +99,6 @@ fn poster(
         u32::from(fit.width) as f32 / scale,
         u32::from(fit.height) as f32 / scale,
     );
-    // The raster may have been drawn for another width: it wears this box's fit, not its own.
     let zoom = (width / w.max(1.)).min(height / h.max(1.));
     slot(width, height)
         .child(
@@ -114,7 +112,6 @@ fn poster(
         .into_any_element()
 }
 
-/// Where an icon landed on screen, for the Quick Look panel to zoom out of and back into.
 pub(crate) type Anchor = native_gpui::SurfaceAnchor;
 
 pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyElement {
@@ -135,7 +132,6 @@ pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// A folder that wears an icon of its own draws that instead, once the check has come back.
 fn kind_of(row: &Row) -> Option<FileType<'static>> {
     match row.artwork {
         Some(FileType::Folder | FileType::FullFolder) if crate::custom::custom_icon(&row.path) => {

@@ -18,15 +18,13 @@ thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Clipboard>>> = const { RefCell::new(None) };
 }
 
-/// Finder's Edit ▸ Show Clipboard: one window, brought forward when it is already open.
 pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
-    if let Some(open) = OPEN.with_borrow(|open| *open) {
-        if open
-            .update(cx, |_, window, _| window.activate_window())
+    let raised = OPEN.with_borrow(|open| *open).is_some_and(|open| {
+        open.update(cx, |_, window, _| window.activate_window())
             .is_ok()
-        {
-            return;
-        }
+    });
+    if raised {
+        return;
     }
     let opened = cx.open_window(
         WindowOptions {
@@ -52,8 +50,6 @@ pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
 
 struct Clipboard;
 
-/// Read on every render, and it renders again whenever the window comes forward, so it says what
-/// the clipboard holds when it is looked at.
 impl Render for Clipboard {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let files = read_pasteboard();

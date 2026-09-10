@@ -14,14 +14,11 @@ const TAG_DOTS_MAX: usize = 3;
 const TAG_LIGHTEN: f32 = 0.2;
 const TAG_PILL_ALPHA: f32 = 0.85;
 
-/// The tags Finder's own tag menus offer, read once from Finder's preferences.
 pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
     static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
     TAGS.get_or_init(finder_fs::tags::favorites)
 }
 
-/// Reading every tag runs a query against Finder's key value store, so it is read once and warmed
-/// off the main thread.
 pub(crate) fn all() -> &'static [finder_fs::tags::Tag] {
     static ALL: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
     ALL.get_or_init(finder_fs::tags::all)
@@ -48,7 +45,6 @@ pub(crate) fn finder_edge(color: u8) -> Hsla {
     tag_system_color(color).map_or(gpui::white(), system_color)
 }
 
-/// Finder's dot fill: its system colour lifted toward white on the display's own primaries.
 pub(crate) fn finder_color(color: u8) -> Hsla {
     let Some(system) = tag_system_color(color) else {
         return gpui::white();
@@ -118,7 +114,6 @@ pub(crate) fn tag_dots_w(count: usize) -> f32 {
     }
 }
 
-/// Finder stacks the newest tag leftmost and over the ones before it, three dots at most.
 pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
     let shown = &tags[tags.len().saturating_sub(TAG_DOTS_MAX)..];
     if shown.is_empty() {
@@ -170,11 +165,26 @@ impl FinderDemo {
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();
         let wanted = finder_tag(tag);
+        self.retag(
+            paths,
+            move |paths| {
+                finder_fs::tags::toggle(paths, &wanted).ok();
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn retag(
+        &self,
+        paths: Vec<PathBuf>,
+        write: impl FnOnce(&[PathBuf]) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             let carried = cx
                 .background_executor()
                 .spawn(async move {
-                    finder_fs::tags::toggle(&paths, &wanted).ok();
+                    write(&paths);
                     paths
                         .iter()
                         .map(|path| {

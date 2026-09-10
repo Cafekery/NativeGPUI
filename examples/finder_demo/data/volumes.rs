@@ -20,7 +20,7 @@ fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
     SEEN.get_or_init(Default::default)
 }
 
-/// Enumerating the mounted volumes costs milliseconds, so no frame may call this.
+/// Blocks for milliseconds: never call it from a frame.
 pub(crate) fn refresh_volumes() {
     let mounted = volumes::mounted()
         .iter()
@@ -109,7 +109,6 @@ pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
         })
 }
 
-/// The folders Finder draws with their own artwork.
 pub(super) fn special() -> &'static HashSet<String> {
     static PLACES: OnceLock<HashSet<String>> = OnceLock::new();
     PLACES.get_or_init(|| {

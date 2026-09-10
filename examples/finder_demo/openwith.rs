@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use objc2::rc::Retained;
 use objc2_app_kit::{NSWorkspace, NSWorkspaceLaunchOptions};
 use objc2_foundation::{NSDictionary, NSString, NSURL};
 
@@ -9,7 +10,7 @@ pub(crate) struct App {
     pub(crate) default: bool,
 }
 
-fn url(path: &Path) -> Option<objc2::rc::Retained<NSURL>> {
+fn url(path: &Path) -> Option<Retained<NSURL>> {
     Some(NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)))
 }
 
@@ -20,7 +21,6 @@ fn name_of(bundle: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Every app that says it can open the file, the one that would take a double-click first.
 pub(crate) fn apps_for(file: &Path) -> Vec<App> {
     let Some(url) = url(file) else {
         return Vec::new();
@@ -45,7 +45,6 @@ pub(crate) fn apps_for(file: &Path) -> Vec<App> {
     apps
 }
 
-/// Finder's File ▸ Print: each document goes to the app that opens it, asked to print it.
 #[allow(deprecated)] // the open API that replaced this call has no print option
 pub(crate) fn print(files: &[PathBuf]) -> Result<(), String> {
     let workspace = NSWorkspace::sharedWorkspace();
@@ -66,7 +65,7 @@ pub(crate) fn open_with(files: &[PathBuf], app: &Path) {
     let Some(app) = url(app) else {
         return;
     };
-    let urls: Vec<objc2::rc::Retained<NSURL>> = files.iter().filter_map(|file| url(file)).collect();
+    let urls: Vec<Retained<NSURL>> = files.iter().filter_map(|file| url(file)).collect();
     if urls.is_empty() {
         return;
     }

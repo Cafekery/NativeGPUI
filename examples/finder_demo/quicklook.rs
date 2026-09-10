@@ -10,10 +10,9 @@ use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::view::LIST_VIEW;
 
-/// The panel's arrow keys, carried back to the window that opened it as its own key presses.
 fn key_forwarder(window: &Window, cx: &mut Context<FinderDemo>) -> impl Fn(QuickLookKey) + 'static {
     let entity = cx.entity().downgrade();
-    let handle = gpui::Window::window_handle(window);
+    let handle = window.window_handle();
     let app = cx.to_async();
     move |key| {
         let entity = entity.clone();
@@ -40,7 +39,6 @@ impl FinderDemo {
         quick_look(window, items, current, source, key_forwarder(window, cx));
     }
 
-    /// Finder's File ▸ Slideshow: the same items, full screen.
     pub(crate) fn slideshow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((items, current)) = self.quick_look_items() else {
             return;
@@ -49,7 +47,6 @@ impl FinderDemo {
         quick_look_full_screen(window, items, current, key_forwarder(window, cx));
     }
 
-    /// Finder previews the whole selection with the cursor's item showing, or just the cursor.
     fn quick_look_items(&self) -> Option<(Vec<PathBuf>, usize)> {
         let cursor = self.cursor.clone()?;
         let lines = self.lines(self.view == LIST_VIEW);

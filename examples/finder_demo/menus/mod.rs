@@ -69,8 +69,6 @@ pub(crate) fn backdrop(
     menu_at(id, this, |demo, _| background(demo), child)
 }
 
-/// Finder's list and column views outline the hit row while the menu is up and leave the selection
-/// alone.
 pub(crate) fn rows_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,
@@ -86,8 +84,6 @@ pub(crate) fn rows_menu(
     )
 }
 
-/// Finder's icon and gallery views select the tile the menu was raised on, and it keeps the
-/// selection once the menu is gone.
 pub(crate) fn tiles_menu(
     id: impl Into<ElementId>,
     this: WeakEntity<FinderDemo>,

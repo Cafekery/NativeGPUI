@@ -33,7 +33,6 @@ impl FinderDemo {
             self.spring_now(cx);
             return;
         }
-        // Space is Quick Look's key: it joins what is being typed only inside a live run.
         if key == "space" && !self.typing() {
             if self.cursor_line().is_some() {
                 self.toggle_quick_look(window, cx);

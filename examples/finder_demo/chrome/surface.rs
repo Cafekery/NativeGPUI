@@ -2,8 +2,7 @@ use gpui::{AnyElement, Hsla, Pixels, div, hsla, prelude::*, px};
 use native_gpui::{Blending, Layer, Material, glass, material, native_rule};
 use objc2_foundation::NSProcessInfo;
 
-/// macOS 27's Finder lifts its bars off the window material by a tint no `NSColor` names; macOS
-/// 26's bars are the material itself.
+/// macOS 27's Finder lifts its bars off the material by a tint no `NSColor` names; 26's do not.
 pub(crate) fn bar_tint() -> Option<Hsla> {
     (NSProcessInfo::processInfo()
         .operatingSystemVersion()
@@ -12,7 +11,6 @@ pub(crate) fn bar_tint() -> Option<Hsla> {
         .then(|| hsla(0., 0., 1., 0.038))
 }
 
-/// macOS 26's Finder rules a column or gallery view off the toolbar; macOS 27's does not.
 pub(crate) fn toolbar_rule() -> bool {
     NSProcessInfo::processInfo()
         .operatingSystemVersion()

@@ -13,11 +13,8 @@ use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 512;
-
 const POLL: Duration = Duration::from_millis(5);
-
 const TICK: Duration = Duration::from_millis(120);
-
 const VOLUMES_EVERY: u64 = 40;
 
 #[derive(Default)]
@@ -41,7 +38,6 @@ fn gone(error: &std::io::Error) -> bool {
 }
 
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
-    // Finder groups folders first under the preference, and always in the Kind column.
     if folders_first() || sort == Column::Kind {
         let by_kind = b.discloses.cmp(&a.discloses);
         if by_kind != Ordering::Equal {
@@ -58,7 +54,6 @@ fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
     if ascending { by } else { by.reverse() }
 }
 
-/// Finder's "keep folders on top" preference, read once: Finder never rereads it mid-session.
 fn folders_first() -> bool {
     static FOLDERS_FIRST: OnceLock<bool> = OnceLock::new();
     *FOLDERS_FIRST.get_or_init(|| {
@@ -411,7 +406,6 @@ impl FinderDemo {
         if !moved {
             self.shaped(&shape, walk);
         }
-        // Finder holds the row the cursor is on in view across a re-sort, wherever it moved to.
         if let Some(key) = self.cursor.clone() {
             self.reveal(&key);
         }
@@ -429,8 +423,7 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
-        // An FSEvents stream reports the whole subtree, so a folder inside a watched one needs no
-        // watch of its own.
+        // An FSEvents stream reports its whole subtree, so only the outermost folders are watched.
         let inside = |id: &str| {
             Path::new(id)
                 .ancestors()

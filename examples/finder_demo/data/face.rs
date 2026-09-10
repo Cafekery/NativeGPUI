@@ -47,7 +47,6 @@ impl Face {
         }
     }
 
-    /// The system's own generic artwork, shown while the row's own type's is still being drawn.
     pub(crate) fn stand_in(self) -> FileType<'static> {
         match self {
             F::Folder => FileType::Folder,
@@ -79,7 +78,7 @@ impl Face {
     }
 }
 
-/// By what a uniform type identifier conforms to, most specific first.
+/// Most specific first: the first type conformed to wins.
 const FACES: &[(&str, Face)] = &[
     ("public.folder", F::Folder),
     ("public.volume", F::Volume),
@@ -98,8 +97,7 @@ const FACES: &[(&str, Face)] = &[
     ("public.text", F::Text),
 ];
 
-// `NSWorkspace` is the only type conformance AppKit exposes, and the lookup is LaunchServices', not
-// AppKit state: fine off the main thread.
+// A LaunchServices lookup, not AppKit state: safe off the main thread.
 #[allow(deprecated)]
 pub(super) fn face_of(uti: &str) -> Face {
     static SEEN: OnceLock<RwLock<HashMap<String, Face>>> = OnceLock::new();
