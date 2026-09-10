@@ -45,6 +45,7 @@ actions!(
         GoDownloads,
         GoHome,
         GoICloud,
+        GoLibrary,
         GoNetwork,
         GoRecents,
         GoToFolder,
@@ -252,6 +253,7 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Desktop", GoDesktop).key("cmd-shift-d"),
         MenuCommand::new("Downloads", GoDownloads).key("cmd-alt-l"),
         MenuCommand::new("Home", GoHome).key("cmd-shift-h"),
+        MenuCommand::new("Library", GoLibrary).option_only(),
         MenuCommand::new("Computer", GoComputer).key("cmd-shift-c"),
         MenuCommand::new("Network", GoNetwork).key("cmd-shift-k"),
         MenuCommand::new("iCloud Drive", GoICloud).key("cmd-shift-i"),
@@ -456,6 +458,9 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &GoHome, window, cx| {
                 this.go_place(Standard::Home, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoLibrary, window, cx| {
+                this.go_to(&crate::home().join("Library"), window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoApplications, window, cx| {
                 this.go_place(Standard::Applications, window, cx);
