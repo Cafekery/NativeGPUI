@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
-use crate::chrome::scope_bar;
+use crate::chrome::{criteria_bar, scope_bar};
 use crate::data::{self, Row};
 use crate::listing::next_rev;
 use crate::{index, prefs};
@@ -22,6 +22,11 @@ impl FinderDemo {
         !self.query.trim().is_empty()
     }
 
+    /// How much room the scope bar and the criteria rows take above the listing.
+    pub(crate) fn search_bars_h(&self) -> f32 {
+        scope_bar::SCOPE_H + criteria_bar::CRITERIA_H * self.criteria.len() as f32
+    }
+
     pub(crate) fn results(&self) -> bool {
         self.tag_listing.is_some() || self.searching()
     }
@@ -31,10 +36,11 @@ impl FinderDemo {
         self.run_search(cx);
     }
 
-    fn run_search(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
         cx.notify();
         let wanted = self.query.trim().to_string();
+        let criteria = self.criteria.clone();
         let everywhere = self.scope == scope_bar::THIS_MAC;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
@@ -58,10 +64,11 @@ impl FinderDemo {
                             .collect(),
                     };
                     found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-                    found.truncate(HITS);
                     found
                         .iter()
                         .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
+                        .filter(|row| criteria.iter().all(|it| it.holds(row)))
+                        .take(HITS)
                         .collect::<Vec<_>>()
                 })
                 .await;

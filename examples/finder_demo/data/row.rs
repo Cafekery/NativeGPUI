@@ -39,6 +39,7 @@ pub(crate) struct Row {
     pub(crate) modified_at: f64,
     pub(crate) created_at: f64,
     pub(crate) kind: SharedString,
+    pub(crate) uti: SharedString,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
     /// A directory the user can walk into, or an alias's target, never a package.
@@ -109,6 +110,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         modified_at: reference_seconds(entry.modified),
         created_at: reference_seconds(entry.created),
         kind: kind.label.to_string().into(),
+        uti: kind.uti.to_string().into(),
         face: face_of(&kind.uti),
         hidden: entry.hidden,
         opens: match entry.kind {
@@ -187,6 +189,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
         modified_at: meta.modified().ok().map_or(0., reference_seconds),
         created_at: meta.created().ok().map_or(0., reference_seconds),
         kind: "Volume".into(),
+        uti: "public.volume".into(),
         face: Face::Volume,
         hidden: false,
         opens: Some(id),

@@ -349,3 +349,111 @@ mod tests {
         assert!(elapsed.as_millis() < 20, "took {elapsed:?}");
     }
 }
+
+/// The kinds Finder's search offers under "Kind is".
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
+pub enum Category {
+    #[default]
+    Any,
+    Application,
+    Archive,
+    Document,
+    Executable,
+    Folder,
+    Image,
+    Movie,
+    Music,
+    Pdf,
+    Presentation,
+    Text,
+    Other,
+}
+
+impl Category {
+    pub const ALL: [Category; 13] = [
+        Category::Any,
+        Category::Application,
+        Category::Archive,
+        Category::Document,
+        Category::Executable,
+        Category::Folder,
+        Category::Image,
+        Category::Movie,
+        Category::Music,
+        Category::Pdf,
+        Category::Presentation,
+        Category::Text,
+        Category::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Any => "Any",
+            Category::Application => "Application",
+            Category::Archive => "Archive",
+            Category::Document => "Document",
+            Category::Executable => "Executable",
+            Category::Folder => "Folder",
+            Category::Image => "Image",
+            Category::Movie => "Movie",
+            Category::Music => "Music",
+            Category::Pdf => "PDF",
+            Category::Presentation => "Presentation",
+            Category::Text => "Text",
+            Category::Other => "Other",
+        }
+    }
+
+    fn identifier(self) -> Option<&'static str> {
+        match self {
+            Category::Any | Category::Other => None,
+            Category::Application => Some("com.apple.application"),
+            Category::Archive => Some("public.archive"),
+            Category::Document => Some("public.content"),
+            Category::Executable => Some("public.executable"),
+            Category::Folder => Some("public.folder"),
+            Category::Image => Some("public.image"),
+            Category::Movie => Some("public.movie"),
+            Category::Music => Some("public.audio"),
+            Category::Pdf => Some("com.adobe.pdf"),
+            Category::Presentation => Some("public.presentation"),
+            Category::Text => Some("public.text"),
+        }
+    }
+}
+
+fn conformance() -> &'static RwLock<HashMap<String, u16>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, u16>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn conformance_of(uti: &str) -> u16 {
+    if let Some(&bits) = conformance().read().unwrap().get(uti) {
+        return bits;
+    }
+    let ty = well_known(uti);
+    let mut bits = 0;
+    for (at, category) in Category::ALL.iter().enumerate() {
+        let base = category.identifier().and_then(well_known);
+        let held = match (&ty, base) {
+            (Some(ty), Some(base)) => ty.conformsToType(&base),
+            _ => false,
+        };
+        bits |= u16::from(held) << at;
+    }
+    conformance().write().unwrap().insert(uti.to_string(), bits);
+    bits
+}
+
+/// Whether a type falls under one of Finder's search kinds. The categories overlap, as Finder's
+/// do: plain text is a Document as well as Text.
+pub fn conforms(uti: &str, category: Category) -> bool {
+    match category {
+        Category::Any => true,
+        Category::Other => false,
+        _ => {
+            let at = Category::ALL.iter().position(|it| *it == category).unwrap();
+            conformance_of(uti) >> at & 1 == 1
+        }
+    }
+}

@@ -1,3 +1,4 @@
+pub(crate) mod criteria_bar;
 pub(crate) mod path_bar;
 pub(crate) mod scope_bar;
 pub(crate) mod sheet;

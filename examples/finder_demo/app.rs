@@ -52,6 +52,7 @@ pub(crate) struct FinderDemo {
     pub(crate) titled: String,
     /// The query the rows on screen are filtered by; `query` is what has been typed since.
     pub(crate) filtered: String,
+    pub(crate) criteria: Vec<crate::chrome::criteria_bar::Criterion>,
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
     pub(crate) expanding: HashMap<&'static str, usize>,
@@ -136,6 +137,7 @@ impl FinderDemo {
         read::spawn_queue_tick(cx);
         let mut this = Self {
             titled: String::new(),
+            criteria: vec![Default::default()],
             folders: Folders::default(),
             sidebar: None,
             sidebar_rows: sidebar::stored_rows(&groups),
