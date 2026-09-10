@@ -27,6 +27,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [ ] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
 - [ ] View ▸ Show Preview Options
 - [ ] View ▸ Customize Toolbar…, the one menu item the demo greys out
+- [ ] Tag swatches read as seven unlabelled groups to VoiceOver; Finder's are radio buttons named “Add “Red” label” and “Remove “Red” label”
 
 ## Features
 
