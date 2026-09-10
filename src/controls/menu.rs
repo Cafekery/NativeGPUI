@@ -12,15 +12,17 @@ use gpui::{
     InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent, Pixels,
     Point, Size, Style, Window, px, size,
 };
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSBox, NSBoxType, NSColor, NSControlSize, NSControlStateValueOff,
-    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem,
-    NSPopUpButton, NSTitlePosition, NSView,
+    NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole, NSBezierPath, NSBox,
+    NSBoxType, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
+    NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition, NSView,
 };
-use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
+};
 
 use crate::bridge::appkit::{Container, fitting_size_keyed};
 use crate::bridge::host::ControlSize;
@@ -173,21 +175,50 @@ define_class!(
         fn mouse_up(&self, event: &NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             let step = SWATCH_DIAMETER + SWATCH_GAP;
-            let index = ((point.x - SWATCH_INSET).max(0.) / step) as usize;
-            if index >= self.ivars().count {
-                return;
+            self.choose(((point.x - SWATCH_INSET).max(0.) / step) as usize);
+        }
+    }
+);
+
+impl SwatchRow {
+    fn choose(&self, index: usize) {
+        if index >= self.ivars().count {
+            return;
+        }
+        (self.ivars().pick)(index);
+        let Some(item) = self.enclosingMenuItem() else {
+            return;
+        };
+        if let (Some(target), Some(action)) = (item.target(), item.action()) {
+            let _: () = unsafe { msg_send![&*target, performSelector: action, withObject: &*item] };
+        }
+        if let Some(menu) = unsafe { item.menu() } {
+            menu.cancelTracking();
+        }
+    }
+}
+
+struct DotIvars {
+    row: Weak<SwatchRow>,
+    index: usize,
+}
+
+define_class!(
+    /// One dot of the tag row as VoiceOver sees it: a radio button named for what picking it does,
+    /// as Finder's are, which a press picks as a click would.
+    #[unsafe(super(NSAccessibilityElement, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSwatchDot"]
+    #[ivars = DotIvars]
+    struct SwatchDot;
+
+    impl SwatchDot {
+        #[unsafe(method(accessibilityPerformPress))]
+        fn perform_press(&self) -> Bool {
+            if let Some(row) = self.ivars().row.load() {
+                row.choose(self.ivars().index);
             }
-            (self.ivars().pick)(index);
-            let Some(item) = self.enclosingMenuItem() else {
-                return;
-            };
-            if let (Some(target), Some(action)) = (item.target(), item.action()) {
-                let _: () =
-                    unsafe { msg_send![&*target, performSelector: action, withObject: &*item] };
-            }
-            if let Some(menu) = unsafe { item.menu() } {
-                menu.cancelTracking();
-            }
+            Bool::YES
         }
     }
 );
@@ -212,19 +243,21 @@ impl MenuView {
     }
 
     /// A strip of round colour swatches at Finder's tag metrics, reporting the dot that was hit.
+    /// Each label is what VoiceOver names its dot, such as Finder's "Add “Red” label".
     pub fn swatches_picking(
-        colors: impl IntoIterator<Item = Hsla>,
+        swatches: impl IntoIterator<Item = (Hsla, String)>,
         pick: impl Fn(usize) + 'static,
     ) -> Self {
-        let colors: Vec<Hsla> = colors.into_iter().collect();
+        let (colors, labels): (Vec<Hsla>, Vec<String>) = swatches.into_iter().unzip();
         let mut hasher = DefaultHasher::new();
         colors.hash(&mut hasher);
+        labels.hash(&mut hasher);
         let width = swatch_row_width(colors.len());
         let pick: Rc<dyn Fn(usize)> = Rc::new(pick);
         Self::new(
             hasher.finish(),
             size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
-            move |mtm| swatch_row_picking(mtm, &colors, pick.clone()),
+            move |mtm| swatch_row_picking(mtm, &colors, &labels, pick.clone()),
         )
     }
 
@@ -280,6 +313,7 @@ fn swatch_row_width(count: usize) -> f64 {
 fn swatch_row_picking(
     mtm: MainThreadMarker,
     colors: &[Hsla],
+    labels: &[String],
     pick: Rc<dyn Fn(usize)>,
 ) -> Retained<NSView> {
     let row = swatch_row(mtm, colors);
@@ -291,7 +325,37 @@ fn swatch_row_picking(
     for view in row.subviews().iter() {
         host.addSubview(&view);
     }
+    // The dots stand in for the row's own children, so VoiceOver reads radio buttons, not boxes.
+    let parent: &AnyObject = host.as_ref();
+    let dots: Vec<Retained<AnyObject>> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let dot = SwatchDot::alloc(mtm).set_ivars(DotIvars {
+                row: Weak::new(&*host),
+                index,
+            });
+            let dot: Retained<SwatchDot> = unsafe { msg_send![super(dot), init] };
+            unsafe {
+                dot.setAccessibilityRole(Some(NSAccessibilityRadioButtonRole));
+                dot.setAccessibilityLabel(Some(&NSString::from_str(label)));
+                dot.setAccessibilityParent(Some(parent));
+                dot.setAccessibilityFrameInParentSpace(dot_frame(index));
+                Retained::cast_unchecked(dot)
+            }
+        })
+        .collect();
+    unsafe { host.setAccessibilityChildren(Some(&NSArray::from_retained_slice(&dots))) };
     Retained::into_super(host)
+}
+
+fn dot_frame(index: usize) -> NSRect {
+    let x = SWATCH_INSET + index as f64 * (SWATCH_DIAMETER + SWATCH_GAP);
+    let y = ((SWATCH_ROW_HEIGHT - SWATCH_DIAMETER) / 2.).round();
+    NSRect::new(
+        NSPoint::new(x, y),
+        NSSize::new(SWATCH_DIAMETER, SWATCH_DIAMETER),
+    )
 }
 
 fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla]) -> Retained<NSView> {
@@ -300,16 +364,8 @@ fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla]) -> Retained<NSView> {
         NSView::alloc(mtm),
         NSRect::new(NSPoint::ZERO, NSSize::new(width, SWATCH_ROW_HEIGHT)),
     );
-    let y = ((SWATCH_ROW_HEIGHT - SWATCH_DIAMETER) / 2.).round();
     for (index, color) in colors.iter().enumerate() {
-        let x = SWATCH_INSET + index as f64 * (SWATCH_DIAMETER + SWATCH_GAP);
-        let dot = NSBox::initWithFrame(
-            NSBox::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(x, y),
-                NSSize::new(SWATCH_DIAMETER, SWATCH_DIAMETER),
-            ),
-        );
+        let dot = NSBox::initWithFrame(NSBox::alloc(mtm), dot_frame(index));
         dot.setBoxType(NSBoxType::Custom);
         dot.setTitlePosition(NSTitlePosition::NoTitle);
         dot.setBorderWidth(0.);
