@@ -14,7 +14,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSControl, NSModalResponse, NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSSharingService,
-    NSSharingServicePicker, NSSharingServicePickerDelegate, NSView, NSViewController, NSWindow,
+    NSSharingServiceNameSendViaAirDrop, NSSharingServicePicker, NSSharingServicePickerDelegate,
+    NSView, NSViewController, NSWindow,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
@@ -468,6 +469,20 @@ fn share_array(items: &[ShareItem]) -> Retained<NSArray> {
 #[allow(deprecated)]
 pub fn share_service_count(items: &[ShareItem]) -> usize {
     unsafe { NSSharingService::sharingServicesForItems(&share_array(items)) }.len()
+}
+
+/// AppKit's AirDrop sheet for `items`; false when AirDrop cannot take them.
+pub fn airdrop(items: &[ShareItem]) -> bool {
+    let name = unsafe { NSSharingServiceNameSendViaAirDrop };
+    let Some(service) = NSSharingService::sharingServiceNamed(name) else {
+        return false;
+    };
+    let items = share_array(items);
+    if !unsafe { service.canPerformWithItems(Some(&items)) } {
+        return false;
+    }
+    unsafe { service.performWithItems(&items) };
+    true
 }
 
 #[derive(Copy, Clone, Debug)]

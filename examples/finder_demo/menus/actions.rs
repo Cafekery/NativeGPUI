@@ -231,16 +231,26 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let items: Vec<ShareItem> = self
-            .paths()
+    fn share_urls(&self) -> Vec<ShareItem> {
+        self.paths()
             .iter()
             .filter_map(|path| {
                 let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
                 url.absoluteString()
                     .map(|url| ShareItem::Url(url.to_string()))
             })
-            .collect();
+            .collect()
+    }
+
+    pub(crate) fn airdrop_selection(&mut self) {
+        let items = self.share_urls();
+        if !items.is_empty() && !native_gpui::airdrop(&items) {
+            self.complain("AirDrop isn’t available for the selected items.");
+        }
+    }
+
+    pub(crate) fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self.share_urls();
         if items.is_empty() {
             return;
         }

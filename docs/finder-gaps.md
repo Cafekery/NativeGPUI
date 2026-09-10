@@ -35,7 +35,8 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 - [x] Go ▸ Recents (⇧⌘F)
 - [x] Go ▸ Connect to Server… (⌘K)
-- [ ] Go ▸ AirDrop (⇧⌘R) and Shared (⇧⌘S)
+- [x] Go ▸ AirDrop (⇧⌘R), and the toolbar's AirDrop button, send the selection through AppKit's AirDrop sheet; Finder's own AirDrop window, where nearby people are listed before anything is chosen, has no public API
+- [ ] Go ▸ Shared (⇧⌘S): Finder's view of iCloud items shared with you has no public API to show it
 - [ ] File ▸ New Smart Folder, and saved searches with it
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
