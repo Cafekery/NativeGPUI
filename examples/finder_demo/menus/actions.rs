@@ -36,6 +36,7 @@ pub(crate) enum Act {
     OpenWith(&'static str),
     Compress,
     Share,
+    Tags,
     Copy,
     Cut,
     Paste,
@@ -123,6 +124,7 @@ impl FinderDemo {
             Act::MakeAlias => self.make_alias(cx),
             Act::Compress => self.compress_selection(cx),
             Act::Share => self.share_selection(window, cx),
+            Act::Tags => self.edit_tags(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => {
                 let files: Vec<PathBuf> = self
