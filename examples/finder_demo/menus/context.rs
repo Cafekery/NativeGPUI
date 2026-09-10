@@ -143,10 +143,26 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Share…"), Act::Share);
     menu.separator();
+    // Finder names each dot for what picking it does: Remove once every chosen item carries it.
+    let chosen_tags: Vec<Vec<usize>> = match selected.contains(&line.key) {
+        true => selected
+            .iter()
+            .map(|key| crate::tags::row_tags(key))
+            .collect(),
+        false => vec![crate::tags::row_tags(&line.key)],
+    };
+    let swatches = tags().iter().enumerate().map(|(index, tag)| {
+        let verb = match chosen_tags.iter().all(|carried| carried.contains(&index)) {
+            true => "Remove",
+            false => "Add",
+        };
+        (
+            finder_color(tag.color),
+            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
+        )
+    });
     menu.view(
-        MenuView::swatches_picking(tags().iter().map(|tag| finder_color(tag.color)), |index| {
-            SWATCH.with(|cell| cell.set(Some(index)))
-        }),
+        MenuView::swatches_picking(swatches, |index| SWATCH.with(|cell| cell.set(Some(index)))),
         Act::Swatch,
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
