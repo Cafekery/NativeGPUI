@@ -21,8 +21,10 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
 - [ ] Edit ▸ Copy as Link (⌥⌃⌘C): Finder keeps it disabled on a local file and on an iCloud Drive
   file alike, so what it copies is unconfirmed
-- [ ] Edit ▸ Paste Exactly (⇧⌥⌘V), which keeps the copy's own timestamps
-- [ ] Edit ▸ Show Clipboard
+- [ ] Edit ▸ Paste Exactly (⇧⌥⌘V): the demo's copies already keep dates, permissions, extended
+  attributes and ACLs; what Finder adds is the original's owner (unconfirmed), which takes admin
+  rights
+- [x] Edit ▸ Show Clipboard
 - [x] Window ▸ Cycle Through Windows (⌘`)
 - [ ] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
 - [ ] View ▸ Show Preview Options

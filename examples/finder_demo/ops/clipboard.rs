@@ -85,7 +85,7 @@ fn write_pasteboard(keys: &[SharedString]) {
     board.writeObjects(&NSArray::from_retained_slice(&items));
 }
 
-fn read_pasteboard() -> Vec<PathBuf> {
+pub(crate) fn read_pasteboard() -> Vec<PathBuf> {
     let board = NSPasteboard::generalPasteboard();
     let Some(items) = board.pasteboardItems() else {
         return Vec::new();
