@@ -13,7 +13,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [ ] File ▸ Open in New Window and Close (⌥⌘O on a window that closes behind it)
 - [ ] View ▸ Clean Up Selection
 - [x] Go ▸ Library, which Finder shows only while ⌥ is held
-- [ ] Go ▸ Select Startup Disk
+- [x] Go ▸ Select Startup Disk
 - [x] Go ▸ Open Enclosing Folder in New Window (⌃⌘↑)
 
 ## Small features
