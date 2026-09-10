@@ -10,15 +10,9 @@ pub(super) enum Plan {
     Content(Vec<u64>),
     Structural {
         content: Vec<u64>,
-        /// The child list the *old* model had; the data source already answers from the new one.
+        /// The *old* model's child lists; the data source already answers from the new one.
         parents: Vec<(Option<u64>, Vec<u64>)>,
     },
-}
-
-impl Plan {
-    pub(super) fn is_empty(&self) -> bool {
-        matches!(self, Plan::Nothing)
-    }
 }
 
 pub(super) fn plan_diff(old: &Model, new: &Model) -> Plan {
@@ -83,10 +77,8 @@ pub(super) fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
         }
         Plan::Reload => {
             outline.reloadData();
-            if shared.expand_groups.get() {
-                expand_groups(state);
-            }
-            shared.writes.set(shared.writes.get() + 1);
+            expand_groups(state);
+            shared.wrote(1);
             return SidebarDiff {
                 full_reloads: 1,
                 ..Default::default()
@@ -106,23 +98,15 @@ pub(super) fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
             diff.moved += moved;
         }
         outline.endUpdates();
-        shared
-            .writes
-            .set(shared.writes.get() + (diff.inserted + diff.removed + diff.moved) as u64);
+        shared.wrote((diff.inserted + diff.removed + diff.moved) as u64);
+        expand_groups(state);
 
-        if shared.expand_groups.get() {
-            expand_groups(state);
-        }
-
-        let expected = expected_rows(state);
-        if outline.numberOfRows() != expected {
+        if outline.numberOfRows() != expected_rows(state) {
             outline.reloadData();
-            if shared.expand_groups.get() {
-                expand_groups(state);
-            }
+            expand_groups(state);
             saved.restore(state);
             diff.full_reloads += 1;
-            shared.writes.set(shared.writes.get() + 1);
+            shared.wrote(1);
         }
     }
 
@@ -131,9 +115,7 @@ pub(super) fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
         unsafe { outline.reloadItem(Some(&item)) };
         diff.reloaded_items += 1;
     }
-    shared
-        .writes
-        .set(shared.writes.get() + diff.reloaded_items as u64);
+    shared.wrote(diff.reloaded_items as u64);
 
     diff
 }
@@ -236,24 +218,24 @@ pub(super) fn reveal(state: &SidebarState, key: u64) {
     for parent in ancestors.into_iter().rev() {
         let item = state.shared.item(parent);
         if !unsafe { outline.isItemExpanded(Some(&item)) } {
-            state.shared.writes.set(state.shared.writes.get() + 1);
+            state.shared.wrote(1);
             unsafe { outline.expandItem(Some(&item)) };
         }
     }
 }
 
 pub(super) fn expand_groups(state: &SidebarState) {
+    if !state.shared.expand_groups.get() {
+        return;
+    }
     let outline = &state.views.outline;
     let keys: Vec<u64> = {
         let model = state.shared.model.borrow();
         model
-            .preorder()
-            .into_iter()
-            .filter(|&key| {
-                model
-                    .node(key)
-                    .is_some_and(|node| node.group && !node.children.is_empty())
-            })
+            .nodes
+            .iter()
+            .filter(|node| node.group && !node.children.is_empty())
+            .map(|node| node.key)
             .collect()
     };
     for key in keys {
@@ -264,32 +246,23 @@ pub(super) fn expand_groups(state: &SidebarState) {
     }
 }
 
-pub(super) fn expected_rows(state: &SidebarState) -> NSInteger {
+fn expected_rows(state: &SidebarState) -> NSInteger {
     let outline = &state.views.outline;
     let model = state.shared.model.borrow();
     let mut total = 0;
-    let mut stack: Vec<u64> = model
-        .roots
-        .iter()
-        .rev()
-        .map(|&i| model.nodes[i].key)
-        .collect();
-    while let Some(key) = stack.pop() {
+    let mut stack: Vec<usize> = model.roots.iter().rev().copied().collect();
+    while let Some(index) = stack.pop() {
         total += 1;
-        let Some(node) = model.node(key) else {
-            continue;
-        };
+        let node = &model.nodes[index];
         if node.children.is_empty() {
             continue;
         }
-        let item = state.shared.item(key);
+        let item = state.shared.item(node.key);
         if unsafe { outline.isItemExpanded(Some(&item)) } {
-            for &child in node.children.iter().rev() {
-                stack.push(model.nodes[child].key);
-            }
+            stack.extend(node.children.iter().rev());
         }
     }
-    total as NSInteger
+    total
 }
 
 pub(super) struct SavedState {
@@ -302,13 +275,11 @@ impl SavedState {
     pub(super) fn capture(state: &SidebarState) -> Self {
         let outline = &state.views.outline;
         let model = state.shared.model.borrow();
-        let selected = {
-            let row = outline.selectedRow();
-            (row >= 0)
-                .then(|| outline.itemAtRow(row))
-                .flatten()
-                .map(|item| Shared::key_of_item(&item))
-        };
+        let row = outline.selectedRow();
+        let selected = (row >= 0)
+            .then(|| outline.itemAtRow(row))
+            .flatten()
+            .map(|item| Shared::key_of_item(&item));
         let expanded = model
             .preorder()
             .into_iter()
@@ -326,25 +297,24 @@ impl SavedState {
 
     pub(super) fn restore(&self, state: &SidebarState) {
         let outline = &state.views.outline;
+        let shared = &state.shared;
         for &key in &self.expanded {
-            if state.shared.model.borrow().node(key).is_none() {
-                continue;
+            if shared.model.borrow().node(key).is_some() {
+                unsafe { outline.expandItem(Some(&shared.item(key))) };
             }
-            let item = state.shared.item(key);
-            unsafe { outline.expandItem(Some(&item)) };
         }
-        if let Some(key) = self.selected {
-            if state.shared.model.borrow().node(key).is_some() {
-                let item = state.shared.item(key);
-                let row = unsafe { outline.rowForItem(Some(&item)) };
-                if row >= 0 {
-                    state.shared.suppress.set(state.shared.suppress.get() + 1);
+        let selected = self
+            .selected
+            .filter(|&key| shared.model.borrow().node(key).is_some());
+        if let Some(key) = selected {
+            let row = unsafe { outline.rowForItem(Some(&shared.item(key))) };
+            if row >= 0 {
+                shared.quietly(|| {
                     outline.selectRowIndexes_byExtendingSelection(
                         &NSIndexSet::indexSetWithIndex(row as usize),
                         false,
-                    );
-                    state.shared.suppress.set(state.shared.suppress.get() - 1);
-                }
+                    )
+                });
             }
         }
         let clip = state.views.scroll.contentView();

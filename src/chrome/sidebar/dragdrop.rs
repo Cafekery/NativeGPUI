@@ -20,16 +20,17 @@ use crate::bridge::appkit::gpui_view;
 
 pub(super) const ROW_PASTEBOARD_TYPE: &str = "com.native-gpui.sidebar-row";
 
-pub(super) fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
+const DRAG_ICON: f64 = 32.;
+
+fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
     let text = info
         .draggingPasteboard()
         .stringForType(&NSString::from_str(ROW_PASTEBOARD_TYPE))?;
     text.to_string().parse().ok()
 }
 
-pub(super) fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
-    let pasteboard = info.draggingPasteboard();
-    let Some(items) = pasteboard.pasteboardItems() else {
+fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
+    let Some(items) = info.draggingPasteboard().pasteboardItems() else {
         return Vec::new();
     };
     items
@@ -42,7 +43,7 @@ pub(super) fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<Pa
         .collect()
 }
 
-pub(super) fn file_drop_target(
+fn file_drop_target(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
@@ -52,31 +53,20 @@ pub(super) fn file_drop_target(
     let (parent, at) = drop_target(shared, outline, info, item, index)?;
     let parent = parent?;
     shared
-        .model
-        .borrow()
-        .node(parent)
-        .filter(|node| node.group)
-        .map(|_| (parent, at))
+        .node_is(parent, |node| node.group)
+        .then_some((parent, at))
 }
 
-/// Finder makes a sidebar row of a folder and of nothing else: a file dropped between rows shows
-/// no insertion line.
-pub(super) fn insertable(paths: &[PathBuf]) -> bool {
+fn insertable(paths: &[PathBuf]) -> bool {
     paths.iter().all(|path| path.is_dir())
 }
 
-/// A row that takes files itself, as Finder's tags do: the drop lands on it, not between rows.
-pub(super) fn file_drop_row(shared: &Rc<Shared>, item: Option<&AnyObject>) -> Option<u64> {
+fn file_drop_row(shared: &Rc<Shared>, item: Option<&AnyObject>) -> Option<u64> {
     let key = Shared::key_of_item(item?);
-    shared
-        .model
-        .borrow()
-        .node(key)
-        .filter(|node| node.drops)
-        .map(|_| key)
+    shared.node_is(key, |node| node.drops).then_some(key)
 }
 
-pub(super) fn validate_file_drop(
+fn validate_file_drop(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
@@ -106,7 +96,7 @@ pub(super) fn validate_file_drop(
     NSDragOperation::Generic
 }
 
-pub(super) fn accept_file_drop(
+fn accept_file_drop(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
@@ -138,11 +128,11 @@ pub(super) fn accept_file_drop(
     let Some(handler) = shared.on_drop_paths.borrow().clone() else {
         return false;
     };
-    let model_ids = {
+    let (group, onto) = {
         let model = shared.model.borrow();
         (model.id_for(group), onto.and_then(|key| model.id_for(key)))
     };
-    let (Some(group), onto) = model_ids else {
+    let Some(group) = group else {
         return false;
     };
     let dropped = SidebarDrop {
@@ -151,17 +141,11 @@ pub(super) fn accept_file_drop(
         index: at,
         onto,
     };
-    shared
-        .cx
-        .borrow()
-        .spawn(async move |cx| {
-            let _ = cx.update(|window, app| handler(&dropped, window, app));
-        })
-        .detach();
+    shared.defer(move |window, app| handler(&dropped, window, app));
     true
 }
 
-pub(super) fn drop_target(
+fn drop_target(
     shared: &Rc<Shared>,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
@@ -178,10 +162,8 @@ pub(super) fn drop_target(
     }
     let parent = model.parent_key(key);
     let at = model.children_keys(parent).iter().position(|&k| k == key)?;
-    let row = unsafe { outline.rowForItem(item) };
-    let rect = outline.rectOfRow(row);
+    let rect = outline.rectOfRow(unsafe { outline.rowForItem(item) });
     let point = outline.convertPoint_fromView(info.draggingLocation(), None);
-    // An outline view is flipped, so a larger y is further down the list.
     let below = point.y > rect.origin.y + rect.size.height / 2.;
     Some((parent, at + usize::from(below)))
 }
@@ -191,12 +173,7 @@ pub(super) fn row_pasteboard_item(
     item: &AnyObject,
 ) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
     let key = Shared::key_of_item(item);
-    if !shared
-        .model
-        .borrow()
-        .node(key)
-        .is_some_and(|node| !node.group)
-    {
+    if !shared.node_is(key, |node| !node.group) {
         return None;
     }
     let entry = NSPasteboardItem::new();
@@ -242,21 +219,16 @@ pub(super) fn accept_row_drop(
         return false;
     }
     let parent = item.map(Shared::key_of_item);
-    let from = {
-        let model = shared.model.borrow();
-        if model.parent_key(source) != parent {
-            return false;
-        }
-        match model
-            .children_keys(parent)
-            .iter()
-            .position(|&k| k == source)
-        {
-            Some(at) => at,
-            None => return false,
-        }
+    let Some(from) = shared
+        .model
+        .borrow()
+        .children_keys(parent)
+        .iter()
+        .position(|&k| k == source)
+    else {
+        return false;
     };
-    // The drop index counts the row itself; both moves count the list with the row lifted out.
+    // AppKit's index counts the dragged row; the moves count the list without it.
     let to = (index as usize).saturating_sub(usize::from(index as usize > from));
     if to == from {
         return true;
@@ -264,7 +236,7 @@ pub(super) fn accept_row_drop(
     if !shared.model.borrow_mut().move_child(parent, from, to) {
         return false;
     }
-    shared.writes.set(shared.writes.get() + 1);
+    shared.wrote(1);
     let parent_item = parent.map(|key| shared.item(key));
     unsafe {
         outline.moveItemAtIndex_inParent_toIndex_inParent(
@@ -285,18 +257,10 @@ pub(super) fn accept_row_drop(
             index: to,
         }
     };
-    shared
-        .cx
-        .borrow()
-        .spawn(async move |cx| {
-            let _ = cx.update(|window, app| handler(&moved, window, app));
-        })
-        .detach();
+    shared.defer(move |window, app| handler(&moved, window, app));
     true
 }
 
-/// Hands the drag GPUI is running to AppKit as file URLs: a hosted `NSOutlineView` is a dragging
-/// destination and sees nothing of GPUI's own drags.
 pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -334,12 +298,10 @@ pub fn drag_files(window: &mut Window, paths: &[PathBuf]) -> bool {
         &event,
         ProtocolObject::from_ref(&*source),
     );
-    // AppKit does not keep the source alive; the session ends when the next one starts.
+    // AppKit does not retain the dragging source.
     DRAG_SOURCE.with(|held| *held.borrow_mut() = Some(source));
     true
 }
-
-const DRAG_ICON: f64 = 32.;
 
 thread_local! {
     static DRAG_SOURCE: RefCell<Option<Retained<FileDragSource>>> = const { RefCell::new(None) };

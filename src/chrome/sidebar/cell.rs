@@ -24,7 +24,6 @@ pub(super) struct CellIvars {
     pub(super) group: bool,
     pub(super) badge: RefCell<Option<Retained<NSTextField>>>,
     pub(super) eject: RefCell<Option<Retained<NSButton>>>,
-    /// A tag row's own colour: what Finder draws its label in while the row is selected.
     pub(super) tint: RefCell<Option<Retained<NSColor>>>,
 }
 
@@ -51,8 +50,7 @@ define_class!(
         fn layout(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
 
-            // AppKit restyles a group row's label as it displays, so both the drop and the
-            // colour have to be re-applied after its own layout, not once at build time.
+            // AppKit restyles a group row's label on display, so this reapplies after every layout.
             if self.ivars().group {
                 if let Some(title) = unsafe { self.textField() } {
                     let frame = title.frame();
@@ -64,7 +62,6 @@ define_class!(
                 }
             }
 
-            // Never hide the image view: that collapses AppKit's icon box and shifts the label.
             let Some(trailing) = self.ivars().trailing() else {
                 return;
             };
@@ -90,31 +87,35 @@ define_class!(
     }
 );
 
-// `NSTableView` keeps one recycling queue per identifier, so rows are split by shape.
+// One identifier per row shape: a recycled cell keeps its subviews and `group`.
 const ID_GROUP: &str = "NGSidebarGroupRow";
 const ID_ICON: &str = "NGSidebarIconRow";
 const ID_PLAIN: &str = "NGSidebarPlainRow";
-
-fn label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
-    let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-    field.setUsesSingleLineMode(true);
-    field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    field
-}
 
 const EJECT_POINTS: f64 = 10.0;
 const TAG_DOT_DIAMETER: f64 = 12.5;
 const TAG_DOT_LINE: f64 = 1.0;
 const TAG_DOTS_OVERLAP: f64 = 4.5;
-/// Finder sets its section headers on the row's baseline, where AppKit centres them.
 const GROUP_BASELINE_DROP: f64 = 2.0;
+const INACTIVE_LABEL_ALPHA: f64 = 0.47;
 
-fn make_cell(
-    mtm: MainThreadMarker,
-    identifier: &str,
-    with_icon: bool,
-    target: &AnyObject,
-) -> Retained<SidebarCell> {
+fn label(mtm: MainThreadMarker) -> Retained<NSTextField> {
+    let field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+    field.setUsesSingleLineMode(true);
+    field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    field
+}
+
+fn srgb((r, g, b): (u8, u8, u8)) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(
+        r as f64 / 255.,
+        g as f64 / 255.,
+        b as f64 / 255.,
+        1.,
+    )
+}
+
+fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Retained<SidebarCell> {
     let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
         group: identifier == ID_GROUP,
         badge: RefCell::new(None),
@@ -124,11 +125,11 @@ fn make_cell(
     let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
     cell.setIdentifier(Some(&NSString::from_str(identifier)));
 
-    let title = label(mtm, "");
+    let title = label(mtm);
     cell.addSubview(&title);
     unsafe { cell.setTextField(Some(&title)) };
 
-    if with_icon {
+    if identifier == ID_ICON {
         let icon = NSImageView::new(mtm);
         icon.setImageScaling(NSImageScaling::ScaleProportionallyDown);
         icon.setImageAlignment(NSImageAlignment::AlignCenter);
@@ -136,7 +137,7 @@ fn make_cell(
         unsafe { cell.setImageView(Some(&icon)) };
     }
 
-    let badge = label(mtm, "");
+    let badge = label(mtm);
     badge.setAlignment(NSTextAlignment::Right);
     badge.setFont(Some(&NSFont::systemFontOfSize(
         NSFont::smallSystemFontSize(),
@@ -193,7 +194,6 @@ fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSIm
     built
 }
 
-/// Ties go to the larger: a template scaled down keeps its shape where one scaled up softens.
 fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> Option<f64> {
     available.into_iter().fold(None, |held, candidate| {
         let better = held.is_none_or(|held: f64| {
@@ -214,9 +214,7 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     let reps = source.representations();
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
     let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(points, points));
-    // One point size only: 16pt@2x and 32pt@1x are both 32px but are different drawings. Of that
-    // size take the finest rep alone and let AppKit resample it: the bundle's 1x drawing at 18pt
-    // is sheared, so a 1x screen given both would draw the broken one.
+    // The finest rep of one point size only: the bundle's 1x drawing at 18pt is sheared.
     if let Some(finest) = reps
         .iter()
         .filter(|rep| rep.size().width == chosen)
@@ -224,7 +222,6 @@ fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage
     {
         image.addRepresentation(&finest);
     }
-    // The bundle's images arrive with `isTemplate` false, so nothing would tint them.
     image.setTemplate(true);
     Some(image)
 }
@@ -241,7 +238,6 @@ fn ring_path(at: NSRect) -> Retained<NSBezierPath> {
     ring
 }
 
-/// Drawn rather than an SF Symbol, which the cell would baseline-align, not centre.
 fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     let color = match icon {
         SidebarIcon::Dot(color) => *color,
@@ -258,14 +254,8 @@ fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     let draw = block2::RcBlock::new(move |rect: NSRect| -> Bool {
         let disc = NSRect::new(rect.origin, NSSize::new(TAG_DOT_DIAMETER, TAG_DOT_DIAMETER));
         match color {
-            Some((r, g, b)) => {
-                NSColor::colorWithSRGBRed_green_blue_alpha(
-                    r as f64 / 255.,
-                    g as f64 / 255.,
-                    b as f64 / 255.,
-                    1.,
-                )
-                .setFill();
+            Some(rgb) => {
+                srgb(rgb).setFill();
                 NSBezierPath::bezierPathWithOvalInRect(disc).fill();
             }
             None => {
@@ -299,11 +289,6 @@ fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-/// What Finder's sidebar label loses when its window is no longer key.
-const INACTIVE_LABEL_ALPHA: f64 = 0.47;
-
-/// macOS 27 fades a source-list label with its window's key state; macOS 26 leaves it at full
-/// strength, so there the label carries the fade itself.
 pub(super) fn label_fades_itself() -> bool {
     static SELF_FADE: OnceLock<bool> = OnceLock::new();
     *SELF_FADE.get_or_init(|| {
@@ -314,24 +299,22 @@ pub(super) fn label_fades_itself() -> bool {
     })
 }
 
-/// Finder draws a selected tag row's label in the tag's own colour, never the accent one, and
-/// fades every label with the window's key state.
 fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
-    let group = cell.ivars().group;
-    let fade = label_fades_itself() && !key && !group;
+    let fade = label_fades_itself() && !key && !cell.ivars().group;
     let tint = cell.ivars().tint.borrow().clone().filter(|_| selected);
     let colour = match tint {
         Some(tag) => tag,
-        // An explicit colour costs a selected row the accent AppKit would have substituted.
+        // An explicit colour loses the accent AppKit substitutes on a selected row.
         None if fade && selected => NSColor::controlAccentColor(),
         None => NSColor::labelColor(),
     };
-    let colour = match fade {
-        true => colour.colorWithAlphaComponent(INACTIVE_LABEL_ALPHA),
-        false => colour,
+    let colour = if fade {
+        colour.colorWithAlphaComponent(INACTIVE_LABEL_ALPHA)
+    } else {
+        colour
     };
     title.setTextColor(Some(&colour));
 }
@@ -362,14 +345,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     }
 
     *cell.ivars().tint.borrow_mut() = match node.icon {
-        Some(SidebarIcon::Dot(Some((r, g, b)))) => {
-            Some(NSColor::colorWithSRGBRed_green_blue_alpha(
-                r as f64 / 255.,
-                g as f64 / 255.,
-                b as f64 / 255.,
-                1.,
-            ))
-        }
+        Some(SidebarIcon::Dot(Some(rgb))) => Some(srgb(rgb)),
         _ => None,
     };
 
@@ -418,18 +394,18 @@ pub(super) fn row_view(
     let model = shared.model.borrow();
     let node = model.node(Shared::key_of_item(item))?;
 
-    let (identifier, with_icon) = if node.group {
-        (ID_GROUP, false)
+    let identifier = if node.group {
+        ID_GROUP
     } else if node.icon.is_some() {
-        (ID_ICON, true)
+        ID_ICON
     } else {
-        (ID_PLAIN, false)
+        ID_PLAIN
     };
     let name = NSString::from_str(identifier);
 
     let cell = match unsafe { outline.makeViewWithIdentifier_owner(&name, Some(outline)) } {
         Some(view) => unsafe { Retained::cast_unchecked::<SidebarCell>(view) },
-        None => make_cell(mtm, identifier, with_icon, target),
+        None => make_cell(mtm, identifier, target),
     };
     configure_cell(
         &cell,

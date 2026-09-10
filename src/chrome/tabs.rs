@@ -16,7 +16,10 @@ use crate::bridge::appkit::gpui_view;
 
 thread_local! {
     static NEW_TAB: RefCell<Option<(AsyncApp, Box<dyn Action>)>> = const { RefCell::new(None) };
+    static INSET: RefCell<HashMap<usize, f64>> = RefCell::new(HashMap::new());
 }
+
+const INSET_CLASS: &CStr = c"NGTabBarInsetView";
 
 fn ns_window_of(window: &Window) -> Retained<NSWindow> {
     gpui_view(window)
@@ -24,8 +27,6 @@ fn ns_window_of(window: &Window) -> Retained<NSWindow> {
         .expect("GPUI's view is in its window")
 }
 
-/// Grouped by `WindowOptions::tabbing_identifier`; `newWindowForTab:` (File > New Tab, ⌘T)
-/// dispatches `action` the way a menu row would.
 pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     let ns_window = ns_window_of(window);
     let mtm = MainThreadMarker::from(&*ns_window);
@@ -36,20 +37,17 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     teach_new_tab(mtm);
 }
 
-/// Stop the toolbar's background and the tab bar `points` short of the window's trailing edge, so
-/// they end where a full-height pane begins and the pane's own material runs up behind the
-/// toolbar, as Finder's does.
 pub fn set_trailing_inset(window: &Window, points: f32) {
     let ns_window = ns_window_of(window);
-    inset_toolbar_background(&ns_window, points.max(0.));
+    let points = points.max(0.);
+    inset_toolbar_background(&ns_window, points);
     let Some(accessory) = tab_bar_accessory(&ns_window) else {
         return;
     };
     adopt_inset(&accessory);
-    let inset = f64::from(points.max(0.));
+    let inset = f64::from(points);
     let key = Retained::as_ptr(&accessory) as usize;
-    let changed = INSET.with_borrow_mut(|insets| insets.insert(key, inset) != Some(inset));
-    if changed {
+    if INSET.with_borrow_mut(|insets| insets.insert(key, inset) != Some(inset)) {
         accessory.setNeedsLayout(true);
     }
 }
@@ -68,8 +66,7 @@ pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
     tab.makeKeyAndOrderFront(None);
 }
 
-/// GPUI's window class collapses AppKit's tab bar to draw its own and swallows the tab
-/// actions; a native app wants AppKit's, so its class gets `NSWindow`'s implementations back.
+// GPUI's window class hides AppKit's tab bar and swallows its actions; put NSWindow's back.
 fn restore_appkit_tabs(window: &NSWindow) {
     let base = NSWindow::class();
     let mut class = window.class();
@@ -111,17 +108,14 @@ fn restore_appkit_tabs(window: &NSWindow) {
     answer_new_tab(class);
 }
 
-/// GPUI turns automatic tabbing off again whenever a window without a tabbing identifier
-/// opens (a panel, say), and AppKit will not raise a lone window's bar while it is off.
+// GPUI turns automatic tabbing off whenever an untabbed window opens, hiding a lone window's bar.
 extern "C" fn toggle_tab_bar(this: &AnyObject, _: Sel, sender: *mut AnyObject) {
     let mtm = MainThreadMarker::new().expect("AppKit sends toggleTabBar: on the main thread");
     NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
     let _: () = unsafe { msg_send![super(this, NSWindow::class()), toggleTabBar: sender] };
 }
 
-/// AppKit decides once, when it first builds a window's tab bar, whether that bar carries the
-/// New Tab button, and gpui builds the bar while it creates the window: nothing the responder
-/// chain learns afterwards brings the button back.
+// AppKit decides whether a tab bar has a New Tab button once, when gpui builds the window.
 pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
     if let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() {
         let delegate: &AnyObject = delegate.as_ref();
@@ -154,14 +148,6 @@ extern "C" fn new_window_for_tab(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {
     });
 }
 
-thread_local! {
-    static INSET: RefCell<HashMap<usize, f64>> = RefCell::new(HashMap::new());
-}
-
-const INSET_CLASS: &CStr = c"NGTabBarInsetView";
-
-/// The toolbar's background is a view of the split view's, drawn over the pane the content item
-/// holds; narrowing it is what leaves the pane's own material showing under the toolbar.
 fn inset_toolbar_background(window: &NSWindow, points: f32) {
     let Some(split) = window
         .contentViewController()
@@ -203,7 +189,7 @@ fn tab_bar(accessory: &NSView) -> Option<Retained<NSView>> {
         .find(|view| view.class().name() == c"NSTabBar")
 }
 
-/// AppKit sizes the bar to the whole titlebar again on each resize and each tab change.
+// AppKit resizes the bar to the whole titlebar on every resize and tab change.
 fn adopt_inset(accessory: &NSView) {
     if accessory.class().name() == INSET_CLASS {
         return;
@@ -252,8 +238,7 @@ extern "C" fn inset_resize(view: *mut AnyObject, selector: Sel, old: NSSize) {
 }
 
 fn apply_inset(view: *mut AnyObject) {
-    let inset = INSET.with_borrow(|insets| insets.get(&(view as usize)).copied());
-    let Some(inset) = inset else {
+    let Some(inset) = INSET.with_borrow(|insets| insets.get(&(view as usize)).copied()) else {
         return;
     };
     let accessory = unsafe { &*view.cast::<NSView>() };

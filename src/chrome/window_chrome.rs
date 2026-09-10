@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::panic::Location;
 use std::ptr;
 use std::rc::Rc;
@@ -36,7 +37,6 @@ use crate::bridge::host::element_key;
 use crate::controls::menu::{MenuEntry, sync_menu};
 use crate::tokens;
 
-/// A GPUI element's `bounds` in [`chrome_host`] space, which is flipped — so, the identity.
 pub fn native_rect(bounds: Bounds<Pixels>) -> NSRect {
     to_rect(bounds)
 }
@@ -52,36 +52,24 @@ pub fn native_screen_rect(host: &NSView, bounds: Bounds<Pixels>) -> NSRect {
     window.convertRectToScreen(native_window_rect(host, bounds))
 }
 
-/// The flipped view that owns this window's chrome: positioning view and [`cursor_region`] owner.
 pub fn chrome_host(window: &Window) -> Retained<NSView> {
     Retained::into_super(chrome(window))
 }
 
 #[derive(Copy, Clone, PartialEq)]
-struct Claim {
+struct Region<T> {
     key: u64,
     rect: NSRect,
-    cursor: Cursor,
+    value: T,
 }
 
-#[derive(Clone, PartialEq)]
-struct Tip {
-    key: u64,
-    rect: NSRect,
-    text: SharedString,
-}
+type Regions<T> = RefCell<Vec<Region<T>>>;
+type Callout = Region<SharedString>;
 
 const CALLOUT_DELAY: f64 = 0.87;
 const CALLOUT_FONT_SIZE: f32 = 14.;
 const CALLOUT_INSET_X: f64 = 8.;
 const CALLOUT_INSET_Y: f64 = 4.;
-
-#[derive(Clone, PartialEq)]
-struct Callout {
-    key: u64,
-    rect: NSRect,
-    text: SharedString,
-}
 
 #[derive(Clone)]
 struct CalloutView {
@@ -93,7 +81,7 @@ struct CalloutView {
 struct Corner {
     supported: bool,
     system: f64,
-    /// Tracked intent: `_setCornerRadius: 0` means "system default" and reads back as one.
+    // `_setCornerRadius: 0` restores the system radius and reads back as it, so intent is kept here.
     written: Option<f64>,
 }
 
@@ -110,9 +98,9 @@ struct Baseline {
 }
 
 struct ChromeIvars {
-    claims: RefCell<Vec<Claim>>,
-    tips: RefCell<Vec<Tip>>,
-    callouts: RefCell<Vec<Callout>>,
+    claims: Regions<Cursor>,
+    tips: Regions<SharedString>,
+    callouts: Regions<SharedString>,
     callout: RefCell<Option<CalloutView>>,
     shown: RefCell<Option<Callout>>,
     hovered: Cell<u64>,
@@ -123,11 +111,10 @@ struct ChromeIvars {
     toolbar: RefCell<Option<Retained<NSToolbar>>>,
     toolbar_delegate: RefCell<Option<Retained<ToolbarDelegate>>>,
     toolbar_installed: RefCell<Option<(ToolbarStyle, Vec<String>)>>,
-    baseline: RefCell<Option<Baseline>>,
+    baseline: Baseline,
 }
 
 define_class!(
-    /// Flipped, event-transparent, one instance per GPUI window holding its whole chrome state.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGChrome"]
@@ -140,7 +127,7 @@ define_class!(
             true
         }
 
-        // `hitTest:` arrives in the superview's space, hence the conversion.
+        // `hitTest:` points arrive in the superview's space.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
@@ -158,13 +145,11 @@ define_class!(
         fn cursor_update(&self, event: &NSEvent) {
             let local = self.convertPoint_fromView(event.locationInWindow(), None);
             if let Some(claim) = self.claim_at(local) {
-                claim.cursor.ns().set();
+                claim.value.ns().set();
             }
         }
 
-        // Cursor rects and gpui's own cursor styles both apply only in the key window, and AppKit
-        // puts the arrow back after every move in a window that is not key. A window that can never
-        // be key, such as a child panel, sets its cursor a turn later, after that reset.
+        // AppKit resets the cursor after every move in a non-key window, so set it a turn later.
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, _: &NSEvent) {
             self.hover_callout();
@@ -189,7 +174,7 @@ define_class!(
             let local = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
             match self.claim_at(local) {
                 Some(claim) => {
-                    claim.cursor.ns().set();
+                    claim.value.ns().set();
                     self.ivars().forced.set(true);
                 }
                 None => self.release_cursor(),
@@ -217,14 +202,15 @@ define_class!(
             point: NSPoint,
             _: *mut c_void,
         ) -> Retained<NSString> {
-            NSString::from_str(self.tip_at(point).as_deref().unwrap_or(""))
+            let tip = region_at(&self.ivars().tips, point).map(|tip| tip.value);
+            NSString::from_str(tip.as_deref().unwrap_or(""))
         }
 
         // One rect per claim: `cursorUpdate:` alone cannot switch between adjacent regions.
         #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
             for claim in self.ivars().claims.borrow().iter() {
-                self.addCursorRect_cursor(claim.rect, &claim.cursor.ns());
+                self.addCursorRect_cursor(claim.rect, &claim.value.ns());
             }
         }
     }
@@ -250,7 +236,7 @@ impl ChromeHost {
             toolbar: RefCell::new(None),
             toolbar_delegate: RefCell::new(None),
             toolbar_installed: RefCell::new(None),
-            baseline: RefCell::new(Some(baseline)),
+            baseline,
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this.setAutoresizingMask(
@@ -266,14 +252,8 @@ impl ChromeHost {
         }
     }
 
-    fn claim_at(&self, point: NSPoint) -> Option<Claim> {
-        self.ivars()
-            .claims
-            .borrow()
-            .iter()
-            .rev()
-            .find(|claim| contains(claim.rect, point))
-            .copied()
+    fn claim_at(&self, point: NSPoint) -> Option<Region<Cursor>> {
+        region_at(&self.ivars().claims, point)
     }
 
     fn ensure_tracking(&self) {
@@ -299,67 +279,40 @@ impl ChromeHost {
     }
 
     fn set_claim(&self, key: u64, rect: NSRect, cursor: Cursor) {
-        let claim = Claim { key, rect, cursor };
-        let mut claims = self.ivars().claims.borrow_mut();
-        match claims.iter_mut().find(|existing| existing.key == key) {
-            Some(existing) if *existing == claim => return,
-            Some(existing) => *existing = claim,
-            None => claims.push(claim),
-        }
-        drop(claims);
-        self.ensure_tracking();
-        self.invalidate_cursor_rects();
-    }
-
-    fn remove_claim(&self, key: u64) {
-        let mut claims = self.ivars().claims.borrow_mut();
-        let before = claims.len();
-        claims.retain(|claim| claim.key != key);
-        let changed = claims.len() != before;
-        drop(claims);
-        if changed {
+        let claim = Region {
+            key,
+            rect,
+            value: cursor,
+        };
+        if upsert(&self.ivars().claims, claim) {
+            self.ensure_tracking();
             self.invalidate_cursor_rects();
         }
     }
 
-    fn tip_at(&self, point: NSPoint) -> Option<SharedString> {
-        self.ivars()
-            .tips
-            .borrow()
-            .iter()
-            .rev()
-            .find(|tip| contains(tip.rect, point))
-            .map(|tip| tip.text.clone())
+    fn remove_claim(&self, key: u64) {
+        if remove_region(&self.ivars().claims, key) {
+            self.invalidate_cursor_rects();
+        }
     }
 
     fn set_tip(&self, key: u64, rect: NSRect, text: &SharedString) {
-        let tip = Tip {
+        let tip = Region {
             key,
             rect,
-            text: text.clone(),
+            value: text.clone(),
         };
-        let mut tips = self.ivars().tips.borrow_mut();
-        match tips.iter_mut().find(|existing| existing.key == key) {
-            Some(existing) if *existing == tip => return,
-            Some(existing) => *existing = tip,
-            None => tips.push(tip),
-        }
-        drop(tips);
-        self.reset_tool_tips();
-    }
-
-    fn remove_tip(&self, key: u64) {
-        let mut tips = self.ivars().tips.borrow_mut();
-        let before = tips.len();
-        tips.retain(|tip| tip.key != key);
-        let changed = tips.len() != before;
-        drop(tips);
-        if changed {
+        if upsert(&self.ivars().tips, tip) {
             self.reset_tool_tips();
         }
     }
 
-    // A tool tip rect cannot be moved, only replaced, and replacing one restarts its delay.
+    fn remove_tip(&self, key: u64) {
+        if remove_region(&self.ivars().tips, key) {
+            self.reset_tool_tips();
+        }
+    }
+
     fn reset_tool_tips(&self) {
         self.removeAllToolTips();
         for tip in self.ivars().tips.borrow().iter() {
@@ -368,37 +321,23 @@ impl ChromeHost {
     }
 
     fn callout_at(&self, point: NSPoint) -> Option<Callout> {
-        self.ivars()
-            .callouts
-            .borrow()
-            .iter()
-            .rev()
-            .find(|callout| contains(callout.rect, point))
-            .cloned()
+        region_at(&self.ivars().callouts, point)
     }
 
     fn set_callout(&self, key: u64, rect: NSRect, text: &SharedString) {
-        let callout = Callout {
+        let callout = Region {
             key,
             rect,
-            text: text.clone(),
+            value: text.clone(),
         };
-        let mut callouts = self.ivars().callouts.borrow_mut();
-        match callouts.iter_mut().find(|existing| existing.key == key) {
-            Some(existing) if *existing == callout => return,
-            Some(existing) => *existing = callout.clone(),
-            None => callouts.push(callout.clone()),
+        if upsert(&self.ivars().callouts, callout.clone()) {
+            self.ensure_tracking();
+            self.follow_callout(&callout);
         }
-        drop(callouts);
-        self.ensure_tracking();
-        self.follow_callout(&callout);
     }
 
     fn remove_callout(&self, key: u64) {
-        self.ivars()
-            .callouts
-            .borrow_mut()
-            .retain(|callout| callout.key != key);
+        remove_region(&self.ivars().callouts, key);
         if self.shows(key) {
             self.hide_callout();
         }
@@ -449,8 +388,7 @@ impl ChromeHost {
         }
     }
 
-    // Every AppKit call below can deliver an event back into this host, so no ivar is borrowed
-    // across one.
+    // AppKit calls here can re-enter this host, so no ivar borrow spans one.
     fn show_callout(&self, callout: &Callout) {
         let mtm = MainThreadMarker::new().expect("AppKit tracking is a main-thread path");
         let view = self
@@ -459,7 +397,7 @@ impl ChromeHost {
             .borrow_mut()
             .get_or_insert_with(|| CalloutView::new(mtm))
             .clone();
-        view.set_text(&callout.text);
+        view.set_text(&callout.value);
         if let Some(window) = self.window() {
             view.popover
                 .setAppearance(Some(&window.effectiveAppearance()));
@@ -555,6 +493,35 @@ fn contains(rect: NSRect, point: NSPoint) -> bool {
         && point.y <= rect.origin.y + rect.size.height
 }
 
+fn region_at<T: Clone>(regions: &Regions<T>, point: NSPoint) -> Option<Region<T>> {
+    regions
+        .borrow()
+        .iter()
+        .rev()
+        .find(|region| contains(region.rect, point))
+        .cloned()
+}
+
+fn upsert<T: PartialEq>(regions: &Regions<T>, region: Region<T>) -> bool {
+    let mut regions = regions.borrow_mut();
+    match regions
+        .iter_mut()
+        .find(|existing| existing.key == region.key)
+    {
+        Some(existing) if *existing == region => return false,
+        Some(existing) => *existing = region,
+        None => regions.push(region),
+    }
+    true
+}
+
+fn remove_region<T>(regions: &Regions<T>, key: u64) -> bool {
+    let mut regions = regions.borrow_mut();
+    let before = regions.len();
+    regions.retain(|region| region.key != key);
+    regions.len() != before
+}
+
 fn chrome(window: &Window) -> Retained<ChromeHost> {
     let view = gpui_view(window);
     let class = ChromeHost::class();
@@ -569,11 +536,10 @@ fn chrome(window: &Window) -> Retained<ChromeHost> {
         .window()
         .expect("GPUI's view is in its window by the time anything paints");
 
-    let supported = ns_window.respondsToSelector(sel!(_setCornerRadius:));
-    let system = if ns_window.respondsToSelector(sel!(_cornerRadius)) {
-        unsafe { msg_send![&*ns_window, _cornerRadius] }
-    } else {
-        0.0f64
+    let corner = Corner {
+        supported: ns_window.respondsToSelector(sel!(_setCornerRadius:)),
+        system: read_corner_radius(&ns_window).unwrap_or(0.),
+        written: None,
     };
     let baseline = Baseline {
         has_shadow: ns_window.hasShadow(),
@@ -587,16 +553,7 @@ fn chrome(window: &Window) -> Retained<ChromeHost> {
         appearance: ns_window.appearance(),
     };
 
-    let host = ChromeHost::new(
-        mtm,
-        view.bounds(),
-        Corner {
-            supported,
-            system,
-            written: None,
-        },
-        baseline,
-    );
+    let host = ChromeHost::new(mtm, view.bounds(), corner, baseline);
     view.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Below, None);
     host
 }
@@ -607,12 +564,16 @@ fn ns_window_of(window: &Window) -> Retained<NSWindow> {
         .expect("GPUI's view is in its window")
 }
 
-/// Whether this macOS has the private setter [`set_corner_radius`] drives; if not, it is a no-op.
+fn read_corner_radius(window: &NSWindow) -> Option<f64> {
+    window
+        .respondsToSelector(sel!(_cornerRadius))
+        .then(|| unsafe { msg_send![window, _cornerRadius] })
+}
+
 pub fn supports_corner_radius(window: &Window) -> bool {
     chrome(window).ivars().corner.get().supported
 }
 
-/// What the OS would round this window's corners to right now, if nobody overrode it.
 pub fn system_corner_radius(window: &Window) -> Pixels {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
@@ -625,7 +586,6 @@ pub fn system_corner_radius(window: &Window) -> Pixels {
     px(corner.system as f32)
 }
 
-/// The radius this crate last wrote, or `None` if the window is following the system.
 pub fn corner_radius(window: &Window) -> Option<Pixels> {
     chrome(window)
         .ivars()
@@ -635,7 +595,6 @@ pub fn corner_radius(window: &Window) -> Option<Pixels> {
         .map(|r| px(r as f32))
 }
 
-/// Round the window's real corners so the shadow follows; `None` and `px(0.)` both mean the OS's.
 pub fn set_corner_radius(window: &Window, radius: Option<Pixels>) {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
@@ -654,14 +613,8 @@ pub fn set_corner_radius(window: &Window, radius: Option<Pixels>) {
     host.ivars().corner.set(corner);
 }
 
-/// `_cornerRadius` as reported now. Diagnostics only — use [`corner_radius`] for intent.
 pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
-    let ns_window = ns_window_of(window);
-    if !ns_window.respondsToSelector(sel!(_cornerRadius)) {
-        return None;
-    }
-    let radius: f64 = unsafe { msg_send![&*ns_window, _cornerRadius] };
-    Some(px(radius as f32))
+    read_corner_radius(&ns_window_of(window)).map(|radius| px(radius as f32))
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -744,7 +697,6 @@ pub enum ToolbarItem {
         tool_tip: Option<String>,
         on_click: Option<ToolbarHandler>,
     },
-    /// Several glyphs in one capsule: `NSToolbarItemGroup`.
     Group {
         id: String,
         label: String,
@@ -755,17 +707,14 @@ pub enum ToolbarItem {
         tool_tip: Option<String>,
         on_select: Option<ToolbarIndexHandler>,
     },
-    /// The search field that collapses to a glyph: `NSSearchToolbarItem`.
     Search {
         id: String,
         label: String,
         placeholder: String,
-        /// What the field widens to when it takes focus.
         width: Pixels,
         tool_tip: Option<String>,
         on_change: Option<ToolbarTextHandler>,
     },
-    /// A glyph with a chevron that drops a real menu: `NSMenuToolbarItem`.
     Menu {
         id: String,
         symbol: String,
@@ -774,24 +723,20 @@ pub enum ToolbarItem {
         tool_tip: Option<String>,
         on_select: Option<ToolbarIndexHandler>,
     },
-    /// The system share sheet: `NSSharingServicePickerToolbarItem`.
     Share {
         id: String,
         label: String,
         items: Vec<String>,
         tool_tip: Option<String>,
     },
-    /// A divider tracking a split-view divider: `NSTrackingSeparatorToolbarItem`. Needs a sidebar.
     Separator {
         id: String,
-        /// Which divider, counting from the leading edge. A one-sidebar window has divider 0.
         divider: usize,
     },
-    /// Any other AppKit view, built once per identifier and retained by the toolbar.
     View {
         id: String,
         label: String,
-        /// Constrained per dimension, and only where positive: zero means "measure yourself".
+        /// Zero in a dimension leaves it unconstrained.
         size: Size<Pixels>,
         tool_tip: Option<String>,
         build: ToolbarViewBuilder,
@@ -815,7 +760,6 @@ impl ToolbarItem {
         }
     }
 
-    /// `selected` is the index you own; wire [`ToolbarItem::on_select`] to keep it.
     pub fn group(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -911,7 +855,6 @@ impl ToolbarItem {
         self
     }
 
-    /// The picked index; a [`ToolbarItem::Menu`]'s counts separators, so it indexes `entries`.
     pub fn on_select(mut self, handler: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
         let handler: ToolbarIndexHandler = Rc::new(handler);
         match &mut self {
@@ -923,7 +866,6 @@ impl ToolbarItem {
         self
     }
 
-    /// Every keystroke in a [`ToolbarItem::Search`] field, and the cancel button's clear.
     pub fn on_change(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
         if let ToolbarItem::Search { on_change, .. } = &mut self {
             *on_change = Some(Rc::new(handler));
@@ -962,7 +904,6 @@ impl ToolbarItem {
         self
     }
 
-    /// What hovering the item shows; AppKit also reports it as the item's `AXHelp`.
     pub fn tool_tip(mut self, text: impl Into<String>) -> Self {
         let text = text.into();
         match &mut self {
@@ -1009,7 +950,7 @@ impl ToolbarItem {
 struct ToolbarIvars {
     items: RefCell<Vec<ToolbarItem>>,
     built: RefCell<Vec<(String, Retained<NSToolbarItem>)>>,
-    /// Weak on purpose: the window retains the toolbar, which retains this delegate.
+    // Weak: the window owns the toolbar, which owns this delegate.
     window: Weak<NSWindow>,
     cx: AsyncWindowContext,
 }
@@ -1081,15 +1022,9 @@ define_class!(
                 ToolbarItem::Symbol { id, on_click, .. } if *id == wanted => on_click.clone(),
                 _ => None,
             });
-            let Some(handler) = handler else {
-                return;
-            };
-            self.ivars()
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| handler(window, app));
-                })
-                .detach();
+            if let Some(handler) = handler {
+                self.defer(move |window, app| handler(window, app));
+            }
         }
 
         #[unsafe(method(ngToolbarSearch:))]
@@ -1114,15 +1049,9 @@ define_class!(
                 } if *found == id => on_change.clone(),
                 _ => None,
             });
-            let Some(handler) = handler else {
-                return;
-            };
-            self.ivars()
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| handler(&text, window, app));
-                })
-                .detach();
+            if let Some(handler) = handler {
+                self.defer(move |window, app| handler(&text, window, app));
+            }
         }
 
         #[unsafe(method(ngToolbarMenu:))]
@@ -1166,7 +1095,16 @@ impl ToolbarDelegate {
         identifier_array(&ids)
     }
 
-    /// The sender's position among the subitems, not `selectedIndex`, which is -1 for Momentary.
+    fn defer(&self, run: impl FnOnce(&mut Window, &mut App) + 'static) {
+        self.ivars()
+            .cx
+            .spawn(async move |cx| {
+                let _ = cx.update(run);
+            })
+            .detach();
+    }
+
+    // The sender's position among the subitems: `selectedIndex` is -1 for Momentary.
     fn group_selection(&self, sender_id: &str) -> Option<(String, usize)> {
         self.ivars().built.borrow().iter().find_map(|(id, item)| {
             let group = item.downcast_ref::<NSToolbarItemGroup>()?;
@@ -1203,18 +1141,11 @@ impl ToolbarDelegate {
                 } if found == id => on_select.clone(),
                 _ => None,
             });
-        let Some(handler) = handler else {
-            return;
-        };
-        self.ivars()
-            .cx
-            .spawn(async move |cx| {
-                let _ = cx.update(|window, app| handler(index, window, app));
-            })
-            .detach();
+        if let Some(handler) = handler {
+            self.defer(move |window, app| handler(index, window, app));
+        }
     }
 
-    /// `None` for a standard spacer: those are AppKit's own items and it builds them itself.
     fn build_item(&self, ident: &NSString) -> Option<Retained<NSToolbarItem>> {
         let mtm = MainThreadMarker::new()?;
         let wanted = ident.to_string();
@@ -1478,7 +1409,7 @@ fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
     )
 }
 
-/// Give the window a real toolbar, or take it away. Conflicts with `traffic_light_position`.
+/// Conflicts with `traffic_light_position`.
 pub fn set_toolbar(
     window: &mut Window,
     cx: &mut App,
@@ -1512,7 +1443,7 @@ pub fn set_toolbar(
                 NSToolbar::alloc(mtm),
                 &NSString::from_str("ng.window_chrome.toolbar"),
             );
-            toolbar.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*delegate)));
+            toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
             toolbar.setAllowsUserCustomization(false);
             toolbar
@@ -1541,7 +1472,6 @@ pub fn set_toolbar(
     *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
 }
 
-/// One line per built item: identifier, the AppKit class, visible or clipped, and class details.
 pub fn toolbar_description(window: &Window) -> String {
     let ns_window = ns_window_of(window);
     let Some(toolbar) = ns_window.toolbar() else {
@@ -1595,46 +1525,39 @@ pub fn toolbar_description(window: &Window) -> String {
     lines.join("\n")
 }
 
-pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> {
-    let ns_window = ns_window_of(window);
-    ns_window
+fn toolbar_item(window: &Window, id: &str) -> Option<Retained<NSToolbarItem>> {
+    ns_window_of(window)
         .toolbar()?
         .items()
         .iter()
         .find(|item| item.itemIdentifier().to_string() == id)
-        .and_then(|item| item.view())
+}
+
+pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> {
+    toolbar_item(window, id)?.view()
 }
 
 pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
-    let ns_window = ns_window_of(window);
-    let Some(toolbar) = ns_window.toolbar() else {
+    let Some(item) = toolbar_item(window, id) else {
         return;
     };
-    for item in toolbar.items().iter() {
-        if item.itemIdentifier().to_string() != id {
-            continue;
-        }
-        let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() else {
-            return;
-        };
-        if active {
-            search.beginSearchInteraction();
-        } else {
-            search.endSearchInteraction();
-        }
+    let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() else {
         return;
+    };
+    if active {
+        search.beginSearchInteraction();
+    } else {
+        search.endSearchInteraction();
     }
 }
 
-/// How much of the window's height the titlebar and toolbar occupy, in points.
 pub fn titlebar_band(window: &Window) -> Pixels {
     let ns_window = ns_window_of(window);
     let frame = ns_window.frame();
-    // contentRectForFrameRect is the whole frame under FullSizeContentView; use contentLayoutRect.
+    // Not contentRectForFrameRect: under FullSizeContentView that is the whole frame.
     px((frame.size.height - ns_window.contentLayoutRect().size.height) as f32)
 }
 
-/// Where macOS has put the traffic lights, as an inset from the window frame's top-left.
 pub fn traffic_light_inset(window: &Window) -> Option<Point<Pixels>> {
     let ns_window = ns_window_of(window);
     let button = ns_window.standardWindowButton(NSWindowButton::CloseButton)?;
@@ -1647,7 +1570,6 @@ pub fn traffic_light_inset(window: &Window) -> Option<Point<Pixels>> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-/// Window levels, resolved through `CGWindowLevelForKey` rather than the SDK's baked constants.
 pub enum WindowLevel {
     Normal,
     Floating,
@@ -1678,24 +1600,19 @@ pub fn window_level(level: WindowLevel) -> isize {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-/// Every window-level flag this crate touches: read it, change one field, write it back.
 pub struct WindowFlags {
     pub has_shadow: bool,
     pub is_opaque: bool,
     pub alpha: f32,
     pub movable_by_background: bool,
-    /// GPUI rewrites this on both fullscreen transitions, so a value set here does not survive one.
     pub titlebar_appears_transparent: bool,
     pub titled: bool,
     pub full_size_content: bool,
     pub level: isize,
     pub collection: NSWindowCollectionBehavior,
-    /// `None` follows the system. Window-scoped, unlike [`tokens::set_app_appearance`].
     pub appearance: Option<tokens::Appearance>,
 }
 
-/// Restore this window's frame from the one AppKit saved under `name`, and keep saving it there
-/// as the window moves and resizes.
 pub fn remember_frame(window: &Window, name: &str) {
     let ns_window = ns_window_of(window);
     let name = NSString::from_str(name);
@@ -1722,7 +1639,7 @@ pub fn window_flags(window: &Window) -> WindowFlags {
 
 pub fn set_window_flags(window: &Window, flags: WindowFlags) {
     let ns_window = ns_window_of(window);
-    // Installs the chrome host, so `restore_window_flags` has a baseline even from a first call.
+    // Installing the host captures the baseline `restore_window_flags` returns to.
     let _ = chrome(window);
 
     ns_window.setHasShadow(flags.has_shadow);
@@ -1753,10 +1670,7 @@ pub fn set_window_flags(window: &Window, flags: WindowFlags) {
 
 pub fn restore_window_flags(window: &Window) {
     let host = chrome(window);
-    let borrowed = host.ivars().baseline.borrow();
-    let Some(baseline) = borrowed.as_ref() else {
-        return;
-    };
+    let baseline = &host.ivars().baseline;
     let ns_window = ns_window_of(window);
     ns_window.setHasShadow(baseline.has_shadow);
     ns_window.setOpaque(baseline.is_opaque);
@@ -1862,15 +1776,41 @@ pub struct CursorRegion {
     child: AnyElement,
 }
 
-struct ClaimGuard {
+struct RegionGuard<E> {
     host: Retained<ChromeHost>,
     key: u64,
+    remove: fn(&ChromeHost, u64),
+    element: PhantomData<E>,
 }
 
-impl Drop for ClaimGuard {
+impl<E> Drop for RegionGuard<E> {
     fn drop(&mut self) {
-        self.host.remove_claim(self.key);
+        (self.remove)(&self.host, self.key);
     }
+}
+
+fn track<E: 'static>(
+    window: &mut Window,
+    id: &GlobalElementId,
+    remove: fn(&ChromeHost, u64),
+) -> (Retained<ChromeHost>, u64) {
+    let host = chrome(window);
+    let key = element_key(Some(id));
+    window.with_element_state::<RegionGuard<E>, ()>(id, |existing, _| {
+        let guard = existing.unwrap_or_else(|| RegionGuard {
+            host: host.clone(),
+            key,
+            remove,
+            element: PhantomData,
+        });
+        ((), guard)
+    });
+    (host, key)
+}
+
+fn visible(bounds: Bounds<Pixels>, window: &Window) -> Option<Bounds<Pixels>> {
+    let visible = bounds.intersect(&window.content_mask().bounds);
+    (visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible)
 }
 
 impl Element for CursorRegion {
@@ -1905,11 +1845,7 @@ impl Element for CursorRegion {
         cx: &mut App,
     ) -> Option<Hitbox> {
         self.child.prepaint(window, cx);
-        let visible = bounds.intersect(&window.content_mask().bounds);
-        if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
-            return None;
-        }
-        Some(window.insert_hitbox(visible, HitboxBehavior::Normal))
+        visible(bounds, window).map(|visible| window.insert_hitbox(visible, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -1924,21 +1860,12 @@ impl Element for CursorRegion {
     ) {
         self.child.paint(window, cx);
 
-        let (Some(global_id), Some(hitbox)) = (id, hitbox.as_ref()) else {
+        let (Some(id), Some(hitbox)) = (id, hitbox.as_ref()) else {
             return;
         };
         // Both mechanisms: gpui resets the cursor to Arrow at the end of every drawn frame.
         window.set_cursor_style(self.cursor.gpui(), hitbox);
-
-        let host = chrome(window);
-        let key = element_key(id);
-        window.with_element_state::<ClaimGuard, ()>(global_id, |existing, _| {
-            let guard = existing.unwrap_or_else(|| ClaimGuard {
-                host: host.clone(),
-                key,
-            });
-            ((), guard)
-        });
+        let (host, key) = track::<Self>(window, id, ChromeHost::remove_claim);
         host.set_claim(key, native_rect(hitbox.bounds), self.cursor);
     }
 }
@@ -1967,17 +1894,6 @@ pub struct NativeTooltip {
     id: ElementId,
     text: SharedString,
     child: AnyElement,
-}
-
-struct TipGuard {
-    host: Retained<ChromeHost>,
-    key: u64,
-}
-
-impl Drop for TipGuard {
-    fn drop(&mut self) {
-        self.host.remove_tip(self.key);
-    }
 }
 
 impl Element for NativeTooltip {
@@ -2028,18 +1944,10 @@ impl Element for NativeTooltip {
     ) {
         self.child.paint(window, cx);
 
-        let Some(global_id) = id else {
+        let Some(id) = id else {
             return;
         };
-        let host = chrome(window);
-        let key = element_key(id);
-        window.with_element_state::<TipGuard, ()>(global_id, |existing, _| {
-            let guard = existing.unwrap_or_else(|| TipGuard {
-                host: host.clone(),
-                key,
-            });
-            ((), guard)
-        });
+        let (host, key) = track::<Self>(window, id, ChromeHost::remove_tip);
         match visible {
             Some(bounds) => host.set_tip(key, native_rect(*bounds), &self.text),
             None => host.remove_tip(key),
@@ -2055,7 +1963,6 @@ impl IntoElement for NativeTooltip {
     }
 }
 
-/// The system popover, pointing down at the element, after the wait Finder's gallery strip uses.
 pub fn native_callout(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -2072,17 +1979,6 @@ pub struct NativeCallout {
     id: ElementId,
     text: SharedString,
     child: AnyElement,
-}
-
-struct CalloutGuard {
-    host: Retained<ChromeHost>,
-    key: u64,
-}
-
-impl Drop for CalloutGuard {
-    fn drop(&mut self) {
-        self.host.remove_callout(self.key);
-    }
 }
 
 impl Element for NativeCallout {
@@ -2133,18 +2029,10 @@ impl Element for NativeCallout {
     ) {
         self.child.paint(window, cx);
 
-        let Some(global_id) = id else {
+        let Some(id) = id else {
             return;
         };
-        let host = chrome(window);
-        let key = element_key(id);
-        window.with_element_state::<CalloutGuard, ()>(global_id, |existing, _| {
-            let guard = existing.unwrap_or_else(|| CalloutGuard {
-                host: host.clone(),
-                key,
-            });
-            ((), guard)
-        });
+        let (host, key) = track::<Self>(window, id, ChromeHost::remove_callout);
         match visible {
             Some(bounds) => host.set_callout(key, native_rect(*bounds), &self.text),
             None => host.remove_callout(key),
