@@ -69,6 +69,7 @@ actions!(
         OpenSelection,
         QuickLook,
         Slideshow,
+        Print,
         Share,
         OpenInNewTab,
         OpenInNewWindow,
@@ -182,6 +183,7 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Slideshow", Slideshow)
                 .key("cmd-alt-y")
                 .option_alternate(),
+            MenuCommand::new("Print", Print).key("cmd-p"),
             MenuCommand::separator(),
             MenuCommand::new("Share…", Share),
             MenuCommand::separator(),
@@ -564,6 +566,16 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &Slideshow, window, cx| {
                 this.slideshow(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Print, _, _| {
+                let files: Vec<std::path::PathBuf> = this
+                    .chosen_keys()
+                    .iter()
+                    .map(|key| std::path::PathBuf::from(key.as_ref()))
+                    .collect();
+                if let Err(error) = crate::openwith::print(&files) {
+                    this.complain(&error);
+                }
             }))
             .on_action(cx.listener(|this, _: &Share, window, cx| {
                 this.share_selection(window, cx);
