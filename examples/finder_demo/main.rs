@@ -146,6 +146,8 @@ fn crawl(cx: &mut App) {
     let executor = cx.background_executor().clone();
     // `NG_NO_CRAWL=1` keeps the index idle, to tell the crawl's disk walk apart from the view's.
     if env::var_os("NG_NO_CRAWL").is_none() {
+        static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
+        FOLLOWING.get_or_init(|| index().follow(roots.clone()));
         executor
             .spawn(async move { index().sync(roots, |_| {}) })
             .detach();

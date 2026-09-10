@@ -215,6 +215,21 @@ impl Index {
         }
     }
 
+    pub fn follow(self: &Arc<Self>, roots: Vec<PathBuf>) -> crate::watch::Watcher {
+        let index = self.clone();
+        crate::watch::since(crate::watch::latest_event_id(), roots, move |replay| {
+            let home = crawl::home();
+            let open = |dir: &PathBuf| catchup::open_to_us(dir, &home);
+            let mut deeper: Vec<PathBuf> = replay.rescan.into_iter().filter(open).collect();
+            for dir in replay.dirs.iter().filter(|dir| open(dir)) {
+                deeper.extend(index.refresh(dir, &home));
+            }
+            if !deeper.is_empty() {
+                index.crawl(deeper, |_| {});
+            }
+        })
+    }
+
     fn refresh(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
         let listed = list_dir(dir);
         let Some(id) = resolve(&self.read(), dir) else {
