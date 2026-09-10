@@ -38,7 +38,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [ ] Go ▸ AirDrop (⇧⌘R) and Shared (⇧⌘S)
 - [ ] File ▸ New Smart Folder, and saved searches with it
 - [ ] File ▸ Print (⌘P)
-- [ ] File ▸ Slideshow (⌥⌘Y)
+- [x] File ▸ Slideshow (⌥⌘Y)
 - [ ] File ▸ Create/Copy iCloud Link, Manage Shared File…
 - [ ] Quick Actions in the context menu: Rotate, Markup, Create PDF, and custom ones
 - [ ] The Services submenu
