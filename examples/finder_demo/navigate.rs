@@ -22,6 +22,20 @@ pub(crate) fn typed_path(text: &str) -> PathBuf {
     })
 }
 
+/// The folder that shows `id`, and the key `id` is chosen by in it. The boot volume sits in no
+/// folder: Finder reveals it among the volumes, the listing /Volumes is.
+fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
+    match Path::new(id).parent() {
+        Some(parent) => Some((intern_path(parent), SharedString::from(id))),
+        None => volume_at(id).map(|volume| {
+            (
+                intern("/Volumes"),
+                SharedString::from(format!("/Volumes/{}", volume.name)),
+            )
+        }),
+    }
+}
+
 impl FinderDemo {
     pub(crate) fn here(&self) -> &'static str {
         self.history[self.at]
@@ -122,19 +136,26 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The boot volume sits in no folder: Finder reveals it among the volumes, the listing
-        // /Volumes is.
-        let (parent, key) = match Path::new(id).parent() {
-            Some(parent) => (intern_path(parent), SharedString::from(id)),
-            None => match volume_at(id) {
-                Some(volume) => (
-                    intern("/Volumes"),
-                    SharedString::from(format!("/Volumes/{}", volume.name)),
-                ),
-                None => return,
-            },
+        let Some((parent, key)) = enclosing(id) else {
+            return;
         };
         self.go(parent, window, cx);
+        self.choose_revealed(key);
+    }
+
+    /// Finder's Enclosing Folder in New Window: the same, in a window of its own.
+    pub(crate) fn enclosing_in_new_window(&self, cx: &mut Context<Self>) {
+        let Some((parent, key)) = enclosing(self.here()) else {
+            return;
+        };
+        cx.defer(move |cx| {
+            open_finder_window(parent, 1, cx)
+                .update(cx, |demo: &mut FinderDemo, _, _| demo.choose_revealed(key))
+                .ok();
+        });
+    }
+
+    fn choose_revealed(&mut self, key: SharedString) {
         self.selected = std::iter::once(key.clone()).collect();
         self.cursor = Some(key.clone());
         self.anchor = Some(key.clone());

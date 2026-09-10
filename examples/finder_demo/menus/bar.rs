@@ -81,6 +81,7 @@ actions!(
         Trash,
         DeleteImmediately,
         Up,
+        UpInNewWindow,
         ViewColumns,
         ViewGallery,
         ViewIcons,
@@ -241,6 +242,7 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Back", Back).key("cmd-["),
         MenuCommand::new("Forward", Forward).key("cmd-]"),
         MenuCommand::new("Enclosing Folder", Up).key("cmd-up"),
+        MenuCommand::new("Enclosing Folder in New Window", UpInNewWindow).key("cmd-ctrl-up"),
         MenuCommand::separator(),
         MenuCommand::new("Recents", GoRecents).key("cmd-shift-f"),
         MenuCommand::new("Documents", GoDocuments).key("cmd-shift-o"),
@@ -429,6 +431,9 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &Up, window, cx| {
                 this.up(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &UpInNewWindow, _, cx| {
+                this.enclosing_in_new_window(cx);
             }))
             .on_action(cx.listener(|this, _: &GoRecents, window, cx| {
                 this.show_tag(crate::search::RECENTS, window, cx);
