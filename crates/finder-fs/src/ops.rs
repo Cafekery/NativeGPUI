@@ -1544,6 +1544,16 @@ mod tests {
         assert!(ok.success(), "could not build the fixture");
     }
 
+    /// `remove_dir_all` holds a descriptor per level, which a test lowering the process's limit
+    /// alongside takes away; `rm` walks a tree past `PATH_MAX` on a handful.
+    fn remove_deep(dir: &Path) {
+        let ok = std::process::Command::new("rm")
+            .args(["-rf".as_ref(), dir.as_os_str()])
+            .status()
+            .unwrap();
+        assert!(ok.success(), "could not remove the fixture");
+    }
+
     struct FewDescriptors(libc::rlimit);
 
     impl FewDescriptors {
@@ -1615,7 +1625,7 @@ mod tests {
         assert_eq!(deep_sh(&dst.join("Moved"), 300, "cat leaf.txt"), "leaf");
         drop(few);
 
-        let _ = fs::remove_dir_all(&dir);
+        remove_deep(&dir);
     }
 
     #[test]
@@ -1646,7 +1656,7 @@ mod tests {
         );
 
         deep_sh(&tree, 249, "chmod 700 d250");
-        let _ = fs::remove_dir_all(&dir);
+        remove_deep(&dir);
     }
 
     #[test]
@@ -1677,7 +1687,7 @@ mod tests {
         assert!(!message.contains("os error"), "{message}");
 
         deep_sh(&tree, 249, "chmod 700 d250");
-        let _ = fs::remove_dir_all(&dir);
+        remove_deep(&dir);
     }
 
     #[test]
@@ -1905,6 +1915,7 @@ mod tests {
             .unwrap();
         let names = String::from_utf8_lossy(&listing.stdout);
         assert!(names.lines().any(|line| line == "sample.txt"), "{names}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1924,5 +1935,6 @@ mod tests {
         let names = String::from_utf8_lossy(&listing.stdout);
         assert!(names.lines().any(|line| line == "a.txt"), "{names}");
         assert!(names.lines().any(|line| line.starts_with("b/")), "{names}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
