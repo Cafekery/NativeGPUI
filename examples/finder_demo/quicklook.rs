@@ -2,12 +2,29 @@ use std::path::PathBuf;
 
 use gpui::{Context, KeyDownEvent, Keystroke, Modifiers, Window, prelude::*};
 use native_gpui::{
-    QuickLookKey, quick_look, quick_look_close, quick_look_update, quick_look_visible,
+    QuickLookKey, quick_look, quick_look_close, quick_look_full_screen, quick_look_update,
+    quick_look_visible,
 };
 
 use crate::app::FinderDemo;
 use crate::data::Line;
 use crate::view::LIST_VIEW;
+
+/// The panel's arrow keys, carried back to the window that opened it as its own key presses.
+fn key_forwarder(window: &Window, cx: &mut Context<FinderDemo>) -> impl Fn(QuickLookKey) + 'static {
+    let entity = cx.entity().downgrade();
+    let handle = gpui::Window::window_handle(window);
+    let app = cx.to_async();
+    move |key| {
+        let entity = entity.clone();
+        let mut app = app.clone();
+        let _ = app.update_window(handle, |_, window, cx| {
+            if let Some(entity) = entity.upgrade() {
+                entity.update(cx, |this, cx| this.quick_look_key(key, window, cx));
+            }
+        });
+    }
+}
 
 impl FinderDemo {
     pub(crate) fn toggle_quick_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -20,18 +37,16 @@ impl FinderDemo {
         };
         let source = self.ql_icon.bounds();
         self.ql_shown = self.cursor.clone().map(|key| (key, source));
-        let entity = cx.entity().downgrade();
-        let handle = gpui::Window::window_handle(window);
-        let app = cx.to_async();
-        quick_look(window, items, current, source, move |key| {
-            let entity = entity.clone();
-            let mut app = app.clone();
-            let _ = app.update_window(handle, |_, window, cx| {
-                if let Some(entity) = entity.upgrade() {
-                    entity.update(cx, |this, cx| this.quick_look_key(key, window, cx));
-                }
-            });
-        });
+        quick_look(window, items, current, source, key_forwarder(window, cx));
+    }
+
+    /// Finder's File ▸ Slideshow: the same items, full screen.
+    pub(crate) fn slideshow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((items, current)) = self.quick_look_items() else {
+            return;
+        };
+        self.ql_shown = None;
+        quick_look_full_screen(window, items, current, key_forwarder(window, cx));
     }
 
     /// Finder previews the whole selection with the cursor's item showing, or just the cursor.
