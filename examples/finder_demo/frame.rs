@@ -106,6 +106,10 @@ impl Render for FinderDemo {
             .go_sheet
             .clone()
             .map(|open| self.go_sheet(&open, &palette, window, cx));
+        let connect_sheet = self
+            .connect_sheet
+            .clone()
+            .map(|open| self.connect_sheet(&open, &palette, window, cx));
         let conflict_sheet = self
             .conflict
             .is_some()
@@ -171,6 +175,7 @@ impl Render for FinderDemo {
                             status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
                         )
                         .children(sheet)
+                        .children(connect_sheet)
                         .children(conflict_sheet)
                         .children(jobs_popover),
                 ),

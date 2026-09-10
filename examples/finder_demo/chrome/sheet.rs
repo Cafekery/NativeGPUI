@@ -145,58 +145,172 @@ impl FinderDemo {
                     .ok();
             });
 
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .relative()
-                    .w(px(SHEET_W))
-                    .rounded_b(system_corner_radius(window))
-                    .overflow_hidden()
-                    .child(
-                        material("ng.finder.go.glass", Material::Popover)
-                            .absolute()
-                            .inset_0(),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .px(px(20.))
-                            .py(px(18.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .font_family(tokens::system_font_family())
-                            .text_color(palette.label)
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Go to the folder:"),
-                            )
-                            .child(div().h(px(24.)).child(field))
-                            .children((!sheet.choices.is_empty()).then(|| {
-                                div().flex().flex_col().gap(px(2.)).children(
-                                    sheet.choices.iter().enumerate().map(|(at, choice)| {
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(match at {
-                                                0 => palette.label,
-                                                _ => palette.secondary,
-                                            })
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(choice.clone())
-                                    }),
-                                )
-                            })),
-                    ),
-            )
-            .into_any_element()
+        let choices = (!sheet.choices.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(sheet.choices.iter().enumerate().map(|(at, choice)| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(match at {
+                            0 => palette.label,
+                            _ => palette.secondary,
+                        })
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(choice.clone())
+                }))
+                .into_any_element()
+        });
+        glass(
+            "ng.finder.go.glass",
+            "Go to the folder:",
+            field,
+            choices,
+            palette,
+            window,
+        )
     }
+
+    /// Mounting blocks until the share is up or the login is refused, so it runs off the main
+    /// thread while the sheet says so.
+    fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.connect_sheet = Some(ConnectSheet {
+            address: address.clone(),
+            status: Some("Connecting…".into()),
+        });
+        cx.notify();
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let wanted = address.clone();
+            let mounted = cx
+                .background_executor()
+                .spawn(async move { finder_fs::volumes::mount(&wanted) })
+                .await;
+            cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| match mounted {
+                    Ok(point) => {
+                        this.connect_sheet = None;
+                        focus_gpui(window);
+                        this.go(intern_path(&point), window, cx);
+                    }
+                    Err(code) => {
+                        let status = format!(
+                            "There was a problem connecting to the server \u{201c}{address}\u{201d}. (Error {code})"
+                        );
+                        this.connect_sheet = Some(ConnectSheet {
+                            address,
+                            status: Some(status),
+                        });
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn connect_sheet(
+        &self,
+        sheet: &ConnectSheet,
+        palette: &Palette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let this: WeakEntity<Self> = cx.entity().downgrade();
+        let leave = this.clone();
+        let field = native_text_field("ng.finder.connect", &sheet.address)
+            .stretch()
+            .placeholder("smb://server")
+            .editing(0..sheet.address.chars().count())
+            .on_submit(move |typed, window, cx| {
+                let typed = typed.trim().to_string();
+                this.update(cx, |demo: &mut FinderDemo, cx| {
+                    demo.connect(typed, window, cx)
+                })
+                .ok();
+            })
+            .on_cancel(move |_, window, cx| {
+                leave
+                    .update(cx, |demo: &mut FinderDemo, cx| {
+                        demo.connect_sheet = None;
+                        focus_gpui(window);
+                        key_to_parent(window);
+                        cx.notify();
+                    })
+                    .ok();
+            });
+        let status = sheet.status.clone().map(|status| {
+            div()
+                .text_size(px(12.))
+                .text_color(palette.secondary)
+                .child(status)
+                .into_any_element()
+        });
+        glass(
+            "ng.finder.connect.glass",
+            "Connect to Server",
+            field,
+            status,
+            palette,
+            window,
+        )
+    }
+}
+
+/// Connect to Server: the address, and what the last try said.
+#[derive(Clone, Default)]
+pub(crate) struct ConnectSheet {
+    address: String,
+    status: Option<String>,
+}
+
+/// The sheet both Go to Folder and Connect to Server drop from the toolbar: a title, a field, and
+/// whatever the field has to say below it.
+fn glass(
+    id: &'static str,
+    title: &'static str,
+    field: impl IntoElement,
+    below: Option<AnyElement>,
+    palette: &Palette,
+    window: &Window,
+) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .relative()
+                .w(px(SHEET_W))
+                .rounded_b(system_corner_radius(window))
+                .overflow_hidden()
+                .child(material(id, Material::Popover).absolute().inset_0())
+                .child(
+                    div()
+                        .relative()
+                        .px(px(20.))
+                        .py(px(18.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .font_family(tokens::system_font_family())
+                        .text_color(palette.label)
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(div().h(px(24.)).child(field))
+                        .children(below),
+                ),
+        )
+        .into_any_element()
 }
