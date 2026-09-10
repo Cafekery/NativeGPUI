@@ -107,7 +107,7 @@ impl Lookup {
                 }
                 _ => (0, 0),
             };
-            place[id] = up | mine | u8::from(dotted) * HIDDEN;
+            place[id] = up | mine | (u8::from(dotted) * HIDDEN);
             if Some(node.parent) == home || (up & HOMED != 0 && node.parent != NONE) {
                 place[id] |= HOMED;
             }

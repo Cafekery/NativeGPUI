@@ -184,7 +184,7 @@ impl Index {
             seen.0 += 1;
         }
         let mut common: Vec<(usize, u32)> = counts.into_values().collect();
-        common.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        common.sort_unstable_by_key(|found| std::cmp::Reverse(found.0));
         common
             .into_iter()
             .take(limit)

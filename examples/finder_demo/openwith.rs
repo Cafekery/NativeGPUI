@@ -10,8 +10,7 @@ pub(crate) struct App {
 }
 
 fn url(path: &Path) -> Option<objc2::rc::Retained<NSURL>> {
-    let path = path.to_str()?;
-    unsafe { Some(NSURL::fileURLWithPath(&NSString::from_str(path))) }
+    Some(NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)))
 }
 
 fn name_of(bundle: &Path) -> String {
@@ -26,13 +25,15 @@ pub(crate) fn apps_for(file: &Path) -> Vec<App> {
     let Some(url) = url(file) else {
         return Vec::new();
     };
-    let workspace = unsafe { NSWorkspace::sharedWorkspace() };
-    let fallback = unsafe { workspace.URLForApplicationToOpenURL(&url) }
-        .and_then(|url| unsafe { url.path() })
+    let workspace = NSWorkspace::sharedWorkspace();
+    let fallback = workspace
+        .URLForApplicationToOpenURL(&url)
+        .and_then(|url| url.path())
         .map(|path| PathBuf::from(path.to_string()));
-    let mut apps: Vec<App> = unsafe { workspace.URLsForApplicationsToOpenURL(&url) }
+    let mut apps: Vec<App> = workspace
+        .URLsForApplicationsToOpenURL(&url)
         .iter()
-        .filter_map(|url| unsafe { url.path() })
+        .filter_map(|url| url.path())
         .map(|path| PathBuf::from(path.to_string()))
         .map(|path| App {
             name: name_of(&path),
@@ -53,13 +54,11 @@ pub(crate) fn open_with(files: &[PathBuf], app: &Path) {
         return;
     }
     let refs: Vec<&NSURL> = urls.iter().map(|url| url.as_ref()).collect();
-    let workspace = unsafe { NSWorkspace::sharedWorkspace() };
-    unsafe {
-        workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
-            &objc2_foundation::NSArray::from_slice(&refs),
-            &app,
-            &objc2_app_kit::NSWorkspaceOpenConfiguration::configuration(),
-            None,
-        )
-    };
+    let workspace = NSWorkspace::sharedWorkspace();
+    workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
+        &objc2_foundation::NSArray::from_slice(&refs),
+        &app,
+        &objc2_app_kit::NSWorkspaceOpenConfiguration::configuration(),
+        None,
+    );
 }
