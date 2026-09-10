@@ -45,7 +45,11 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
         menu.separator();
     }
-    menu.item(MenuEntry::item("Show Inspector"), Act::Inspector);
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(demo.target()));
+    menu.item(
+        MenuEntry::item("Show Inspector").option_alternate(),
+        Act::Inspector,
+    );
     menu.separator();
     menu.item(
         MenuEntry::item("Use Groups").checked(demo.grouped),
@@ -251,6 +255,10 @@ fn place_row(id: &SharedString) -> Menu {
     let held = holds(path);
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(at));
+    menu.item(
+        MenuEntry::item("Open in New Window").option_alternate(),
+        Act::OpenWindowAt(at),
+    );
     if held {
         menu.item(
             MenuEntry::item("Show in Enclosing Folder"),
