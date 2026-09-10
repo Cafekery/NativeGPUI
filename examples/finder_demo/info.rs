@@ -174,8 +174,14 @@ impl Render for Info {
     }
 }
 
-/// One window per chosen item, cascaded down the screen; `at` opens on a folder instead.
-pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static str>, cx: &mut App) {
+/// One window per chosen item, cascaded down the screen; `at` opens on a folder instead, and
+/// `summary` puts any selection in one window, as Get Summary Info does.
+pub(crate) fn open(
+    demo: &Entity<crate::app::FinderDemo>,
+    at: Option<&'static str>,
+    summary: bool,
+    cx: &mut App,
+) {
     let (lines, path) = {
         let state = demo.read(cx);
         let lines = match at {
@@ -198,7 +204,7 @@ pub(crate) fn open(demo: &Entity<crate::app::FinderDemo>, at: Option<&'static st
             ),
         )
     };
-    if lines.len() > COMBINE_OVER {
+    if summary || lines.len() > COMBINE_OVER {
         open_combined(lines, path, cx);
         return;
     }
@@ -238,7 +244,7 @@ impl Render for Combined {
         kinds.dedup();
         let kind_text: SharedString = kinds.join(", ").into();
         body()
-            .child(heading(format!("{count} Items").into()))
+            .child(heading(items(count).into()))
             .child(Info::section("General", true))
             .child(
                 div()
@@ -295,8 +301,16 @@ fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
             ..window_options()
         },
         move |window, cx| {
-            window.set_window_title(&format!("{count} Items Info"));
+            window.set_window_title(&format!("{} Info", items(count)));
             cx.new(|_| Combined { lines, where_ })
         },
     );
+}
+
+fn items(count: usize) -> String {
+    if count == 1 {
+        "1 Item".into()
+    } else {
+        format!("{count} Items")
+    }
 }

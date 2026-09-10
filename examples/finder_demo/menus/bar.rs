@@ -35,6 +35,7 @@ actions!(
         FindHere,
         Forward,
         GetInfo,
+        GetSummaryInfo,
         AddToSidebar,
         GoApplications,
         GoComputer,
@@ -132,6 +133,9 @@ pub(crate) fn install(_cx: &mut App) {
             MenuCommand::separator(),
             MenuCommand::new("Get Info", GetInfo).key("cmd-i"),
             MenuCommand::new("Show Inspector", ShowInspector).key("cmd-alt-i"),
+            MenuCommand::new("Get Summary Info", GetSummaryInfo)
+                .key("cmd-ctrl-i")
+                .option_alternate(),
             MenuCommand::new("Rename", RenameSelection),
             MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
             MenuCommand::new("Duplicate Exactly", DuplicateExactly)
@@ -331,7 +335,11 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|_, _: &GetInfo, _, cx| {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, None, cx));
+                cx.defer(move |cx| crate::info::open(&demo, None, false, cx));
+            }))
+            .on_action(cx.listener(|_, _: &GetSummaryInfo, _, cx| {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
             }))
             .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
                 this.run_menu(Act::Inspector, window, cx);
