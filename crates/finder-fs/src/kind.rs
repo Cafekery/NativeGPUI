@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -30,14 +30,13 @@ fn ns_ptr(s: &NSString) -> *const c_void {
     (s as *const NSString).cast()
 }
 
-/// `ptr` must be a `+1` CFStringRef (the "Copy" ownership rule); consumes that retain.
 unsafe fn take_string(ptr: *mut c_void) -> Option<String> {
     let s = Retained::from_raw(ptr.cast::<NSString>())?;
     let s = s.to_string();
     (!s.is_empty()).then_some(s)
 }
 
-/// Deprecated in favour of `UTType`, but still the closest public match to Finder's Kind string.
+// Deprecated in favour of `UTType`, but still the closest public match to Finder's Kind string.
 fn ls_label(ext: &str) -> Option<String> {
     if ext.is_empty() {
         return None;
@@ -51,7 +50,6 @@ fn ls_label(ext: &str) -> Option<String> {
     unsafe { take_string(out) }
 }
 
-/// `None` if the item is missing, its volume isn't indexed, or Spotlight hasn't caught up to it.
 fn spotlight_label(path: &Path) -> Option<String> {
     let path_str = path.to_str()?;
     let ns_path = NSString::from_str(path_str);
@@ -79,23 +77,13 @@ fn cache() -> &'static RwLock<HashMap<String, Kind>> {
     CACHE.get_or_init(Default::default)
 }
 
+fn package_names() -> &'static RwLock<HashSet<String>> {
+    static NAMES: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+    NAMES.get_or_init(Default::default)
+}
+
 fn well_known(identifier: &str) -> Option<Retained<UTType>> {
     UTType::typeWithIdentifier(&NSString::from_str(identifier))
-}
-
-fn directory_type() -> Option<Retained<UTType>> {
-    static TY: OnceLock<Option<Retained<UTType>>> = OnceLock::new();
-    TY.get_or_init(|| well_known("public.directory")).clone()
-}
-
-fn package_type() -> Option<Retained<UTType>> {
-    static TY: OnceLock<Option<Retained<UTType>>> = OnceLock::new();
-    TY.get_or_init(|| well_known("com.apple.package")).clone()
-}
-
-fn bundle_type() -> Option<Retained<UTType>> {
-    static TY: OnceLock<Option<Retained<UTType>>> = OnceLock::new();
-    TY.get_or_init(|| well_known("com.apple.bundle")).clone()
 }
 
 fn capitalize(s: &str) -> String {
@@ -123,26 +111,27 @@ fn label_for(ty: &UTType, ext: &str) -> Arc<str> {
         .into()
 }
 
-/// A real, non-synthesized package or bundle type: how `.app`, `.framework`, `.xcodeproj` resolve.
 fn package_variant(ns_ext: &NSString) -> Option<Retained<UTType>> {
-    let dir = directory_type()?;
-    let ty = UTType::typeWithFilenameExtension_conformingToType(ns_ext, &dir)?;
+    static TYPES: OnceLock<[Option<Retained<UTType>>; 3]> = OnceLock::new();
+    let [directory, package, bundle] = TYPES.get_or_init(|| {
+        ["public.directory", "com.apple.package", "com.apple.bundle"].map(well_known)
+    });
+    let ty = UTType::typeWithFilenameExtension_conformingToType(ns_ext, directory.as_ref()?)?;
     if ty.identifier().to_string().starts_with("dyn.") {
         return None;
     }
-    let conforms_package = package_type().is_some_and(|p| ty.conformsToType(&p));
-    let conforms_bundle = bundle_type().is_some_and(|b| ty.conformsToType(&b));
-    (conforms_package || conforms_bundle).then_some(ty)
+    [package, bundle]
+        .into_iter()
+        .flatten()
+        .any(|base| ty.conformsToType(base))
+        .then_some(ty)
 }
 
 fn lookup(ext: &str) -> (Kind, bool) {
     let ns_ext = NSString::from_str(ext);
-    if let Some(ty) = package_variant(&ns_ext) {
-        let uti: Arc<str> = ty.identifier().to_string().into();
-        let label = label_for(&ty, ext);
-        return (Kind { uti, label }, true);
-    }
-    let Some(ty) = UTType::typeWithFilenameExtension(&ns_ext) else {
+    let package = package_variant(&ns_ext);
+    let is_package = package.is_some();
+    let Some(ty) = package.or_else(|| UTType::typeWithFilenameExtension(&ns_ext)) else {
         return (
             Kind {
                 uti: "public.data".into(),
@@ -151,13 +140,26 @@ fn lookup(ext: &str) -> (Kind, bool) {
             false,
         );
     };
-    let uti: Arc<str> = ty.identifier().to_string().into();
-    let label = label_for(&ty, ext);
-    (Kind { uti, label }, false)
+    let kind = Kind {
+        uti: ty.identifier().to_string().into(),
+        label: label_for(&ty, ext),
+    };
+    (kind, is_package)
 }
 
-/// The kind table from a past run. Resolving one costs a Spotlight round trip against a real
-/// file, so the labels are worth keeping between launches; they only move when macOS does.
+fn cached(ext: &str, resolve: impl FnOnce(&str) -> (Kind, bool)) -> Kind {
+    let key = ext.to_ascii_lowercase();
+    if let Some(hit) = cache().read().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let (kind, is_package) = resolve(&key);
+    cache().write().unwrap().insert(key.clone(), kind.clone());
+    if is_package {
+        package_names().write().unwrap().insert(key);
+    }
+    kind
+}
+
 pub fn load_kinds(from: &Path) -> usize {
     let Ok(text) = std::fs::read_to_string(from) else {
         return 0;
@@ -201,11 +203,6 @@ pub fn save_kinds(to: &Path) -> usize {
     }
 }
 
-fn package_names() -> &'static RwLock<std::collections::HashSet<String>> {
-    static NAMES: OnceLock<RwLock<std::collections::HashSet<String>>> = OnceLock::new();
-    NAMES.get_or_init(Default::default)
-}
-
 pub fn kind_of(entry: &Entry) -> Kind {
     match entry.kind {
         EntryKind::Directory if !entry.package => Kind {
@@ -221,16 +218,7 @@ pub fn kind_of(entry: &Entry) -> Kind {
 }
 
 pub fn kind_for_extension(ext: &str) -> Kind {
-    let key = ext.to_ascii_lowercase();
-    if let Some(hit) = cache().read().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let (kind, is_package) = lookup(&key);
-    cache().write().unwrap().insert(key.clone(), kind.clone());
-    if is_package {
-        package_names().write().unwrap().insert(key);
-    }
-    kind
+    cached(ext, lookup)
 }
 
 pub fn kind_of_path(path: &Path) -> Kind {
@@ -238,21 +226,14 @@ pub fn kind_of_path(path: &Path) -> Kind {
         .file_name()
         .and_then(|n| n.to_str())
         .and_then(|name| name.rsplit_once('.'))
-        .map(|(_, ext)| ext)
-        .unwrap_or("");
-    let key = ext.to_ascii_lowercase();
-    if let Some(hit) = cache().read().unwrap().get(&key) {
-        return hit.clone();
-    }
-    let (mut kind, is_package) = lookup(&key);
-    if let Some(label) = spotlight_label(path) {
-        kind.label = label.into();
-    }
-    cache().write().unwrap().insert(key.clone(), kind.clone());
-    if is_package {
-        package_names().write().unwrap().insert(key);
-    }
-    kind
+        .map_or("", |(_, ext)| ext);
+    cached(ext, |key| {
+        let (mut kind, is_package) = lookup(key);
+        if let Some(label) = spotlight_label(path) {
+            kind.label = label.into();
+        }
+        (kind, is_package)
+    })
 }
 
 pub fn is_package_name(name: &str) -> bool {
@@ -395,7 +376,6 @@ mod tests {
     }
 }
 
-/// The kinds Finder's search offers under "Kind is".
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub enum Category {
     #[default]
@@ -490,8 +470,6 @@ fn conformance_of(uti: &str) -> u16 {
     bits
 }
 
-/// Whether a type falls under one of Finder's search kinds. The categories overlap, as Finder's
-/// do: plain text is a Document as well as Text.
 pub fn conforms(uti: &str, category: Category) -> bool {
     match category {
         Category::Any => true,

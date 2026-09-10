@@ -1,5 +1,3 @@
-//! `native_gpui::tokens` on screen: colours, fonts, symbols, and a live appearance switch.
-
 use std::ptr;
 use std::sync::Arc;
 

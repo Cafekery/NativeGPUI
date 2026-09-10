@@ -1,5 +1,3 @@
-//! Hosted `NSVisualEffectView` materials over a busy backdrop.
-
 use gpui::{
     App, AppContext, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,

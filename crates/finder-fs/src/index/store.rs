@@ -39,14 +39,29 @@ pub struct Node {
     pub flags: u8,
     pub state: u8,
     pub depth: u8,
-    /// The snapshot writes these structs as bytes, so the tail has to be a field: padding the
-    /// compiler inserts is never written.
+    /// A field so the snapshot, which writes nodes as bytes, never writes compiler padding.
     pub pad: [u8; 1],
 }
 
 const _: () = assert!(std::mem::size_of::<Node>() == 48);
 
 impl Node {
+    fn dir(parent: u32, depth: u8) -> Node {
+        Node {
+            size: 0,
+            modified: 0,
+            created: 0,
+            added: NO_TIME,
+            parent,
+            first_child: NONE,
+            next_sibling: NONE,
+            flags: 1,
+            state: 0,
+            depth,
+            pad: [0; 1],
+        }
+    }
+
     pub fn kind(&self) -> EntryKind {
         match self.flags & KIND {
             0 => EntryKind::File,
@@ -77,7 +92,6 @@ fn kind_bits(kind: EntryKind) -> u8 {
 /// A time the volume does not record; zero is 1970 and negative is older still.
 pub const NO_TIME: i64 = i64::MIN;
 
-/// Seconds from the UNIX epoch, signed, so a file older than 1970 keeps its date.
 pub fn secs(t: SystemTime) -> i64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(since) => since.as_secs() as i64,
@@ -113,8 +127,6 @@ fn hash(bytes: &[u8]) -> u32 {
     (h ^ (h >> 32)) as u32
 }
 
-/// Case-, width- and diacritic-folded, so "cafe" and "café" are one string however either is
-/// composed.
 pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
     match bytes.is_ascii() {
         true => Cow::Borrowed(bytes),
@@ -125,8 +137,7 @@ pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
 /// Set on a non-ASCII name; a query never sets it, being folded before its own mask is taken.
 pub const NEEDS_FOLD: u64 = 1 << 28;
 
-/// Spotlight indexes neither a dot-file nor anything inside a dot-folder, but does index
-/// `~/Library`, which carries the hidden flag.
+/// Search hides what Spotlight skips: dot-names, not the `UF_HIDDEN` `~/Library` it indexes.
 pub const DOTTED: u64 = 1 << 29;
 
 pub fn grams(bytes: &[u8]) -> u32 {
@@ -164,6 +175,15 @@ fn fold_bit(bytes: &[u8]) -> u64 {
         Some(b'.') => fold | DOTTED,
         _ => fold,
     }
+}
+
+fn put(table: &mut [u32], hash: u32, id: u32) {
+    let mask = table.len() - 1;
+    let mut at = (hash >> 8) as usize & mask;
+    while table[at] != NONE {
+        at = (at + 1) & mask;
+    }
+    table[at] = id;
 }
 
 impl Names {
@@ -234,25 +254,13 @@ impl Names {
         let size = ((self.counts[shard] as usize + 1) * 2)
             .next_power_of_two()
             .max(64);
-        let old = std::mem::take(&mut self.tables[shard]);
-        let live = old
-            .into_iter()
-            .filter(|&id| id != NONE)
-            .map(|id| (hash(self.bytes(id)), id));
-        self.tables[shard] = self.place(live, size);
-    }
-
-    fn place(&self, ids: impl Iterator<Item = (u32, u32)>, size: usize) -> Vec<u32> {
         let mut table = vec![NONE; size];
-        let mask = size - 1;
-        for (hash, id) in ids {
-            let mut at = (hash >> 8) as usize & mask;
-            while table[at] != NONE {
-                at = (at + 1) & mask;
+        for id in std::mem::take(&mut self.tables[shard]) {
+            if id != NONE {
+                put(&mut table, hash(self.bytes(id)), id);
             }
-            table[at] = id;
         }
-        table
+        self.tables[shard] = table;
     }
 
     pub fn reindex(&mut self) {
@@ -275,13 +283,7 @@ impl Names {
             .map(|&count| vec![NONE; ((count as usize + 1) * 2).next_power_of_two().max(64)])
             .collect();
         for (id, &hash) in hashes.iter().enumerate() {
-            let table = &mut self.tables[hash as usize % SHARDS];
-            let mask = table.len() - 1;
-            let mut at = (hash >> 8) as usize & mask;
-            while table[at] != NONE {
-                at = (at + 1) & mask;
-            }
-            table[at] = id as u32;
+            put(&mut self.tables[hash as usize % SHARDS], hash, id as u32);
         }
     }
 }
@@ -289,7 +291,6 @@ impl Names {
 #[derive(Clone, Debug)]
 pub struct Root {
     pub path: PathBuf,
-    /// The FSEvents id this root's subtree is current to.
     pub event_id: u64,
     pub modified: i64,
 }
@@ -328,19 +329,7 @@ impl Default for Tree {
         let mut names = Names::default();
         let root = names.intern("");
         Tree {
-            nodes: vec![Node {
-                size: 0,
-                modified: 0,
-                created: 0,
-                added: NO_TIME,
-                parent: NONE,
-                first_child: NONE,
-                next_sibling: NONE,
-                flags: 1,
-                state: 0,
-                depth: 0,
-                pad: [0; 1],
-            }],
+            nodes: vec![Node::dir(NONE, 0)],
             name_of: vec![root],
             names,
             dirs: 0,
@@ -441,20 +430,7 @@ impl Tree {
         reserve(&mut self.nodes, 1);
         reserve(&mut self.name_of, 1);
         let depth = self.nodes[parent as usize].depth.saturating_add(1);
-        let node = Node {
-            size: 0,
-            modified: 0,
-            created: 0,
-            added: NO_TIME,
-            parent,
-            first_child: NONE,
-            next_sibling: NONE,
-            flags: 1,
-            state: 0,
-            depth,
-            pad: [0; 1],
-        };
-        self.nodes.push(node);
+        self.nodes.push(Node::dir(parent, depth));
         self.name_of.push(name);
         if let Some(entry) = entry {
             self.write(id, entry, sealed);
@@ -513,7 +489,6 @@ impl Tree {
         }
     }
 
-    /// `sealed[i]` marks a child the crawl will not list: a package, a skip, a symlink.
     pub fn relist(&mut self, state: &mut Relist, entries: &[Entry], sealed: &[bool]) {
         for (i, entry) in entries.iter().enumerate() {
             let name = self.names.intern(&entry.name);
@@ -652,9 +627,6 @@ impl Tree {
                 false => files += 1,
             }
             let parent = node.parent as usize;
-            if parent >= self.nodes.len() {
-                continue;
-            }
             self.nodes[parent].size += node.size;
             if node.state & COMPLETE == 0 {
                 self.nodes[parent].state &= !COMPLETE;

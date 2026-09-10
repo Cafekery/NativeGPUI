@@ -1,15 +1,15 @@
 use std::collections::VecDeque;
-use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use super::store::{NONE, VISITED};
 use super::{Index, Progress};
 use crate::entry::{Entry, EntryKind};
 use crate::list::list_dir;
+use crate::volumes::is_local;
 
 const THREADS: usize = 6;
 const REPORT_EVERY_MS: u64 = 100;
@@ -17,9 +17,7 @@ const REPORT_EVERY_MS: u64 = 100;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Class {
     Descend,
-    /// Walked for its bytes, never listed: a package, a cache, a trash.
     Weigh,
-    /// Neither listed nor weighed: another volume's tree, a symlink, a device.
     Seal,
 }
 
@@ -93,7 +91,7 @@ pub fn spawn(index: &Arc<Index>, walk: Walk, report: impl Fn(Progress) + Send + 
     }
 }
 
-static TRACE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static TRACE_START: OnceLock<Instant> = OnceLock::new();
 
 pub fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
@@ -103,10 +101,7 @@ impl Crawl {
     fn run(self: &Arc<Self>) {
         while let Some(task) = self.next() {
             if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-                let ms = TRACE_START
-                    .get_or_init(std::time::Instant::now)
-                    .elapsed()
-                    .as_millis();
+                let ms = TRACE_START.get_or_init(Instant::now).elapsed().as_millis();
                 eprintln!(
                     "crawl {ms} {} {}",
                     if task.weigh { "W" } else { "L" },
@@ -150,8 +145,7 @@ impl Crawl {
                 continue;
             }
             if !work.later.is_empty() {
-                let later = std::mem::take(&mut work.later);
-                work.tasks = later;
+                work.tasks = std::mem::take(&mut work.later);
                 continue;
             }
             work.done = true;
@@ -314,13 +308,7 @@ pub fn modified(path: &Path) -> i64 {
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
-    if is_symlink(path)
-        || elsewhere(path)
-        || guarded(path)
-        || private(path, home)
-        || sandboxed(path, home)
-        || simulator(path)
-    {
+    if is_symlink(path) || off_limits(path, home) {
         return Class::Seal;
     }
     if entry.package || weigh_only(path, home) {
@@ -355,8 +343,7 @@ fn guarded(path: &Path) -> bool {
     })
 }
 
-/// An iOS Simulator device: a UUID-named folder holding `device.plist`, whose `data` sits behind
-/// the media-library prompt macOS puts on the user's own home.
+/// An iOS Simulator device, whose `data` sits behind the media-library prompt on the home.
 fn simulator(path: &Path) -> bool {
     let name = path.file_name().unwrap_or_default().as_bytes();
     let uuid_shaped = name.len() == 36
@@ -367,8 +354,7 @@ fn simulator(path: &Path) -> bool {
     uuid_shaped && path.join("device.plist").is_file()
 }
 
-/// Walking `~/Library` raises the media-library prompt and a blocked-access notice for
-/// every sandboxed app.
+/// Walking `~/Library` raises the media-library prompt and a notice per sandboxed app.
 fn sandboxed(path: &Path, home: &Path) -> bool {
     in_a_home(path, home) && path.file_name().unwrap_or_default().as_bytes() == b"Library"
 }
@@ -405,8 +391,7 @@ fn weigh_only(path: &Path, home: &Path) -> bool {
     !home.as_os_str().is_empty() && path == home.join(".Trash")
 }
 
-/// The firmlinked volume roots (`/System/Volumes/Data` is `/` again), devices, the swap files,
-/// and anything mounted over a network.
+/// Firmlinked volume roots (`/System/Volumes/Data` is `/` again), devices, swap, network mounts.
 fn elsewhere(path: &Path) -> bool {
     if matches!(
         path.as_os_str().as_bytes(),
@@ -415,15 +400,4 @@ fn elsewhere(path: &Path) -> bool {
         return true;
     }
     path.parent() == Some(Path::new("/Volumes")) && !is_local(path)
-}
-
-fn is_local(path: &Path) -> bool {
-    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return false;
-    };
-    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(path.as_ptr(), &mut stat) } != 0 {
-        return false;
-    }
-    stat.f_flags & libc::MNT_LOCAL as u32 != 0
 }

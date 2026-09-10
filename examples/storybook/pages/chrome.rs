@@ -1,5 +1,3 @@
-//! Window chrome, driven onto a second window opened through [`crate::popout`].
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{
@@ -211,7 +209,7 @@ fn edit(demo: WeakEntity<Demo>, change: fn(&mut State)) -> impl Fn(&mut Window, 
     }
 }
 
-/// The popped-out window. It copies the knobs: `open_window` draws while `Demo` is still leased.
+/// Copies the knobs: `open_window` draws while `Demo` is still leased.
 pub struct Popout {
     settings: Settings,
 }

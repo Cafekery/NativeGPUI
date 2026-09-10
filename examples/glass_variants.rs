@@ -1,5 +1,3 @@
-//! The private glass catalogue, one panel per render class over a periodic backdrop.
-
 use std::io::Write;
 
 use gpui::{
@@ -131,7 +129,6 @@ impl Render for Catalogue {
             self.announce(window);
         }
         if let Some(quit_at) = self.quit_at {
-            // Glass loses its chroma when its window stops being key.
             let ns = ns_window(window);
             println!(
                 "GLASS-FRAME {} key={} main={}",

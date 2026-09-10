@@ -1,14 +1,4 @@
 //! The standard menu bar, read back out of AppKit. Exits with the number of failed rows.
-//!
-//! ```text
-//! NG_ARM=table   default; compares every row against the table below, then fires ⌘H, ⌘M and ⌘W
-//! NG_ARM=extend  adds an app menu and an app row; every standard row must survive
-//! NG_ARM=order   which layer answers ⌘M, with and without a gpui binding for it
-//! NG_ARM=quit    fires ⌘Q through the menu; the pass is this process being gone
-//! NG_ARM=noquit  the control for `quit`: the same fire with no bar installed, must stay alive
-//! NG_ARM=hold    installs the bar and waits NG_HOLD seconds (default 12) for an external reader
-//! NG_MENUS=0     skips install_menus entirely, in any arm
-//! ```
 
 use std::env;
 use std::process::ExitCode;
@@ -31,12 +21,10 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 const APP: &str = "{}";
 
-/// title, key equivalent, modifier chord, selector. A separator is a title of `-`; a submenu host
-/// reports `(submenu)`.
+/// title, key equivalent, modifiers, selector; a separator is `-`, a submenu host `(submenu)`.
 type Row = (&'static str, &'static str, &'static str, &'static str);
 
-/// `exact` is true only where every row is this crate's: AppKit maintains a tail of its own on
-/// the rest, so there only the standard prefix is compared.
+/// `exact`: every row is this crate's. Elsewhere AppKit keeps a tail, so only the prefix counts.
 struct Expect {
     menu: &'static str,
     exact: bool,
@@ -99,8 +87,7 @@ const EXPECTED: &[Expect] = &[
             ("-", "", "", ""),
             ("Show Sidebar", "s", "cmd-ctrl", "toggleSidebar:"),
             ("-", "", "", ""),
-            // macOS substitutes Globe-F for the ⌃⌘F this crate asks for, keeping ⌃⌘F on an
-            // alternate of its own.
+            // macOS swaps the ⌃⌘F asked for to Globe-F, keeping ⌃⌘F on an alternate.
             ("Enter Full Screen", "f", "fn", "toggleFullScreen:"),
         ],
     },
@@ -229,8 +216,7 @@ fn expected_signature(row: &Row, name: &str) -> String {
     format!("{}|{}|{}|{}", row.0.replace(APP, name), row.1, row.2, row.3)
 }
 
-/// Walked rather than asked of `targetForAction:to:from:`, which searches from the key window and
-/// so reports every window action as unreachable on a run without one.
+/// Walked, not `targetForAction:to:from:`, which starts at the key window a run may lack.
 fn responder_for(window: &NSWindow, selector: Sel) -> Option<String> {
     let mut next = window.firstResponder();
     while let Some(responder) = next {
@@ -310,8 +296,7 @@ fn menu_titles(bar: &NSMenu) -> Vec<String> {
 }
 
 fn rows_of(menu: &NSMenu) -> Vec<Retained<NSMenuItem>> {
-    // Runs the validation that decides `isEnabled`; without it every row reports the YES an
-    // `NSMenuItem` is born with.
+    // Validates `isEnabled`; unvalidated, every row reports the YES it was born with.
     menu.update();
     menu.itemArray().iter().collect()
 }
@@ -413,8 +398,7 @@ fn read_table(bar: &NSMenu, name: &str) {
     println!();
 }
 
-/// By object identity rather than by looking for the tail AppKit maintains: that tail only appears
-/// when the app has something to put in one, so its absence says nothing.
+/// By identity: AppKit's tail appears only once there is something to put in it.
 fn registered_menus(bar: &NSMenu, name: &str) {
     let mtm = bar.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -492,8 +476,7 @@ fn enabled_for(menu: &NSMenu, key: &str, mask: NSEventModifierFlags) -> Option<b
         .map(|item| item.isEnabled())
 }
 
-/// Every row this crate installed carries tag 0: gpui's app delegate looks a sender's tag up in a
-/// one-entry table and, on a miss, re-locks a mutex it still holds and freezes the process.
+/// Tag 0 on every row: gpui's delegate re-locks a mutex it holds on any other tag and freezes.
 fn tags(bar: &NSMenu, name: &str) {
     let mut offenders = Vec::new();
     let mut checked = 0;
@@ -516,9 +499,7 @@ fn tags(bar: &NSMenu, name: &str) {
     );
 }
 
-/// Each of ⌘H, ⌘M, ⌘W and ⌘Q: the responder its selector reaches, and for the first three the
-/// state the chord is supposed to move. `hide:`, `performMiniaturize:` and `deminiaturize` all
-/// complete on a later run-loop turn, so every row settles before reading.
+/// `hide:`, `performMiniaturize:` and `deminiaturize` land a turn later, so each row settles.
 async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, resolvable: bool) {
     let mtm = window.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -559,8 +540,7 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
         return;
     };
 
-    // ⌘M first, then ⌘W, then ⌘H: ⌘W destroys the window ⌘M needs, and `hide:` takes the key
-    // window with it.
+    // ⌘M, ⌘W, ⌘H in that order: ⌘W destroys the window ⌘M needs, and `hide:` takes the key window.
     if let Some(event) = chord(window, "m", KEY_M, CMD) {
         let enabled = enabled_for(&window_menu, "m", CMD);
         if window.isMiniaturized() {
@@ -613,8 +593,7 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
     }
 }
 
-/// An app menu and an app row alongside the standard set. A subsequence match, so an inserted row
-/// is fine and a dropped or reordered one is not.
+/// A subsequence match: an inserted row is fine, a dropped or reordered one is not.
 fn extended(bar: &NSMenu, name: &str) {
     let read = menu_titles(bar);
     let want = vec![
@@ -731,8 +710,7 @@ fn main() -> ExitCode {
         cx.on_action(|_: &FromMenu, _| {
             MENU_CLAIMED.fetch_add(1, Ordering::Relaxed);
         });
-        // Without the stop, gpui declines the chord and the menu answers it anyway, so both arms
-        // of the ordering measurement would read the same.
+        // Without the stop the menu answers the chord too, and both order arms read the same.
         cx.on_action(|_: &FromKeymap, cx| {
             GPUI_CLAIMED.fetch_add(1, Ordering::Relaxed);
             cx.stop_propagation();
@@ -750,8 +728,7 @@ fn main() -> ExitCode {
                         origin: point(px(1400.), px(40.)),
                         size: size(px(200.), px(120.)),
                     })),
-                    // `run` makes the window key inside this app without activating it, which is
-                    // what a window action resolves against.
+                    // Keyed within the app, not activated: what a window action resolves against.
                     focus: false,
                     ..window_options()
                 },
@@ -797,8 +774,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
         verdict("window", false, "no NSWindow behind the gpui window");
         return;
     };
-    // Key inside this app, without `NSApp.activate`: a window action resolves against the key
-    // window.
+    // Key within the app, without `NSApp.activate`: window actions resolve against the key window.
     window.makeKeyAndOrderFront(None);
     settle(cx).await;
 
@@ -815,8 +791,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     );
 
     if arm == "noquit" {
-        // A bundled app has a system main menu whether or not this crate installed one, so what
-        // has to be absent is the standard set.
+        // A bundled app always has a main menu, so what must be absent is the standard set.
         let bar = app.mainMenu();
         let ours: Vec<&str> = ["File", "Edit", "View", "Window", "Help"]
             .into_iter()
@@ -848,8 +823,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     };
 
     if let Some(expected) = expected.as_deref() {
-        // The menu count is part of the condition: AppKit titles the first item of a bundled
-        // app's system menu with the app's name whether or not `install_menus` ran.
+        // Count menus too: a bundle's system menu bears the app's name even without install_menus.
         let titles = menu_titles(&bar);
         let first = titles.first().cloned().unwrap_or_default();
         verdict(
@@ -924,8 +898,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     }
 }
 
-/// Which layer claims ⌘M. The chord goes into `NSApp.sendEvent:` so AppKit sequences the layers
-/// rather than this probe calling them in an order it chose.
+/// Through `NSApp.sendEvent:`, so AppKit, not this probe, orders the layers.
 async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
     let mtm = window.mtm();
     let app = NSApplication::sharedApplication(mtm);
@@ -935,8 +908,7 @@ async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
         return;
     };
 
-    // `deminiaturize` lands on a later turn, and fired at a miniaturised window the chord routes
-    // nowhere and both arms read zero.
+    // `deminiaturize` lands a turn later; at a miniaturised window the chord routes nowhere.
     window.deminiaturize(None);
     settle(cx).await;
     settle(cx).await;

@@ -1,5 +1,3 @@
-//! The three hosted text controls: plain, secure and search.
-
 use gpui::{
     App, Bounds, Context, Render, SharedString, Window, WindowBounds, div, point, prelude::*, px,
     rgb, size,

@@ -7,16 +7,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::entry::{Entry, EntryKind};
 
-/// Not in `libc`: only valid as a `getattrlistbulk` request, one bit above `ATTR_CMN_ADDEDTIME`.
 const ATTR_CMN_ERROR: libc::attrgroup_t = 0x2000_0000;
-/// `vnode` types (`sys/vnode.h`); `libc` does not expose these.
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
-/// `kHasBundle`, a bit in classic `FndrDirInfo.frFlags` (big-endian, offset 8 of
-/// `ATTR_CMN_FNDRINFO`).
 const HAS_BUNDLE: u16 = 0x2000;
-/// `SF_DATALESS`, the flag a File Provider leaves on an item whose data it has evicted.
 const SF_DATALESS: u32 = 0x4000_0000;
 
 const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
@@ -40,8 +35,6 @@ impl Drop for FdGuard {
     }
 }
 
-/// A path past `PATH_MAX` cannot be opened whole, so it is walked one component at a time with
-/// `openat`, which is never handed more than one name.
 fn open_dir(dir: &Path) -> io::Result<FdGuard> {
     let path = CString::new(dir.as_os_str().as_bytes())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -153,9 +146,7 @@ fn read_timespec(b: &[u8]) -> SystemTime {
     }
 }
 
-/// A `getattrlistbulk` record packs the requested attributes in ascending bit order
-/// (`FSOPT_PACK_INVAL_ATTRS` omits absent ones entirely, so the offsets are only known by walking
-/// `returned` bit by bit).
+/// Attributes are packed in ascending bit order, so each offset is found by walking `returned`.
 fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut p = 4usize;
     let returned_common = u32::from_ne_bytes(record[p..p + 4].try_into().unwrap());
@@ -172,8 +163,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut file_id = 0u64;
     let mut added = None;
 
-    // `ATTR_CMN_ERROR`, unlike every other attribute, is packed right after `returned` rather
-    // than in bit order, so a failed entry can be recognised before touching the rest.
+    // `ATTR_CMN_ERROR` alone is packed straight after `returned`, not in bit order.
     if returned_common & ATTR_CMN_ERROR != 0 {
         let code = i32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
         if code != 0 {
@@ -235,8 +225,6 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     if kind == EntryKind::Directory {
         size = 0;
     }
-    // An evicted file is a `.name.icloud` placeholder holding the size of what it stands in for;
-    // Finder lists it under the name it will have again once it is downloaded.
     let mut dataless = flags & SF_DATALESS != 0;
     let name = match crate::icloud::placeholder_name(&name) {
         Some(real) => {

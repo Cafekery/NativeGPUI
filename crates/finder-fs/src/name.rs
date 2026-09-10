@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-/// Finder draws a stored `:` as `/`, and a control character other than tab as `?`.
 pub fn display(name: &str) -> Cow<'_, str> {
     let mapped = |c: char| c == ':' || (c.is_control() && c != '\t');
     if !name.chars().any(mapped) {
@@ -31,7 +30,6 @@ mod tests {
     fn a_control_character_keeps_the_name_on_one_line() {
         assert_eq!(display("newline\nin-name.txt"), "newline?in-name.txt");
         assert_eq!(display("bell\u{7}.txt"), "bell?.txt");
-        // A tab is whitespace Finder leaves alone; it draws on the row like a space.
         assert_eq!(display("tab\tin-name.txt"), "tab\tin-name.txt");
         assert_eq!(
             display("caf\u{e9} \u{1f600}.txt"),

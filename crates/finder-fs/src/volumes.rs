@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::null;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSDictionary, NSFileManager, NSMutableDictionary, NSNumber, NSString, NSURL,
     NSURLResourceKey, NSURLVolumeAvailableCapacityForImportantUsageKey,
@@ -11,6 +12,8 @@ use objc2_foundation::{
     NSURLVolumeIsRemovableKey, NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey,
     NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
 };
+
+type Values = NSDictionary<NSURLResourceKey, AnyObject>;
 
 #[derive(Clone, Debug)]
 pub struct Volume {
@@ -20,7 +23,6 @@ pub struct Volume {
     pub network: bool,
     pub capacity: u64,
     pub available: u64,
-    /// The file system as Finder names it, e.g. `APFS (Encrypted)`.
     pub format: String,
 }
 
@@ -39,10 +41,7 @@ fn keys() -> Retained<NSArray<NSURLResourceKey>> {
     }
 }
 
-fn string_value(
-    values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
-    key: &NSString,
-) -> Option<String> {
+fn string_value(values: &Values, key: &NSString) -> Option<String> {
     values
         .objectForKey(key)?
         .downcast::<NSString>()
@@ -50,62 +49,51 @@ fn string_value(
         .map(|s| s.to_string())
 }
 
-fn bool_value(
-    values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
-    key: &NSString,
-) -> bool {
+fn bool_value(values: &Values, key: &NSString) -> bool {
     values
         .objectForKey(key)
         .and_then(|v| v.downcast::<NSNumber>().ok())
         .is_some_and(|n| n.boolValue())
 }
 
-fn u64_value(
-    values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
-    key: &NSString,
-) -> Option<u64> {
+fn u64_value(values: &Values, key: &NSString) -> Option<u64> {
     values
         .objectForKey(key)
         .and_then(|v| v.downcast::<NSNumber>().ok())
         .map(|n| n.longLongValue().max(0) as u64)
 }
 
-/// `…ForImportantUsage` reads 0 on exFAT and FAT32 rather than being absent, so a zero from
-/// either key means "this file system does not say" and `statfs` answers instead.
-fn available_at(
-    values: &NSDictionary<NSURLResourceKey, objc2::runtime::AnyObject>,
-    path: &Path,
-) -> u64 {
+// On exFAT and FAT32 both keys read 0 rather than being absent, so a zero defers to `statfs`.
+fn available_at(values: &Values, path: &Path) -> u64 {
     let free = |key: &NSString| u64_value(values, key).filter(|&free| free > 0);
     free(unsafe { NSURLVolumeAvailableCapacityForImportantUsageKey })
         .or_else(|| free(unsafe { NSURLVolumeAvailableCapacityKey }))
         .unwrap_or_else(|| statfs_available(path))
 }
 
+fn statfs(path: &Path) -> Option<libc::statfs> {
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statfs(path.as_ptr(), &mut stat) } == 0).then_some(stat)
+}
+
 fn statfs_available(path: &Path) -> u64 {
-    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return 0;
-    };
-    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stat` is a valid out-pointer for the call.
-    if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return 0;
-    }
-    // SAFETY: statfs returned 0, so the struct is initialised.
-    let stat = unsafe { stat.assume_init() };
-    stat.f_bavail.saturating_mul(stat.f_bsize as u64)
+    statfs(path).map_or(0, |stat| stat.f_bavail.saturating_mul(stat.f_bsize as u64))
+}
+
+pub(crate) fn is_local(path: &Path) -> bool {
+    statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
 fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
     let values = url.resourceValuesForKeys_error(keys).ok()?;
-    let name_key = unsafe { NSURLVolumeNameKey };
     let path = url
         .path()
         .map(|p| PathBuf::from(p.to_string()))
         .unwrap_or_default();
     let available = available_at(&values, &path);
     Some(Volume {
-        name: string_value(&values, name_key).unwrap_or_default(),
+        name: string_value(&values, unsafe { NSURLVolumeNameKey }).unwrap_or_default(),
         path,
         ejectable: bool_value(&values, unsafe { NSURLVolumeIsEjectableKey })
             || bool_value(&values, unsafe { NSURLVolumeIsRemovableKey }),
@@ -127,14 +115,10 @@ pub fn mounted() -> Vec<Volume> {
         return Vec::new();
     };
     let mut volumes: Vec<Volume> = urls
-        .to_vec()
         .iter()
-        .filter_map(|url| volume_at(url, &keys))
+        .filter_map(|url| volume_at(&url, &keys))
         .collect();
-    if let Some(boot) = volumes
-        .iter()
-        .position(|v| v.path.as_path() == std::path::Path::new("/"))
-    {
+    if let Some(boot) = volumes.iter().position(|v| v.path == Path::new("/")) {
         volumes.swap(0, boot);
     }
     volumes
@@ -181,8 +165,7 @@ extern "C" {
     ) -> i32;
 }
 
-/// Mounts a server as Connect to Server does, the system asking for any login itself. It blocks
-/// until the share is up, so it belongs off the main thread; the error is NetFS's status code.
+/// Blocks until the share is up; the error is NetFS's status code.
 pub fn mount(address: &str) -> Result<PathBuf, i32> {
     let url = NSURL::URLWithString(&NSString::from_str(address)).ok_or(libc::EINVAL)?;
     let open = NSMutableDictionary::<NSString, NSString>::new();

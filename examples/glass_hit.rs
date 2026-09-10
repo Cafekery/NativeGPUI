@@ -76,8 +76,7 @@ fn class_of(view: &NSView) -> String {
     obj.class().name().to_string_lossy().into_owned()
 }
 
-/// AppKit builds a private `_NSCoreHostingView<NSGlassEffectContainerView.RootView>`, whose
-/// name contains the container's, so this walks ancestry instead of matching names.
+/// By ancestry, not name: AppKit's private hosting view carries the container's name in its own.
 fn is_kind(view: &NSView, name: &str) -> bool {
     let obj: &AnyObject = view.as_ref();
     let mut class = Some(obj.class());
@@ -142,8 +141,7 @@ fn covers(view: &NSView, space: &NSView, point: NSPoint) -> bool {
 fn report(window: &Window) {
     let gpui = gpui_view(window);
     let content = unsafe { gpui.superview() }.expect("gpui's view is inside a content view");
-    // The private subviews of both glass classes have zero frames until something lays them out,
-    // and a zero-framed view declines every point.
+    // Private glass subviews have zero frames, and decline every point, until laid out.
     content.layoutSubtreeIfNeeded();
     content.displayIfNeeded();
 
@@ -172,8 +170,7 @@ fn report(window: &Window) {
         Some(&content),
     );
 
-    // The container is unflipped while the clip above it and its `contentView` below it are
-    // flipped: a missing conversion mirrors y about the content view's midline.
+    // The container is unflipped between flipped views: a missed conversion mirrors y.
     let mirror_at = NSPoint::new(panel_at.x, content.bounds().size.height - panel_at.y);
     if covers(&panel, &content, mirror_at) || covers(&knob, &content, mirror_at) {
         fail("the mirrored member point lands on a hosted view; move the member or the window");

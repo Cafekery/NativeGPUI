@@ -1,5 +1,3 @@
-//! The small controls, each beside a GPUI-painted mirror of its own value.
-
 use gpui::{
     App, Bounds, Context, Hsla, Render, Window, WindowBounds, div, hsla, point, prelude::*, px,
     rgb, size,

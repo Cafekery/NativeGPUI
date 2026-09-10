@@ -7,8 +7,11 @@ use std::ptr;
 
 const WHILE_FILLING: libc::mode_t = 0o700;
 
-fn last_error() -> io::Error {
-    io::Error::last_os_error()
+fn check(status: libc::c_int) -> io::Result<()> {
+    match status {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 fn name_of(name: &OsStr) -> io::Result<CString> {
@@ -25,7 +28,7 @@ fn split(path: &Path) -> io::Result<(&Path, CString)> {
 
 fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
     if fd < 0 {
-        return Err(last_error());
+        return Err(io::Error::last_os_error());
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -60,17 +63,14 @@ fn open_dir(path: &Path) -> io::Result<OwnedFd> {
 
 fn stat_at(dir: &OwnedFd, name: &CStr) -> io::Result<libc::stat> {
     let mut meta = unsafe { std::mem::zeroed::<libc::stat>() };
-    if unsafe {
+    check(unsafe {
         libc::fstatat(
             dir.as_raw_fd(),
             name.as_ptr(),
             &mut meta,
             libc::AT_SYMLINK_NOFOLLOW,
         )
-    } != 0
-    {
-        return Err(last_error());
-    }
+    })?;
     Ok(meta)
 }
 
@@ -78,7 +78,7 @@ fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
     let listing = dir.try_clone()?;
     let handle = unsafe { libc::fdopendir(listing.into_raw_fd()) };
     if handle.is_null() {
-        return Err(last_error());
+        return Err(io::Error::last_os_error());
     }
     let mut names = Vec::new();
     let mut failed = None;
@@ -86,7 +86,7 @@ fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
         unsafe { *libc::__error() = 0 };
         let entry = unsafe { libc::readdir(handle) };
         if entry.is_null() {
-            let err = last_error();
+            let err = io::Error::last_os_error();
             if err.raw_os_error() != Some(0) {
                 failed = Some(err);
             }
@@ -98,10 +98,7 @@ fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
         }
     }
     unsafe { libc::closedir(handle) };
-    match failed {
-        Some(err) => Err(err),
-        None => Ok(names),
-    }
+    failed.map_or(Ok(names), Err)
 }
 
 fn copy_state(from: &OwnedFd, into: &OwnedFd, with_data: bool) -> io::Result<()> {
@@ -109,18 +106,14 @@ fn copy_state(from: &OwnedFd, into: &OwnedFd, with_data: bool) -> io::Result<()>
     if with_data {
         flags |= libc::COPYFILE_DATA;
     }
-    if unsafe {
+    check(unsafe {
         libc::fcopyfile(
             from.as_raw_fd(),
             into.as_raw_fd(),
             ptr::null_mut(),
             flags as libc::copyfile_flags_t,
         )
-    } != 0
-    {
-        return Err(last_error());
-    }
-    Ok(())
+    })
 }
 
 fn copy_link(
@@ -140,29 +133,20 @@ fn copy_link(
         )
     };
     if read < 0 {
-        return Err(last_error());
+        return Err(io::Error::last_os_error());
     }
     target.truncate(read as usize);
     let target = CString::new(target)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the link contains a NUL"))?;
-    if unsafe { libc::symlinkat(target.as_ptr(), ddir.as_raw_fd(), dname.as_ptr()) } != 0 {
-        return Err(last_error());
-    }
-    Ok(())
+    check(unsafe { libc::symlinkat(target.as_ptr(), ddir.as_raw_fd(), dname.as_ptr()) })
 }
 
 fn make_dir(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
-    if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), WHILE_FILLING) } != 0 {
-        return Err(last_error());
-    }
-    Ok(())
+    check(unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), WHILE_FILLING) })
 }
 
 fn unlink_at(dir: &OwnedFd, name: &CStr, flags: libc::c_int) -> io::Result<()> {
-    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } != 0 {
-        return Err(last_error());
-    }
-    Ok(())
+    check(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) })
 }
 
 fn copy_file(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Result<()> {
@@ -184,10 +168,8 @@ fn copy_file(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::
     copy_state(&from, &into, true)
 }
 
-/// A descriptor per level would run a deep tree into the open-file limit long before `PATH_MAX`,
-/// so each pair is let go of on the way down and found again through `..`.
-fn fill_dir(from: OwnedFd, into: OwnedFd) -> io::Result<(OwnedFd, OwnedFd)> {
-    let (mut from, mut into) = (from, into);
+/// Let go on the way down and found again through `..`, or a deep tree runs out of descriptors.
+fn fill_dir(mut from: OwnedFd, mut into: OwnedFd) -> io::Result<(OwnedFd, OwnedFd)> {
     for name in names_in(&from)? {
         let meta = stat_at(&from, &name)?;
         match meta.st_mode & libc::S_IFMT {
@@ -223,8 +205,7 @@ fn copy_at(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Re
     }
 }
 
-fn empty_dir(dir: OwnedFd) -> io::Result<OwnedFd> {
-    let mut dir = dir;
+fn empty_dir(mut dir: OwnedFd) -> io::Result<OwnedFd> {
     for name in names_in(&dir)? {
         if stat_at(&dir, &name)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
             unlink_at(&dir, &name, 0)?;

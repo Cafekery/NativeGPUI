@@ -1,5 +1,3 @@
-//! `NG_PAGE=<id>` opens straight onto a page.
-
 mod pages;
 mod ui;
 
@@ -200,6 +198,7 @@ pub fn popout<V: 'static + Render>(
     .ok()
 }
 
+#[derive(Default)]
 pub struct Demo {
     sidebar: Option<NativeSidebar>,
     selected: SharedString,
@@ -228,32 +227,12 @@ pub struct Demo {
 impl Demo {
     fn new() -> Self {
         Self {
-            sidebar: None,
-            frames: VecDeque::new(),
             selected: std::env::var("NG_PAGE")
                 .ok()
                 .map(|id| page_of(&id).id)
                 .unwrap_or("switch")
                 .into(),
-            switch: Default::default(),
-            slider: Default::default(),
-            segmented: Default::default(),
-            buttons: Default::default(),
-            popup: Default::default(),
-            text: Default::default(),
-            label: Default::default(),
-            indicators: Default::default(),
-            small: Default::default(),
-            material: Default::default(),
-            glass: Default::default(),
-            glass_variants: Default::default(),
-            custom_glass: Default::default(),
-            surfaces: Default::default(),
-            tokens: Default::default(),
-            menus: Default::default(),
-            sidebar_page: Default::default(),
-            chrome: Default::default(),
-            background: Default::default(),
+            ..Default::default()
         }
     }
 

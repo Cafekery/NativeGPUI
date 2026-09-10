@@ -1,5 +1,3 @@
-//! Real `NSProgressIndicator`s (bar and spinner) and `NSLevelIndicator`s inside GPUI.
-
 use std::time::Duration;
 
 use gpui::{

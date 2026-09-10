@@ -1,10 +1,3 @@
-//! Measurement apparatus for `NSMenu` submenus, custom-view rows and pop-up ticks. `menu.rs` is
-//! the demo.
-//!
-//! `NG_ARM=metrics` (default) is headless; `popup` reads a placed pop-up's tick back; `open`
-//! right-clicks and holds the menu open for `NG_HOLD` seconds, walking into a submenu if
-//! `NG_SUBMENU` is set.
-
 use std::env;
 use std::ptr::NonNull;
 
@@ -447,8 +440,7 @@ fn report_popup_tick(mtm: MainThreadMarker, frames: usize) -> ! {
     std::process::exit(if ok { 0 } else { 1 });
 }
 
-/// Control-left rather than right: gpui derives the button from `NSEvent.buttonNumber`, which a
-/// synthesised event reports as 0 whatever type it carries.
+/// Control-left, not right: gpui reads `buttonNumber`, which is 0 on any synthesised event.
 fn click_own_window(mtm: MainThreadMarker, at: NSPoint) {
     let app = NSApplication::sharedApplication(mtm);
     let Some(window) = app.windows().iter().next() else {
@@ -501,8 +493,7 @@ fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_co
     }
 }
 
-/// Menu tracking runs the run loop in `NSEventTrackingRunLoopMode`: a timer added only for the
-/// default mode never fires while the menu is up.
+/// Common modes: menu tracking runs the loop in `NSEventTrackingRunLoopMode`.
 fn schedule_submenu_reveal(window_number: isize, after: f64) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         let Some(mtm) = MainThreadMarker::new() else {

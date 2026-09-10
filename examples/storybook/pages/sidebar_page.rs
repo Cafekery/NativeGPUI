@@ -1,5 +1,3 @@
-//! A sidebar is a property of the window, so this page drives one in a second window.
-
 use crate::ui::*;
 use crate::{Demo, popout};
 use gpui::{AnyElement, Context, Render, SharedString, Window, WindowHandle, div, prelude::*, px};

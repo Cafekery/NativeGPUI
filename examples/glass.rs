@@ -1,5 +1,3 @@
-//! macOS 26 liquid glass: both styles, tints, the corner-radius range, and a `glass_container`.
-
 use gpui::{
     App, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, hsla, point,
     prelude::*, px, rgb, size,

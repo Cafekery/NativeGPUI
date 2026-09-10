@@ -1,6 +1,3 @@
-//! Every component in one window, plus native controls inside a GPUI scroll list. `NG_ROWS` sets
-//! the list length (default 400).
-
 use std::time::Instant;
 
 use gpui::{

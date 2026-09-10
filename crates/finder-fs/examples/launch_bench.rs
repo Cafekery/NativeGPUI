@@ -1,5 +1,3 @@
-//! `launch_bench <tree> <store> crawl|sync [touch <dir>]`
-
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};

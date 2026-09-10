@@ -1,5 +1,3 @@
-//! An FSEvents stream is immutable, so `watch`/`unwatch` recreate it from the last event id seen.
-
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -25,15 +23,12 @@ use objc2_core_services::{
 #[derive(Clone, Debug, Default)]
 pub struct Replay {
     pub dirs: Vec<PathBuf>,
-    /// Subtrees to read again whole: the log dropped events, or a volume came or went.
     pub rescan: Vec<PathBuf>,
     pub event_id: u64,
     pub history_done: bool,
-    /// FSEvents ids restarted: no saved id means anything any more.
     pub wrapped: bool,
 }
 
-/// The events that say "I cannot tell you what changed under here, look again yourself".
 const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
     | kFSEventStreamEventFlagUserDropped
     | kFSEventStreamEventFlagKernelDropped
@@ -41,13 +36,14 @@ const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
     | kFSEventStreamEventFlagMount
     | kFSEventStreamEventFlagUnmount;
 
+type OnChange = Box<dyn Fn(Replay) + Send>;
+
 struct Shared {
     paths: Mutex<HashSet<PathBuf>>,
     changed: Condvar,
     since: AtomicU64,
     shutdown: AtomicBool,
-    /// Set while `CFRunLoopRun` is blocking; `None` while idle so a stray wake-up can't poison
-    /// the next run.
+    /// `None` while idle, so a stray wake-up can't poison the next run.
     run_loop: Mutex<Option<usize>>,
 }
 
@@ -92,11 +88,7 @@ impl Watcher {
         self.shared.wake();
     }
 
-    fn spawn(
-        paths: HashSet<PathBuf>,
-        since: FSEventStreamEventId,
-        on_change: Box<dyn Fn(Replay) + Send + 'static>,
-    ) -> Watcher {
+    fn spawn(paths: HashSet<PathBuf>, since: FSEventStreamEventId, on_change: OnChange) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::new(paths),
             changed: Condvar::new(),
@@ -153,23 +145,13 @@ fn strip_trailing_slash(raw: &str) -> PathBuf {
     }
 }
 
-struct Context {
-    on_change: Box<dyn Fn(Replay) + Send + 'static>,
-}
-
-fn run(shared: Arc<Shared>, on_change: Box<dyn Fn(Replay) + Send + 'static>) {
+fn run(shared: Arc<Shared>, on_change: OnChange) {
     let run_loop = CFRunLoop::current().expect("watcher thread has a run loop");
     let run_loop_addr = (&*run_loop) as *const CFRunLoop as usize;
-    let context = Box::into_raw(Box::new(Context { on_change }));
+    let context = Box::into_raw(Box::new(on_change));
 
-    loop {
-        if shared.shutdown.load(Ordering::SeqCst) {
-            break;
-        }
-        let snapshot: Vec<PathBuf> = {
-            let paths = shared.paths.lock().unwrap();
-            paths.iter().cloned().collect()
-        };
+    while !shared.shutdown.load(Ordering::SeqCst) {
+        let snapshot: Vec<PathBuf> = shared.paths.lock().unwrap().iter().cloned().collect();
         if snapshot.is_empty() {
             let mut paths = shared.paths.lock().unwrap();
             while paths.is_empty() && !shared.shutdown.load(Ordering::SeqCst) {
@@ -240,7 +222,7 @@ unsafe extern "C-unwind" fn callback(
     event_flags: NonNull<FSEventStreamEventFlags>,
     event_ids: NonNull<FSEventStreamEventId>,
 ) {
-    let context = unsafe { &*(info as *const Context) };
+    let on_change = unsafe { &*(info as *const OnChange) };
     let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
     let ids = unsafe { std::slice::from_raw_parts(event_ids.as_ptr(), num_events) };
@@ -266,7 +248,7 @@ unsafe extern "C-unwind" fn callback(
     if replay.dirs.is_empty() && replay.rescan.is_empty() && !replay.history_done {
         return;
     }
-    (context.on_change)(replay);
+    on_change(replay);
 }
 
 #[cfg(test)]

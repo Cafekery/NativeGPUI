@@ -12,7 +12,6 @@ const DEEP_LEVELS: usize = 300;
 const MANY_BYTES: u64 = (MANY * 10) as u64;
 const DEEP_BYTES: u64 = 4 + 40 + 400;
 const APP_BYTES: u64 = 500 + 60;
-/// Long enough for the FSEvents daemon to have logged the writes just made.
 const SETTLE: Duration = Duration::from_millis(800);
 
 struct Temp(PathBuf);
@@ -248,7 +247,6 @@ fn a_hit_below_a_byte_of_depth_carries_its_real_path() {
     assert_eq!(index.children(&leaf).unwrap()[0].name, "needle.txt");
 }
 
-/// A file whose mtime an unsigned 32-bit second cannot hold: before 1970, or past 2106.
 fn dated(dir: &Path, name: &str, at: SystemTime) {
     let file = fs::File::create(dir.join(name)).unwrap();
     file.set_times(fs::FileTimes::new().set_modified(at))
@@ -405,8 +403,7 @@ fn a_warm_sync_over_an_unchanged_tree_reads_nothing() {
     let root = &temp.0;
     let store = store("warm-sync");
     let index = Index::open(&store);
-    // FSEvents dates an event when its daemon logs it, so building the fixture is still landing
-    // in the log for a moment after the last write returns.
+    // FSEvents logs the fixture's writes a moment after they return.
     std::thread::sleep(SETTLE);
     sync(&index, root);
     index.save();
