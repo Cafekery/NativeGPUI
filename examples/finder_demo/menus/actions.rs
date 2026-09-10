@@ -242,22 +242,21 @@ impl FinderDemo {
         if items.is_empty() {
             return;
         }
-        let at = self.ql_icon.get().unwrap_or_else(|| {
-            let width = window.viewport_size().width;
-            Bounds::new(point(width / 2., px(60.)), size(px(1.), px(1.)))
-        });
+        let at = match self.ql_icon.bounds() {
+            Some(_) => self.ql_icon.clone(),
+            None => {
+                let width = window.viewport_size().width;
+                SurfaceAnchor::at(Bounds::new(
+                    point(width / 2., px(60.)),
+                    size(px(1.), px(1.)),
+                ))
+            }
+        };
         let picker = SharePicker {
             edge: SurfaceEdge::Below,
             ..Default::default()
         };
-        present_share_picker(
-            window,
-            cx,
-            &SurfaceAnchor::at(at),
-            picker,
-            items,
-            |_, _, _| {},
-        );
+        present_share_picker(window, cx, &at, picker, items, |_, _, _| {});
     }
 
     pub(crate) fn make_alias(&mut self, cx: &mut Context<Self>) {
