@@ -42,6 +42,7 @@ pub enum Op {
     Duplicate(Vec<PathBuf>),
     /// Finder's Make Alias: a bookmark file beside each item, not a symlink.
     MakeAlias(Vec<PathBuf>),
+    Compress(Vec<PathBuf>),
     NewFolder {
         into: PathBuf,
         name: String,
@@ -97,6 +98,7 @@ fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Re
         Op::Rename { path, name } => rename(path, name, conflict),
         Op::Duplicate(items) => duplicate(items, progress),
         Op::MakeAlias(items) => make_alias(items, progress),
+        Op::Compress(items) => compress(items, progress),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
         Op::PutBack(items) => put_back(items, progress),
@@ -764,6 +766,76 @@ fn alias_path(path: &Path) -> PathBuf {
         }
         n += 1;
     }
+}
+
+/// Finder names one item's archive after the whole name, extension and all, and a selection's
+/// `Archive.zip`.
+fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
+    let first = items.first()?;
+    let dir = first.parent().unwrap_or_else(|| Path::new(""));
+    let stem = match items.len() {
+        1 => first.file_name()?.to_string_lossy().into_owned(),
+        _ => "Archive".to_string(),
+    };
+    let plain = dir.join(format!("{stem}.zip"));
+    if !taken(&plain) {
+        return Some(plain);
+    }
+    (2..).find_map(|n| {
+        let candidate = dir.join(format!("{stem} {n}.zip"));
+        (!taken(&candidate)).then_some(candidate)
+    })
+}
+
+/// `ditto` is what Archive Utility itself runs, so the archive holds the resource forks and the
+/// extended attributes the way Finder's does. A folder keeps its own name inside the archive and
+/// a file does not, which is what `--keepParent` means for each.
+fn compress(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+    let Some(dest) = archive_path(&items) else {
+        return Ok(Done {
+            results: Vec::new(),
+            undo: None,
+        });
+    };
+    let mut ditto = std::process::Command::new("/usr/bin/ditto");
+    ditto.args(["-c", "-k", "--sequesterRsrc"]);
+    let staging = (items.len() > 1).then(|| staging_path(&dest));
+    let source = match &staging {
+        None => {
+            if items[0].is_dir() {
+                ditto.arg("--keepParent");
+            }
+            items[0].clone()
+        }
+        Some(staging) => {
+            std::fs::create_dir(staging)?;
+            let fm = NSFileManager::defaultManager();
+            for (at, item) in items.iter().enumerate() {
+                let name = item.file_name().unwrap_or_default();
+                transfer(&fm, item, &staging.join(name), false)?;
+                progress(Progress {
+                    done: at,
+                    total: items.len() + 1,
+                    current: Some(item.clone()),
+                });
+            }
+            staging.clone()
+        }
+    };
+    let status = ditto.arg(&source).arg(&dest).status();
+    if let Some(staging) = &staging {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+    status?;
+    progress(Progress {
+        done: items.len(),
+        total: items.len(),
+        current: Some(dest.clone()),
+    });
+    Ok(Done {
+        results: vec![dest.clone()],
+        undo: Some(Op::Trash(vec![dest])),
+    })
 }
 
 fn make_alias(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
@@ -1815,5 +1887,42 @@ mod tests {
 
         let _ = fs::remove_file(&file);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compresses_a_file_the_way_finder_names_it() {
+        let dir = temp_dir("compress-file");
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let done = perform(Op::Compress(vec![file]), Conflict::KeepBoth, |_| {}).unwrap();
+        let zip = dir.join("sample.txt.zip");
+        assert_eq!(done.results, vec![zip.clone()]);
+        assert!(zip.is_file());
+        let listing = std::process::Command::new("/usr/bin/unzip")
+            .args(["-Z1"])
+            .arg(&zip)
+            .output()
+            .unwrap();
+        let names = String::from_utf8_lossy(&listing.stdout);
+        assert!(names.lines().any(|line| line == "sample.txt"), "{names}");
+    }
+
+    #[test]
+    fn compresses_a_selection_into_one_archive() {
+        let dir = temp_dir("compress-many");
+        let file = dir.join("a.txt");
+        let folder = dir.join("b");
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let done = perform(Op::Compress(vec![file, folder]), Conflict::KeepBoth, |_| {}).unwrap();
+        assert_eq!(done.results, vec![dir.join("Archive.zip")]);
+        let listing = std::process::Command::new("/usr/bin/unzip")
+            .args(["-Z1"])
+            .arg(dir.join("Archive.zip"))
+            .output()
+            .unwrap();
+        let names = String::from_utf8_lossy(&listing.stdout);
+        assert!(names.lines().any(|line| line == "a.txt"), "{names}");
+        assert!(names.lines().any(|line| line.starts_with("b/")), "{names}");
     }
 }

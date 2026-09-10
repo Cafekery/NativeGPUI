@@ -32,6 +32,7 @@ pub(crate) enum Act {
     MakeAlias,
     QuickLook,
     OpenWith(&'static str),
+    Compress,
     Copy,
     Cut,
     Paste,
@@ -117,6 +118,7 @@ impl FinderDemo {
             Act::Rename => self.renaming = self.cursor.clone(),
             Act::Duplicate => self.duplicate_selection(cx),
             Act::MakeAlias => self.make_alias(cx),
+            Act::Compress => self.compress_selection(cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => {
                 let files: Vec<PathBuf> = self
@@ -213,6 +215,13 @@ impl FinderDemo {
         let items = self.paths();
         if !items.is_empty() {
             self.run_op(Op::Duplicate(items), After::Select, cx);
+        }
+    }
+
+    fn compress_selection(&mut self, cx: &mut Context<Self>) {
+        let items = self.paths();
+        if !items.is_empty() {
+            self.run_op(Op::Compress(items), After::Select, cx);
         }
     }
 

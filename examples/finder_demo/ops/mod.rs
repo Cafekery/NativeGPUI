@@ -34,7 +34,8 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
         Op::Trash(items)
         | Op::DeleteImmediately(items)
         | Op::Duplicate(items)
-        | Op::MakeAlias(items) => parents(items),
+        | Op::MakeAlias(items)
+        | Op::Compress(items) => parents(items),
         Op::Rename { path, .. } => parents(std::slice::from_ref(path)),
         Op::NewFolder { into, .. } | Op::NewFile { into, .. } => vec![into.clone()],
         Op::PutBack(items) => items

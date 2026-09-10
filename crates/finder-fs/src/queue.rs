@@ -257,7 +257,9 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
         | Op::MakeAlias(items)
         | Op::Trash(items)
         | Op::DeleteImmediately(items) => Some(items),
-        Op::Rename { .. }
+        // One archive comes out of the whole selection, so it is never split into item jobs.
+        Op::Compress(_)
+        | Op::Rename { .. }
         | Op::NewFolder { .. }
         | Op::NewFile { .. }
         | Op::PutBack(_)
@@ -279,7 +281,8 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
         Op::MakeAlias(_) => Op::MakeAlias(vec![item]),
         Op::Trash(_) => Op::Trash(vec![item]),
         Op::DeleteImmediately(_) => Op::DeleteImmediately(vec![item]),
-        Op::Rename { .. }
+        Op::Compress(_)
+        | Op::Rename { .. }
         | Op::NewFolder { .. }
         | Op::NewFile { .. }
         | Op::PutBack(_)
@@ -395,6 +398,7 @@ fn label_for(op: &Op) -> String {
         Op::Copy { items, .. } => describe("Copy", items),
         Op::Duplicate(items) => describe("Duplicate", items),
         Op::MakeAlias(items) => describe("Make Alias of", items),
+        Op::Compress(items) => describe("Compress", items),
         Op::Trash(items) => format!("{} to Trash", describe("Move", items)),
         Op::DeleteImmediately(items) => describe("Delete", items),
         Op::Rename { name, .. } => format!("Rename of \"{name}\""),

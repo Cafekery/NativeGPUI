@@ -117,8 +117,8 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         Act::Rename,
     );
     menu.item(
-        MenuEntry::item(subject("Compress", &line.row.display, many, chosen)).disabled(),
-        Act::Nothing,
+        MenuEntry::item(subject("Compress", &line.row.display, many, chosen)),
+        Act::Compress,
     );
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
