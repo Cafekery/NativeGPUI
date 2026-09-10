@@ -141,6 +141,9 @@ pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
 }
 
 pub(crate) fn tag_title(id: &str) -> String {
+    if id == crate::search::RECENTS {
+        return "Recents".to_string();
+    }
     match id.strip_prefix("tag:").unwrap_or_default() {
         "" => "All Tags".to_string(),
         name => name.to_string(),

@@ -149,8 +149,36 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
     else {
         return Vec::new();
     };
+    let found = String::from_utf8_lossy(&found.stdout);
+    let mut rows = rows_at(found.lines().take(limit), index);
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+/// Finder's Recents: the query its own canned search runs over the user's files, newest use first.
+pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<Row>> {
+    const QUERY: &str = r#"(kMDItemLastUsedDate = "*") && ((kMDItemContentTypeTree = public.content) || (kMDItemContentTypeTree = "com.microsoft.*"cdw) || (kMDItemContentTypeTree = public.archive))"#;
+    let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
+        .arg("-onlyin")
+        .arg(home)
+        .args(["-attr", "kMDItemLastUsedDate", QUERY])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let found = String::from_utf8_lossy(&found.stdout);
+    // Every date is printed in UTC, so the text sorts as the time does.
+    let mut used: Vec<(&str, &str)> = found
+        .lines()
+        .filter_map(|line| line.split_once("   kMDItemLastUsedDate = "))
+        .collect();
+    used.sort_by(|a, b| b.1.cmp(a.1));
+    rows_at(used.into_iter().take(limit).map(|(path, _)| path), index)
+}
+
+fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -> Vec<Arc<Row>> {
     let mut wanted: HashMap<&'static str, HashSet<String>> = HashMap::new();
-    for path in String::from_utf8_lossy(&found.stdout).lines().take(limit) {
+    for path in paths {
         let path = Path::new(path);
         if let (Some(dir), Some(name)) = (path.parent(), path.file_name()) {
             wanted
@@ -171,7 +199,6 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
                 .map(|entry| Arc::new(row_of(dir, entry, index))),
         );
     }
-    rows.sort_by(|a, b| a.name.cmp(&b.name));
     rows
 }
 

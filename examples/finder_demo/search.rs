@@ -11,6 +11,8 @@ use crate::listing::next_rev;
 use crate::{index, prefs};
 
 const HITS: usize = 200;
+/// Stands where a `tag:` id would, for the one listing that is not a tag.
+pub(crate) const RECENTS: &str = "recents";
 
 impl FinderDemo {
     pub(crate) fn searching(&self) -> bool {
@@ -128,7 +130,10 @@ impl FinderDemo {
             let found = cx
                 .background_executor()
                 .spawn(async move {
-                    let rows = data::tagged_rows(&tag, index(), HITS);
+                    let rows = match id == RECENTS {
+                        true => data::recent_rows(&crate::home(), index(), HITS),
+                        false => data::tagged_rows(&tag, index(), HITS),
+                    };
                     let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()
                         .map(|row| (row.path.clone(), crate::tags::row_tags(&row.path)))
