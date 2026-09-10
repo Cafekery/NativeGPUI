@@ -8,6 +8,7 @@ use finder_fs::sort::fold;
 use gpui::SharedString;
 
 use crate::app::FinderDemo;
+use crate::chrome::criteria_bar::Criterion;
 use crate::data::{Column, Line, Row, group_of};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 
@@ -50,6 +51,7 @@ pub(crate) struct Shape {
     results: bool,
     expanded: Keys,
     hits: Vec<Arc<Row>>,
+    criteria: Vec<Criterion>,
 }
 
 type Bands = (Arc<Vec<Line>>, Arc<Vec<Slot>>);
@@ -181,10 +183,10 @@ impl Shape {
                 depth: 0,
             })
             .collect();
-        merged.extend(
-            out.into_iter()
-                .filter(|line| !ranked.contains(line.key.as_ref())),
-        );
+        merged.extend(out.into_iter().filter(|line| {
+            !ranked.contains(line.key.as_ref())
+                && self.criteria.iter().all(|it| it.holds(&line.row))
+        }));
         (merged, Vec::new())
     }
 
@@ -379,6 +381,7 @@ impl FinderDemo {
             results: self.results(),
             expanded: self.expanded.clone(),
             hits: self.hits.clone(),
+            criteria: self.criteria.clone(),
         }
     }
 

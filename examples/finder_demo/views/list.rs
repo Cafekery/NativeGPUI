@@ -9,7 +9,6 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art, small_glyph};
-use crate::chrome::scope_bar::SCOPE_H;
 use crate::data::{Column, Line, date_text, enclosing_name};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
@@ -104,7 +103,11 @@ pub(crate) fn row_h(icon: f32) -> f32 {
 impl FinderDemo {
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         // Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
-        let scope_h = if self.in_search() { SCOPE_H } else { 0. };
+        let scope_h = if self.in_search() {
+            self.search_bars_h()
+        } else {
+            0.
+        };
         let inset = f32::from(self.metrics().top) + scope_h + HEADER_H + LIST_TOP_GAP;
         let row_h = self.row_h();
         let rows = (inset / row_h).ceil() as usize;

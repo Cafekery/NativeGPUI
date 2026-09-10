@@ -16,7 +16,6 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::app::FinderDemo;
 use crate::app::LIST_CONTEXT;
 use crate::chrome::path_bar::PATH_H;
-use crate::chrome::scope_bar;
 use crate::chrome::surface::{band_glass, pane_surface, toolbar_rule};
 use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
@@ -244,13 +243,14 @@ impl FinderDemo {
             headers,
             path_bar,
         } = column;
-        // The scope bar shares the hosted band with the toolbar, so it grows the top inset.
+        // The scope and criteria bars share the hosted band with the toolbar, so they grow the
+        // top inset.
         let scope_h = if self.in_search() {
-            scope_bar::SCOPE_H
+            self.search_bars_h()
         } else {
             0.
         };
-        let scope_bar = (scope_h > 0.).then(|| self.scope_bar(cx));
+        let search_bars = (scope_h > 0.).then(|| (self.scope_bar(cx), self.criteria_bar(cx)));
         let above = metrics.top;
         let top = above + px(scope_h);
         // The path bar takes height from the list, not from the pane, which runs to the corner.
@@ -313,7 +313,7 @@ impl FinderDemo {
                 let height = top + if banded { px(HEADER_H) } else { px(0.) };
                 column.child(band_glass(px(pane), height))
             })
-            .children(scope_bar.map(|bar| {
+            .children(search_bars.map(|(scope, criteria)| {
                 div()
                     .absolute()
                     .top(above)
@@ -321,7 +321,10 @@ impl FinderDemo {
                     .right(px(pane))
                     .h(px(scope_h))
                     .pl(metrics.left)
-                    .child(bar)
+                    .flex()
+                    .flex_col()
+                    .child(scope)
+                    .child(criteria)
             }))
             .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             .children(path_bar.map(|bar| {
