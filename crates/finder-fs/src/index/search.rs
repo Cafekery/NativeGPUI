@@ -137,6 +137,7 @@ struct Query<'a> {
     lookup: &'a Lookup,
     bytes: &'a [u8],
     wanted: u64,
+    pairs: u64,
     home: Option<u32>,
     under: Option<u32>,
     limit: usize,
@@ -197,7 +198,7 @@ impl Query<'_> {
         if self.under.is_some_and(|root| !self.tree.is_under(id, root)) {
             return;
         }
-        let Some(home) = self.placed(id) else {
+        let Some(home) = self.lookup.placed(id).unwrap_or_else(|| self.placed(id)) else {
             return;
         };
         let score = score(home);
@@ -213,12 +214,20 @@ impl Query<'_> {
     }
 
     fn ids(&self, ids: &[u32], class: &(impl Fn(&[u8]) -> u8 + Sync)) -> Vec<Found> {
+        self.sift(ids.iter().copied(), class)
+    }
+
+    fn sift(
+        &self,
+        ids: impl Iterator<Item = u32>,
+        class: &(impl Fn(&[u8]) -> u8 + Sync),
+    ) -> Vec<Found> {
         let masks = self.tree.names.masks();
         let mut best = Vec::with_capacity(self.cap + 1);
         let mut cutoff = 0;
-        for &id in ids {
+        for id in ids {
             let mask = masks[id as usize];
-            if mask & self.wanted != self.wanted {
+            if mask & self.wanted != self.wanted || !self.lookup.holds(id, self.pairs) {
                 continue;
             }
             let class = class(&self.name(id, mask));
@@ -270,8 +279,7 @@ impl Query<'_> {
                 .flatten()
                 .collect()
         });
-        let fresh: Vec<u32> =
-            (self.lookup.every().len() as u32..self.tree.names.len() as u32).collect();
+        let fresh: Vec<u32> = (self.lookup.names() as u32..self.tree.names.len() as u32).collect();
         best.extend(self.ids(&fresh, class));
         best.extend(self.tail(class));
         best.sort_by(|a, b| self.order(a, b));
@@ -283,8 +291,33 @@ impl Query<'_> {
         self.spread(self.lookup.heads(self.bytes), class)
     }
 
+    /// Every name, walked in id order: the head buckets are the wrong order for this, one cache
+    /// miss per name against a mask array that reads at memory speed in its own.
     fn all(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        self.spread(self.lookup.every(), class)
+        let names = self.tree.names.len();
+        let cores = thread::available_parallelism().map_or(1, |cores| cores.get());
+        let threads = cores.min(names.div_ceil(CHUNK)).max(1);
+        let per = names.div_ceil(threads).max(1);
+        let class = &class;
+        let mut best: Vec<Found> = thread::scope(|scope| {
+            let handles: Vec<_> = (0..names)
+                .step_by(per)
+                .map(|from| {
+                    scope.spawn(move || {
+                        self.sift(from as u32..(from + per).min(names) as u32, class)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .flatten()
+                .collect()
+        });
+        best.extend(self.tail(class));
+        best.sort_by(|a, b| self.order(a, b));
+        best.truncate(self.limit);
+        best
     }
 }
 
@@ -313,6 +346,9 @@ pub fn search(
         wanted: words
             .iter()
             .fold(0, |mask, word| mask | mask_of(&word.bytes)),
+        pairs: words.iter().fold(0, |pairs, word| {
+            pairs | super::lookup::signature(&word.bytes)
+        }),
         home: super::resolve(tree, &super::crawl::home()),
         under,
         limit,
