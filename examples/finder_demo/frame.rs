@@ -45,6 +45,9 @@ impl Render for FinderDemo {
         if self.sidebar.is_none() {
             self.install(window, cx);
         }
+        if self.toolbar_for != (self.selected.rev(), self.cursor.clone()) {
+            self.toolbar = false;
+        }
         if !self.toolbar {
             self.install_toolbar(window, cx);
         }

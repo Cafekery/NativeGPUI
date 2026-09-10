@@ -1,28 +1,19 @@
+use crate::menus::{Act, Menu};
 use block2::RcBlock;
 use gpui::{Context, Window, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::{
-    MenuEntry, MenuView, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection,
-    ToolbarStyle, chrome_host, set_toolbar,
+    MenuEntry, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection, ToolbarStyle,
+    chrome_host, set_toolbar,
 };
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use std::rc::Rc;
 
 use crate::app::FinderDemo;
 use crate::data::Column;
-use crate::tags::{finder_color, tags};
-
-pub(crate) const SORTINGS: &[(Option<Column>, &str)] = &[
-    (Some(Column::Name), "Name"),
-    (Some(Column::Kind), "Kind"),
-    (None, "Date Last Opened"),
-    (None, "Date Added"),
-    (Some(Column::Modified), "Date Modified"),
-    (None, "Date Created"),
-    (Some(Column::Size), "Size"),
-];
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
@@ -161,48 +152,6 @@ pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
     entries
 }
 
-pub(crate) fn action_menu() -> Vec<MenuEntry> {
-    let swatches = MenuView::swatches(tags().iter().map(|tag| finder_color(tag.color)));
-    vec![
-        MenuEntry::item("New Folder").symbol("folder.badge.plus"),
-        MenuEntry::item("New Folder with Selection")
-            .symbol("folder.badge.plus")
-            .disabled(),
-        MenuEntry::item("Get Info").symbol("info.circle").disabled(),
-        MenuEntry::separator(),
-        MenuEntry::item("Rename").symbol("pencil"),
-        MenuEntry::item("Compress").symbol("archivebox"),
-        MenuEntry::item("Duplicate").symbol("plus.square.on.square"),
-        MenuEntry::item("Make Alias").symbol("link"),
-        MenuEntry::item("Quick Look").symbol("eye"),
-        MenuEntry::separator(),
-        MenuEntry::item("Copy").symbol("doc.on.doc"),
-        MenuEntry::item("Share…").symbol("square.and.arrow.up"),
-        MenuEntry::separator(),
-        MenuEntry::item("Sort By")
-            .symbol("arrow.up.arrow.down")
-            .submenu(
-                SORTINGS
-                    .iter()
-                    .map(|(_, title)| MenuEntry::item(*title))
-                    .chain([MenuEntry::separator(), MenuEntry::item("Tags")]),
-            ),
-        MenuEntry::item("Show View Options").symbol("slider.horizontal.3"),
-        MenuEntry::separator(),
-        MenuEntry::view(swatches),
-        MenuEntry::item("Tags…").symbol("tag"),
-        MenuEntry::separator(),
-        MenuEntry::item("Import from iPhone or iPad")
-            .symbol("iphone")
-            .submenu([
-                MenuEntry::item("Take Photo").symbol("camera"),
-                MenuEntry::item("Scan Documents").symbol("doc.viewfinder"),
-                MenuEntry::item("Add Sketch").symbol("pencil.tip.crop.circle"),
-            ]),
-        MenuEntry::item("Quick Actions").symbol("wand.and.stars"),
-    ]
-}
-
 impl FinderDemo {
     pub(crate) fn install_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar.is_none() {
@@ -215,6 +164,9 @@ impl FinderDemo {
         let query = this.clone();
         let jobs = this.clone();
         let group = this.clone();
+        let action = this.clone();
+        let rows = self.action_rows();
+        let acts: Rc<[Act]> = rows.acts.into();
 
         set_toolbar(
             window,
@@ -288,8 +240,14 @@ impl FinderDemo {
                         })
                         .ok();
                     }),
-                ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", action_menu())
-                    .tool_tip("Perform tasks with the selected items"),
+                ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
+                    .tool_tip("Perform tasks with the selected items")
+                    .on_select(move |index, window, cx| {
+                        let act = acts.get(index).copied().unwrap_or(Act::Nothing);
+                        action
+                            .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
+                            .ok();
+                    }),
                 ToolbarItem::space(),
                 ToolbarItem::search(SEARCH_ID, "Search")
                     .placeholder("Search")
@@ -308,6 +266,18 @@ impl FinderDemo {
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
         }
         self.toolbar = true;
+        self.toolbar_for = (self.selected.rev(), self.cursor.clone());
+    }
+
+    /// Finder's Action menu is its context menu for the selection, or for the folder without one.
+    fn action_rows(&self) -> Menu {
+        match self
+            .cursor_line()
+            .filter(|line| self.selected.contains(&line.key))
+        {
+            Some(line) => crate::menus::item(&self.selected, &line),
+            None => crate::menus::background(self),
+        }
     }
 
     pub(crate) fn resync_toolbar(&mut self) {
