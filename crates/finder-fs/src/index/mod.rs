@@ -161,6 +161,37 @@ impl Index {
         self.lookup.read().unwrap_or_else(|held| held.into_inner())
     }
 
+    /// One real path per extension, the most common first: what a kind lookup wants warmed,
+    /// since the label it caches comes from Spotlight and that needs a file that exists.
+    pub fn extensions(&self, limit: usize) -> Vec<PathBuf> {
+        let tree = self.read();
+        let mut counts: std::collections::HashMap<&[u8], (usize, u32)> =
+            std::collections::HashMap::new();
+        for id in 0..tree.name_of.len() as u32 {
+            let node = &tree.nodes[id as usize];
+            if node.deleted() || node.is_dir() {
+                continue;
+            }
+            let name = tree.names.bytes(tree.name_of[id as usize]);
+            let Some(at) = name.iter().rposition(|byte| *byte == b'.') else {
+                continue;
+            };
+            let ext = &name[at + 1..];
+            if ext.is_empty() || ext.len() > 12 {
+                continue;
+            }
+            let seen = counts.entry(ext).or_insert((0, id));
+            seen.0 += 1;
+        }
+        let mut common: Vec<(usize, u32)> = counts.into_values().collect();
+        common.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        common
+            .into_iter()
+            .take(limit)
+            .map(|(_, id)| tree.path(id))
+            .collect()
+    }
+
     pub fn search(&self, query: &str, under: Option<&Path>, limit: usize) -> Vec<Hit> {
         let tree = self.read();
         let under = match under {
