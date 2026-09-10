@@ -21,7 +21,6 @@ pub(crate) struct Stats {
     pub(crate) head: Vec<Line>,
 }
 
-/// Runs off the main thread, so nothing here may touch a view.
 pub(crate) fn summarize(
     key: (u64, usize),
     lines: &[Line],

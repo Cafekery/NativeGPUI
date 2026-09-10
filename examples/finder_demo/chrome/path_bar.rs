@@ -47,7 +47,6 @@ impl FinderDemo {
 
         let (selection, selection_text) = (palette.selection, palette.selection_text);
         for (index, crumb) in crumbs.iter().enumerate() {
-            // The fixture starts at the home folder, so the crumbs above it lead nowhere.
             let target = index
                 .checked_sub(crumbs.len() - chain.len())
                 .and_then(|step| chain.get(step).copied());
@@ -79,7 +78,6 @@ impl FinderDemo {
                     FontWeight::SEMIBOLD,
                     SystemColor::SecondaryLabel,
                 ) {
-                    // Finder leaves a point more after a chevron than before it.
                     segment = segment.child(div().flex_none().mr(px(1.)).child(chevron));
                 }
             }
@@ -138,7 +136,6 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Finder drops crumbs from the left until the trail fits.
     fn crumb_labels(&self, crumbs: &[&str], window: &Window) -> Vec<bool> {
         let mut named = vec![true; crumbs.len()];
         let size = tokens::small_system_font_size();

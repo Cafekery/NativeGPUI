@@ -32,7 +32,6 @@ const GRIP_W: f32 = 6.;
 pub(crate) const INSET: f32 = 10.;
 const RESIZE_EDGE: f32 = 6.;
 
-/// The card's own window: one Metal layer cannot both blur GPUI content and paint over the blur.
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
@@ -96,8 +95,7 @@ impl Render for PreviewPane {
                 .size_full()
                 .font_family(family)
                 .text_size(tokens::system_font_size())
-                // AppKit sends the drag to the window the grip was pressed in, which the pointer
-                // leaves as soon as the pane grows.
+                // Window-level: the pointer leaves the grip's window as soon as the pane grows.
                 .child(canvas(|_, _, _| (), move |_, _, window, _| {
                     // A non-activating panel: a click here must still bring the app forward.
                     window.on_mouse_event(|_: &MouseDownEvent, phase, _, cx| {
@@ -118,7 +116,6 @@ impl Render for PreviewPane {
                     });
                 }))
                 .child(
-                    // The parent paints the pane's material; this carries what draws above it.
                     div()
                         .size_full()
                         .relative()
@@ -137,13 +134,6 @@ impl Render for PreviewPane {
                 ),
         )
     }
-}
-
-fn same_rect(a: NSRect, b: NSRect) -> bool {
-    a.origin.x == b.origin.x
-        && a.origin.y == b.origin.y
-        && a.size.width == b.size.width
-        && a.size.height == b.size.height
 }
 
 fn open_preview_window(
@@ -222,8 +212,7 @@ impl FinderDemo {
             return;
         }
 
-        // The card window stops short of the parent's resize edges: a child window over them would
-        // take the drag.
+        // Short of the parent's resize edges, which a child window over them would steal.
         let bounds = Bounds {
             origin: point(
                 px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
@@ -233,7 +222,7 @@ impl FinderDemo {
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
         match &mut self.preview_window {
-            Some(pane) if !same_rect(pane.frame, frame) => {
+            Some(pane) if pane.frame != frame => {
                 pane.frame = frame;
                 // Off this draw: resizing from inside the parent's frame loses the size change.
                 let pane_window = pane.window.clone();

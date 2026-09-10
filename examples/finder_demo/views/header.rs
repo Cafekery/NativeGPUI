@@ -55,18 +55,9 @@ impl ColumnSpec {
 
 pub(crate) fn default_columns() -> Vec<ColumnSpec> {
     vec![
-        ColumnSpec {
-            column: Column::Modified,
-            width: COL_MODIFIED,
-        },
-        ColumnSpec {
-            column: Column::Size,
-            width: COL_SIZE,
-        },
-        ColumnSpec {
-            column: Column::Kind,
-            width: COL_KIND,
-        },
+        ColumnSpec::of(Column::Modified),
+        ColumnSpec::of(Column::Size),
+        ColumnSpec::of(Column::Kind),
     ]
 }
 
@@ -100,13 +91,7 @@ pub(crate) fn column_title(column: Column) -> &'static str {
 }
 
 fn overlay(fill: Hsla) -> Div {
-    div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left_0()
-        .right_0()
-        .bg(fill)
+    div().absolute().inset_0().bg(fill)
 }
 
 fn cell_body(
@@ -121,7 +106,7 @@ fn cell_body(
     } else {
         CELL_PAD
     };
-    // Hosted, not GPUI text: the band's material is above the whole Metal layer and would blur it.
+    // Hosted, not GPUI: the band's material sits above the whole Metal layer and would blur it.
     let label = div().flex_1().mb(px(2.)).child(
         native_label(id, column_title(column))
             .font_size(tokens::small_system_font_size())
@@ -145,7 +130,6 @@ fn cell_body(
         .child(div().w(px(inset)).flex_none())
         .child(label);
     if sorted {
-        // Hosted: a GPUI glyph would sit under the band's material.
         let arrow = if ascending {
             "chevron.up"
         } else {
@@ -172,12 +156,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn fit_name_column(&mut self) {
-        let span = self.list_room
-            - if self.preview_shown() {
-                self.preview_w
-            } else {
-                0.
-            };
+        let span = self.list_room - self.pane_w();
         let fixed = self.list_content_w() - self.name_w;
         if self.list_span.is_nan() {
             self.name_w = (span - fixed).max(NAME_MIN_W);
@@ -469,7 +448,6 @@ impl FinderDemo {
                         }
                     }
                 }
-                // Option borrows the growth from the neighbour instead of sliding the rest.
                 if event.event.modifiers.alt {
                     if let Some(neighbour) = self.list_columns.get_mut(index) {
                         neighbour.width = (neighbour.width - grown).max(COL_MIN_W);
@@ -499,7 +477,6 @@ impl FinderDemo {
         self.refit_name_column();
     }
 
-    /// Finder's own gesture: fit a column to its widest currently-loaded cell, standard padding.
     fn fit_list_column(&mut self, index: usize, window: &Window, cx: &mut Context<Self>) {
         let column = match index {
             0 => Column::Name,

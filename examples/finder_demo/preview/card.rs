@@ -22,54 +22,30 @@ use crate::ui::rename_field;
 use crate::view::GALLERY_VIEW;
 
 const NAME_SIZE: f32 = 15.;
-
 const NAME_H: f32 = 18.;
-
 const LINE_H: f32 = 15.;
-
 const SMALL_H: f32 = 13.;
-
 const GAP_NAME_KIND: f32 = 4.;
-
 const GAP_KIND_HEAD: f32 = 9.;
-
 const GAP_HEAD_ROWS: f32 = 8.5;
-
 const ROW_GAP: f32 = 8.;
-
 const GAP_ROWS_TAGS: f32 = 17.;
-
 const GAP_TAGS_ADD: f32 = 6.5;
-
 const ICON_H: f32 = 16.;
-
 const GAP_ICON_LABEL: f32 = 10.5;
-
 const BOTTOM_INSET: f32 = 16.;
-
 const GAP_TOP: f32 = 10.;
-
 const GAP_HERO_TEXT: f32 = 27.;
-
 const HERO_TALL: f32 = 1.31;
-
 const HERO_CAP: f32 = 0.5;
-
 const HEADER_ICON: f32 = 48.;
-
 const GAP_HEADER: f32 = 26.;
-
 const GAP_HEADER_ICON: f32 = 10.;
-
 const GAP_HEADER_HEAD: f32 = 14.;
-
 const ACTION_SLOT_W: f32 = 75.5;
-
 const ACTION_ICON_SIZE: f32 = 15.;
-
 const STACK_ICON: f32 = 0.62;
 
-/// Back to front: tilt in degrees, x and y offsets in shares of the square, scale.
 pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
     (-10., 0.03, -0.025, 0.9),
     (7., -0.025, 0., 0.95),
@@ -87,7 +63,7 @@ struct Card {
     actions: &'static [(&'static str, &'static str)],
 }
 
-/// The icons fanned into one square, `side` pixels across; straight-alpha BGRA, as icons come.
+/// Straight-alpha BGRA in and out, as icons come.
 fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     if icons.is_empty() {
         return None;
@@ -143,7 +119,6 @@ fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-/// Finder titles an application by its stem: the `.app` is the package's, not the app's.
 fn title_line(row: &Row) -> SharedString {
     match row.display.strip_suffix(".app") {
         Some(stem) if row.face == Face::Program => stem.to_string().into(),
@@ -165,7 +140,6 @@ fn info_rows(
     expanded: bool,
 ) -> (Vec<(&'static str, SharedString)>, bool) {
     let none = Meta::default();
-    // A folder's block is its two dates and no More: Spotlight's file attributes are not its.
     let meta = match row.face {
         Face::Folder | Face::Volume => &none,
         _ => meta.unwrap_or(&none),
@@ -182,7 +156,6 @@ fn info_rows(
         all.extend(value.map(|value| (label, value, under_more)));
     };
     add("Last opened", meta.last_used.map(stamp), false);
-    // Only what was shot or recorded carries a content date Finder shows apart from the file's.
     let media = meta.pixels.is_some() || meta.duration.is_some();
     add(
         "Content created",
@@ -191,7 +164,6 @@ fn info_rows(
     );
     add("Dimensions", meta.pixels.map(size), false);
     add("Duration", meta.duration.map(clock), false);
-    // An application wears its version whatever the block is showing; a document's is under More.
     add(
         "Version",
         meta.version.clone().map(SharedString::from),
@@ -237,7 +209,6 @@ fn info_rows(
     (rows, more)
 }
 
-/// A running time as Finder writes it: hours only where there are any.
 fn clock(seconds: f64) -> SharedString {
     let seconds = seconds.max(0.).round() as u64;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -359,7 +330,6 @@ impl FinderDemo {
     }
 
     pub(crate) fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
-        // A selection whose rows have left the listing (a folder read still in flight) has no hero.
         let Some(first) = lines.first() else {
             return div().w(px(content)).h(px(content)).into_any_element();
         };
@@ -410,7 +380,6 @@ impl FinderDemo {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
         let hairline = system_color(SystemColor::QuaternarySystemFill);
-        // Gallery view renames in the card's title, there being no label to edit.
         let editing = (self.view == GALLERY_VIEW && !card.many)
             .then(|| self.cursor_line())
             .flatten()

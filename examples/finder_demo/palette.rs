@@ -42,7 +42,6 @@ impl Palette {
     }
 }
 
-/// Measured from `NSBrowser`: black in the dark appearance, 230 in the light one.
 pub(crate) fn browser_rule() -> Hsla {
     match tokens::current_appearance() {
         Appearance::Dark => hsla(0., 0., 0., 1.),
@@ -50,7 +49,6 @@ pub(crate) fn browser_rule() -> Hsla {
     }
 }
 
-/// `alternatingContentBackgroundColors[1]`, the even row's fill, which the token set does not name.
 pub(crate) fn alternating_row() -> Option<Hsla> {
     let slot: RefCell<Option<Hsla>> = RefCell::new(None);
     let block = StackBlock::new(|| {

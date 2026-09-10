@@ -172,7 +172,6 @@ impl Shape {
         if !self.results {
             return (out, at);
         }
-        // The index's hits are ranked best first; what only the listing knows trails behind.
         let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
         let mut merged: Vec<Line> = self
             .hits
@@ -311,7 +310,7 @@ impl FinderDemo {
             taken => self.extended(taken, self.here(), tree, rows),
         }
         .unwrap_or_else(|| {
-            let (lines, at) = self.build_lines(tree);
+            let (lines, at) = self.shape(tree).build(&self.held());
             Built {
                 lines: Arc::new(lines),
                 used: rows,
@@ -640,10 +639,6 @@ impl FinderDemo {
             .rposition(|rung| rung.selected.is_some())
             .unwrap_or(0);
         self.column_listing(chain[focused].folder)
-    }
-
-    fn build_lines(&self, tree: bool) -> Walk {
-        self.shape(tree).build(&self.held())
     }
 
     fn held<'a>(&'a self) -> impl Fn(&'static str) -> Option<&'a [Arc<Row>]> + 'a {

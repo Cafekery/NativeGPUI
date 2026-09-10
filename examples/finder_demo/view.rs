@@ -11,17 +11,12 @@ use crate::views::icon::cell;
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
 
 pub(crate) const ICON_VIEW: usize = 0;
-
 pub(crate) const LIST_VIEW: usize = 1;
-
 pub(crate) const COLUMN_VIEW: usize = 2;
-
 pub(crate) const GALLERY_VIEW: usize = 3;
 
 pub(crate) const LIST_ZOOM_SECS: f32 = 0.2;
-
 const ICON_STOPS: [f32; 9] = [16., 24., 32., 48., 64., 96., 128., 256., 512.];
-
 const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
 
 impl FinderDemo {
@@ -84,7 +79,6 @@ impl FinderDemo {
         row_h(self.list_icon_now())
     }
 
-    /// ⌘= and ⌘-: the list toggles, the grid and the strip step, column view does nothing.
     pub(crate) fn zoom(&mut self, larger: bool, cx: &mut Context<Self>) {
         fn step(stops: &[f32], from: f32, larger: bool) -> Option<f32> {
             if larger {
@@ -132,7 +126,6 @@ impl FinderDemo {
         }
     }
 
-    /// The grid scrolls under the sidebar, so the pane's width still counts as room.
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)

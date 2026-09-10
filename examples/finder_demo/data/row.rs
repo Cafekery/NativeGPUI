@@ -31,7 +31,6 @@ pub(crate) enum Column {
 #[derive(Clone)]
 pub(crate) struct Row {
     pub(crate) name: SharedString,
-    /// The name as Finder draws it, which is not always the name the directory stores.
     pub(crate) display: SharedString,
     pub(crate) path: SharedString,
     pub(crate) size: SharedString,
@@ -42,11 +41,9 @@ pub(crate) struct Row {
     pub(crate) uti: SharedString,
     pub(crate) face: Face,
     pub(crate) hidden: bool,
-    /// A directory the user can walk into, or an alias's target, never a package.
     pub(crate) opens: Option<&'static str>,
     /// Finder gives an alias no triangle, however its target opens.
     pub(crate) discloses: bool,
-    /// Evicted to iCloud: Finder badges the row with a cloud and downloads it when it opens.
     pub(crate) dataless: bool,
     pub(crate) artwork: Option<FileType<'static>>,
 }
@@ -59,7 +56,6 @@ fn folder_full(entry: &Entry, path: &str, index: &Index) -> bool {
 }
 
 fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<FileType<'static>> {
-    // An alias wears the icon of what it points at, badged; the system draws that for the link.
     if entry.package || entry.kind == EntryKind::Symlink {
         return Some(FileType::Path(intern(path)));
     }
@@ -78,7 +74,6 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<Fil
     })
 }
 
-/// Finder opens an alias at the folder it points at, wherever that is.
 fn target_folder(path: &str) -> Option<&'static str> {
     let path = Path::new(path);
     path.is_dir()
@@ -93,7 +88,6 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
         _ => kind::kind_of_path(Path::new(&path)),
     };
-    // A package is a directory too: its bytes are the index's to know, not the listing's.
     let directory = entry.kind == EntryKind::Directory;
     let bytes = match directory {
         true => index.folder_size(Path::new(&path)).unwrap_or(0),
@@ -124,7 +118,6 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
     }
 }
 
-/// Runs off the main thread, so nothing here may touch a view.
 pub(crate) fn rows_of(dir: &'static str, entries: &[Entry], index: &Index) -> Vec<Arc<Row>> {
     entries
         .iter()
@@ -155,7 +148,6 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
     rows
 }
 
-/// Finder's Recents: the query its own canned search runs over the user's files, newest use first.
 pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     const QUERY: &str = r#"(kMDItemLastUsedDate = "*") && ((kMDItemContentTypeTree = public.content) || (kMDItemContentTypeTree = "com.microsoft.*"cdw) || (kMDItemContentTypeTree = public.archive))"#;
     let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
@@ -167,7 +159,7 @@ pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<R
         return Vec::new();
     };
     let found = String::from_utf8_lossy(&found.stdout);
-    // Every date is printed in UTC, so the text sorts as the time does.
+    // mdfind prints every date in UTC, so the text sorts as the time does.
     let mut used: Vec<(&str, &str)> = found
         .lines()
         .filter_map(|line| line.split_once("   kMDItemLastUsedDate = "))
@@ -202,8 +194,6 @@ pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -
     rows
 }
 
-/// The boot volume is under no folder at all, and the rest wear a name the mount point need not
-/// carry.
 fn volume_row(id: &'static str) -> Option<Row> {
     let volume = volume_at(id)?;
     let meta = std::fs::metadata(id).ok()?;
@@ -226,7 +216,6 @@ fn volume_row(id: &'static str) -> Option<Row> {
     })
 }
 
-/// iCloud Drive's app folders, which Finder lists there and the directory does not hold.
 pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
     finder_fs::icloud::app_folders()
         .into_iter()

@@ -30,8 +30,6 @@ impl GoSheet {
     }
 }
 
-/// `complete` shortens the home folder to `~`, which belongs only where the typing started that
-/// way.
 fn as_typed(typed: &str, display: String) -> String {
     match display.strip_prefix('~') {
         Some(rest) if !typed.starts_with('~') => format!("{}{rest}", home().to_string_lossy()),
@@ -46,8 +44,7 @@ fn inline(typed: &str, choices: &[String]) -> Option<String> {
 }
 
 impl FinderDemo {
-    /// The completion sits at the end of the field, so typing replaces it and a delete takes all of
-    /// it, the way a selected completion behaves.
+    /// The completion sits selected after the typing: typing replaces it and a delete removes it.
     fn go_typing(&mut self, text: String, cx: &mut Context<Self>) {
         let Some(sheet) = self.go_sheet.as_ref() else {
             return;
@@ -173,8 +170,6 @@ impl FinderDemo {
         )
     }
 
-    /// Mounting blocks until the share is up or the login is refused, so it runs off the main
-    /// thread while the sheet says so.
     fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         self.connect_sheet = Some(ConnectSheet {
             address: address.clone(),
@@ -306,15 +301,12 @@ impl FinderDemo {
     }
 }
 
-/// Connect to Server: the address, and what the last try said.
 #[derive(Clone, Default)]
 pub(crate) struct ConnectSheet {
     address: String,
     status: Option<String>,
 }
 
-/// The sheet both Go to Folder and Connect to Server drop from the toolbar: a title, a field, and
-/// whatever the field has to say below it.
 fn glass(
     id: &'static str,
     title: &'static str,

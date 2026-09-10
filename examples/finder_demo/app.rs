@@ -90,7 +90,6 @@ pub(crate) struct FinderDemo {
     pub(crate) recents: Vec<(&'static str, String)>,
     pub(crate) go_sheet: Option<GoSheet>,
     pub(crate) connect_sheet: Option<ConnectSheet>,
-    /// The name in Save As while a search is being saved as a smart folder.
     pub(crate) save_sheet: Option<String>,
     pub(crate) ql_icon: Anchor,
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,

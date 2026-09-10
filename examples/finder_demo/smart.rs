@@ -1,6 +1,3 @@
-//! Smart folders: a search saved the way Finder saves one, in ~/Library/Saved Searches, and run
-//! again through Spotlight each time it opens.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -14,9 +11,7 @@ use crate::chrome::criteria_bar::Criterion;
 use crate::chrome::scope_bar;
 use crate::data::{self, Row, intern, intern_path};
 
-/// Stands where a `tag:` id would, for the listing a saved search opens as.
 const PREFIX: &str = "search:";
-/// Finder's codes for a search of the whole Mac, and of the folders listed with it.
 const THIS_MAC: u32 = 1396925814;
 const FOLDERS: u32 = 1396925286;
 
@@ -24,18 +19,14 @@ pub(crate) fn is_saved(path: &str) -> bool {
     path.ends_with(".savedSearch")
 }
 
-/// The listing `id` opens as, when it is a saved search.
 pub(crate) fn listing(id: &str) -> Option<&'static str> {
     is_saved(id).then(|| intern(&format!("{PREFIX}{id}")))
 }
 
-/// The saved search a listing reads, when it is one.
 pub(crate) fn file_of(listing: &str) -> Option<&str> {
     listing.strip_prefix(PREFIX)
 }
 
-/// Finder's Spotlight query for the search field and every criteria row, all of them held; with
-/// nothing to hold, Finder saves `false`.
 fn raw_query(text: &str, criteria: &[Criterion]) -> String {
     let text = text.trim();
     let clauses: Vec<String> = (!text.is_empty())
@@ -53,8 +44,6 @@ pub(crate) fn name_clause(before: &str, text: &str, after: &str) -> String {
     format!("(kMDItemFSName == \"{before}{}{after}\"cd)", escape(text))
 }
 
-/// Spotlight reads `*` in a string as a wildcard, so a typed one is escaped with the quote and the
-/// backslash.
 pub(crate) fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
@@ -66,11 +55,10 @@ pub(crate) fn escape(text: &str) -> String {
     escaped
 }
 
-/// Written where Finder keeps its own, under `name`; no `folders` means the whole Mac.
 fn save(name: &str, raw: &str, folders: &[String]) -> Result<PathBuf, String> {
     let dir = crate::home().join("Library/Saved Searches");
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    // Finder shows a colon on disk as a slash, and so takes a slash in a name as one.
+    // Finder stores a slash typed in a name as a colon on disk.
     let file = dir.join(format!("{}.savedSearch", name.replace('/', ":")));
     if file.exists() {
         return Err(format!(
@@ -78,15 +66,12 @@ fn save(name: &str, raw: &str, folders: &[String]) -> Result<PathBuf, String> {
         ));
     }
     std::fs::write(&file, plist(raw, folders)).map_err(|error| error.to_string())?;
-    // Finder hides a smart folder's extension, and titles its window by that; failing only shows it.
     let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
     let yes = NSNumber::new_bool(true);
     let _ = unsafe { url.setResourceValue_forKey_error(Some(&yes), NSURLHasHiddenExtensionKey) };
     Ok(file)
 }
 
-/// The keys Finder itself writes, its raw-query criteria row included so Finder can edit the
-/// search too.
 fn plist(raw: &str, folders: &[String]) -> String {
     let string = |text: &str| format!("<string>{}</string>", xml(text));
     let (code, scopes, paths) = match folders.is_empty() {
@@ -149,7 +134,6 @@ fn unxml(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// What a saved search finds now: its query run through Spotlight in each folder it names.
 pub(crate) fn rows(file: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     let file = Path::new(file);
     let Some(raw) = plutil(file, "RawQuery", "raw") else {
@@ -176,7 +160,6 @@ pub(crate) fn rows(file: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     data::rows_at(found.iter().take(limit).map(String::as_str), index)
 }
 
-/// The folders a saved search looks in; Finder names the whole Mac and the home folder by constant.
 fn roots(file: &Path) -> Vec<PathBuf> {
     let listed = plutil(file, "SearchCriteria.FXScopeArrayOfPaths", "xml1").unwrap_or_default();
     let roots: Vec<PathBuf> = listed
@@ -212,7 +195,6 @@ fn plutil(file: &Path, key: &str, format: &str) -> Option<String> {
 }
 
 impl FinderDemo {
-    /// Finder's Save for a search: the file, its row in the sidebar, then the search shown as it.
     pub(crate) fn save_search(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let folders: Vec<String> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),

@@ -212,7 +212,6 @@ fn tile(
     drop: Option<Hsla>,
 ) -> Div {
     let cell = cell(size);
-    // A folder under a drag draws the way a selected tile does, its label pill flashing.
     let lit = selected || drop.is_some();
     let pill = drop.unwrap_or(look.selection);
     let mut icon = div()
@@ -327,7 +326,6 @@ impl FinderDemo {
         let layout = self.icons.layout(&lines, columns, cell);
         let height = layout.height;
 
-        // The grid runs on beneath the pane, padded by its width so the last column clears it.
         let width = GRID_X + columns as f32 * cell + self.pane_w();
         let mut canvas = div()
             .id("ng.finder.icons")
@@ -339,7 +337,6 @@ impl FinderDemo {
             // The only child in flow: the tiles are absolute and contribute no scrollable size.
             .child(div().w(px(width)).h(px(height)).flex_none());
 
-        // A tile a cell outside the viewport still asks, so a short scroll finds it drawn.
         let top = -f32::from(self.icons.scroll.offset().y);
         let room = f32::from(window.viewport_size().height);
         for (index, line) in lines.iter().enumerate() {
@@ -356,7 +353,7 @@ impl FinderDemo {
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
 
-            let mut slot = div()
+            let tile = div()
                 .id(("ng.finder.tile", index))
                 .absolute()
                 .left(at.x)
@@ -375,35 +372,32 @@ impl FinderDemo {
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
                     self.drop_fill(&line.key, look.selection),
                 ))
-                .when(held, |tile| tile.opacity(SOURCE_ALPHA));
-
-            slot = slot.on_drag(
-                TileDrag {
-                    key: line.key.clone(),
-                    grab: grab.clone(),
-                },
-                {
-                    let this = this.clone();
-                    let line = line.clone();
-                    move |drag: &TileDrag, offset, _window, cx: &mut App| {
-                        drag.grab.set(offset);
-                        let key = drag.key.clone();
-                        this.update(cx, |this: &mut FinderDemo, _| {
-                            this.icons.dragging = Some(key);
-                        })
-                        .ok();
-                        cx.new(|_| Ghost {
-                            line: line.clone(),
-                            size,
-                            scale,
-                            look,
-                            tags: carried.clone(),
-                        })
-                    }
-                },
-            );
-
-            let tile = slot
+                .when(held, |tile| tile.opacity(SOURCE_ALPHA))
+                .on_drag(
+                    TileDrag {
+                        key: line.key.clone(),
+                        grab: grab.clone(),
+                    },
+                    {
+                        let this = this.clone();
+                        let line = line.clone();
+                        move |drag: &TileDrag, offset, _window, cx: &mut App| {
+                            drag.grab.set(offset);
+                            let key = drag.key.clone();
+                            this.update(cx, |this: &mut FinderDemo, _| {
+                                this.icons.dragging = Some(key);
+                            })
+                            .ok();
+                            cx.new(|_| Ghost {
+                                line: line.clone(),
+                                size,
+                                scale,
+                                look,
+                                tags: carried.clone(),
+                            })
+                        }
+                    },
+                )
                 .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
                 .on_click(pick_on_click(line, this.clone()));
             let tile = match line.row.opens {
@@ -440,7 +434,6 @@ impl FinderDemo {
             let under = tile_at(&dropped.tiles, landed, cell)
                 .and_then(|index| dropped_lines.get(index))
                 .cloned();
-            // Finder copies instead of moving while Option is held.
             let copy = window.modifiers().alt;
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {

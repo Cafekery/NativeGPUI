@@ -20,19 +20,15 @@ thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Progress>>> = const { RefCell::new(None) };
 }
 
-/// Finder's Window ▸ Show Progress Window: one window for every operation in the app, brought
-/// forward when it is already open.
 pub(crate) fn show(_: &ShowProgressWindow, cx: &mut App) {
-    if let Some(open) = OPEN.with_borrow(|open| *open) {
-        if open
-            .update(cx, |_, window, _| window.activate_window())
+    let raised = OPEN.with_borrow(|open| *open).is_some_and(|open| {
+        open.update(cx, |_, window, _| window.activate_window())
             .is_ok()
-        {
-            return;
-        }
+    });
+    if raised {
+        return;
     }
-    // The menu fires inside a Finder window's update, and the first draw reads every Finder window,
-    // so the window opens once that update has unwound.
+    // Deferred: the first draw reads every Finder window, and the menu fires inside one's update.
     cx.defer(|cx| {
         let opened = cx.open_window(
             WindowOptions {
@@ -56,8 +52,6 @@ pub(crate) fn show(_: &ShowProgressWindow, cx: &mut App) {
     });
 }
 
-/// Each Finder window keeps its own jobs and notifies as they move, so this watches every one of
-/// them, taking in the windows opened since it last drew.
 struct Progress {
     watched: HashSet<EntityId>,
     watching: Vec<Subscription>,
@@ -94,7 +88,7 @@ impl Render for Progress {
                     .collect::<Vec<_>>()
             })
             .collect();
-        // The rows host native progress bars, which only a native root takes away again.
+        // The rows host native progress bars, which only a native root removes again.
         native_root(
             div()
                 .size_full()

@@ -12,7 +12,6 @@ use crate::{index, prefs};
 
 const HITS: usize = 200;
 const ALL_HITS: usize = usize::MAX;
-/// Stands where a `tag:` id would, for the one listing that is not a tag.
 pub(crate) const RECENTS: &str = "recents";
 
 impl FinderDemo {
@@ -20,12 +19,10 @@ impl FinderDemo {
         !self.filtered.trim().is_empty() && !self.hits.is_empty()
     }
 
-    /// Finder is in its search state whenever the field holds a query, found anything or not.
     pub(crate) fn in_search(&self) -> bool {
         !self.query.trim().is_empty()
     }
 
-    /// How much room the scope bar and the criteria rows take above the listing.
     pub(crate) fn search_bars_h(&self) -> f32 {
         scope_bar::SCOPE_H + criteria_bar::CRITERIA_H * self.criteria.len() as f32
     }
@@ -50,7 +47,6 @@ impl FinderDemo {
             scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
             _ => vec![PathBuf::from(self.here())],
         };
-        // The best few land at once and every match follows, as Finder's results fill in.
         cx.spawn(async move |this, cx| {
             for limit in [HITS, ALL_HITS] {
                 let query = wanted.clone();

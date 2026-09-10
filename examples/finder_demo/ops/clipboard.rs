@@ -18,7 +18,6 @@ impl FinderDemo {
         self.copy_selection(cx);
     }
 
-    /// Finder's ⌘C writes the names as text and the files as file URLs, and clears the ⌘X mark.
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         self.clear_cut(cx);
         let keys = self.chosen_keys();
@@ -30,14 +29,9 @@ impl FinderDemo {
             .filter_map(|key| split_key(key).map(|(_, name)| name))
             .collect();
         let text = NSString::from_str(&names.join("\n"));
-        let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
-            vec![ProtocolObject::from_retained(text)];
-        items.extend(keys.iter().map(|key| {
-            ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key)))
-        }));
-        let board = NSPasteboard::generalPasteboard();
-        board.clearContents();
-        board.writeObjects(&NSArray::from_retained_slice(&items));
+        let mut items: Vec<Writable> = vec![ProtocolObject::from_retained(text)];
+        items.extend(file_urls(&keys));
+        write_pasteboard(&items);
     }
 
     pub(crate) fn cut_selection(&mut self, cx: &mut Context<Self>) {
@@ -45,12 +39,11 @@ impl FinderDemo {
         if keys.is_empty() {
             return;
         }
-        write_pasteboard(&keys);
+        write_pasteboard(&file_urls(&keys).collect::<Vec<_>>());
         self.cut = keys.into_iter().collect();
         cx.notify();
     }
 
-    /// Finder clears the cut mark without touching disk.
     pub(crate) fn clear_cut(&mut self, cx: &mut Context<Self>) {
         if self.cut.is_empty() {
             return;
@@ -75,14 +68,17 @@ impl FinderDemo {
     }
 }
 
-fn write_pasteboard(keys: &[SharedString]) {
-    let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = keys
-        .iter()
+type Writable = Retained<ProtocolObject<dyn NSPasteboardWriting>>;
+
+fn file_urls(keys: &[SharedString]) -> impl Iterator<Item = Writable> + '_ {
+    keys.iter()
         .map(|key| ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key))))
-        .collect();
+}
+
+fn write_pasteboard(items: &[Writable]) {
     let board = NSPasteboard::generalPasteboard();
     board.clearContents();
-    board.writeObjects(&NSArray::from_retained_slice(&items));
+    board.writeObjects(&NSArray::from_retained_slice(items));
 }
 
 pub(crate) fn read_pasteboard() -> Vec<PathBuf> {
@@ -100,7 +96,6 @@ pub(crate) fn read_pasteboard() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Cached until the pasteboard's change count moves: reading it is IPC.
 pub(crate) fn can_paste() -> bool {
     thread_local! {
         static ANSWERED: Cell<(isize, bool)> = const { Cell::new((-1, false)) };

@@ -52,8 +52,6 @@ pub(crate) enum Act {
     Toggle(Column),
 }
 
-/// Resolving a file that is neither an alias nor a symlink hands back the file itself, which is
-/// nothing to show.
 fn original_of(path: &Path) -> Option<PathBuf> {
     if let Ok(target) = std::fs::read_link(path) {
         let joined = match target.is_absolute() {
@@ -69,10 +67,10 @@ fn original_of(path: &Path) -> Option<PathBuf> {
     )
     .ok()?;
     let original = PathBuf::from(resolved.path()?.to_string());
+    // Resolving a plain file hands back the file itself.
     (original != path.canonicalize().ok()?).then_some(original)
 }
 
-/// The user's `TERM_PROGRAM` if a GUI launch carries one, else Terminal.app.
 fn open_terminal(path: &str) {
     let app = std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "Terminal".to_owned());
     let _ = std::process::Command::new("open")
@@ -117,23 +115,16 @@ impl FinderDemo {
             }
             Act::Sort(column) => self.sort_by(column, cx),
             Act::Open => self.open_here(window, cx),
-            Act::OpenWindow => self.open_in_window(window, cx),
+            Act::OpenWindow => self.open_in_window(cx),
             Act::Trash => self.trash_selection(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
-            Act::Duplicate => self.duplicate_selection(cx),
-            Act::MakeAlias => self.make_alias(cx),
-            Act::Compress => self.compress_selection(cx),
+            Act::Duplicate => self.with_selection(Op::Duplicate, cx),
+            Act::MakeAlias => self.with_selection(Op::MakeAlias, cx),
+            Act::Compress => self.with_selection(Op::Compress, cx),
             Act::Share => self.share_selection(window, cx),
             Act::Tags => self.edit_tags(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
-            Act::OpenWith(app) => {
-                let files: Vec<PathBuf> = self
-                    .chosen_keys()
-                    .iter()
-                    .map(|key| PathBuf::from(key.as_ref()))
-                    .collect();
-                crate::openwith::open_with(&files, Path::new(app));
-            }
+            Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
             Act::Copy => self.copy_selection(cx),
             Act::Cut => self.cut_selection(cx),
             Act::Paste => self.paste(false, cx),
@@ -217,17 +208,10 @@ impl FinderDemo {
             .collect()
     }
 
-    fn duplicate_selection(&mut self, cx: &mut Context<Self>) {
+    fn with_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, cx: &mut Context<Self>) {
         let items = self.paths();
         if !items.is_empty() {
-            self.run_op(Op::Duplicate(items), After::Select, cx);
-        }
-    }
-
-    fn compress_selection(&mut self, cx: &mut Context<Self>) {
-        let items = self.paths();
-        if !items.is_empty() {
-            self.run_op(Op::Compress(items), After::Select, cx);
+            self.run_op(op(items), After::Select, cx);
         }
     }
 
@@ -269,13 +253,6 @@ impl FinderDemo {
             ..Default::default()
         };
         present_share_picker(window, cx, &at, picker, items, |_, _, _| {});
-    }
-
-    pub(crate) fn make_alias(&mut self, cx: &mut Context<Self>) {
-        let items = self.paths();
-        if !items.is_empty() {
-            self.run_op(Op::MakeAlias(items), After::Select, cx);
-        }
     }
 
     pub(crate) fn show_original(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -355,8 +332,6 @@ impl FinderDemo {
         }
     }
 
-    /// Handed to AppKit as a tab of this one; a tag opens as its listing, since no window stands in
-    /// one.
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
         let start = match id.starts_with("tag:") {
@@ -375,7 +350,7 @@ impl FinderDemo {
         });
     }
 
-    fn open_in_window(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn open_in_window(&self, cx: &mut Context<Self>) {
         for (extra, id) in self.chosen_folders().into_iter().enumerate() {
             open_finder_window(id, extra + 1, cx);
         }

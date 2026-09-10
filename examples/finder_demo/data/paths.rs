@@ -35,7 +35,6 @@ pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
     Some((intern(if dir.is_empty() { "/" } else { dir }), name))
 }
 
-/// Finder's search results show this in place of Kind.
 pub(crate) fn enclosing_name(key: &str) -> SharedString {
     match Path::new(key).parent().and_then(Path::file_name) {
         Some(name) => finder_fs::name::display(&name.to_string_lossy())

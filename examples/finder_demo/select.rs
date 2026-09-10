@@ -91,7 +91,6 @@ impl FinderDemo {
         deep: bool,
     ) {
         let was = self.expanded.rev();
-        // Finder opens the whole subtree when Option is down.
         match into.filter(|_| deep) {
             Some(into) => self.disclose_all(&[(key.clone(), into)], open, true),
             None => self.disclose(key, open),
@@ -222,7 +221,6 @@ impl FinderDemo {
         self.reveal(&line.key);
     }
 
-    /// Finder's type-select, falling back to a filter where no row starts with what is typed.
     pub(crate) fn type_select(&mut self, typed: &str, cx: &mut Context<Self>) {
         let now = Instant::now();
         if self
@@ -267,7 +265,6 @@ impl FinderDemo {
         self.type_filter_seen_match = false;
     }
 
-    /// Once a match existed an idle spell clears the filter; a run that never matched waits.
     fn schedule_filter_clear(&mut self, cx: &mut Context<Self>) {
         let since = self.typed_at;
         cx.spawn(async move |this, cx| {
