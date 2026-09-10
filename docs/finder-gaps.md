@@ -23,7 +23,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [ ] Edit ▸ Copy as Link (⌥⌃⌘C)
 - [ ] Edit ▸ Paste Exactly (⇧⌥⌘V), which keeps the copy's own timestamps
 - [ ] Edit ▸ Show Clipboard
-- [ ] Window ▸ Cycle Through Windows (⌘`)
+- [x] Window ▸ Cycle Through Windows (⌘`)
 - [ ] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
 - [ ] View ▸ Show Preview Options
 - [ ] View ▸ Customize Toolbar…, the one menu item the demo greys out
