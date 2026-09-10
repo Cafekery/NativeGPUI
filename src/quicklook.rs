@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use block2::{DynBlock, RcBlock};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Imp, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSEvent, NSEventType, NSWindow, NSWindowDelegate};
 use objc2_foundation::{
@@ -29,15 +29,11 @@ pub enum QuickLookKey {
 struct State {
     items: Vec<PathBuf>,
     current: usize,
-    /// Screen frame of the current item's icon; the panel zooms out of and back into it.
     source: Option<NSRect>,
     on_key: Option<Box<dyn Fn(QuickLookKey)>>,
     sink: Option<Retained<QuickLook>>,
-    /// The panel was asked to open and the deferred job has not reached it yet.
     opening: bool,
-    /// The open job takes the panel to full screen, as Finder's Slideshow does.
     full_screen: bool,
-    /// A panel job is running, so far inside its own nested run loop.
     busy: bool,
     pending: Option<Job>,
 }
@@ -84,12 +80,9 @@ define_class!(
             _panel: Option<&QLPreviewPanel>,
             item: Option<&ProtocolObject<dyn QLPreviewItem>>,
         ) -> NSRect {
-            match showing(item) {
-                Some(_) => STATE
-                    .with_borrow(|state| state.source)
-                    .unwrap_or(NSRect::ZERO),
-                None => NSRect::ZERO,
-            }
+            showing(item)
+                .and_then(|_| STATE.with_borrow(|state| state.source))
+                .unwrap_or(NSRect::ZERO)
         }
 
         #[unsafe(method_id(previewPanel:transitionImageForPreviewItem:contentRect:))]
@@ -110,7 +103,6 @@ fn item_at(index: NSInteger) -> Option<Retained<ProtocolObject<dyn QLPreviewItem
     Some(ProtocolObject::from_retained(url))
 }
 
-/// The item the app says the panel is showing, so only that one zooms out of a row.
 fn showing(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<PathBuf> {
     let path = PathBuf::from(unsafe { item?.previewItemURL()?.path()? }.to_string());
     STATE
@@ -118,7 +110,6 @@ fn showing(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<PathBuf> 
         .then_some(path)
 }
 
-/// The raster the row drew, worn at the size it is drawn at: the picture zooms, not a type icon.
 fn thumbnail_of(
     item: Option<&ProtocolObject<dyn QLPreviewItem>>,
     content_rect: *mut NSRect,
@@ -132,21 +123,18 @@ fn thumbnail_of(
     let size = NSSize::new(raster.width * zoom, raster.height * zoom);
     image.setSize(size);
     if !content_rect.is_null() {
-        unsafe { *content_rect = NSRect::new(NSPoint::new(0., 0.), size) };
+        unsafe { *content_rect = NSRect::new(NSPoint::ZERO, size) };
     }
     Some(Retained::into_super(Retained::into_super(image)))
 }
 
-/// Space closes like Finder's; with a single item the arrows move the app's selection.
 fn handle_key(panel: Option<&QLPreviewPanel>, event: Option<&NSEvent>) -> bool {
-    let Some(event) = event else {
+    const SPACE: u16 = 49;
+    let Some(event) = event.filter(|event| event.r#type() == NSEventType::KeyDown) else {
         return false;
     };
-    if event.r#type() != NSEventType::KeyDown {
-        return false;
-    }
     let key = match event.keyCode() {
-        49 => {
+        SPACE => {
             if let Some(panel) = panel {
                 panel.close();
             }
@@ -161,13 +149,10 @@ fn handle_key(panel: Option<&QLPreviewPanel>, event: Option<&NSEvent>) -> bool {
     if STATE.with_borrow(|state| state.items.len() > 1) {
         return false;
     }
-    let handler = STATE.with_borrow_mut(|state| state.on_key.take());
-    if let Some(handler) = handler {
+    if let Some(handler) = STATE.with_borrow_mut(|state| state.on_key.take()) {
         handler(key);
         STATE.with_borrow_mut(|state| {
-            if state.on_key.is_none() {
-                state.on_key = Some(handler);
-            }
+            state.on_key.get_or_insert(handler);
         });
     }
     true
@@ -198,9 +183,7 @@ fn panel(mtm: MainThreadMarker) -> Retained<QLPreviewPanel> {
         .expect("QuickLookUI always has its shared panel")
 }
 
-/// Opens the panel on `items` (Finder previews the whole selection) showing `current`, zooming out
-/// of `source` when the app knows where that item's icon is. With one item, the panel's arrow
-/// keys reach `on_key` so the app can move its selection and call [`quick_look_update`].
+/// With a single item, the panel's arrow keys go to `on_key`.
 pub fn quick_look(
     window: &Window,
     items: Vec<PathBuf>,
@@ -218,16 +201,14 @@ pub fn quick_look(
         state.on_key = Some(Box::new(on_key));
         state.opening = true;
         state.full_screen = false;
-        if state.sink.is_none() {
-            let sink: Retained<QuickLook> = unsafe { msg_send![QuickLook::alloc(mtm), init] };
-            state.sink = Some(sink);
-        }
+        state
+            .sink
+            .get_or_insert_with(|| unsafe { msg_send![QuickLook::alloc(mtm), init] });
     });
     answer_panel_control(ns_window.class());
     defer(panel(mtm), Job::Open);
 }
 
-/// Finder's Slideshow: [`quick_look`] with the panel taken to full screen as it opens.
 pub fn quick_look_full_screen(
     window: &Window,
     items: Vec<PathBuf>,
@@ -238,7 +219,6 @@ pub fn quick_look_full_screen(
     STATE.with_borrow_mut(|state| state.full_screen = true);
 }
 
-/// The selection moved while the panel is up: show the new items without closing.
 pub fn quick_look_update(
     window: &Window,
     items: Vec<PathBuf>,
@@ -289,9 +269,7 @@ enum Job {
     Close,
 }
 
-/// The panel loads its item synchronously, in a nested run loop that drains the main queue and so
-/// runs GPUI's foreground tasks: every call that can load or lay it out is enqueued instead, to run
-/// at the run loop's top level where GPUI holds no borrow of its `App`.
+/// Loading the panel spins a nested run loop that runs GPUI's tasks: only do it at the top level.
 fn defer(panel: Retained<QLPreviewPanel>, job: Job) {
     let block = RcBlock::new(move || run(&panel, job));
     unsafe { dispatch_async(&_dispatch_main_q, &block) };
@@ -307,7 +285,6 @@ extern "C" {
     fn dispatch_async(queue: &DispatchQueue, block: &DynBlock<dyn Fn()>);
 }
 
-/// A job that lands inside another's nested loop waits for it rather than re-entering the panel.
 fn run(panel: &QLPreviewPanel, job: Job) {
     let queued = STATE.with_borrow_mut(|state| {
         if state.busy {
@@ -365,8 +342,7 @@ fn attach(panel: &QLPreviewPanel) {
     }
 }
 
-/// The panel finds its controller on the key window's responder chain; GPUI's window learns the
-/// three methods once.
+/// The panel looks for its controller along the key window's responder chain.
 fn answer_panel_control(class: &AnyClass) {
     if class
         .instance_method(sel!(acceptsPreviewPanelControl:))
@@ -374,8 +350,7 @@ fn answer_panel_control(class: &AnyClass) {
     {
         return;
     }
-    let accepts: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> objc2::runtime::Bool =
-        accepts_control;
+    let accepts: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool = accepts_control;
     let begin: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) = begin_control;
     let end: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) = end_control;
     unsafe {
@@ -383,48 +358,38 @@ fn answer_panel_control(class: &AnyClass) {
         objc2::ffi::class_addMethod(
             class,
             sel!(acceptsPreviewPanelControl:),
-            std::mem::transmute::<
-                extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> objc2::runtime::Bool,
-                Imp,
-            >(accepts),
+            std::mem::transmute(accepts),
             c"B@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(beginPreviewPanelControl:),
-            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(begin),
+            std::mem::transmute(begin),
             c"v@:@".as_ptr(),
         );
         objc2::ffi::class_addMethod(
             class,
             sel!(endPreviewPanelControl:),
-            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(end),
+            std::mem::transmute(end),
             c"v@:@".as_ptr(),
         );
     }
 }
 
-extern "C" fn accepts_control(
-    _: *mut AnyObject,
-    _: Sel,
-    _: *mut AnyObject,
-) -> objc2::runtime::Bool {
-    objc2::runtime::Bool::new(STATE.with_borrow(|state| !state.items.is_empty()))
+extern "C" fn accepts_control(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> Bool {
+    Bool::new(STATE.with_borrow(|state| !state.items.is_empty()))
 }
 
 extern "C" fn begin_control(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
-    if panel.is_null() {
-        return;
+    if let Some(panel) = unsafe { panel.cast::<QLPreviewPanel>().as_ref() } {
+        attach(panel);
     }
-    let panel: &QLPreviewPanel = unsafe { &*panel.cast() };
-    attach(panel);
 }
 
 extern "C" fn end_control(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
-    if panel.is_null() {
+    let Some(panel) = (unsafe { panel.cast::<QLPreviewPanel>().as_ref() }) else {
         return;
-    }
-    let panel: &QLPreviewPanel = unsafe { &*panel.cast() };
+    };
     unsafe {
         panel.setDataSource(None);
         panel.setDelegate(None);

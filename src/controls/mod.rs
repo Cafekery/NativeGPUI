@@ -40,7 +40,6 @@ pub use text_field::{
     NativeTextField, native_search_field, native_secure_field, native_text_field,
 };
 
-/// An axis AppKit reports as 0 is free, so layout fills it.
 pub(crate) fn axis(reported: f64) -> Length {
     if reported > 0. {
         px(reported as f32).into()

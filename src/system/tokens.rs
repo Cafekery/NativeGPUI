@@ -57,7 +57,7 @@ impl Appearance {
         match appearance.bestMatchFromAppearancesWithNames(&names) {
             Some(name) if &*name == unsafe { NSAppearanceNameDarkAqua } => Appearance::Dark,
             Some(_) => Appearance::Light,
-            // For an appearance Apple has not shipped yet: only dark and vibrant ones vibrate.
+            // An appearance Apple has not shipped yet: only dark and vibrant ones vibrate.
             None if appearance.allowsVibrancy() => Appearance::Dark,
             None => Appearance::Light,
         }
@@ -86,21 +86,18 @@ pub fn current_appearance() -> Appearance {
     })
 }
 
-/// Force this process's appearance, or `None` to follow the system again.
 pub fn set_app_appearance(appearance: Option<Appearance>) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    let app = NSApplication::sharedApplication(mtm);
-    let value = appearance.map(|a| a.ns_appearance());
-    app.setAppearance(value.as_deref());
+    NSApplication::sharedApplication(mtm)
+        .setAppearance(appearance.map(Appearance::ns_appearance).as_deref());
 }
 
 type ColorFn = fn() -> Retained<NSColor>;
 
 macro_rules! system_colors {
     ($(($variant:ident, $objc:ident)),* $(,)?) => {
-        /// A semantic macOS colour: a role, not a value.
         #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
         #[non_exhaustive]
         pub enum SystemColor {
@@ -191,7 +188,6 @@ impl SystemColor {
         (self.getter())()
     }
 
-    /// Resolve for an explicit appearance, uncached.
     pub fn try_resolve(self, appearance: Appearance) -> Option<Hsla> {
         let getter = self.getter();
         with_appearance(appearance, || from_nscolor(&getter()))
@@ -208,7 +204,6 @@ fn with_appearance<T>(appearance: Appearance, f: impl Fn() -> T) -> T {
         .expect("performAsCurrentDrawingAppearance never invoked the block")
 }
 
-/// Convert any `NSColor` to a gpui [`Hsla`], `None` if it refuses sRGB conversion.
 pub fn srgb(color: &NSColor) -> Option<Hsla> {
     from_nscolor(color)
 }
@@ -228,7 +223,6 @@ fn refusal_fallback(appearance: Appearance) -> Hsla {
     .into()
 }
 
-/// Which colours refuse sRGB conversion under `appearance`.
 pub fn refused(appearance: Appearance) -> Vec<SystemColor> {
     SystemColor::ALL
         .iter()
@@ -317,14 +311,12 @@ pub fn accent() -> Hsla {
     system_color(SystemColor::ControlAccent)
 }
 
-/// The one background colour every opaque surface of a window resolves to.
 pub const WINDOW_BACKGROUND: SystemColor = SystemColor::WindowBackground;
 
 pub fn window_background() -> Hsla {
     system_color(WINDOW_BACKGROUND)
 }
 
-// `NSScreen` answers only on the main thread; a worker draws at the scale it last gave.
 static SCALE: AtomicU32 = AtomicU32::new(2.0f32.to_bits());
 
 fn display_scale() -> f32 {
@@ -432,31 +424,24 @@ pub fn init(cx: &mut App) {
     };
 
     let async_cx = cx.to_async();
-    let mut tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>> = Vec::new();
-
+    let mut tokens = Vec::new();
     let distributed = NSDistributedNotificationCenter::defaultCenter();
-    for name in DISTRIBUTED_NOTIFICATIONS {
-        let name = NSString::from_str(name);
-        let cx = async_cx.clone();
-        let block = StackBlock::new(move |_: ptr::NonNull<NSNotification>| bump(&cx)).copy();
-        tokens.push(unsafe {
-            distributed.addObserverForName_object_queue_usingBlock(Some(&name), None, None, &block)
-        });
-    }
-
     let local = NSNotificationCenter::defaultCenter();
-    for name in LOCAL_NOTIFICATIONS {
-        let name = NSString::from_str(name);
-        let cx = async_cx.clone();
-        let block = StackBlock::new(move |_: ptr::NonNull<NSNotification>| bump(&cx)).copy();
-        tokens.push(unsafe {
-            local.addObserverForName_object_queue_usingBlock(Some(&name), None, None, &block)
-        });
+    for (center, names) in [
+        (&**distributed, DISTRIBUTED_NOTIFICATIONS),
+        (&*local, LOCAL_NOTIFICATIONS),
+    ] {
+        for name in names {
+            let name = NSString::from_str(name);
+            let cx = async_cx.clone();
+            let block = StackBlock::new(move |_: ptr::NonNull<NSNotification>| bump(&cx)).copy();
+            tokens.push(unsafe {
+                center.addObserverForName_object_queue_usingBlock(Some(&name), None, None, &block)
+            });
+        }
     }
 
-    let kvo = ThemeObserver::alloc(mtm).set_ivars(ThemeObserverIvars {
-        cx: async_cx.clone(),
-    });
+    let kvo = ThemeObserver::alloc(mtm).set_ivars(ThemeObserverIvars { cx: async_cx });
     let kvo: Retained<ThemeObserver> = unsafe { msg_send![super(kvo), init] };
     let nsapp = NSApplication::sharedApplication(mtm);
     let app: &NSObject = nsapp.as_ref();
@@ -485,7 +470,6 @@ pub const fn text_font_family_name() -> &'static str {
     "SF Pro Text"
 }
 
-/// `SF Pro Text` if it is actually installed — a developer download, not part of stock macOS.
 pub fn text_font_family(cx: &App) -> Option<&'static str> {
     let text_system = cx.text_system();
     let resolve = |family: &str| {
@@ -621,7 +605,7 @@ pub fn appkit_string_width(
     Some(typeset_width(&*ns_font(family, size, weight)?, text) as f32)
 }
 
-// Differential — `width(ch ch) - width(ch)` — to cancel the string's own side bearings.
+// `width(ch ch) - width(ch)` cancels the string's own side bearings.
 pub fn appkit_advance(family: &str, size: Pixels, weight: FontWeight, ch: char) -> Option<f32> {
     let font = ns_font(family, size, weight)?;
     Some(
@@ -643,7 +627,6 @@ pub fn gpui_advance(
     Some(f32::from(text_system.advance(id, size, ch).ok()?.width))
 }
 
-/// How far gpui's advance for `ch` is from AppKit's, in points; positive means gpui is wider.
 pub fn advance_delta(
     cx: &App,
     family: &str,
@@ -658,7 +641,6 @@ pub fn advance_delta(
 pub enum SymbolColor {
     Label,
     Hierarchical(SystemColor),
-    /// One colour per layer, in order; layers past the end of the list keep the last colour.
     Palette(Vec<SystemColor>),
     Multicolor,
     /// No colour configuration at all: a template symbol comes out black.
@@ -669,11 +651,7 @@ impl SymbolColor {
     fn ns_configuration(&self) -> Option<Retained<NSImageSymbolConfiguration>> {
         match self {
             SymbolColor::Raw => None,
-            SymbolColor::Label => Some(
-                NSImageSymbolConfiguration::configurationWithHierarchicalColor(
-                    &SystemColor::Label.ns_color(),
-                ),
-            ),
+            SymbolColor::Label => SymbolColor::Hierarchical(SystemColor::Label).ns_configuration(),
             SymbolColor::Hierarchical(c) => {
                 Some(NSImageSymbolConfiguration::configurationWithHierarchicalColor(&c.ns_color()))
             }
@@ -692,11 +670,9 @@ impl SymbolColor {
     }
 }
 
-/// A rasterised system image, ready to hand to gpui.
 #[derive(Clone)]
 pub struct Symbol {
     pub image: Arc<RenderImage>,
-    /// Logical size in points; the buffer is `scale` times this.
     pub size: Size<Pixels>,
     pub scale: f32,
 }
@@ -718,7 +694,6 @@ struct SymbolKey {
     appearance: Appearance,
 }
 
-/// Render an SF Symbol for gpui, in `labelColor` at the current appearance.
 pub fn sf_symbol(name: &str, size: Pixels, weight: FontWeight) -> Option<Symbol> {
     sf_symbol_colored(name, size, weight, &SymbolColor::Label)
 }
@@ -773,34 +748,17 @@ fn rasterize_symbol(
     };
     let image = base.imageWithSymbolConfiguration(&configuration)?;
 
-    let points = image.size();
-    let w = ((points.width * scale as f64).round() as usize).max(1);
-    let h = ((points.height * scale as f64).round() as usize).max(1);
-
     // A semantic tint resolves at raster time, picking up the ambient appearance if none is set.
-    let rgba = with_appearance(appearance, || draw(&[&image], points, w, h))?;
-
-    Some(Symbol {
-        image: Arc::new(RenderImage::new(vec![Frame::new(
-            RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(&rgba))
-                .expect("raster buffer is w*h*4 by construction"),
-        )])),
-        size: size_of_points(points),
-        scale,
-    })
+    with_appearance(appearance, || symbol(&[&image], image.size(), scale))
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum FileType<'a> {
     Folder,
-    /// A folder holding at least one item the user can see, which Finder draws with a sheet of
-    /// paper between its flaps.
     FullFolder,
     /// A filename extension without the dot, e.g. `"zip"`.
     Extension(&'a str),
-    /// A uniform type identifier, e.g. `"public.plain-text"`.
     Uti(&'a str),
-    /// This file's own icon, e.g. a volume's drive artwork, which its type alone does not give.
     Path(&'a str),
 }
 
@@ -823,7 +781,6 @@ struct FileIconKey {
     scale: u32,
 }
 
-/// The system's own artwork for a file type, rasterised for gpui.
 pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
     let scale = display_scale();
     let key = FileIconKey {
@@ -857,12 +814,9 @@ unsafe extern "C" {
     ) -> isize;
 }
 
-// FinderInfo's `finderFlags` sit at byte 8, big-endian; `kHasCustomIcon` is bit 0x0400 of it,
-// the same offset for files, folders and (as `kExtFinderInfo`) volumes.
+// FinderInfo's big-endian `finderFlags` sit at byte 8; `kHasCustomIcon` is its 0x0400 bit.
 const HAS_CUSTOM_ICON: u16 = 0x0400;
 
-/// Whether `path` carries its own Finder icon (an app's own artwork aside — that comes from its
-/// bundle, not this bit). Cheap: one `getxattr`, no icon work.
 pub fn has_custom_icon(path: &std::path::Path) -> bool {
     let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
         return false;
@@ -882,9 +836,7 @@ pub fn has_custom_icon(path: &std::path::Path) -> bool {
     read >= 10 && u16::from_be_bytes([info[8], info[9]]) & HAS_CUSTOM_ICON != 0
 }
 
-// `typeWithFilenameExtension:` answers a dynamic type for `iconset` and the legacy one for `app`.
-// `UTType` only answers `AnyClass::get` once its framework is in the process, and nothing else
-// here loads it on macOS 26.
+// Loads `UTType`'s framework: `AnyClass::get` misses it until then, and nothing else loads it.
 #[link(name = "UniformTypeIdentifiers", kind = "framework")]
 unsafe extern "C" {}
 
@@ -935,32 +887,14 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
 
     // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
     let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);
-    let w = ((points.width * scale as f64).round() as usize).max(1);
-    let h = ((points.height * scale as f64).round() as usize).max(1);
-
     let mut stack = vec![image];
     if kind == FileType::FullFolder {
         stack.extend(folder_parts(points.width)?);
     }
     let layers: Vec<&NSImage> = stack.iter().map(|layer| &**layer).collect();
-    let rgba = draw(&layers, points, w, h)?;
-
-    Some(Symbol {
-        image: Arc::new(RenderImage::new(vec![Frame::new(
-            RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(&rgba))
-                .expect("raster buffer is w*h*4 by construction"),
-        )])),
-        size: size_of_points(points),
-        scale,
-    })
+    symbol(&layers, points, scale)
 }
 
-fn size_of_points(points: NSSize) -> Size<Pixels> {
-    size(px(points.width as f32), px(points.height as f32))
-}
-
-/// The parts the full folder wears over the empty one: the sheet, then the flap that overlaps it.
-/// CoreTypes draws each folder size separately, so the art has to be asked for by size, not scaled.
 fn folder_parts(points: f64) -> Option<[Retained<NSImage>; 2]> {
     let drawn = [16., 32., 128., 256., 512.];
     let at = drawn
@@ -976,8 +910,33 @@ fn folder_parts(points: f64) -> Option<[Retained<NSImage>; 2]> {
     Some([part("PaperSheet")?, part("FrontFlap")?])
 }
 
-pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
-    let rep = unsafe {
+fn symbol(images: &[&NSImage], points: NSSize, scale: f32) -> Option<Symbol> {
+    let w = ((points.width * scale as f64).round() as usize).max(1);
+    let h = ((points.height * scale as f64).round() as usize).max(1);
+    Some(Symbol {
+        image: rasterize(images, points, w, h)?,
+        size: size(px(points.width as f32), px(points.height as f32)),
+        scale,
+    })
+}
+
+pub(crate) fn rasterize(
+    images: &[&NSImage],
+    points: NSSize,
+    w: usize,
+    h: usize,
+) -> Option<Arc<RenderImage>> {
+    let rgba = draw(images, points, w, h)?;
+    let buffer = RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(&rgba))?;
+    Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
+}
+
+pub(crate) fn bitmap(
+    w: usize,
+    h: usize,
+    format: NSBitmapFormat,
+) -> Option<Retained<NSBitmapImageRep>> {
+    unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(),
             ptr::null_mut(),
@@ -988,15 +947,18 @@ pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> O
             true,
             false,
             NSDeviceRGBColorSpace,
-            NSBitmapFormat::empty(),
+            format,
             (w * 4) as isize,
             32,
         )
-    }?;
+    }
+}
+
+pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
+    let rep = bitmap(w, h, NSBitmapFormat::empty())?;
     // The rep's size is in points while its buffer is in pixels; that mismatch is the 2x transform.
     rep.setSize(points);
 
-    // A bitmap rep with no current graphics context accepts `drawInRect` and produces zeroes.
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
@@ -1020,8 +982,7 @@ pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> O
     Some(out)
 }
 
-// gpui's `RenderImage` wants straight-alpha BGRA, so swap R/B *and* divide out alpha.
-pub(crate) fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
+fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
     for px in out.chunks_exact_mut(4) {
         px.swap(0, 2);

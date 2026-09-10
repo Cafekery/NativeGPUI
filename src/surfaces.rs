@@ -26,7 +26,6 @@ use crate::bridge::appkit::{Container, gpui_view};
 use crate::bridge::host::{Layer, NativeHost};
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
-/// The painted bounds of a gpui element, kept for a surface to point at.
 #[derive(Clone, Default)]
 pub struct SurfaceAnchor(Rc<AnchorState>);
 
@@ -41,14 +40,12 @@ impl SurfaceAnchor {
         Self::default()
     }
 
-    /// An anchor over bounds the caller already knows, in window coordinates.
     pub fn at(bounds: Bounds<Pixels>) -> Self {
         let anchor = Self::default();
         anchor.0.bounds.set(Some(bounds));
         anchor
     }
 
-    /// `None` until the anchoring element has painted.
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
         self.0.bounds.get()
     }
@@ -140,7 +137,6 @@ impl IntoElement for NativeAnchor {
     }
 }
 
-/// Which side of the anchor a surface appears on, named as you see it on screen.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum SurfaceEdge {
     #[default]
@@ -176,8 +172,6 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSurfaceActions"]
-    /// The action sink for controls a surface owns; `setTarget:` is weak, so the surface retains
-    /// it.
     #[ivars = ActionIvars]
     pub struct SurfaceActions;
 
@@ -192,7 +186,6 @@ define_class!(
             else {
                 return;
             };
-            // Deferred: an action can fire while gpui holds its `App` borrow.
             ivars
                 .cx
                 .spawn(async move |cx| {
@@ -213,7 +206,7 @@ impl SurfaceActions {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Fire `handler` when `control` acts; uses the control's `tag`, so do not set your own.
+    /// Takes over `control`'s tag, target and action.
     pub fn on_action(
         &self,
         control: &NSControl,
@@ -269,7 +262,7 @@ impl Default for PopoverOptions {
     }
 }
 
-/// A live popover. Dropping this does **not** close it; call [`NativePopover::close`].
+/// Dropping this does not close the popover; call [`NativePopover::close`].
 pub struct NativePopover {
     popover: Retained<NSPopover>,
     // `setTarget:` and `setDelegate:` are both weak.
@@ -306,7 +299,7 @@ define_class!(
     }
 );
 
-/// Show a popover pointing at `anchor`, or `None` if `anchor` has never painted.
+/// `None` if `anchor` has never painted.
 pub fn present_popover(
     window: &mut Window,
     cx: &mut App,
@@ -381,7 +374,6 @@ impl NativePopover {
     }
 }
 
-/// The `NSModalResponse` a sheet ended with; anything but `OK` or `CANCEL` is your own value.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct SheetResponse(pub isize);
 
@@ -429,7 +421,6 @@ pub fn present_sheet(
 }
 
 impl NativeSheet {
-    /// End the sheet with `response`, which is what `on_end` receives.
     pub fn dismiss(&self, response: SheetResponse) {
         self.parent.endSheet_returnCode(&self.sheet, response.0);
     }
@@ -465,13 +456,11 @@ fn share_array(items: &[ShareItem]) -> Retained<NSArray> {
     NSArray::from_slice(&refs)
 }
 
-/// How many share services macOS currently offers for `items`.
 #[allow(deprecated)]
 pub fn share_service_count(items: &[ShareItem]) -> usize {
     unsafe { NSSharingService::sharingServicesForItems(&share_array(items)) }.len()
 }
 
-/// AppKit's AirDrop sheet for `items`; false when AirDrop cannot take them.
 pub fn airdrop(items: &[ShareItem]) -> bool {
     let name = unsafe { NSSharingServiceNameSendViaAirDrop };
     let Some(service) = NSSharingService::sharingServiceNamed(name) else {
@@ -488,7 +477,6 @@ pub fn airdrop(items: &[ShareItem]) -> bool {
 #[derive(Copy, Clone, Debug)]
 pub struct SharePicker {
     pub edge: SurfaceEdge,
-    /// How long before the picker is forced shut; nothing else dismisses an ignored one.
     pub watchdog: Option<Duration>,
 }
 
@@ -504,19 +492,18 @@ impl Default for SharePicker {
 #[derive(Clone, Debug)]
 pub enum SharePickerEvent {
     Opening { services: usize },
-    // `showRelativeToRect:` returns with the picker still up; this is not "closed".
     Presented { blocked: Duration },
     Closed { chose: Option<String> },
 }
 
 struct PickerIvars {
     on_event: Rc<PickerHandler>,
-    // AppKit asks for the service list again as the picker tears down, with an empty proposal.
+    // AppKit asks again, with an empty proposal, as the picker tears down.
     announced: Cell<bool>,
     cx: AsyncWindowContext,
 }
 
-// `setDelegate:` and AppKit's own reference are both weak, so the picker is kept alive here.
+// `setDelegate:` and AppKit's own reference are both weak.
 struct LivePicker {
     _picker: Retained<NSSharingServicePicker>,
     delegate: Retained<PickerDelegate>,

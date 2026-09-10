@@ -1,12 +1,9 @@
-//! The app menu's Services act on the key window's selected files. AppKit asks the responder chain
-//! who can send them, so GPUI's window class learns to answer with a requestor holding the files.
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 
 use gpui::Window;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, ProtocolObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting, NSWindow,
@@ -20,8 +17,7 @@ struct RequestorIvars {
 }
 
 define_class!(
-    // AppKit found writeSelectionToPasteboard:types: added to GPUI's window and still reported
-    // that the window could not write, so a plain object carries the files instead.
+    // AppKit ignores `writeSelectionToPasteboard:types:` added to GPUI's window itself.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGServicesRequestor"]
@@ -54,7 +50,7 @@ thread_local! {
     static REQUESTORS: RefCell<Vec<(Weak<NSWindow>, Retained<Requestor>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The files Services offers to act on while `window` is key; call it whenever the selection changes.
+/// The files the Services menu acts on while `window` is key.
 pub fn services_selection(window: &Window, files: Vec<PathBuf>) {
     let ns_window = gpui_view(window)
         .window()
@@ -78,7 +74,6 @@ pub fn services_selection(window: &Window, files: Vec<PathBuf>) {
     });
 }
 
-/// `window`'s requestor, while it holds any files.
 fn requestor_of(window: &AnyObject) -> Option<*mut AnyObject> {
     REQUESTORS.with_borrow(|all| {
         all.iter()
@@ -91,8 +86,7 @@ fn requestor_of(window: &AnyObject) -> Option<*mut AnyObject> {
     })
 }
 
-/// NSWindow already answers the requestor question, so the add itself says whether this class
-/// has learnt ours yet.
+/// Succeeds only the first time: NSWindow's own answer is inherited, not this class's.
 fn offer_files(window: &NSWindow) {
     let class: &AnyClass = unsafe { msg_send![window, class] };
     let valid: extern "C" fn(&AnyObject, Sel, *mut NSString, *mut NSString) -> *mut AnyObject =
@@ -101,10 +95,7 @@ fn offer_files(window: &NSWindow) {
         objc2::ffi::class_addMethod(
             class as *const AnyClass as *mut AnyClass,
             sel!(validRequestorForSendType:returnType:),
-            std::mem::transmute::<
-                extern "C" fn(&AnyObject, Sel, *mut NSString, *mut NSString) -> *mut AnyObject,
-                Imp,
-            >(valid),
+            std::mem::transmute(valid),
             c"@@:@@".as_ptr(),
         )
     };
@@ -115,7 +106,6 @@ fn offer_files(window: &NSWindow) {
     }
 }
 
-/// Files go out and nothing comes back, as Finder's selection does.
 extern "C" fn valid_requestor(
     this: &AnyObject,
     _: Sel,

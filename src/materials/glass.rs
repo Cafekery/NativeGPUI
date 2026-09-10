@@ -6,7 +6,6 @@ use std::ptr;
 use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, LayoutId, Pixels, Rgba, Size, Style, Window, point, px,
-    relative,
 };
 use objc2::rc::Retained;
 use objc2::runtime::NSObject;
@@ -15,11 +14,11 @@ use objc2_app_kit::{
     NSColor, NSGlassEffectContainerView, NSGlassEffectView, NSGlassEffectViewStyle, NSResponder,
     NSView,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect};
 
 #[cfg(feature = "private-api")]
 use super::glass_private::{GlassInteractionState, GlassSubvariant, GlassVariant, Private};
-use crate::bridge::appkit::{Container, rects_equal};
+use crate::bridge::appkit::{Container, rects_equal, to_rect};
 use crate::bridge::host::{Layer, NativeHost, Slot, element_key, hosted_element};
 use crate::system::color::to_nscolor;
 
@@ -49,8 +48,6 @@ thread_local! {
     static OPEN: RefCell<Vec<OpenContainer>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A panel of liquid glass filling the box it is given. Over an unpainted region of an opaque
-/// window it has nothing to sample and collapses to a flat fill.
 pub fn glass(id: impl Into<ElementId>) -> Glass {
     Glass {
         id: id.into(),
@@ -79,8 +76,6 @@ impl Glass {
         self
     }
 
-    /// Frost the desktop instead, under GPUI's view: needs a non-opaque window and a rect the
-    /// scene leaves transparent, and can never receive input.
     pub fn frosting_desktop(mut self) -> Self {
         self.layer = Layer::Below;
         self
@@ -91,13 +86,11 @@ impl Glass {
         self
     }
 
-    /// Alpha is the strength; macOS drops the chroma while the window is not key.
     pub fn tint(mut self, color: impl Into<Hsla>) -> Self {
         self.tint = Some(color.into());
         self
     }
 
-    /// `NSGlassEffectViewStyle::Clear`: tints rather than blurs.
     pub fn clear(mut self, clear: bool) -> Self {
         self.clear = clear;
         self
@@ -105,10 +98,7 @@ impl Glass {
 
     fn layout(&self) -> Style {
         Style {
-            size: Size {
-                width: relative(1.).into(),
-                height: relative(1.).into(),
-            },
+            size: Size::full(),
             ..Default::default()
         }
     }
@@ -195,8 +185,7 @@ pub(crate) fn glass_style(clear: bool) -> NSGlassEffectViewStyle {
 }
 
 define_class!(
-    /// `NSGlassEffectContainerView` that claims a click only where a member is: stock, it answers
-    /// `hitTest:` with itself across its whole bounds.
+    /// Stock, it answers `hitTest:` with itself across its whole bounds.
     #[unsafe(super(NSGlassEffectContainerView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGGlassContainer"]
@@ -223,8 +212,6 @@ impl Batch {
     }
 }
 
-/// Batches the [`glass`] panels in its subtree into one render pass. Spans the whole window and
-/// lays out like `div().size_full().flex()`.
 pub fn glass_container(id: impl Into<ElementId>) -> GlassContainer {
     GlassContainer {
         id: id.into(),
@@ -252,7 +239,6 @@ impl GlassContainer {
         self
     }
 
-    /// How close two members must be before macOS merges them into one blob.
     pub fn spacing(mut self, spacing: Pixels) -> Self {
         self.spacing = Some(spacing);
         self
@@ -296,10 +282,7 @@ impl Element for GlassContainer {
             .collect();
         let style = Style {
             display: Display::Flex,
-            size: Size {
-                width: relative(1.).into(),
-                height: relative(1.).into(),
-            },
+            size: Size::full(),
             ..Default::default()
         };
         (window.request_layout(style, children, cx), ())
@@ -343,10 +326,7 @@ impl Element for GlassContainer {
         });
         let content = view.contentView();
         if let Some(content) = &content {
-            let fill = NSRect::new(
-                NSPoint::ZERO,
-                NSSize::new(viewport.size.width.to_f64(), viewport.size.height.to_f64()),
-            );
+            let fill = to_rect(viewport);
             if !rects_equal(content.frame(), fill) {
                 content.setFrame(fill);
             }

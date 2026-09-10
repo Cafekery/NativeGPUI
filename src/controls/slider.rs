@@ -10,7 +10,6 @@ use crate::bridge::host::{
 };
 use crate::controls::fitted;
 
-/// Values outside the range are clamped.
 pub fn native_slider(id: impl Into<ElementId>, value: f64) -> NativeSlider {
     NativeSlider {
         id: id.into(),
@@ -42,14 +41,12 @@ pub struct NativeSlider {
 struct Held(Rc<Cell<Option<f64>>>);
 
 impl NativeSlider {
-    /// Defaults to `0.0..=1.0`.
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.min = min;
         self.max = max;
         self
     }
 
-    /// `count` includes both ends.
     pub fn ticks(mut self, count: usize) -> Self {
         self.ticks = count;
         self
@@ -60,7 +57,6 @@ impl NativeSlider {
         self
     }
 
-    /// A vertical slider pins its width and fills the height.
     pub fn vertical(mut self, vertical: bool) -> Self {
         self.vertical = vertical;
         self
@@ -71,7 +67,6 @@ impl NativeSlider {
         self
     }
 
-    /// Fires continuously while the knob is dragged.
     pub fn on_change(mut self, handler: impl Fn(&f64, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Rc::new(move |value, window, cx| {
             if let NativeValue::Number(value) = value {

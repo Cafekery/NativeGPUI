@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::ffi::CStr;
 use std::sync::LazyLock;
 
-use gpui::{App, ElementId, Hsla, Pixels, Point, Size, Style, Window, point, relative};
+use gpui::{App, ElementId, Hsla, Pixels, Point, Size, Style, Window, point};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
@@ -15,7 +15,6 @@ use objc2_quartz_core::{CALayer, CATransaction, kCACornerCurveContinuous};
 use crate::bridge::host::{Layer, Slot, hosted_element};
 use crate::system::color::to_nscolor;
 
-/// Filter inputs that move nothing on macOS 26.5, kept so a later OS can be re-checked.
 pub const INERT_INPUTS: [&str; 8] = [
     "inputBlurOpacity3",
     "inputBlurOpacity4",
@@ -27,15 +26,11 @@ pub const INERT_INPUTS: [&str; 8] = [
     "inputShadowDistanceOffset",
 ];
 
-/// Every live input of the private glass filter plus the geometry of the field it reads. Nothing
-/// clamps; the presets are the calibrated end of the range. A `None` fill means no fill colour.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct GlassRecipe {
     pub corner_radius: f32,
     pub ovalization: f32,
-    /// How far outside its bounds the backdrop samples.
     pub margin_width: f32,
-    /// How far the backdrop downsamples before the filter reads it.
     pub backdrop_scale: f32,
 
     pub blur_radius: f32,
@@ -49,7 +44,6 @@ pub struct GlassRecipe {
     pub inner_refraction_height: f32,
     pub outer_refraction_amount: f32,
     pub outer_refraction_height: f32,
-    /// Gates both refraction distances.
     pub refraction_opacity: f32,
     pub refraction_distance0: f32,
     pub refraction_distance1: f32,
@@ -60,7 +54,6 @@ pub struct GlassRecipe {
     pub face_saturation: f32,
     pub face_fill: Option<Hsla>,
 
-    /// Gates every other bleed input.
     pub bleed_opacity: f32,
     pub bleed_amount: f32,
     pub bleed_height: f32,
@@ -79,7 +72,6 @@ pub struct GlassRecipe {
     pub shadow_height: f32,
     pub shadow_blur_radius: f32,
     pub shadow_opacity: f32,
-    /// The dominant one on an SDR display.
     pub shadow_opacity_sdr: f32,
     pub shadow_vibrancy: f32,
     pub shadow_white: f32,
@@ -87,7 +79,6 @@ pub struct GlassRecipe {
     pub shadow_saturation: f32,
     pub shadow_fill: Option<Hsla>,
 
-    /// Gates the four fields below it.
     pub holding_tone: bool,
     pub holding_tone_white: f32,
     pub max_headroom: f32,
@@ -102,7 +93,6 @@ impl Default for GlassRecipe {
 }
 
 impl GlassRecipe {
-    /// What a stock `NSGlassEffectView` in a key window writes into its filter, dark appearance.
     pub fn regular() -> Self {
         Self {
             corner_radius: 0.,
@@ -175,7 +165,6 @@ impl GlassRecipe {
         }
     }
 
-    /// The clear style: tints rather than blurs; the same in both appearances.
     pub fn clear() -> Self {
         Self {
             ovalization: 0.,
@@ -239,7 +228,6 @@ fn grey(level: f32, alpha: f32) -> Hsla {
     }
 }
 
-/// Whether the three layer classes and `CAFilter` all resolved.
 pub fn custom_glass_available() -> bool {
     private_class(c"CABackdropLayer").is_some()
         && private_class(c"CASDFLayer").is_some()
@@ -247,7 +235,6 @@ pub fn custom_glass_available() -> bool {
         && private_class(c"CAFilter").is_some()
 }
 
-/// A panel of liquid glass drawn from a [`GlassRecipe`], filling the box it is given.
 pub fn custom_glass(id: impl Into<ElementId>) -> CustomGlass {
     CustomGlass {
         id: id.into(),
@@ -280,7 +267,6 @@ impl CustomGlass {
         self
     }
 
-    /// Overrides the recipe's radius, in either order.
     pub fn corner_radius(mut self, radius: Pixels) -> Self {
         self.radius = Some(radius.to_f64() as f32);
         self
@@ -288,10 +274,7 @@ impl CustomGlass {
 
     fn layout(&self) -> Style {
         Style {
-            size: Size {
-                width: relative(1.).into(),
-                height: relative(1.).into(),
-            },
+            size: Size::full(),
             ..Default::default()
         }
     }
@@ -333,7 +316,6 @@ define_class!(
     struct CustomGlassView;
 );
 
-/// The filter reads the field by layer name.
 fn field_name() -> &'static NSString {
     ns_string!("ngGlassField")
 }
@@ -385,8 +367,7 @@ impl CustomGlassView {
         });
     }
 
-    /// Called from `paint`: the pool sets geometry with `setFrame:`, which does not reach
-    /// `setFrameSize:`.
+    /// From `paint`: the host's `setFrame:` never reaches `setFrameSize:`.
     fn fit(&self) {
         let ivars = self.ivars();
         let size = self.bounds().size;

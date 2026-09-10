@@ -1,6 +1,3 @@
-//! Real AppKit views hosted inside a GPUI window. GPUI owns layout; macOS owns the pixels of
-//! anything whose design Apple changes between releases.
-
 #![cfg(target_os = "macos")]
 #![deny(unsafe_op_in_unsafe_fn)]
 

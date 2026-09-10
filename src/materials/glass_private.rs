@@ -13,8 +13,6 @@ use super::private_api::{read_isize, read_string, send_isize, send_string};
 const STYLE_REGULAR: isize = 1;
 const STYLE_CLEAR: isize = 2;
 
-/// The internal recipe the glass draws, one per render class. `Keyboard` draws nothing and
-/// `Sidebar` only near the panel edge.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GlassVariant {
     Automatic,
@@ -178,7 +176,7 @@ impl GlassSubvariant {
     }
 }
 
-/// Closed rather than an integer: `_interactionState` outside 0...2 traps uncatchably.
+/// `_interactionState` outside 0...2 traps uncatchably.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum GlassInteractionState {
     #[default]
@@ -223,8 +221,7 @@ impl Private {
             if clear { STYLE_CLEAR } else { STYLE_REGULAR },
             GlassVariant::raw,
         );
-        // `style` and `_variant` are one piece of state, last write wins, and `style` reads back
-        // Regular under every override.
+        // `style` and `_variant` share one state, last write wins; `style` reads back Regular.
         if read_isize(view, sel!(_variant)) != Some(wanted) {
             view.setStyle(glass_style(clear));
             if let Some(variant) = self.variant {
@@ -241,7 +238,7 @@ impl Private {
             view,
             sel!(_interactionState),
             sel!(set_interactionState:),
-            self.interaction.raw().clamp(0, 2),
+            self.interaction.raw(),
         );
         set_state(
             view,
@@ -263,7 +260,7 @@ impl Private {
         );
     }
 
-    pub(super) fn effective_subvariant(&self) -> GlassSubvariant {
+    fn effective_subvariant(&self) -> GlassSubvariant {
         match self.variant {
             Some(variant) if !variant.accepts(self.subvariant) => GlassSubvariant::None,
             _ => self.subvariant,
@@ -271,7 +268,6 @@ impl Private {
     }
 }
 
-/// A redundant write rebuilds the recipe, so only differing values are pushed.
 fn set_state(view: &NSGlassEffectView, getter: Sel, setter: Sel, value: isize) {
     if read_isize(view, getter) != Some(value) {
         send_isize(view, setter, value);

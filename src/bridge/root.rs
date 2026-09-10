@@ -64,7 +64,6 @@ impl Element for NativeRoot {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // A mouse-down GPUI sees is one no hosted view claimed, so focus comes back to GPUI.
         window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
             if phase == DispatchPhase::Capture {
                 focus_gpui(window);
@@ -83,8 +82,6 @@ impl IntoElement for NativeRoot {
     }
 }
 
-/// A non-opaque window, so `Layer::Below` materials and a real sidebar can sample the desktop,
-/// and a transparent titlebar.
 pub fn window_options() -> WindowOptions {
     WindowOptions {
         window_background: WindowBackgroundAppearance::Transparent,

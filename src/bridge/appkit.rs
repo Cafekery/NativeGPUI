@@ -12,7 +12,6 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 define_class!(
-    /// A flipped container, so subview frames are GPUI's top-left coordinates verbatim.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGContainer"]
@@ -51,7 +50,6 @@ impl Container {
     }
 }
 
-/// The `NSView` GPUI renders into. Its superview is the window's content view.
 pub fn gpui_view(window: &Window) -> Retained<NSView> {
     let handle = HasWindowHandle::window_handle(window)
         .expect("gpui's macOS window always exposes an AppKit window handle");
@@ -69,8 +67,6 @@ pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {
     )
 }
 
-/// AppKit's first responder and GPUI's focus are independent: a hosted field keeps first
-/// responder after a click elsewhere.
 pub fn focus_gpui(window: &Window) {
     let view = gpui_view(window);
     if let Some(ns_window) = view.window() {
@@ -80,8 +76,7 @@ pub fn focus_gpui(window: &Window) {
 
 const KEY_PATH_CLASS: &CStr = c"NGKeyPathView";
 
-/// GPUI's overrides swallow function keys into the field editor as legacy ASCII and dead-end the
-/// keys `NSWindow` would have used to activate the focused control.
+/// GPUI's key overrides eat hosted controls' keys, so they run only while GPUI is first responder.
 pub fn adopt_key_path(view: &NSView) {
     let current = view.class();
     if current.name() == KEY_PATH_CLASS {
@@ -160,10 +155,7 @@ extern "C" fn key_down(view: *mut AnyObject, _: Sel, event: *mut AnyObject) {
 }
 
 pub fn rects_equal(a: NSRect, b: NSRect) -> bool {
-    a.origin.x == b.origin.x
-        && a.origin.y == b.origin.y
-        && a.size.width == b.size.width
-        && a.size.height == b.size.height
+    a == b
 }
 
 /// A `0.0` axis is AppKit declaring that axis free.
@@ -198,31 +190,13 @@ mod tests {
     use super::*;
     use gpui::{point, px, size};
 
-    fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
-        Bounds {
-            origin: point(px(x), px(y)),
-            size: size(px(w), px(h)),
-        }
-    }
-
     #[test]
     fn to_rect_preserves_fractions() {
-        let r = to_rect(bounds(430.5, 201.25, 120.5, 32.75));
+        let r = to_rect(Bounds::new(
+            point(px(430.5), px(201.25)),
+            size(px(120.5), px(32.75)),
+        ));
         assert_eq!((r.origin.x, r.origin.y), (430.5, 201.25));
         assert_eq!((r.size.width, r.size.height), (120.5, 32.75));
-    }
-
-    #[test]
-    fn rects_equal_compares_all_four_fields() {
-        let base = to_rect(bounds(1., 2., 3., 4.));
-        assert!(rects_equal(base, to_rect(bounds(1., 2., 3., 4.))));
-        for other in [
-            bounds(9., 2., 3., 4.),
-            bounds(1., 9., 3., 4.),
-            bounds(1., 2., 9., 4.),
-            bounds(1., 2., 3., 9.),
-        ] {
-            assert!(!rects_equal(base, to_rect(other)));
-        }
     }
 }

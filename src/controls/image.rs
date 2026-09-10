@@ -11,7 +11,6 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSString};
 use crate::bridge::host::{Layer, Slot, hosted_element};
 use crate::system::tokens::{SystemColor, ns_font_weight};
 
-/// An AppKit named image (`NSImage imageNamed:`) drawn at its own size, tinted like a template.
 pub fn native_image(id: impl Into<ElementId>, name: &str) -> NativeImage {
     NativeImage {
         id: id.into(),
@@ -86,7 +85,6 @@ impl NativeImage {
     }
 
     fn paint(&mut self, mut slot: Slot, window: &mut Window, _: &mut App) {
-        // A 1 px stroke straddling a device pixel draws at half weight: keep the origin whole.
         let scale = window.scale_factor();
         let snap = |v: gpui::Pixels| px((f32::from(v) * scale).round() / scale);
         slot.bounds.origin.x = snap(slot.bounds.origin.x);
