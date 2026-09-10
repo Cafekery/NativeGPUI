@@ -46,6 +46,8 @@ pub enum MenuEntry {
         checked: bool,
         /// Drawn at the trailing edge; a label only, since a transient menu is not listening.
         key: Option<(String, Modifiers)>,
+        /// Stands in for the row above it while ⌥ is held.
+        alternate: bool,
         submenu: Vec<MenuEntry>,
     },
     Separator,
@@ -61,6 +63,7 @@ impl MenuEntry {
             enabled: true,
             checked: false,
             key: None,
+            alternate: false,
             submenu: Vec::new(),
         }
     }
@@ -105,6 +108,15 @@ impl MenuEntry {
     pub fn key(mut self, equivalent: impl Into<String>, modifiers: Modifiers) -> Self {
         if let Self::Item { key, .. } = &mut self {
             *key = Some((equivalent.into(), modifiers));
+        }
+        self
+    }
+
+    /// Shows in place of the row above it while ⌥ is held, as Finder's Always Open With does. Only
+    /// a row without a key equivalent can stand in this way.
+    pub fn option_alternate(mut self) -> Self {
+        if let Self::Item { alternate, .. } = &mut self {
+            *alternate = true;
         }
         self
     }
@@ -486,6 +498,7 @@ fn sync_level(
             enabled,
             checked,
             key,
+            alternate,
             submenu,
         } = entry
         else {
@@ -517,16 +530,20 @@ fn sync_level(
             item.setState(want_state);
         }
 
-        if let Some((equivalent, modifiers)) = key {
-            if !nsstring_is(&item.keyEquivalent(), equivalent) {
-                item.setKeyEquivalent(&NSString::from_str(equivalent));
-            }
-            let mask = event_mask(*modifiers);
-            if item.keyEquivalentModifierMask() != mask {
-                item.setKeyEquivalentModifierMask(mask);
-            }
-        } else if !nsstring_is(&item.keyEquivalent(), "") {
-            item.setKeyEquivalent(&NSString::from_str(""));
+        // An ⌥ row pairs with the row above it by their shared empty key; the mask tells them apart.
+        let (equivalent, mask) = match key {
+            Some((equivalent, modifiers)) => (equivalent.as_str(), event_mask(*modifiers)),
+            None if *alternate => ("", NSEventModifierFlags::Option),
+            None => ("", NSEventModifierFlags::Command),
+        };
+        if !nsstring_is(&item.keyEquivalent(), equivalent) {
+            item.setKeyEquivalent(&NSString::from_str(equivalent));
+        }
+        if item.keyEquivalentModifierMask() != mask {
+            item.setKeyEquivalentModifierMask(mask);
+        }
+        if item.isAlternate() != *alternate {
+            item.setAlternate(*alternate);
         }
 
         // What the image is, is parked in `representedObject`; an NSImage cannot say which it is.
