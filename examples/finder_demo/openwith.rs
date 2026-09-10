@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSString, NSURL};
+use objc2_app_kit::{NSWorkspace, NSWorkspaceLaunchOptions};
+use objc2_foundation::{NSDictionary, NSString, NSURL};
 
 pub(crate) struct App {
     pub(crate) name: String,
@@ -43,6 +43,23 @@ pub(crate) fn apps_for(file: &Path) -> Vec<App> {
         .collect();
     apps.sort_by(|a, b| b.default.cmp(&a.default).then_with(|| a.name.cmp(&b.name)));
     apps
+}
+
+/// Finder's File ▸ Print: each document goes to the app that opens it, asked to print it.
+#[allow(deprecated)] // the open API that replaced this call has no print option
+pub(crate) fn print(files: &[PathBuf]) -> Result<(), String> {
+    let workspace = NSWorkspace::sharedWorkspace();
+    for url in files.iter().filter_map(|file| url(file)) {
+        unsafe {
+            workspace.openURL_options_configuration_error(
+                &url,
+                NSWorkspaceLaunchOptions::AndPrint,
+                &NSDictionary::new(),
+            )
+        }
+        .map_err(|error| error.localizedDescription().to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn open_with(files: &[PathBuf], app: &Path) {
