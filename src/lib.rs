@@ -6,6 +6,7 @@
 
 mod bridge;
 mod chrome;
+mod services;
 mod system;
 
 pub mod controls;
@@ -30,6 +31,7 @@ pub use chrome::{sidebar, window_chrome};
 pub use controls::*;
 pub use materials::*;
 pub use quicklook::*;
+pub use services::services_selection;
 pub use surfaces::*;
 pub use system::thumbnails;
 pub use system::tokens;

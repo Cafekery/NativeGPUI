@@ -47,6 +47,12 @@ impl Render for FinderDemo {
         }
         if self.toolbar_for != (self.selected.rev(), self.cursor.clone()) {
             self.toolbar = false;
+            let files = self
+                .chosen_keys()
+                .iter()
+                .map(|key| key.to_string().into())
+                .collect();
+            native_gpui::services_selection(window, files);
         }
         if !self.toolbar {
             self.install_toolbar(window, cx);
