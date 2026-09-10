@@ -1,10 +1,8 @@
 use gpui::{
-    App, ClickEvent, Div, ElementId, FontWeight, Hsla, IntoElement, MouseDownEvent, Pixels,
-    ScrollHandle, SharedString, Styled, TextRun, WeakEntity, Window, div, hsla, point, prelude::*,
-    px,
+    App, ClickEvent, Div, FontWeight, Hsla, IntoElement, MouseDownEvent, Pixels, SharedString,
+    Styled, TextRun, WeakEntity, Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens;
-use native_gpui::{NativeScroller, native_scroller};
 
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
@@ -149,29 +147,6 @@ pub(crate) fn key_to_parent(window: &Window) {
     if let Some(parent) = ns_window(window).and_then(|panel| panel.parentWindow()) {
         parent.makeKeyWindow();
     }
-}
-
-pub(crate) fn scroller(
-    id: impl Into<ElementId>,
-    handle: &ScrollHandle,
-    inset: f32,
-) -> Option<NativeScroller> {
-    let max = f32::from(handle.max_offset().y);
-    let room = f32::from(handle.bounds().size.height) - inset;
-    if max < 1. || room <= 0. {
-        return None;
-    }
-    let handle = handle.clone();
-    let value = (-f32::from(handle.offset().y) / max).clamp(0., 1.);
-    Some(
-        native_scroller(id, value as f64, (room / (room + max)) as f64).on_change(
-            move |value, window, _| {
-                let offset = handle.offset();
-                handle.set_offset(point(offset.x, -handle.max_offset().y * *value as f32));
-                window.refresh();
-            },
-        ),
-    )
 }
 
 pub(crate) fn axis_locked<E: Styled>(mut element: E) -> E {

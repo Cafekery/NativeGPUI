@@ -7,7 +7,7 @@ use gpui::{
 };
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
-use native_gpui::{NativeScroller, native_root, system_corner_radius};
+use native_gpui::{NativeScrollBars, native_root, native_scroll_bars, system_corner_radius};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -21,7 +21,7 @@ use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
 use crate::palette::Palette;
 use crate::preview::LIST_MIN_W;
-use crate::ui::{axis_locked, scroller};
+use crate::ui::axis_locked;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
 use crate::views::header::HEADER_H;
 use crate::views::list::LIST_FOOT_GAP;
@@ -233,17 +233,17 @@ impl FinderDemo {
         });
     }
 
-    fn scroller_bar(&self) -> Option<NativeScroller> {
+    fn scroll_bars(&self) -> Option<NativeScrollBars> {
+        let bars = native_scroll_bars("ng.finder.scroll_bars");
         match self.view {
-            LIST_VIEW => {
-                let inset = self.list_inset().0 as f32 * self.row_h() + self.list_tail();
-                scroller(
-                    "ng.finder.scroller",
-                    &self.scroll.0.borrow().base_handle,
-                    inset,
-                )
-            }
-            ICON_VIEW => scroller("ng.finder.scroller", &self.icons.scroll, 0.),
+            LIST_VIEW => Some(
+                bars.vertical(&self.scroll.0.borrow().base_handle)
+                    .horizontal(&self.hscroll),
+            ),
+            ICON_VIEW => Some(
+                bars.vertical(&self.icons.scroll)
+                    .horizontal(&self.icons.scroll),
+            ),
             _ => None,
         }
     }
@@ -369,13 +369,14 @@ impl FinderDemo {
                         .child(headers),
                 )
             }))
-            .children(self.scroller_bar().map(|scroller| {
+            .children(self.scroll_bars().map(|bars| {
                 div()
                     .absolute()
                     .top(top + px(if banded { HEADER_H } else { 0. }))
                     .bottom(px(bar))
+                    .left(metrics.left)
                     .right(px(pane))
-                    .child(scroller)
+                    .child(bars)
             }))
             .children(
                 (self.view == LIST_VIEW)

@@ -28,7 +28,7 @@ pub use progress::{
     native_spinner,
 };
 pub use rule::{NativeRule, native_rule};
-pub use scroller::{NativeScroller, native_scroller};
+pub use scroller::{NativeScrollBars, native_scroll_bars};
 pub use slider::{NativeSlider, native_slider};
 pub use small::{
     ColorWellStyle, DateElements, DatePickerStyle, NativeColorWell, NativeDatePicker,
