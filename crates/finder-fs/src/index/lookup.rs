@@ -1,9 +1,11 @@
 use super::store::{DOTTED, NEEDS_FOLD, NONE, PACKAGE, ROOT, Tree, folded};
 
 /// What a hit needs to know about where a node sits, which is otherwise a walk to the root:
-/// whether Spotlight would hide it, and whether it is under the user's home.
+/// whether it is a dot-file or inside a dot-folder, whether it is inside a package, and whether
+/// it is under the user's home.
 const HIDDEN: u8 = 1;
 const HOMED: u8 = 2;
+const PACKED: u8 = 4;
 
 /// A name's adjacent byte pairs, hashed into one bit each. A query whose pairs are not all here
 /// cannot be a substring of the name, and the check costs one load against a name's bytes.
@@ -103,7 +105,7 @@ impl Lookup {
                 parent if (parent as usize) < id => {
                     let up = place[parent as usize];
                     let packaged = tree.nodes[parent as usize].flags & PACKAGE != 0;
-                    (up, u8::from(packaged) * HIDDEN)
+                    (up, u8::from(packaged) * PACKED)
                 }
                 _ => (0, 0),
             };
@@ -173,13 +175,13 @@ impl Lookup {
         self.built
     }
 
-    /// `Some(under the home)` for a node a search may show, `None` for one Spotlight hides.
-    /// Nodes the table has not taken in yet answer `None` here and are walked instead.
-    pub fn placed(&self, id: u32) -> Option<Option<bool>> {
+    /// `Some((hidden, under the home))` for a node a search may show, `None` for one inside a
+    /// package. Nodes the table has not taken in yet answer `None` here and are walked instead.
+    pub fn placed(&self, id: u32) -> Option<Option<(bool, bool)>> {
         let place = *self.place.get(id as usize)?;
-        match place & HIDDEN != 0 {
+        match place & PACKED != 0 {
             true => Some(None),
-            false => Some(Some(place & HOMED != 0)),
+            false => Some(Some((place & HIDDEN != 0, place & HOMED != 0))),
         }
     }
 }
