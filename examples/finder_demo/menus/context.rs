@@ -85,7 +85,25 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         );
     } else {
         menu.item(MenuEntry::item("Open"), Act::Open);
-        menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing);
+        let apps = crate::openwith::apps_for(Path::new(line.key.as_ref()));
+        match apps.is_empty() {
+            true => menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing),
+            false => menu.submenu(
+                "Open With",
+                apps.iter()
+                    .map(|app| {
+                        let title = match app.default {
+                            true => format!("{} (default)", app.name),
+                            false => app.name.clone(),
+                        };
+                        (
+                            MenuEntry::item(title),
+                            Act::OpenWith(intern(&app.path.to_string_lossy())),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
     }
     if let Some(path) = line.row.opens {
         menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(path));
