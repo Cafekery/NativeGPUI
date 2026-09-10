@@ -27,7 +27,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Edit ▸ Show Clipboard
 - [x] Window ▸ Cycle Through Windows (⌘`)
 - [x] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
-- [ ] View ▸ Show Preview Options
+- [ ] View ▸ Show Preview Options: Finder on the test Mac kept it disabled with the preview pane showing and a text file or an image selected over accessibility, so what its panel offers is unconfirmed
 - [ ] View ▸ Customize Toolbar…, the one menu item the demo greys out
 - [x] Tag swatches read as seven unlabelled groups to VoiceOver; Finder's are radio buttons named “Add “Red” label” and “Remove “Red” label”
 
