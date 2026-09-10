@@ -6,7 +6,7 @@ use gpui::SharedString;
 
 use super::{SidebarIcon, SidebarItem};
 
-pub(super) fn key_of(id: &str) -> u64 {
+fn key_of(id: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     id.hash(&mut hasher);
     hasher.finish()
@@ -43,7 +43,7 @@ impl Node {
 pub(super) struct Model {
     pub(super) nodes: Vec<Node>,
     pub(super) roots: Vec<usize>,
-    pub(super) by_key: HashMap<u64, usize>,
+    by_key: HashMap<u64, usize>,
 }
 
 impl Model {
@@ -53,7 +53,7 @@ impl Model {
         model
     }
 
-    pub(super) fn push_all(&mut self, items: &[SidebarItem], parent: Option<usize>) -> Vec<usize> {
+    fn push_all(&mut self, items: &[SidebarItem], parent: Option<usize>) -> Vec<usize> {
         let mut out = Vec::with_capacity(items.len());
         for item in items {
             let index = self.nodes.len();
@@ -87,33 +87,34 @@ impl Model {
         self.by_key.get(&key).map(|&i| &self.nodes[i])
     }
 
-    pub(super) fn children_keys(&self, parent: Option<u64>) -> Vec<u64> {
-        let indices = match parent {
+    pub(super) fn children_of(&self, parent: Option<u64>) -> &[usize] {
+        match parent {
             None => &self.roots,
-            Some(key) => match self.by_key.get(&key) {
-                Some(&i) => &self.nodes[i].children,
-                None => return Vec::new(),
-            },
-        };
-        indices.iter().map(|&i| self.nodes[i].key).collect()
+            Some(key) => self
+                .node(key)
+                .map(|node| node.children.as_slice())
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(super) fn children_keys(&self, parent: Option<u64>) -> Vec<u64> {
+        self.children_of(parent)
+            .iter()
+            .map(|&i| self.nodes[i].key)
+            .collect()
     }
 
     pub(super) fn parent_key(&self, key: u64) -> Option<u64> {
-        let index = *self.by_key.get(&key)?;
-        self.nodes[index].parent.map(|p| self.nodes[p].key)
+        self.node(key)?.parent.map(|p| self.nodes[p].key)
     }
 
     pub(super) fn move_child(&mut self, parent: Option<u64>, from: usize, to: usize) -> bool {
-        let parent_index = match parent {
-            None => None,
+        let list = match parent {
+            None => &mut self.roots,
             Some(key) => match self.by_key.get(&key) {
-                Some(&index) => Some(index),
+                Some(&index) => &mut self.nodes[index].children,
                 None => return false,
             },
-        };
-        let list = match parent_index {
-            None => &mut self.roots,
-            Some(index) => &mut self.nodes[index].children,
         };
         if from >= list.len() || to >= list.len() {
             return false;
@@ -128,9 +129,7 @@ impl Model {
         let mut stack: Vec<usize> = self.roots.iter().rev().copied().collect();
         while let Some(index) = stack.pop() {
             out.push(self.nodes[index].key);
-            for &child in self.nodes[index].children.iter().rev() {
-                stack.push(child);
-            }
+            stack.extend(self.nodes[index].children.iter().rev());
         }
         out
     }
