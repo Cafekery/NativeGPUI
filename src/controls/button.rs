@@ -300,6 +300,7 @@ pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> Nati
         id: id.into(),
         title: title.into(),
         bezel: ButtonBezel::Automatic,
+        control_size: ControlSize::default(),
         default_button: false,
         enabled: true,
         on_click: None,
@@ -310,6 +311,7 @@ pub struct NativeButton {
     id: ElementId,
     title: String,
     bezel: ButtonBezel,
+    control_size: ControlSize,
     default_button: bool,
     enabled: bool,
     on_click: Option<NativeHandler>,
@@ -318,6 +320,11 @@ pub struct NativeButton {
 impl NativeButton {
     pub fn bezel_style(mut self, bezel: ButtonBezel) -> Self {
         self.bezel = bezel;
+        self
+    }
+
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
         self
     }
 
@@ -338,17 +345,22 @@ impl NativeButton {
     }
 
     fn layout(&self) -> Style {
-        let (title, bezel) = (self.title.clone(), self.bezel);
-        measured("NSButton.push", (&title, bezel), |mtm| unsafe {
-            let button = NSButton::buttonWithTitle_target_action(
-                &NSString::from_str(&title),
-                None,
-                None,
-                mtm,
-            );
-            button.setBezelStyle(bezel.to_native());
-            button.fittingSize()
-        })
+        let (title, bezel, control_size) = (self.title.clone(), self.bezel, self.control_size);
+        measured(
+            "NSButton.push",
+            (&title, bezel, control_size),
+            |mtm| unsafe {
+                let button = NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(&title),
+                    None,
+                    None,
+                    mtm,
+                );
+                button.setBezelStyle(bezel.to_native());
+                button.setControlSize(NSControlSize::from(control_size));
+                button.fittingSize()
+            },
+        )
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -368,6 +380,10 @@ impl NativeButton {
         let bezel = self.bezel.to_native();
         if button.bezelStyle() != bezel {
             button.setBezelStyle(bezel);
+        }
+        let control_size = NSControlSize::from(self.control_size);
+        if button.controlSize() != control_size {
+            button.setControlSize(control_size);
         }
         sync_title(&button, &self.title);
         if is_default_button(&button) != self.default_button {
