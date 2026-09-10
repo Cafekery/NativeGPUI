@@ -9,7 +9,7 @@ use native_gpui::{
 };
 
 use crate::app::FinderDemo;
-use crate::chrome::sheet::GoSheet;
+use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
@@ -47,6 +47,7 @@ actions!(
         GoNetwork,
         GoRecents,
         GoToFolder,
+        ConnectToServer,
         GoUtilities,
         GoRecent0,
         GoRecent1,
@@ -256,6 +257,7 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Utilities", GoUtilities).key("cmd-shift-u"),
         MenuCommand::separator(),
         MenuCommand::new("Go to Folder…", GoToFolder).key("cmd-shift-g"),
+        MenuCommand::new("Connect to Server…", ConnectToServer).key("cmd-k"),
         MenuCommand::separator(),
     ]
 }
@@ -488,6 +490,10 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
                 this.go_sheet = Some(GoSheet::at(this.crumb_path()));
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ConnectToServer, _, cx| {
+                this.connect_sheet = Some(ConnectSheet::default());
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &QuickLook, window, cx| {

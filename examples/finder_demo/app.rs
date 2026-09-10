@@ -17,7 +17,7 @@ use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
 use crate::chrome::scope_bar;
-use crate::chrome::sheet::GoSheet;
+use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::dragdrop::Spring;
@@ -89,6 +89,7 @@ pub(crate) struct FinderDemo {
     pub(crate) spring: Option<Spring>,
     pub(crate) recents: Vec<(&'static str, String)>,
     pub(crate) go_sheet: Option<GoSheet>,
+    pub(crate) connect_sheet: Option<ConnectSheet>,
     pub(crate) ql_icon: Anchor,
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
@@ -191,6 +192,7 @@ impl FinderDemo {
             spring: None,
             recents: Vec::new(),
             go_sheet: None,
+            connect_sheet: None,
             ql_icon: Anchor::default(),
             tag_editor: None,
             ql_shown: None,

@@ -32,7 +32,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 ## Features
 
 - [x] Go ▸ Recents (⇧⌘F)
-- [ ] Go ▸ Connect to Server… (⌘K)
+- [x] Go ▸ Connect to Server… (⌘K)
 - [ ] Go ▸ AirDrop (⇧⌘R) and Shared (⇧⌘S)
 - [ ] File ▸ New Smart Folder, and saved searches with it
 - [ ] File ▸ Print (⌘P)
