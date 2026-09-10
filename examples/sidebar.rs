@@ -1,5 +1,3 @@
-//! A real `NSSplitViewItem.sidebar` with GPUI rendering the content pane beside it.
-
 use std::env;
 
 use gpui::{

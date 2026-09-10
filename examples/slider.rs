@@ -1,5 +1,3 @@
-//! Real `NSSlider`s driving GPUI state: horizontal, 5-tick snapping, and vertical.
-
 use gpui::{
     App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };

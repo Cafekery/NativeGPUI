@@ -7,6 +7,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -36,7 +37,6 @@ pub struct Progress {
 pub struct Hit {
     pub path: PathBuf,
     pub entry: Entry,
-    /// Higher is better: prefix beats word start beats substring; shallower beats deeper.
     pub score: u32,
 }
 
@@ -46,7 +46,6 @@ pub struct Stats {
     pub files: u64,
     pub bytes: u64,
     pub crawled_at: Option<SystemTime>,
-    /// The FSEvents id the snapshot is current to, for catching up on launch.
     pub event_id: u64,
 }
 
@@ -54,8 +53,7 @@ pub struct Index {
     store: PathBuf,
     tree: RwLock<Tree>,
     lookup: RwLock<lookup::Lookup>,
-    /// A stream of writers starves a reader of `RwLock` indefinitely, so a writer waits its turn
-    /// behind anyone already asking to read.
+    /// Readers queued on `tree`: a writer yields to them, or a stream of writes starves them.
     waiting: AtomicUsize,
     crawling: AtomicBool,
     dirty: AtomicBool,
@@ -77,7 +75,6 @@ impl Index {
         })
     }
 
-    /// Walks `roots` in order until every subtree is in; a call made while one runs is ignored.
     pub fn crawl(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
@@ -110,22 +107,13 @@ impl Index {
 
     pub fn children(&self, dir: &Path) -> Option<Vec<Entry>> {
         let tree = self.read();
-        let id = resolve(&tree, dir)?;
-        let node = tree.nodes[id as usize];
-        if !node.is_dir() || node.flags & PACKAGE != 0 || node.state & LISTED == 0 {
-            return None;
-        }
+        let id = listed_dir(&tree, dir)?;
         Some(tree.children(id).map(|child| tree.entry(child)).collect())
     }
 
-    /// How many entries of `dir` Finder would show, hidden ones left out.
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
-        let id = resolve(&tree, dir)?;
-        let node = tree.nodes[id as usize];
-        if !node.is_dir() || node.flags & PACKAGE != 0 || node.state & LISTED == 0 {
-            return None;
-        }
+        let id = listed_dir(&tree, dir)?;
         Some(
             tree.children(id)
                 .filter(|&child| tree.nodes[child as usize].flags & HIDDEN == 0)
@@ -161,12 +149,10 @@ impl Index {
         self.lookup.read().unwrap_or_else(|held| held.into_inner())
     }
 
-    /// One real path per extension, the most common first: what a kind lookup wants warmed,
-    /// since the label it caches comes from Spotlight and that needs a file that exists.
+    /// One real file per extension, the most common first.
     pub fn extensions(&self, limit: usize) -> Vec<PathBuf> {
         let tree = self.read();
-        let mut counts: std::collections::HashMap<&[u8], (usize, u32)> =
-            std::collections::HashMap::new();
+        let mut counts: HashMap<&[u8], (usize, u32)> = HashMap::new();
         for id in 0..tree.name_of.len() as u32 {
             let node = &tree.nodes[id as usize];
             if node.deleted() || node.is_dir() {
@@ -180,8 +166,7 @@ impl Index {
             if ext.is_empty() || ext.len() > 12 {
                 continue;
             }
-            let seen = counts.entry(ext).or_insert((0, id));
-            seen.0 += 1;
+            counts.entry(ext).or_insert((0, id)).0 += 1;
         }
         let mut common: Vec<(usize, u32)> = counts.into_values().collect();
         common.sort_unstable_by_key(|found| std::cmp::Reverse(found.0));
@@ -194,12 +179,9 @@ impl Index {
 
     pub fn search(&self, query: &str, under: Option<&Path>, limit: usize) -> Vec<Hit> {
         let tree = self.read();
-        let under = match under {
-            Some(dir) => match resolve(&tree, dir) {
-                Some(id) => Some(id),
-                None => return Vec::new(),
-            },
-            None => None,
+        let under = match under.map(|dir| resolve(&tree, dir)) {
+            Some(None) => return Vec::new(),
+            under => under.flatten(),
         };
         let lookup = self.lookup(&tree);
         search::search(&tree, &lookup, query, under, limit)
@@ -208,7 +190,6 @@ impl Index {
     pub fn note_changed(&self, dirs: &[PathBuf]) {
         let home = crawl::home();
         for dir in dirs {
-            // Reading back a watched write under `~/Library` raises a TCC prompt.
             if catchup::open_to_us(dir, &home) {
                 self.refresh(dir, &home);
             }
@@ -345,4 +326,10 @@ fn relist(index: &Index, dir: u32, entries: &[Entry], sealed: &[bool]) -> Vec<u3
 fn resolve(tree: &Tree, path: &Path) -> Option<u32> {
     tree.find(path)
         .or_else(|| tree.find(&std::fs::canonicalize(path).ok()?))
+}
+
+fn listed_dir(tree: &Tree, dir: &Path) -> Option<u32> {
+    let id = resolve(tree, dir)?;
+    let node = tree.nodes[id as usize];
+    (node.is_dir() && node.flags & PACKAGE == 0 && node.state & LISTED != 0).then_some(id)
 }

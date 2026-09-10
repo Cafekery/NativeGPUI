@@ -1,8 +1,7 @@
 use crate::Demo;
 use crate::ui::*;
 use gpui::{
-    AnyElement, App, Context, FontWeight, Hsla, Pixels, Rgba, Subscription, Window, div,
-    prelude::*, px,
+    AnyElement, App, Context, FontWeight, Pixels, Subscription, Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{
     Appearance, FileType, SymbolColor, SystemColor, SystemTheme, accent, advance_delta,
@@ -110,7 +109,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 "SystemColor::try_resolve(Appearance)",
                 format!("{differing} of {} differ", SystemColor::ALL.len()),
             ),
-            ("accent()", hex8(accent())),
+            ("accent()", hex(accent())),
             (
                 "current_appearance()",
                 format!("{:?}", current_appearance()),
@@ -213,7 +212,7 @@ fn appearance_section(pinned: bool, cx: &mut Context<Demo>) -> AnyElement {
                     |t| format!(
                         "{:?}, accent {}, generation {}",
                         t.appearance,
-                        hex8(t.accent),
+                        hex(t.accent),
                         t.generation
                     )
                 )
@@ -259,7 +258,7 @@ fn color_section(differing: usize) -> AnyElement {
                     mono(format!(
                         "srgb(NSColor.scrubberTexturedBackgroundColor) = {}",
                         match pattern {
-                            Some(c) => hex8(c),
+                            Some(c) => hex(c),
                             None => "None".into(),
                         }
                     )),
@@ -282,38 +281,9 @@ fn color_section(differing: usize) -> AnyElement {
 }
 
 fn color_tile(c: SystemColor) -> AnyElement {
-    let (light, dark) = (
-        c.try_resolve(Appearance::Light),
-        c.try_resolve(Appearance::Dark),
-    );
-    let half = |value: Option<Hsla>| {
-        let cell = div().flex_1().h_full();
-        match value {
-            Some(value) => cell.bg(value),
-            None => cell,
-        }
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .gap_1p5()
-        .w(px(116.))
-        .child(checker(
-            116.,
-            div()
-                .flex()
-                .size_full()
-                .child(half(light))
-                .child(half(dark))
-                .into_any_element(),
-        ))
-        .child(mono(format!(
-            "{} {c:?}",
-            if light == dark { "=" } else { "≠" }
-        )))
-        .child(caption(format!("{} {}", opt_hex(light), opt_hex(dark))))
-        .into_any_element()
+    appearance_swatch(c, 116., |light, dark| {
+        format!("{} {c:?}", if light == dark { "=" } else { "≠" })
+    })
 }
 
 fn font_section(cx: &App) -> AnyElement {
@@ -589,7 +559,6 @@ fn file_icon_section() -> AnyElement {
         })
         .collect();
 
-    // 16, 32 and 64 land exactly on a representation rung at 2x; 20 and 48 do not and resample.
     let sizes: Vec<AnyElement> = [16., 20., 32., 48., 64.]
         .iter()
         .map(|&size| file_icon_cell(FileType::Extension("zip"), px(size)))
@@ -661,14 +630,4 @@ fn cache_section() -> AnyElement {
             ),
         ],
     )
-}
-
-fn hex8(c: Hsla) -> String {
-    let c = Rgba::from(c);
-    let q = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-    format!("#{:02X}{:02X}{:02X}{:02X}", q(c.r), q(c.g), q(c.b), q(c.a))
-}
-
-fn opt_hex(c: Option<Hsla>) -> String {
-    c.map_or_else(|| "refused".to_string(), hex8)
 }

@@ -1,6 +1,3 @@
-//! Finder's sidebar lists are keyed archives of plain Foundation objects under
-//! `~/Library/Application Support/com.apple.sharedfilelist`, one item per row.
-
 use std::path::PathBuf;
 
 use objc2::AnyThread;
@@ -13,7 +10,6 @@ use objc2_foundation::{
 
 const LISTS: &str = "Library/Application Support/com.apple.sharedfilelist";
 
-/// Newest first: macOS 26 writes `sfl4`, earlier releases `sfl3` and `sfl2`.
 const SUFFIXES: [&str; 3] = ["sfl4", "sfl3", "sfl2"];
 
 const FAVORITES: &str = "com.apple.LSSharedFileList.FavoriteItems";
@@ -49,10 +45,8 @@ impl Special {
 
 #[derive(Clone, Debug)]
 pub struct Item {
-    /// A row the user unticked stays in the list, hidden.
     pub visible: bool,
     pub path: Option<PathBuf>,
-    /// Set for a renamed or pathless row, absent otherwise.
     pub name: Option<String>,
     pub special: Option<Special>,
     pub volume: bool,
@@ -87,9 +81,7 @@ pub fn locations() -> Option<Locations> {
     })
 }
 
-type List = (Vec<Item>, Option<Retained<NSDictionary>>);
-
-fn read(name: &str) -> Option<List> {
+fn read(name: &str) -> Option<(Vec<Item>, Option<Retained<NSDictionary>>)> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     let root = SUFFIXES.iter().find_map(|suffix| {
         let path = home.join(LISTS).join(format!("{name}.{suffix}"));
@@ -112,7 +104,7 @@ fn decode(bytes: &[u8]) -> Option<Retained<NSDictionary>> {
         NSKeyedUnarchiver::initForReadingFromData_error(NSKeyedUnarchiver::alloc(), &data)
     }
     .ok()?;
-    // The archived classes are not known ahead of time, so secure coding would fail every decode.
+    // The archived classes are not known ahead of time: secure coding would fail every decode.
     unsafe { unarchiver.setRequiresSecureCoding(false) };
     let root = unsafe { unarchiver.decodeObjectForKey(&NSString::from_str("root")) }?;
     root.downcast::<NSDictionary>().ok()

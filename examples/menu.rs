@@ -1,5 +1,3 @@
-//! Real `NSPopUpButton`s and `NSMenu`s driving GPUI state: pop-up, pull-down and context menus.
-
 use gpui::{
     App, Bounds, Context, Hsla, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };

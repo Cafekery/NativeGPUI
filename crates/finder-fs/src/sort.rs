@@ -19,9 +19,6 @@ const FOLD_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInse
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareDiacriticInsensitive);
 
-// `CompareNonliteral` matches canonically equivalent text, so a name stored NFD answers to a
-// prefix typed NFC, `CompareDiacriticInsensitive` answers a prefix typed without the accent at
-// all, and `CompareAnchored` holds the match to the start.
 const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseInsensitive
     .union(CFStringCompareFlags::CompareWidthInsensitive)
     .union(CFStringCompareFlags::CompareNonliteral)
@@ -41,7 +38,6 @@ unsafe fn borrow_cf_str(s: &str) -> CFRetained<CFString> {
     .expect("str is valid UTF-8")
 }
 
-/// Finder's Name order: `localizedStandardCompare`, so "file 2" sorts before "file 10".
 pub fn name_cmp(a: &str, b: &str) -> Ordering {
     let a = unsafe { borrow_cf_str(a) };
     let b = unsafe { borrow_cf_str(b) };
@@ -49,7 +45,6 @@ pub fn name_cmp(a: &str, b: &str) -> Ordering {
     unsafe { a.compare_with_options_and_locale(Some(&b), range, OPTIONS, current_locale()) }.into()
 }
 
-/// Finder's type-select: whether `name` starts with `prefix`, case- and width-insensitively.
 pub fn starts_with(name: &str, prefix: &str) -> bool {
     if prefix.is_empty() {
         return true;
@@ -61,7 +56,6 @@ pub fn starts_with(name: &str, prefix: &str) -> bool {
     unsafe { name_cf.find_with_options(Some(&prefix_cf), range, PREFIX_OPTIONS, &mut found) }
 }
 
-/// Case, width and diacritics folded away, decomposed first so either storage form folds alike.
 pub fn fold(s: &str) -> String {
     if s.is_ascii() {
         return s.to_ascii_lowercase();
@@ -97,10 +91,9 @@ pub fn sort_names(names: &mut [String]) {
     });
     drop(cf_strings);
 
-    let mut originals: Vec<Option<String>> =
-        names.iter_mut().map(|s| Some(std::mem::take(s))).collect();
-    for (dst, &src) in names.iter_mut().zip(order.iter()) {
-        *dst = originals[src].take().unwrap();
+    let mut originals: Vec<String> = names.iter_mut().map(std::mem::take).collect();
+    for (dst, &src) in names.iter_mut().zip(&order) {
+        *dst = std::mem::take(&mut originals[src]);
     }
 }
 

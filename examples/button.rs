@@ -1,5 +1,3 @@
-//! The button family: checkbox, radio, push button, segmented control.
-
 use gpui::{
     App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };

@@ -1,5 +1,3 @@
-//! Liquid glass built from a [`GlassRecipe`], drawn twice over two different backdrops.
-
 use gpui::{
     App, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, point, prelude::*,
     px, rgb, size,

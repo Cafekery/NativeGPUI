@@ -118,8 +118,7 @@ impl Render for Probe {
                 Want::Tabular,
             );
 
-            // Must be `1`: SF's proportional `0` already advances at the tabular width, so ten of
-            // them measure 86.68 whether the feature applied or not.
+            // "1", not "0": SF's proportional 0 is already tabular width, so would pass either way.
             let width = shaped_width(window, &tabular, size, &"1".repeat(REPEATS));
             let off = (width - APPKIT_TABULAR_WIDTH).abs();
             RAN.fetch_add(1, Ordering::Relaxed);

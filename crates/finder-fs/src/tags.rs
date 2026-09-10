@@ -16,12 +16,9 @@ use objc2_foundation::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag {
     pub name: String,
-    /// Finder's label colour index: 0 none, 1 grey, 2 green, 3 purple, 4 blue, 5 yellow, 6 red, 7
-    /// orange.
     pub color: u8,
 }
 
-/// Finder's seven built-in tags, in the order Finder lists them.
 const STANDARD: [(&str, u8); 7] = [
     ("Red", 6),
     ("Orange", 7),
@@ -43,13 +40,11 @@ fn standard() -> Vec<Tag> {
 }
 
 pub fn all() -> Vec<Tag> {
-    match finder_tags().filter(|tags| !tags.is_empty()) {
-        Some(tags) => tags,
-        None => standard(),
-    }
+    finder_tags()
+        .filter(|tags| !tags.is_empty())
+        .unwrap_or_else(standard)
 }
 
-/// The tags Finder's tag menus offer, in the order the user dragged them.
 pub fn favorites() -> Vec<Tag> {
     let known = all();
     let color = |name: &str| {
@@ -76,11 +71,9 @@ pub fn favorites() -> Vec<Tag> {
 
 fn favorite_tag_names() -> Option<Vec<String>> {
     let suite = NSString::from_str("com.apple.finder");
-    let defaults = NSUserDefaults::alloc();
-    let defaults = NSUserDefaults::initWithSuiteName(defaults, Some(&suite))?;
-    let key = NSString::from_str("FavoriteTagNames");
-    let names = defaults.stringArrayForKey(&key)?;
-    Some(names.to_vec().iter().map(|s| s.to_string()).collect())
+    let defaults = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))?;
+    let names = defaults.stringArrayForKey(&NSString::from_str("FavoriteTagNames"))?;
+    Some(names.iter().map(|s| s.to_string()).collect())
 }
 
 fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
@@ -107,7 +100,6 @@ fn finder_tags() -> Option<Vec<Tag>> {
         unsafe { Retained::cast_unchecked(entries) };
     Some(
         entries
-            .to_vec()
             .iter()
             .filter_map(|entry| {
                 let name = entry
@@ -196,36 +188,30 @@ fn read_xattr(path: &Path, name: &str) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// The colour of each tag name as Finder's `_kMDItemUserTags` xattr records it: `"Name\nN"`.
 fn xattr_colors(path: &Path) -> HashMap<String, u8> {
-    let mut colors = HashMap::new();
-    let Some(bytes) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags") else {
-        return colors;
-    };
-    let Some(Ok(entries)) = plist(&bytes).map(|p| p.downcast::<NSArray>()) else {
-        return colors;
+    let Some(entries) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags")
+        .and_then(|bytes| plist(&bytes)?.downcast::<NSArray>().ok())
+    else {
+        return HashMap::new();
     };
     let entries: Retained<NSArray<NSString>> = unsafe { Retained::cast_unchecked(entries) };
-    for entry in entries.to_vec() {
-        let entry = entry.to_string();
-        if let Some((name, color)) = entry.split_once('\n') {
-            if let Ok(color) = color.parse() {
-                colors.insert(name.to_string(), color);
-            }
-        }
-    }
-    colors
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let entry = entry.to_string();
+            let (name, color) = entry.split_once('\n')?;
+            Some((name.to_string(), color.parse().ok()?))
+        })
+        .collect()
 }
 
 pub fn of(path: &Path) -> Vec<Tag> {
     let key = unsafe { NSURLTagNamesKey };
     let keys = NSArray::from_slice(&[key]);
-    let Ok(values) = url(path).resourceValuesForKeys_error(&keys) else {
-        return Vec::new();
-    };
-    let Some(names) = values
-        .objectForKey(key)
-        .and_then(|v| v.downcast::<NSArray>().ok())
+    let Some(names) = url(path)
+        .resourceValuesForKeys_error(&keys)
+        .ok()
+        .and_then(|values| values.objectForKey(key)?.downcast::<NSArray>().ok())
     else {
         return Vec::new();
     };
@@ -235,7 +221,6 @@ pub fn of(path: &Path) -> Vec<Tag> {
     }
     let colors = xattr_colors(path);
     names
-        .to_vec()
         .iter()
         .map(|name| {
             let name = name.to_string();
@@ -255,9 +240,7 @@ pub fn set(path: &Path, tags: &[Tag]) -> io::Result<()> {
         .map_err(|e| io::Error::other(e.localizedDescription().to_string()))
 }
 
-/// Finder's swatch: the tag comes off every item when they all carry it, and otherwise goes on the
-/// ones that lack it. Whatever else an item was tagged with stays.
-pub fn toggle(paths: &[std::path::PathBuf], tag: &Tag) -> io::Result<()> {
+pub fn toggle(paths: &[PathBuf], tag: &Tag) -> io::Result<()> {
     let carried: Vec<Vec<Tag>> = paths.iter().map(|path| of(path)).collect();
     let everywhere = carried
         .iter()
@@ -274,9 +257,7 @@ pub fn toggle(paths: &[std::path::PathBuf], tag: &Tag) -> io::Result<()> {
     Ok(())
 }
 
-/// The tag editor's edit: `add` goes on every item that lacks it and `remove` comes off every item,
-/// in place, so an item keeps the order and the tags the edit never named.
-pub fn apply(paths: &[std::path::PathBuf], add: &[Tag], remove: &[String]) -> io::Result<()> {
+pub fn apply(paths: &[PathBuf], add: &[Tag], remove: &[String]) -> io::Result<()> {
     for path in paths {
         let before = of(path);
         let mut tags: Vec<Tag> = before
@@ -301,6 +282,10 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn names(path: &Path) -> Vec<String> {
+        of(path).into_iter().map(|tag| tag.name).collect()
+    }
+
     #[test]
     fn set_read_back_and_clear() {
         let dir = std::env::temp_dir().join(format!("finder-fs-tags-{}", std::process::id()));
@@ -319,7 +304,7 @@ mod tests {
             },
         ];
         set(&file, &mine).unwrap();
-        let mut read: Vec<String> = of(&file).into_iter().map(|t| t.name).collect();
+        let mut read = names(&file);
         read.sort();
         assert_eq!(read, vec!["Reviewed".to_string(), "Urgent".to_string()]);
 
@@ -333,16 +318,6 @@ mod tests {
     fn all_is_never_empty() {
         assert!(!all().is_empty());
         assert!(!favorites().is_empty());
-    }
-}
-
-#[cfg(test)]
-mod toggle_tests {
-    use super::*;
-    use std::fs;
-
-    fn names(path: &Path) -> Vec<String> {
-        of(path).into_iter().map(|tag| tag.name).collect()
     }
 
     #[test]

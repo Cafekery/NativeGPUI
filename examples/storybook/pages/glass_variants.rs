@@ -1,5 +1,3 @@
-//! The undocumented `NSGlassEffectView` surface: render classes, subvariants, interaction states.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Window};

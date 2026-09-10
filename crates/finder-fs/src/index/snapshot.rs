@@ -18,8 +18,7 @@ fn field(head: &[u8], i: usize) -> u64 {
     u64::from_le_bytes(head[8 + i * 8..16 + i * 8].try_into().unwrap())
 }
 
-/// # Safety
-/// `T` must be an integer or a `repr(C)` struct of integers: every bit pattern is a value.
+/// Safety: every bit pattern must be a valid `T`, as for integers and `repr(C)` structs of them.
 unsafe fn read_vec<T>(file: &mut File, n: usize) -> std::io::Result<Vec<T>> {
     let mut out: Vec<T> = Vec::with_capacity(n);
     let bytes = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n * size_of::<T>());

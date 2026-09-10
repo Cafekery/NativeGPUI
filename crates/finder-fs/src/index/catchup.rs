@@ -93,8 +93,7 @@ fn replay(plan: &Plan) -> (Batch, bool) {
         let Ok(replay) = rx.recv_timeout(left) else {
             return (batch, false);
         };
-        let done = collect(&mut batch, replay);
-        if done {
+        if collect(&mut batch, replay) {
             return (batch, true);
         }
     }

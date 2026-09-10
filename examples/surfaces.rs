@@ -1,5 +1,3 @@
-//! The transient surfaces: an `NSPopover` on a GPUI anchor, an `NSWindow` sheet, the share picker.
-
 use gpui::{
     App, Bounds, Context, MouseButton, MouseDownEvent, Render, Window, WindowBounds, div, point,
     prelude::*, px, rgb, size,

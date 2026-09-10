@@ -1,5 +1,3 @@
-//! The one-background rule: a window is one material.
-
 use crate::Demo;
 use crate::ui::*;
 use gpui::{AnyElement, Context, Hsla, Rgba, SharedString, Window, div, prelude::*, px, rgb};
@@ -288,35 +286,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
 }
 
 fn swatch(label: &str, color: SystemColor) -> AnyElement {
-    let (light, dark) = (
-        color.try_resolve(Appearance::Light),
-        color.try_resolve(Appearance::Dark),
-    );
-    let half = |value: Option<Hsla>| {
-        let cell = div().flex_1().h_full();
-        match value {
-            Some(value) => cell.bg(value),
-            None => cell,
-        }
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .gap_1p5()
-        .w(px(168.))
-        .child(checker(
-            168.,
-            div()
-                .flex()
-                .size_full()
-                .child(half(light))
-                .child(half(dark))
-                .into_any_element(),
-        ))
-        .child(mono(label.to_string()))
-        .child(caption(format!("{} {}", opt_hex(light), opt_hex(dark))))
-        .into_any_element()
+    appearance_swatch(color, 168., |_, _| label.to_string())
 }
 
 fn step_panel(label: &str, color: Hsla) -> AnyElement {
@@ -362,14 +332,4 @@ fn grey_byte(color: Hsla) -> u8 {
 fn grey_hsla(level: f64) -> Hsla {
     let byte = level.round().clamp(0., 255.) as u32;
     rgb(byte << 16 | byte << 8 | byte).into()
-}
-
-fn hex(c: Hsla) -> String {
-    let c = Rgba::from(c);
-    let q = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-    format!("#{:02X}{:02X}{:02X}{:02X}", q(c.r), q(c.g), q(c.b), q(c.a))
-}
-
-fn opt_hex(c: Option<Hsla>) -> String {
-    c.map_or_else(|| "refused".to_string(), hex)
 }

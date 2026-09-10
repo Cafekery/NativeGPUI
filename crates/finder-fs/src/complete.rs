@@ -8,6 +8,7 @@ use std::time::Duration;
 use crate::entry::Entry;
 use crate::index::Index;
 use crate::list::list_dir;
+use crate::volumes::is_local;
 
 const TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -28,11 +29,7 @@ pub fn complete(typed: &str, index: Option<&Index>, limit: usize) -> Vec<Complet
         Some(trimmed) => (trimmed, ""),
         None => expanded.rsplit_once('/').unwrap(),
     };
-    let parent = if parent.is_empty() {
-        Path::new("/")
-    } else {
-        Path::new(parent)
-    };
+    let parent = Path::new(if parent.is_empty() { "/" } else { parent });
     in_dir(parent, prefix, index, limit)
 }
 
@@ -88,7 +85,6 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
         .collect()
 }
 
-/// A network mount that has not answered within `TIMEOUT` is abandoned, its thread left to finish.
 fn list_dir_with_timeout(dir: &Path) -> Option<Vec<Entry>> {
     if is_local(dir) {
         return list_dir(dir).ok();
@@ -101,32 +97,13 @@ fn list_dir_with_timeout(dir: &Path) -> Option<Vec<Entry>> {
     rx.recv_timeout(TIMEOUT).ok()?.ok()
 }
 
-fn is_local(dir: &Path) -> bool {
-    let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
-        return false;
-    };
-    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stat` is a valid out-pointer for the call.
-    if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return false;
-    }
-    // SAFETY: statfs returned 0, so the struct is initialised.
-    let stat = unsafe { stat.assume_init() };
-    stat.f_flags & libc::MNT_LOCAL as u32 != 0
-}
-
 fn subsequence(needle: &str, haystack: &str) -> bool {
     let mut chars = haystack.chars();
     needle.chars().all(|c| chars.by_ref().any(|h| h == c))
 }
 
 fn to_completion(path: PathBuf, is_dir: bool) -> Completion {
-    let display = display_string(&path, is_dir);
-    Completion { path, display }
-}
-
-fn display_string(path: &Path, is_dir: bool) -> String {
-    let mut shown = home_dir()
+    let mut display = home_dir()
         .and_then(|home| {
             if path == home {
                 Some("~".to_string())
@@ -137,10 +114,10 @@ fn display_string(path: &Path, is_dir: bool) -> String {
             }
         })
         .unwrap_or_else(|| path.display().to_string());
-    if is_dir && !shown.ends_with('/') {
-        shown.push('/');
+    if is_dir && !display.ends_with('/') {
+        display.push('/');
     }
-    shown
+    Completion { path, display }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -151,19 +128,16 @@ fn expand_tilde(typed: &str) -> String {
     let Some(rest) = typed.strip_prefix('~') else {
         return typed.to_string();
     };
-    let (user, tail) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, ""),
-    };
+    let (user, tail) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let home = if user.is_empty() {
         home_dir()
     } else {
         user_home(user)
     };
-    match home {
-        Some(home) => format!("{}{}", home.display(), tail),
-        None => typed.to_string(),
-    }
+    home.map_or_else(
+        || typed.to_string(),
+        |home| format!("{}{tail}", home.display()),
+    )
 }
 
 fn user_home(user: &str) -> Option<PathBuf> {

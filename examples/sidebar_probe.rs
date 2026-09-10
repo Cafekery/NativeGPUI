@@ -1,5 +1,3 @@
-//! Measurement apparatus for the native sidebar's pane geometry.
-
 use std::env;
 use std::ffi::c_void;
 use std::time::Instant;

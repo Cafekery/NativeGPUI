@@ -1,5 +1,5 @@
-use gpui::{AnyElement, SharedString, div, prelude::*, px};
-use native_gpui::tokens::{SystemColor, system_color};
+use gpui::{AnyElement, Hsla, Rgba, SharedString, div, prelude::*, px};
+use native_gpui::tokens::{Appearance, SystemColor, system_color};
 
 pub fn stack(children: Vec<AnyElement>) -> AnyElement {
     div()
@@ -179,5 +179,51 @@ pub fn checker(size_px: f32, child: AnyElement) -> AnyElement {
                 .children(cells),
         )
         .child(div().absolute().inset_0().child(child))
+        .into_any_element()
+}
+
+pub fn hex(c: Hsla) -> String {
+    let c = Rgba::from(c);
+    let q = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    format!("#{:02X}{:02X}{:02X}{:02X}", q(c.r), q(c.g), q(c.b), q(c.a))
+}
+
+pub fn opt_hex(c: Option<Hsla>) -> String {
+    c.map_or_else(|| "refused".to_string(), hex)
+}
+
+pub fn appearance_swatch(
+    color: SystemColor,
+    width: f32,
+    label: impl FnOnce(Option<Hsla>, Option<Hsla>) -> String,
+) -> AnyElement {
+    let (light, dark) = (
+        color.try_resolve(Appearance::Light),
+        color.try_resolve(Appearance::Dark),
+    );
+    let half = |value: Option<Hsla>| {
+        let cell = div().flex_1().h_full();
+        match value {
+            Some(value) => cell.bg(value),
+            None => cell,
+        }
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1p5()
+        .w(px(width))
+        .child(checker(
+            width,
+            div()
+                .flex()
+                .size_full()
+                .child(half(light))
+                .child(half(dark))
+                .into_any_element(),
+        ))
+        .child(mono(label(light, dark)))
+        .child(caption(format!("{} {}", opt_hex(light), opt_hex(dark))))
         .into_any_element()
 }

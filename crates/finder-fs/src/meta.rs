@@ -21,7 +21,6 @@ extern "C" {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
-    /// When the camera or encoder made the content, not when the file was written.
     pub content_created: Option<f64>,
     pub last_used: Option<f64>,
     pub pixels: Option<(u64, u64)>,
@@ -29,7 +28,6 @@ pub struct Meta {
     pub color_profile: Option<String>,
     pub version: Option<String>,
     pub pages: Option<u64>,
-    /// A page's size in points, which Finder labels Resolution.
     pub page: Option<(u64, u64)>,
     pub security: Option<String>,
     pub encoders: Vec<String>,
@@ -46,11 +44,10 @@ impl Drop for Item {
 }
 
 impl Item {
-    /// A `+1` attribute value, or null where the item carries none.
     fn attribute(&self, name: &str) -> Option<Attribute> {
         let key = NSString::from_str(name);
         let value = unsafe { MDItemCopyAttribute(self.0, (&*key as *const NSString).cast()) };
-        // `then_some` would build the wrapper first and release a null attribute on the way out.
+        // Not `then_some`: that builds the wrapper first and releases a null attribute.
         (!value.is_null()).then(|| Attribute(value))
     }
 
@@ -118,7 +115,6 @@ fn pair(item: &Item, width: &str, height: &str) -> Option<(u64, u64)> {
     (width > 0. && height > 0.).then_some((width as u64, height as u64))
 }
 
-/// Empty where the item is missing, its volume isn't indexed, or Spotlight hasn't caught up.
 pub fn meta(path: &Path) -> Meta {
     let Some(text) = path.to_str() else {
         return Meta::default();

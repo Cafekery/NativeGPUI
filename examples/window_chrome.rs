@@ -1,6 +1,3 @@
-//! Window-level chrome, live: corner radius, a unified toolbar, cursor regions and the titlebar
-//! band. Arms with no on-screen control are driven by appending lines to `/tmp/wchrome/cmd`.
-
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write;

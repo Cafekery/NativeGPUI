@@ -10,9 +10,6 @@ use objc2_foundation::{
 
 const CLOUD_DOCS: &str = "com~apple~CloudDocs";
 
-const PLACEHOLDER: &str = ".icloud";
-
-/// An app's own container, under the name the app published it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppFolder {
     pub name: String,
@@ -55,12 +52,10 @@ pub fn app_folders() -> Vec<AppFolder> {
     folders
 }
 
-/// Finder shows a published container once it holds anything at all, a hidden file included.
 fn holds_anything(documents: &Path) -> bool {
     std::fs::read_dir(documents).is_ok_and(|mut read| read.next().is_some())
 }
 
-/// CloudDocs records a container's published name beside it, keyed by the owning bundle.
 fn published(id: &str) -> Option<String> {
     let plist = PathBuf::from(std::env::var_os("HOME")?)
         .join("Library/Application Support/CloudDocs/session/containers")
@@ -97,9 +92,8 @@ fn read_plist(path: &Path) -> Option<Retained<NSDictionary<NSString, AnyObject>>
     Some(unsafe { Retained::cast_unchecked(dict) })
 }
 
-/// An evicted item is shown under its real name: `.report.pdf.icloud` on disk is `report.pdf`.
 pub fn placeholder_name(name: &str) -> Option<&str> {
-    name.strip_prefix('.')?.strip_suffix(PLACEHOLDER)
+    name.strip_prefix('.')?.strip_suffix(".icloud")
 }
 
 pub fn placeholder_size(path: &Path) -> Option<u64> {

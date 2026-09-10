@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ops::Range;
 use std::thread;
 
 use super::Hit;
@@ -15,7 +16,6 @@ const HIGH: u64 = 0x8080_8080_8080_8080;
 
 const CHUNK: usize = 1 << 15;
 
-/// A query byte matches case-insensitively as `byte | fold == query`.
 fn fold_of(byte: u8) -> u8 {
     match byte.is_ascii_lowercase() {
         true => 0x20,
@@ -132,10 +132,27 @@ fn classed(words: &[Word], name: &[u8], first: impl Fn(&Word, &[u8]) -> u8) -> u
 
 type Found = (u32, u32, u32);
 
+fn parallel(len: usize, run: impl Fn(Range<usize>) -> Vec<Found> + Sync) -> Vec<Found> {
+    let cores = thread::available_parallelism().map_or(1, |cores| cores.get());
+    let threads = cores.min(len.div_ceil(CHUNK)).max(1);
+    let per = len.div_ceil(threads).max(1);
+    let run = &run;
+    thread::scope(|scope| {
+        let handles: Vec<_> = (0..len)
+            .step_by(per)
+            .map(|from| scope.spawn(move || run(from..(from + per).min(len))))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .flatten()
+            .collect()
+    })
+}
+
 struct Query<'a> {
     tree: &'a Tree,
     lookup: &'a Lookup,
-    bytes: &'a [u8],
     wanted: u64,
     pairs: u64,
     home: Option<u32>,
@@ -159,8 +176,7 @@ impl Query<'_> {
             .then_with(|| a.2.cmp(&b.2))
     }
 
-    /// `Some((hidden, under the home))`, hidden being a dot-file or anything inside a dot-folder;
-    /// `None` inside a package, which is one item to a search as it is to Finder.
+    /// `(hidden, under the home)`, or `None` inside a package.
     fn placed(&self, id: u32) -> Option<(bool, bool)> {
         let masks = self.tree.names.masks();
         let dotted = |id: u32| masks[self.tree.name_of[id as usize] as usize] & DOTTED != 0;
@@ -184,7 +200,6 @@ impl Query<'_> {
         if node.deleted() {
             return;
         }
-        // A hidden hit ranks below every shown one, so dot-folder clutter never buries a match.
         let score = |shown: bool, home: bool| {
             (shown as u32) << 31
                 | (class as u32) << 28
@@ -212,10 +227,6 @@ impl Query<'_> {
             best.truncate(self.limit);
             *cutoff = best.iter().map(|found| found.0).min().unwrap_or(0);
         }
-    }
-
-    fn ids(&self, ids: &[u32], class: &(impl Fn(&[u8]) -> u8 + Sync)) -> Vec<Found> {
-        self.sift(ids.iter().copied(), class)
     }
 
     fn sift(
@@ -264,61 +275,27 @@ impl Query<'_> {
         best
     }
 
+    fn ranked(&self, mut best: Vec<Found>, class: &impl Fn(&[u8]) -> u8) -> Vec<Found> {
+        best.extend(self.tail(class));
+        best.sort_by(|a, b| self.order(a, b));
+        best.truncate(self.limit);
+        best
+    }
+
     fn spread(&self, ids: &[u32], class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        let cores = thread::available_parallelism().map_or(1, |cores| cores.get());
-        let threads = cores.min(ids.len().div_ceil(CHUNK)).max(1);
-        let per = ids.len().div_ceil(threads).max(1);
-        let class = &class;
-        let mut best: Vec<Found> = thread::scope(|scope| {
-            let handles: Vec<_> = ids
-                .chunks(per)
-                .map(|ids| scope.spawn(move || self.ids(ids, class)))
-                .collect();
-            handles
-                .into_iter()
-                .filter_map(|handle| handle.join().ok())
-                .flatten()
-                .collect()
+        let mut best = parallel(ids.len(), |range| {
+            self.sift(ids[range].iter().copied(), &class)
         });
-        let fresh: Vec<u32> = (self.lookup.names() as u32..self.tree.names.len() as u32).collect();
-        best.extend(self.ids(&fresh, class));
-        best.extend(self.tail(class));
-        best.sort_by(|a, b| self.order(a, b));
-        best.truncate(self.limit);
-        best
+        let fresh = self.lookup.names() as u32..self.tree.names.len() as u32;
+        best.extend(self.sift(fresh, &class));
+        self.ranked(best, &class)
     }
 
-    fn heads(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        self.spread(self.lookup.heads(self.bytes), class)
-    }
-
-    /// Every name, walked in id order: the head buckets are the wrong order for this, one cache
-    /// miss per name against a mask array that reads at memory speed in its own.
     fn all(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        let names = self.tree.names.len();
-        let cores = thread::available_parallelism().map_or(1, |cores| cores.get());
-        let threads = cores.min(names.div_ceil(CHUNK)).max(1);
-        let per = names.div_ceil(threads).max(1);
-        let class = &class;
-        let mut best: Vec<Found> = thread::scope(|scope| {
-            let handles: Vec<_> = (0..names)
-                .step_by(per)
-                .map(|from| {
-                    scope.spawn(move || {
-                        self.sift(from as u32..(from + per).min(names) as u32, class)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .filter_map(|handle| handle.join().ok())
-                .flatten()
-                .collect()
+        let best = parallel(self.tree.names.len(), |range| {
+            self.sift(range.start as u32..range.end as u32, &class)
         });
-        best.extend(self.tail(class));
-        best.sort_by(|a, b| self.order(a, b));
-        best.truncate(self.limit);
-        best
+        self.ranked(best, &class)
     }
 }
 
@@ -343,7 +320,6 @@ pub fn search(
     let query = Query {
         tree,
         lookup,
-        bytes: &first.bytes,
         wanted: words
             .iter()
             .fold(0, |mask, word| mask | mask_of(&word.bytes)),
@@ -355,7 +331,9 @@ pub fn search(
         limit,
         cap: limit.saturating_mul(4).max(64),
     };
-    let mut best = query.heads(|name| classed(&words, name, Word::head_of));
+    let mut best = query.spread(lookup.heads(&first.bytes), |name| {
+        classed(&words, name, Word::head_of)
+    });
     if best.len() < limit {
         best = query.all(|name| classed(&words, name, Word::class_of));
     }
