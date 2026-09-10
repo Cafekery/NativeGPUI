@@ -1,6 +1,6 @@
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, Window, div, prelude::*, px};
-use native_gpui::native_rule;
 use native_gpui::tokens::{self, SystemColor};
+use native_gpui::{Blending, Layer, Material, material, native_rule};
 
 use crate::app::FinderDemo;
 use crate::art::{place_art, small_glyph};
@@ -117,6 +117,13 @@ impl FinderDemo {
             .h(px(PATH_H))
             .flex_none()
             .relative()
+            .child(
+                material("ng.finder.path.material", Material::Header)
+                    .layer(Layer::Below)
+                    .blending(Blending::WithinWindow)
+                    .absolute()
+                    .inset_0(),
+            )
             .when_some(bar_tint(), |bar, tint| bar.bg(tint))
             .child(
                 div()
