@@ -18,7 +18,7 @@ impl FinderDemo {
         let Some((items, current)) = self.quick_look_items() else {
             return;
         };
-        let source = self.ql_icon.get();
+        let source = self.ql_icon.bounds();
         self.ql_shown = self.cursor.clone().map(|key| (key, source));
         let entity = cx.entity().downgrade();
         let handle = gpui::Window::window_handle(window);
@@ -61,7 +61,7 @@ impl FinderDemo {
         let Some(cursor) = self.cursor.clone() else {
             return;
         };
-        let source = self.ql_icon.get();
+        let source = self.ql_icon.bounds();
         if self
             .ql_shown
             .as_ref()

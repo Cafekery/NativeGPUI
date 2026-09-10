@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use gpui::{
-    AnyElement, Bounds, Div, FontWeight, Hsla, ObjectFit, Pixels, RenderImage, div, img,
-    prelude::*, px,
-};
+use gpui::{AnyElement, Div, FontWeight, Hsla, ObjectFit, RenderImage, div, img, prelude::*, px};
+use native_gpui::native_anchor;
 use native_gpui::tokens::{FileType, SymbolColor, SystemColor, sf_symbol_colored};
 
 use crate::data::{Face, Row};
@@ -117,26 +115,17 @@ fn poster(
 }
 
 /// Where an icon landed on screen, for the Quick Look panel to zoom out of and back into.
-pub(crate) type Anchor = std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
+pub(crate) type Anchor = native_gpui::SurfaceAnchor;
 
 pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyElement {
     let Some(anchor) = anchor else {
         return art;
     };
     div()
-        .relative()
         .flex_none()
         .w(px(size))
         .h(px(size))
-        .child(art)
-        .child(
-            gpui::canvas(
-                move |bounds, _, _| anchor.set(Some(bounds)),
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .inset_0(),
-        )
+        .child(native_anchor(&anchor, art))
         .into_any_element()
 }
 
