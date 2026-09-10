@@ -28,6 +28,7 @@ actions!(
         CopyNames,
         CopyPath,
         DeselectAll,
+        Compress,
         Duplicate,
         DuplicateExactly,
         EjectSelection,
@@ -140,6 +141,7 @@ pub(crate) fn install(_cx: &mut App) {
                 .key("cmd-ctrl-i")
                 .option_alternate(),
             MenuCommand::new("Rename", RenameSelection),
+            MenuCommand::new("Compress", Compress),
             MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
             MenuCommand::new("Duplicate Exactly", DuplicateExactly)
                 .key("cmd-alt-shift-d")
@@ -322,6 +324,9 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &MakeAlias, window, cx| {
                 this.run_menu(Act::MakeAlias, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Compress, window, cx| {
+                this.run_menu(Act::Compress, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowOriginal, window, cx| {
                 this.show_original(window, cx);

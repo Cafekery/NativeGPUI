@@ -7,7 +7,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 ## Wiring: the demo has the action, the menu bar does not offer it
 
 - [ ] File ▸ Open With, and Always Open With under ⌥
-- [ ] File ▸ Compress
+- [x] File ▸ Compress
 - [x] File ▸ Share…
 - [ ] File ▸ Add to Dock (⇧⌃⌘T)
 - [ ] File ▸ Open in New Window and Close (⌥⌘O on a window that closes behind it)
