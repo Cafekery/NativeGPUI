@@ -26,7 +26,7 @@ pub(crate) fn poster_art(
     match thumb(row, width.max(height), scale, true, false) {
         Some(image) => poster(image, width, height, scale, kind),
         None => slot(width, height)
-            .child(type_art(row.artwork, row.face, width.min(height)))
+            .child(type_art(kind_of(row), row.face, width.min(height)))
             .into_any_element(),
     }
 }
@@ -142,8 +142,18 @@ pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyE
 
 pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
     square(size)
-        .child(type_art(row.artwork, row.face, size))
+        .child(type_art(kind_of(row), row.face, size))
         .into_any_element()
+}
+
+/// A folder that wears an icon of its own draws that instead, once the check has come back.
+fn kind_of(row: &Row) -> Option<FileType<'static>> {
+    match row.artwork {
+        Some(FileType::Folder | FileType::FullFolder) if crate::custom::custom_icon(&row.path) => {
+            Some(FileType::Path(crate::data::intern(&row.path)))
+        }
+        kind => kind,
+    }
 }
 
 /// `public.volume` has no artwork of its own, so a volume draws `/`'s.
