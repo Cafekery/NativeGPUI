@@ -14,7 +14,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [ ] View ▸ Clean Up Selection
 - [ ] Go ▸ Library, which Finder shows only while ⌥ is held
 - [ ] Go ▸ Select Startup Disk
-- [ ] Go ▸ Open Enclosing Folder in New Window (⌃⌘↑)
+- [x] Go ▸ Open Enclosing Folder in New Window (⌃⌘↑)
 
 ## Small features
 
