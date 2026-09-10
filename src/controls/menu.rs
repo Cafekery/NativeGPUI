@@ -16,13 +16,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSBox, NSBoxType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition,
-    NSView,
+    NSBezierPath, NSBox, NSBoxType, NSColor, NSControlSize, NSControlStateValueOff,
+    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem,
+    NSPopUpButton, NSTitlePosition, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
 use crate::bridge::appkit::{Container, fitting_size_keyed};
+use crate::bridge::host::ControlSize;
 use crate::bridge::host::{
     Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element, wire,
 };
@@ -574,6 +575,7 @@ pub fn native_popup(id: impl Into<ElementId>, selected: usize) -> NativePopup {
         selected,
         entries: Vec::new(),
         pull_down: false,
+        control_size: ControlSize::default(),
         enabled: true,
         on_change: None,
     }
@@ -584,6 +586,7 @@ pub struct NativePopup {
     selected: usize,
     entries: Vec<MenuEntry>,
     pull_down: bool,
+    control_size: ControlSize,
     enabled: bool,
     on_change: Option<NativeDispatch>,
 }
@@ -602,6 +605,11 @@ impl NativePopup {
     /// AppKit lifts entry 0 onto a pull-down's face, so its pickable rows start at 1.
     pub fn pull_down(mut self, pull_down: bool) -> Self {
         self.pull_down = pull_down;
+        self
+    }
+
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
         self
     }
 
@@ -626,7 +634,8 @@ impl NativePopup {
         let mut hasher = DefaultHasher::new();
         self.entries.hash(&mut hasher);
         self.pull_down.hash(&mut hasher);
-        let (entries, pull_down) = (&self.entries, self.pull_down);
+        self.control_size.hash(&mut hasher);
+        let (entries, pull_down, control_size) = (&self.entries, self.pull_down, self.control_size);
         fitted(fitting_size_keyed(
             "NSPopUpButton",
             hasher.finish(),
@@ -637,6 +646,7 @@ impl NativePopup {
                     pull_down,
                 );
                 probe.setAutoenablesItems(false);
+                probe.setControlSize(NSControlSize::from(control_size));
                 if let Some(menu) = probe.menu() {
                     sync_menu(mtm, &menu, entries, None);
                 }
@@ -659,6 +669,10 @@ impl NativePopup {
             popup
         });
 
+        let control_size = NSControlSize::from(self.control_size);
+        if popup.controlSize() != control_size {
+            popup.setControlSize(control_size);
+        }
         // `setPullsDown:` reverses the item array, so the diff runs after it.
         if popup.pullsDown() != self.pull_down {
             popup.setPullsDown(self.pull_down);

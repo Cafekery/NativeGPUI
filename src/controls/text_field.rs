@@ -6,14 +6,15 @@ use objc2::rc::Retained;
 use objc2::runtime::{Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
+    NSControl, NSControlSize, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
     NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
 };
 
-use crate::bridge::appkit::fitting_size;
+use crate::bridge::appkit::fitting_size_keyed;
+use crate::bridge::host::ControlSize;
 use crate::bridge::host::{
     Layer, NativeDispatch, NativeHandler, NativeValue, Slot, Target, ValueKind, hosted_element,
     wire,
@@ -55,12 +56,14 @@ impl Kind {
         }
     }
 
-    fn fitting(self, mtm: MainThreadMarker) -> NSSize {
-        match self {
-            Kind::Plain => NSTextField::new(mtm).fittingSize(),
-            Kind::Secure => NSSecureTextField::new(mtm).fittingSize(),
-            Kind::Search => NSSearchField::new(mtm).fittingSize(),
-        }
+    fn fitting(self, mtm: MainThreadMarker, control_size: NSControlSize) -> NSSize {
+        let field: Retained<NSTextField> = match self {
+            Kind::Plain => NSTextField::new(mtm),
+            Kind::Secure => Retained::into_super(NSSecureTextField::new(mtm)),
+            Kind::Search => Retained::into_super(NSSearchField::new(mtm)),
+        };
+        field.setControlSize(control_size);
+        field.fittingSize()
     }
 }
 
@@ -71,6 +74,7 @@ pub struct NativeTextField {
     placeholder: SharedString,
     enabled: bool,
     stretch: bool,
+    control_size: ControlSize,
     editing: Option<std::ops::Range<usize>>,
     on_change: Option<NativeHandler>,
     on_submit: Option<NativeHandler>,
@@ -84,6 +88,7 @@ impl NativeTextField {
             kind,
             text: SharedString::from(text.to_owned()),
             placeholder: SharedString::default(),
+            control_size: ControlSize::default(),
             enabled: true,
             stretch: false,
             editing: None,
@@ -135,9 +140,18 @@ impl NativeTextField {
         self
     }
 
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
+        self
+    }
+
     fn layout(&self) -> Style {
-        let kind = self.kind;
-        let mut style = fitted(fitting_size(kind.class(), |mtm| kind.fitting(mtm)));
+        let (kind, control_size) = (self.kind, self.control_size);
+        let mut style = fitted(fitting_size_keyed(
+            kind.class(),
+            control_size as u64,
+            |mtm| kind.fitting(mtm, NSControlSize::from(control_size)),
+        ));
         if self.stretch {
             style.size.width = relative(1.).into();
         }
@@ -172,6 +186,10 @@ impl NativeTextField {
                 .into_super(),
         };
 
+        let control_size = NSControlSize::from(self.control_size);
+        if field.controlSize() != control_size {
+            field.setControlSize(control_size);
+        }
         if field.isEnabled() != self.enabled {
             field.setEnabled(self.enabled);
         }
