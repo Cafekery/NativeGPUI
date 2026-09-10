@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, Context, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{ControlSize, SegmentStyle, native_label, native_segmented};
+use native_gpui::{ControlSize, SegmentStyle, native_button, native_label, native_segmented};
 
 use crate::app::FinderDemo;
 
@@ -59,6 +59,17 @@ impl FinderDemo {
                         let index = *index;
                         this.update(cx, |this, cx| this.set_scope(index, cx)).ok();
                     }),
+            )
+            .child(div().flex_1())
+            .child(
+                div().flex_none().pr(px(SCOPE_INSET)).child(
+                    native_button("ng.finder.scope.save", "Save")
+                        .control_size(ControlSize::Small)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.save_sheet = Some("New Smart Folder".into());
+                            cx.notify();
+                        })),
+                ),
             )
             .into_any_element()
     }

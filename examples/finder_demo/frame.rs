@@ -116,6 +116,10 @@ impl Render for FinderDemo {
             .connect_sheet
             .clone()
             .map(|open| self.connect_sheet(&open, &palette, window, cx));
+        let save_sheet = self
+            .save_sheet
+            .clone()
+            .map(|name| self.save_sheet(&name, &palette, window, cx));
         let conflict_sheet = self
             .conflict
             .is_some()
@@ -182,6 +186,7 @@ impl Render for FinderDemo {
                         )
                         .children(sheet)
                         .children(connect_sheet)
+                        .children(save_sheet)
                         .children(conflict_sheet)
                         .children(jobs_popover),
                 ),

@@ -97,26 +97,29 @@ fn glyph_of(path: &Path) -> Glyph {
     }
 }
 
-/// An app is the one bundle Finder names without its extension; every other package keeps it.
+/// Finder names an app and a smart folder without their extensions; every other name keeps it.
 fn pinned_title(path: &Path) -> String {
     let name = path
         .file_name()
         .unwrap_or(path.as_os_str())
         .to_string_lossy();
     match name.rsplit_once('.') {
-        Some((stem, ext)) if ext.eq_ignore_ascii_case("app") => stem.to_owned(),
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("app") || ext == "savedSearch" => {
+            stem.to_owned()
+        }
         _ => name.into_owned(),
     }
 }
 
-/// Finder gives a pinned app the Applications artwork rather than its own icon, and any other
-/// package the square it gives a kind it has no drawing for.
+/// Finder gives a pinned app the Applications artwork rather than its own icon, a smart folder its
+/// gear folder, and any other package the square it gives a kind it has no drawing for.
 fn pinned_glyph(path: &Path) -> Glyph {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match name.rsplit_once('.') {
         Some((_, ext)) if ext.eq_ignore_ascii_case("app") => {
             Glyph::Artwork("SidebarApplicationsFolder")
         }
+        Some((_, "savedSearch")) => Glyph::Symbol("folder.badge.gearshape"),
         Some(_) if finder_fs::kind::is_package_name(&name) => Glyph::Symbol("questionmark.square"),
         _ => Glyph::Symbol("folder"),
     }
@@ -285,7 +288,9 @@ pub(crate) fn groups() -> Vec<Group> {
             .retain(|row| !removed.iter().any(|gone| gone == row.id));
         for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
             let id = intern_path(&path);
-            if !path.is_dir() || group.rows.iter().any(|row| row.id == id) {
+            if !(path.is_dir() || crate::smart::is_saved(id) && path.is_file())
+                || group.rows.iter().any(|row| row.id == id)
+            {
                 continue;
             }
             group
@@ -521,7 +526,7 @@ impl FinderDemo {
         let folders: Vec<&'static str> = dropped
             .paths
             .iter()
-            .filter(|path| path.is_dir())
+            .filter(|path| path.is_dir() || crate::smart::is_saved(&path.to_string_lossy()))
             .map(|path| intern_path(path))
             .collect();
         if folders.is_empty() {
@@ -555,7 +560,11 @@ impl FinderDemo {
 
     /// Finder's ⌃⌘T: the chosen folders join Favorites, where a drop onto it would put them.
     pub(crate) fn add_to_sidebar(&mut self) {
-        let paths: Vec<std::path::PathBuf> = self.paths();
+        let paths = self.paths();
+        self.pin_favourite(paths);
+    }
+
+    pub(crate) fn pin_favourite(&mut self, paths: Vec<std::path::PathBuf>) {
         if paths.is_empty() {
             return;
         }

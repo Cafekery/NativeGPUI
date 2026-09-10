@@ -37,7 +37,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Go ▸ Connect to Server… (⌘K)
 - [x] Go ▸ AirDrop (⇧⌘R), and the toolbar's AirDrop button, send the selection through AppKit's AirDrop sheet; Finder's own AirDrop window, where nearby people are listed before anything is chosen, has no public API
 - [ ] Go ▸ Shared (⇧⌘S): Finder's view of iCloud items shared with you has no public API to show it
-- [ ] File ▸ New Smart Folder, and saved searches with it
+- [x] File ▸ New Smart Folder, and saved searches with it: Save in a search's scope bar writes a .savedSearch in Finder's own format to ~/Library/Saved Searches and adds it to the sidebar, and opening one, the demo's or Finder's, runs its query through Spotlight. The Save sheet asks only for the name, without Finder's tags, Where and Add To Sidebar controls
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
 - [ ] File ▸ Create/Copy iCloud Link, Manage Shared File…

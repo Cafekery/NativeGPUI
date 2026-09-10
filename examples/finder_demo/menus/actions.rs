@@ -346,6 +346,12 @@ impl FinderDemo {
         let opens = self.chosen_folders();
         if let Some(first) = opens.first() {
             self.go(first, window, cx);
+        } else if let Some(saved) = self
+            .chosen_keys()
+            .into_iter()
+            .find(|key| crate::smart::is_saved(key))
+        {
+            self.go(crate::data::intern(&saved), window, cx);
         }
     }
 

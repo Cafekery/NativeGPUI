@@ -60,6 +60,32 @@ impl Criterion {
     fn names(&self) -> bool {
         FIELDS[self.field.min(FIELDS.len() - 1)] == "Name"
     }
+
+    /// The row as Finder's Spotlight clause, or none when it narrows nothing.
+    pub(crate) fn raw_query(&self) -> Option<String> {
+        if self.names() {
+            let (before, after) = match TESTS[self.test.min(TESTS.len() - 1)] {
+                "begins with" => ("", "*"),
+                "ends with" => ("*", ""),
+                "is" => ("", ""),
+                _ => ("*", "*"),
+            };
+            return (!self.text.is_empty())
+                .then(|| crate::smart::name_clause(before, &self.text, after));
+        }
+        match self.kind {
+            Category::Any => None,
+            Category::Other => (!self.text.is_empty()).then(|| {
+                format!(
+                    "(kMDItemKind == \"*{}*\"cd)",
+                    crate::smart::escape(&self.text)
+                )
+            }),
+            kind => kind
+                .identifier()
+                .map(|uti| format!("(kMDItemContentTypeTree == \"{uti}\")")),
+        }
+    }
 }
 
 impl FinderDemo {

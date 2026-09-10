@@ -449,7 +449,7 @@ impl Category {
         }
     }
 
-    fn identifier(self) -> Option<&'static str> {
+    pub fn identifier(self) -> Option<&'static str> {
         match self {
             Category::Any | Category::Other => None,
             Category::Application => Some("com.apple.application"),

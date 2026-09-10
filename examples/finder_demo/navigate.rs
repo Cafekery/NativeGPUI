@@ -116,6 +116,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(listing) = crate::smart::listing(id) {
+            self.show_tag(listing, window, cx);
+            return;
+        }
         if self.here() == id {
             if self.results() {
                 self.arrive(window, cx);
@@ -227,6 +231,8 @@ impl FinderDemo {
     pub(crate) fn open(&mut self, line: &Line, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = line.row.opens {
             self.go(id, window, cx);
+        } else if crate::smart::is_saved(&line.key) {
+            self.go(intern(&line.key), window, cx);
         }
     }
 
@@ -267,6 +273,12 @@ impl FinderDemo {
             let _ = finder_fs::icloud::download(Path::new(line.key.as_ref()));
         }
         let folders: Vec<&'static str> = chosen.iter().filter_map(|line| line.row.opens).collect();
+        if folders.is_empty() {
+            if let Some(saved) = chosen.iter().find(|line| crate::smart::is_saved(&line.key)) {
+                self.go(intern(&saved.key), window, cx);
+            }
+            return;
+        }
         let mut folders = folders.into_iter();
         if let Some(first) = folders.next() {
             self.go(first, window, cx);
