@@ -29,13 +29,10 @@ pub enum Material {
     Sidebar,
     Titlebar,
     Header,
-    /// Small surfaces only: it transmits twice what the chrome materials do.
     Popover,
     Menu,
     Hud,
-    /// The accent tint needs [`NativeMaterial::emphasized`].
     Selection,
-    /// Opaque.
     Card,
 }
 
@@ -55,7 +52,6 @@ impl From<Material> for RawMaterial {
     }
 }
 
-/// Every material `NSVisualEffectView` draws; the undocumented ones need `private-api`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum RawMaterial {
     AppearanceBased,
@@ -234,10 +230,9 @@ impl RawMaterial {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum Blending {
-    /// Everything behind the window.
     #[default]
     BehindWindow,
-    /// What is drawn behind the view inside the window; a no-op on `Layer::Below`.
+    /// A no-op on `Layer::Below`.
     WithinWindow,
 }
 
@@ -250,8 +245,6 @@ impl Blending {
     }
 }
 
-/// A vibrancy surface that is `Styled` and a `ParentElement` like `div()`. Children are GPUI
-/// content, so the default `Layer::Below` puts them crisply over the material.
 pub fn material(id: impl Into<ElementId>, material: impl Into<RawMaterial>) -> NativeMaterial {
     NativeMaterial {
         id: id.into(),
@@ -303,7 +296,6 @@ impl NativeMaterial {
         self
     }
 
-    /// Off by default: a non-key `NSVisualEffectView` collapses to a flat fill.
     pub fn dims_when_inactive(mut self, dims: bool) -> Self {
         self.dims_when_inactive = dims;
         self
@@ -440,8 +432,6 @@ impl IntoElement for NativeMaterial {
 }
 
 define_class!(
-    /// A material that declines every mouse point: a stock one claims them, and at `Layer::Above`
-    /// that eats every click under it.
     #[unsafe(super(NSVisualEffectView, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGBackdrop"]
@@ -465,17 +455,11 @@ fn apply_corner_radius(view: &NSVisualEffectView, radius: f64) {
     let applied = view
         .maskImage()
         .map_or(0., |mask| (mask.size().width - 1.) / 2.);
-    if applied == radius {
-        return;
-    }
-    if radius <= 0. {
-        view.setMaskImage(None);
-    } else {
-        view.setMaskImage(Some(&corner_mask(radius)));
+    if applied != radius {
+        view.setMaskImage((radius > 0.).then(|| corner_mask(radius)).as_deref());
     }
 }
 
-/// A nine-part resizable rounded-rect mask; the drawing handler re-runs at backing scale.
 fn corner_mask(radius: f64) -> Retained<NSImage> {
     thread_local! {
         static CACHE: RefCell<HashMap<u64, Retained<NSImage>>> = RefCell::new(HashMap::new());

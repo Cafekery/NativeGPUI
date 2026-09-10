@@ -16,8 +16,6 @@ use crate::system::tokens::{
     SystemColor, ns_font, ns_font_weight, system_font_family, system_font_size,
 };
 
-/// One-line static text. It fills the box it is given and truncates at the tail; `align` positions
-/// the text inside that box.
 pub fn native_label(id: impl Into<ElementId>, text: &str) -> NativeLabel {
     NativeLabel {
         id: id.into(),
@@ -73,7 +71,6 @@ impl NativeLabel {
         self
     }
 
-    /// A role AppKit re-resolves on appearance change, not a baked colour.
     pub fn color(mut self, color: SystemColor) -> Self {
         self.color = color;
         self
@@ -89,7 +86,6 @@ impl NativeLabel {
         self
     }
 
-    /// An ellipsis at the tail when the text does not fit; off clips mid-glyph.
     pub fn truncates(mut self, truncates: bool) -> Self {
         self.truncates = truncates;
         self
@@ -136,8 +132,6 @@ impl NativeLabel {
         if field.stringValue().to_string() != want {
             field.setStringValue(&NSString::from_str(want));
         }
-        // AppKit hands back the identical NSFont and NSColor for repeated system requests, so
-        // `isEqual:` is a true diff here.
         let font = self.font();
         if !field.font().is_some_and(|have| have.isEqual(Some(&**font))) {
             field.setFont(Some(&font));
@@ -167,8 +161,6 @@ impl NativeLabel {
 hosted_element!(NativeLabel);
 
 define_class!(
-    /// A label that declines every mouse point: a stock `NSTextField` claims them and would eat
-    /// clicks meant for whatever it sits on.
     #[unsafe(super(NSTextField, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGLabel"]

@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{
-    AnyWindowHandle, App, AsyncWindowContext, Bounds, Global, GlobalElementId, Pixels, Window, px,
+    AnyWindowHandle, App, AsyncWindowContext, Bounds, Global, GlobalElementId, Pixels, Window,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -25,9 +25,8 @@ pub fn element_key(id: Option<&GlobalElementId>) -> u64 {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Layer {
-    /// Subview of GPUI's Metal view: draws over GPUI content and takes input.
     Above,
-    /// Sibling beneath GPUI's view: GPUI paints over it and it cannot receive input.
+    /// Beneath GPUI's view: GPUI paints over it and it never receives input.
     Below,
 }
 
@@ -75,7 +74,6 @@ pub enum ValueKind {
 pub type NativeHandler = Rc<dyn Fn(NativeValue, &mut Window, &mut App)>;
 /// Runs inside the AppKit action, while transient values such as a clicked path item still exist.
 pub type NativeRead = Rc<dyn Fn(&AnyObject) -> Box<dyn Any>>;
-/// Runs deferred, on a turn where GPUI is not borrowed.
 pub type NativeDispatch = Rc<dyn Fn(Box<dyn Any>, &mut Window, &mut App)>;
 
 struct Entry {
@@ -133,7 +131,6 @@ pub struct TargetIvars {
 }
 
 define_class!(
-    /// `setTarget:` is weak, so the host retains it for the window's lifetime.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGTarget"]
@@ -187,8 +184,7 @@ struct TerminusIvars {
 }
 
 define_class!(
-    /// GPUI's view never accepts first responder, so Tab could never leave the hosted views
-    /// without a member that hands focus back to it.
+    /// Hands Tab focus back to GPUI's view, which never accepts first responder itself.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGKeyViewTerminus"]
@@ -203,8 +199,7 @@ define_class!(
 
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> bool {
-            // `makeFirstResponder:` assigns after this returns, so a nested call would be
-            // overwritten.
+            // `makeFirstResponder:` assigns after this returns and would overwrite a nested call.
             unsafe {
                 let _: () = msg_send![
                     self,
@@ -242,7 +237,6 @@ impl Terminus {
 }
 
 struct Pooled {
-    /// Clip wrapper sized to the visible part of the element, so clipping also clips hit-testing.
     clip: Retained<Container>,
     view: Retained<NSView>,
     typed: Box<dyn Any>,
@@ -299,7 +293,7 @@ impl NativeHost {
         above.autoresize();
         parent.addSubview(&above);
 
-        // `below` lives in the superview, so it takes `frame()`: a sidebar offsets gpui's view.
+        // A sibling of gpui's view, so `frame()`: a sidebar offsets gpui's view.
         let below = Container::new(mtm, parent.frame(), false);
         below.autoresize();
         let content =
@@ -311,8 +305,7 @@ impl NativeHost {
         let terminus = Terminus::new(mtm, parent.clone());
         above.addSubview(&terminus);
 
-        // AppKit's own loop derivation walks into hosted views' private subviews and cannot end
-        // at GPUI's view; `commit` writes the loop instead.
+        // AppKit's own loop walks into hosted views' private subviews; `commit` writes it instead.
         if let Some(ns_window) = parent.window() {
             ns_window.setAutorecalculatesKeyViewLoop(false);
         }
@@ -379,7 +372,6 @@ impl NativeHost {
         keys
     }
 
-    /// `bounds` and `mask` are in logical points from the top-left of the content view.
     pub fn place<V: Message + AsRef<NSView> + 'static>(
         &self,
         key: u64,
@@ -401,16 +393,10 @@ impl NativeHost {
         new: impl FnOnce(MainThreadMarker, &Target) -> Retained<V>,
     ) -> Retained<V> {
         let state = &mut *self.0.borrow_mut();
-        let visible = clamped_intersection(bounds, mask);
+        let visible = bounds.intersect(&mask);
         let clip_frame = to_rect(visible);
-        let view_frame = NSRect::new(
-            objc2_foundation::NSPoint::new(
-                (bounds.origin.x - visible.origin.x).to_f64(),
-                (bounds.origin.y - visible.origin.y).to_f64(),
-            ),
-            objc2_foundation::NSSize::new(bounds.size.width.to_f64(), bounds.size.height.to_f64()),
-        );
-        let hidden = visible.size.width <= px(0.) || visible.size.height <= px(0.);
+        let view_frame = to_rect(bounds - visible.origin);
+        let hidden = visible.is_empty();
 
         let rebuild = state.slots.get(&key).is_some_and(|slot| {
             slot.layer != layer
@@ -448,8 +434,7 @@ impl NativeHost {
             }
         });
 
-        // Diffed against what was last written, not read back: `NSSlider` rounds its frame origin
-        // and would disagree with itself once per slider.
+        // Diffed against the last write, not read back: `NSSlider` rounds its frame origin.
         if !rects_equal(slot.clip_frame, clip_frame) {
             slot.clip.setFrame(clip_frame);
             slot.clip_frame = clip_frame;
@@ -474,6 +459,16 @@ impl NativeHost {
     }
 
     pub fn on_change(&self, key: u64, kind: ValueKind, handler: Option<NativeHandler>) {
+        self.on_change_channel(key, key, kind, handler);
+    }
+
+    pub(crate) fn on_change_channel(
+        &self,
+        owner: u64,
+        tag: u64,
+        kind: ValueKind,
+        handler: Option<NativeHandler>,
+    ) {
         let dispatch = handler.map(|handler| -> NativeDispatch {
             Rc::new(move |value, window, cx| {
                 if let Ok(value) = value.downcast::<NativeValue>() {
@@ -481,7 +476,7 @@ impl NativeHost {
                 }
             })
         });
-        self.on_event(key, kind.reader(), dispatch);
+        self.on_event_channel(owner, tag, kind.reader(), dispatch);
     }
 
     pub fn on_event(&self, key: u64, read: NativeRead, handler: Option<NativeDispatch>) {
@@ -517,7 +512,7 @@ impl NativeHost {
         let state = &mut *self.0.borrow_mut();
         let generation = state.generation;
 
-        let mut retired: Vec<u64> = Vec::new();
+        let mut retired = Vec::new();
         state.slots.retain(|key, slot| {
             let keep = slot.generation == generation;
             if !keep {
@@ -534,8 +529,7 @@ impl NativeHost {
                 .retain(|_, entry| !retired.contains(&entry.owner));
         }
 
-        // A rebuilt view lands topmost in its container and breaks the key view link that pointed
-        // at its predecessor, with `order` unchanged.
+        // A rebuilt view lands topmost and drops out of the key loop, with `order` unchanged.
         if std::mem::take(&mut state.recreated) || state.order != state.last_order {
             for key in &state.order {
                 let Some(slot) = state.slots.get(key) else {
@@ -555,7 +549,6 @@ impl NativeHost {
                 );
             }
 
-            // terminus -> hosted views in paint order -> terminus, so Tab leaves to GPUI both ways.
             let start: &NSView = &state.terminus;
             let mut previous = start;
             for key in &state.order {
@@ -669,72 +662,21 @@ macro_rules! hosted_element {
 }
 pub(crate) use hosted_element;
 
-fn clamped_intersection(a: Bounds<Pixels>, b: Bounds<Pixels>) -> Bounds<Pixels> {
-    let x0 = a.origin.x.to_f64().max(b.origin.x.to_f64());
-    let y0 = a.origin.y.to_f64().max(b.origin.y.to_f64());
-    let x1 = (a.origin.x + a.size.width)
-        .to_f64()
-        .min((b.origin.x + b.size.width).to_f64());
-    let y1 = (a.origin.y + a.size.height)
-        .to_f64()
-        .min((b.origin.y + b.size.height).to_f64());
-    Bounds {
-        origin: gpui::point(px(x0 as f32), px(y0 as f32)),
-        size: gpui::size(px((x1 - x0).max(0.) as f32), px((y1 - y0).max(0.) as f32)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use gpui::{point, size};
+    use gpui::{Bounds, point, px, size};
 
-    fn bounds(x: f32, y: f32, w: f32, h: f32) -> Bounds<Pixels> {
-        Bounds {
-            origin: point(px(x), px(y)),
-            size: size(px(w), px(h)),
+    #[test]
+    fn a_mask_clear_of_the_bounds_leaves_an_empty_rect_not_a_negative_one() {
+        let element = Bounds::new(point(px(0.), px(0.)), size(px(50.), px(50.)));
+        for mask in [
+            Bounds::new(point(px(0.), px(500.)), size(px(50.), px(20.))),
+            Bounds::new(point(px(500.), px(0.)), size(px(20.), px(50.))),
+            Bounds::new(point(px(50.), px(0.)), size(px(50.), px(50.))),
+        ] {
+            let visible = element.intersect(&mask);
+            assert!(visible.is_empty());
+            assert!(visible.size.width >= px(0.) && visible.size.height >= px(0.));
         }
-    }
-
-    #[test]
-    fn mask_containing_bounds_leaves_them_alone() {
-        let element = bounds(10., 20., 30., 40.);
-        assert_eq!(
-            clamped_intersection(element, bounds(0., 0., 100., 100.)),
-            element
-        );
-    }
-
-    #[test]
-    fn bounds_containing_mask_clip_to_the_mask() {
-        let mask = bounds(10., 20., 5., 6.);
-        assert_eq!(clamped_intersection(bounds(0., 0., 100., 100.), mask), mask);
-    }
-
-    #[test]
-    fn partial_overlap_keeps_only_the_shared_rect() {
-        let clipped = clamped_intersection(bounds(0., 90., 50., 20.), bounds(0., 100., 50., 200.));
-        assert_eq!(clipped, bounds(0., 100., 50., 10.));
-    }
-
-    #[test]
-    fn disjoint_collapses_to_zero_rather_than_negative() {
-        for mask in [bounds(0., 500., 50., 20.), bounds(500., 0., 20., 50.)] {
-            let clipped = clamped_intersection(bounds(0., 0., 50., 50.), mask);
-            assert!(clipped.size.width >= px(0.) && clipped.size.height >= px(0.));
-            assert!(clipped.size.width <= px(0.) || clipped.size.height <= px(0.));
-        }
-    }
-
-    #[test]
-    fn edge_contact_is_empty_not_one_pixel() {
-        let clipped = clamped_intersection(bounds(0., 0., 50., 50.), bounds(50., 0., 50., 50.));
-        assert_eq!(clipped.size.width, px(0.));
-    }
-
-    #[test]
-    fn fractional_bounds_survive_intersection() {
-        let clipped = clamped_intersection(bounds(10.5, 0., 20.25, 8.), bounds(0., 0., 100., 100.));
-        assert_eq!(clipped, bounds(10.5, 0., 20.25, 8.));
     }
 }

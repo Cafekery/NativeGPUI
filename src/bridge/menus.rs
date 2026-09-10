@@ -1,6 +1,3 @@
-//! Every row carries one of AppKit's own selectors and no target, so macOS supplies the key
-//! equivalent, localisation, enabling and the Show/Hide title flips.
-
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -57,12 +54,8 @@ impl MenuCommand {
     pub fn new(title: impl Into<String>, action: impl Action) -> Self {
         Self {
             title: title.into(),
-            chord: None,
             action: Some(Box::new(action)),
-            rows: Vec::new(),
-            alternate: false,
-            option_only: false,
-            checked: false,
+            ..Self::separator()
         }
     }
 
@@ -71,14 +64,12 @@ impl MenuCommand {
         self
     }
 
-    /// The row the one above it becomes while Option is held, as Finder swaps Duplicate.
+    /// Stands in for the row above it while Option is held.
     pub fn option_alternate(mut self) -> Self {
         self.alternate = true;
         self
     }
 
-    /// A row that is there only while Option is held, as Finder's Go ▸ Library. AppKit hides an
-    /// alternate only when it stands in for the row above, so this one is hidden and shown by hand.
     pub fn option_only(mut self) -> Self {
         self.option_only = true;
         self
@@ -87,12 +78,8 @@ impl MenuCommand {
     pub fn submenu(title: impl Into<String>, rows: impl IntoIterator<Item = MenuCommand>) -> Self {
         Self {
             title: title.into(),
-            chord: None,
-            action: None,
             rows: rows.into_iter().collect(),
-            alternate: false,
-            option_only: false,
-            checked: false,
+            ..Self::separator()
         }
     }
 
@@ -129,73 +116,62 @@ fn app_name() -> String {
     NSProcessInfo::processInfo().processName().to_string()
 }
 
-/// The bar's own title, never displayed, marks it as this crate's.
 const BAR: &str = "NGStandardMenuBar";
 
-const CMD: NSEventModifierFlags = NSEventModifierFlags::Command;
 const NONE: NSEventModifierFlags = NSEventModifierFlags::empty();
-
-fn shift() -> NSEventModifierFlags {
-    CMD | NSEventModifierFlags::Shift
-}
-
-fn alt() -> NSEventModifierFlags {
-    CMD | NSEventModifierFlags::Option
-}
-
-fn ctrl() -> NSEventModifierFlags {
-    CMD | NSEventModifierFlags::Control
-}
-
-fn ctrl_shift() -> NSEventModifierFlags {
-    NSEventModifierFlags::Control | NSEventModifierFlags::Shift
-}
+const CMD: NSEventModifierFlags = NSEventModifierFlags::Command;
+const CTRL: NSEventModifierFlags = NSEventModifierFlags::Control;
+const CMD_SHIFT: NSEventModifierFlags = CMD.union(NSEventModifierFlags::Shift);
+const CMD_ALT: NSEventModifierFlags = CMD.union(NSEventModifierFlags::Option);
+const CMD_CTRL: NSEventModifierFlags = CMD.union(CTRL);
+const CTRL_SHIFT: NSEventModifierFlags = CTRL.union(NSEventModifierFlags::Shift);
 
 fn menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
     NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title))
 }
 
-fn item(
-    mtm: MainThreadMarker,
-    into: &NSMenu,
-    title: &str,
-    selector: Sel,
-    key: &str,
-    mask: NSEventModifierFlags,
-) -> Retained<NSMenuItem> {
-    let row = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            &NSString::from_str(title),
-            Some(selector),
-            &NSString::from_str(key),
-        )
-    };
-    row.setKeyEquivalentModifierMask(mask);
-    into.addItem(&row);
+fn submenu_row(mtm: MainThreadMarker, title: &str, submenu: &NSMenu) -> Retained<NSMenuItem> {
+    let row = NSMenuItem::new(mtm);
+    row.setTitle(&NSString::from_str(title));
+    row.setSubmenu(Some(submenu));
     row
 }
 
-fn separator(mtm: MainThreadMarker, into: &NSMenu) {
-    into.addItem(&NSMenuItem::separatorItem(mtm));
+fn section(mtm: MainThreadMarker, bar: &NSMenu, title: &str) -> Retained<NSMenu> {
+    let submenu = menu(mtm, title);
+    bar.addItem(&submenu_row(mtm, title, &submenu));
+    submenu
 }
 
-fn section(mtm: MainThreadMarker, bar: &NSMenu, title: &str) -> Retained<NSMenu> {
-    let host = NSMenuItem::new(mtm);
-    host.setTitle(&NSString::from_str(title));
-    let submenu = menu(mtm, title);
-    host.setSubmenu(Some(&submenu));
-    bar.addItem(&host);
-    submenu
+trait Rows {
+    fn add_row(&self, title: &str, action: Sel, key: &str, mask: NSEventModifierFlags);
+    fn add_separator(&self);
+}
+
+impl Rows for NSMenu {
+    fn add_row(&self, title: &str, action: Sel, key: &str, mask: NSEventModifierFlags) {
+        let row = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(MainThreadMarker::from(self)),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        row.setKeyEquivalentModifierMask(mask);
+        self.addItem(&row);
+    }
+
+    fn add_separator(&self) {
+        self.addItem(&NSMenuItem::separatorItem(MainThreadMarker::from(self)));
+    }
 }
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = native_gpui, no_register)]
 struct Unhandled;
 
-/// gpui's app delegate answers Cut/Copy/Paste/Undo/Redo/Select All by looking the sender's tag
-/// up in a table only `App::set_menus` fills, and on a miss re-locks a mutex it holds, freezing
-/// the process.
+/// gpui answers edit rows through a tag table only `App::set_menus` fills, and deadlocks on a miss.
 fn reserve_gpui_menu_slot(cx: &mut App) {
     cx.set_menus(vec![Menu {
         name: "".into(),
@@ -204,16 +180,14 @@ fn reserve_gpui_menu_slot(cx: &mut App) {
     }]);
 }
 
-/// Never call `App::set_menus` after this: it replaces the bar with rows wired to gpui's own
-/// handler.
+/// Never call `App::set_menus` after this: it replaces the bar.
 pub fn install_menus(cx: &mut App) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     let app = NSApplication::sharedApplication(mtm);
     let name = app_name();
-    // A bundled app already has a main menu titled with the app's name, so the bar's own title
-    // is the only reliable mark.
+    // A bundled app already has a main menu, so only the bar's own title marks it as ours.
     if app
         .mainMenu()
         .is_some_and(|bar| bar.title().to_string() == BAR)
@@ -227,200 +201,88 @@ pub fn install_menus(cx: &mut App) {
     let bar = menu(mtm, BAR);
 
     let app_menu = section(mtm, &bar, &name);
-    item(
-        mtm,
-        &app_menu,
+    app_menu.add_row(
         &format!("About {name}"),
         sel!(orderFrontStandardAboutPanel:),
         "",
         NONE,
     );
-    separator(mtm, &app_menu);
-    // The reserved block `extend_menu(MenuSection::App, ..)` inserts into; adjacent separators
-    // collapse on screen.
-    separator(mtm, &app_menu);
+    app_menu.add_separator();
+    // Rows for `MenuSection::App` go between these two; adjacent separators collapse on screen.
+    app_menu.add_separator();
     let services = menu(mtm, "Services");
-    let services_host = NSMenuItem::new(mtm);
-    services_host.setTitle(&NSString::from_str("Services"));
-    services_host.setSubmenu(Some(&services));
-    services_host.setKeyEquivalentModifierMask(NONE);
-    app_menu.addItem(&services_host);
+    let services_row = submenu_row(mtm, "Services", &services);
+    services_row.setKeyEquivalentModifierMask(NONE);
+    app_menu.addItem(&services_row);
     app.setServicesMenu(Some(&services));
-    separator(mtm, &app_menu);
-    item(
-        mtm,
-        &app_menu,
-        &format!("Hide {name}"),
-        sel!(hide:),
-        "h",
-        CMD,
-    );
-    item(
-        mtm,
-        &app_menu,
-        "Hide Others",
-        sel!(hideOtherApplications:),
-        "h",
-        alt(),
-    );
-    item(
-        mtm,
-        &app_menu,
-        "Show All",
-        sel!(unhideAllApplications:),
-        "",
-        NONE,
-    );
-    separator(mtm, &app_menu);
-    item(
-        mtm,
-        &app_menu,
-        &format!("Quit {name}"),
-        sel!(terminate:),
-        "q",
-        CMD,
-    );
+    app_menu.add_separator();
+    app_menu.add_row(&format!("Hide {name}"), sel!(hide:), "h", CMD);
+    app_menu.add_row("Hide Others", sel!(hideOtherApplications:), "h", CMD_ALT);
+    app_menu.add_row("Show All", sel!(unhideAllApplications:), "", NONE);
+    app_menu.add_separator();
+    app_menu.add_row(&format!("Quit {name}"), sel!(terminate:), "q", CMD);
 
     let file = section(mtm, &bar, "File");
     crate::chrome::tabs::teach_new_tab(mtm);
-    // Live only for windows that opted into tabs (`window_tabs`); AppKit validates it.
-    item(mtm, &file, "New Tab", sel!(newWindowForTab:), "t", CMD);
-    item(mtm, &file, "Close", sel!(performClose:), "w", CMD);
+    file.add_row("New Tab", sel!(newWindowForTab:), "t", CMD);
+    file.add_row("Close", sel!(performClose:), "w", CMD);
 
     let edit = section(mtm, &bar, "Edit");
-    item(mtm, &edit, "Undo", sel!(undo:), "z", CMD);
-    item(mtm, &edit, "Redo", sel!(redo:), "z", shift());
-    separator(mtm, &edit);
-    item(mtm, &edit, "Cut", sel!(cut:), "x", CMD);
-    item(mtm, &edit, "Copy", sel!(copy:), "c", CMD);
-    item(mtm, &edit, "Paste", sel!(paste:), "v", CMD);
-    item(
-        mtm,
-        &edit,
+    edit.add_row("Undo", sel!(undo:), "z", CMD);
+    edit.add_row("Redo", sel!(redo:), "z", CMD_SHIFT);
+    edit.add_separator();
+    edit.add_row("Cut", sel!(cut:), "x", CMD);
+    edit.add_row("Copy", sel!(copy:), "c", CMD);
+    edit.add_row("Paste", sel!(paste:), "v", CMD);
+    edit.add_row(
         "Paste and Match Style",
         sel!(pasteAsPlainText:),
         "v",
-        CMD | NSEventModifierFlags::Option | NSEventModifierFlags::Shift,
+        CMD_ALT | NSEventModifierFlags::Shift,
     );
-    item(mtm, &edit, "Delete", sel!(delete:), "", NONE);
-    item(mtm, &edit, "Select All", sel!(selectAll:), "a", CMD);
+    edit.add_row("Delete", sel!(delete:), "", NONE);
+    edit.add_row("Select All", sel!(selectAll:), "a", CMD);
 
     // AppKit flips these titles itself; naming the current state would freeze them.
     let view = section(mtm, &bar, "View");
-    item(
-        mtm,
-        &view,
-        "Show Toolbar",
-        sel!(toggleToolbarShown:),
-        "t",
-        alt(),
-    );
-    item(
-        mtm,
-        &view,
+    view.add_row("Show Toolbar", sel!(toggleToolbarShown:), "t", CMD_ALT);
+    view.add_row(
         "Customize Toolbar…",
         sel!(runToolbarCustomizationPalette:),
         "",
         NONE,
     );
-    separator(mtm, &view);
-    item(
-        mtm,
-        &view,
-        "Show Tab Bar",
-        sel!(toggleTabBar:),
-        "t",
-        shift(),
-    );
-    item(
-        mtm,
-        &view,
-        "Show All Tabs",
-        sel!(toggleTabOverview:),
-        "\\",
-        shift(),
-    );
-    separator(mtm, &view);
-    item(
-        mtm,
-        &view,
-        "Show Sidebar",
-        sel!(toggleSidebar:),
-        "s",
-        ctrl(),
-    );
-    separator(mtm, &view);
-    item(
-        mtm,
-        &view,
-        "Enter Full Screen",
-        sel!(toggleFullScreen:),
-        "f",
-        ctrl(),
-    );
+    view.add_separator();
+    view.add_row("Show Tab Bar", sel!(toggleTabBar:), "t", CMD_SHIFT);
+    view.add_row("Show All Tabs", sel!(toggleTabOverview:), "\\", CMD_SHIFT);
+    view.add_separator();
+    view.add_row("Show Sidebar", sel!(toggleSidebar:), "s", CMD_CTRL);
+    view.add_separator();
+    view.add_row("Enter Full Screen", sel!(toggleFullScreen:), "f", CMD_CTRL);
 
     let window = section(mtm, &bar, "Window");
-    item(
-        mtm,
-        &window,
-        "Minimize",
-        sel!(performMiniaturize:),
-        "m",
-        CMD,
-    );
-    item(mtm, &window, "Zoom", sel!(performZoom:), "", NONE);
-    separator(mtm, &window);
-    item(
-        mtm,
-        &window,
+    window.add_row("Minimize", sel!(performMiniaturize:), "m", CMD);
+    window.add_row("Zoom", sel!(performZoom:), "", NONE);
+    window.add_separator();
+    window.add_row(
         "Show Previous Tab",
         sel!(selectPreviousTab:),
         "\u{19}",
-        ctrl_shift(),
+        CTRL_SHIFT,
     );
-    item(
-        mtm,
-        &window,
-        "Show Next Tab",
-        sel!(selectNextTab:),
-        "\t",
-        NSEventModifierFlags::Control,
-    );
-    item(
-        mtm,
-        &window,
+    window.add_row("Show Next Tab", sel!(selectNextTab:), "\t", CTRL);
+    window.add_row(
         "Move Tab to New Window",
         sel!(moveTabToNewWindow:),
         "",
         NONE,
     );
-    item(
-        mtm,
-        &window,
-        "Merge All Windows",
-        sel!(mergeAllWindows:),
-        "",
-        NONE,
-    );
-    separator(mtm, &window);
-    item(
-        mtm,
-        &window,
-        "Bring All to Front",
-        sel!(arrangeInFront:),
-        "",
-        NONE,
-    );
+    window.add_row("Merge All Windows", sel!(mergeAllWindows:), "", NONE);
+    window.add_separator();
+    window.add_row("Bring All to Front", sel!(arrangeInFront:), "", NONE);
 
     let help = section(mtm, &bar, "Help");
-    item(
-        mtm,
-        &help,
-        &format!("{name} Help"),
-        sel!(showHelp:),
-        "?",
-        CMD,
-    );
+    help.add_row(&format!("{name} Help"), sel!(showHelp:), "?", CMD);
 
     app.setMainMenu(Some(&bar));
     app.setWindowsMenu(Some(&window));
@@ -435,22 +297,16 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     for command in commands {
         add_command(mtm, &submenu, submenu.numberOfItems(), command);
     }
-    let host = NSMenuItem::new(mtm);
-    host.setTitle(&NSString::from_str(title));
-    host.setSubmenu(Some(&submenu));
     let before = index_of(&bar, &MenuSection::Window.title(&app_name()))
         .unwrap_or_else(|| bar.numberOfItems());
-    bar.insertItem_atIndex(&host, before);
+    bar.insertItem_atIndex(&submenu_row(mtm, title, &submenu), before);
 }
 
 pub fn set_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     let Some((mtm, bar)) = bar() else {
         return;
     };
-    let Some(host) = index_of(&bar, title).map(|at| bar.itemAtIndex(at)) else {
-        return;
-    };
-    let Some(submenu) = host.and_then(|item| item.submenu()) else {
+    let Some(submenu) = submenu_of(&bar, title) else {
         return;
     };
     submenu.removeAllItems();
@@ -471,11 +327,7 @@ fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuComman
     let Some((mtm, bar)) = bar() else {
         return;
     };
-    let name = app_name();
-    let Some(menu) = index_of(&bar, &section.title(&name))
-        .and_then(|index| bar.itemAtIndex(index))
-        .and_then(|host| host.submenu())
-    else {
+    let Some(menu) = submenu_of(&bar, &section.title(&app_name())) else {
         return;
     };
     let start = match (first, section) {
@@ -501,17 +353,18 @@ fn index_of(bar: &NSMenu, title: &str) -> Option<isize> {
         .map(|index| index as isize)
 }
 
+fn submenu_of(bar: &NSMenu, title: &str) -> Option<Retained<NSMenu>> {
+    bar.itemAtIndex(index_of(bar, title)?)?.submenu()
+}
+
 fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCommand) {
     let row = match command.action {
         None if !command.rows.is_empty() => {
-            let host = NSMenuItem::new(mtm);
-            host.setTitle(&NSString::from_str(&command.title));
             let inner = menu(mtm, &command.title);
             for row in command.rows {
                 add_command(mtm, &inner, inner.numberOfItems(), row);
             }
-            host.setSubmenu(Some(&inner));
-            host
+            submenu_row(mtm, &command.title, &inner)
         }
         None => NSMenuItem::separatorItem(mtm),
         Some(action) => {
@@ -532,7 +385,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
             let index = NSNumber::new_isize(CommandSink::register(action));
             unsafe { row.setRepresentedObject(Some(index.as_ref())) };
-            let Some(sink) = CommandSink::shared() else {
+            let Some(sink) = SHARED.with_borrow(|shared| shared.clone()) else {
                 return;
             };
             unsafe { row.setTarget(Some(sink.as_ref())) };
@@ -554,9 +407,7 @@ thread_local! {
     static OPTION_POLL: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Menu tracking takes flagsChanged before any monitor sees it, so while a menu is open a timer in
-/// the tracking mode reads the held modifiers instead. Rows a rebuilt menu dropped fall out of the
-/// list as they go.
+/// Menu tracking takes flagsChanged before any monitor sees it, so a tracking-mode timer polls.
 fn show_with_option(row: &NSMenuItem) {
     row.setHidden(true);
     OPTION_ONLY.with_borrow_mut(|rows| rows.push(Weak::new(row)));
@@ -573,7 +424,6 @@ fn show_with_option(row: &NSMenuItem) {
     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSEventTrackingRunLoopMode) };
 }
 
-/// A field editor is what AppKit puts in front of an `NSTextField` while it is being typed into.
 fn editing_text() -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -584,8 +434,7 @@ fn editing_text() -> bool {
         .is_some_and(|responder| responder.isKindOfClass(NSText::class()))
 }
 
-/// Cocoa's standard bindings give the field editor ⌘ and ⌥ with delete and the arrows, and a menu
-/// that answered those first would take the keystroke off the text being typed.
+/// The field editor's own ⌘ and ⌥ delete and arrow chords, which a row would take off the text.
 fn edits_text(item: &NSMenuItem) -> bool {
     const DELETE: &str = "\u{8}";
     const ARROWS: [&str; 4] = ["\u{f700}", "\u{f701}", "\u{f702}", "\u{f703}"];
@@ -595,8 +444,6 @@ fn edits_text(item: &NSMenuItem) -> bool {
     alone && (key == DELETE || ARROWS.contains(&key.as_str()))
 }
 
-/// AppKit matches a key equivalent against the characters an event carries, so a named key is
-/// the character it types: `"backspace"` as a title never matches ⌫.
 fn equivalent_key(key: &str) -> Option<String> {
     let named = match key {
         "backspace" => '\u{8}',
@@ -648,9 +495,7 @@ fn set_state(row: &NSMenuItem, on: bool) {
 
 type MenuState = dyn Fn(&dyn Action) -> Option<bool>;
 
-/// AppKit validates every row as its menu opens, and each `Some` answer is that row's state. The
-/// closure runs inside AppKit's menu tracking, where gpui holds its `App`, so it must read state
-/// of its own.
+/// Each `Some` is that row's state. Runs while gpui holds its `App`: read state of your own.
 pub fn on_menu_state(check: impl Fn(&dyn Action) -> Option<bool> + 'static) {
     STATE.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
 }
@@ -672,7 +517,6 @@ struct SinkIvars {
 }
 
 define_class!(
-    /// The target every app-provided row points at, held for the life of the process.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGMenuBarSink"]
@@ -685,7 +529,6 @@ define_class!(
             let Some(action) = unsafe { sender.as_ref() }.and_then(action_of) else {
                 return;
             };
-            // Deferred: this fires inside AppKit's menu tracking loop.
             self.ivars()
                 .cx
                 .spawn(async move |cx: &mut AsyncApp| {
@@ -723,10 +566,6 @@ impl CommandSink {
         let this = Self::alloc(mtm).set_ivars(SinkIvars { cx: cx.to_async() });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         SHARED.with_borrow_mut(|shared| *shared = Some(this));
-    }
-
-    fn shared() -> Option<Retained<Self>> {
-        SHARED.with_borrow(|shared| shared.clone())
     }
 
     fn register(action: Box<dyn Action>) -> isize {

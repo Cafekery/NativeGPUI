@@ -15,7 +15,6 @@ use crate::controls::{axis, fitted};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum LevelStyle {
-    /// Stars; interactive with [`NativeLevel::editable`].
     #[default]
     Rating,
     ContinuousCapacity,
@@ -34,7 +33,6 @@ impl LevelStyle {
     }
 }
 
-/// `fraction` is 0.0..=1.0, ignored while indeterminate.
 pub fn native_progress(id: impl Into<ElementId>, fraction: f64) -> NativeProgress {
     NativeProgress {
         id: id.into(),
@@ -64,7 +62,6 @@ impl NativeProgress {
         self
     }
 
-    /// Defaults to the full width of the parent.
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = width.into();
         self
@@ -102,7 +99,6 @@ impl NativeProgress {
         if bar.controlSize() != control_size {
             bar.setControlSize(control_size);
         }
-        // Re-issuing `startAnimation:` every frame restarts the barber-pole, which reads static.
         if bar.isIndeterminate() != indeterminate {
             bar.setIndeterminate(indeterminate);
             unsafe {
@@ -238,7 +234,6 @@ impl NativeLevel {
         self
     }
 
-    /// Only the capacity and relevancy styles have a free width.
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = Some(width.into());
         self
@@ -299,7 +294,6 @@ impl NativeLevel {
         }
         if level.isEditable() != self.editable {
             level.setEditable(self.editable);
-            // Without continuous the action fires only on mouse-up.
             level.setContinuous(self.editable);
         }
         if level.isEnabled() != self.enabled {

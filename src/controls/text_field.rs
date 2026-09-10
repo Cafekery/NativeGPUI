@@ -14,20 +14,15 @@ use objc2_foundation::{
 };
 
 use crate::bridge::appkit::fitting_size_keyed;
-use crate::bridge::host::ControlSize;
 use crate::bridge::host::{
-    Layer, NativeDispatch, NativeHandler, NativeValue, Slot, Target, ValueKind, hosted_element,
-    wire,
+    ControlSize, Layer, NativeHandler, NativeValue, Slot, Target, ValueKind, hosted_element, wire,
 };
 use crate::controls::fitted;
 
-/// Salts the element key into a second tag, so Return and per-keystroke change are separate
-/// channels on one pooled view.
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 const CANCEL_CHANNEL: u64 = 0x6a09_e667_f3bc_c908;
 
-/// `text` is the value you own; wire `on_change` to keep it. ⌘A/⌘C/⌘V/⌘X/⌘Z reach a hosted field
-/// only after [`crate::install_menus`].
+/// `text` must be the state `on_change` writes; edit chords need [`crate::install_menus`].
 pub fn native_text_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
     NativeTextField::new(id.into(), Kind::Plain, text)
 }
@@ -108,33 +103,28 @@ impl NativeTextField {
         self
     }
 
-    /// Every keystroke, including IME commits, paste and dictation.
     pub fn on_change(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(text_handler(handler));
         self
     }
 
-    /// Return only. A search field's cancel button clears the text and fires both handlers with
-    /// `""`.
+    /// Return. A search field's cancel button clears the text and fires both handlers with `""`.
     pub fn on_submit(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
         self.on_submit = Some(text_handler(handler));
         self
     }
 
-    /// Escape while editing; the text is whatever was typed so far.
     pub fn on_cancel(mut self, handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> Self {
         self.on_cancel = Some(text_handler(handler));
         self
     }
 
-    /// Fill the box's width rather than the field's own fitting width.
     pub fn stretch(mut self) -> Self {
         self.stretch = true;
         self
     }
 
-    /// Become first responder on appearing, with these characters selected, as a field that
-    /// renames in place does.
+    /// Takes first responder on appearing, with these characters selected.
     pub fn editing(mut self, selected: std::ops::Range<usize>) -> Self {
         self.editing = Some(selected);
         self
@@ -160,7 +150,7 @@ impl NativeTextField {
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
         let submit = slot.key ^ SUBMIT_CHANNEL;
-        // Each class is its own `V`, so a field that changes kind is rebuilt by the host.
+        // One `V` per class, so the host rebuilds a field that changes kind.
         let field: Retained<NSTextField> = match self.kind {
             Kind::Plain => slot.place(Layer::Above, |mtm, target| {
                 let field = NSTextField::new(mtm);
@@ -177,7 +167,6 @@ impl NativeTextField {
             Kind::Search => slot
                 .place(Layer::Above, |mtm, target| {
                     let field = NSSearchField::new(mtm);
-                    // Action on Return, not on every pause in typing.
                     field.setSendsWholeSearchString(true);
                     field.setSendsSearchStringImmediately(false);
                     configure(&field, target, submit);
@@ -193,16 +182,13 @@ impl NativeTextField {
         if field.isEnabled() != self.enabled {
             field.setEnabled(self.enabled);
         }
-        let want_placeholder: &str = &self.placeholder;
-        let matches = match field.placeholderString() {
-            Some(have) => have.to_string() == want_placeholder,
-            None => want_placeholder.is_empty(),
-        };
-        if !matches {
-            field.setPlaceholderString(Some(&NSString::from_str(want_placeholder)));
+        let placeholder = field
+            .placeholderString()
+            .map_or_else(String::new, |have| have.to_string());
+        if placeholder != *self.placeholder {
+            field.setPlaceholderString(Some(&NSString::from_str(&self.placeholder)));
         }
-        // Events are a frame late, so `self.text` is stale for a frame or two after a keystroke;
-        // writing it back then would delete what the user typed in between.
+        // `self.text` lags typing by the pending edits; writing it back would eat keystrokes.
         let want_text: &str = &self.text;
         if pending(&field) == 0 && field.stringValue().to_string() != want_text {
             field.setStringValue(&NSString::from_str(want_text));
@@ -219,39 +205,27 @@ impl NativeTextField {
                 }
             })),
         );
-        let dispatch = |handler: NativeHandler| -> NativeDispatch {
-            Rc::new(move |value, window, cx| {
-                if let Ok(value) = value.downcast::<NativeValue>() {
-                    handler(*value, window, cx);
-                }
-            })
-        };
-        let submit_handler = self.on_submit.take().map(dispatch);
-        slot.host
-            .on_event_channel(slot.key, submit, ValueKind::Text.reader(), submit_handler);
-        let cancel_handler = self.on_cancel.take().map(dispatch);
-        slot.host.on_event_channel(
-            slot.key,
-            slot.key ^ CANCEL_CHANNEL,
-            ValueKind::Text.reader(),
-            cancel_handler,
-        );
+        let cancel = slot.key ^ CANCEL_CHANNEL;
+        let host = &slot.host;
+        host.on_change_channel(slot.key, submit, ValueKind::Text, self.on_submit.take());
+        host.on_change_channel(slot.key, cancel, ValueKind::Text, self.on_cancel.take());
 
-        if let Some(selected) = &self.editing {
-            if field.currentEditor().is_none() {
-                if let Some(window) = field.window() {
-                    // A field in a panel that is not key edits nothing: take key first.
-                    if !window.isKeyWindow() && window.canBecomeKeyWindow() {
-                        window.makeKeyWindow();
-                    }
-                    window.makeFirstResponder(Some(&field));
-                }
-                if let Some(editor) = field.currentEditor() {
-                    let start = selected.start.min(want_text.chars().count());
-                    let len = selected.end.saturating_sub(selected.start);
-                    editor.setSelectedRange(NSRange::new(start, len));
-                }
+        let Some(selected) = &self.editing else {
+            return;
+        };
+        if field.currentEditor().is_some() {
+            return;
+        }
+        if let Some(window) = field.window() {
+            if !window.isKeyWindow() && window.canBecomeKeyWindow() {
+                window.makeKeyWindow();
             }
+            window.makeFirstResponder(Some(&field));
+        }
+        if let Some(editor) = field.currentEditor() {
+            let start = selected.start.min(want_text.chars().count());
+            let len = selected.end.saturating_sub(selected.start);
+            editor.setSelectedRange(NSRange::new(start, len));
         }
     }
 }
@@ -277,8 +251,6 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
 }
 
 define_class!(
-    /// One delegate for every hosted field: `NSTextField` fires its action on Return only, so
-    /// per-keystroke change comes from `controlTextDidChange:`.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGFieldDelegate"]
@@ -301,14 +273,12 @@ define_class!(
             if let Some(field) = control.downcast_ref::<NSTextField>() {
                 set_pending(field, pending(field) + 1);
             }
-            // The host dispatches on the sender's tag, so borrow it for one send.
             let submit = control.tag();
             control.setTag(submit ^ SUBMIT_CHANNEL as isize);
             let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
             control.setTag(submit);
         }
 
-        /// Escape reaches the field editor as `cancelOperation:`; sent on as the cancel channel.
         #[unsafe(method(control:textView:doCommandBySelector:))]
         fn do_command(&self, control: &NSControl, _: &NSTextView, selector: Sel) -> Bool {
             if selector != sel!(cancelOperation:) {
@@ -340,7 +310,6 @@ fn shared_delegate(mtm: MainThreadMarker) -> Retained<FieldDelegate> {
     })
 }
 
-/// Edits dispatched to GPUI that GPUI has not applied yet, kept in the cell's `representedObject`.
 fn pending(field: &NSTextField) -> isize {
     field
         .cell()

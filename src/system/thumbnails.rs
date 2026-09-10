@@ -5,10 +5,9 @@ use std::time::SystemTime;
 
 use block2::RcBlock;
 use gpui::{Pixels, RenderImage};
-use image::{Frame, RgbaImage};
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSBitmapFormat, NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
+use objc2_app_kit::{NSBitmapFormat, NSImage};
 use objc2_foundation::{NSError, NSSize, NSString, NSURL};
 use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
@@ -41,24 +40,17 @@ impl Key {
     }
 }
 
-struct Job {
-    key: Key,
-    path: PathBuf,
-    pixels: u32,
-}
-
 #[derive(Default)]
 struct State {
     cache: HashMap<Key, Option<Arc<RenderImage>>>,
     order: VecDeque<Key>,
     waiters: HashMap<Key, Vec<Callback>>,
-    queue: VecDeque<Job>,
+    queue: VecDeque<Key>,
     active: usize,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
 
-/// A thumbnail already generated for this exact `(path, mtime, size, scale, icon)`.
 pub fn cached_thumbnail(
     path: &Path,
     size: Pixels,
@@ -69,7 +61,6 @@ pub fn cached_thumbnail(
     STATE.lock().unwrap().cache.get(&key).cloned().flatten()
 }
 
-/// The largest raster cached for `path`, as an image AppKit can draw at its own pixel size.
 pub(crate) fn cached_image(path: &Path) -> Option<Retained<NSImage>> {
     let raster = largest_cached(path)?;
     let size = raster.size(0);
@@ -77,22 +68,7 @@ pub(crate) fn cached_image(path: &Path) -> Option<Retained<NSImage>> {
         u32::from(size.width) as usize,
         u32::from(size.height) as usize,
     );
-    let rep = unsafe {
-        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut(),
-            w as isize,
-            h as isize,
-            8,
-            4,
-            true,
-            false,
-            NSDeviceRGBColorSpace,
-            NSBitmapFormat::AlphaNonpremultiplied,
-            (w * 4) as isize,
-            32,
-        )
-    }?;
+    let rep = tokens::bitmap(w, h, NSBitmapFormat::AlphaNonpremultiplied)?;
     let src = raster.as_bytes(0)?;
     let dst = rep.bitmapData();
     if dst.is_null() || src.len() < w * h * 4 {
@@ -101,9 +77,8 @@ pub(crate) fn cached_image(path: &Path) -> Option<Retained<NSImage>> {
     let stride = rep.bytesPerRow() as usize;
     for y in 0..h {
         for x in 0..w {
-            let (from, to) = (&src[(y * w + x) * 4..], unsafe {
-                dst.add(y * stride + x * 4)
-            });
+            let from = &src[(y * w + x) * 4..];
+            let to = unsafe { dst.add(y * stride + x * 4) };
             for (at, channel) in [from[2], from[1], from[0], from[3]].into_iter().enumerate() {
                 unsafe { *to.add(at) = channel };
             }
@@ -125,10 +100,7 @@ fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
         .map(|(_, image)| image)
 }
 
-/// Request a thumbnail (or, failing that, an icon) for `path`, delivered to `done` once
-/// generated. A cache hit calls `done` immediately, on the calling thread. Requests for the same
-/// key already in flight share one generation. `icon` asks Quick Look for Finder's icon
-/// rendering rather than the picture on its own.
+/// `icon` is Finder's icon rendering; a cache hit calls `done` at once, on this thread.
 pub fn thumbnail(
     path: &Path,
     size: Pixels,
@@ -149,17 +121,12 @@ pub fn thumbnail(
         return;
     }
     state.waiters.insert(key.clone(), vec![Box::new(done)]);
-    let job = Job {
-        pixels: key.pixels,
-        key,
-        path: path.to_path_buf(),
-    };
     if state.active < MAX_INFLIGHT {
         state.active += 1;
         drop(state);
-        generate(job);
+        generate(key);
     } else {
-        state.queue.push_back(job);
+        state.queue.push_back(key);
     }
 }
 
@@ -168,11 +135,11 @@ pub fn cancel_thumbnails_outside(paths: &[PathBuf]) {
     let stranded: Vec<Callback> = {
         let mut state = STATE.lock().unwrap();
         let mut stale = Vec::new();
-        state.queue.retain(|job| {
-            if keep.contains(job.path.as_path()) {
+        state.queue.retain(|key| {
+            if keep.contains(key.path.as_path()) {
                 true
             } else {
-                stale.push(job.key.clone());
+                stale.push(key.clone());
                 false
             }
         });
@@ -186,9 +153,9 @@ pub fn cancel_thumbnails_outside(paths: &[PathBuf]) {
     }
 }
 
-fn generate(job: Job) {
-    let points = NSSize::new(job.pixels as f64, job.pixels as f64);
-    let url = NSURL::fileURLWithPath(&NSString::from_str(&job.path.to_string_lossy()));
+fn generate(key: Key) {
+    let points = NSSize::new(key.pixels as f64, key.pixels as f64);
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&key.path.to_string_lossy()));
     let request = unsafe {
         QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
             QLThumbnailGenerationRequest::alloc(),
@@ -199,12 +166,9 @@ fn generate(job: Job) {
                 | QLThumbnailGenerationRequestRepresentationTypes::Icon,
         )
     };
-    // Icon mode is Finder's own rendering: the fitted picture with its keyline, corner radius
-    // and shadow baked into a raster the size of the box.
-    unsafe { request.setIconMode(job.key.icon) };
+    unsafe { request.setIconMode(key.icon) };
 
-    let key = job.key;
-    let pixels = job.pixels as usize;
+    let pixels = key.pixels as usize;
     let block = RcBlock::new(
         move |rep: *mut QLThumbnailRepresentation, _err: *mut NSError| {
             let image = unsafe { rep.as_ref() }.map(|rep| unsafe { rep.NSImage() });
@@ -218,16 +182,11 @@ fn generate(job: Job) {
     }
 }
 
-/// Draws at the size Quick Look chose within the requested box, capped by `max_pixels` (the box
-/// side we asked the generator for) so a source Quick Look upscales never grows past it.
 fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     let fit = image.size();
     let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
     let h = (fit.height.round() as usize).clamp(1, max_pixels.max(1));
-    let points = NSSize::new(w as f64, h as f64);
-    let rgba = tokens::draw(&[image], points, w, h)?;
-    let buf = RgbaImage::from_raw(w as u32, h as u32, tokens::to_bgra_straight(&rgba))?;
-    Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
+    tokens::rasterize(&[image], NSSize::new(w as f64, h as f64), w, h)
 }
 
 fn complete(key: Key, result: Option<Arc<RenderImage>>) {
@@ -253,14 +212,15 @@ fn complete(key: Key, result: Option<Arc<RenderImage>>) {
     for callback in callbacks {
         callback(result.clone());
     }
-    if let Some(job) = next {
-        generate(job);
+    if let Some(key) = next {
+        generate(key);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::RgbaImage;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -327,7 +287,6 @@ mod tests {
         let drawn =
             tokens::draw(&[&image], NSSize::new(size.width, size.height), side, side).unwrap();
         let raster = raster.as_bytes(0).unwrap();
-        // A raster is BGRA, what the image draws is RGBA: the middle pixel is the fill colour.
         let at = (side * side / 2 + side / 2) * 4;
         assert_eq!(drawn[at], raster[at + 2]);
         assert_eq!(drawn[at + 1], raster[at + 1]);

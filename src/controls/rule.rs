@@ -9,7 +9,6 @@ use crate::bridge::host::{Layer, Slot, hosted_element};
 use crate::system::color::to_nscolor;
 use crate::system::tokens::SystemColor;
 
-/// Fills the box it is given, so the box is the rule.
 pub fn native_rule(id: impl Into<ElementId>) -> NativeRule {
     NativeRule {
         id: id.into(),
@@ -74,7 +73,6 @@ impl Rule {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this: Retained<Self> =
             unsafe { msg_send![Self::alloc(mtm), initWithFrame: NSRect::ZERO] };
-        // Only the Custom box type draws `fillColor`.
         this.setBoxType(NSBoxType::Custom);
         this.setBorderWidth(0.);
         this.setTitlePosition(NSTitlePosition::NoTitle);

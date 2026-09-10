@@ -24,8 +24,7 @@ use crate::controls::fitted;
 const LINGER: f64 = 1.0;
 const FADE: f64 = 0.35;
 
-/// A vertical scroller: `value` is `0.0..=1.0` down the track, `proportion` the visible share of
-/// the content. Draw it only while the content overflows.
+/// A vertical scroller; `value` and `proportion` are `NSScroller`'s, in `0.0..=1.0`.
 pub fn native_scroller(id: impl Into<ElementId>, value: f64, proportion: f64) -> NativeScroller {
     NativeScroller {
         id: id.into(),
@@ -47,7 +46,6 @@ pub struct NativeScroller {
 struct Held(Rc<Cell<Option<(f64, f64)>>>);
 
 impl NativeScroller {
-    /// Fires continuously while the knob is dragged, and once per click in the track.
     pub fn on_change(mut self, handler: impl Fn(&f64, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Rc::new(move |value, window, cx| {
             if let NativeValue::Number(value) = value {
@@ -100,8 +98,7 @@ impl NativeScroller {
             scroller.setKnobProportion(wanted.1);
             scroller.setDoubleValue(wanted.0);
             held.0.set(Some(wanted));
-            // An overlay scroller shows itself when the content moves under it, never because
-            // the content grew: a listing that is still landing draws no scroller in Finder.
+            // Only a move flashes an overlay scroller, never growth alone, as in Finder.
             if was.is_some_and(|(value, _)| value != wanted.0) {
                 scroller.flash();
             }
@@ -125,8 +122,7 @@ impl NativeScroller {
 
 hosted_element!(NativeScroller);
 
-/// Where the scroller says it is now: the knob carries its own value, a click in the track pages
-/// by what the knob covers.
+/// A click in the track leaves `doubleValue` alone, so the page is worked out from the knob.
 fn reader() -> NativeRead {
     Rc::new(|sender| {
         let part: usize = unsafe { msg_send![sender, hitPart] };
@@ -147,16 +143,13 @@ fn reader() -> NativeRead {
 }
 
 define_class!(
-    /// Outside an `NSScrollView` nothing drives an overlay scroller's fade but itself. Faded out
-    /// it takes no mouse: that edge is the content's again.
     #[unsafe(super(NSScroller, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGScroller"]
     struct Scroller;
 
     impl Scroller {
-        // AppKit's own answer is `self == NSScroller`, so a subclass is refused the overlay style
-        // and drawn as the legacy one however the system is set.
+        // AppKit answers `self == NSScroller`, refusing a subclass the overlay style.
         #[unsafe(method(isCompatibleWithOverlayScrollers))]
         fn compatible_with_overlay_scrollers() -> bool {
             true
