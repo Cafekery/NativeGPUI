@@ -1,14 +1,15 @@
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
+use std::ptr::null;
 
 use objc2::rc::Retained;
 use objc2_foundation::{
-    NSArray, NSDictionary, NSFileManager, NSNumber, NSString, NSURL, NSURLResourceKey,
-    NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeAvailableCapacityKey,
-    NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey,
-    NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey, NSURLVolumeTotalCapacityKey,
-    NSVolumeEnumerationOptions,
+    NSArray, NSDictionary, NSFileManager, NSMutableDictionary, NSNumber, NSString, NSURL,
+    NSURLResourceKey, NSURLVolumeAvailableCapacityForImportantUsageKey,
+    NSURLVolumeAvailableCapacityKey, NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey,
+    NSURLVolumeIsRemovableKey, NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey,
+    NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
 };
 
 #[derive(Clone, Debug)]
@@ -165,6 +166,51 @@ pub fn standard(which: Standard) -> Option<PathBuf> {
         Standard::Pictures => home.join("Pictures"),
         Standard::Trash => home.join(".Trash"),
     })
+}
+
+#[link(name = "NetFS", kind = "framework")]
+extern "C" {
+    fn NetFSMountURLSync(
+        url: *const c_void,
+        mountpath: *const c_void,
+        user: *const c_void,
+        passwd: *const c_void,
+        open_options: *const c_void,
+        mount_options: *const c_void,
+        mountpoints: *mut *mut c_void,
+    ) -> i32;
+}
+
+/// Mounts a server as Connect to Server does, the system asking for any login itself. It blocks
+/// until the share is up, so it belongs off the main thread; the error is NetFS's status code.
+pub fn mount(address: &str) -> Result<PathBuf, i32> {
+    let url = NSURL::URLWithString(&NSString::from_str(address)).ok_or(libc::EINVAL)?;
+    let open = NSMutableDictionary::<NSString, NSString>::new();
+    open.insert(
+        &*NSString::from_str("UIOption"),
+        &*NSString::from_str("AllowUI"),
+    );
+    let mut points: *mut c_void = std::ptr::null_mut();
+    let status = unsafe {
+        NetFSMountURLSync(
+            Retained::as_ptr(&url).cast(),
+            null(),
+            null(),
+            null(),
+            Retained::as_ptr(&open).cast(),
+            null(),
+            &mut points,
+        )
+    };
+    if status != 0 {
+        return Err(status);
+    }
+    // A `+1` CFArray of the mount points' paths.
+    let points: Option<Retained<NSArray<NSString>>> = unsafe { Retained::from_raw(points.cast()) };
+    points
+        .and_then(|points| points.firstObject())
+        .map(|point| PathBuf::from(point.to_string()))
+        .ok_or(libc::ENOENT)
 }
 
 #[cfg(test)]
