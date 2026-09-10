@@ -1,20 +1,22 @@
 //! Every row carries one of AppKit's own selectors and no target, so macOS supplies the key
 //! equivalent, localisation, enabling and the Show/Hide title flips.
 
-use std::cell::RefCell;
-
+use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::rc::Rc;
 
+use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem};
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{Bool, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
-    NSMenuItem, NSText,
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
+    NSEventTrackingRunLoopMode, NSMenu, NSMenuItem, NSText,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSString,
+    MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSRunLoop,
+    NSString, NSTimer,
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -47,6 +49,7 @@ pub struct MenuCommand {
     action: Option<Box<dyn Action>>,
     rows: Vec<MenuCommand>,
     alternate: bool,
+    option_only: bool,
     checked: bool,
 }
 
@@ -58,6 +61,7 @@ impl MenuCommand {
             action: Some(Box::new(action)),
             rows: Vec::new(),
             alternate: false,
+            option_only: false,
             checked: false,
         }
     }
@@ -73,6 +77,13 @@ impl MenuCommand {
         self
     }
 
+    /// A row that is there only while Option is held, as Finder's Go ▸ Library. AppKit hides an
+    /// alternate only when it stands in for the row above, so this one is hidden and shown by hand.
+    pub fn option_only(mut self) -> Self {
+        self.option_only = true;
+        self
+    }
+
     pub fn submenu(title: impl Into<String>, rows: impl IntoIterator<Item = MenuCommand>) -> Self {
         Self {
             title: title.into(),
@@ -80,6 +91,7 @@ impl MenuCommand {
             action: None,
             rows: rows.into_iter().collect(),
             alternate: false,
+            option_only: false,
             checked: false,
         }
     }
@@ -91,6 +103,7 @@ impl MenuCommand {
             action: None,
             rows: Vec::new(),
             alternate: false,
+            option_only: false,
             checked: false,
         }
     }
@@ -529,8 +542,35 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     if command.alternate {
         row.setAlternate(true);
     }
+    if command.option_only {
+        show_with_option(&row);
+    }
     set_state(&row, command.checked);
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
+}
+
+thread_local! {
+    static OPTION_ONLY: RefCell<Vec<Weak<NSMenuItem>>> = const { RefCell::new(Vec::new()) };
+    static OPTION_POLL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Menu tracking takes flagsChanged before any monitor sees it, so while a menu is open a timer in
+/// the tracking mode reads the held modifiers instead. Rows a rebuilt menu dropped fall out of the
+/// list as they go.
+fn show_with_option(row: &NSMenuItem) {
+    row.setHidden(true);
+    OPTION_ONLY.with_borrow_mut(|rows| rows.push(Weak::new(row)));
+    if OPTION_POLL.replace(true) {
+        return;
+    }
+    let block = RcBlock::new(|_: NonNull<NSTimer>| {
+        let held = NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option);
+        OPTION_ONLY.with_borrow_mut(|rows| {
+            rows.retain(|row| row.load().inspect(|row| row.setHidden(!held)).is_some())
+        });
+    });
+    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.05, true, &block) };
+    unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSEventTrackingRunLoopMode) };
 }
 
 /// A field editor is what AppKit puts in front of an `NSTextField` while it is being typed into.
