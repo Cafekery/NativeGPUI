@@ -255,6 +255,25 @@ pub fn set(path: &Path, tags: &[Tag]) -> io::Result<()> {
         .map_err(|e| io::Error::other(e.localizedDescription().to_string()))
 }
 
+/// Finder's swatch: the tag comes off every item when they all carry it, and otherwise goes on the
+/// ones that lack it. Whatever else an item was tagged with stays.
+pub fn toggle(paths: &[std::path::PathBuf], tag: &Tag) -> io::Result<()> {
+    let carried: Vec<Vec<Tag>> = paths.iter().map(|path| of(path)).collect();
+    let everywhere = carried
+        .iter()
+        .all(|tags| tags.iter().any(|held| held.name == tag.name));
+    for (path, mut tags) in paths.iter().zip(carried) {
+        let held = tags.iter().any(|it| it.name == tag.name);
+        match (everywhere, held) {
+            (true, _) => tags.retain(|it| it.name != tag.name),
+            (false, false) => tags.push(tag.clone()),
+            (false, true) => continue,
+        }
+        set(path, &tags)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +311,44 @@ mod tests {
     fn all_is_never_empty() {
         assert!(!all().is_empty());
         assert!(!favorites().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod toggle_tests {
+    use super::*;
+    use std::fs;
+
+    fn names(path: &Path) -> Vec<String> {
+        of(path).into_iter().map(|tag| tag.name).collect()
+    }
+
+    #[test]
+    fn a_swatch_adds_where_missing_and_clears_where_everywhere() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-toggle-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let kept = Tag {
+            name: "Reviewed".into(),
+            color: 0,
+        };
+        let red = Tag {
+            name: "Red".into(),
+            color: 6,
+        };
+        set(&a, &[kept.clone()]).unwrap();
+        let both = [a.clone(), b.clone()];
+
+        toggle(&both, &red).unwrap();
+        assert_eq!(names(&a), ["Reviewed", "Red"]);
+        assert_eq!(names(&b), ["Red"]);
+
+        toggle(&both, &red).unwrap();
+        assert_eq!(names(&a), ["Reviewed"]);
+        assert!(names(&b).is_empty());
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

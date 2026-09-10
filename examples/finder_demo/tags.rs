@@ -162,11 +162,37 @@ fn write_tags(key: &SharedString, tags: &[usize], cx: &mut Context<FinderDemo>) 
 
 impl FinderDemo {
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
-        let chosen = self.selected.snapshot();
-        for key in chosen.iter() {
-            self.tags.insert(key.clone(), vec![tag]);
-            write_tags(key, &[tag], cx);
-        }
+        let paths: Vec<PathBuf> = self
+            .selected
+            .snapshot()
+            .iter()
+            .map(|key| PathBuf::from(key.as_ref()))
+            .collect();
+        let wanted = finder_tag(tag);
+        cx.spawn(async move |this, cx| {
+            let carried = cx
+                .background_executor()
+                .spawn(async move {
+                    finder_fs::tags::toggle(&paths, &wanted).ok();
+                    paths
+                        .iter()
+                        .map(|path| {
+                            let key = path.to_string_lossy().into_owned();
+                            let tags = row_tags(&key);
+                            (key, tags)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                for (key, tags) in carried {
+                    this.tags.insert(key.into(), tags);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn cycle_tag(&mut self, cx: &mut Context<Self>) {
