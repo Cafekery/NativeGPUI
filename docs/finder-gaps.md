@@ -31,7 +31,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 ## Features
 
-- [ ] Go ▸ Recents (⇧⌘F)
+- [x] Go ▸ Recents (⇧⌘F)
 - [ ] Go ▸ Connect to Server… (⌘K)
 - [ ] Go ▸ AirDrop (⇧⌘R) and Shared (⇧⌘S)
 - [ ] File ▸ New Smart Folder, and saved searches with it
