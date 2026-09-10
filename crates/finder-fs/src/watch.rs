@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-use objc2_core_foundation::{CFArray, CFRetained, CFRunLoop, CFString, kCFRunLoopDefaultMode};
+use objc2_core_foundation::{
+    CFArray, CFRetained, CFRunLoop, CFRunLoopRunResult, CFString, kCFRunLoopDefaultMode,
+};
 #[allow(deprecated)]
 use objc2_core_services::FSEventStreamScheduleWithRunLoop;
 use objc2_core_services::{
@@ -35,6 +37,9 @@ const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
     | kFSEventStreamEventFlagRootChanged
     | kFSEventStreamEventFlagMount
     | kFSEventStreamEventFlagUnmount;
+
+/// A callback also gets an empty replay each second: a tick for work it put off.
+const TICK: f64 = 1.0;
 
 type OnChange = Box<dyn Fn(Replay) + Send>;
 
@@ -97,7 +102,10 @@ impl Watcher {
             run_loop: Mutex::new(None),
         });
         let thread_shared = shared.clone();
-        let thread = thread::spawn(move || run(thread_shared, on_change));
+        let thread = thread::spawn(move || {
+            crate::utility_qos();
+            run(thread_shared, on_change)
+        });
         Watcher {
             shared,
             thread: Some(thread),
@@ -198,7 +206,11 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
         }
         *shared.run_loop.lock().unwrap() = Some(run_loop_addr);
 
-        CFRunLoop::run();
+        while CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, TICK, false)
+            == CFRunLoopRunResult::TimedOut
+        {
+            unsafe { (*context)(Replay::default()) };
+        }
 
         *shared.run_loop.lock().unwrap() = None;
         unsafe {
@@ -387,7 +399,9 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let started = std::time::Instant::now();
         let _watcher = since(start_id, vec![dir.clone()], move |replay: Replay| {
-            let _ = tx.send((replay.dirs, replay.event_id));
+            if !replay.dirs.is_empty() {
+                let _ = tx.send((replay.dirs, replay.event_id));
+            }
         });
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);

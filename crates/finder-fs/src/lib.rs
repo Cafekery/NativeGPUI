@@ -15,3 +15,9 @@ pub mod volumes;
 pub mod watch;
 
 pub use entry::{Entry, EntryKind};
+
+/// Walking and watching the disk runs at utility QoS: near full speed, yielding to the
+/// foreground. Background QoS measured three times the CPU for the same walk.
+pub(crate) fn utility_qos() {
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
+}

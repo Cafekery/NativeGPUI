@@ -563,6 +563,7 @@ fn a_reopened_snapshot_drops_what_was_deleted() {
     fs::remove_dir_all(root.join("many")).unwrap();
     index.note_changed(&[root.join("many"), root.clone()]);
     index.save();
+    drop(index);
 
     let index = Index::open(&store);
     assert_eq!(
@@ -672,4 +673,117 @@ fn a_followed_index_keeps_up_with_the_disk() {
 
     fs::remove_file(root.join("a/b/fresh.txt")).unwrap();
     assert!(eventually(|| found("fresh") == 0));
+}
+
+#[test]
+fn a_followed_change_moves_the_snapshot_forward_without_rewriting_it() {
+    let temp = tree("follow-id");
+    let root = &temp.0;
+    let store = store("follow-id");
+    let index = Index::open(&store);
+    crawl(&index, root);
+    let landed = index.stats().event_id;
+    let written = fs::metadata(&store).unwrap().modified().unwrap();
+    let roots = index.read().roots.len();
+    let _following = index.follow(vec![root.clone()]);
+    std::thread::sleep(SETTLE);
+
+    fs::create_dir_all(root.join("fresh/inner")).unwrap();
+    fs::write(root.join("fresh/inner/nested.txt"), b"n").unwrap();
+
+    assert!(eventually(|| index.search("nested", None, 4).len() == 1));
+    assert!(eventually(|| index.stats().event_id > landed));
+    assert_eq!(index.read().roots.len(), roots);
+    assert_eq!(fs::metadata(&store).unwrap().modified().unwrap(), written);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_second_index_on_a_store_reads_it_and_leaves_walking_and_writing_to_the_first() {
+    let temp = tree("owner");
+    let root = &temp.0;
+    let store = store("owner");
+    let first = Index::open(&store);
+    std::thread::sleep(SETTLE);
+    crawl(&first, root);
+    let written = fs::read(&store).unwrap();
+    std::thread::sleep(SETTLE);
+    fs::write(root.join("a/late.txt"), b"l").unwrap();
+    std::thread::sleep(SETTLE);
+
+    let second = Index::open(&store);
+    let mark = reads_mark();
+    sync(&second, root);
+    crawl(&second, root);
+    assert_eq!(second.search("late", None, 4).len(), 1);
+    assert!(!reads_under(root, mark).contains(&root.join("many")));
+    second.save();
+    assert_eq!(fs::read(&store).unwrap(), written);
+
+    drop(second);
+    drop(first);
+    let next = Index::open(&store);
+    next.note_changed(&[root.join("a")]);
+    next.save();
+    assert_eq!(Index::open(&store).search("late", None, 4).len(), 1);
+    let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_root_inside_another_is_walked_once() {
+    let temp = tree("nested-roots");
+    let root = &temp.0;
+    let index = Index::open(&store("nested-roots"));
+    let mark = reads_mark();
+    let (tx, rx) = mpsc::channel();
+    index.crawl(
+        vec![root.join("a"), root.clone()],
+        move |progress: Progress| {
+            if progress.done {
+                let _ = tx.send(());
+            }
+        },
+    );
+    rx.recv_timeout(Duration::from_secs(120)).unwrap();
+
+    assert_eq!(reads_under(&root.join("a/b/c"), mark).len(), 1);
+    assert_eq!(index.stats().files as usize, MANY + 6);
+}
+
+#[test]
+fn a_costly_folder_under_constant_change_is_relisted_rarely_and_lands_its_last_change() {
+    let temp = tree("cooldown");
+    let root = &temp.0;
+    let busy = root.join("busy");
+    fs::create_dir_all(&busy).unwrap();
+    for i in 0..20_000 {
+        fs::write(busy.join(format!("f{i:05}")), b"").unwrap();
+    }
+    let index = Index::open(&store("cooldown"));
+    crawl(&index, root);
+    let _following = index.follow(vec![root.clone()]);
+    std::thread::sleep(SETTLE);
+
+    let mark = reads_mark();
+    for i in 0..30 {
+        fs::write(busy.join(format!("tick{i}")), b"").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let landed = (0..150).any(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        index.search("tick29", None, 4).len() == 1
+    });
+
+    assert!(landed);
+    let relists = reads_under(&busy, mark).len();
+    assert!(relists < 10, "{relists} relists for 30 changes");
+}
+
+#[test]
+fn queued_walks_collapse_into_their_outermost_folders() {
+    let paths = |all: &[&str]| all.iter().map(PathBuf::from).collect::<Vec<_>>();
+    assert_eq!(
+        super::outermost(paths(&["/a/b", "/a", "/c", "/a", "/c/d", "/cd"])),
+        paths(&["/a", "/c", "/cd"])
+    );
 }

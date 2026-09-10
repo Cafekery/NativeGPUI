@@ -23,11 +23,14 @@ struct Batch {
     dirs: BTreeSet<PathBuf>,
     rescan: BTreeSet<PathBuf>,
     wrapped: bool,
+    /// Events arrive in id order, so the batch holds every change up to here.
+    reached: u64,
 }
 
 pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) + Send + 'static) {
     let index = index.clone();
     std::thread::spawn(move || {
+        crate::utility_qos();
         let now = watch::latest_event_id();
         let mut roots: Vec<PathBuf> = roots.iter().map(|root| crawl::real(root)).collect();
         roots.dedup();
@@ -38,22 +41,25 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
                 plan.warm, plan.cold, plan.since_when
             );
         }
+        // A reader refreshes what changed since its snapshot but walks no whole root.
+        let whole = match index.owner {
+            true => roots,
+            false => Vec::new(),
+        };
         if plan.warm.is_empty() {
             let walk = Walk {
-                crawl: roots.clone(),
-                record: roots,
+                crawl: whole.clone(),
+                record: whole,
                 since: now,
             };
             return crawl::spawn(&index, walk, report);
         }
         let (batch, history_done) = replay(&plan);
-        let walk = reconcile(
-            &index,
-            &plan,
-            batch,
-            roots,
-            if history_done { now } else { plan.since_when },
-        );
+        let since = match history_done {
+            true => now,
+            false => batch.reached.max(plan.since_when),
+        };
+        let walk = reconcile(&index, &plan, batch, whole, since);
         crawl::spawn(&index, walk, report);
     });
 }
@@ -101,6 +107,7 @@ fn replay(plan: &Plan) -> (Batch, bool) {
 
 fn collect(batch: &mut Batch, replay: Replay) -> bool {
     batch.wrapped |= replay.wrapped;
+    batch.reached = batch.reached.max(replay.event_id);
     batch.dirs.extend(replay.dirs);
     batch.rescan.extend(replay.rescan);
     replay.history_done
@@ -113,9 +120,15 @@ fn reconcile(
     record: Vec<PathBuf>,
     since: u64,
 ) -> Walk {
-    let mut crawl = plan.cold.clone();
+    let owner = index.owner;
+    let mut crawl = match owner {
+        true => plan.cold.clone(),
+        false => Vec::new(),
+    };
     if batch.wrapped {
-        crawl.extend(plan.warm.iter().cloned());
+        if owner {
+            crawl.extend(plan.warm.iter().cloned());
+        }
         return Walk {
             crawl,
             record,
@@ -132,7 +145,7 @@ fn reconcile(
             }
         }
         for path in batch.rescan {
-            if tree.listed(&path) && open_to_us(&path, &home) {
+            if owner && tree.listed(&path) && open_to_us(&path, &home) {
                 crawl.push(path);
             }
         }
@@ -211,9 +224,11 @@ mod tests {
             &mut batch,
             Replay {
                 dirs: vec![PathBuf::from("/a/x")],
+                event_id: 12,
                 ..Replay::default()
             }
         ));
+        assert_eq!(batch.reached, 12);
         assert!(collect(
             &mut batch,
             Replay {
