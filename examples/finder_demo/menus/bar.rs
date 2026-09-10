@@ -29,6 +29,7 @@ actions!(
         CopyNames,
         CopyPath,
         DeselectAll,
+        ShowClipboard,
         Compress,
         Duplicate,
         DuplicateExactly,
@@ -148,6 +149,7 @@ fn cycle_windows(_: &CycleWindows, cx: &mut App) {
 
 pub(crate) fn install(cx: &mut App) {
     cx.on_action(cycle_windows);
+    cx.on_action(crate::clipboard_window::show);
     on_menu_state(checked);
     prepend_menu(
         MenuSection::File,
@@ -205,6 +207,8 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Move Item Here", MoveHere).key("cmd-alt-v"),
             MenuCommand::new("Copy as Pathname", CopyPath).key("cmd-alt-c"),
             MenuCommand::new("Deselect All", DeselectAll).key("cmd-alt-a"),
+            MenuCommand::separator(),
+            MenuCommand::new("Show Clipboard", ShowClipboard),
             MenuCommand::separator(),
             MenuCommand::new("Search", FindHere).key("cmd-f"),
         ],

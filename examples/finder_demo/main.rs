@@ -1,6 +1,7 @@
 mod app;
 mod art;
 mod chrome;
+mod clipboard_window;
 mod custom;
 mod data;
 mod dragdrop;
