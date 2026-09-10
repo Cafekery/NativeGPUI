@@ -41,7 +41,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] File ▸ Slideshow (⌥⌘Y)
 - [ ] File ▸ Create/Copy iCloud Link, Manage Shared File…
 - [ ] Quick Actions in the context menu: Rotate, Markup, Create PDF, and custom ones
-- [ ] The Services submenu
+- [x] The Services submenu
 
 ## ⌥ in context menus
 
