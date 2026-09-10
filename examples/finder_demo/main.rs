@@ -142,9 +142,12 @@ fn crawl(cx: &mut App) {
     let executor = cx.background_executor().clone();
     if env::var_os("NG_NO_CRAWL").is_none() {
         static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
-        FOLLOWING.get_or_init(|| index().follow(roots.clone()));
+        // Off the main thread: the first `index()` loads the snapshot.
         executor
-            .spawn(async move { index().sync(roots, |_| {}) })
+            .spawn(async move {
+                FOLLOWING.get_or_init(|| index().follow(roots.clone()));
+                index().sync(roots, |_| {})
+            })
             .detach();
     }
     // TCC-gated folders join the crawl only once a visit has listed them, so no prompt is raised.
