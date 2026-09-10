@@ -48,9 +48,9 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 Finder swaps some context-menu rows while ⌥ is held. These were read off Finder 26's own menus through the accessibility API, which lists each alternate with its modifier mask. The demo's context menus have no alternates at all; the crate's context-menu entries would need an alternate flag first, the way `MenuCommand::option_alternate` works in the menu bar.
 
 - [ ] A file: Open With becomes Always Open With (the same app list, and the choice sticks for that kind of file)
-- [ ] The folder's background: Get Info becomes Show Inspector
+- [x] The folder's background: Get Info becomes Show Inspector
 - [ ] The folder's background: Paste Item becomes Paste Item Exactly, with ⌥⇧ held
-- [ ] A sidebar item: Open in New Tab becomes Open in New Window
+- [x] A sidebar item: Open in New Tab becomes Open in New Window
 - [ ] A selected file or folder, not yet read off Finder: Copy becomes Copy as Pathname, Quick Look becomes Slideshow, Move to Trash becomes Delete Immediately…, Get Info becomes Show Inspector. Finder on the test Mac refused to open an item's menu over accessibility after the first read, so these rest on memory of Finder, not on this probe
 
 ## Left alone
