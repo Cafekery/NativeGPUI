@@ -35,6 +35,8 @@ struct State {
     sink: Option<Retained<QuickLook>>,
     /// The panel was asked to open and the deferred job has not reached it yet.
     opening: bool,
+    /// The open job takes the panel to full screen, as Finder's Slideshow does.
+    full_screen: bool,
     /// A panel job is running, so far inside its own nested run loop.
     busy: bool,
     pending: Option<Job>,
@@ -215,6 +217,7 @@ pub fn quick_look(
         state.source = source;
         state.on_key = Some(Box::new(on_key));
         state.opening = true;
+        state.full_screen = false;
         if state.sink.is_none() {
             let sink: Retained<QuickLook> = unsafe { msg_send![QuickLook::alloc(mtm), init] };
             state.sink = Some(sink);
@@ -222,6 +225,17 @@ pub fn quick_look(
     });
     answer_panel_control(ns_window.class());
     defer(panel(mtm), Job::Open);
+}
+
+/// Finder's Slideshow: [`quick_look`] with the panel taken to full screen as it opens.
+pub fn quick_look_full_screen(
+    window: &Window,
+    items: Vec<PathBuf>,
+    current: usize,
+    on_key: impl Fn(QuickLookKey) + 'static,
+) {
+    quick_look(window, items, current, None, on_key);
+    STATE.with_borrow_mut(|state| state.full_screen = true);
 }
 
 /// The selection moved while the panel is up: show the new items without closing.
@@ -326,6 +340,9 @@ fn run(panel: &QLPreviewPanel, job: Job) {
                 if job == Job::Open {
                     unsafe { panel.updateController() };
                     panel.makeKeyAndOrderFront(None);
+                    if STATE.with_borrow(|state| state.full_screen) {
+                        unsafe { panel.enterFullScreenMode_withOptions(None, None) };
+                    }
                 }
             }
         }
