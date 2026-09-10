@@ -6,7 +6,7 @@ use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::index::Index;
 use finder_fs::kind;
 use gpui::SharedString;
-use native_gpui::tokens::{FileType, has_custom_icon};
+use native_gpui::tokens::FileType;
 
 use super::face::{Face, face_of};
 use super::format::{byte_string, reference_seconds};
@@ -64,7 +64,7 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<Fil
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
-        if special().contains(path) || has_custom_icon(Path::new(path)) {
+        if special().contains(path) {
             return Some(FileType::Path(intern(path)));
         }
         return Some(match folder_full(entry, path, index) {

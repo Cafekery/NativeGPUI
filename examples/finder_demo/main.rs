@@ -1,6 +1,7 @@
 mod app;
 mod art;
 mod chrome;
+mod custom;
 mod data;
 mod dragdrop;
 mod frame;
@@ -45,6 +46,9 @@ use crate::data::intern_path;
 use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
 const SAVE_EVERY: Duration = Duration::from_secs(180);
+
+/// How many of the disk's extensions to have Spotlight name at launch.
+const KINDS_WARM: usize = 400;
 /// What a quit can spend on a save already under way; gpui gives shutdown handlers about 200 ms.
 const QUIT_WAIT: Duration = Duration::from_millis(150);
 
@@ -86,6 +90,17 @@ fn main() {
         warm.spawn(async {
             tags::all();
             tags::tags();
+        })
+        .detach();
+        warm.spawn(async {
+            let table = store().join("kinds.tsv");
+            finder_fs::kind::load_kinds(&table);
+            // A kind's label comes from Spotlight, one round trip per extension against a file
+            // that exists, so the ones this disk actually holds are warmed once and kept.
+            for path in index().extensions(KINDS_WARM) {
+                finder_fs::kind::kind_of_path(&path);
+            }
+            finder_fs::kind::save_kinds(&table);
         })
         .detach();
         cx.spawn(async move |cx| {
