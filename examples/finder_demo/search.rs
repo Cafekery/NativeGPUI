@@ -130,9 +130,10 @@ impl FinderDemo {
             let found = cx
                 .background_executor()
                 .spawn(async move {
-                    let rows = match id == RECENTS {
-                        true => data::recent_rows(&crate::home(), index(), HITS),
-                        false => data::tagged_rows(&tag, index(), HITS),
+                    let rows = match (id == RECENTS, crate::smart::file_of(id)) {
+                        (true, _) => data::recent_rows(&crate::home(), index(), HITS),
+                        (_, Some(file)) => crate::smart::rows(file, index(), HITS),
+                        _ => data::tagged_rows(&tag, index(), HITS),
                     };
                     let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()

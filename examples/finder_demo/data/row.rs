@@ -176,7 +176,7 @@ pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<R
     rows_at(used.into_iter().take(limit).map(|(path, _)| path), index)
 }
 
-fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -> Vec<Arc<Row>> {
+pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -> Vec<Arc<Row>> {
     let mut wanted: HashMap<&'static str, HashSet<String>> = HashMap::new();
     for path in paths {
         let path = Path::new(path);

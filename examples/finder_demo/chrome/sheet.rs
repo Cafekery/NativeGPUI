@@ -259,6 +259,51 @@ impl FinderDemo {
             window,
         )
     }
+
+    pub(crate) fn save_sheet(
+        &self,
+        name: &str,
+        palette: &Palette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let this: WeakEntity<Self> = cx.entity().downgrade();
+        let leave = this.clone();
+        let field = native_text_field("ng.finder.save", name)
+            .stretch()
+            .editing(0..name.chars().count())
+            .on_submit(move |typed, window, cx| {
+                let typed = typed.trim().to_string();
+                this.update(cx, |demo: &mut FinderDemo, cx| {
+                    demo.save_sheet = None;
+                    focus_gpui(window);
+                    key_to_parent(window);
+                    if !typed.is_empty() {
+                        demo.save_search(&typed, window, cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .on_cancel(move |_, window, cx| {
+                leave
+                    .update(cx, |demo: &mut FinderDemo, cx| {
+                        demo.save_sheet = None;
+                        focus_gpui(window);
+                        key_to_parent(window);
+                        cx.notify();
+                    })
+                    .ok();
+            });
+        glass(
+            "ng.finder.save.glass",
+            "Save As:",
+            field,
+            None,
+            palette,
+            window,
+        )
+    }
 }
 
 /// Connect to Server: the address, and what the last try said.

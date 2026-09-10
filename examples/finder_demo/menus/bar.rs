@@ -41,6 +41,7 @@ actions!(
         GetInfo,
         GetSummaryInfo,
         AddToSidebar,
+        NewSmartFolder,
         GoAirDrop,
         GoApplications,
         GoComputer,
@@ -163,6 +164,7 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("New Folder", NewFolder).key("cmd-shift-n"),
             MenuCommand::new("New Text File", NewTextFile),
             MenuCommand::new("New Folder with Selection", NewFolderWithSelection).key("cmd-ctrl-n"),
+            MenuCommand::new("New Smart Folder", NewSmartFolder),
             MenuCommand::separator(),
             MenuCommand::new("Open", OpenSelection).key("cmd-o"),
             MenuCommand::new("Open in New Tab", OpenInNewTab).key("cmd-ctrl-o"),
@@ -393,6 +395,9 @@ impl FinderDemo {
                 this.empty_trash(cx);
             }))
             .on_action(cx.listener(|_, _: &FindHere, window, _| {
+                set_toolbar_search_active(window, SEARCH_ID, true);
+            }))
+            .on_action(cx.listener(|_, _: &NewSmartFolder, window, _| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
             }))
             .on_action(cx.listener(|this, _: &FindByName, window, cx| {
