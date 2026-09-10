@@ -60,6 +60,7 @@ actions!(
         MakeAlias,
         OpenSelection,
         QuickLook,
+        Share,
         OpenInNewTab,
         OpenInNewWindow,
         ShowOriginal,
@@ -138,6 +139,8 @@ pub(crate) fn install(_cx: &mut App) {
                 .option_alternate(),
             MenuCommand::new("Make Alias", MakeAlias).key("cmd-ctrl-a"),
             MenuCommand::new("Quick Look", QuickLook).key("cmd-y"),
+            MenuCommand::separator(),
+            MenuCommand::new("Share…", Share),
             MenuCommand::separator(),
             MenuCommand::new("Show Original", ShowOriginal).key("cmd-r"),
             MenuCommand::new("Add to Sidebar", AddToSidebar).key("cmd-ctrl-t"),
@@ -471,6 +474,9 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &QuickLook, window, cx| {
                 this.toggle_quick_look(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &Share, window, cx| {
+                this.share_selection(window, cx);
             }))
     }
 }

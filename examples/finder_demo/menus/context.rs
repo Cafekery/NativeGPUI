@@ -141,7 +141,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
     }
     menu.separator();
-    menu.item(MenuEntry::item("Share…").disabled(), Act::Nothing);
+    menu.item(MenuEntry::item("Share…"), Act::Share);
     menu.separator();
     menu.view(
         MenuView::swatches_picking(tags().iter().map(|tag| finder_color(tag.color)), |index| {

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op};
-use gpui::{Context, Window};
+use gpui::{Bounds, Context, Window, point, px, size};
+use native_gpui::surfaces::SurfaceEdge;
+use native_gpui::{ShareItem, SharePicker, SurfaceAnchor, present_share_picker};
 use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
 
 use super::context;
@@ -33,6 +35,7 @@ pub(crate) enum Act {
     QuickLook,
     OpenWith(&'static str),
     Compress,
+    Share,
     Copy,
     Cut,
     Paste,
@@ -119,6 +122,7 @@ impl FinderDemo {
             Act::Duplicate => self.duplicate_selection(cx),
             Act::MakeAlias => self.make_alias(cx),
             Act::Compress => self.compress_selection(cx),
+            Act::Share => self.share_selection(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => {
                 let files: Vec<PathBuf> = self
@@ -223,6 +227,37 @@ impl FinderDemo {
         if !items.is_empty() {
             self.run_op(Op::Compress(items), After::Select, cx);
         }
+    }
+
+    pub(crate) fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items: Vec<ShareItem> = self
+            .paths()
+            .iter()
+            .filter_map(|path| {
+                let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+                url.absoluteString()
+                    .map(|url| ShareItem::Url(url.to_string()))
+            })
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let at = self.ql_icon.get().unwrap_or_else(|| {
+            let width = window.viewport_size().width;
+            Bounds::new(point(width / 2., px(60.)), size(px(1.), px(1.)))
+        });
+        let picker = SharePicker {
+            edge: SurfaceEdge::Below,
+            ..Default::default()
+        };
+        present_share_picker(
+            window,
+            cx,
+            &SurfaceAnchor::at(at),
+            picker,
+            items,
+            |_, _, _| {},
+        );
     }
 
     pub(crate) fn make_alias(&mut self, cx: &mut Context<Self>) {

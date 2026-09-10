@@ -40,6 +40,13 @@ impl SurfaceAnchor {
         Self::default()
     }
 
+    /// An anchor over bounds the caller already knows, in window coordinates.
+    pub fn at(bounds: Bounds<Pixels>) -> Self {
+        let anchor = Self::default();
+        anchor.0.bounds.set(Some(bounds));
+        anchor
+    }
+
     /// `None` until the anchoring element has painted.
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
         self.0.bounds.get()
