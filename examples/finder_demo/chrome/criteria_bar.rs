@@ -15,21 +15,42 @@ const IS_W: f32 = 14.;
 const BUTTON_W: f32 = 33.;
 const OTHER_W: f32 = 127.;
 
+const FIELDS: [&str; 2] = ["Kind", "Name"];
+const TESTS: [&str; 4] = ["contains", "begins with", "ends with", "is"];
+
 /// One row of Finder's search criteria: what to test, and what it has to be.
 #[derive(Clone, Default)]
 pub(crate) struct Criterion {
+    pub(crate) field: usize,
     pub(crate) kind: Category,
+    pub(crate) test: usize,
     pub(crate) text: String,
 }
 
 impl Criterion {
-    /// Finder's kinds overlap, so this asks what the type conforms to rather than sorting each
-    /// file into one of them.
     pub(crate) fn holds(&self, row: &Row) -> bool {
-        match self.kind {
-            Category::Other => row.kind.to_lowercase().contains(&self.text.to_lowercase()),
-            kind => finder_fs::kind::conforms(&row.uti, kind),
+        match FIELDS[self.field.min(FIELDS.len() - 1)] {
+            "Name" => {
+                let name = row.name.to_lowercase();
+                let wanted = self.text.to_lowercase();
+                match TESTS[self.test.min(TESTS.len() - 1)] {
+                    "begins with" => name.starts_with(&wanted),
+                    "ends with" => name.ends_with(&wanted),
+                    "is" => name == wanted,
+                    _ => name.contains(&wanted),
+                }
+            }
+            // Finder's kinds overlap, so this asks what the type conforms to rather than sorting
+            // each file into one of them.
+            _ => match self.kind {
+                Category::Other => row.kind.to_lowercase().contains(&self.text.to_lowercase()),
+                kind => finder_fs::kind::conforms(&row.uti, kind),
+            },
         }
+    }
+
+    fn names(&self) -> bool {
+        FIELDS[self.field.min(FIELDS.len() - 1)] == "Name"
     }
 }
 
@@ -54,12 +75,15 @@ impl FinderDemo {
             .iter()
             .position(|it| *it == criterion.kind)
             .unwrap_or(0);
-        let (pick, edit, add, remove) = (
+        let (field, pick, test, edit, add, remove) = (
+            cx.entity().downgrade(),
+            cx.entity().downgrade(),
             cx.entity().downgrade(),
             cx.entity().downgrade(),
             cx.entity().downgrade(),
             cx.entity().downgrade(),
         );
+        let names = criterion.names();
         div()
             .h(px(CRITERIA_H))
             .w_full()
@@ -69,18 +93,36 @@ impl FinderDemo {
             .pl(px(INSET))
             .pr(px(INSET))
             .child(
-                native_popup(("ng.finder.criteria.field", row), 0)
-                    .items(["Kind"])
-                    .control_size(ControlSize::Small),
+                native_popup(("ng.finder.criteria.field", row), criterion.field)
+                    .items(FIELDS)
+                    .control_size(ControlSize::Small)
+                    .on_change(move |index, _, cx| {
+                        let index = *index;
+                        field
+                            .update(cx, |this, cx| this.set_criterion_field(row, index, cx))
+                            .ok();
+                    }),
             )
-            .child(
+            .children((!names).then(|| {
                 div().flex_none().w(px(IS_W)).ml(px(GAP)).child(
                     native_label(("ng.finder.criteria.is", row), "is")
                         .font_size(tokens::small_system_font_size())
                         .color(SystemColor::SecondaryLabel),
-                ),
-            )
-            .child(
+                )
+            }))
+            .children(names.then(|| {
+                div().flex_none().ml(px(GAP)).child(
+                    native_popup(("ng.finder.criteria.test", row), criterion.test)
+                        .items(TESTS)
+                        .control_size(ControlSize::Small)
+                        .on_change(move |index, _, cx| {
+                            let index = *index;
+                            test.update(cx, |this, cx| this.set_criterion_test(row, index, cx))
+                                .ok();
+                        }),
+                )
+            }))
+            .children((!names).then(|| {
                 div().flex_none().ml(px(GAP)).child(
                     native_popup(("ng.finder.criteria.kind", row), value)
                         .items(Category::ALL.map(|kind| kind.label()))
@@ -90,9 +132,9 @@ impl FinderDemo {
                             pick.update(cx, |this, cx| this.set_criterion(row, kind, cx))
                                 .ok();
                         }),
-                ),
-            )
-            .children((criterion.kind == Category::Other).then(|| {
+                )
+            }))
+            .children((names || criterion.kind == Category::Other).then(|| {
                 div().flex_none().w(px(OTHER_W)).ml(px(GAP)).child(
                     native_text_field(("ng.finder.criteria.other", row), &criterion.text)
                         .control_size(ControlSize::Small)
@@ -128,6 +170,20 @@ impl FinderDemo {
                 ),
             )
             .into_any_element()
+    }
+
+    fn set_criterion_field(&mut self, row: usize, field: usize, cx: &mut Context<Self>) {
+        if let Some(criterion) = self.criteria.get_mut(row) {
+            criterion.field = field;
+        }
+        self.run_search(cx);
+    }
+
+    fn set_criterion_test(&mut self, row: usize, test: usize, cx: &mut Context<Self>) {
+        if let Some(criterion) = self.criteria.get_mut(row) {
+            criterion.test = test;
+        }
+        self.run_search(cx);
     }
 
     fn set_criterion(&mut self, row: usize, kind: Category, cx: &mut Context<Self>) {
