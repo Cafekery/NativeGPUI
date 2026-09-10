@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::path::Path;
 
 use finder_fs::volumes::{self, Standard};
-use gpui::{Action, App, Context, Div, InteractiveElement, Window, actions};
+use gpui::{Action, AnyWindowHandle, App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{
     MenuCommand, MenuSection, add_menu, extend_menu, on_menu_state, prepend_menu,
     set_toolbar_search_active,
@@ -86,6 +86,7 @@ actions!(
         Up,
         UpInNewWindow,
         SelectStartupDisk,
+        CycleWindows,
         ViewColumns,
         ViewGallery,
         ViewIcons,
@@ -123,7 +124,28 @@ fn checked(action: &dyn Action) -> Option<bool> {
         .map(|(_, on)| on)
 }
 
-pub(crate) fn install(_cx: &mut App) {
+/// AppKit's own Cycle Through Windows is private, so this walks the Finder windows itself in the
+/// order they opened. The helper panels are windows too but never take a turn, and it answers from
+/// any window, a panel included.
+fn cycle_windows(_: &CycleWindows, cx: &mut App) {
+    let windows: Vec<AnyWindowHandle> = cx
+        .windows()
+        .into_iter()
+        .filter(|window| window.downcast::<FinderDemo>().is_some())
+        .collect();
+    let Some(&first) = windows.first() else {
+        return;
+    };
+    let at = cx
+        .active_window()
+        .and_then(|here| windows.iter().position(|window| *window == here));
+    let next = at.map_or(first, |at| windows[(at + 1) % windows.len()]);
+    next.update(cx, |_, window, _| window.activate_window())
+        .ok();
+}
+
+pub(crate) fn install(cx: &mut App) {
+    cx.on_action(cycle_windows);
     on_menu_state(checked);
     prepend_menu(
         MenuSection::File,
@@ -167,6 +189,10 @@ pub(crate) fn install(_cx: &mut App) {
     extend_menu(
         MenuSection::App,
         [MenuCommand::new("Empty Trash…", EmptyTrash).key("cmd-shift-backspace")],
+    );
+    extend_menu(
+        MenuSection::Window,
+        [MenuCommand::new("Cycle Through Windows", CycleWindows).key("cmd-`")],
     );
     extend_menu(
         MenuSection::Edit,
