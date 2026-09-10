@@ -358,6 +358,22 @@ impl Tree {
         }
     }
 
+    pub fn advance(&mut self, followed: &[PathBuf], event_id: u64) {
+        for root in self
+            .roots
+            .iter_mut()
+            .filter(|root| followed.contains(&root.path))
+        {
+            root.event_id = root.event_id.max(event_id);
+        }
+        self.event_id = self
+            .roots
+            .iter()
+            .map(|root| root.event_id)
+            .min()
+            .unwrap_or(self.event_id);
+    }
+
     pub fn listed(&self, path: &Path) -> bool {
         self.find(path).is_some_and(|id| {
             let node = self.nodes[id as usize];

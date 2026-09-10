@@ -87,7 +87,10 @@ pub fn spawn(index: &Arc<Index>, walk: Walk, report: impl Fn(Progress) + Send + 
     });
     for _ in 0..THREADS {
         let crawl = crawl.clone();
-        std::thread::spawn(move || crawl.run());
+        std::thread::spawn(move || {
+            crate::utility_qos();
+            crawl.run()
+        });
     }
 }
 
@@ -191,7 +194,8 @@ impl Crawl {
         }
         let mut tasks = Vec::with_capacity(dirs.len());
         for (i, path, class) in dirs {
-            if class == Class::Seal {
+            // Another root of this walk is walked on its own; reaching it again doubles the work.
+            if class == Class::Seal || self.walk.crawl.contains(&path) {
                 continue;
             }
             tasks.push(Task {
@@ -296,8 +300,12 @@ impl Crawl {
                 .unwrap_or(self.walk.since);
         }
         self.index.crawling.store(false, Ordering::SeqCst);
-        self.index.save();
+        // A walk the follower queued lands with the periodic save, not a whole snapshot per folder.
+        if !self.walk.record.is_empty() {
+            self.index.save();
+        }
         self.send(None, true);
+        self.index.walk_pending();
     }
 }
 
