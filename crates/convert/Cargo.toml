@@ -1,0 +1,25 @@
+[package]
+name = "convert"
+version = "0.1.0"
+edition = "2021"
+description = "Local image, audio, and font conversion: probe, plan, then copy, remux, or encode"
+license = "MIT"
+publish = false
+
+[lib]
+name = "convert"
+path = "src/lib.rs"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "gif",
+    "jpeg",
+    "png",
+    "tiff",
+    "webp",
+] }
+webp = "0.3"
+ttf2woff2 = { version = "0.13", default-features = false }
+wuff = "0.2"
+flate2 = "1"
