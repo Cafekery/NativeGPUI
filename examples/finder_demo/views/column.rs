@@ -28,6 +28,7 @@ const PILL_INSET: f32 = 7.25;
 const PILL_RADIUS: f32 = 7.;
 const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
+const REVEAL_SECS: f32 = 0.2;
 const COL_MIN: f32 = 100.;
 
 const AREA_ALPHA: f32 = 0.3;
@@ -477,7 +478,12 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    pub(crate) fn column_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn column_body(
+        &mut self,
+        palette: &Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (chain, leaf) = self.column_chain();
         while self.column_scrolls.len() < chain.len() {
             self.column_scrolls.push(UniformListScrollHandle::new());
@@ -497,8 +503,25 @@ impl FinderDemo {
 
         let depth = columns.len();
         if depth != self.column_depth {
+            // The first build lands at its end; a column opened later slides in, as Finder's does.
+            match self.column_depth {
+                0 => self.column_scroll.scroll_to_item(depth - 1),
+                _ => {
+                    let from = f32::from(self.column_scroll.offset().x);
+                    self.column_reveal = Some((from, std::time::Instant::now()));
+                }
+            }
             self.column_depth = depth;
-            self.column_scroll.scroll_to_item(depth - 1);
+        }
+        if let Some((from, started)) = self.column_reveal {
+            let t = (started.elapsed().as_secs_f32() / REVEAL_SECS).min(1.);
+            let to = -f32::from(self.column_scroll.max_offset().x);
+            let x = from + (to - from) * gpui::ease_in_out(t);
+            self.column_scroll.set_offset(gpui::point(px(x), px(0.)));
+            match t < 1. {
+                true => window.request_animation_frame(),
+                false => self.column_reveal = None,
+            }
         }
 
         let this = cx.entity();
