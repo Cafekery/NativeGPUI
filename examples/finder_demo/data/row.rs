@@ -5,6 +5,7 @@ use std::sync::Arc;
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::index::Index;
 use finder_fs::kind;
+use finder_fs::volumes::{Standard, standard};
 use gpui::SharedString;
 use native_gpui::tokens::FileType;
 
@@ -60,18 +61,30 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<Fil
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
-        if special().contains(path) {
-            return Some(FileType::Path(intern(path)));
-        }
-        return Some(match folder_full(entry, path, index) {
-            true => FileType::FullFolder,
-            false => FileType::Folder,
-        });
+        return Some(folder_kind(intern(path), folder_full(entry, path, index)));
     }
     Some(match entry.extension() {
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
         None => FileType::Uti(intern(uti)),
     })
+}
+
+fn folder_kind(path: &'static str, full: bool) -> FileType<'static> {
+    let trash = standard(Standard::Trash).is_some_and(|trash| trash == Path::new(path));
+    match (special().contains(path), full && !trash) {
+        (true, true) => FileType::FullPath(path),
+        (true, false) => FileType::Path(path),
+        (false, true) => FileType::FullFolder,
+        (false, false) => FileType::Folder,
+    }
+}
+
+pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'static> {
+    if crate::custom::custom_icon(&SharedString::new_static(path)) {
+        return FileType::Path(path);
+    }
+    let seen = crate::index().visible_children(Path::new(path));
+    folder_kind(path, seen.map_or(holds, |seen| seen > 0))
 }
 
 fn target_folder(path: &str) -> Option<&'static str> {

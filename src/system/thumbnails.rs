@@ -7,7 +7,7 @@ use block2::RcBlock;
 use gpui::{Pixels, RenderImage};
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSBitmapFormat, NSImage};
+use objc2_app_kit::{NSBitmapFormat, NSCompositingOperation, NSImage};
 use objc2_foundation::{NSError, NSSize, NSString, NSURL};
 use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
@@ -186,7 +186,12 @@ fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     let fit = image.size();
     let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
     let h = (fit.height.round() as usize).clamp(1, max_pixels.max(1));
-    tokens::rasterize(&[image], NSSize::new(w as f64, h as f64), w, h)
+    tokens::rasterize(
+        &[(image, NSCompositingOperation::SourceOver)],
+        NSSize::new(w as f64, h as f64),
+        w,
+        h,
+    )
 }
 
 fn complete(key: Key, result: Option<Arc<RenderImage>>) {
@@ -284,8 +289,13 @@ mod tests {
         assert_eq!(size.height as u32, u32::from(raster.size(0).height));
 
         let side = size.width as usize;
-        let drawn =
-            tokens::draw(&[&image], NSSize::new(size.width, size.height), side, side).unwrap();
+        let drawn = tokens::draw(
+            &[(&*image, NSCompositingOperation::SourceOver)],
+            NSSize::new(size.width, size.height),
+            side,
+            side,
+        )
+        .unwrap();
         let raster = raster.as_bytes(0).unwrap();
         let at = (side * side / 2 + side / 2) * 4;
         assert_eq!(drawn[at], raster[at + 2]);

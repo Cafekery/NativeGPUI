@@ -134,7 +134,9 @@ pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
 
 fn kind_of(row: &Row) -> Option<FileType<'static>> {
     match row.artwork {
-        Some(FileType::Folder | FileType::FullFolder) if crate::custom::custom_icon(&row.path) => {
+        Some(FileType::Folder | FileType::FullFolder | FileType::FullPath(_))
+            if crate::custom::custom_icon(&row.path) =>
+        {
             Some(FileType::Path(crate::data::intern(&row.path)))
         }
         kind => kind,
@@ -142,10 +144,10 @@ fn kind_of(row: &Row) -> Option<FileType<'static>> {
 }
 
 /// `public.volume` has no artwork of its own, so a volume draws `/`'s.
-pub(crate) fn place_art(volume: bool, size: f32) -> AnyElement {
-    let (kind, face) = match volume {
-        true => (FileType::Path("/"), Face::Volume),
-        false => (FileType::Folder, Face::Folder),
+pub(crate) fn place_art(folder: Option<FileType<'static>>, size: f32) -> AnyElement {
+    let (kind, face) = match folder {
+        None => (FileType::Path("/"), Face::Volume),
+        Some(kind) => (kind, Face::Folder),
     };
     square(size)
         .child(type_art(Some(kind), face, size))

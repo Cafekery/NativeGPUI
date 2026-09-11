@@ -16,11 +16,11 @@ use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceName, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
     NSAttributedStringNSStringDrawing, NSBitmapFormat, NSBitmapImageRep, NSBundleImageExtension,
-    NSColor, NSDeviceRGBColorSpace, NSFont, NSFontAttributeName, NSFontWeight, NSFontWeightBlack,
-    NSFontWeightBold, NSFontWeightHeavy, NSFontWeightLight, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSFontWeightThin, NSFontWeightUltraLight,
-    NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSImageSymbolScale,
-    NSKernAttributeName, NSLigatureAttributeName, NSScreen, NSWorkspace,
+    NSColor, NSCompositingOperation, NSDeviceRGBColorSpace, NSFont, NSFontAttributeName,
+    NSFontWeight, NSFontWeightBlack, NSFontWeightBold, NSFontWeightHeavy, NSFontWeightLight,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSFontWeightThin,
+    NSFontWeightUltraLight, NSGraphicsContext, NSImage, NSImageSymbolConfiguration,
+    NSImageSymbolScale, NSKernAttributeName, NSLigatureAttributeName, NSScreen, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSBundle, NSDictionary,
@@ -749,7 +749,13 @@ fn rasterize_symbol(
     let image = base.imageWithSymbolConfiguration(&configuration)?;
 
     // A semantic tint resolves at raster time, picking up the ambient appearance if none is set.
-    with_appearance(appearance, || symbol(&[&image], image.size(), scale))
+    with_appearance(appearance, || {
+        symbol(
+            &[(&*image, NSCompositingOperation::SourceOver)],
+            image.size(),
+            scale,
+        )
+    })
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -760,6 +766,7 @@ pub enum FileType<'a> {
     Extension(&'a str),
     Uti(&'a str),
     Path(&'a str),
+    FullPath(&'a str),
 }
 
 impl FileType<'_> {
@@ -770,6 +777,7 @@ impl FileType<'_> {
             FileType::Uti(uti) => format!("uti:{uti}"),
             FileType::Extension(extension) => format!("ext:{extension}"),
             FileType::Path(path) => format!("path:{path}"),
+            FileType::FullPath(path) => format!("path:{path}+full"),
         }
     }
 }
@@ -866,7 +874,7 @@ fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
 fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<Symbol> {
     let workspace = NSWorkspace::sharedWorkspace();
     let image: Option<Retained<NSImage>> = match kind {
-        FileType::Path(path) => {
+        FileType::Path(path) | FileType::FullPath(path) => {
             let path = NSString::from_str(path);
             unsafe { msg_send![&*workspace, iconForFile: &*path] }
         }
@@ -887,11 +895,20 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
 
     // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
     let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);
-    let mut stack = vec![image];
-    if kind == FileType::FullFolder {
-        stack.extend(folder_parts(points.width)?);
-    }
-    let layers: Vec<&NSImage> = stack.iter().map(|layer| &**layer).collect();
+    let parts = match kind {
+        FileType::FullFolder | FileType::FullPath(_) => Some(folder_parts(points.width)?),
+        _ => None,
+    };
+    let layers = match &parts {
+        // The icon's own front, glyph included, masked by the flap and laid over the paper.
+        Some([paper, flap]) => vec![
+            (&**flap, NSCompositingOperation::SourceOver),
+            (&*image, NSCompositingOperation::SourceIn),
+            (&**paper, NSCompositingOperation::DestinationOver),
+            (&*image, NSCompositingOperation::DestinationOver),
+        ],
+        None => vec![(&*image, NSCompositingOperation::SourceOver)],
+    };
     symbol(&layers, points, scale)
 }
 
@@ -910,7 +927,11 @@ fn folder_parts(points: f64) -> Option<[Retained<NSImage>; 2]> {
     Some([part("PaperSheet")?, part("FrontFlap")?])
 }
 
-fn symbol(images: &[&NSImage], points: NSSize, scale: f32) -> Option<Symbol> {
+fn symbol(
+    images: &[(&NSImage, NSCompositingOperation)],
+    points: NSSize,
+    scale: f32,
+) -> Option<Symbol> {
     let w = ((points.width * scale as f64).round() as usize).max(1);
     let h = ((points.height * scale as f64).round() as usize).max(1);
     Some(Symbol {
@@ -921,7 +942,7 @@ fn symbol(images: &[&NSImage], points: NSSize, scale: f32) -> Option<Symbol> {
 }
 
 pub(crate) fn rasterize(
-    images: &[&NSImage],
+    images: &[(&NSImage, NSCompositingOperation)],
     points: NSSize,
     w: usize,
     h: usize,
@@ -954,7 +975,12 @@ pub(crate) fn bitmap(
     }
 }
 
-pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> Option<Vec<u8>> {
+pub(crate) fn draw(
+    images: &[(&NSImage, NSCompositingOperation)],
+    points: NSSize,
+    w: usize,
+    h: usize,
+) -> Option<Vec<u8>> {
     let rep = bitmap(w, h, NSBitmapFormat::empty())?;
     // The rep's size is in points while its buffer is in pixels; that mismatch is the 2x transform.
     rep.setSize(points);
@@ -962,8 +988,13 @@ pub(crate) fn draw(images: &[&NSImage], points: NSSize, w: usize, h: usize) -> O
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
-    for image in images {
-        image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), points));
+    for (image, operation) in images {
+        image.drawInRect_fromRect_operation_fraction(
+            NSRect::new(NSPoint::new(0.0, 0.0), points),
+            NSRect::ZERO,
+            *operation,
+            1.0,
+        );
     }
     context.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
@@ -1072,6 +1103,15 @@ mod tests {
         assert!(
             paper(FileType::FullFolder) > 0,
             "the full folder shows none"
+        );
+        assert_eq!(
+            paper(FileType::Path("/Users")),
+            0,
+            "the empty Users shows paper"
+        );
+        assert!(
+            paper(FileType::FullPath("/Users")) > 0,
+            "the full Users shows none"
         );
     }
 
