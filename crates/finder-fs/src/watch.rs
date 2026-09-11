@@ -50,10 +50,13 @@ struct Shared {
     shutdown: AtomicBool,
     /// `None` while idle, so a stray wake-up can't poison the next run.
     run_loop: Mutex<Option<usize>>,
+    /// A stop that lands between two runs of the loop is dropped; this carries it to the next.
+    stale: AtomicBool,
 }
 
 impl Shared {
     fn wake(&self) {
+        self.stale.store(true, Ordering::SeqCst);
         self.changed.notify_all();
         if let Some(addr) = *self.run_loop.lock().unwrap() {
             unsafe { (&*(addr as *const CFRunLoop)).stop() };
@@ -100,6 +103,7 @@ impl Watcher {
             since: AtomicU64::new(since),
             shutdown: AtomicBool::new(false),
             run_loop: Mutex::new(None),
+            stale: AtomicBool::new(false),
         });
         let thread_shared = shared.clone();
         let thread = thread::spawn(move || {
@@ -159,6 +163,7 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
     let context = Box::into_raw(Box::new(on_change));
 
     while !shared.shutdown.load(Ordering::SeqCst) {
+        shared.stale.store(false, Ordering::SeqCst);
         let snapshot: Vec<PathBuf> = shared.paths.lock().unwrap().iter().cloned().collect();
         if snapshot.is_empty() {
             let mut paths = shared.paths.lock().unwrap();
@@ -208,6 +213,7 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
 
         while CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, TICK, false)
             == CFRunLoopRunResult::TimedOut
+            && !shared.stale.load(Ordering::SeqCst)
         {
             unsafe { (*context)(Replay::default()) };
         }
@@ -449,6 +455,27 @@ mod tests {
             "no callbacks should fire after drop"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_drop_during_a_tick_still_stops_the_watcher() {
+        let _serial = serial();
+        let dir = temp_dir("tick-drop");
+        let (ticked, tick) = mpsc::channel();
+        let watcher = since(0, vec![dir.clone()], move |replay: Replay| {
+            if replay.event_id == 0 {
+                let _ = ticked.send(());
+                thread::sleep(Duration::from_millis(300));
+            }
+        });
+        tick.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (dropped, done) = mpsc::channel();
+        thread::spawn(move || {
+            drop(watcher);
+            let _ = dropped.send(());
+        });
+        assert!(done.recv_timeout(Duration::from_secs(3)).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 }

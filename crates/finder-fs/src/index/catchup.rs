@@ -137,6 +137,7 @@ fn reconcile(
     }
     let home = crawl::home();
     let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let rescans: Vec<PathBuf>;
     {
         let tree = index.read();
         for root in &plan.warm {
@@ -144,11 +145,11 @@ fn reconcile(
                 dirs.insert(root.clone());
             }
         }
-        for path in batch.rescan {
-            if owner && tree.listed(&path) && open_to_us(&path, &home) {
-                crawl.push(path);
-            }
-        }
+        rescans = batch
+            .rescan
+            .into_iter()
+            .filter(|path| tree.listed(path) && open_to_us(path, &home))
+            .collect();
         dirs.extend(
             batch
                 .dirs
@@ -159,6 +160,10 @@ fn reconcile(
     for dir in dirs {
         crawl.extend(index.refresh(&dir, &home));
     }
+    let saved = index
+        .saved
+        .map_or(std::time::UNIX_EPOCH, |at| at - super::SAVE_GAP);
+    crawl.extend(index.verify(&rescans, saved, &home));
     Walk {
         crawl,
         record,
