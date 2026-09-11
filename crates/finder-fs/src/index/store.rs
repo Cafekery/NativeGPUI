@@ -384,6 +384,28 @@ impl Tree {
         })
     }
 
+    pub fn listed_under(&self, roots: &[PathBuf]) -> Vec<PathBuf> {
+        let mut stack: Vec<(u32, PathBuf)> = roots
+            .iter()
+            .filter_map(|root| Some((self.find(root)?, root.clone())))
+            .collect();
+        let mut listed = Vec::new();
+        while let Some((id, path)) = stack.pop() {
+            let node = self.nodes[id as usize];
+            if !node.is_dir() || node.flags & PACKAGE != 0 || node.state & LISTED == 0 {
+                continue;
+            }
+            for child in self.children(id) {
+                if self.nodes[child as usize].is_dir() {
+                    let name = OsStr::from_bytes(self.names.bytes(self.name_of[child as usize]));
+                    stack.push((child, path.join(name)));
+                }
+            }
+            listed.push(path);
+        }
+        listed
+    }
+
     pub fn find(&self, path: &Path) -> Option<u32> {
         let mut cur = ROOT;
         for part in path.components() {

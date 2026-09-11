@@ -56,6 +56,22 @@ fn main() {
         format!("{} entries", stats.dirs + stats.files),
     );
 
+    if mode.as_deref() == Some("search") {
+        for query in &roots {
+            let query = query.to_string_lossy();
+            for pass in ["first", "again"] {
+                let start = Instant::now();
+                let hits = index.search(&query, None, usize::MAX);
+                line(
+                    "search",
+                    start,
+                    format!("{pass} {query:?}: {} hits", hits.len()),
+                );
+            }
+        }
+        return;
+    }
+
     if mode.as_deref() == Some("follow") {
         let _watcher = index.follow(roots);
         let seconds: u64 = std::env::var("NG_FOLLOW_SECS").map_or(60, |s| s.parse().unwrap());
@@ -67,6 +83,13 @@ fn main() {
                 "follow",
                 start,
                 format!("{} entries", stats.dirs + stats.files),
+            );
+        }
+        if let Ok(query) = std::env::var("NG_FOLLOW_SEARCH") {
+            let hits = index.search(&query, None, usize::MAX);
+            println!(
+                "search  {query:?}: {} hits in the followed tree",
+                hits.len()
             );
         }
         return;

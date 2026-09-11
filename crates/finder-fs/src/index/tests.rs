@@ -787,3 +787,28 @@ fn queued_walks_collapse_into_their_outermost_folders() {
         paths(&["/a", "/c", "/cd"])
     );
 }
+
+#[test]
+fn a_root_rescan_reads_again_only_the_folders_changed_since_the_tree_was_in_sync() {
+    let temp = tree("rescan-check");
+    let root = &temp.0;
+    std::thread::sleep(Duration::from_millis(2500));
+    let index = Index::open(&store("rescan-check"));
+    crawl(&index, root);
+
+    fs::write(root.join("a/b/new.txt"), b"n").unwrap();
+    fs::create_dir_all(root.join("fresh/inner")).unwrap();
+    fs::write(root.join("fresh/inner/deep.txt"), b"d").unwrap();
+    let mark = reads_mark();
+    index.apply(crate::watch::Replay {
+        rescan: vec![root.clone()],
+        ..Default::default()
+    });
+
+    assert!(eventually(|| index.search("deep", None, 4).len() == 1));
+    assert_eq!(index.search("new", None, 4).len(), 1);
+    let reads = reads_under(root, mark);
+    assert!(reads.contains(&root.join("a/b")));
+    assert!(!reads.contains(&root.join("a/b/c")));
+    assert!(!reads.contains(&root.join("many")));
+}

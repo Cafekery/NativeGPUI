@@ -28,9 +28,14 @@ const YIELDS: usize = 64;
 /// Long enough for an instance that is quitting as this one launches to let go of the store.
 const CLAIM_WAIT: Duration = Duration::from_millis(500);
 /// A folder whose relist cost more than this waits `COOLDOWN` times that cost before the next,
-/// so one big folder under constant change holds at most a twentieth of a core.
+/// so one big folder under constant change holds at most a twentieth of a core. A rescan's check
+/// cools its roots the same way: macOS rescans a whole root each time it drops events.
 const COSTLY: Duration = Duration::from_millis(10);
 const COOLDOWN: u32 = 20;
+/// Room for coarse timestamps when finding the folders modified since the tree was in sync.
+const SYNC_MARGIN: Duration = Duration::from_secs(2);
+/// A snapshot can be saved while the tree trails the disk, so its catch-up looks this far back.
+const SAVE_GAP: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
@@ -67,6 +72,10 @@ struct Pending {
     advanced: u64,
     later: HashMap<PathBuf, Instant>,
     cooling: HashMap<PathBuf, Instant>,
+    rescans: Vec<PathBuf>,
+    checked: HashMap<PathBuf, Instant>,
+    rechecks: HashMap<PathBuf, Instant>,
+    synced: Option<SystemTime>,
 }
 
 pub struct Index {
@@ -76,6 +85,8 @@ pub struct Index {
     /// Readers queued on `tree`: a writer yields to them, or a stream of writes starves them.
     waiting: AtomicUsize,
     crawling: AtomicBool,
+    /// A rescan's check runs apart from crawling, so new folders keep landing while it reads.
+    checking: AtomicBool,
     pending: Mutex<Pending>,
     /// Only the store's owner walks whole roots and writes the snapshot; any other instance
     /// reads it and follows the disk live.
@@ -84,6 +95,7 @@ pub struct Index {
     dirty: AtomicBool,
     saving: AtomicBool,
     writing: Mutex<()>,
+    saved: Option<SystemTime>,
 }
 
 impl Index {
@@ -95,12 +107,16 @@ impl Index {
             lookup: RwLock::new(lookup::Lookup::default()),
             waiting: AtomicUsize::new(0),
             crawling: AtomicBool::new(false),
+            checking: AtomicBool::new(false),
             pending: Mutex::default(),
             owner,
             _lock: lock,
             dirty: AtomicBool::new(false),
             saving: AtomicBool::new(false),
             writing: Mutex::new(()),
+            saved: std::fs::metadata(store)
+                .and_then(|meta| meta.modified())
+                .ok(),
         })
     }
 
@@ -118,6 +134,7 @@ impl Index {
         if self.crawling.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.pending.lock().unwrap().synced = Some(SystemTime::now());
         crawl::spawn(
             self,
             Walk {
@@ -137,6 +154,7 @@ impl Index {
         if self.crawling.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.pending.lock().unwrap().synced = Some(SystemTime::now());
         catchup::spawn(self, roots, progress);
     }
 
@@ -242,12 +260,13 @@ impl Index {
     fn apply(self: &Arc<Self>, replay: Replay) {
         let home = crawl::home();
         let open = |dir: &PathBuf| catchup::open_to_us(dir, &home);
-        let mut deeper: Vec<PathBuf> = replay.rescan.into_iter().filter(open).collect();
+        let rescans: Vec<PathBuf> = replay.rescan.into_iter().filter(open).collect();
         if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            for dir in &deeper {
+            for dir in &rescans {
                 eprintln!("rescan {}", dir.display());
             }
         }
+        let mut deeper = Vec::new();
         let mut dirs: Vec<PathBuf> = replay.dirs.into_iter().filter(open).collect();
         let now = Instant::now();
         {
@@ -261,6 +280,16 @@ impl Index {
             for dir in due {
                 pending.later.remove(&dir);
                 dirs.push(dir);
+            }
+            let rechecks: Vec<PathBuf> = pending
+                .rechecks
+                .iter()
+                .filter(|(_, at)| **at <= now)
+                .map(|(dir, _)| dir.clone())
+                .collect();
+            for dir in rechecks {
+                pending.rechecks.remove(&dir);
+                pending.rescans.push(dir);
             }
             pending.cooling.retain(|_, until| *until > now);
             dirs.sort_unstable();
@@ -284,6 +313,7 @@ impl Index {
         }
         let mut pending = self.pending.lock().unwrap();
         pending.dirs.extend(deeper);
+        pending.rescans.extend(rescans);
         pending.applied = pending.applied.max(replay.event_id);
         drop(pending);
         self.walk_pending();
@@ -297,6 +327,45 @@ impl Index {
                 return;
             }
             let mut pending = self.pending.lock().unwrap();
+            let now = Instant::now();
+            pending.checked.retain(|_, until| *until > now);
+            let mut check = Vec::new();
+            for dir in std::mem::take(&mut pending.rescans) {
+                match pending.checked.get(&dir).copied() {
+                    Some(until) => {
+                        pending.rechecks.insert(dir, until);
+                    }
+                    None => check.push(dir),
+                }
+            }
+            if !check.is_empty() {
+                match self.checking.swap(true, Ordering::SeqCst) {
+                    true => pending.rescans.extend(check),
+                    false => {
+                        let since = pending
+                            .synced
+                            .map_or(std::time::UNIX_EPOCH, |at| at - SYNC_MARGIN);
+                        let index = self.clone();
+                        std::thread::spawn(move || {
+                            crate::utility_qos();
+                            let started = Instant::now();
+                            let deeper = index.verify(&check, since, &crawl::home());
+                            if std::env::var_os("NG_CRAWL_TRACE").is_some() {
+                                eprintln!(
+                                    "check {:?} took {} ms deeper {}",
+                                    check,
+                                    started.elapsed().as_millis(),
+                                    deeper.len()
+                                );
+                            }
+                            index.cool_check(&check, started.elapsed());
+                            index.pending.lock().unwrap().dirs.extend(deeper);
+                            index.checking.store(false, Ordering::SeqCst);
+                            index.walk_pending();
+                        });
+                    }
+                }
+            }
             if !pending.dirs.is_empty() {
                 let crawl = outermost(std::mem::take(&mut pending.dirs));
                 drop(pending);
@@ -307,21 +376,60 @@ impl Index {
                 };
                 return crawl::spawn(self, walk, |_| {});
             }
-            // A folder put off until it cools down still owes its change.
-            let settled = pending.later.is_empty() && pending.applied > pending.advanced;
+            // A folder put off until it cools down, or a check still reading, still owes its change.
+            let settled = pending.later.is_empty()
+                && pending.rechecks.is_empty()
+                && pending.rescans.is_empty()
+                && !self.checking.load(Ordering::SeqCst)
+                && pending.applied > pending.advanced;
             let (roots, applied) = (pending.roots.clone(), pending.applied);
             if settled {
                 pending.advanced = applied;
+                pending.synced = Some(SystemTime::now());
             }
             drop(pending);
             if settled {
                 self.write().advance(&roots, applied);
             }
             self.crawling.store(false, Ordering::SeqCst);
-            if self.pending.lock().unwrap().dirs.is_empty() {
+            let pending = self.pending.lock().unwrap();
+            let checking = self.checking.load(Ordering::SeqCst);
+            if pending.dirs.is_empty() && (pending.rescans.is_empty() || checking) {
                 return;
             }
         }
+    }
+
+    fn cool_check(&self, roots: &[PathBuf], took: Duration) {
+        if took <= COSTLY {
+            return;
+        }
+        let until = Instant::now() + took * COOLDOWN;
+        let mut pending = self.pending.lock().unwrap();
+        for root in roots {
+            pending.checked.insert(root.clone(), until);
+        }
+    }
+
+    /// Every change adds, removes or renames an entry, which moves its folder's modification time:
+    /// after dropped events, the folders to read again are the ones modified since `since`.
+    fn verify(&self, roots: &[PathBuf], since: SystemTime, home: &Path) -> Vec<PathBuf> {
+        let dirs = self.read().listed_under(&outermost(roots.to_vec()));
+        let (known, mut refreshed) = (dirs.len(), 0);
+        let mut deeper = Vec::new();
+        for dir in dirs {
+            let changed = std::fs::symlink_metadata(&dir)
+                .and_then(|meta| meta.modified())
+                .map_or(true, |at| at >= since);
+            if changed && catchup::open_to_us(&dir, home) {
+                refreshed += 1;
+                deeper.extend(self.refresh(&dir, home));
+            }
+        }
+        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
+            eprintln!("verify {known} known folders, {refreshed} read again");
+        }
+        deeper
     }
 
     fn refresh(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
