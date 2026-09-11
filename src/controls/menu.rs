@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Modifiers, MouseButton, MouseDownEvent, Pixels,
-    Point, Size, Style, Window, px, size,
+    InspectorElementId, IntoElement, LayoutId, Length, Modifiers, MouseButton, MouseDownEvent,
+    Pixels, Point, Size, Style, Window, px, size,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, Sel};
@@ -29,6 +29,7 @@ use crate::bridge::host::ControlSize;
 use crate::bridge::host::{
     Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element, wire,
 };
+use crate::controls::button::ButtonBezel;
 use crate::controls::fitted;
 use crate::system::color::to_nscolor;
 
@@ -655,7 +656,9 @@ pub fn native_popup(id: impl Into<ElementId>, selected: usize) -> NativePopup {
         selected,
         entries: Vec::new(),
         pull_down: false,
+        bezel: ButtonBezel::Automatic,
         control_size: ControlSize::default(),
+        width: None,
         enabled: true,
         on_change: None,
     }
@@ -666,7 +669,9 @@ pub struct NativePopup {
     selected: usize,
     entries: Vec<MenuEntry>,
     pull_down: bool,
+    bezel: ButtonBezel,
     control_size: ControlSize,
+    width: Option<Length>,
     enabled: bool,
     on_change: Option<NativeDispatch>,
 }
@@ -688,8 +693,18 @@ impl NativePopup {
         self
     }
 
+    pub fn bezel_style(mut self, bezel: ButtonBezel) -> Self {
+        self.bezel = bezel;
+        self
+    }
+
     pub fn control_size(mut self, control_size: ControlSize) -> Self {
         self.control_size = control_size;
+        self
+    }
+
+    pub fn width(mut self, width: impl Into<Length>) -> Self {
+        self.width = Some(width.into());
         self
     }
 
@@ -714,9 +729,11 @@ impl NativePopup {
         let mut hasher = DefaultHasher::new();
         self.entries.hash(&mut hasher);
         self.pull_down.hash(&mut hasher);
+        self.bezel.hash(&mut hasher);
         self.control_size.hash(&mut hasher);
-        let (entries, pull_down, control_size) = (&self.entries, self.pull_down, self.control_size);
-        fitted(fitting_size_keyed(
+        let (entries, pull_down, bezel, control_size) =
+            (&self.entries, self.pull_down, self.bezel, self.control_size);
+        let fitted = fitted(fitting_size_keyed(
             "NSPopUpButton",
             hasher.finish(),
             |mtm| {
@@ -726,13 +743,21 @@ impl NativePopup {
                     pull_down,
                 );
                 probe.setAutoenablesItems(false);
+                probe.setBezelStyle(bezel.to_native());
                 probe.setControlSize(NSControlSize::from(control_size));
                 if let Some(menu) = probe.menu() {
                     sync_menu(mtm, &menu, entries, None);
                 }
                 probe.fittingSize()
             },
-        ))
+        ));
+        match self.width {
+            Some(width) => Style {
+                size: size(width, fitted.size.height),
+                ..fitted
+            },
+            None => fitted,
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -777,6 +802,10 @@ impl NativePopup {
                     item.setState(NSControlStateValueOn);
                 }
             }
+        }
+        let bezel = self.bezel.to_native();
+        if popup.bezelStyle() != bezel {
+            popup.setBezelStyle(bezel);
         }
         if popup.isEnabled() != self.enabled {
             popup.setEnabled(self.enabled);
