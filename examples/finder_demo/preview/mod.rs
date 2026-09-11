@@ -1,6 +1,11 @@
 mod card;
 mod stats;
 
+use std::cell::Cell;
+use std::ptr::NonNull;
+use std::rc::Rc;
+
+use block2::StackBlock;
 use gpui::{
     App, Bounds, Context, DispatchPhase, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Render, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas,
@@ -12,9 +17,13 @@ use native_gpui::{
     window_options,
 };
 use objc2::msg_send;
-use objc2::rc::Retained;
-use objc2_app_kit::{NSColor, NSEvent, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
-use objc2_foundation::NSRect;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2_app_kit::{
+    NSColor, NSEvent, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode,
+    NSWindowStyleMask,
+};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize};
 
 pub(crate) use self::stats::{Stats, summarize};
 use crate::app::FinderDemo;
@@ -35,7 +44,78 @@ const RESIZE_EDGE: f32 = 6.;
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
-    frame: NSRect,
+    anchor: Rc<Cell<Anchor>>,
+    follow: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+}
+
+impl Drop for PreviewWindow {
+    fn drop(&mut self) {
+        unsafe { NSNotificationCenter::defaultCenter().removeObserver(self.follow.as_ref()) };
+    }
+}
+
+/// The pane's gaps to its parent's edges, which resizing the parent keeps.
+#[derive(Clone, Copy)]
+struct Anchor {
+    right: f64,
+    top: f64,
+    bottom: f64,
+    width: f64,
+}
+
+impl Anchor {
+    fn new(parent: NSRect, pane: NSRect) -> Self {
+        Self {
+            right: parent.origin.x + parent.size.width - pane.origin.x - pane.size.width,
+            top: parent.origin.y + parent.size.height - pane.origin.y - pane.size.height,
+            bottom: pane.origin.y - parent.origin.y,
+            width: pane.size.width,
+        }
+    }
+
+    fn place(self, parent: NSRect) -> NSRect {
+        NSRect::new(
+            NSPoint::new(
+                parent.origin.x + parent.size.width - self.right - self.width,
+                parent.origin.y + self.bottom,
+            ),
+            NSSize::new(self.width, parent.size.height - self.top - self.bottom),
+        )
+    }
+}
+
+/// Moves the pane within the parent's own resize: placed from the next frame, it trails the edge.
+fn follow_parent(
+    parent: &NSWindow,
+    pane: &Retained<NSWindow>,
+    anchor: &Rc<Cell<Anchor>>,
+) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let (host, pane, anchor) = (Weak::new(parent), pane.clone(), anchor.clone());
+    let block = StackBlock::new(move |_: NonNull<NSNotification>| {
+        let Some(host) = host.load() else {
+            return;
+        };
+        let frame = anchor.get().place(host.frame());
+        if !near(pane.frame(), frame) {
+            pane.setFrame_display(frame, true);
+        }
+    })
+    .copy();
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowDidResizeNotification),
+            Some(parent),
+            None,
+            &block,
+        )
+    }
+}
+
+fn near(a: NSRect, b: NSRect) -> bool {
+    (a.origin.x - b.origin.x).abs() < 0.5
+        && (a.origin.y - b.origin.y).abs() < 0.5
+        && (a.size.width - b.size.width).abs() < 0.5
+        && (a.size.height - b.size.height).abs() < 0.5
 }
 
 pub(crate) struct PreviewPane {
@@ -178,10 +258,13 @@ fn open_preview_window(
         window.setFrame_display(frame, true);
         unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
         window.setLevel(parent.level());
+        let anchor = Rc::new(Cell::new(Anchor::new(parent.frame(), frame)));
+        let follow = follow_parent(&parent, &window, &anchor);
         Some(PreviewWindow {
             handle,
             window,
-            frame,
+            anchor,
+            follow,
         })
     });
     finder.update(cx, |this, _| {
@@ -221,15 +304,18 @@ impl FinderDemo {
             size: size(px(self.preview_w - RESIZE_EDGE), px(self.pane_h)),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
-        match &mut self.preview_window {
-            Some(pane) if pane.frame != frame => {
-                pane.frame = frame;
-                // Off this draw: resizing from inside the parent's frame loses the size change.
-                let pane_window = pane.window.clone();
-                cx.spawn(async move |_, _| pane_window.setFrame_display(frame, true))
-                    .detach();
+        match &self.preview_window {
+            Some(pane) => {
+                if let Some(parent) = &self.host {
+                    pane.anchor.set(Anchor::new(parent.frame(), frame));
+                }
+                if !near(pane.window.frame(), frame) {
+                    // Off this draw: resizing from inside the parent's frame loses the size change.
+                    let pane_window = pane.window.clone();
+                    cx.spawn(async move |_, _| pane_window.setFrame_display(frame, true))
+                        .detach();
+                }
             }
-            Some(_) => {}
             None if self.preview_opening => {}
             None => {
                 self.preview_opening = true;

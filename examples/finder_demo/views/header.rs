@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, Window, div,
-    prelude::*, px,
+    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{native_label, native_rule, native_symbol};
@@ -230,12 +230,21 @@ impl FinderDemo {
                             this.fit_list_column(index, window, cx);
                         }
                     }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, _| {
+                            this.header_press = Some(f32::from(event.position.x));
+                        }),
+                    )
                     .on_drag(HeaderGrab::Divider(index), {
                         let this = cx.entity().downgrade();
                         move |grab: &HeaderGrab, _, window, cx| {
                             let grab = *grab;
-                            let origin = f32::from(window.mouse_position().x);
+                            let now = f32::from(window.mouse_position().x);
                             this.update(cx, |this: &mut FinderDemo, cx| {
+                                // gpui starts a drag only once the pointer has moved; measured from
+                                // there, the divider falls behind the pointer by that much.
+                                let origin = this.header_press.take().unwrap_or(now);
                                 this.begin_header_drag(grab, origin, 0.);
                                 cx.notify();
                             })

@@ -98,7 +98,7 @@ impl Render for FinderDemo {
         let status_bar = self.status_bar_shown.then(|| self.status_bar(&palette, cx));
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
-            COLUMN_VIEW => self.column_body(&palette, cx),
+            COLUMN_VIEW => self.column_body(&palette, window, cx),
             GALLERY_VIEW => self.gallery_body(&palette, window, cx),
             _ => self.list_body(&palette, cx),
         };
