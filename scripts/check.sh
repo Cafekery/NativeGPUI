@@ -30,6 +30,7 @@ formatting() {
 step 'formatting'                   formatting
 step 'unit tests'                   cargo test --release --lib
 step 'finder-fs tests'              cargo test --release -p finder-fs
+step 'convert tests'                cargo test --release -p convert
 step 'z-order holds paint order'    cargo run --release --example z_order
 step 'glass container declines'     cargo run --release --example glass_hit
 step 'decorations decline'          cargo run --release --example decoration_hit
