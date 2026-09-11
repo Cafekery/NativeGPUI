@@ -134,9 +134,11 @@ pub(crate) fn index() -> &'static Arc<Index> {
 
 fn crawl(cx: &mut App) {
     let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
+    // A network share is sealed below a root already; as a root it would be walked over the wire.
     roots.extend(
         volumes::mounted()
             .into_iter()
+            .filter(|volume| !volume.network)
             .map(|volume| volume.path)
             .filter(|path| path != Path::new("/")),
     );
