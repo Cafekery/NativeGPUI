@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Hsla, Style, Window, px};
+use gpui::{App, ElementId, Hsla, Style, Window, px, relative};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -433,6 +433,7 @@ impl NativePathControl {
             control.fittingSize()
         });
         let mut style = Style::default();
+        style.size.width = relative(1.).into();
         style.size.height = px(fitting.height as f32).into();
         style
     }

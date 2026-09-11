@@ -1,13 +1,13 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Style, Window, px};
+use gpui::{App, ElementId, Length, Style, Window, px, size};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSControlSize, NSControlStateValue, NSControlStateValueMixed,
-    NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle, NSSegmentSwitchTracking,
-    NSSegmentedControl,
+    NSBezelStyle, NSButton, NSCellImagePosition, NSControlSize, NSControlStateValue,
+    NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn, NSImage,
+    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
 };
 use objc2_foundation::{MainThreadMarker, NSSize, NSString};
 
@@ -31,6 +31,50 @@ fn measured(
 fn sync_title(button: &NSButton, wanted: &str) {
     if button.title().to_string() != wanted {
         button.setTitle(&NSString::from_str(wanted));
+    }
+}
+
+fn symbol_image(name: &str, label: &str) -> Option<Retained<NSImage>> {
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        Some(&NSString::from_str(label)),
+    )
+}
+
+fn sync_symbol(button: &NSButton, symbol: Option<&str>, label: &str, only: bool) {
+    let Some(name) = symbol else {
+        if button.image().is_some() {
+            button.setImage(None);
+        }
+        if button.imagePosition() != NSCellImagePosition::NoImage {
+            button.setImagePosition(NSCellImagePosition::NoImage);
+        }
+        sync_title(button, label);
+        return;
+    };
+    let image = symbol_image(name, label);
+    let same = match (button.image(), &image) {
+        (Some(have), Some(want)) => have.isEqual(Some(&**want)),
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        button.setImage(image.as_deref());
+    }
+    let position = if only {
+        NSCellImagePosition::ImageOnly
+    } else {
+        NSCellImagePosition::ImageTrailing
+    };
+    if button.imagePosition() != position {
+        button.setImagePosition(position);
+    }
+    if only {
+        if !button.title().is_empty() {
+            button.setTitle(&NSString::from_str(""));
+        }
+    } else {
+        sync_title(button, label);
     }
 }
 
@@ -262,7 +306,7 @@ pub enum ButtonBezel {
 }
 
 impl ButtonBezel {
-    fn to_native(self) -> NSBezelStyle {
+    pub(crate) fn to_native(self) -> NSBezelStyle {
         match self {
             Self::Automatic => NSBezelStyle::Automatic,
             Self::Push => NSBezelStyle::Push,
@@ -299,8 +343,12 @@ pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> Nati
     NativeButton {
         id: id.into(),
         title: title.into(),
+        symbol: None,
+        symbol_only: true,
         bezel: ButtonBezel::Automatic,
         control_size: ControlSize::default(),
+        square: None,
+        width: None,
         default_button: false,
         enabled: true,
         on_click: None,
@@ -310,14 +358,32 @@ pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> Nati
 pub struct NativeButton {
     id: ElementId,
     title: String,
+    symbol: Option<String>,
+    symbol_only: bool,
     bezel: ButtonBezel,
     control_size: ControlSize,
+    square: Option<f32>,
+    width: Option<Length>,
     default_button: bool,
     enabled: bool,
     on_click: Option<NativeHandler>,
 }
 
 impl NativeButton {
+    /// SF Symbol on the face; the title is the accessibility name.
+    pub fn symbol(mut self, name: impl Into<String>) -> Self {
+        self.symbol = Some(name.into());
+        self.symbol_only = true;
+        self
+    }
+
+    /// SF Symbol after the title.
+    pub fn trailing_symbol(mut self, name: impl Into<String>) -> Self {
+        self.symbol = Some(name.into());
+        self.symbol_only = false;
+        self
+    }
+
     pub fn bezel_style(mut self, bezel: ButtonBezel) -> Self {
         self.bezel = bezel;
         self
@@ -325,6 +391,16 @@ impl NativeButton {
 
     pub fn control_size(mut self, control_size: ControlSize) -> Self {
         self.control_size = control_size;
+        self
+    }
+
+    pub fn square(mut self, side: f32) -> Self {
+        self.square = Some(side);
+        self
+    }
+
+    pub fn width(mut self, width: impl Into<Length>) -> Self {
+        self.width = Some(width.into());
         self
     }
 
@@ -345,10 +421,22 @@ impl NativeButton {
     }
 
     fn layout(&self) -> Style {
-        let (title, bezel, control_size) = (self.title.clone(), self.bezel, self.control_size);
-        measured(
+        if let Some(side) = self.square {
+            return Style {
+                size: size(px(side).into(), px(side).into()),
+                ..Default::default()
+            };
+        }
+        let (title, symbol, symbol_only, bezel, control_size) = (
+            self.title.clone(),
+            self.symbol.clone(),
+            self.symbol_only,
+            self.bezel,
+            self.control_size,
+        );
+        let fitted = measured(
             "NSButton.push",
-            (&title, bezel, control_size),
+            (&title, &symbol, symbol_only, bezel, control_size),
             |mtm| unsafe {
                 let button = NSButton::buttonWithTitle_target_action(
                     &NSString::from_str(&title),
@@ -356,11 +444,19 @@ impl NativeButton {
                     None,
                     mtm,
                 );
-                button.setBezelStyle(bezel.to_native());
                 button.setControlSize(NSControlSize::from(control_size));
+                button.setBezelStyle(bezel.to_native());
+                sync_symbol(&button, symbol.as_deref(), &title, symbol_only);
                 button.fittingSize()
             },
-        )
+        );
+        match self.width {
+            Some(width) => Style {
+                size: size(width, fitted.size.height),
+                ..fitted
+            },
+            None => fitted,
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -377,15 +473,20 @@ impl NativeButton {
             wire(&button, target, slot.key);
             button
         });
-        let bezel = self.bezel.to_native();
-        if button.bezelStyle() != bezel {
-            button.setBezelStyle(bezel);
-        }
         let control_size = NSControlSize::from(self.control_size);
         if button.controlSize() != control_size {
             button.setControlSize(control_size);
         }
-        sync_title(&button, &self.title);
+        let bezel = self.bezel.to_native();
+        if button.bezelStyle() != bezel {
+            button.setBezelStyle(bezel);
+        }
+        sync_symbol(
+            &button,
+            self.symbol.as_deref(),
+            &self.title,
+            self.symbol_only,
+        );
         if is_default_button(&button) != self.default_button {
             let wanted = if self.default_button { "\r" } else { "" };
             button.setKeyEquivalent(&NSString::from_str(wanted));
@@ -453,6 +554,7 @@ pub fn native_segmented(id: impl Into<ElementId>, selected: usize) -> NativeSegm
         id: id.into(),
         selected,
         segments: Vec::new(),
+        symbols: Vec::new(),
         tracking: TrackingMode::SelectOne,
         style: SegmentStyle::default(),
         control_size: ControlSize::default(),
@@ -466,6 +568,7 @@ pub struct NativeSegmented {
     id: ElementId,
     selected: usize,
     segments: Vec<String>,
+    symbols: Vec<String>,
     tracking: TrackingMode,
     style: SegmentStyle,
     control_size: ControlSize,
@@ -477,6 +580,12 @@ pub struct NativeSegmented {
 impl NativeSegmented {
     pub fn segments(mut self, segments: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.segments = segments.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// SF Symbols on the face; `segments` stay the accessibility names.
+    pub fn symbols(mut self, symbols: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.symbols = symbols.into_iter().map(Into::into).collect();
         self
     }
 
@@ -520,16 +629,14 @@ impl NativeSegmented {
 
     fn layout(&self) -> Style {
         let segments = self.segments.clone();
+        let symbols = self.symbols.clone();
         let (style, control_size) = (self.style, self.control_size);
         measured(
             "NSSegmentedControl",
-            (&segments, style, control_size),
+            (&segments, &symbols, style, control_size),
             |mtm| {
                 let control = NSSegmentedControl::new(mtm);
-                control.setSegmentCount(segments.len() as isize);
-                for (i, label) in segments.iter().enumerate() {
-                    control.setLabel_forSegment(&NSString::from_str(label), i as isize);
-                }
+                fill_segments(&control, &segments, &symbols);
                 control.setSegmentStyle(style.to_native());
                 control.setControlSize(NSControlSize::from(control_size));
                 control.fittingSize()
@@ -548,16 +655,7 @@ impl NativeSegmented {
             wire(&control, target, slot.key);
             control
         });
-        let count = self.segments.len() as isize;
-        if control.segmentCount() != count {
-            control.setSegmentCount(count);
-        }
-        for (i, label) in self.segments.iter().enumerate() {
-            let current = control.labelForSegment(i as isize).map(|s| s.to_string());
-            if current.as_deref() != Some(label.as_str()) {
-                control.setLabel_forSegment(&NSString::from_str(label), i as isize);
-            }
-        }
+        fill_segments(&control, &self.segments, &self.symbols);
         let style = self.style.to_native();
         if control.segmentStyle() != style {
             control.setSegmentStyle(style);
@@ -599,3 +697,45 @@ impl NativeSegmented {
 }
 
 hosted_element!(NativeSegmented);
+
+fn fill_segments(control: &NSSegmentedControl, segments: &[String], symbols: &[String]) {
+    let count = segments.len().max(symbols.len()) as isize;
+    if control.segmentCount() != count {
+        control.setSegmentCount(count);
+    }
+    for i in 0..count {
+        let label = segments.get(i as usize).map(String::as_str).unwrap_or("");
+        let symbol = symbols
+            .get(i as usize)
+            .map(String::as_str)
+            .filter(|name| !name.is_empty());
+        match symbol {
+            Some(name) => {
+                let image = symbol_image(name, label);
+                let same = match (control.imageForSegment(i), &image) {
+                    (Some(have), Some(want)) => have.isEqual(Some(&**want)),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same {
+                    control.setImage_forSegment(image.as_deref(), i);
+                }
+                if control
+                    .labelForSegment(i)
+                    .is_some_and(|held| !held.is_empty())
+                {
+                    control.setLabel_forSegment(&NSString::from_str(""), i);
+                }
+            }
+            None => {
+                if control.imageForSegment(i).is_some() {
+                    control.setImage_forSegment(None, i);
+                }
+                let current = control.labelForSegment(i).map(|held| held.to_string());
+                if current.as_deref() != Some(label) {
+                    control.setLabel_forSegment(&NSString::from_str(label), i);
+                }
+            }
+        }
+    }
+}
