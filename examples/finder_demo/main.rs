@@ -50,7 +50,8 @@ use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::data::intern_path;
 use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
 
-const SAVE_EVERY: Duration = Duration::from_secs(180);
+/// Each save rewrites the whole snapshot, hundreds of MB; a launch replays events since the last.
+const SAVE_EVERY: Duration = Duration::from_secs(3600);
 
 const KINDS_WARM: usize = 400;
 /// gpui gives shutdown handlers about 200 ms.
