@@ -384,14 +384,14 @@ impl Drop for SidebarState {
     }
 }
 
-// The toolbar hairline's view appears after the pane's layouts, so it is re-hidden on every update.
-fn observe_pocket_hairline(
+// AppKit builds the toolbar background after the pane's layouts, so it is re-hidden on every update.
+fn observe_toolbar_background(
     window: &NSWindow,
     pane: &NSView,
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
     let pane = pane.retain();
     let block =
-        StackBlock::new(move |_: NonNull<NSNotification>| hide_pocket_hairline(&pane)).copy();
+        StackBlock::new(move |_: NonNull<NSNotification>| hide_toolbar_background(&pane)).copy();
     unsafe {
         NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
             Some(NSWindowDidUpdateNotification),
@@ -973,33 +973,19 @@ define_class!(
     }
 );
 
-fn hide_pocket_hairline(pane: &NSView) {
+fn hide_toolbar_background(pane: &NSView) {
     let Some(split) = (unsafe { pane.superview().and_then(|wrapper| wrapper.superview()) }) else {
         return;
     };
-    fn hide_rules(view: &NSView) {
-        for sub in view.subviews().iter() {
-            if sub.frame().size.height <= 1.
-                && sub
-                    .class()
-                    .name()
-                    .to_string_lossy()
-                    .contains("FillColorView")
-            {
-                sub.setHidden(true);
-            } else {
-                hide_rules(&sub);
-            }
-        }
-    }
     for view in split.subviews().iter() {
-        if view
-            .class()
-            .name()
-            .to_string_lossy()
-            .contains("NSTitlebarBackgroundView")
+        if !view.isHidden()
+            && view
+                .class()
+                .name()
+                .to_string_lossy()
+                .contains("NSTitlebarBackgroundView")
         {
-            hide_rules(&view);
+            view.setHidden(true);
         }
     }
 }
@@ -1320,7 +1306,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     }
 
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
-    // A transparent titlebar draws no toolbar background, which darkens toolbar item glass.
+    // A transparent titlebar darkens the toolbar items' glass.
     ns_window.setTitlebarAppearsTransparent(false);
 
     // Collected before `setContentViewController:` orphans them.
@@ -1385,7 +1371,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     outline.sizeLastColumnToFit();
 
     let mut observers = observe_key_state(&ns_window, &shared);
-    observers.push(observe_pocket_hairline(&ns_window, &pane));
+    observers.push(observe_toolbar_background(&ns_window, &pane));
     let state = SidebarState {
         views: Views {
             outline,

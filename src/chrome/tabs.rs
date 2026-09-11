@@ -6,10 +6,7 @@ use gpui::{Action, AnyWindowHandle, App, AsyncApp, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
-use objc2_app_kit::{
-    NSApplication, NSSplitViewController, NSView, NSWindow, NSWindowOrderingMode,
-    NSWindowTabbingMode,
-};
+use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
 use objc2_foundation::{MainThreadMarker, NSSize};
 
 use crate::bridge::appkit::gpui_view;
@@ -40,7 +37,6 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
 pub fn set_trailing_inset(window: &Window, points: f32) {
     let ns_window = ns_window_of(window);
     let points = points.max(0.);
-    inset_toolbar_background(&ns_window, points);
     let Some(accessory) = tab_bar_accessory(&ns_window) else {
         return;
     };
@@ -146,32 +142,6 @@ extern "C" fn new_window_for_tab(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {
             .detach();
         }
     });
-}
-
-fn inset_toolbar_background(window: &NSWindow, points: f32) {
-    let Some(split) = window
-        .contentViewController()
-        .and_then(|controller| controller.downcast::<NSSplitViewController>().ok())
-        .map(|controller| controller.splitView())
-    else {
-        return;
-    };
-    let width = split.frame().size.width - f64::from(points);
-    for view in split.subviews().iter() {
-        if !view
-            .class()
-            .name()
-            .to_string_lossy()
-            .contains("NSTitlebarBackgroundView")
-        {
-            continue;
-        }
-        let mut frame = view.frame();
-        if (frame.size.width - width).abs() > 0.5 {
-            frame.size.width = width;
-            view.setFrame(frame);
-        }
-    }
 }
 
 fn tab_bar_accessory(window: &NSWindow) -> Option<Retained<NSView>> {

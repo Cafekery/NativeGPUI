@@ -10,7 +10,7 @@ Behaviour-preserving refactors only. Keep the public surface (`scripts/surface.s
 
 ## One background
 
-A window is one surface, not two: `SidebarOptions::backdrop` spans it and both panes show that material, so with `sidebar::NativeSidebar` the crate paints nothing and an app paints no background at all; only a sidebar installed with `backdrop: None`, or a window without a sidebar, is the opaque `tokens::WINDOW_BACKGROUND`. A `Layer::Below` material shows only where GPUI painted nothing. `NSWindow.backgroundColor` is inert here. The titlebar band is AppKit's and not the backdrop's: a sidebar window turns `titlebarAppearsTransparent` off so the toolbar draws its own background, and `set_trailing_inset` stops that background where a full-height pane begins, so the pane's material runs up behind the toolbar.
+A window is one surface, not two: `SidebarOptions::backdrop` spans it and both panes show that material, so with `sidebar::NativeSidebar` the crate paints nothing and an app paints no background at all; only a sidebar installed with `backdrop: None`, or a window without a sidebar, is the opaque `tokens::WINDOW_BACKGROUND`. A `Layer::Below` material shows only where GPUI painted nothing. `NSWindow.backgroundColor` is inert here. The backdrop runs up behind the toolbar too: a sidebar window keeps `titlebarAppearsTransparent` off, which the toolbar items' glass needs, and hides the background AppKit then gives the toolbar.
 
 ## Two layers
 
@@ -37,7 +37,7 @@ Keeping a hosted view on the same frame as the GPUI row it sits on takes two cha
 * Cursor rects and GPUI's cursor styles apply only in the key window. A window that can never be key (the pane's child panel) gets its `cursor_region` cursor from the chrome host's own `mouseMoved:`.
 * A hosted field in a window that is not key edits nothing, however it was made first responder: a field asked to edit takes key for its window first, and whoever put it in a child panel hands key back to the main window when the edit ends.
 * A divider drag runs AppKit's own event loop, in which gpui's display link never ticks: the pane publishes its new metrics and draws that frame inside the move, or the content trails the divider by a refresh. The settled rect is the split item's wrapper's; the pane's own frame catches up a turn later, and insets read off that lag shimmer. A resize AppKit services inside gpui's first draw (a window manager snapping the window as it opens) reaches gpui's own resize handler while it cannot take its app, and the size is dropped: the pane puts the bounds back on the next turn.
-* A non-transparent titlebar hands the pane AppKit's toolbar background and, with it, a pocket hairline across the pane's top: no separator style, toolbar style or baseline flag turns it off, and the pocket is built after the pane's own layouts, so the sidebar hides it on the window's updates.
+* A non-transparent titlebar lays AppKit's toolbar background, pocket hairline included, over the pane's top: no separator style, toolbar style or baseline flag turns it off, and it is built after the pane's own layouts, so the sidebar hides it on the window's updates.
 * GPUI's Metal layer carries CA's width/height-sizable autoresizing mask. AppKit already sizes a layer-backed view's layer from the view, so the mask only matters when the view does not fill its superview, and then CA adds the superview's resize delta a second time (old + 2x delta) and every frame displays scaled. The sidebar pane clears the mask when it adopts the view.
 
 ## Verifying
