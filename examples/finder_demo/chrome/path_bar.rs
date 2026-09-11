@@ -1,10 +1,11 @@
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, Window, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor};
+use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{Blending, Layer, Material, material, native_rule};
 
 use crate::app::FinderDemo;
 use crate::art::{place_art, small_glyph};
 use crate::chrome::surface::bar_tint;
+use crate::data::folder_artwork;
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::palette::Palette;
@@ -33,6 +34,7 @@ impl FinderDemo {
     ) -> AnyElement {
         let here = self.folders.get(self.target());
         let crumbs: &[&str] = here.map_or(&[][..], |folder| folder.crumbs.as_slice());
+        let listed = here.is_some_and(|folder| !folder.rows.is_empty());
         let chain = self.crumb_ids();
         let named = self.crumb_labels(crumbs, window);
         let mut trail = div()
@@ -58,7 +60,14 @@ impl FinderDemo {
                 .min_w(px(CRUMB_ICON))
                 .gap(px(CRUMB_GAP))
                 .active(move |style| style.text_color(selection_text))
-                .child(place_art(index == 0, CRUMB_ICON))
+                .child(place_art(
+                    (index > 0).then(|| {
+                        target.map_or(FileType::Folder, |path| {
+                            folder_artwork(path, index + 1 < crumbs.len() || listed)
+                        })
+                    }),
+                    CRUMB_ICON,
+                ))
                 .when(named[index], |crumb_row| {
                     crumb_row.child(
                         div()
