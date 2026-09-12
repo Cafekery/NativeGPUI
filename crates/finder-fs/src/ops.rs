@@ -479,7 +479,11 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> i
         return Err(err);
     }
     if let Err(err) = exchange(&staged, &dest) {
-        let _ = remove_path(fm, &staged);
+        // A moved item's only copy is the staged one; it goes back where it came from.
+        let _ = match is_move {
+            true => transfer(fm, &staged, src, true),
+            false => remove_path(fm, &staged),
+        };
         return Err(err);
     }
     let displaced = match trash_one(fm, &staged) {
@@ -628,7 +632,7 @@ fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Resu
             &fm,
             &restore.item,
             restore.to.clone(),
-            Conflict::Replace,
+            Conflict::KeepBoth,
             true,
         )?;
         results.extend(placed.dest);
@@ -1519,6 +1523,72 @@ mod tests {
 
         purge(&first.results);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_never_overwrites_what_arrived_since() {
+        let dir = temp_dir("undo-arrived");
+        let (from, into) = (dir.join("from"), dir.join("into"));
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&into).unwrap();
+        touch(&from.join("a.txt"), "moved");
+        let done = perform(
+            Op::Move {
+                items: vec![from.join("a.txt")],
+                into,
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        touch(&from.join("a.txt"), "arrived since");
+
+        perform(done.undo.unwrap(), Conflict::Replace, no_progress).unwrap();
+        assert_eq!(
+            fs::read_to_string(from.join("a.txt")).unwrap(),
+            "arrived since",
+            "undo overwrote a newer file"
+        );
+        assert_eq!(fs::read_to_string(from.join("a 2.txt")).unwrap(), "moved");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_replace_that_fails_keeps_the_moved_item() {
+        let dir = temp_dir("replace-fails");
+        let (from, into) = (dir.join("from"), dir.join("into"));
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&into).unwrap();
+        touch(&from.join("a.txt"), "new");
+        touch(&into.join("a.txt"), "old");
+        let locked = into.join("a.txt");
+        assert!(
+            std::process::Command::new("chflags")
+                .arg("uchg")
+                .arg(&locked)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let _ = perform(
+            Op::Move {
+                items: vec![from.join("a.txt")],
+                into: into.clone(),
+            },
+            Conflict::Replace,
+            no_progress,
+        );
+        let kept = |path: &Path| fs::read_to_string(path).ok();
+        let (left, landed) = (kept(&from.join("a.txt")), kept(&locked));
+        let _ = unlock(&locked);
+        assert!(
+            left.as_deref() == Some("new") || landed.as_deref() == Some("new"),
+            "the moved item is gone: from={left:?} into={landed:?}"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn deep_path(root: &Path, levels: usize) -> PathBuf {

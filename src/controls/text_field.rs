@@ -223,9 +223,16 @@ impl NativeTextField {
             window.makeFirstResponder(Some(&field));
         }
         if let Some(editor) = field.currentEditor() {
-            let start = selected.start.min(want_text.chars().count());
-            let len = selected.end.saturating_sub(selected.start);
-            editor.setSelectedRange(NSRange::new(start, len));
+            // `editing` counts chars; AppKit ranges count UTF-16 units, two per emoji.
+            let units = |chars: usize| {
+                want_text
+                    .chars()
+                    .take(chars)
+                    .map(char::len_utf16)
+                    .sum::<usize>()
+            };
+            let (start, end) = (units(selected.start), units(selected.end));
+            editor.setSelectedRange(NSRange::new(start, end.saturating_sub(start)));
         }
     }
 }

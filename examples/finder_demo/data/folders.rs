@@ -42,6 +42,7 @@ pub(crate) struct Folders {
     cache: HashMap<&'static str, Folder>,
     order: Vec<&'static str>,
     reading: HashSet<&'static str>,
+    owed: HashSet<&'static str>,
     wanted: RefCell<Vec<&'static str>>,
     pinned: HashSet<&'static str>,
     changed: u64,
@@ -87,11 +88,17 @@ impl Folders {
         self.wanted.take()
     }
 
+    /// A folder already being read owes a second read: the change may have missed the first.
     pub(crate) fn start(&mut self, id: &'static str) -> bool {
-        self.reading.insert(id)
+        let fresh = self.reading.insert(id);
+        if !fresh {
+            self.owed.insert(id);
+        }
+        fresh
     }
 
-    pub(crate) fn finish(&mut self, id: &'static str) {
+    /// Whether a change arrived while the read ran, so the folder must be read again.
+    pub(crate) fn finish(&mut self, id: &'static str) -> bool {
         self.reading.remove(id);
         self.changed += 1;
         if let Some(folder) = self.cache.get_mut(id) {
@@ -100,10 +107,12 @@ impl Folders {
                 folder.rows = staged;
             }
         }
+        self.owed.remove(id)
     }
 
     pub(crate) fn forget(&mut self, id: &'static str) {
         self.reading.remove(id);
+        self.owed.remove(id);
         self.pinned.remove(id);
         self.order.retain(|&held| held != id);
         if self.cache.remove(id).is_some() {

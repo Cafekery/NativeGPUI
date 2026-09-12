@@ -209,6 +209,13 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> Window
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
+                // The Edit menu is app-wide; it names the undo of whichever window is in front.
+                cx.observe_window_activation(window, |this: &mut FinderDemo, window, _| {
+                    if window.is_window_active() {
+                        ops::undo::refresh_edit_menu(&this.journal);
+                    }
+                })
+                .detach();
                 FinderDemo::new(start, cx)
             })
         },
