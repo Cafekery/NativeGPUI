@@ -229,6 +229,12 @@ fn remove_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
     unlink_at(dir, name, libc::AT_REMOVEDIR)
 }
 
+pub(super) fn identity(path: &Path) -> io::Result<(u64, u64)> {
+    let (dir, name) = split(path)?;
+    let meta = stat_at(&open_dir(dir)?, &name)?;
+    Ok((meta.st_dev as u64, meta.st_ino))
+}
+
 pub(super) fn remove(path: &Path) -> io::Result<()> {
     let (dir, name) = split(path)?;
     remove_at(&open_dir(dir)?, &name)
