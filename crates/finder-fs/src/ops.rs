@@ -240,7 +240,9 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
     match landed {
         Ok(()) => Ok(()),
         Err(err) if past_path_max(&err) => {
-            let _ = deep::remove(dst);
+            if !same_item(src, dst) {
+                let _ = deep::remove(dst);
+            }
             deep::transfer(src, dst, is_move).map_err(|err| deep_error(err, src, dst, is_move))
         }
         Err(err) => Err(volume_refusal(&err, src, dst, is_move).unwrap_or_else(|| io_error(err))),
@@ -321,20 +323,24 @@ fn unlock(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Past `PATH_MAX` `lstat` fails, which would read a name that is in use as free.
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Some((meta.dev(), meta.ino())),
+        Err(err) if err.raw_os_error() == Some(libc::ENAMETOOLONG) => deep::identity(path).ok(),
+        Err(_) => None,
+    }
+}
+
 /// A broken symlink still holds its name, which `Path::exists` misses because it follows links.
 fn taken(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok()
+    identity(path).is_some()
 }
 
 /// On a case-insensitive volume, a rename that only changes a name's case finds the item itself
 /// standing at the destination.
 fn same_item(one: &Path, other: &Path) -> bool {
-    let id = |path: &Path| {
-        std::fs::symlink_metadata(path)
-            .map(|meta| (meta.dev(), meta.ino()))
-            .ok()
-    };
-    matches!((id(one), id(other)), (Some(one), Some(other)) if one == other)
+    matches!((identity(one), identity(other)), (Some(one), Some(other)) if one == other)
 }
 
 /// Splits `name` the way Finder does: no extension for dot-files or a trailing dot.
@@ -1513,6 +1519,61 @@ mod tests {
 
         purge(&first.results);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn deep_path(root: &Path, levels: usize) -> PathBuf {
+        (1..=levels).fold(root.to_path_buf(), |path, i| path.join(format!("d{i}")))
+    }
+
+    #[test]
+    fn a_name_taken_past_path_max_is_kept() {
+        let dir = temp_dir("deep-taken");
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+        deep_sh(&tree, 300, "echo old > x.txt");
+        touch(&dir.join("x.txt"), "new");
+
+        perform(
+            Op::Move {
+                items: vec![dir.join("x.txt")],
+                into: deep_path(&tree, 300),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(
+            deep_sh(&tree, 300, "cat x.txt"),
+            "old",
+            "the item already there was overwritten"
+        );
+        assert_eq!(deep_sh(&tree, 300, "cat 'x 2.txt'"), "new");
+
+        remove_deep(&dir);
+    }
+
+    #[test]
+    fn a_case_only_rename_past_path_max_keeps_the_item() {
+        let dir = temp_dir("deep-case");
+        let tree = dir.join("Deep");
+        deep_tree(&tree, 300);
+
+        perform(
+            Op::Rename {
+                path: deep_path(&tree, 300).join("leaf.txt"),
+                name: "LEAF.txt".into(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(
+            deep_sh(&tree, 300, "cat LEAF.txt"),
+            "leaf",
+            "the renamed item is gone"
+        );
+
+        remove_deep(&dir);
     }
 
     fn deep_sh(root: &Path, levels: usize, script: &str) -> String {
