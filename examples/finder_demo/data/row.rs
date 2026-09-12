@@ -256,11 +256,7 @@ pub(crate) fn path_line(id: &'static str) -> Option<Line> {
     }
     let path = Path::new(id);
     let dir = path.parent().map_or("/", intern_path);
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let entry = finder_fs::list::list_dir(Path::new(dir))
-        .ok()?
-        .into_iter()
-        .find(|entry| entry.name == name)?;
+    let entry = finder_fs::list::entry_at(path).ok()?;
     let row = Arc::new(row_of(dir, &entry, crate::index()));
     Some(Line {
         key: row.path.clone(),
