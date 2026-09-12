@@ -275,8 +275,11 @@ impl FinderDemo {
             self.folders.deliver(id, rows, replace);
         }
         if done {
-            self.folders.finish(id);
+            let owed = self.folders.finish(id);
             self.landed(id);
+            if owed {
+                self.read_folder(id, cx);
+            }
         }
         if done && sorted_by != (self.sort, self.ascending) {
             self.sort_folder(id, (self.sort, self.ascending), cx);

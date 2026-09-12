@@ -39,6 +39,8 @@ impl FinderDemo {
     pub(crate) fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
         cx.notify();
+        self.search_gen += 1;
+        let generation = self.search_gen;
         let wanted = self.query.trim().to_string();
         let criteria = self.criteria.clone();
         let everywhere = self.scope == scope_bar::THIS_MAC;
@@ -78,7 +80,7 @@ impl FinderDemo {
                     .await;
                 let rev = next_rev();
                 let taken = this.update(cx, |this, _| {
-                    (this.query.trim() == wanted).then(|| {
+                    (this.search_gen == generation).then(|| {
                         (
                             this.shape_filtered(&wanted, &hits, rev),
                             this.folders.held(),
@@ -98,7 +100,7 @@ impl FinderDemo {
                     })
                     .await;
                 let shown = this.update(cx, |this, cx| {
-                    if this.query.trim() != wanted {
+                    if this.search_gen != generation {
                         return false;
                     }
                     let (shape, walk) = filtered;

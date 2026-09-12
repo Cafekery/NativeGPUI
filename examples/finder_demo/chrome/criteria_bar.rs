@@ -225,7 +225,7 @@ impl FinderDemo {
     }
 
     fn drop_criterion(&mut self, row: usize, cx: &mut Context<Self>) {
-        if self.criteria.len() > 1 {
+        if row < self.criteria.len() && self.criteria.len() > 1 {
             self.criteria.remove(row);
         }
         self.run_search(cx);

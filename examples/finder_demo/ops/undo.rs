@@ -139,7 +139,8 @@ impl FinderDemo {
             return;
         };
         refresh_edit_menu(&self.journal);
-        self.submit(undoable.undo, Conflict::Replace, After::Select, false, cx);
+        // Whatever took an undone item's place since is kept, never replaced.
+        self.submit(undoable.undo, Conflict::KeepBoth, After::Select, false, cx);
     }
 
     pub(crate) fn perform_redo(&mut self, cx: &mut Context<Self>) {
@@ -147,7 +148,7 @@ impl FinderDemo {
             return;
         };
         refresh_edit_menu(&self.journal);
-        self.submit(undoable.redo, Conflict::Replace, After::Select, false, cx);
+        self.submit(undoable.redo, Conflict::KeepBoth, After::Select, false, cx);
     }
 
     pub(crate) fn wire_undo_redo(&self, element: Div, cx: &mut Context<Self>) -> Div {

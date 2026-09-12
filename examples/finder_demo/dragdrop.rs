@@ -189,7 +189,10 @@ fn springing_delay() -> Option<Duration> {
             true => SPRING_FLOOR + delay + FLASH.as_secs_f32() * FLASHES as f32,
             false => SPRING_FLOOR + delay,
         };
-        Some(Duration::from_secs_f32(held))
+        // The delay is the user's own default and can hold anything, negative or infinite.
+        Duration::try_from_secs_f32(held)
+            .ok()
+            .or(Some(Duration::from_secs_f32(SPRING_FLOOR + 0.5)))
     })
 }
 

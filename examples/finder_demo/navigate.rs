@@ -171,7 +171,12 @@ impl FinderDemo {
         self.folders.forget(id);
         self.expanded.retain(|key| !inside(key));
         self.expanding.retain(|held, _| !inside(held));
+        let before = self.history[..self.at]
+            .iter()
+            .filter(|been| inside(been))
+            .count();
         self.history.retain(|been| !inside(been));
+        self.at -= before;
         if !leaving {
             return;
         }
