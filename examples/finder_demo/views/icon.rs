@@ -434,7 +434,6 @@ impl FinderDemo {
             let under = tile_at(&dropped.tiles, landed, cell)
                 .and_then(|index| dropped_lines.get(index))
                 .cloned();
-            let copy = window.modifiers().alt;
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
                     let into = under
@@ -442,7 +441,7 @@ impl FinderDemo {
                         .and_then(|line| line.row.opens);
                     if let Some(into) = into {
                         let keys = this.drag_keys(&drag.key);
-                        this.drop_into(into, &keys, copy, cx);
+                        this.drop_into(into, &keys, window, cx);
                         this.icons.dragging = None;
                         cx.notify();
                         return;

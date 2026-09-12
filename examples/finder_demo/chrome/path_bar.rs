@@ -103,7 +103,7 @@ impl FinderDemo {
                     .on_drop(
                         cx.listener(move |this, grab: &RowDrag, window: &mut Window, cx| {
                             let keys = this.drag_keys(&grab.key);
-                            this.drop_into(id, &keys, window.modifiers().alt, cx);
+                            this.drop_into(id, &keys, window, cx);
                             cx.notify();
                         }),
                     )

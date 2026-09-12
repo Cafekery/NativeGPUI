@@ -150,6 +150,11 @@ impl Render for FinderDemo {
                         .map(|element| self.menu_bar_actions(element, cx))
                         .map(|element| self.wire_undo_redo(element, cx))
                         .on_key_down(cx.listener(Self::on_key))
+                        .capture_any_mouse_down(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, _| {
+                                this.pressed_at = event.position;
+                            },
+                        ))
                         .on_drag_move(cx.listener(Self::drag_to_sidebar))
                         .on_mouse_down(
                             MouseButton::Left,
