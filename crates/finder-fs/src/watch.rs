@@ -52,6 +52,7 @@ struct Shared {
     run_loop: Mutex<Option<usize>>,
     /// A stop that lands between two runs of the loop is dropped; this carries it to the next.
     stale: AtomicBool,
+    latency: f64,
 }
 
 impl Shared {
@@ -74,6 +75,7 @@ impl Watcher {
         Watcher::spawn(
             HashSet::new(),
             kFSEventStreamEventIdSinceNow,
+            0.1,
             Box::new(move |replay: Replay| {
                 let mut dirs = replay.dirs;
                 dirs.extend(replay.rescan);
@@ -96,7 +98,12 @@ impl Watcher {
         self.shared.wake();
     }
 
-    fn spawn(paths: HashSet<PathBuf>, since: FSEventStreamEventId, on_change: OnChange) -> Watcher {
+    fn spawn(
+        paths: HashSet<PathBuf>,
+        since: FSEventStreamEventId,
+        latency: f64,
+        on_change: OnChange,
+    ) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::new(paths),
             changed: Condvar::new(),
@@ -104,6 +111,7 @@ impl Watcher {
             shutdown: AtomicBool::new(false),
             run_loop: Mutex::new(None),
             stale: AtomicBool::new(false),
+            latency,
         });
         let thread_shared = shared.clone();
         let thread = thread::spawn(move || {
@@ -138,7 +146,8 @@ pub fn since(
         event_id
     };
     let paths = roots.into_iter().map(|p| watched_path(&p)).collect();
-    Watcher::spawn(paths, since_when, Box::new(on_change))
+    // A folder written ten times a second is read once a second; the index can lag that much.
+    Watcher::spawn(paths, since_when, 1.0, Box::new(on_change))
 }
 
 pub fn latest_event_id() -> u64 {
@@ -194,7 +203,7 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
                 &mut stream_context,
                 array.as_opaque(),
                 since_when,
-                0.1,
+                shared.latency,
                 kFSEventStreamCreateFlagUseCFTypes,
             )
         };

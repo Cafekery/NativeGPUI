@@ -22,6 +22,20 @@ pub(crate) fn typed_path(text: &str) -> PathBuf {
     })
 }
 
+/// A typed name is NFC and any case, but the index keys the bytes on disk, which `realpath`
+/// gives; a symlink stays as typed.
+pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
+    let path = typed_path(text);
+    if !finder_fs::list::is_dir(&path) {
+        return None;
+    }
+    let fold = |path: &Path| finder_fs::sort::fold(&path.to_string_lossy());
+    let stored = std::fs::canonicalize(&path)
+        .ok()
+        .filter(|real| fold(real) == fold(&path));
+    Some(intern_path(stored.as_deref().unwrap_or(&path)))
+}
+
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
     match Path::new(id).parent() {
         Some(parent) => Some((intern_path(parent), SharedString::from(id))),
@@ -62,11 +76,6 @@ impl FinderDemo {
             .and_then(|folder| folder.rows.iter().find(|row| row.name == name))
             .and_then(|row| row.opens)
             .unwrap_or(holder)
-    }
-
-    pub(crate) fn folder_at_path(&self, text: &str) -> Option<&'static str> {
-        let path = typed_path(text);
-        finder_fs::list::is_dir(&path).then(|| intern_path(&path))
     }
 
     pub(crate) fn crumb_path(&self) -> String {

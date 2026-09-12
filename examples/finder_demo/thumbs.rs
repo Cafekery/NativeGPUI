@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{App, Entity, RenderImage, SharedString, px};
 use native_gpui::thumbnails;
@@ -40,6 +40,7 @@ const WATCH: Duration = Duration::from_millis(8);
 const GIVE_UP: u32 = 250;
 const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
+const KEPT: usize = 512;
 
 pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
@@ -147,6 +148,24 @@ pub(crate) fn sweep_thumbnails() {
             .borrow_mut()
             .retain(|(path, _, _)| drawn.contains(path))
     });
+    // Off-screen thumbnails come back from the library's own bounded cache when scrolled to.
+    if THUMBS.with(|thumbs| thumbs.borrow().len()) > KEPT {
+        THUMBS.with(|thumbs| {
+            thumbs
+                .borrow_mut()
+                .retain(|(path, _, _), _| drawn.contains(path))
+        });
+        LARGEST.with(|largest| {
+            largest
+                .borrow_mut()
+                .retain(|(path, _), _| drawn.contains(path))
+        });
+        RETRY.with(|retry| {
+            retry
+                .borrow_mut()
+                .retain(|(path, _, _), _| drawn.contains(path))
+        });
+    }
     let paths: Vec<PathBuf> = drawn
         .iter()
         .map(|path| PathBuf::from(path.as_ref()))
@@ -199,16 +218,19 @@ pub(crate) fn thumb(
         return largest(&row.path, icon);
     }
     let path = Path::new(row.path.as_ref());
-    if let Some(image) = thumbnails::cached_thumbnail(path, px(size), scale, icon) {
+    let modified = Duration::try_from_secs_f64(row.modified_at)
+        .ok()
+        .map(|since| UNIX_EPOCH + since);
+    if let Some(image) = thumbnails::cached_thumbnail(path, modified, px(size), scale, icon) {
         keep(&key, &image);
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
         return Some(image);
     }
-    ask(path, key, size, scale, icon);
+    ask(path, modified, key, size, scale, icon);
     largest(&row.path, icon)
 }
 
-fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
+fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: f32, icon: bool) {
     if RETRY.with(|retry| {
         retry
             .borrow()
@@ -221,7 +243,7 @@ fn ask(path: &Path, key: Thumb, size: f32, scale: f32, icon: bool) {
         return;
     }
     INFLIGHT.fetch_add(1, Ordering::Relaxed);
-    thumbnails::thumbnail(path, px(size), scale, icon, move |image| {
+    thumbnails::thumbnail(path, modified, px(size), scale, icon, move |image| {
         LANDED.lock().unwrap().push((key, image));
         DELIVERED.fetch_add(1, Ordering::Relaxed);
         INFLIGHT.fetch_sub(1, Ordering::Relaxed);

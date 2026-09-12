@@ -10,6 +10,7 @@ use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 
 use super::After;
+use super::jobs::Record;
 use crate::app::FinderDemo;
 
 actions!(finder_demo, [UndoOp, RedoOp]);
@@ -140,7 +141,13 @@ impl FinderDemo {
         };
         refresh_edit_menu(&self.journal);
         // Whatever took an undone item's place since is kept, never replaced.
-        self.submit(undoable.undo, Conflict::KeepBoth, After::Select, false, cx);
+        self.submit(
+            undoable.undo,
+            Conflict::KeepBoth,
+            After::Select,
+            Record::Undo,
+            cx,
+        );
     }
 
     pub(crate) fn perform_redo(&mut self, cx: &mut Context<Self>) {
@@ -148,7 +155,14 @@ impl FinderDemo {
             return;
         };
         refresh_edit_menu(&self.journal);
-        self.submit(undoable.redo, Conflict::KeepBoth, After::Select, false, cx);
+        let at = self.journal.undo_len() - 1;
+        self.submit(
+            undoable.redo,
+            Conflict::KeepBoth,
+            After::Select,
+            Record::Redo(at),
+            cx,
+        );
     }
 
     pub(crate) fn wire_undo_redo(&self, element: Div, cx: &mut Context<Self>) -> Div {

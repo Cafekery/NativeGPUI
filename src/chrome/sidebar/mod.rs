@@ -450,6 +450,15 @@ impl NativeSidebar {
             return existing;
         }
         let sidebar = build(window, cx, options);
+        if cx.try_global::<Sidebars>().is_none() {
+            // A closed window's sidebar holds its views and observers until it is dropped here.
+            cx.on_window_closed(|cx, closed| {
+                cx.default_global::<Sidebars>()
+                    .0
+                    .retain(|handle, _| handle.window_id() != closed);
+            })
+            .detach();
+        }
         cx.default_global::<Sidebars>()
             .0
             .insert(window.window_handle(), sidebar.clone());

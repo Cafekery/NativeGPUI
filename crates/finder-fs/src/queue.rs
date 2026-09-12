@@ -390,6 +390,17 @@ impl Journal {
         self.undo_stack.push(undoable.clone());
         Some(undoable)
     }
+
+    pub fn undo_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// A redo lands its items afresh, so undoing it again starts from where they are now.
+    pub fn redone(&mut self, at: usize, done: &Done) {
+        if let (Some(entry), Some(undo)) = (self.undo_stack.get_mut(at), done.undo.clone()) {
+            entry.undo = undo;
+        }
+    }
 }
 
 fn label_for(op: &Op) -> String {
@@ -810,6 +821,33 @@ mod tests {
         assert_eq!(
             journal.undo_label(),
             Some("Move of \"Ventura.dmg\" to Trash")
+        );
+    }
+
+    #[test]
+    fn a_redo_is_undone_from_where_it_landed() {
+        let mut journal = Journal::new();
+        let back_from = |from: &str| Op::Move {
+            items: vec![PathBuf::from(from)],
+            into: PathBuf::from("/A"),
+        };
+        let first = Done {
+            results: vec![PathBuf::from("/Trash/x.pdf")],
+            undo: Some(back_from("/Trash/x.pdf")),
+        };
+        journal.record(&first, &Op::Trash(vec![PathBuf::from("/A/x.pdf")]));
+        journal.pop_undo().unwrap();
+        journal.pop_redo().unwrap();
+        let again = Done {
+            results: vec![PathBuf::from("/Trash/x 2.pdf")],
+            undo: Some(back_from("/Trash/x 2.pdf")),
+        };
+        journal.redone(journal.undo_len() - 1, &again);
+
+        let undo = journal.pop_undo().unwrap().undo;
+        assert!(
+            matches!(undo, Op::Move { ref items, .. } if items == &[PathBuf::from("/Trash/x 2.pdf")]),
+            "the undo still names the first run's path"
         );
     }
 
