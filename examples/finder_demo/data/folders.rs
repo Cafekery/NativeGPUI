@@ -80,6 +80,11 @@ impl Folders {
         self.cache.contains_key(id)
     }
 
+    /// The watcher reports every changing folder under home; interning each would keep them all.
+    pub(crate) fn known(&self, path: &str) -> Option<&'static str> {
+        self.cache.get_key_value(path).map(|(id, _)| *id)
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.cache.len()
     }

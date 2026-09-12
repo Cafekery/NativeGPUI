@@ -30,10 +30,18 @@ struct Key {
 }
 
 impl Key {
-    fn new(path: &Path, size: Pixels, scale: f32, icon: bool) -> Self {
+    /// The caller brings `modified`: a `stat` here would run on the UI thread and hang it on a
+    /// volume that stopped answering.
+    fn new(
+        path: &Path,
+        modified: Option<SystemTime>,
+        size: Pixels,
+        scale: f32,
+        icon: bool,
+    ) -> Self {
         Key {
             path: path.to_path_buf(),
-            mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+            mtime: modified,
             pixels: (f32::from(size) * scale).round().max(1.0) as u32,
             icon,
         }
@@ -53,11 +61,12 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::defaul
 
 pub fn cached_thumbnail(
     path: &Path,
+    modified: Option<SystemTime>,
     size: Pixels,
     scale: f32,
     icon: bool,
 ) -> Option<Arc<RenderImage>> {
-    let key = Key::new(path, size, scale, icon);
+    let key = Key::new(path, modified, size, scale, icon);
     STATE.lock().unwrap().cache.get(&key).cloned().flatten()
 }
 
@@ -103,12 +112,13 @@ fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
 /// `icon` is Finder's icon rendering; a cache hit calls `done` at once, on this thread.
 pub fn thumbnail(
     path: &Path,
+    modified: Option<SystemTime>,
     size: Pixels,
     scale: f32,
     icon: bool,
     done: impl FnOnce(Option<Arc<RenderImage>>) + Send + 'static,
 ) {
-    let key = Key::new(path, size, scale, icon);
+    let key = Key::new(path, modified, size, scale, icon);
     let mut state = STATE.lock().unwrap();
     if let Some(hit) = state.cache.get(&key) {
         let hit = hit.clone();
@@ -241,10 +251,18 @@ mod tests {
         let path = dir.join("a.png");
         write_png(&path, 64);
 
+        let modified = std::fs::metadata(&path).unwrap().modified().ok();
         let (tx, rx) = mpsc::channel();
-        thumbnail(&path, Pixels::from(32.0), 2.0, true, move |image| {
-            tx.send(image).unwrap();
-        });
+        thumbnail(
+            &path,
+            modified,
+            Pixels::from(32.0),
+            2.0,
+            true,
+            move |image| {
+                tx.send(image).unwrap();
+            },
+        );
         let image = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("thumbnail within 2s")
@@ -254,9 +272,16 @@ mod tests {
 
         let before = STATE.lock().unwrap().cache.len();
         let (tx2, rx2) = mpsc::channel();
-        thumbnail(&path, Pixels::from(32.0), 2.0, true, move |image| {
-            tx2.send(image).unwrap();
-        });
+        thumbnail(
+            &path,
+            modified,
+            Pixels::from(32.0),
+            2.0,
+            true,
+            move |image| {
+                tx2.send(image).unwrap();
+            },
+        );
         let second = rx2
             .recv_timeout(Duration::from_secs(2))
             .expect("cache hit is instant")
@@ -264,7 +289,7 @@ mod tests {
         assert!(Arc::ptr_eq(&image, &second), "same cached raster");
         assert_eq!(STATE.lock().unwrap().cache.len(), before, "no new entry");
 
-        assert!(cached_thumbnail(&path, Pixels::from(32.0), 2.0, true).is_some());
+        assert!(cached_thumbnail(&path, modified, Pixels::from(32.0), 2.0, true).is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -276,9 +301,17 @@ mod tests {
         let path = dir.join("a.png");
         write_png(&path, 64);
         let (tx, rx) = mpsc::channel();
-        thumbnail(&path, Pixels::from(32.0), 2.0, false, move |image| {
-            tx.send(image).unwrap();
-        });
+        let modified = std::fs::metadata(&path).unwrap().modified().ok();
+        thumbnail(
+            &path,
+            modified,
+            Pixels::from(32.0),
+            2.0,
+            false,
+            move |image| {
+                tx.send(image).unwrap();
+            },
+        );
         let raster = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("thumbnail within 2s")

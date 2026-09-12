@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use finder_fs::ops::{Conflict, Op};
+use finder_fs::ops::{Conflict, Done, Op};
 use finder_fs::queue::{Event, JobId};
 use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
 use native_gpui::tokens;
@@ -12,11 +12,20 @@ use crate::chrome::path_bar::PATH_H;
 use crate::data::byte_string;
 use crate::palette::Palette;
 
+/// A new operation goes in the journal, a redo updates the entry it came from, and an undo is
+/// already accounted for.
+#[derive(Clone, Copy)]
+pub(crate) enum Record {
+    New,
+    Undo,
+    Redo(usize),
+}
+
 pub(crate) struct JobRow {
     pub(crate) id: JobId,
     pub(crate) op: Op,
     pub(crate) after: After,
-    pub(crate) record: bool,
+    pub(crate) record: Record,
     pub(crate) label: String,
     pub(crate) done_bytes: u64,
     pub(crate) total_bytes: u64,
@@ -25,7 +34,7 @@ pub(crate) struct JobRow {
 }
 
 impl JobRow {
-    pub(crate) fn new(id: JobId, op: Op, after: After, record: bool) -> Self {
+    pub(crate) fn new(id: JobId, op: Op, after: After, record: Record) -> Self {
         let label = describe(&op);
         Self {
             id,
@@ -145,7 +154,6 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// `record` is false only while the journal's own undo or redo is running.
     pub(crate) fn submit_op(
         &mut self,
         op: Op,
@@ -153,7 +161,7 @@ impl FinderDemo {
         after: After,
         cx: &mut Context<Self>,
     ) {
-        self.submit(op, conflict, after, true, cx);
+        self.submit(op, conflict, after, Record::New, cx);
     }
 
     pub(crate) fn submit(
@@ -161,12 +169,21 @@ impl FinderDemo {
         op: Op,
         conflict: Conflict,
         after: After,
-        record: bool,
+        record: Record,
         cx: &mut Context<Self>,
     ) {
         let id = self.queue.submit(op.clone(), conflict);
         self.jobs.push(JobRow::new(id, op, after, record));
         cx.notify();
+    }
+
+    fn note(&mut self, row: &JobRow, done: &Done) -> bool {
+        match row.record {
+            Record::New => self.journal.record(done, &row.op),
+            Record::Redo(at) => self.journal.redone(at, done),
+            Record::Undo => return false,
+        }
+        true
     }
 
     pub(crate) fn handle_queue_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
@@ -197,10 +214,7 @@ impl FinderDemo {
                     let row = self.jobs.remove(pos);
                     match result {
                         Ok(done) => {
-                            if row.record {
-                                self.journal.record(&done, &row.op);
-                                landed = true;
-                            }
+                            landed |= self.note(&row, &done);
                             let touched = crate::ops::touched(&row.op);
                             self.settled(touched, done.results, row.after, cx);
                         }
@@ -212,10 +226,7 @@ impl FinderDemo {
                         continue;
                     };
                     let row = self.jobs.remove(pos);
-                    if row.record && done.undo.is_some() {
-                        self.journal.record(&done, &row.op);
-                        landed = true;
-                    }
+                    landed |= self.note(&row, &done);
                     let touched = crate::ops::touched(&row.op);
                     self.settled(touched, done.results, row.after, cx);
                     self.complain(&error.to_string());
@@ -225,10 +236,7 @@ impl FinderDemo {
                         continue;
                     };
                     let row = self.jobs.remove(pos);
-                    if row.record && done.undo.is_some() {
-                        self.journal.record(&done, &row.op);
-                        landed = true;
-                    }
+                    landed |= self.note(&row, &done);
                     let touched = crate::ops::touched(&row.op);
                     self.settled(touched, done.results, row.after, cx);
                 }

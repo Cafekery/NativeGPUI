@@ -5,7 +5,7 @@ use native_gpui::{Material, material, system_corner_radius};
 
 use crate::app::FinderDemo;
 use crate::data::intern_path;
-use crate::navigate::typed_path;
+use crate::navigate::{folder_at_path, typed_path};
 use crate::palette::Palette;
 use crate::ui::{focus_gpui, key_to_parent, native_text_field};
 use crate::{home, index};
@@ -90,15 +90,28 @@ impl FinderDemo {
         .detach();
     }
 
+    /// Off the main thread: a path on a volume that stopped answering must not hang the window.
     fn go_typed(&mut self, typed: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.folder_at_path(typed) {
-            self.go(id, window, cx);
-            return;
-        }
-        let path = typed_path(typed);
-        if path.symlink_metadata().is_ok() {
-            self.show_enclosing(intern_path(&path), window, cx);
-        }
+        let typed = typed.to_string();
+        cx.spawn_in(window, async move |this, cx| {
+            let (folder, item) = cx
+                .background_executor()
+                .spawn(async move {
+                    let folder = folder_at_path(&typed);
+                    let path = typed_path(&typed);
+                    let item = (folder.is_none() && path.symlink_metadata().is_ok())
+                        .then(|| intern_path(&path));
+                    (folder, item)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| match (folder, item) {
+                (Some(id), _) => this.go(id, window, cx),
+                (None, Some(item)) => this.show_enclosing(item, window, cx),
+                (None, None) => {}
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn go_sheet(

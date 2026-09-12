@@ -345,7 +345,6 @@ impl FinderDemo {
     }
 
     pub(crate) fn refresh_sidebar(&mut self) {
-        crate::data::refresh_volumes();
         self.sidebar_groups = groups();
         for (rows, group) in self.sidebar_rows.iter_mut().zip(&self.sidebar_groups) {
             rows.retain(|id| group.rows.iter().any(|row| row.id == *id));
@@ -586,12 +585,24 @@ impl FinderDemo {
             return;
         }
         let left = volume_roots().contains(&intern(id));
-        self.refresh_sidebar();
-        if left && self.here().starts_with(id) {
-            if let Some(home) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home) {
-                self.go(intern_path(&home), window, cx);
-            }
-        }
-        cx.notify();
+        let id = id.to_string();
+        // Reading every volume's capacity waits on any network volume that stopped answering.
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .spawn(async { crate::data::refresh_volumes() })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.refresh_sidebar();
+                if left && this.here().starts_with(id.as_str()) {
+                    let home = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home);
+                    if let Some(home) = home {
+                        this.go(intern_path(&home), window, cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }

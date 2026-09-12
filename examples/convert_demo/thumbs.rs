@@ -90,11 +90,15 @@ fn pick(path: &Path, size: f32, scale: f32) -> Option<Arc<RenderImage>> {
         ask(path, size, scale, false);
         return Some(hit);
     }
-    if let Some(hit) = thumbnails::cached_thumbnail(path, px(size), scale_step(scale), false) {
+    if let Some(hit) =
+        thumbnails::cached_thumbnail(path, modified(path), px(size), scale_step(scale), false)
+    {
         CACHE.with(|c| c.borrow_mut().insert(poster, hit.clone()));
         return Some(hit);
     }
-    if let Some(hit) = thumbnails::cached_thumbnail(path, px(size), scale_step(scale), true) {
+    if let Some(hit) =
+        thumbnails::cached_thumbnail(path, modified(path), px(size), scale_step(scale), true)
+    {
         CACHE.with(|c| c.borrow_mut().insert(icon, hit.clone()));
         ask(path, size, scale, false);
         return Some(hit);
@@ -121,7 +125,21 @@ fn ask(path: &Path, size: f32, scale: f32, is_icon: bool) {
     if ASKED.with(|asked| !asked.borrow_mut().insert(key.clone())) {
         return;
     }
-    thumbnails::thumbnail(path, px(size), scale_step(scale), is_icon, move |image| {
-        LANDED.lock().unwrap().push((key, image));
-    });
+    let modified = modified(path);
+    thumbnails::thumbnail(
+        path,
+        modified,
+        px(size),
+        scale_step(scale),
+        is_icon,
+        move |image| {
+            LANDED.lock().unwrap().push((key, image));
+        },
+    );
+}
+
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
 }

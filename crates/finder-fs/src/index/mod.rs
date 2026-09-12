@@ -32,6 +32,7 @@ const CLAIM_WAIT: Duration = Duration::from_millis(500);
 /// cools its roots the same way: macOS rescans a whole root each time it drops events.
 const COSTLY: Duration = Duration::from_millis(10);
 const COOLDOWN: u32 = 20;
+const MIN_GAP: Duration = Duration::from_secs(2);
 /// Room for coarse timestamps when finding the folders modified since the tree was in sync.
 const SYNC_MARGIN: Duration = Duration::from_secs(2);
 /// A snapshot can be saved while the tree trails the disk, so its catch-up looks this far back.
@@ -305,11 +306,9 @@ impl Index {
         for dir in dirs {
             let started = Instant::now();
             deeper.extend(self.refresh(&dir, &home));
-            let cost = started.elapsed();
-            if cost > COSTLY {
-                let until = Instant::now() + cost * COOLDOWN;
-                self.pending.lock().unwrap().cooling.insert(dir, until);
-            }
+            // A folder written many times a second is read again at most once per gap.
+            let until = Instant::now() + (started.elapsed() * COOLDOWN).max(MIN_GAP);
+            self.pending.lock().unwrap().cooling.insert(dir, until);
         }
         let mut pending = self.pending.lock().unwrap();
         pending.dirs.extend(deeper);

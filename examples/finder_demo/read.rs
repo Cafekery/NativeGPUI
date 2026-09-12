@@ -7,7 +7,7 @@ use std::time::Duration;
 use gpui::{Context, Window};
 
 use crate::app::FinderDemo;
-use crate::data::{self, Column, Line, Row, intern, intern_path};
+use crate::data::{self, Column, Line, Row, intern};
 use crate::listing::{Shape, Walk};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
@@ -455,8 +455,7 @@ impl FinderDemo {
             return;
         }
         for dir in &dirs {
-            let id = intern_path(dir);
-            if self.folders.has(id) {
+            if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
                 self.read_folder(id, cx);
             }
         }
