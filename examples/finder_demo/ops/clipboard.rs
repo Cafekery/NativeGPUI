@@ -58,7 +58,13 @@ impl FinderDemo {
             return;
         }
         let into = PathBuf::from(self.target());
-        let op = if force_move || !self.cut.is_empty() {
+        // Files copied since, in any app, may have replaced the cut on the pasteboard.
+        let cut = !self.cut.is_empty()
+            && items.iter().all(|item| {
+                let key = SharedString::from(item.to_string_lossy().into_owned());
+                self.cut.contains(&key)
+            });
+        let op = if force_move || cut {
             Op::Move { items, into }
         } else {
             Op::Copy { items, into }

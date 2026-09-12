@@ -289,6 +289,7 @@ impl FinderDemo {
             "Are you sure you want to permanently erase the items in the Trash?",
             "You can’t undo this action.",
             "Empty Trash",
+            false,
             cx,
             move |cx| {
                 let mut cx = cx.clone();
@@ -301,22 +302,49 @@ impl FinderDemo {
     }
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
-        self.remove_selection(Op::Trash, cx);
+        let items = self.paths();
+        if !items.is_empty() {
+            self.remove(Op::Trash(items), cx);
+        }
     }
 
     pub(crate) fn delete_selection(&mut self, cx: &mut Context<Self>) {
-        self.remove_selection(Op::DeleteImmediately, cx);
+        let items = self.paths();
+        let (text, detail) = match items.as_slice() {
+            [] => return,
+            [only] => (
+                format!(
+                    "Are you sure you want to delete \u{201c}{}\u{201d}?",
+                    only.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                "This item will be deleted immediately. You can\u{2019}t undo this action.".into(),
+            ),
+            _ => (
+                format!(
+                    "Are you sure you want to delete the {} selected items?",
+                    items.len()
+                ),
+                format!(
+                    "{} items will be deleted immediately. You can\u{2019}t undo this action.",
+                    items.len()
+                ),
+            ),
+        };
+        let this = cx.entity().downgrade();
+        self.confirm(&text, &detail, "Delete", true, cx, move |cx| {
+            let mut cx = cx.clone();
+            this.update(&mut cx, |this: &mut FinderDemo, cx| {
+                this.remove(Op::DeleteImmediately(items.clone()), cx);
+            })
+            .ok();
+        });
     }
 
-    fn remove_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, cx: &mut Context<Self>) {
-        let items = self.paths();
-        if items.is_empty() {
-            return;
-        }
+    fn remove(&mut self, op: Op, cx: &mut Context<Self>) {
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
-        self.run_op(op(items), After::Nothing, cx);
+        self.run_op(op, After::Nothing, cx);
     }
 
     fn open_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -39,7 +39,6 @@ impl Choice {
 enum Kind {
     Move,
     Copy,
-    Rename(String),
 }
 
 pub(crate) struct Sheet {
@@ -63,10 +62,6 @@ impl Sheet {
         match &self.kind {
             Kind::Move => Op::Move { items, into },
             Kind::Copy => Op::Copy { items, into },
-            Kind::Rename(name) => Op::Rename {
-                path: self.current.clone(),
-                name: name.clone(),
-            },
         }
     }
 
@@ -106,13 +101,14 @@ fn same_item(one: &Path, other: &Path) -> bool {
 pub(crate) enum Split {
     Clean(Op),
     Conflicted { clean: Option<Op>, sheet: Sheet },
+    Refused(String),
 }
 
 pub(crate) fn split(op: Op, after: After) -> Split {
     let (items, into, kind) = match op {
         Op::Move { items, into } => (items, into, Kind::Move),
         Op::Copy { items, into } => (items, into, Kind::Copy),
-        Op::Rename { path, name } => return rename_split(path, name, after),
+        Op::Rename { path, name } => return rename_split(path, name),
         other => return Split::Clean(other),
     };
     let mut clean = Vec::new();
@@ -161,23 +157,21 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     }
 }
 
-fn rename_split(path: PathBuf, name: String, after: After) -> Split {
-    let into = path.parent().map(PathBuf::from).unwrap_or_default();
-    let dest = into.join(&name);
+/// Finder refuses a name another item holds rather than offering to replace it.
+fn rename_split(path: PathBuf, name: String) -> Split {
+    let dest = path.with_file_name(&name);
     if !taken(&dest) || same_item(&dest, &path) {
         return Split::Clean(Op::Rename { path, name });
     }
-    let sheet = Sheet {
-        kind: Kind::Rename(name),
-        into,
-        after,
-        current: path,
-        dest,
-        remaining: VecDeque::new(),
-        total: 1,
-        apply_to_all: false,
+    let named = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
+            format!("\u{201c}{stem}\u{201d} with extension \u{201c}.{ext}\u{201d}")
+        }
+        _ => format!("\u{201c}{name}\u{201d}"),
     };
-    Split::Conflicted { clean: None, sheet }
+    Split::Refused(format!(
+        "The name {named} is already taken. Please choose a different name."
+    ))
 }
 
 fn modified_seconds(path: &Path) -> f64 {

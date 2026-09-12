@@ -61,6 +61,7 @@ impl FinderDemo {
                 self.conflict = Some(sheet);
                 cx.notify();
             }
+            conflicts::Split::Refused(message) => self.complain(&message),
         }
     }
 
@@ -167,6 +168,7 @@ impl FinderDemo {
         text: &str,
         detail: &str,
         button: &str,
+        destructive: bool,
         cx: &mut Context<Self>,
         run: impl Fn(&gpui::AsyncApp) + 'static,
     ) {
@@ -176,8 +178,13 @@ impl FinderDemo {
         let alert = objc2_app_kit::NSAlert::new(mtm);
         alert.setMessageText(&objc2_foundation::NSString::from_str(text));
         alert.setInformativeText(&objc2_foundation::NSString::from_str(detail));
-        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(button));
+        let act = alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(button));
         alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Cancel"));
+        // Finder's delete question ignores Return: its red button takes a click.
+        if destructive {
+            act.setHasDestructiveAction(true);
+            act.setKeyEquivalent(&objc2_foundation::NSString::from_str(""));
+        }
         let async_cx = cx.to_async();
         // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
         let handler = block2::RcBlock::new(move |response: objc2_app_kit::NSModalResponse| {

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -21,6 +22,9 @@ const FLASH: Duration = Duration::from_millis(100);
 const FLASHES: u32 = 3;
 
 const FLASH_DIM: f32 = 0.83;
+
+/// Finder lets a press wander about 7 pt before it drops anything; gpui's drag starts at 2.
+const DRAG_START: f64 = 7.;
 
 #[derive(Clone)]
 pub(crate) struct RowDrag {
@@ -115,13 +119,12 @@ pub(crate) fn drop_lands<D: Grabbed>(
                     return;
                 }
                 let grabbed = grab.key().clone();
-                let copy = window.modifiers().alt;
                 this.update(cx, |demo: &mut FinderDemo, cx| {
                     if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
                         return;
                     }
                     let keys = demo.drag_keys(&grabbed);
-                    demo.drop_into(into, &keys, copy, cx);
+                    demo.drop_into(into, &keys, window, cx);
                     cx.notify();
                 })
                 .ok();
@@ -329,26 +332,49 @@ impl FinderDemo {
         }
     }
 
+    /// Finder moves within a volume and copies onto another; Option always copies, Command
+    /// always moves.
     pub(crate) fn drop_into(
         &mut self,
         into: &'static str,
         keys: &[SharedString],
-        copy: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let items: Vec<PathBuf> = keys
-            .iter()
-            .map(|key| PathBuf::from(key.as_ref()))
-            .filter(|path| path.parent() != Some(Path::new(into)))
-            .collect();
-        if items.is_empty() {
+        if (window.mouse_position() - self.pressed_at).magnitude() < DRAG_START {
             return;
         }
+        let held = window.modifiers();
         let into = PathBuf::from(into);
-        let op = match copy {
-            true => Op::Copy { items, into },
-            false => Op::Move { items, into },
-        };
-        self.run_op(op, After::Select, cx);
+        let (copies, moves): (Vec<PathBuf>, Vec<PathBuf>) = keys
+            .iter()
+            .map(|key| PathBuf::from(key.as_ref()))
+            .filter(|path| path.parent() != Some(into.as_path()))
+            .partition(|path| held.alt || (!held.platform && !same_volume(path, &into)));
+        if !moves.is_empty() {
+            let op = Op::Move {
+                items: moves,
+                into: into.clone(),
+            };
+            self.run_op(op, After::Select, cx);
+        }
+        if !copies.is_empty() {
+            self.run_op(
+                Op::Copy {
+                    items: copies,
+                    into,
+                },
+                After::Select,
+                cx,
+            );
+        }
+    }
+}
+
+/// A side that can't be read counts as another volume, so the originals stay where they are.
+fn same_volume(item: &Path, into: &Path) -> bool {
+    match (std::fs::symlink_metadata(item), std::fs::metadata(into)) {
+        (Ok(item), Ok(into)) => item.dev() == into.dev(),
+        _ => false,
     }
 }
