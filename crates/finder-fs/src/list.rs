@@ -70,6 +70,45 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// One item's entry without listing its whole folder. The listing stays the fallback: past
+/// `PATH_MAX`, and for an evicted iCloud file whose name on disk is its stand-in's.
+pub fn entry_at(path: &Path) -> io::Result<Entry> {
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    let listed = || {
+        let wanted = path.file_name().map(|name| name.to_string_lossy());
+        list_dir(dir)?
+            .into_iter()
+            .find(|entry| wanted.as_deref() == Some(entry.name.as_str()))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    };
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return listed();
+    };
+    let mut list = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: COMMON_ATTRS & !ATTR_CMN_ERROR,
+        volattr: 0,
+        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
+        fileattr: libc::ATTR_FILE_DATALENGTH,
+        forkattr: 0,
+    };
+    let mut buf = vec![0u8; 4096];
+    let got = unsafe {
+        libc::getattrlist(
+            c_path.as_ptr(),
+            &mut list as *mut _ as *mut libc::c_void,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+            libc::FSOPT_PACK_INVAL_ATTRS | libc::FSOPT_NOFOLLOW,
+        )
+    };
+    match got {
+        0 => parse_entry(&buf, dir).map_or_else(listed, Ok),
+        _ => listed(),
+    }
+}
+
 #[cfg(test)]
 pub(crate) static READS: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
@@ -340,6 +379,35 @@ mod tests {
                 e.modified,
                 modified
             );
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn one_entry_reads_like_its_listing() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-one-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("stuffed")).unwrap();
+        fs::write(dir.join("plain.txt"), b"hello").unwrap();
+        fs::write(dir.join("stuffed/child"), b"x").unwrap();
+        symlink(dir.join("plain.txt"), dir.join("a-symlink")).unwrap();
+
+        let listed = list_dir(&dir).unwrap();
+        assert_eq!(listed.len(), 3);
+        for entry in &listed {
+            let one = entry_at(&dir.join(&entry.name)).unwrap();
+            assert_eq!(
+                (&one.name, one.kind, one.size, one.children, one.file_id),
+                (
+                    &entry.name,
+                    entry.kind,
+                    entry.size,
+                    entry.children,
+                    entry.file_id
+                ),
+            );
+            assert_eq!(one.modified, entry.modified, "{}", entry.name);
         }
 
         fs::remove_dir_all(&dir).unwrap();
