@@ -61,7 +61,7 @@ struct Card {
     actions: &'static [(&'static str, &'static str)],
 }
 
-/// Straight-alpha BGRA in and out, as icons and thumbnails come.
+/// Straight-alpha BGRA in and out.
 fn stack_image(images: &[Arc<RenderImage>], side: u32) -> Option<Arc<RenderImage>> {
     if images.is_empty() {
         return None;
@@ -332,26 +332,22 @@ impl FinderDemo {
             return div().w(px(content)).h(px(content)).into_any_element();
         };
         let shown = &lines[..lines.len().min(3)];
-        // A photo is stacked as its own picture, as Finder does; anything else as its type's icon.
+        let size = content * STACK_ICON;
         let thumbs: Vec<Option<Arc<RenderImage>>> = shown
             .iter()
-            .map(|line| {
-                crate::thumbs::thumb(&line.row, content * STACK_ICON, self.scale, true, true)
-            })
+            .map(|line| crate::thumbs::thumb(&line.row, size, self.scale, true, true))
             .collect();
         let images: Vec<Arc<RenderImage>> = shown
             .iter()
             .zip(&thumbs)
             .filter_map(|(line, thumb)| {
-                thumb.clone().or_else(|| {
-                    crate::icons::icon(line.row.artwork?, content * STACK_ICON)
-                        .map(|icon| icon.image)
-                })
+                thumb
+                    .clone()
+                    .or_else(|| Some(crate::icons::icon(line.row.artwork?, size)?.image))
             })
             .collect();
         let keys: Vec<SharedString> = shown.iter().map(|line| line.key.clone()).collect();
-        // A larger raster landing for a photo changes its width, so the stack is composed again.
-        let widths: Vec<Option<u32>> = thumbs
+        let thumb_widths: Vec<Option<u32>> = thumbs
             .iter()
             .map(|thumb| thumb.as_ref().map(|image| image.size(0).width.0 as u32))
             .collect();
@@ -360,8 +356,10 @@ impl FinderDemo {
             .stack
             .borrow()
             .as_ref()
-            .filter(|(k, s, w, _)| *k == keys && *s == side && *w == widths)
-            .map(|(_, _, _, image)| image.clone());
+            .filter(|stack| {
+                stack.keys == keys && stack.side == side && stack.thumb_widths == thumb_widths
+            })
+            .map(|stack| stack.image.clone());
         let drawn = shown
             .iter()
             .zip(&thumbs)
@@ -371,7 +369,12 @@ impl FinderDemo {
         let image = cached.or_else(|| {
             let image = stack_image(&images, side)?;
             if drawn {
-                *self.stack.borrow_mut() = Some((keys, side, widths, image.clone()));
+                *self.stack.borrow_mut() = Some(crate::app::Stack {
+                    keys,
+                    side,
+                    thumb_widths,
+                    image: image.clone(),
+                });
             }
             Some(image)
         });

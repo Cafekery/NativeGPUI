@@ -129,9 +129,7 @@ impl NativeTextField {
         self
     }
 
-    /// Takes these editing commands (`moveUp:`, `insertTab:`, …) from AppKit and hands them over
-    /// with the text as it stands. `moveRight:` is only taken with the caret at the end of the
-    /// text, where AppKit would do nothing with it.
+    /// `moveRight:` is only taken with the caret at the end of the text.
     pub fn on_command(
         mut self,
         commands: &'static [&'static str],
@@ -152,7 +150,6 @@ impl NativeTextField {
         self
     }
 
-    /// No bezel, border, background or focus ring: the text sits on whatever is drawn behind it.
     pub fn borderless(mut self) -> Self {
         self.borderless = true;
         self
@@ -291,9 +288,7 @@ impl NativeTextField {
 hosted_element!(NativeTextField);
 
 thread_local! {
-    /// The commands each field takes, by the field's address.
     static COMMANDS: RefCell<HashMap<usize, &'static [&'static str]>> = RefCell::new(HashMap::new());
-    /// Set just before the action is sent, and read inside it.
     static LAST_COMMAND: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
@@ -323,7 +318,6 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
     unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
 }
 
-/// Sends the control's action on the channel `channel` instead of submit.
 fn send_on(control: &NSControl, channel: u64) -> Bool {
     let (Some(action), Some(target)) = (control.action(), control.target()) else {
         return Bool::NO;

@@ -123,7 +123,6 @@ pub(crate) fn set_removed(group: &str, ids: &[&str]) {
     write_list(&format!("removed.{group}"), ids);
 }
 
-/// Where Go to Folder went, newest first.
 pub(crate) fn go_history() -> Vec<String> {
     read_list("go.history")
 }

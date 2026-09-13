@@ -17,7 +17,6 @@ use objc2_quick_look_thumbnailing::{
 use crate::system::tokens;
 
 const MAX_CACHE: usize = 4096;
-/// A gallery hero is ~13 MB at 2x, so a count alone would let a walk through photos hold gigabytes.
 const MAX_BYTES: usize = 512 << 20;
 const MAX_INFLIGHT: usize = 8;
 
