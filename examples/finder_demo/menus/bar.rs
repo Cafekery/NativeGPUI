@@ -555,7 +555,7 @@ impl FinderDemo {
                 native_gpui::set_menu("Go", go_rows(&this.recents));
             }))
             .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
-                this.go_sheet = Some(GoSheet::at(this.crumb_path()));
+                this.go_sheet = Some(GoSheet::open());
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ConnectToServer, _, cx| {

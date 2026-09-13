@@ -1,13 +1,15 @@
+use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{App, ElementId, SharedString, Style, Window, relative};
 use objc2::rc::Retained;
-use objc2::runtime::{Bool, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControl, NSControlSize, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate,
-    NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType, NSSearchField,
+    NSSearchFieldDelegate, NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
@@ -15,12 +17,14 @@ use objc2_foundation::{
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, NativeValue, Slot, Target, ValueKind, hosted_element, wire,
+    ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, Target,
+    ValueKind, hosted_element, wire,
 };
 use crate::controls::fitted;
 
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 const CANCEL_CHANNEL: u64 = 0x6a09_e667_f3bc_c908;
+const COMMAND_CHANNEL: u64 = 0xbb67_ae85_84ca_a73b;
 
 /// `text` must be the state `on_change` writes; edit chords need [`crate::install_menus`].
 pub fn native_text_field(id: impl Into<ElementId>, text: &str) -> NativeTextField {
@@ -69,11 +73,14 @@ pub struct NativeTextField {
     placeholder: SharedString,
     enabled: bool,
     stretch: bool,
+    borderless: bool,
     control_size: ControlSize,
     editing: Option<std::ops::Range<usize>>,
     on_change: Option<NativeHandler>,
     on_submit: Option<NativeHandler>,
     on_cancel: Option<NativeHandler>,
+    commands: &'static [&'static str],
+    on_command: Option<NativeDispatch>,
 }
 
 impl NativeTextField {
@@ -86,10 +93,13 @@ impl NativeTextField {
             control_size: ControlSize::default(),
             enabled: true,
             stretch: false,
+            borderless: false,
             editing: None,
             on_change: None,
             on_submit: None,
             on_cancel: None,
+            commands: &[],
+            on_command: None,
         }
     }
 
@@ -119,8 +129,32 @@ impl NativeTextField {
         self
     }
 
+    /// Takes these editing commands (`moveUp:`, `insertTab:`, …) from AppKit and hands them over
+    /// with the text as it stands. `moveRight:` is only taken with the caret at the end of the
+    /// text, where AppKit would do nothing with it.
+    pub fn on_command(
+        mut self,
+        commands: &'static [&'static str],
+        handler: impl Fn(&str, &String, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.commands = commands;
+        self.on_command = Some(Rc::new(move |value: Box<dyn Any>, window, cx| {
+            if let Ok(value) = value.downcast::<(String, String)>() {
+                let (command, text) = *value;
+                handler(&command, &text, window, cx);
+            }
+        }));
+        self
+    }
+
     pub fn stretch(mut self) -> Self {
         self.stretch = true;
+        self
+    }
+
+    /// No bezel, border, background or focus ring: the text sits on whatever is drawn behind it.
+    pub fn borderless(mut self) -> Self {
+        self.borderless = true;
         self
     }
 
@@ -182,6 +216,12 @@ impl NativeTextField {
         if field.isEnabled() != self.enabled {
             field.setEnabled(self.enabled);
         }
+        if self.borderless && field.drawsBackground() {
+            field.setBezeled(false);
+            field.setBordered(false);
+            field.setDrawsBackground(false);
+            field.setFocusRingType(NSFocusRingType::None);
+        }
         let placeholder = field
             .placeholderString()
             .map_or_else(String::new, |have| have.to_string());
@@ -209,6 +249,17 @@ impl NativeTextField {
         let host = &slot.host;
         host.on_change_channel(slot.key, submit, ValueKind::Text, self.on_submit.take());
         host.on_change_channel(slot.key, cancel, ValueKind::Text, self.on_cancel.take());
+        let address = Retained::as_ptr(&field) as usize;
+        COMMANDS.with(|taken| match self.on_command.is_some() {
+            true => taken.borrow_mut().insert(address, self.commands),
+            false => taken.borrow_mut().remove(&address),
+        });
+        host.on_event_channel(
+            slot.key,
+            slot.key ^ COMMAND_CHANNEL,
+            command_read(),
+            self.on_command.take(),
+        );
 
         let Some(selected) = &self.editing else {
             return;
@@ -239,6 +290,21 @@ impl NativeTextField {
 
 hosted_element!(NativeTextField);
 
+thread_local! {
+    /// The commands each field takes, by the field's address.
+    static COMMANDS: RefCell<HashMap<usize, &'static [&'static str]>> = RefCell::new(HashMap::new());
+    /// Set just before the action is sent, and read inside it.
+    static LAST_COMMAND: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+fn command_read() -> NativeRead {
+    Rc::new(|sender: &AnyObject| {
+        let text: Retained<NSString> = unsafe { msg_send![sender, stringValue] };
+        let command = LAST_COMMAND.with(|last| last.borrow().clone());
+        Box::new((command, text.to_string()))
+    })
+}
+
 fn text_handler(handler: impl Fn(&String, &mut Window, &mut App) + 'static) -> NativeHandler {
     Rc::new(move |value, window, cx| {
         if let NativeValue::Text(text) = value {
@@ -255,6 +321,18 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
     wire(field, target, submit);
     let delegate = shared_delegate(MainThreadMarker::from(field));
     unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+}
+
+/// Sends the control's action on the channel `channel` instead of submit.
+fn send_on(control: &NSControl, channel: u64) -> Bool {
+    let (Some(action), Some(target)) = (control.action(), control.target()) else {
+        return Bool::NO;
+    };
+    let submit = control.tag();
+    control.setTag(submit ^ SUBMIT_CHANNEL as isize ^ channel as isize);
+    let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
+    control.setTag(submit);
+    Bool::YES
 }
 
 define_class!(
@@ -287,18 +365,29 @@ define_class!(
         }
 
         #[unsafe(method(control:textView:doCommandBySelector:))]
-        fn do_command(&self, control: &NSControl, _: &NSTextView, selector: Sel) -> Bool {
-            if selector != sel!(cancelOperation:) {
+        fn do_command(&self, control: &NSControl, text_view: &NSTextView, selector: Sel) -> Bool {
+            if selector == sel!(cancelOperation:) {
+                return send_on(control, CANCEL_CHANNEL);
+            }
+            let name = selector.name().to_str().unwrap_or_default();
+            let address = control as *const NSControl as usize;
+            let taken = COMMANDS.with(|taken| {
+                taken
+                    .borrow()
+                    .get(&address)
+                    .is_some_and(|commands| commands.contains(&name))
+            });
+            if !taken {
                 return Bool::NO;
             }
-            let (Some(action), Some(target)) = (control.action(), control.target()) else {
-                return Bool::NO;
-            };
-            let submit = control.tag();
-            control.setTag(submit ^ SUBMIT_CHANNEL as isize ^ CANCEL_CHANNEL as isize);
-            let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
-            control.setTag(submit);
-            Bool::YES
+            if selector == sel!(moveRight:) {
+                let selected = text_view.selectedRange();
+                if selected.length != 0 || selected.location != text_view.string().length() {
+                    return Bool::NO;
+                }
+            }
+            LAST_COMMAND.with(|last| *last.borrow_mut() = name.to_owned());
+            send_on(control, COMMAND_CHANNEL)
         }
     }
 

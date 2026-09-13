@@ -71,9 +71,11 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
             file_hit = Some(entry);
         }
     }
+    // A folder typed whole is browsed, so its children come in name order.
     prefix_hits.sort_by_key(|e| {
         let name = e.name.to_lowercase();
-        (name != needle, e.name.len(), name)
+        let rank = if prefix.is_empty() { 0 } else { e.name.len() };
+        (name != needle, rank, name)
     });
     fuzzy_hits.sort_by_key(|e| (e.name.len(), e.name.to_lowercase()));
     prefix_hits
