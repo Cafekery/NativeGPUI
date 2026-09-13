@@ -3,7 +3,7 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
-use native_gpui::{MenuEntry, native_popup, native_slider, window_options};
+use native_gpui::{MenuEntry, native_popup, native_root, native_slider, window_options};
 
 use crate::app::FinderDemo;
 use crate::data::Column;
@@ -40,7 +40,7 @@ impl ViewOptions {
 impl Render for ViewOptions {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(demo) = self.demo.upgrade() else {
-            return div();
+            return div().into_any_element();
         };
         let state = demo.read(cx);
         let title = state
@@ -51,52 +51,55 @@ impl Render for ViewOptions {
         let icon_size = state.icon_size;
         let icons = state.view == ICON_VIEW;
 
-        div()
-            .size_full()
-            .p(px(14.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .bg(system_color(SystemColor::WindowBackground))
-            .child(
-                div()
-                    .text_size(tokens::small_system_font_size())
-                    .text_color(system_color(SystemColor::Label))
-                    .child(SharedString::from(title.to_string())),
-            )
-            .child(Self::row(
-                "Sort by:",
-                native_popup("ng.finder.options.sort", sort.unwrap_or(0))
-                    .entries(SORTS.iter().map(|(_, label)| MenuEntry::item(*label)))
-                    .on_change({
-                        let demo = demo.clone();
-                        move |index: &usize, _, cx| {
-                            let column = SORTS[*index].0;
-                            demo.update(cx, |this, cx| {
-                                this.sort_by(column, cx);
-                                cx.notify();
-                            });
-                        }
-                    }),
-            ))
-            .when(icons, |panel| {
-                panel.child(Self::row(
-                    "Icon size:",
-                    native_slider("ng.finder.options.size", icon_size)
-                        .range(32., 128.)
+        native_root(
+            div()
+                .size_full()
+                .p(px(14.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .bg(system_color(SystemColor::WindowBackground))
+                .child(
+                    div()
+                        .text_size(tokens::small_system_font_size())
+                        .text_color(system_color(SystemColor::Label))
+                        .child(SharedString::from(title.to_string())),
+                )
+                .child(Self::row(
+                    "Sort by:",
+                    native_popup("ng.finder.options.sort", sort.unwrap_or(0))
+                        .entries(SORTS.iter().map(|(_, label)| MenuEntry::item(*label)))
                         .on_change({
                             let demo = demo.clone();
-                            move |value: &f64, _, cx| {
-                                let size = (value / 8.).round() * 8.;
+                            move |index: &usize, _, cx| {
+                                let column = SORTS[*index].0;
                                 demo.update(cx, |this, cx| {
-                                    this.icon_size = size;
-                                    crate::prefs::set_icon_size(size as f32);
+                                    this.sort_by(column, cx);
                                     cx.notify();
                                 });
                             }
                         }),
                 ))
-            })
+                .when(icons, |panel| {
+                    panel.child(Self::row(
+                        "Icon size:",
+                        native_slider("ng.finder.options.size", icon_size)
+                            .range(32., 128.)
+                            .on_change({
+                                let demo = demo.clone();
+                                move |value: &f64, _, cx| {
+                                    let size = (value / 8.).round() * 8.;
+                                    demo.update(cx, |this, cx| {
+                                        this.icon_size = size;
+                                        crate::prefs::set_icon_size(size as f32);
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    ))
+                }),
+        )
+        .into_any_element()
     }
 }
 
