@@ -304,8 +304,8 @@ pub fn locked(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
 }
 
-/// A locked child refuses the folder it sits in.
-fn unlock(path: &Path) -> io::Result<()> {
+/// A locked child refuses a delete of the folder it sits in, but not a trash, which is one rename.
+fn unlock(path: &Path, deep: bool) -> io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     let flags = meta.st_flags();
     // `chflags` follows a link, so the lock a link carries itself is left where it is.
@@ -315,9 +315,9 @@ fn unlock(path: &Path) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    if meta.is_dir() {
+    if deep && meta.is_dir() {
         for entry in std::fs::read_dir(path)? {
-            unlock(&entry?.path())?;
+            unlock(&entry?.path(), true)?;
         }
     }
     Ok(())
@@ -435,10 +435,11 @@ fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
 /// Finder carries on past its "the item is locked" question, so a lock is cleared and retried.
 fn past_the_lock<T>(
     path: &Path,
+    deep: bool,
     refused: io::Error,
     again: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    if refused.kind() != io::ErrorKind::PermissionDenied || unlock(path).is_err() {
+    if refused.kind() != io::ErrorKind::PermissionDenied || unlock(path, deep).is_err() {
         return Err(refused);
     }
     again()
@@ -446,30 +447,53 @@ fn past_the_lock<T>(
 
 fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
     match trash_at(fm, path) {
-        Err(refused) => past_the_lock(path, refused, || trash_at(fm, path)),
+        Err(refused) => past_the_lock(path, false, refused, || trash_at(fm, path)),
         landed => landed,
     }
 }
 
 fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     match remove_path(fm, path) {
-        Err(refused) => past_the_lock(path, refused, || remove_path(fm, path)),
+        Err(refused) => past_the_lock(path, true, refused, || remove_path(fm, path)),
         gone => gone,
     }
 }
 
+/// A Replace swaps the old item out to a staging name, so it goes to the Trash under its own.
+fn trash_as(fm: &NSFileManager, staged: &Path, dest: &Path) -> io::Result<PathBuf> {
+    let holder = staging_path(dest);
+    std::fs::create_dir(&holder)?;
+    let named = holder.join(dest.file_name().unwrap_or_default());
+    let trashed = std::fs::rename(staged, &named).and_then(|()| {
+        trash_one(fm, &named).inspect_err(|_| {
+            let _ = std::fs::rename(&named, staged);
+        })
+    });
+    let _ = std::fs::remove_dir(&holder);
+    trashed
+}
+
 struct Placed {
     dest: Option<PathBuf>,
+    landed: Vec<Restore>,
     displaced: Vec<Restore>,
 }
 
 impl Placed {
-    fn at(dest: PathBuf) -> Placed {
+    fn at(src: &Path, dest: PathBuf) -> Placed {
         Placed {
+            landed: vec![Restore {
+                item: dest.clone(),
+                to: src.to_path_buf(),
+            }],
             dest: Some(dest),
             displaced: Vec::new(),
         }
     }
+}
+
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> io::Result<Placed> {
@@ -486,7 +510,7 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> i
         };
         return Err(err);
     }
-    let displaced = match trash_one(fm, &staged) {
+    let displaced = match trash_as(fm, &staged, &dest) {
         Ok(item) => vec![Restore {
             item,
             to: dest.clone(),
@@ -497,8 +521,8 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> i
         }
     };
     Ok(Placed {
-        dest: Some(dest),
         displaced,
+        ..Placed::at(src, dest)
     })
 }
 
@@ -511,35 +535,37 @@ fn place_one(
 ) -> io::Result<Placed> {
     if !taken(&dest) {
         transfer(fm, src, &dest, is_move)?;
-        return Ok(Placed::at(dest));
+        return Ok(Placed::at(src, dest));
     }
     // Finder leaves a move onto itself where it is, and makes a copy into the same folder a
     // Duplicate.
     if same_item(src, &dest) {
         if is_move {
-            return Ok(Placed::at(dest));
+            return Ok(Placed::at(src, dest));
         }
         let dest = duplicate_path(&dest);
         transfer(fm, src, &dest, false)?;
-        return Ok(Placed::at(dest));
+        return Ok(Placed::at(src, dest));
     }
     match conflict {
         Conflict::Skip => Ok(Placed {
             dest: None,
+            landed: Vec::new(),
             displaced: Vec::new(),
         }),
         Conflict::KeepBoth => {
             let dest = keep_both_path(&dest);
             transfer(fm, src, &dest, is_move)?;
-            Ok(Placed::at(dest))
+            Ok(Placed::at(src, dest))
         }
         Conflict::Replace => replace_at(fm, src, dest, is_move),
-        Conflict::Merge if src.is_dir() && dest.is_dir() => {
-            let mut displaced = Vec::new();
+        Conflict::Merge if real_dir(src) && real_dir(&dest) => {
+            let (mut landed, mut displaced) = (Vec::new(), Vec::new());
             for entry in std::fs::read_dir(src)? {
                 let entry = entry?;
                 let child_dest = dest.join(entry.file_name());
                 let placed = place_one(fm, &entry.path(), child_dest, Conflict::Merge, is_move)?;
+                landed.extend(placed.landed);
                 displaced.extend(placed.displaced);
             }
             if is_move {
@@ -547,6 +573,7 @@ fn place_one(
             }
             Ok(Placed {
                 dest: Some(dest),
+                landed,
                 displaced,
             })
         }
@@ -589,13 +616,8 @@ fn move_or_copy(
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
         let dest = into.join(name);
         let placed = place_one(&fm, item, dest, conflict, is_move)?;
-        if let Some(dest) = placed.dest {
-            home.push(Restore {
-                item: dest.clone(),
-                to: item.clone(),
-            });
-            results.push(dest);
-        }
+        results.extend(placed.dest);
+        home.extend(placed.landed);
         displaced.extend(placed.displaced);
         progress(Progress {
             done: i + 1,
@@ -603,19 +625,15 @@ fn move_or_copy(
             current: Some(item.clone()),
         });
     }
-    let undo = undo_of_transfer(is_move, home, &results, displaced);
+    let undo = undo_of_transfer(is_move, home, displaced);
     Ok(Done { results, undo })
 }
 
-fn undo_of_transfer(
-    is_move: bool,
-    home: Vec<Restore>,
-    results: &[PathBuf],
-    displaced: Vec<Restore>,
-) -> Option<Op> {
+fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) -> Option<Op> {
+    let landed = (!is_move && !home.is_empty())
+        .then(|| Op::Trash(home.iter().map(|placed| placed.item.clone()).collect()));
     let mut put_back = if is_move { home } else { Vec::new() };
     put_back.extend(displaced);
-    let landed = (!is_move && !results.is_empty()).then(|| Op::Trash(results.to_vec()));
     let restored = (!put_back.is_empty()).then_some(Op::PutBack(put_back));
     match (landed, restored) {
         (Some(landed), Some(restored)) => Some(Op::Batch(vec![landed, restored])),
@@ -628,6 +646,9 @@ fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Resu
     let total = items.len();
     let mut results = Vec::with_capacity(total);
     for (i, restore) in items.iter().enumerate() {
+        if let Some(parent) = restore.to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let placed = place_one(
             &fm,
             &restore.item,
@@ -713,7 +734,7 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
     let placed = if same_item(&path, &dest) {
         transfer(&fm, &path, &dest, true)?;
-        Placed::at(dest)
+        Placed::at(&path, dest)
     } else {
         place_one(&fm, &path, dest, conflict, true)?
     };
@@ -832,11 +853,17 @@ fn compress(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Resu
             staging.clone()
         }
     };
-    let status = ditto.arg(&source).arg(&dest).status();
+    let out = ditto.arg(&source).arg(&dest).output();
     if let Some(staging) = &staging {
         let _ = std::fs::remove_dir_all(staging);
     }
-    status?;
+    let out = out?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&dest);
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
     progress(Progress {
         done: items.len(),
         total: items.len(),
@@ -1582,7 +1609,7 @@ mod tests {
         );
         let kept = |path: &Path| fs::read_to_string(path).ok();
         let (left, landed) = (kept(&from.join("a.txt")), kept(&locked));
-        let _ = unlock(&locked);
+        let _ = unlock(&locked, true);
         assert!(
             left.as_deref() == Some("new") || landed.as_deref() == Some("new"),
             "the moved item is gone: from={left:?} into={landed:?}"
@@ -2066,6 +2093,184 @@ mod tests {
         let names = String::from_utf8_lossy(&listing.stdout);
         assert!(names.lines().any(|line| line == "a.txt"), "{names}");
         assert!(names.lines().any(|line| line.starts_with("b/")), "{names}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_merge_leaves_what_was_already_there() {
+        for is_move in [false, true] {
+            let dir = temp_dir(if is_move {
+                "merge-undo-move"
+            } else {
+                "merge-undo-copy"
+            });
+            let src = dir.join("src").join("Folder");
+            let dst_parent = dir.join("dest");
+            let dst = dst_parent.join("Folder");
+            fs::create_dir_all(src.join("nested")).unwrap();
+            fs::create_dir_all(dst.join("nested")).unwrap();
+            touch(&src.join("keep.txt"), "from src");
+            touch(&src.join("nested").join("child.txt"), "child");
+            touch(&dst.join("keep.txt"), "from dst");
+            touch(&dst.join("only-in-dst.txt"), "untouched");
+
+            let items = vec![src.clone()];
+            let into = dst_parent.clone();
+            let op = match is_move {
+                true => Op::Move { items, into },
+                false => Op::Copy { items, into },
+            };
+            let done = perform(op, Conflict::Merge, no_progress).unwrap();
+            let back = perform(
+                done.undo.expect("a merge undoes"),
+                Conflict::KeepBoth,
+                no_progress,
+            );
+
+            let read = |path: PathBuf| fs::read_to_string(path).ok();
+            assert_eq!(
+                read(dst.join("only-in-dst.txt")).as_deref(),
+                Some("untouched")
+            );
+            assert_eq!(read(dst.join("keep.txt")).as_deref(), Some("from dst"));
+            assert!(!dst.join("nested").join("child.txt").exists());
+            if is_move {
+                assert_eq!(read(src.join("keep.txt")).as_deref(), Some("from src"));
+                assert_eq!(
+                    read(src.join("nested").join("child.txt")).as_deref(),
+                    Some("child")
+                );
+            }
+            if let Ok(back) = back {
+                purge(
+                    &back
+                        .results
+                        .into_iter()
+                        .filter(|p| !p.starts_with(&dir))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_failed_compress_is_an_error() {
+        let dir = temp_dir("compress-fails");
+        let folder = dir.join("Unreadable");
+        fs::create_dir_all(&folder).unwrap();
+        let secret = folder.join("secret.txt");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(
+            Op::Compress(vec![folder.clone()]),
+            Conflict::KeepBoth,
+            no_progress,
+        );
+        assert!(done.is_err(), "ditto failed, so the archive is not done");
+        assert!(
+            !dir.join("Unreadable.zip").exists(),
+            "no partial archive is left"
+        );
+
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replaced_item_goes_to_the_trash_under_its_own_name() {
+        let dir = temp_dir("replaced-name");
+        let name = format!("replaced-{}.txt", std::process::id());
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        touch(&dir.join("a").join(&name), "new");
+        touch(&dir.join("b").join(&name), "old");
+
+        let done = perform(
+            Op::Copy {
+                items: vec![dir.join("a").join(&name)],
+                into: dir.join("b"),
+            },
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        let trashed = displaced(&done.undo.unwrap());
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(trashed[0].file_name().unwrap().to_string_lossy(), name);
+        assert_eq!(fs::read_to_string(&trashed[0]).unwrap(), "old");
+
+        purge(&trashed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_never_follows_a_link_into_its_target() {
+        let dir = temp_dir("merge-link");
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        touch(&elsewhere.join("mine.txt"), "mine");
+        let src = dir.join("src").join("Folder");
+        fs::create_dir_all(&src).unwrap();
+        touch(&src.join("keep.txt"), "from src");
+        fs::create_dir_all(dir.join("dest")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("dest").join("Folder")).unwrap();
+
+        let done = perform(
+            Op::Copy {
+                items: vec![src.clone()],
+                into: dir.join("dest"),
+            },
+            Conflict::Merge,
+            no_progress,
+        )
+        .unwrap();
+        assert!(
+            !elsewhere.join("keep.txt").exists(),
+            "the link's target is untouched"
+        );
+        assert!(
+            !fs::symlink_metadata(dir.join("dest").join("Folder"))
+                .unwrap()
+                .is_symlink()
+        );
+
+        purge(&displaced(&done.undo.unwrap()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trashing_a_locked_folder_keeps_the_locks_inside() {
+        let dir = temp_dir("locked-folder");
+        let folder = dir.join("LockedFolder");
+        fs::create_dir_all(&folder).unwrap();
+        let child = folder.join("child.txt");
+        touch(&child, "child");
+        for path in [&child, &folder] {
+            assert!(
+                std::process::Command::new("/usr/bin/chflags")
+                    .arg("uchg")
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+
+        let done = perform(
+            Op::Trash(vec![folder.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        perform(done.undo.unwrap(), Conflict::KeepBoth, no_progress).unwrap();
+        assert!(locked(&child), "the child's own lock survived the trip");
+
+        let _ = std::process::Command::new("/usr/bin/chflags")
+            .args(["-R", "nouchg"])
+            .arg(&dir)
+            .status();
         let _ = fs::remove_dir_all(&dir);
     }
 }
