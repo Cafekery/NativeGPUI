@@ -41,6 +41,7 @@ const GIVE_UP: u32 = 250;
 const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
 const KEPT: usize = 512;
+const KEPT_BYTES: usize = 256 << 20;
 
 pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
@@ -149,7 +150,15 @@ pub(crate) fn sweep_thumbnails() {
             .retain(|(path, _, _)| drawn.contains(path))
     });
     // Off-screen thumbnails come back from the library's own bounded cache when scrolled to.
-    if THUMBS.with(|thumbs| thumbs.borrow().len()) > KEPT {
+    let (count, bytes) = THUMBS.with(|thumbs| {
+        let thumbs = thumbs.borrow();
+        let bytes = thumbs
+            .values()
+            .map(|image| image.as_bytes(0).map_or(0, <[u8]>::len))
+            .sum::<usize>();
+        (thumbs.len(), bytes)
+    });
+    if count > KEPT || bytes > KEPT_BYTES {
         THUMBS.with(|thumbs| {
             thumbs
                 .borrow_mut()

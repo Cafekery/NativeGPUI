@@ -17,6 +17,8 @@ use objc2_quick_look_thumbnailing::{
 use crate::system::tokens;
 
 const MAX_CACHE: usize = 4096;
+/// A gallery hero is ~13 MB at 2x, so a count alone would let a walk through photos hold gigabytes.
+const MAX_BYTES: usize = 512 << 20;
 const MAX_INFLIGHT: usize = 8;
 
 type Callback = Box<dyn FnOnce(Option<Arc<RenderImage>>) + Send>;
@@ -52,6 +54,7 @@ impl Key {
 struct State {
     cache: HashMap<Key, Option<Arc<RenderImage>>>,
     order: VecDeque<Key>,
+    bytes: usize,
     waiters: HashMap<Key, Vec<Callback>>,
     queue: VecDeque<Key>,
     active: usize,
@@ -204,15 +207,25 @@ fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     )
 }
 
+fn raster_bytes(image: &RenderImage) -> usize {
+    image.as_bytes(0).map_or(0, <[u8]>::len)
+}
+
 fn complete(key: Key, result: Option<Arc<RenderImage>>) {
     let (callbacks, next) = {
         let mut state = STATE.lock().unwrap();
         state.active -= 1;
-        state.cache.insert(key.clone(), result.clone());
+        if let Some(Some(old)) = state.cache.insert(key.clone(), result.clone()) {
+            state.bytes -= raster_bytes(&old);
+        }
+        state.bytes += result.as_deref().map_or(0, raster_bytes);
         state.order.push_back(key.clone());
-        while state.order.len() > MAX_CACHE {
-            if let Some(old) = state.order.pop_front() {
-                state.cache.remove(&old);
+        while state.order.len() > MAX_CACHE || state.bytes > MAX_BYTES {
+            let Some(old) = state.order.pop_front() else {
+                break;
+            };
+            if let Some(Some(image)) = state.cache.remove(&old) {
+                state.bytes -= raster_bytes(&image);
             }
         }
         let callbacks = state.waiters.remove(&key).unwrap_or_default();

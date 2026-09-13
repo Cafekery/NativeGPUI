@@ -13,7 +13,6 @@ use crate::ui::pick_on_click;
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
 const HERO_INSET: f32 = 61.;
-const HERO_MAX: f32 = 512.;
 
 #[derive(Clone, Copy)]
 struct Strip {
@@ -68,7 +67,7 @@ impl FinderDemo {
         let room_h = f32::from(window.viewport_size().height)
             - f32::from(self.metrics().top)
             - strip.height();
-        let size = (room_w.min(room_h) - 2. * HERO_INSET).clamp(64., HERO_MAX);
+        let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
         let scale = self.scale;
         let hero = match chosen.as_slice() {
             many if many.len() > 1 => Some(self.stack_hero(many, size)),
