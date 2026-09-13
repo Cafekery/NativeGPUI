@@ -280,8 +280,32 @@ impl NativeHost {
             return host;
         }
         let host = Self::new(window, cx);
+        if cx.try_global::<Hosts>().is_none() {
+            // The terminus retains gpui's view, so an unreleased host keeps a closed window alive.
+            cx.on_window_closed(|cx, closed| {
+                cx.default_global::<Hosts>().0.retain(|handle, host| {
+                    let open = handle.window_id() != closed;
+                    if !open {
+                        host.release();
+                    }
+                    open
+                });
+            })
+            .detach();
+        }
         cx.default_global::<Hosts>().0.insert(handle, host.clone());
         host
+    }
+
+    fn release(&self) {
+        let Ok(mut state) = self.0.try_borrow_mut() else {
+            return;
+        };
+        state.terminus.removeFromSuperview();
+        state.above.removeFromSuperview();
+        state.below.removeFromSuperview();
+        state.dispatch.table.borrow_mut().clear();
+        state.slots.clear();
     }
 
     fn new(window: &mut Window, cx: &mut App) -> Self {

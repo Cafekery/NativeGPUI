@@ -216,6 +216,7 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> Window
                     }
                 })
                 .detach();
+                preview::close_with_finder(cx);
                 FinderDemo::new(start, cx)
             })
         },

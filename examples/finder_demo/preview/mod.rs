@@ -8,8 +8,8 @@ use std::rc::Rc;
 use block2::StackBlock;
 use gpui::{
     App, Bounds, Context, DispatchPhase, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Render, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas,
-    div, point, prelude::*, px, size,
+    MouseUpEvent, Render, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind,
+    WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens;
 use native_gpui::{
@@ -118,15 +118,19 @@ fn near(a: NSRect, b: NSRect) -> bool {
         && (a.size.height - b.size.height).abs() < 0.5
 }
 
+/// Holds its Finder weakly: a strong handle here keeps a closed window's whole state alive.
 pub(crate) struct PreviewPane {
-    finder: Entity<FinderDemo>,
+    finder: WeakEntity<FinderDemo>,
     drag: Option<f32>,
 }
 
 impl PreviewPane {
     fn new(finder: Entity<FinderDemo>, cx: &mut Context<Self>) -> Self {
         cx.observe(&finder, |_, _, cx| cx.notify()).detach();
-        Self { finder, drag: None }
+        Self {
+            finder: finder.downgrade(),
+            drag: None,
+        }
     }
 
     fn resize_start(&mut self, _: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
@@ -137,7 +141,7 @@ impl PreviewPane {
     }
 
     fn resize(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(right) = self.drag else {
+        let (Some(right), Some(finder)) = (self.drag, self.finder.upgrade()) else {
             return;
         };
         // A mouse-up outside the window never arrives, so the next move back inside ends the drag.
@@ -147,9 +151,9 @@ impl PreviewPane {
         }
         // The pointer's screen position: GPUI re-sends the last window-local one while dragging.
         let pointer = NSEvent::mouseLocation().x as f32;
-        let room = self.finder.read(cx).list_room;
+        let room = finder.read(cx).list_room;
         let width = (right - pointer).clamp(MIN_W, MAX_W.min(room - LIST_MIN_W).max(MIN_W));
-        self.finder.update(cx, |this, cx| {
+        finder.update(cx, |this, cx| {
             if width != this.preview_w {
                 this.preview_w = width;
                 crate::prefs::set_pane_width(width);
@@ -161,8 +165,10 @@ impl PreviewPane {
 
 impl Render for PreviewPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(finder) = self.finder.upgrade() else {
+            return div().into_any_element();
+        };
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
-        let finder = self.finder.clone();
         let demo = finder.read(cx);
         let palette = Palette::new(demo.list_focused);
         let content = demo.preview_w - 1. - 2. * INSET;
@@ -213,7 +219,19 @@ impl Render for PreviewPane {
                         )),
                 ),
         )
+        .into_any_element()
     }
+}
+
+pub(crate) fn close_with_finder(cx: &mut Context<FinderDemo>) {
+    cx.on_release(|this, cx| {
+        if let Some(pane) = this.preview_window.take() {
+            pane.handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+    })
+    .detach();
 }
 
 fn open_preview_window(
