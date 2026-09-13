@@ -1,15 +1,19 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Hsla, Style, Window, px, relative};
+use gpui::{App, ElementId, Hsla, SharedString, Style, Window, px, relative};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSColor, NSColorWell, NSColorWellStyle, NSDatePicker, NSDatePickerElementFlags,
-    NSDatePickerStyle, NSPathControl, NSPathControlItem, NSPathStyle, NSStepper,
+    NSBackgroundStyle, NSColor, NSColorWell, NSColorWellStyle, NSDatePicker,
+    NSDatePickerElementFlags, NSDatePickerStyle, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
+    NSParagraphStyleAttributeName, NSPathControl, NSPathControlItem, NSPathStyle, NSStepper,
 };
-use objc2_foundation::{NSDate, NSString, NSURL};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSDate, NSMutableAttributedString, NSRange, NSString, NSURL,
+};
 
 use crate::bridge::appkit::{fitting_size, fitting_size_keyed};
 use crate::bridge::host::{
@@ -387,6 +391,9 @@ pub fn native_path_control(id: impl Into<ElementId>, path: impl Into<String>) ->
         path: path.into(),
         style: PathStyle::default(),
         enabled: true,
+        titles: None,
+        bold: Vec::new(),
+        emphasized: false,
         on_click: None,
     }
 }
@@ -396,10 +403,31 @@ pub struct NativePathControl {
     path: String,
     style: PathStyle,
     enabled: bool,
+    titles: Option<Vec<SharedString>>,
+    bold: Vec<usize>,
+    emphasized: bool,
     on_click: Option<Handler<String>>,
 }
 
 impl NativePathControl {
+    /// These components in place of the path's own, without icons; a click reports the whole path.
+    pub fn titles(mut self, titles: Vec<SharedString>) -> Self {
+        self.titles = Some(titles);
+        self
+    }
+
+    /// Characters of the last title, by index, drawn bold as a search match is.
+    pub fn bold(mut self, chars: Vec<usize>) -> Self {
+        self.bold = chars;
+        self
+    }
+
+    /// For a selected row: titles and chevrons in the selected text colour.
+    pub fn emphasized(mut self, emphasized: bool) -> Self {
+        self.emphasized = emphasized;
+        self
+    }
+
     pub fn style(mut self, style: PathStyle) -> Self {
         self.style = style;
         self
@@ -448,26 +476,43 @@ impl NativePathControl {
         if control.pathStyle() != appkit_style {
             control.setPathStyle(appkit_style);
         }
-        let current = control
-            .URL()
-            .and_then(|url| url.path())
-            .map(|path| path.to_string());
-        if current.as_deref() != Some(self.path.as_str()) {
-            control.setURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(
-                &self.path,
-            ))));
+        match &self.titles {
+            Some(titles) => set_titles(&control, titles, &self.bold),
+            None => {
+                let current = control
+                    .URL()
+                    .and_then(|url| url.path())
+                    .map(|path| path.to_string());
+                if current.as_deref() != Some(self.path.as_str()) {
+                    control.setURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(
+                        &self.path,
+                    ))));
+                }
+            }
+        }
+        let background = match self.emphasized {
+            true => NSBackgroundStyle::Emphasized,
+            false => NSBackgroundStyle::Normal,
+        };
+        if let Some(cell) = control.cell() {
+            if cell.backgroundStyle() != background {
+                cell.setBackgroundStyle(background);
+            }
         }
         if control.isEnabled() != self.enabled {
             control.setEnabled(self.enabled);
         }
+        // Titled items carry no URL, so a click on one reports the path the titles stand for.
+        let whole = self.titles.is_some().then(|| self.path.clone());
         // `clickedPathItem` is nil once the action returns, so it is read inside it.
-        let read: NativeRead = Rc::new(|sender: &AnyObject| {
+        let read: NativeRead = Rc::new(move |sender: &AnyObject| {
             let item: Option<Retained<NSPathControlItem>> =
                 unsafe { msg_send![sender, clickedPathItem] };
             let path = item
                 .and_then(|item| item.URL())
                 .and_then(|url| url.path())
-                .map(|path| path.to_string());
+                .map(|path| path.to_string())
+                .or_else(|| whole.clone());
             Box::new(path) as Box<dyn Any>
         });
         slot.on_event(read, forward_some(self.on_click.take()));
@@ -475,3 +520,72 @@ impl NativePathControl {
 }
 
 hosted_element!(NativePathControl);
+
+/// Rebuilds the items only when a title or its bold characters changed.
+fn set_titles(control: &NSPathControl, titles: &[SharedString], bold: &[usize]) {
+    let size = control
+        .font()
+        .map_or_else(NSFont::systemFontSize, |font| font.pointSize());
+    let (plain, heavy) = (
+        NSFont::systemFontOfSize(size),
+        NSFont::boldSystemFontOfSize(size),
+    );
+    let last = titles.len().saturating_sub(1);
+    let wanted: Vec<Retained<NSAttributedString>> = titles
+        .iter()
+        .enumerate()
+        .map(|(at, title)| {
+            let marks = if at == last { bold } else { &[] };
+            attributed(title, &plain, &heavy, marks)
+        })
+        .collect();
+    let items = control.pathItems();
+    let same = items.count() == wanted.len()
+        && items
+            .iter()
+            .zip(&wanted)
+            .all(|(item, title)| item.attributedTitle().isEqualToAttributedString(title));
+    if same {
+        return;
+    }
+    let items: Vec<Retained<NSPathControlItem>> = wanted
+        .iter()
+        .map(|title| {
+            let item = NSPathControlItem::new();
+            item.setAttributedTitle(title);
+            item
+        })
+        .collect();
+    control.setPathItems(&NSArray::from_retained_slice(&items));
+}
+
+fn attributed(
+    text: &str,
+    plain: &NSFont,
+    heavy: &NSFont,
+    bold: &[usize],
+) -> Retained<NSAttributedString> {
+    let string = NSMutableAttributedString::from_nsstring(&NSString::from_str(text));
+    let whole = NSRange::new(0, string.length());
+    // Without a colour the cell draws titles secondary; an emphasized cell still turns it white.
+    let color = NSColor::labelColor();
+    // Clipped rather than truncated: a squeezed title fades into its chevron, as Finder's do.
+    let style = NSMutableParagraphStyle::new();
+    style.setLineBreakMode(NSLineBreakMode::ByClipping);
+    unsafe {
+        string.addAttribute_value_range(NSFontAttributeName, plain, whole);
+        string.addAttribute_value_range(NSForegroundColorAttributeName, &color, whole);
+        string.addAttribute_value_range(NSParagraphStyleAttributeName, &style, whole);
+    }
+    // `bold` counts chars; attributed ranges count UTF-16 units.
+    let mut unit = 0;
+    for (at, ch) in text.chars().enumerate() {
+        let len = ch.len_utf16();
+        if bold.contains(&at) {
+            let range = NSRange::new(unit, len);
+            unsafe { string.addAttribute_value_range(NSFontAttributeName, heavy, range) };
+        }
+        unit += len;
+    }
+    Retained::into_super(string)
+}

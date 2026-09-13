@@ -10,7 +10,7 @@ use native_gpui::{
 
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
-use crate::chrome::sheet::{ConnectSheet, GoSheet};
+use crate::chrome::sheet::ConnectSheet;
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
@@ -555,8 +555,7 @@ impl FinderDemo {
                 native_gpui::set_menu("Go", go_rows(&this.recents));
             }))
             .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
-                this.go_sheet = Some(GoSheet::open());
-                cx.notify();
+                this.open_go(cx);
             }))
             .on_action(cx.listener(|this, _: &ConnectToServer, _, cx| {
                 this.connect_sheet = Some(ConnectSheet::default());

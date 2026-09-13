@@ -59,7 +59,12 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
     let mut prefix_hits: Vec<&Entry> = Vec::new();
     let mut fuzzy_hits: Vec<&Entry> = Vec::new();
     let mut file_hit = None;
-    for entry in &entries {
+    // As Finder's Go to Folder does, hidden items only show once a name starting with a dot is typed.
+    let hidden = needle.starts_with('.');
+    for entry in entries
+        .iter()
+        .filter(|entry| hidden || !entry.name.starts_with('.'))
+    {
         let name = entry.name.to_lowercase();
         if entry.is_dir() {
             if prefix.is_empty() || name.starts_with(&needle) {
@@ -202,6 +207,16 @@ mod tests {
                 format!("{}/Developer/", root.display()),
             ]
         );
+    }
+
+    #[test]
+    fn hidden_folders_wait_for_a_typed_dot() {
+        let root = tree("hidden");
+        fs::create_dir_all(root.join(".config")).unwrap();
+        let listed = complete(&format!("{}/", root.display()), None, 10);
+        assert!(!names(&listed).iter().any(|name| name.contains("/.config")));
+        let dotted = complete(&format!("{}/.c", root.display()), None, 10);
+        assert_eq!(names(&dotted), [format!("{}/.config/", root.display())]);
     }
 
     #[test]

@@ -1,12 +1,12 @@
 use finder_fs::sort::fold;
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, Pixels, ScrollStrategy, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnyElement, App, Context, FontWeight, MouseButton, Pixels, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{
-    Blending, Layer, Material, material, native_label, native_rule, native_symbol,
-    system_corner_radius,
+    Blending, Layer, Material, material, native_label, native_path_control, native_rule,
+    native_symbol, system_corner_radius,
 };
 
 use crate::app::FinderDemo;
@@ -17,15 +17,28 @@ use crate::ui::{focus_gpui, key_to_parent, native_text_field, text_width};
 use crate::{home, index};
 
 const SHEET_W: f32 = 520.;
-const PANEL_W: f32 = 460.;
 const PANEL_TOP: f32 = 60.;
+// Finder's Go to Folder window, measured in points.
+const PANEL_W: f32 = 460.;
+const PANEL_H: f32 = 183.;
+const FIELD_X: f32 = 15.;
+const FIELD_Y: f32 = 7.;
+const FIELD_H: f32 = 22.;
+const FIELD_FONT: f32 = 15.;
+const CLEAR: f32 = 18.;
+const SEPARATOR_Y: f32 = 34.5;
+const LIST_Y: f32 = 36.;
+const LIST_PAD: f32 = 10.;
 const ROW_H: f32 = 22.;
-const ROWS_SHOWN: f32 = 7.;
-/// An NSTextField insets its text by a line fragment's padding on either side.
-const LABEL_PAD: f32 = 4.;
-const CRUMB_GAP: f32 = 1.;
-const TEXT: f32 = 13.;
-const FIELD_TEXT_INSET: f32 = 2.;
+const HEADING_X: f32 = 17.;
+const PATH_X: f32 = 15.;
+const PATH_W: f32 = 434.;
+const HEADING_FONT: f32 = 12.;
+const CLEAR_GLYPH: f32 = 14.;
+/// Our field fits 29pt tall where Finder's is 22; measured, its text then sits 3.5pt high.
+const FIELD_DROP: f32 = 3.5;
+const PICK_INSET: f32 = 10.;
+const PICK_RADIUS: f32 = 8.;
 /// A borderless field sets its line above centre; measured, it sits 3.5pt above a centred label.
 const GHOST_LIFT: f32 = 7.;
 const CHOICES: usize = 200;
@@ -39,25 +52,25 @@ const COMMANDS: &[&str] = &[
 ];
 
 #[derive(Clone)]
+enum GoLine {
+    Heading(&'static str),
+    Path(String),
+}
+
+#[derive(Clone)]
 pub(crate) struct GoSheet {
     typed: String,
-    rows: Vec<String>,
+    lines: Vec<GoLine>,
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
 }
 
 impl GoSheet {
-    pub(crate) fn open() -> GoSheet {
-        GoSheet {
-            typed: String::new(),
-            rows: prefs::go_history(),
-            selected: None,
-            scroll: UniformListScrollHandle::new(),
-        }
-    }
-
     fn chosen(&self) -> Option<&str> {
-        self.rows.get(self.selected?).map(String::as_str)
+        match self.lines.get(self.selected?)? {
+            GoLine::Path(path) => Some(path),
+            GoLine::Heading(_) => None,
+        }
     }
 }
 
@@ -110,90 +123,145 @@ fn ghost(sheet: &GoSheet) -> Option<String> {
     }
 }
 
+/// Which of the leaf's characters spell out `typed` in order: the ones Finder sets in bold.
+fn marks(typed: &str, leaf: &str) -> Option<Vec<usize>> {
+    let mut wanted = typed.chars().flat_map(char::to_lowercase).peekable();
+    let mut hits = Vec::new();
+    for (at, ch) in leaf.chars().enumerate() {
+        let Some(&next) = wanted.peek() else {
+            break;
+        };
+        if ch.to_lowercase().eq(std::iter::once(next)) {
+            hits.push(at);
+            wanted.next();
+        }
+    }
+    wanted.peek().is_none().then_some(hits)
+}
+
+fn section(heading: &'static str, paths: Vec<String>) -> Vec<GoLine> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once(GoLine::Heading(heading))
+        .chain(paths.into_iter().map(GoLine::Path))
+        .collect()
+}
+
+/// A bare name lists matches in the current folder and among recents, as Finder does; a path, or
+/// a name found in neither, lists completions.
+fn go_lines(typed: &str, here: &str) -> Vec<GoLine> {
+    let bare = !typed.contains('/') && !typed.starts_with('~');
+    if !bare {
+        return section("Go to:", go_rows(typed));
+    }
+    let nearby: Vec<String> = match here.starts_with('/') {
+        true => {
+            let inside = format!("{}/{typed}", here.trim_end_matches('/'));
+            finder_fs::complete::complete(&inside, Some(index()), CHOICES)
+                .into_iter()
+                .map(|found| found.path.to_string_lossy().into_owned())
+                .collect()
+        }
+        false => Vec::new(),
+    };
+    let recent: Vec<String> = prefs::go_history()
+        .into_iter()
+        .filter(|path| !nearby.contains(path) && marks(typed, leaf(path)).is_some())
+        .collect();
+    if nearby.is_empty() && recent.is_empty() {
+        return section("Go to:", go_rows(typed));
+    }
+    let mut lines = section("Go to folder in current location", nearby);
+    lines.extend(section("Recents", recent));
+    lines
+}
+
+fn go_heading(at: usize, heading: &'static str) -> AnyElement {
+    div()
+        .id(("ng.finder.go.heading", at))
+        .w_full()
+        .h(px(ROW_H))
+        .pl(px(HEADING_X))
+        .flex()
+        .items_center()
+        .child(
+            native_label(("ng.finder.go.heading.label", at), heading)
+                .font_size(px(HEADING_FONT))
+                .weight(FontWeight::SEMIBOLD)
+                .color(SystemColor::TertiaryLabel),
+        )
+        .into_any_element()
+}
+
+/// Finder draws each row as a path control, which clips the longest crumbs and keeps the leaf.
 fn go_row(
     at: usize,
     path: &str,
     picked: bool,
-    bold_leaf: bool,
-    window: &Window,
+    bold: Vec<usize>,
     go: WeakEntity<FinderDemo>,
 ) -> AnyElement {
-    let (text, arrow) = if picked {
-        (
-            SystemColor::AlternateSelectedControlText,
-            SystemColor::AlternateSelectedControlText,
-        )
-    } else {
-        (SystemColor::Label, SystemColor::SecondaryLabel)
-    };
-    let sized = |id: (&'static str, usize), part: &str, color: SystemColor| {
-        div()
-            .flex_none()
-            .w(px(
-                text_width(window, part.to_string(), px(TEXT)) + LABEL_PAD
-            ))
-            .child(
-                native_label(id, part)
-                    .font_size(px(TEXT))
-                    .color(color)
-                    .truncates(false),
-            )
-    };
-    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let last = parts.len().saturating_sub(1);
-    let mut row = div()
+    let mut titles: Vec<SharedString> = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| SharedString::from(part.to_string()))
+        .collect();
+    if titles.is_empty() {
+        titles.push("/".into());
+    }
+    let clicked = go.clone();
+    div()
         .id(("ng.finder.go.row", at))
         .relative()
         .h(px(ROW_H))
-        .flex()
-        .items_center()
-        .gap(px(CRUMB_GAP))
-        .px(px(8.))
-        .overflow_hidden()
         .when(picked, |row| {
             row.child(
-                div().absolute().inset_0().child(
-                    // Finder's panel keeps the accent highlight while its field has focus.
-                    native_rule("ng.finder.go.pick")
-                        .tint(tokens::system_color(SystemColor::SelectedContentBackground))
-                        .corner_radius(6.),
-                ),
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(PICK_INSET))
+                    .right(px(PICK_INSET))
+                    .child(
+                        // Finder's panel keeps the accent highlight while its field has focus.
+                        native_rule("ng.finder.go.pick")
+                            .tint(tokens::system_color(SystemColor::SelectedContentBackground))
+                            .corner_radius(PICK_RADIUS),
+                    ),
             )
         })
-        .when(parts.is_empty(), |row| {
-            row.child(sized(("ng.finder.go.part", 0), "/", text))
-        });
-    for (index, part) in parts.iter().enumerate() {
-        if index < last {
-            row = row
-                .child(sized(("ng.finder.go.part", index), part, text))
-                .child(sized(("ng.finder.go.arrow", index), "\u{203a}", arrow));
-            continue;
-        }
-        let weight = if bold_leaf {
-            FontWeight::SEMIBOLD
-        } else {
-            FontWeight::NORMAL
-        };
-        row = row.child(
-            div().flex_1().min_w(px(0.)).child(
-                native_label(("ng.finder.go.part", index), part)
-                    .font_size(px(TEXT))
-                    .weight(weight)
-                    .color(text),
-            ),
-        );
-    }
-    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-        go.update(cx, |demo: &mut FinderDemo, cx| {
-            if let Some(sheet) = demo.go_sheet.as_mut() {
-                sheet.selected = Some(at);
-            }
-            demo.go_submit("", window, cx);
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(PATH_X))
+                .w(px(PATH_W))
+                .h(px(ROW_H))
+                .flex()
+                .items_center()
+                .child(
+                    native_path_control(("ng.finder.go.path", at), path)
+                        .titles(titles)
+                        .bold(bold)
+                        .emphasized(picked)
+                        .on_click(move |_, window, cx| pick(&clicked, at, window, cx)),
+                ),
+        )
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            pick(&go, at, window, cx)
         })
-        .ok();
+        .into_any_element()
+}
+
+fn pick(go: &WeakEntity<FinderDemo>, at: usize, window: &mut Window, cx: &mut App) {
+    go.update(cx, |demo: &mut FinderDemo, cx| {
+        if let Some(sheet) = demo.go_sheet.as_mut() {
+            sheet.selected = Some(at);
+        }
+        demo.go_submit("", window, cx);
     })
-    .into_any_element()
+    .ok();
 }
 
 fn remember_go(path: &str) {
@@ -205,22 +273,39 @@ fn remember_go(path: &str) {
 }
 
 impl FinderDemo {
+    /// Finder opens on the current folder's path, selected, listing what is inside it.
+    pub(crate) fn open_go(&mut self, cx: &mut Context<Self>) {
+        self.go_sheet = Some(GoSheet {
+            typed: String::new(),
+            lines: Vec::new(),
+            selected: None,
+            scroll: UniformListScrollHandle::new(),
+        });
+        let here = self.here();
+        let typed = match here.starts_with('/') {
+            true => format!("{}/", here.trim_end_matches('/')),
+            false => String::new(),
+        };
+        self.go_typing(typed, cx);
+    }
+
     fn go_typing(&mut self, text: String, cx: &mut Context<Self>) {
+        let here = self.here();
         let Some(sheet) = self.go_sheet.as_mut() else {
             return;
         };
         sheet.typed = text.clone();
         cx.notify();
         if text.is_empty() {
-            sheet.rows = prefs::go_history();
+            sheet.lines = section("Recents", prefs::go_history());
             sheet.selected = None;
             return;
         }
         cx.spawn(async move |this, cx| {
             let wanted = text.clone();
-            let rows = cx
+            let lines = cx
                 .background_executor()
-                .spawn(async move { go_rows(&text) })
+                .spawn(async move { go_lines(&text, here) })
                 .await;
             this.update(cx, |this, cx| {
                 let Some(sheet) = this.go_sheet.as_mut() else {
@@ -229,8 +314,10 @@ impl FinderDemo {
                 if sheet.typed != wanted {
                     return;
                 }
-                sheet.selected = (!rows.is_empty()).then_some(0);
-                sheet.rows = rows;
+                sheet.selected = lines
+                    .iter()
+                    .position(|line| matches!(line, GoLine::Path(_)));
+                sheet.lines = lines;
                 sheet.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             })
@@ -239,20 +326,32 @@ impl FinderDemo {
         .detach();
     }
 
+    /// Steps over the section headings.
     fn go_move(&mut self, by: isize, cx: &mut Context<Self>) {
         let Some(sheet) = self.go_sheet.as_mut() else {
             return;
         };
-        let Some(last) = sheet.rows.len().checked_sub(1) else {
+        let paths: Vec<usize> = (0..sheet.lines.len())
+            .filter(|&at| matches!(sheet.lines[at], GoLine::Path(_)))
+            .collect();
+        let Some(last) = paths.len().checked_sub(1) else {
             return;
         };
-        let at = match sheet.selected {
+        let now = sheet
+            .selected
+            .and_then(|selected| paths.iter().position(|&at| at == selected));
+        let step = match now {
             None if by > 0 => 0,
             None => return,
-            Some(at) => at.saturating_add_signed(by).min(last),
+            Some(step) => step.saturating_add_signed(by).min(last),
         };
+        let at = paths[step];
         sheet.selected = Some(at);
-        sheet.scroll.scroll_to_item(at, ScrollStrategy::Nearest);
+        // The first path brings its heading into view with it.
+        match step {
+            0 => sheet.scroll.scroll_to_item(0, ScrollStrategy::Top),
+            _ => sheet.scroll.scroll_to_item(at, ScrollStrategy::Nearest),
+        }
         cx.notify();
     }
 
@@ -328,6 +427,7 @@ impl FinderDemo {
         let field = native_text_field("ng.finder.go", &sheet.typed)
             .stretch()
             .borderless()
+            .font_size(FIELD_FONT)
             .placeholder("Go to Folder")
             .editing(0..sheet.typed.chars().count())
             .on_change(move |text, _, cx| {
@@ -360,33 +460,40 @@ impl FinderDemo {
                     .ok();
             });
 
-        let typed_w = text_width(window, sheet.typed.clone(), px(TEXT));
+        let typed_w = text_width(window, sheet.typed.clone(), px(FIELD_FONT));
         let ghost = ghost(sheet).map(|ghost| {
             div()
                 .absolute()
                 .top_0()
                 .bottom(px(GHOST_LIFT))
-                .left(px(FIELD_TEXT_INSET + typed_w))
+                // The label insets its text as the field does, so the two insets cancel.
+                .left(px(typed_w))
                 .right_0()
                 .flex()
                 .items_center()
                 .child(
                     native_label("ng.finder.go.ghost", &ghost)
-                        .font_size(px(TEXT))
+                        .font_size(px(FIELD_FONT))
                         .color(SystemColor::TertiaryLabel),
                 )
         });
         let clear = div()
             .id("ng.finder.go.clear")
-            .flex_none()
+            .absolute()
+            .top(px(FIELD_Y + (FIELD_H - CLEAR) / 2.))
+            .right(px(FIELD_X - 1.))
+            .size(px(CLEAR))
+            .flex()
+            .items_center()
+            .justify_center()
             .child(
                 native_symbol(
                     "ng.finder.go.clear.glyph",
                     "xmark.circle.fill",
-                    TEXT,
+                    CLEAR_GLYPH,
                     FontWeight::NORMAL,
                 )
-                .tint(SystemColor::TertiaryLabel),
+                .tint(SystemColor::SecondaryLabel),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 clearing
@@ -396,61 +503,52 @@ impl FinderDemo {
                     .ok();
             });
         let entry = div()
-            .h(px(24.))
+            .absolute()
+            .top(px(FIELD_Y + FIELD_DROP))
+            .left(px(FIELD_X))
+            .right(px(FIELD_X + CLEAR))
+            .h(px(FIELD_H))
             .flex()
             .items_center()
-            .gap(px(6.))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .overflow_hidden()
-                    .children(ghost)
-                    .child(field),
-            )
-            .child(clear);
+            .overflow_hidden()
+            .children(ghost)
+            .child(field);
 
-        let bold_leaf = !sheet.typed.is_empty() && !sheet.typed.contains('/');
-        let (rows, selected) = (sheet.rows.clone(), sheet.selected);
-        let count = rows.len();
-        let heading = if sheet.typed.is_empty() {
-            "Recents"
-        } else {
-            "Go to:"
-        };
-        let list = (count > 0).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(
-                    div().px(px(8.)).child(
-                        native_label("ng.finder.go.heading", heading)
-                            .font_size(px(11.))
-                            .weight(FontWeight::SEMIBOLD)
-                            .color(SystemColor::SecondaryLabel),
-                    ),
-                )
-                .child(
-                    // Only the rows in view host labels.
-                    uniform_list("ng.finder.go.rows", count, move |range, window, _| {
-                        range
-                            .map(|at| {
-                                let picked = selected == Some(at);
-                                let go = this.clone();
-                                go_row(at, &rows[at], picked, bold_leaf, window, go)
-                            })
-                            .collect()
-                    })
-                    .h(px(ROW_H * (count as f32).min(ROWS_SHOWN)))
-                    .track_scroll(&sheet.scroll),
-                )
-        });
+        let (lines, selected) = (sheet.lines.clone(), sheet.selected);
+        let tail = sheet
+            .typed
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        // Only the rows in view host controls.
+        let list = uniform_list("ng.finder.go.rows", lines.len(), move |range, _, _| {
+            range
+                .map(|at| match &lines[at] {
+                    GoLine::Heading(heading) => go_heading(at, heading),
+                    GoLine::Path(path) => {
+                        let bold = marks(&tail, leaf(path)).unwrap_or_default();
+                        go_row(at, path, selected == Some(at), bold, this.clone())
+                    }
+                })
+                .collect()
+        })
+        .size_full()
+        .track_scroll(&sheet.scroll);
 
         let corner = system_corner_radius(window);
+        let radius = f32::from(corner);
+        let white = tokens::system_color(SystemColor::ControlBackground);
+        // The list's fill laid over the white, opaque so the rules below may overlap.
+        let gray = white.blend(tokens::system_color(SystemColor::QuaternarySystemFill));
+        let band = |top: f32, height: f32| {
+            div()
+                .absolute()
+                .top(px(top))
+                .h(px(height))
+                .left_0()
+                .right_0()
+        };
         div()
             .absolute()
             .top(px(PANEL_TOP))
@@ -462,29 +560,35 @@ impl FinderDemo {
                 div()
                     .relative()
                     .w(px(PANEL_W))
+                    .h(px(PANEL_H))
                     .rounded(corner)
-                    .overflow_hidden()
                     .shadow_lg()
                     .block_mouse_except_scroll()
-                    // Native and Above: the list header's band and labels sit over all of GPUI.
+                    // Opaque like Finder's, and native so it covers the list header's band. Gray
+                    // fills the card, the field's white takes its top with the card's own corners,
+                    // and a square gray strip hides the white's rounded bottom corners.
                     .child(
-                        material("ng.finder.go.glass", Material::Popover)
-                            .layer(Layer::Above)
-                            .blending(Blending::WithinWindow)
-                            .corner_radius(corner)
-                            .absolute()
-                            .inset_0(),
+                        div().absolute().inset_0().child(
+                            native_rule("ng.finder.go.list")
+                                .tint(gray)
+                                .corner_radius(radius),
+                        ),
                     )
                     .child(
-                        div()
-                            .relative()
-                            .p(px(10.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .child(div().px(px(6.)).child(entry))
-                            .children(list),
-                    ),
+                        band(0., LIST_Y + radius).child(
+                            native_rule("ng.finder.go.band")
+                                .tint(white)
+                                .corner_radius(radius),
+                        ),
+                    )
+                    .child(band(LIST_Y, radius).child(native_rule("ng.finder.go.square").tint(gray)))
+                    .child(band(SEPARATOR_Y, 1.).child(
+                        native_rule("ng.finder.go.separator")
+                            .tint(tokens::system_color(SystemColor::Separator)),
+                    ))
+                    .child(entry)
+                    .child(clear)
+                    .child(band(LIST_Y + LIST_PAD, PANEL_H - LIST_Y - LIST_PAD).child(list)),
             )
             .into_any_element()
     }

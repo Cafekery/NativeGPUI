@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType, NSSearchField,
+    NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType, NSFont, NSSearchField,
     NSSearchFieldDelegate, NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{
@@ -55,13 +55,21 @@ impl Kind {
         }
     }
 
-    fn fitting(self, mtm: MainThreadMarker, control_size: NSControlSize) -> NSSize {
+    fn fitting(
+        self,
+        mtm: MainThreadMarker,
+        control_size: NSControlSize,
+        font_size: Option<f32>,
+    ) -> NSSize {
         let field: Retained<NSTextField> = match self {
             Kind::Plain => NSTextField::new(mtm),
             Kind::Secure => Retained::into_super(NSSecureTextField::new(mtm)),
             Kind::Search => Retained::into_super(NSSearchField::new(mtm)),
         };
         field.setControlSize(control_size);
+        if let Some(size) = font_size {
+            field.setFont(Some(&NSFont::systemFontOfSize(f64::from(size))));
+        }
         field.fittingSize()
     }
 }
@@ -75,6 +83,7 @@ pub struct NativeTextField {
     stretch: bool,
     borderless: bool,
     control_size: ControlSize,
+    font_size: Option<f32>,
     editing: Option<std::ops::Range<usize>>,
     on_change: Option<NativeHandler>,
     on_submit: Option<NativeHandler>,
@@ -91,6 +100,7 @@ impl NativeTextField {
             text: SharedString::from(text.to_owned()),
             placeholder: SharedString::default(),
             control_size: ControlSize::default(),
+            font_size: None,
             enabled: true,
             stretch: false,
             borderless: false,
@@ -166,13 +176,18 @@ impl NativeTextField {
         self
     }
 
+    /// The system font at this point size, in place of the control size's own; the height follows.
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font_size = Some(size);
+        self
+    }
+
     fn layout(&self) -> Style {
-        let (kind, control_size) = (self.kind, self.control_size);
-        let mut style = fitted(fitting_size_keyed(
-            kind.class(),
-            control_size as u64,
-            |mtm| kind.fitting(mtm, NSControlSize::from(control_size)),
-        ));
+        let (kind, control_size, font_size) = (self.kind, self.control_size, self.font_size);
+        let key = control_size as u64 | u64::from(font_size.map_or(0, f32::to_bits)) << 8;
+        let mut style = fitted(fitting_size_keyed(kind.class(), key, |mtm| {
+            kind.fitting(mtm, NSControlSize::from(control_size), font_size)
+        }));
         if self.stretch {
             style.size.width = relative(1.).into();
         }
@@ -209,6 +224,11 @@ impl NativeTextField {
         let control_size = NSControlSize::from(self.control_size);
         if field.controlSize() != control_size {
             field.setControlSize(control_size);
+        }
+        if let Some(size) = self.font_size.map(f64::from) {
+            if field.font().map(|font| font.pointSize()) != Some(size) {
+                field.setFont(Some(&NSFont::systemFontOfSize(size)));
+            }
         }
         if field.isEnabled() != self.enabled {
             field.setEnabled(self.enabled);
