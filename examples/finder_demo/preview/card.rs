@@ -5,9 +5,7 @@ use gpui::{
     img, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
-use native_gpui::tokens::{
-    self, Symbol, SymbolColor, SystemColor, sf_symbol_colored, system_color,
-};
+use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored, system_color};
 
 use super::INSET;
 use super::stats::{CALCULATING, span};
@@ -63,20 +61,20 @@ struct Card {
     actions: &'static [(&'static str, &'static str)],
 }
 
-/// Straight-alpha BGRA in and out, as icons come.
-fn stack_image(icons: &[Symbol], side: u32) -> Option<Arc<RenderImage>> {
-    if icons.is_empty() {
+/// Straight-alpha BGRA in and out, as icons and thumbnails come.
+fn stack_image(images: &[Arc<RenderImage>], side: u32) -> Option<Arc<RenderImage>> {
+    if images.is_empty() {
         return None;
     }
-    let layers = &STACK_LAYERS[3 - icons.len().min(3)..];
+    let layers = &STACK_LAYERS[3 - images.len().min(3)..];
     let mut canvas = vec![0f32; (side * side * 4) as usize];
     let centre = side as f32 / 2.;
-    for (icon, (degrees, dx, dy, zoom)) in icons.iter().take(3).rev().zip(layers) {
+    for (image, (degrees, dx, dy, zoom)) in images.iter().take(3).rev().zip(layers) {
         let (w, h) = {
-            let size = icon.image.size(0);
+            let size = image.size(0);
             (size.width.0 as usize, size.height.0 as usize)
         };
-        let src = icon.image.as_bytes(0)?;
+        let src = image.as_bytes(0)?;
         let (sin, cos) = degrees.to_radians().sin_cos();
         let (cx, cy) = (centre + dx * side as f32, centre + dy * side as f32);
         for y in 0..side {
@@ -333,33 +331,47 @@ impl FinderDemo {
         let Some(first) = lines.first() else {
             return div().w(px(content)).h(px(content)).into_any_element();
         };
-        let icons: Vec<Symbol> = lines
+        let shown = &lines[..lines.len().min(3)];
+        // A photo is stacked as its own picture, as Finder does; anything else as its type's icon.
+        let thumbs: Vec<Option<Arc<RenderImage>>> = shown
             .iter()
-            .take(3)
-            .filter_map(|line| line.row.artwork)
-            .filter_map(|kind| crate::icons::icon(kind, content * STACK_ICON))
+            .map(|line| {
+                crate::thumbs::thumb(&line.row, content * STACK_ICON, self.scale, true, true)
+            })
             .collect();
-        let keys: Vec<SharedString> = lines.iter().take(3).map(|line| line.key.clone()).collect();
-        let side = icons
-            .first()
-            .map(|icon| (content * icon.scale).round() as u32)
-            .unwrap_or_default();
+        let images: Vec<Arc<RenderImage>> = shown
+            .iter()
+            .zip(&thumbs)
+            .filter_map(|(line, thumb)| {
+                thumb.clone().or_else(|| {
+                    crate::icons::icon(line.row.artwork?, content * STACK_ICON)
+                        .map(|icon| icon.image)
+                })
+            })
+            .collect();
+        let keys: Vec<SharedString> = shown.iter().map(|line| line.key.clone()).collect();
+        // A larger raster landing for a photo changes its width, so the stack is composed again.
+        let widths: Vec<Option<u32>> = thumbs
+            .iter()
+            .map(|thumb| thumb.as_ref().map(|image| image.size(0).width.0 as u32))
+            .collect();
+        let side = (content * self.scale).round() as u32;
         let cached = self
             .stack
             .borrow()
             .as_ref()
-            .filter(|(k, s, _)| *k == keys && *s == side)
-            .map(|(_, _, image)| image.clone());
-        let drawn = lines
+            .filter(|(k, s, w, _)| *k == keys && *s == side && *w == widths)
+            .map(|(_, _, _, image)| image.clone());
+        let drawn = shown
             .iter()
-            .take(3)
-            .filter(|line| line.row.artwork.is_some())
+            .zip(&thumbs)
+            .filter(|(line, thumb)| thumb.is_some() || line.row.artwork.is_some())
             .count()
-            == icons.len();
+            == images.len();
         let image = cached.or_else(|| {
-            let image = stack_image(&icons, side)?;
+            let image = stack_image(&images, side)?;
             if drawn {
-                *self.stack.borrow_mut() = Some((keys, side, image.clone()));
+                *self.stack.borrow_mut() = Some((keys, side, widths, image.clone()));
             }
             Some(image)
         });
