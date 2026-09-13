@@ -316,7 +316,7 @@ pub fn modified(path: &Path) -> i64 {
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
-    if is_symlink(path) || off_limits(path, home) {
+    if off_limits(path, home) {
         return Class::Seal;
     }
     if entry.package || weigh_only(path, home) {
@@ -382,10 +382,6 @@ fn in_a_home(path: &Path, home: &Path) -> bool {
         return false;
     };
     (!home.as_os_str().is_empty() && parent == home) || parent.parent() == Some(Path::new("/Users"))
-}
-
-fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
 fn weigh_only(path: &Path, home: &Path) -> bool {

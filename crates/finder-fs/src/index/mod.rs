@@ -243,11 +243,33 @@ impl Index {
 
     pub fn note_changed(&self, dirs: &[PathBuf]) {
         let home = crawl::home();
+        let now = Instant::now();
         for dir in dirs {
-            if catchup::open_to_us(dir, &home) {
-                self.refresh(dir, &home);
+            if !catchup::open_to_us(dir, &home) {
+                continue;
             }
+            {
+                let mut pending = self.pending.lock().unwrap();
+                if let Some(until) = pending
+                    .cooling
+                    .get(dir)
+                    .copied()
+                    .filter(|until| *until > now)
+                {
+                    pending.later.insert(dir.clone(), until);
+                    continue;
+                }
+            }
+            let started = Instant::now();
+            self.refresh(dir, &home);
+            self.cool(dir.clone(), started.elapsed());
         }
+    }
+
+    fn cool(&self, dir: PathBuf, took: Duration) {
+        // A folder written many times a second is read again at most once per gap.
+        let until = Instant::now() + (took * COOLDOWN).max(MIN_GAP);
+        self.pending.lock().unwrap().cooling.insert(dir, until);
     }
 
     pub fn follow(self: &Arc<Self>, roots: Vec<PathBuf>) -> crate::watch::Watcher {
@@ -306,9 +328,7 @@ impl Index {
         for dir in dirs {
             let started = Instant::now();
             deeper.extend(self.refresh(&dir, &home));
-            // A folder written many times a second is read again at most once per gap.
-            let until = Instant::now() + (started.elapsed() * COOLDOWN).max(MIN_GAP);
-            self.pending.lock().unwrap().cooling.insert(dir, until);
+            self.cool(dir, started.elapsed());
         }
         let mut pending = self.pending.lock().unwrap();
         pending.dirs.extend(deeper);
@@ -446,11 +466,10 @@ impl Index {
     }
 
     fn relisted(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
-        let listed = list_dir(dir);
         let Some(id) = resolve(&self.read(), dir) else {
             return Vec::new();
         };
-        let entries = match listed {
+        let entries = match list_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
                 if error.kind() == io::ErrorKind::NotFound {
