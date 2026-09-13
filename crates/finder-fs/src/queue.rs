@@ -33,6 +33,7 @@ pub enum Event {
         job: JobId,
         done: Done,
         error: io::Error,
+        left: Option<Op>,
     },
     Paused,
     Resumed,
@@ -191,10 +192,11 @@ fn worker_loop(shared: Arc<Shared>) {
         shared.pending.fetch_sub(1, Ordering::SeqCst);
         match outcome {
             RunOutcome::Done(result) => shared.emit(Event::Finished(job.id, result)),
-            RunOutcome::Failed { done, error } => shared.emit(Event::Failed {
+            RunOutcome::Failed { done, error, left } => shared.emit(Event::Failed {
                 job: job.id,
                 done,
                 error,
+                left,
             }),
             RunOutcome::Cancelled(done) => shared.emit(Event::Cancelled { job: job.id, done }),
         }
@@ -203,19 +205,29 @@ fn worker_loop(shared: Arc<Shared>) {
 
 enum RunOutcome {
     Done(io::Result<Done>),
-    Failed { done: Done, error: io::Error },
+    Failed {
+        done: Done,
+        error: io::Error,
+        left: Option<Op>,
+    },
     Cancelled(Done),
 }
 
 fn run_job(shared: &Shared, id: JobId, op: Op, conflict: Conflict) -> RunOutcome {
     let items = split_items(&op).map(<[PathBuf]>::to_vec);
-    match items {
-        Some(items) => run_split_job(shared, id, op, items, conflict),
-        None => {
-            wait_while_paused(shared);
-            RunOutcome::Done(ops::perform(op, conflict, |_| {}))
-        }
-    }
+    let Some(items) = items else {
+        wait_while_paused(shared);
+        return match ops::perform(op, conflict, |_| {}).map_err(ops::Unfinished::from_error) {
+            Ok(done) => RunOutcome::Done(Ok(done)),
+            Err(Ok(unfinished)) => RunOutcome::Failed {
+                done: unfinished.done,
+                error: unfinished.cause,
+                left: Some(unfinished.left),
+            },
+            Err(Err(error)) => RunOutcome::Done(Err(error)),
+        };
+    };
+    run_split_job(shared, id, op, items, conflict)
 }
 
 fn run_split_job(
@@ -233,13 +245,13 @@ fn run_split_job(
     let mut meter = Meter::new();
     let mut results = Vec::with_capacity(items.len());
     let mut undos = Vec::with_capacity(items.len());
-    for item in &items {
+    for (at, item) in items.iter().enumerate() {
         wait_while_paused(shared);
         if shared.cancelled.lock().unwrap().remove(&id.0) {
             return RunOutcome::Cancelled(batch_done(results, undos));
         }
         let size = if sized { ops::walk_size(item) } else { 0 };
-        match ops::perform(item_op(&op, item.clone()), conflict, |_| {}) {
+        match ops::perform(op_for(&op, vec![item.clone()]), conflict, |_| {}) {
             Ok(done) => {
                 results.extend(done.results);
                 undos.extend(done.undo);
@@ -253,9 +265,18 @@ fn run_split_job(
                 });
             }
             Err(error) => {
+                let error = match ops::Unfinished::from_error(error) {
+                    Ok(unfinished) => {
+                        results.extend(unfinished.done.results);
+                        undos.extend(unfinished.done.undo);
+                        unfinished.cause
+                    }
+                    Err(error) => error,
+                };
                 return RunOutcome::Failed {
                     done: batch_done(results, undos),
                     error,
+                    left: Some(op_for(&op, items[at..].to_vec())),
                 };
             }
         }
@@ -290,20 +311,20 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
     }
 }
 
-fn item_op(op: &Op, item: PathBuf) -> Op {
+fn op_for(op: &Op, items: Vec<PathBuf>) -> Op {
     match op {
         Op::Move { into, .. } => Op::Move {
-            items: vec![item],
+            items,
             into: into.clone(),
         },
         Op::Copy { into, .. } => Op::Copy {
-            items: vec![item],
+            items,
             into: into.clone(),
         },
-        Op::Duplicate(_) => Op::Duplicate(vec![item]),
-        Op::MakeAlias(_) => Op::MakeAlias(vec![item]),
-        Op::Trash(_) => Op::Trash(vec![item]),
-        Op::DeleteImmediately(_) => Op::DeleteImmediately(vec![item]),
+        Op::Duplicate(_) => Op::Duplicate(items),
+        Op::MakeAlias(_) => Op::MakeAlias(items),
+        Op::Trash(_) => Op::Trash(items),
+        Op::DeleteImmediately(_) => Op::DeleteImmediately(items),
         Op::Compress(_)
         | Op::Rename { .. }
         | Op::NewFolder { .. }
@@ -425,6 +446,19 @@ impl Journal {
 
     pub fn undo_len(&self) -> usize {
         self.undo_stack.len()
+    }
+
+    pub fn redo_len(&self) -> usize {
+        self.redo_stack.len()
+    }
+
+    /// An undo that stopped partway stays undoable for what it did not get to.
+    pub fn undo_left(&mut self, at: usize, left: Op) {
+        if at < self.redo_stack.len() {
+            let mut entry = self.redo_stack.remove(at);
+            entry.undo = left;
+            self.undo_stack.push(entry);
+        }
     }
 
     /// A redo lands its items afresh, so undoing it again starts from where they are now.
@@ -974,6 +1008,60 @@ mod tests {
         assert!(
             shared.upgrade().is_none(),
             "the worker thread still holds the queue"
+        );
+    }
+
+    #[test]
+    fn an_undo_that_stops_partway_hands_back_what_is_left() {
+        let dir = temp_dir("undo-left");
+        let item = dir.join("item.txt");
+        fs::write(&item, "item").unwrap();
+        let dest = dir.join("back").join("item.txt");
+        let missing = ops::Restore {
+            item: dir.join("missing.txt"),
+            to: dir.join("missing.txt"),
+        };
+        let real = ops::Restore {
+            item: item.clone(),
+            to: dest.clone(),
+        };
+        let (tx, rx) = mpsc::channel();
+        let queue = Queue::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let id = queue.submit(Op::PutBack(vec![missing, real]), Conflict::KeepBoth);
+        match expect(
+            &rx,
+            Duration::from_secs(10),
+            |e| matches!(e, Event::Failed { job, .. } if *job == id),
+        ) {
+            Event::Failed { done, left, .. } => {
+                assert_eq!(done.results, vec![dest.clone()]);
+                assert!(matches!(left, Some(Op::PutBack(left)) if left.len() == 1));
+            }
+            _ => unreachable!(),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_undo_that_stops_partway_stays_undoable() {
+        let mut journal = Journal::new();
+        let original = Op::Trash(vec![PathBuf::from("/tmp/finder-fs-journal-a")]);
+        let done = Done {
+            results: Vec::new(),
+            undo: Some(Op::PutBack(Vec::new())),
+        };
+        journal.record(&done, &original);
+        journal.pop_undo();
+        journal.undo_left(journal.redo_len() - 1, Op::PutBack(Vec::new()));
+        assert!(
+            journal.undo_label().is_some(),
+            "what is left can be undone again"
+        );
+        assert!(
+            journal.redo_label().is_none(),
+            "a half-undone entry is not redone"
         );
     }
 }
