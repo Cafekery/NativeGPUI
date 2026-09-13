@@ -1,8 +1,8 @@
 use std::cell::RefMut;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as Atomic};
+use std::sync::{Arc, Weak};
 
 use finder_fs::sort::fold;
 use gpui::SharedString;
@@ -80,6 +80,7 @@ pub(crate) struct Listings {
     slots: Option<Bands>,
     columns: HashMap<&'static str, Built>,
     cursor: Option<Cursor>,
+    names: Option<(Weak<Vec<Line>>, Arc<[usize]>)>,
 }
 
 impl Keys {
@@ -647,6 +648,21 @@ impl FinderDemo {
 
     pub(crate) fn line_at(&self, lines: &[Line], key: &SharedString) -> Option<usize> {
         lines.iter().position(|line| &line.key == key)
+    }
+
+    /// Tab walks names in Finder's order, which costs a sort of the whole listing, so each
+    /// listing sorts once.
+    pub(crate) fn name_order(&self, lines: &Arc<Vec<Line>>) -> Arc<[usize]> {
+        if let Some((held, order)) = &self.listings().names {
+            if held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, lines)) {
+                return order.clone();
+            }
+        }
+        let mut order: Vec<usize> = (0..lines.len()).collect();
+        order.sort_by(|&i, &j| finder_fs::sort::name_cmp(&lines[i].row.name, &lines[j].row.name));
+        let order: Arc<[usize]> = order.into();
+        self.listings().names = Some((Arc::downgrade(lines), order.clone()));
+        order
     }
 
     pub(crate) fn cursor_line(&self) -> Option<Line> {

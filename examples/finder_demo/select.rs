@@ -203,8 +203,7 @@ impl FinderDemo {
         if lines.is_empty() {
             return;
         }
-        let mut by_name: Vec<usize> = (0..lines.len()).collect();
-        by_name.sort_by(|&i, &j| finder_fs::sort::name_cmp(&lines[i].row.name, &lines[j].row.name));
+        let by_name = self.name_order(&lines);
         let at = self
             .cursor
             .as_ref()
