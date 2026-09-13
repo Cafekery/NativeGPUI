@@ -1,15 +1,17 @@
 use finder_fs::sort::fold;
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, ScrollHandle, WeakEntity, Window, div,
-    prelude::*, px,
+    AnyElement, Context, FontWeight, MouseButton, Pixels, ScrollStrategy, UniformListScrollHandle,
+    WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
-use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored};
-use native_gpui::{Material, material, system_corner_radius};
+use native_gpui::tokens::{self, SystemColor};
+use native_gpui::{
+    Blending, Layer, Material, material, native_label, native_rule, native_symbol,
+    system_corner_radius,
+};
 
 use crate::app::FinderDemo;
 use crate::data::intern_path;
 use crate::navigate::{folder_at_path, typed_path};
-use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{focus_gpui, key_to_parent, native_text_field, text_width};
 use crate::{home, index};
@@ -19,8 +21,13 @@ const PANEL_W: f32 = 460.;
 const PANEL_TOP: f32 = 60.;
 const ROW_H: f32 = 22.;
 const ROWS_SHOWN: f32 = 7.;
+/// An NSTextField insets its text by a line fragment's padding on either side.
+const LABEL_PAD: f32 = 4.;
+const CRUMB_GAP: f32 = 1.;
 const TEXT: f32 = 13.;
 const FIELD_TEXT_INSET: f32 = 2.;
+/// A borderless field sets its line above centre; measured, it sits 3.5pt above a centred label.
+const GHOST_LIFT: f32 = 7.;
 const CHOICES: usize = 200;
 const HISTORY: usize = 8;
 const COMMANDS: &[&str] = &[
@@ -36,7 +43,7 @@ pub(crate) struct GoSheet {
     typed: String,
     rows: Vec<String>,
     selected: Option<usize>,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
 }
 
 impl GoSheet {
@@ -45,7 +52,7 @@ impl GoSheet {
             typed: String::new(),
             rows: prefs::go_history(),
             selected: None,
-            scroll: ScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
         }
     }
 
@@ -103,6 +110,92 @@ fn ghost(sheet: &GoSheet) -> Option<String> {
     }
 }
 
+fn go_row(
+    at: usize,
+    path: &str,
+    picked: bool,
+    bold_leaf: bool,
+    window: &Window,
+    go: WeakEntity<FinderDemo>,
+) -> AnyElement {
+    let (text, arrow) = if picked {
+        (
+            SystemColor::AlternateSelectedControlText,
+            SystemColor::AlternateSelectedControlText,
+        )
+    } else {
+        (SystemColor::Label, SystemColor::SecondaryLabel)
+    };
+    let sized = |id: (&'static str, usize), part: &str, color: SystemColor| {
+        div()
+            .flex_none()
+            .w(px(
+                text_width(window, part.to_string(), px(TEXT)) + LABEL_PAD
+            ))
+            .child(
+                native_label(id, part)
+                    .font_size(px(TEXT))
+                    .color(color)
+                    .truncates(false),
+            )
+    };
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let last = parts.len().saturating_sub(1);
+    let mut row = div()
+        .id(("ng.finder.go.row", at))
+        .relative()
+        .h(px(ROW_H))
+        .flex()
+        .items_center()
+        .gap(px(CRUMB_GAP))
+        .px(px(8.))
+        .overflow_hidden()
+        .when(picked, |row| {
+            row.child(
+                div().absolute().inset_0().child(
+                    // Finder's panel keeps the accent highlight while its field has focus.
+                    native_rule("ng.finder.go.pick")
+                        .tint(tokens::system_color(SystemColor::SelectedContentBackground))
+                        .corner_radius(6.),
+                ),
+            )
+        })
+        .when(parts.is_empty(), |row| {
+            row.child(sized(("ng.finder.go.part", 0), "/", text))
+        });
+    for (index, part) in parts.iter().enumerate() {
+        if index < last {
+            row = row
+                .child(sized(("ng.finder.go.part", index), part, text))
+                .child(sized(("ng.finder.go.arrow", index), "\u{203a}", arrow));
+            continue;
+        }
+        let weight = if bold_leaf {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        };
+        row = row.child(
+            div().flex_1().min_w(px(0.)).child(
+                native_label(("ng.finder.go.part", index), part)
+                    .font_size(px(TEXT))
+                    .weight(weight)
+                    .color(text),
+            ),
+        );
+    }
+    row.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+        go.update(cx, |demo: &mut FinderDemo, cx| {
+            if let Some(sheet) = demo.go_sheet.as_mut() {
+                sheet.selected = Some(at);
+            }
+            demo.go_submit("", window, cx);
+        })
+        .ok();
+    })
+    .into_any_element()
+}
+
 fn remember_go(path: &str) {
     let mut history = prefs::go_history();
     history.retain(|seen| seen != path);
@@ -138,7 +231,7 @@ impl FinderDemo {
                 }
                 sheet.selected = (!rows.is_empty()).then_some(0);
                 sheet.rows = rows;
-                sheet.scroll.scroll_to_item(0);
+                sheet.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
             })
             .ok();
@@ -159,7 +252,7 @@ impl FinderDemo {
             Some(at) => at.saturating_add_signed(by).min(last),
         };
         sheet.selected = Some(at);
-        sheet.scroll.scroll_to_item(at);
+        sheet.scroll.scroll_to_item(at, ScrollStrategy::Nearest);
         cx.notify();
     }
 
@@ -221,7 +314,6 @@ impl FinderDemo {
     pub(crate) fn go_sheet(
         &self,
         sheet: &GoSheet,
-        palette: &Palette,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -273,26 +365,28 @@ impl FinderDemo {
             div()
                 .absolute()
                 .top_0()
-                .bottom_0()
+                .bottom(px(GHOST_LIFT))
                 .left(px(FIELD_TEXT_INSET + typed_w))
+                .right_0()
                 .flex()
                 .items_center()
-                .text_size(px(TEXT))
-                .text_color(palette.tertiary)
-                .whitespace_nowrap()
-                .child(ghost)
+                .child(
+                    native_label("ng.finder.go.ghost", &ghost)
+                        .font_size(px(TEXT))
+                        .color(SystemColor::TertiaryLabel),
+                )
         });
         let clear = div()
             .id("ng.finder.go.clear")
             .flex_none()
-            .children(
-                sf_symbol_colored(
+            .child(
+                native_symbol(
+                    "ng.finder.go.clear.glyph",
                     "xmark.circle.fill",
-                    px(TEXT),
+                    TEXT,
                     FontWeight::NORMAL,
-                    &SymbolColor::Hierarchical(SystemColor::TertiaryLabel),
                 )
-                .map(|symbol| symbol.img()),
+                .tint(SystemColor::TertiaryLabel),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 clearing
@@ -320,80 +414,43 @@ impl FinderDemo {
             .child(clear);
 
         let bold_leaf = !sheet.typed.is_empty() && !sheet.typed.contains('/');
-        let rows = sheet.rows.iter().enumerate().map(|(at, path)| {
-            let picked = sheet.selected == Some(at);
-            let (text, crumb) = if picked {
-                (palette.selection_text, palette.selection_text.opacity(0.7))
-            } else {
-                (palette.label, palette.secondary)
-            };
-            let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-            let last = parts.len().saturating_sub(1);
-            let crumbs = parts.iter().enumerate().flat_map(|(index, part)| {
-                let name = div()
-                    .when(bold_leaf && index == last, |name| {
-                        name.font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .text_color(text)
-                    .child(part.to_string());
-                let arrow = (index < last).then(|| div().text_color(crumb).child("\u{203a}"));
-                std::iter::once(name).chain(arrow)
-            });
-            let go = this.clone();
-            div()
-                .id(("ng.finder.go.row", at))
-                .h(px(ROW_H))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .px(px(8.))
-                .rounded(px(6.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_size(px(TEXT))
-                .when(picked, |row| row.bg(palette.selection))
-                .when(parts.is_empty(), |row| row.text_color(text).child("/"))
-                .children(crumbs)
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                    go.update(cx, |demo: &mut FinderDemo, cx| {
-                        if let Some(sheet) = demo.go_sheet.as_mut() {
-                            sheet.selected = Some(at);
-                        }
-                        demo.go_submit("", window, cx);
-                    })
-                    .ok();
-                })
-        });
-        let list = (!sheet.rows.is_empty()).then(|| {
+        let (rows, selected) = (sheet.rows.clone(), sheet.selected);
+        let count = rows.len();
+        let heading = if sheet.typed.is_empty() {
+            "Recents"
+        } else {
+            "Go to:"
+        };
+        let list = (count > 0).then(|| {
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
                 .child(
-                    div()
-                        .px(px(8.))
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette.secondary)
-                        .child(if sheet.typed.is_empty() {
-                            "Recents"
-                        } else {
-                            "Go to:"
-                        }),
+                    div().px(px(8.)).child(
+                        native_label("ng.finder.go.heading", heading)
+                            .font_size(px(11.))
+                            .weight(FontWeight::SEMIBOLD)
+                            .color(SystemColor::SecondaryLabel),
+                    ),
                 )
                 .child(
-                    div()
-                        .id("ng.finder.go.rows")
-                        .max_h(px(ROW_H * ROWS_SHOWN))
-                        .overflow_y_scroll()
-                        .track_scroll(&sheet.scroll)
-                        .flex()
-                        .flex_col()
-                        .children(rows),
+                    // Only the rows in view host labels.
+                    uniform_list("ng.finder.go.rows", count, move |range, window, _| {
+                        range
+                            .map(|at| {
+                                let picked = selected == Some(at);
+                                let go = this.clone();
+                                go_row(at, &rows[at], picked, bold_leaf, window, go)
+                            })
+                            .collect()
+                    })
+                    .h(px(ROW_H * (count as f32).min(ROWS_SHOWN)))
+                    .track_scroll(&sheet.scroll),
                 )
         });
 
+        let corner = system_corner_radius(window);
         div()
             .absolute()
             .top(px(PANEL_TOP))
@@ -405,12 +462,19 @@ impl FinderDemo {
                 div()
                     .relative()
                     .w(px(PANEL_W))
-                    .rounded(system_corner_radius(window))
+                    .rounded(corner)
                     .overflow_hidden()
                     .shadow_lg()
-                    .bg(tokens::system_color(SystemColor::WindowBackground))
-                    .border_1()
-                    .border_color(palette.separator)
+                    .block_mouse_except_scroll()
+                    // Native and Above: the list header's band and labels sit over all of GPUI.
+                    .child(
+                        material("ng.finder.go.glass", Material::Popover)
+                            .layer(Layer::Above)
+                            .blending(Blending::WithinWindow)
+                            .corner_radius(corner)
+                            .absolute()
+                            .inset_0(),
+                    )
                     .child(
                         div()
                             .relative()
@@ -418,8 +482,6 @@ impl FinderDemo {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
-                            .font_family(tokens::system_font_family())
-                            .text_color(palette.label)
                             .child(div().px(px(6.)).child(entry))
                             .children(list),
                     ),
@@ -468,7 +530,6 @@ impl FinderDemo {
     pub(crate) fn connect_sheet(
         &self,
         sheet: &ConnectSheet,
-        palette: &Palette,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -495,11 +556,10 @@ impl FinderDemo {
                     })
                     .ok();
             });
-        let status = sheet.status.clone().map(|status| {
-            div()
-                .text_size(px(12.))
-                .text_color(palette.secondary)
-                .child(status)
+        let status = sheet.status.as_deref().map(|status| {
+            native_label("ng.finder.connect.status", status)
+                .font_size(px(12.))
+                .color(SystemColor::SecondaryLabel)
                 .into_any_element()
         });
         glass(
@@ -507,7 +567,7 @@ impl FinderDemo {
             "Connect to Server",
             field,
             status,
-            palette,
+            self.metrics().top,
             window,
         )
     }
@@ -515,7 +575,6 @@ impl FinderDemo {
     pub(crate) fn save_sheet(
         &self,
         name: &str,
-        palette: &Palette,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -552,7 +611,7 @@ impl FinderDemo {
             "Save As:",
             field,
             None,
-            palette,
+            self.metrics().top,
             window,
         )
     }
@@ -569,12 +628,13 @@ fn glass(
     title: &'static str,
     field: impl IntoElement,
     below: Option<AnyElement>,
-    palette: &Palette,
+    top: Pixels,
     window: &Window,
 ) -> AnyElement {
+    let corner = system_corner_radius(window);
     div()
         .absolute()
-        .top_0()
+        .top(top)
         .left_0()
         .right_0()
         .flex()
@@ -583,9 +643,19 @@ fn glass(
             div()
                 .relative()
                 .w(px(SHEET_W))
-                .rounded_b(system_corner_radius(window))
+                .rounded(corner)
                 .overflow_hidden()
-                .child(material(id, Material::Popover).absolute().inset_0())
+                .shadow_lg()
+                .block_mouse_except_scroll()
+                // Native and Above, like the Go panel: the header band covers all of GPUI.
+                .child(
+                    material(id, Material::Popover)
+                        .layer(Layer::Above)
+                        .blending(Blending::WithinWindow)
+                        .corner_radius(corner)
+                        .absolute()
+                        .inset_0(),
+                )
                 .child(
                     div()
                         .relative()
@@ -594,13 +664,10 @@ fn glass(
                         .flex()
                         .flex_col()
                         .gap(px(10.))
-                        .font_family(tokens::system_font_family())
-                        .text_color(palette.label)
                         .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
+                            native_label((id, 1usize), title)
+                                .font_size(px(13.))
+                                .weight(FontWeight::SEMIBOLD),
                         )
                         .child(div().h(px(24.)).child(field))
                         .children(below),

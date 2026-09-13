@@ -114,20 +114,20 @@ impl Render for FinderDemo {
         let sheet = self
             .go_sheet
             .clone()
-            .map(|open| self.go_sheet(&open, &palette, window, cx));
+            .map(|open| self.go_sheet(&open, window, cx));
         let connect_sheet = self
             .connect_sheet
             .clone()
-            .map(|open| self.connect_sheet(&open, &palette, window, cx));
+            .map(|open| self.connect_sheet(&open, window, cx));
         let save_sheet = self
             .save_sheet
             .clone()
-            .map(|name| self.save_sheet(&name, &palette, window, cx));
+            .map(|name| self.save_sheet(&name, window, cx));
         let conflict_sheet = self
             .conflict
             .is_some()
             .then(|| self.conflict_sheet(&palette, cx));
-        let jobs_popover = self.jobs_open.then(|| self.jobs_popover(&palette, cx));
+        let jobs_popover = self.jobs_open.then(|| self.jobs_popover(cx));
         self.pump(window, cx);
         self.sync_quick_look(window);
         let root = native_root(
