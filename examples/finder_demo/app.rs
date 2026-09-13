@@ -32,7 +32,8 @@ use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
-pub(crate) type Stack = (Vec<SharedString>, u32, Arc<RenderImage>);
+/// The stacked selection, its side, which thumbnail width each layer was drawn from, the picture.
+pub(crate) type Stack = (Vec<SharedString>, u32, Vec<Option<u32>>, Arc<RenderImage>);
 
 pub(crate) struct FinderDemo {
     pub(crate) folders: Folders,
