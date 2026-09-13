@@ -1,6 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -50,6 +51,7 @@ struct Job {
 struct State {
     jobs: VecDeque<Job>,
     paused: bool,
+    shutdown: bool,
 }
 
 struct Shared {
@@ -70,6 +72,17 @@ impl Shared {
 #[derive(Clone)]
 pub struct Queue {
     shared: Arc<Shared>,
+    _alive: Arc<Alive>,
+}
+
+/// The worker holds `Shared` itself, so the last `Queue` to go tells it to finish up and exit.
+struct Alive(Arc<Shared>);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().shutdown = true;
+        self.0.cond.notify_all();
+    }
 }
 
 impl Queue {
@@ -78,6 +91,7 @@ impl Queue {
             state: Mutex::new(State {
                 jobs: VecDeque::new(),
                 paused: false,
+                shutdown: false,
             }),
             cond: Condvar::new(),
             cancelled: Mutex::new(HashSet::new()),
@@ -87,7 +101,10 @@ impl Queue {
         });
         let worker = shared.clone();
         thread::spawn(move || worker_loop(worker));
-        Queue { shared }
+        Queue {
+            _alive: Arc::new(Alive(shared.clone())),
+            shared,
+        }
     }
 
     pub fn submit(&self, op: Op, conflict: Conflict) -> JobId {
@@ -136,11 +153,14 @@ impl Queue {
     }
 }
 
-fn next_job(shared: &Shared) -> Job {
+fn next_job(shared: &Shared) -> Option<Job> {
     loop {
         let mut state = shared.state.lock().unwrap();
-        while state.paused || state.jobs.front().is_none() {
+        while !state.shutdown && (state.paused || state.jobs.is_empty()) {
             state = shared.cond.wait(state).unwrap();
+        }
+        if state.paused || state.jobs.is_empty() {
+            return None;
         }
         let front_id = state.jobs.front().unwrap().id;
         if shared.cancelled.lock().unwrap().remove(&front_id.0) {
@@ -153,20 +173,19 @@ fn next_job(shared: &Shared) -> Job {
             });
             continue;
         }
-        return state.jobs.pop_front().unwrap();
+        return state.jobs.pop_front();
     }
 }
 
 fn wait_while_paused(shared: &Shared) {
     let mut state = shared.state.lock().unwrap();
-    while state.paused {
+    while state.paused && !state.shutdown {
         state = shared.cond.wait(state).unwrap();
     }
 }
 
 fn worker_loop(shared: Arc<Shared>) {
-    loop {
-        let job = next_job(&shared);
+    while let Some(job) = next_job(&shared) {
         shared.emit(Event::Started(job.id));
         let outcome = run_job(&shared, job.id, job.op, job.conflict);
         shared.pending.fetch_sub(1, Ordering::SeqCst);
@@ -206,7 +225,11 @@ fn run_split_job(
     items: Vec<PathBuf>,
     conflict: Conflict,
 ) -> RunOutcome {
-    let total_bytes = total_size(items.clone(), Duration::from_millis(100));
+    let sized = moves_bytes(&op, &items);
+    let total_bytes = match sized {
+        true => total_size(items.clone(), Duration::from_millis(100)),
+        false => 0,
+    };
     let mut meter = Meter::new();
     let mut results = Vec::with_capacity(items.len());
     let mut undos = Vec::with_capacity(items.len());
@@ -215,7 +238,7 @@ fn run_split_job(
         if shared.cancelled.lock().unwrap().remove(&id.0) {
             return RunOutcome::Cancelled(batch_done(results, undos));
         }
-        let size = ops::walk_size(item);
+        let size = if sized { ops::walk_size(item) } else { 0 };
         match ops::perform(item_op(&op, item.clone()), conflict, |_| {}) {
             Ok(done) => {
                 results.extend(done.results);
@@ -289,6 +312,15 @@ fn item_op(op: &Op, item: PathBuf) -> Op {
         | Op::Batch(_) => {
             unreachable!("only called for splittable ops")
         }
+    }
+}
+
+fn moves_bytes(op: &Op, items: &[PathBuf]) -> bool {
+    let device = |path: &Path| std::fs::symlink_metadata(path).map(|meta| meta.dev()).ok();
+    match op {
+        Op::Copy { .. } | Op::Duplicate(_) => true,
+        Op::Move { into, .. } => items.iter().any(|item| device(item) != device(into)),
+        _ => false,
     }
 }
 
@@ -928,5 +960,20 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dropped_queue_lets_its_worker_go() {
+        let queue = Queue::new(|_| {});
+        let shared = Arc::downgrade(&queue.shared);
+        drop(queue);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.upgrade().is_some() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            shared.upgrade().is_none(),
+            "the worker thread still holds the queue"
+        );
     }
 }
