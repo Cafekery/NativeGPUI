@@ -74,7 +74,9 @@ impl Sheet {
     }
 
     pub(crate) fn both_folders(&self) -> bool {
-        self.current.is_dir() && self.dest.is_dir()
+        let real_dir =
+            |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+        real_dir(&self.current) && real_dir(&self.dest)
     }
 
     pub(crate) fn shows_apply_to_all(&self) -> bool {
