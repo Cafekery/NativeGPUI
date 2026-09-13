@@ -20,11 +20,9 @@ const PANEL_TOP: f32 = 60.;
 const ROW_H: f32 = 22.;
 const ROWS_SHOWN: f32 = 7.;
 const TEXT: f32 = 13.;
-/// Where a borderless field's cell starts its text.
-const TEXT_INSET: f32 = 2.;
+const FIELD_TEXT_INSET: f32 = 2.;
 const CHOICES: usize = 200;
 const HISTORY: usize = 8;
-/// What the panel takes from the field: moving through the rows, taking one, dropping a folder.
 const COMMANDS: &[&str] = &[
     "moveUp:",
     "moveDown:",
@@ -36,7 +34,6 @@ const COMMANDS: &[&str] = &[
 #[derive(Clone)]
 pub(crate) struct GoSheet {
     typed: String,
-    /// Full paths: the history before anything is typed, then what the typing finds.
     rows: Vec<String>,
     selected: Option<usize>,
     scroll: ScrollHandle,
@@ -64,7 +61,6 @@ fn expanded(typed: &str) -> String {
     }
 }
 
-/// A path ending in `/` lists the folder itself first, then what it holds.
 fn go_rows(typed: &str) -> Vec<String> {
     let folder = typed
         .ends_with('/')
@@ -77,7 +73,6 @@ fn go_rows(typed: &str) -> Vec<String> {
     folder.into_iter().chain(found).collect()
 }
 
-/// Option-Delete takes back one folder of the path, the whole word when there is no path.
 fn drop_folder(typed: &str) -> String {
     let trimmed = typed.strip_suffix('/').unwrap_or(typed);
     match trimmed.rfind('/') {
@@ -92,8 +87,6 @@ fn leaf(path: &str) -> &str {
         .unwrap_or("/")
 }
 
-/// Greyed after the caret: the rest of the chosen row's path, or its name when the typing is
-/// not how that path starts.
 fn ghost(sheet: &GoSheet) -> Option<String> {
     let chosen = sheet.chosen().filter(|_| !sheet.typed.is_empty())?;
     let typed = expanded(&sheet.typed);
@@ -170,15 +163,11 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Right Arrow or Tab takes the chosen row into the field and lists what it holds.
     fn go_accept(&mut self, cx: &mut Context<Self>) {
         let Some(chosen) = self.go_sheet.as_ref().and_then(GoSheet::chosen) else {
             return;
         };
-        let text = match chosen {
-            "/" => "/".to_string(),
-            _ => format!("{chosen}/"),
-        };
+        let text = format!("{}/", chosen.trim_end_matches('/'));
         self.go_typing(text, cx);
     }
 
@@ -192,6 +181,10 @@ impl FinderDemo {
             return;
         }
         self.go_typed(&target, window, cx);
+        self.close_go(window, cx);
+    }
+
+    fn close_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.go_sheet = None;
         focus_gpui(window);
         key_to_parent(window);
@@ -233,8 +226,13 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let this: WeakEntity<Self> = cx.entity().downgrade();
-        let (typing, leave, commanded, clearing) =
-            (this.clone(), this.clone(), this.clone(), this.clone());
+        let (typing, commanded, submitting, leaving, clearing) = (
+            this.clone(),
+            this.clone(),
+            this.clone(),
+            this.clone(),
+            this.clone(),
+        );
         let field = native_text_field("ng.finder.go", &sheet.typed)
             .stretch()
             .borderless()
@@ -256,24 +254,17 @@ impl FinderDemo {
                     })
                     .ok();
             })
-            .on_submit({
-                let this = this.clone();
-                move |typed, window, cx| {
-                    let typed = typed.to_string();
-                    this.update(cx, |demo: &mut FinderDemo, cx| {
+            .on_submit(move |typed, window, cx| {
+                let typed = typed.to_string();
+                submitting
+                    .update(cx, |demo: &mut FinderDemo, cx| {
                         demo.go_submit(&typed, window, cx)
                     })
                     .ok();
-                }
             })
             .on_cancel(move |_, window, cx| {
-                leave
-                    .update(cx, |demo: &mut FinderDemo, cx| {
-                        demo.go_sheet = None;
-                        focus_gpui(window);
-                        key_to_parent(window);
-                        cx.notify();
-                    })
+                leaving
+                    .update(cx, |demo: &mut FinderDemo, cx| demo.close_go(window, cx))
                     .ok();
             });
 
@@ -283,7 +274,7 @@ impl FinderDemo {
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left(px(TEXT_INSET + typed_w))
+                .left(px(FIELD_TEXT_INSET + typed_w))
                 .flex()
                 .items_center()
                 .text_size(px(TEXT))
@@ -331,9 +322,10 @@ impl FinderDemo {
         let bold_leaf = !sheet.typed.is_empty() && !sheet.typed.contains('/');
         let rows = sheet.rows.iter().enumerate().map(|(at, path)| {
             let picked = sheet.selected == Some(at);
-            let (text, crumb) = match picked {
-                true => (palette.selection_text, palette.selection_text.opacity(0.7)),
-                false => (palette.label, palette.secondary),
+            let (text, crumb) = if picked {
+                (palette.selection_text, palette.selection_text.opacity(0.7))
+            } else {
+                (palette.label, palette.secondary)
             };
             let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
             let last = parts.len().saturating_sub(1);
@@ -384,9 +376,10 @@ impl FinderDemo {
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette.secondary)
-                        .child(match sheet.typed.is_empty() {
-                            true => "Recents",
-                            false => "Go to:",
+                        .child(if sheet.typed.is_empty() {
+                            "Recents"
+                        } else {
+                            "Go to:"
                         }),
                 )
                 .child(
@@ -415,8 +408,6 @@ impl FinderDemo {
                     .rounded(system_corner_radius(window))
                     .overflow_hidden()
                     .shadow_lg()
-                    // Drawn, not a native material: the material sits under gpui, so the rows it
-                    // floats over would show through.
                     .bg(tokens::system_color(SystemColor::WindowBackground))
                     .border_1()
                     .border_color(palette.separator)

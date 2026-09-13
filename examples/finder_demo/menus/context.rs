@@ -134,9 +134,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     );
     menu.item(MenuEntry::item(counted("Cut", many, chosen)), Act::Cut);
     menu.item(MenuEntry::item(counted("Copy", many, chosen)), Act::Copy);
-    let pathname = match many {
-        true => format!("Copy {chosen} Items as Pathnames"),
-        false => format!("Copy “{}” as Pathname", line.row.display),
+    let pathname = if many {
+        format!("Copy {chosen} Items as Pathnames")
+    } else {
+        format!("Copy “{}” as Pathname", line.row.display)
     };
     menu.item(
         MenuEntry::item(pathname).option_alternate(),

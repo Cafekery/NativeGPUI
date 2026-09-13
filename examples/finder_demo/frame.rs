@@ -17,6 +17,7 @@ use crate::app::FinderDemo;
 use crate::app::LIST_CONTEXT;
 use crate::chrome::path_bar::PATH_H;
 use crate::chrome::surface::{band_glass, pane_surface, toolbar_rule};
+use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
 use crate::palette::Palette;
@@ -24,6 +25,7 @@ use crate::preview::LIST_MIN_W;
 use crate::ui::axis_locked;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW, LIST_ZOOM_SECS};
 use crate::views::header::HEADER_H;
+use crate::views::icon::TileDrag;
 use crate::views::list::LIST_FOOT_GAP;
 
 pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
@@ -155,10 +157,8 @@ impl Render for FinderDemo {
                                 this.pressed_at = event.position;
                             },
                         ))
-                        .on_drag_move(cx.listener(Self::hand_off_drag::<crate::dragdrop::RowDrag>))
-                        .on_drag_move(
-                            cx.listener(Self::hand_off_drag::<crate::views::icon::TileDrag>),
-                        )
+                        .on_drag_move(cx.listener(Self::hand_off_drag::<RowDrag>))
+                        .on_drag_move(cx.listener(Self::hand_off_drag::<TileDrag>))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {

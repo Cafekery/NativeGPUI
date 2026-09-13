@@ -246,7 +246,6 @@ impl FinderDemo {
                 self.reveal(&line.key);
             }
             None => {
-                // A filter that matches nothing would blank the list on a typo.
                 let wanted = finder_fs::sort::fold(&self.typed);
                 if !lines
                     .iter()

@@ -309,8 +309,6 @@ impl FinderDemo {
         true
     }
 
-    /// Carried over the native sidebar or out of the window, a drag becomes a real file drag so
-    /// AppKit can deliver it there; other apps are only offered a copy.
     pub(crate) fn hand_off_drag<D: Grabbed>(
         &mut self,
         event: &DragMoveEvent<D>,
