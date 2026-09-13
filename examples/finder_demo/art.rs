@@ -144,16 +144,6 @@ fn kind_of(row: &Row) -> Option<FileType<'static>> {
 }
 
 /// `public.volume` has no artwork of its own, so a volume draws `/`'s.
-pub(crate) fn place_art(folder: Option<FileType<'static>>, size: f32) -> AnyElement {
-    let (kind, face) = match folder {
-        None => (FileType::Path("/"), Face::Volume),
-        Some(kind) => (kind, Face::Folder),
-    };
-    square(size)
-        .child(type_art(Some(kind), face, size))
-        .into_any_element()
-}
-
 pub(crate) fn glyph(face: Face, size: f32) -> AnyElement {
     let symbol = sf_symbol_colored(face.symbol(), px(size), FontWeight::NORMAL, &face.tint());
     let mut slot = div()

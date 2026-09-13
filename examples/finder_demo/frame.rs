@@ -277,14 +277,17 @@ impl FinderDemo {
         let search_bars = (scope_h > 0.).then(|| (self.scope_bar(cx), self.criteria_bar(cx)));
         let above = metrics.top;
         let top = above + px(scope_h);
-        // The path bar takes height from the list, not from the pane, which runs to the corner.
         let bar = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
         let mut surface = div()
             .absolute()
             .left_0()
             .right_0()
-            .bottom(px(bar))
+            .bottom(px(if matches!(self.view, LIST_VIEW | ICON_VIEW) {
+                0.
+            } else {
+                bar
+            }))
             .top(if banded { px(0.) } else { top })
             .flex()
             .flex_col()

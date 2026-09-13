@@ -138,11 +138,10 @@ impl Grid {
         index: usize,
         columns: usize,
         icon: f32,
-        visible: f32,
+        visible: gpui::Size<f32>,
     ) {
         let cell = cell(icon);
         let at = self.at(key, index, columns, cell);
-        let view = f32::from(self.scroll.bounds().size.height);
         let offset = self.scroll.offset();
         let into_view = |start: f32, extent: f32, seen: f32| {
             if start < seen {
@@ -153,8 +152,8 @@ impl Grid {
                 seen
             }
         };
-        let x = into_view(f32::from(at.x), visible, -f32::from(offset.x));
-        let y = into_view(f32::from(at.y), view, -f32::from(offset.y));
+        let x = into_view(f32::from(at.x), visible.width, -f32::from(offset.x));
+        let y = into_view(f32::from(at.y), visible.height, -f32::from(offset.y));
         self.scroll
             .set_offset(point(px(-x.max(0.)), px(-y.max(0.))));
     }
@@ -335,7 +334,12 @@ impl FinderDemo {
             .overflow_y_scroll()
             .track_scroll(&scroll)
             // The only child in flow: the tiles are absolute and contribute no scrollable size.
-            .child(div().w(px(width)).h(px(height)).flex_none());
+            .child(
+                div()
+                    .w(px(width))
+                    .h(px(height + self.path_bar_h()))
+                    .flex_none(),
+            );
 
         let top = -f32::from(self.icons.scroll.offset().y);
         let room = f32::from(window.viewport_size().height);
