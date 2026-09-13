@@ -58,6 +58,7 @@ pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
         .left_0()
         .right(right)
         .h(height)
+        .block_mouse_except_scroll()
         .child(
             material("ng.finder.band", Material::Header)
                 .layer(Layer::Above)
