@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use finder_fs::volumes::{Standard, standard};
+
 use super::paths::{intern, intern_path};
 use super::row::Row;
 use super::volumes::volume_of;
@@ -19,7 +21,12 @@ pub(crate) struct Folder {
 }
 
 pub(crate) fn folder_of(id: &'static str) -> Folder {
-    let (mount, volume) = volume_of(id);
+    // Finder roots the Trash's path at "Trash", not at .Trash inside the home folder.
+    let trash = standard(Standard::Trash).filter(|trash| Path::new(id).starts_with(trash));
+    let (mount, volume) = match trash {
+        Some(trash) => (intern_path(&trash), "Trash"),
+        None => volume_of(id),
+    };
     let rest = id.strip_prefix(mount.trim_end_matches('/')).unwrap_or("");
     let mut crumbs = vec![volume];
     crumbs.extend(

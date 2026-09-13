@@ -76,11 +76,12 @@ impl FinderDemo {
             let target = index
                 .checked_sub(crumbs.len() - chain.len())
                 .and_then(|step| chain.get(step).copied());
-            let art = (index > 0).then(|| {
-                target.map_or(FileType::Folder, |path| {
-                    folder_artwork(path, index + 1 < crumbs.len() || listed)
-                })
-            });
+            let art =
+                (index > 0 || target.is_some_and(|path| crate::data::is_trash(path))).then(|| {
+                    target.map_or(FileType::Folder, |path| {
+                        folder_artwork(path, index + 1 < crumbs.len() || listed)
+                    })
+                });
             let mut segment = div()
                 .id(("ng.finder.crumb", index))
                 .h_full()
