@@ -2,15 +2,17 @@ use std::path::PathBuf;
 
 use finder_fs::ops::{Conflict, Done, Op};
 use finder_fs::queue::{Event, JobId};
-use gpui::{AnyElement, App, Context, SharedString, div, prelude::*, px};
-use native_gpui::tokens;
-use native_gpui::{Material, material, native_button, native_progress};
+use gpui::{AnyElement, App, Context, div, prelude::*, px};
+use native_gpui::tokens::SystemColor;
+use native_gpui::{
+    Blending, Layer, Material, material, native_button, native_label, native_progress,
+};
 
 use super::After;
 use crate::app::FinderDemo;
-use crate::chrome::path_bar::PATH_H;
 use crate::data::byte_string;
-use crate::palette::Palette;
+
+const CANCEL_W: f32 = 40.;
 
 /// A new operation goes in the journal, a redo updates the entry it came from, and an undo is
 /// already accounted for.
@@ -81,13 +83,13 @@ fn describe(op: &Op) -> String {
 }
 
 impl FinderDemo {
-    pub(crate) fn jobs_popover(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn jobs_popover(&self, cx: &mut Context<Self>) -> AnyElement {
         let rows: Vec<AnyElement> = self
             .jobs
             .iter()
             .map(|job| {
                 let (demo, id) = (cx.entity(), job.id);
-                job_row(job, palette, move |cx| {
+                job_row(job, move |cx| {
                     demo.update(cx, |this, cx| {
                         this.queue.cancel(id);
                         cx.notify();
@@ -98,7 +100,7 @@ impl FinderDemo {
         let paused = self.jobs.iter().any(|job| job.paused);
         div()
             .absolute()
-            .top(px(PATH_H + 6.))
+            .top(self.metrics().top + px(6.))
             .right(px(12.))
             .child(
                 div()
@@ -106,8 +108,13 @@ impl FinderDemo {
                     .w(px(320.))
                     .rounded(px(10.))
                     .overflow_hidden()
+                    .block_mouse_except_scroll()
+                    // Native and Above, all of it: the band's material covers everything GPUI paints.
                     .child(
                         material("ng.finder.jobs.glass", Material::Popover)
+                            .layer(Layer::Above)
+                            .blending(Blending::WithinWindow)
+                            .corner_radius(px(10.))
                             .absolute()
                             .inset_0(),
                     )
@@ -118,14 +125,11 @@ impl FinderDemo {
                             .flex()
                             .flex_col()
                             .gap(px(10.))
-                            .font_family(tokens::system_font_family())
-                            .text_color(palette.label)
                             .when(rows.is_empty(), |panel| {
                                 panel.child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(palette.secondary)
-                                        .child("No operations in progress"),
+                                    native_label("ng.finder.jobs.none", "No operations in progress")
+                                        .font_size(px(12.))
+                                        .color(SystemColor::SecondaryLabel),
                                 )
                             })
                             .children(rows)
@@ -279,11 +283,7 @@ impl FinderDemo {
 
 /// One operation's row: what it is doing, how far it has got, and a Cancel that `on_cancel` carries
 /// to whichever window owns it.
-pub(crate) fn job_row(
-    job: &JobRow,
-    palette: &Palette,
-    on_cancel: impl Fn(&mut App) + 'static,
-) -> AnyElement {
+pub(crate) fn job_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static) -> AnyElement {
     let fraction = if job.total_bytes > 0 {
         job.done_bytes as f64 / job.total_bytes as f64
     } else {
@@ -307,23 +307,28 @@ pub(crate) fn job_row(
         .child(
             div()
                 .flex()
-                .justify_between()
-                .text_size(px(11.))
-                .child(SharedString::from(job.label.clone()))
+                .gap(px(8.))
+                .child(div().flex_1().min_w(px(0.)).child(
+                    native_label(("ng.finder.jobs.label", id.raw()), &job.label).font_size(px(11.)),
+                ))
                 .child(
                     div()
                         .id(("ng.finder.jobs.cancel", id.raw()))
-                        .text_color(palette.secondary)
-                        .child("Cancel")
+                        .flex_none()
+                        .w(px(CANCEL_W))
+                        .child(
+                            native_label(("ng.finder.jobs.cancel.label", id.raw()), "Cancel")
+                                .font_size(px(11.))
+                                .color(SystemColor::SecondaryLabel),
+                        )
                         .on_click(move |_, _, cx| on_cancel(cx)),
                 ),
         )
         .child(native_progress(("ng.finder.jobs.bar", id.raw()), fraction))
         .child(
-            div()
-                .text_size(px(10.))
-                .text_color(palette.secondary)
-                .child(SharedString::from(caption)),
+            native_label(("ng.finder.jobs.caption", id.raw()), &caption)
+                .font_size(px(10.))
+                .color(SystemColor::SecondaryLabel),
         )
         .into_any_element()
 }

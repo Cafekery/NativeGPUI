@@ -78,7 +78,7 @@ impl Render for Progress {
                     .iter()
                     .map(|job| {
                         let (demo, id) = (demo.clone(), job.id);
-                        job_row(job, &palette, move |cx| {
+                        job_row(job, move |cx| {
                             demo.update(cx, |this, cx| {
                                 this.queue.cancel(id);
                                 cx.notify();
