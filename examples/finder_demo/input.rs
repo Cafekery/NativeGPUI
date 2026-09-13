@@ -74,7 +74,10 @@ impl FinderDemo {
                 } else {
                     self.pick(line, false, false);
                 }
-                let visible = self.list_room - self.pane_w();
+                let visible = gpui::size(
+                    self.list_room - self.pane_w(),
+                    f32::from(self.icons.scroll.bounds().size.height) - self.path_bar_h(),
+                );
                 self.icons
                     .reveal(&line.key, next, columns, self.icon_size as f32, visible);
             }

@@ -112,8 +112,11 @@ impl FinderDemo {
         (rows, rows as f32 * row_h - inset)
     }
 
-    pub(crate) fn list_tail(&self) -> f32 {
-        self.row_h() - LIST_FOOT_GAP
+    pub(crate) fn list_tail(&self) -> (usize, f32) {
+        let foot = LIST_FOOT_GAP + self.path_bar_h();
+        let row_h = self.row_h();
+        let rows = (foot / row_h).ceil() as usize;
+        (rows, rows as f32 * row_h - foot)
     }
 
     pub(crate) fn list_body(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -161,7 +164,8 @@ impl FinderDemo {
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
-        let items = pads + count + 1;
+        let (tails, trim) = self.list_tail();
+        let items = pads + count + tails;
         let list = uniform_list("ng.finder.list", items, move |range, window, _| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
@@ -208,7 +212,7 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .mt(px(-lift))
-            .mb(px(-self.list_tail()))
+            .mb(px(-trim))
             .child(rows_menu(
                 "ng.finder.list.menu",
                 cx.entity().downgrade(),
