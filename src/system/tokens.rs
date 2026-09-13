@@ -767,6 +767,8 @@ pub enum FileType<'a> {
     Uti(&'a str),
     Path(&'a str),
     FullPath(&'a str),
+    /// An AppKit image by name, e.g. `"NSTrashFull"`.
+    Named(&'a str),
 }
 
 impl FileType<'_> {
@@ -778,6 +780,7 @@ impl FileType<'_> {
             FileType::Extension(extension) => format!("ext:{extension}"),
             FileType::Path(path) => format!("path:{path}"),
             FileType::FullPath(path) => format!("path:{path}+full"),
+            FileType::Named(name) => format!("named:{name}"),
         }
     }
 }
@@ -897,6 +900,7 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
             let content = ut_type(true, extension)?;
             unsafe { msg_send![&*workspace, iconForContentType: &*content] }
         }
+        FileType::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
     };
     let image = image?;
 

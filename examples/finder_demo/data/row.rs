@@ -69,9 +69,16 @@ fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<Fil
     })
 }
 
+pub(crate) fn is_trash(path: &str) -> bool {
+    standard(Standard::Trash).is_some_and(|trash| trash == Path::new(path))
+}
+
 fn folder_kind(path: &'static str, full: bool) -> FileType<'static> {
-    let trash = standard(Standard::Trash).is_some_and(|trash| trash == Path::new(path));
-    match (special().contains(path), full && !trash) {
+    // `iconForFile:` on ~/.Trash answers with a plain folder.
+    if is_trash(path) {
+        return FileType::Named(if full { "NSTrashFull" } else { "NSTrashEmpty" });
+    }
+    match (special().contains(path), full) {
         (true, true) => FileType::FullPath(path),
         (true, false) => FileType::Path(path),
         (false, true) => FileType::FullFolder,
