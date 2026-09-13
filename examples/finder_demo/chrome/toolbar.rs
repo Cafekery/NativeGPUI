@@ -10,6 +10,7 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::app::FinderDemo;
@@ -302,12 +303,14 @@ impl FinderDemo {
     }
 
     pub(crate) fn share_items(&self) -> Vec<String> {
-        let names: Vec<String> = self
-            .lines(false)
+        let mut names: Vec<String> = self
+            .selected
+            .snapshot()
             .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .map(|line| line.row.name.to_string())
+            .filter_map(|key| Path::new(key.as_ref()).file_name())
+            .map(|name| name.to_string_lossy().into_owned())
             .collect();
+        names.sort_unstable();
         if names.is_empty() {
             vec![self.folder().map_or("Finder", |folder| folder.title).into()]
         } else {
