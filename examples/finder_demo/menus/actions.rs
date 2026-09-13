@@ -49,6 +49,9 @@ pub(crate) enum Act {
     RenameAt(&'static str),
     Eject(&'static str),
     CopyPathname(&'static str),
+    CopyPathnames,
+    Slideshow,
+    MoveHere,
     Toggle(Column),
 }
 
@@ -144,6 +147,16 @@ impl FinderDemo {
             Act::CopyPathname(id) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()))
             }
+            Act::CopyPathnames => {
+                let lines: Vec<String> = self
+                    .paths()
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(lines.join("\n")))
+            }
+            Act::Slideshow => self.slideshow(window, cx),
+            Act::MoveHere => self.paste(true, cx),
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();

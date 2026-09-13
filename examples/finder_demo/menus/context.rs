@@ -81,7 +81,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     if folder {
         menu.item(MenuEntry::item(plural("Open in New Tab", many)), Act::Open);
         menu.item(
-            MenuEntry::item(plural("Open in New Window", many)),
+            MenuEntry::item(plural("Open in New Window", many)).option_alternate(),
             Act::OpenWindow,
         );
     } else {
@@ -114,6 +114,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
     menu.item(
+        MenuEntry::item("Show Inspector").option_alternate(),
+        Act::Inspector,
+    );
+    menu.item(
         MenuEntry::item(if many { "Rename…" } else { "Rename" }),
         Act::Rename,
     );
@@ -124,10 +128,26 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
     menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
+    menu.item(
+        MenuEntry::item(subject("Slideshow", &line.row.display, many, chosen)).option_alternate(),
+        Act::Slideshow,
+    );
     menu.item(MenuEntry::item(counted("Cut", many, chosen)), Act::Cut);
     menu.item(MenuEntry::item(counted("Copy", many, chosen)), Act::Copy);
+    let pathname = match many {
+        true => format!("Copy {chosen} Items as Pathnames"),
+        false => format!("Copy “{}” as Pathname", line.row.display),
+    };
+    menu.item(
+        MenuEntry::item(pathname).option_alternate(),
+        Act::CopyPathnames,
+    );
     if can_paste() {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
+        menu.item(
+            MenuEntry::item("Move Item Here").option_alternate(),
+            Act::MoveHere,
+        );
     }
     menu.separator();
     menu.item(MenuEntry::item("Share…"), Act::Share);
