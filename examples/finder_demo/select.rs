@@ -246,6 +246,14 @@ impl FinderDemo {
                 self.reveal(&line.key);
             }
             None => {
+                // A filter that matches nothing would blank the list on a typo.
+                let wanted = finder_fs::sort::fold(&self.typed);
+                if !lines
+                    .iter()
+                    .any(|line| finder_fs::sort::fold(&line.row.name).contains(&wanted))
+                {
+                    return;
+                }
                 self.type_filter = Some(self.typed.clone());
                 if self.type_filter_seen_match {
                     self.schedule_filter_clear(cx);
