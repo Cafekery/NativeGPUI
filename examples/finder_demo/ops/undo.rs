@@ -140,12 +140,13 @@ impl FinderDemo {
             return;
         };
         refresh_edit_menu(&self.journal);
+        let at = self.journal.redo_len() - 1;
         // Whatever took an undone item's place since is kept, never replaced.
         self.submit(
             undoable.undo,
             Conflict::KeepBoth,
             After::Select,
-            Record::Undo,
+            Record::Undo(at),
             cx,
         );
     }

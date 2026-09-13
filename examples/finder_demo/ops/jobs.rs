@@ -17,7 +17,7 @@ use crate::palette::Palette;
 #[derive(Clone, Copy)]
 pub(crate) enum Record {
     New,
-    Undo,
+    Undo(usize),
     Redo(usize),
 }
 
@@ -181,9 +181,16 @@ impl FinderDemo {
         match row.record {
             Record::New => self.journal.record(done, &row.op),
             Record::Redo(at) => self.journal.redone(at, done),
-            Record::Undo => return false,
+            Record::Undo(_) => return false,
         }
         true
+    }
+
+    fn undo_left(&mut self, row: &JobRow, left: Op) {
+        if let Record::Undo(at) = row.record {
+            self.journal.undo_left(at, left);
+            super::undo::refresh_edit_menu(&self.journal);
+        }
     }
 
     pub(crate) fn handle_queue_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
@@ -218,15 +225,26 @@ impl FinderDemo {
                             let touched = crate::ops::touched(&row.op);
                             self.settled(touched, done.results, row.after, cx);
                         }
-                        Err(err) => self.complain(&err.to_string()),
+                        Err(err) => {
+                            self.undo_left(&row, row.op.clone());
+                            self.complain(&err.to_string());
+                        }
                     }
                 }
-                Event::Failed { job, done, error } => {
+                Event::Failed {
+                    job,
+                    done,
+                    error,
+                    left,
+                } => {
                     let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
                         continue;
                     };
                     let row = self.jobs.remove(pos);
                     landed |= self.note(&row, &done);
+                    if let Some(left) = left {
+                        self.undo_left(&row, left);
+                    }
                     let touched = crate::ops::touched(&row.op);
                     self.settled(touched, done.results, row.after, cx);
                     self.complain(&error.to_string());

@@ -106,6 +106,39 @@ fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Re
     }
 }
 
+/// What an undo got through before items refused, and the part still left to do.
+#[derive(Debug)]
+pub struct Unfinished {
+    pub done: Done,
+    pub left: Op,
+    pub cause: io::Error,
+}
+
+impl std::fmt::Display for Unfinished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+impl std::error::Error for Unfinished {}
+
+impl Unfinished {
+    fn error(done: Done, left: Op, cause: io::Error) -> io::Error {
+        io::Error::new(cause.kind(), Unfinished { done, left, cause })
+    }
+
+    pub fn from_error(error: io::Error) -> Result<Unfinished, io::Error> {
+        if !error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<Unfinished>())
+        {
+            return Err(error);
+        }
+        let inner = error.into_inner().expect("checked above");
+        Ok(*inner.downcast::<Unfinished>().expect("checked above"))
+    }
+}
+
 fn url(path: &Path) -> Retained<NSURL> {
     NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()))
 }
@@ -645,39 +678,77 @@ fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Resu
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
-    for (i, restore) in items.iter().enumerate() {
-        if let Some(parent) = restore.to.parent() {
-            std::fs::create_dir_all(parent)?;
+    let (mut left, mut cause) = (Vec::new(), None);
+    for (i, restore) in items.into_iter().enumerate() {
+        let current = restore.item.clone();
+        match put_one(&fm, &restore) {
+            Ok(dest) => results.extend(dest),
+            Err(error) => {
+                cause.get_or_insert(error);
+                left.push(restore);
+            }
         }
-        let placed = place_one(
-            &fm,
-            &restore.item,
-            restore.to.clone(),
-            Conflict::KeepBoth,
-            true,
-        )?;
-        results.extend(placed.dest);
         progress(Progress {
             done: i + 1,
             total,
-            current: Some(restore.item.clone()),
+            current: Some(current),
         });
     }
-    Ok(Done {
+    let done = Done {
         results,
         undo: None,
-    })
+    };
+    match cause {
+        None => Ok(done),
+        Some(cause) => Err(Unfinished::error(done, Op::PutBack(left), cause)),
+    }
+}
+
+fn put_one(fm: &NSFileManager, restore: &Restore) -> io::Result<Option<PathBuf>> {
+    if let Some(parent) = restore.to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let placed = place_one(
+        fm,
+        &restore.item,
+        restore.to.clone(),
+        Conflict::KeepBoth,
+        true,
+    )?;
+    Ok(placed.dest)
 }
 
 fn batch(ops: Vec<Op>, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     let mut results = Vec::new();
+    let (mut left, mut cause) = (Vec::new(), None);
     for op in ops {
-        results.extend(run(op, conflict, progress)?.results);
+        match run(op.clone(), conflict, progress) {
+            Ok(done) => results.extend(done.results),
+            Err(error) => match Unfinished::from_error(error) {
+                Ok(unfinished) => {
+                    results.extend(unfinished.done.results);
+                    left.push(unfinished.left);
+                    cause.get_or_insert(unfinished.cause);
+                }
+                Err(error) => {
+                    left.push(op);
+                    cause.get_or_insert(error);
+                }
+            },
+        }
     }
-    Ok(Done {
+    let done = Done {
         results,
         undo: None,
-    })
+    };
+    let Some(cause) = cause else {
+        return Ok(done);
+    };
+    let left = match left.len() {
+        1 => left.pop().expect("one left"),
+        _ => Op::Batch(left),
+    };
+    Err(Unfinished::error(done, left, cause))
 }
 
 fn trash(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
@@ -685,21 +756,35 @@ fn trash(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<
     let total = items.len();
     let mut results = Vec::with_capacity(total);
     let mut home = Vec::with_capacity(total);
-    for (i, item) in items.iter().enumerate() {
-        let trashed = trash_one(&fm, item)?;
-        home.push(Restore {
-            item: trashed.clone(),
-            to: item.clone(),
-        });
-        results.push(trashed);
+    let (mut left, mut cause) = (Vec::new(), None);
+    for (i, item) in items.into_iter().enumerate() {
+        match trash_one(&fm, &item) {
+            Ok(trashed) => {
+                home.push(Restore {
+                    item: trashed.clone(),
+                    to: item.clone(),
+                });
+                results.push(trashed);
+            }
+            Err(error) => {
+                cause.get_or_insert(error);
+                left.push(item.clone());
+            }
+        }
         progress(Progress {
             done: i + 1,
             total,
-            current: Some(item.clone()),
+            current: Some(item),
         });
     }
-    let undo = (!home.is_empty()).then_some(Op::PutBack(home));
-    Ok(Done { results, undo })
+    let done = Done {
+        results,
+        undo: (!home.is_empty()).then_some(Op::PutBack(home)),
+    };
+    match cause {
+        None => Ok(done),
+        Some(cause) => Err(Unfinished::error(done, Op::Trash(left), cause)),
+    }
 }
 
 fn delete(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
@@ -2271,6 +2356,74 @@ mod tests {
             .args(["-R", "nouchg"])
             .arg(&dir)
             .status();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_put_back_keeps_going_past_an_item_that_refuses() {
+        let dir = temp_dir("put-back-partial");
+        let kept = dir.join("kept.txt");
+        touch(&kept, "kept");
+        let trashed = perform(
+            Op::Trash(vec![kept.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        let gone = Restore {
+            item: dir.join("gone.txt"),
+            to: dir.join("gone.txt"),
+        };
+        let home = Restore {
+            item: trashed.results[0].clone(),
+            to: kept.clone(),
+        };
+        let back = perform(
+            Op::PutBack(vec![gone, home]),
+            Conflict::KeepBoth,
+            no_progress,
+        );
+        assert!(back.is_err(), "the item that refused is still reported");
+        assert_eq!(
+            fs::read_to_string(&kept).ok().as_deref(),
+            Some("kept"),
+            "the item after the one that refused still went back"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unfinished_put_back_names_only_what_refused() {
+        let dir = temp_dir("put-back-left");
+        let kept = dir.join("kept.txt");
+        touch(&kept, "kept");
+        let trashed = perform(
+            Op::Trash(vec![kept.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        let gone = Restore {
+            item: dir.join("gone.txt"),
+            to: dir.join("gone.txt"),
+        };
+        let home = Restore {
+            item: trashed.results[0].clone(),
+            to: kept.clone(),
+        };
+        let error = perform(
+            Op::PutBack(vec![gone, home]),
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap_err();
+        let unfinished = Unfinished::from_error(error).expect("the error says what is left");
+        assert_eq!(unfinished.done.results, vec![kept.clone()]);
+        let Op::PutBack(left) = unfinished.left else {
+            panic!("a put back leaves a put back");
+        };
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].to, dir.join("gone.txt"));
         let _ = fs::remove_dir_all(&dir);
     }
 }
