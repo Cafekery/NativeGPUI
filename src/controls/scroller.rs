@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{App, ElementId, ScrollHandle, Style, Window, point, px, relative, size};
 use objc2::rc::Retained;
@@ -11,6 +12,8 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSNotificationCenter, NSObject, NSPoint, NSRect, NSSize};
 
 use crate::bridge::host::{Layer, NativeRead, Slot, Target, hosted_element};
+
+const FLASH_EVERY: Duration = Duration::from_millis(500);
 
 /// AppKit's own scroll bars over GPUI content: a click-through `NSScrollView` the size of the
 /// scrolled area, kept at the handles' offsets, whose scrollers move the handles in turn. Place it
@@ -109,6 +112,7 @@ struct Ivars {
     target: Retained<Target>,
     syncing: Cell<bool>,
     shown: Cell<bool>,
+    flashed: Cell<Option<Instant>>,
 }
 
 define_class!(
@@ -179,6 +183,7 @@ impl ScrollBars {
             target: target.retain(),
             syncing: Cell::new(false),
             shown: Cell::new(false),
+            flashed: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setDrawsBackground(false);
@@ -214,8 +219,16 @@ impl ScrollBars {
             self.reflectScrolledClipView(&clip);
             self.ivars().syncing.set(false);
             // GPUI moving the content flashes the scrollers, as a scroll view's own scrolling does.
-            if self.ivars().shown.get() {
+            // A flash holds them up for about a second, and each one invalidates the window's
+            // cursor rects, so a scroll flashes every so often rather than every frame.
+            let due = self
+                .ivars()
+                .flashed
+                .get()
+                .is_none_or(|at| at.elapsed() >= FLASH_EVERY);
+            if self.ivars().shown.get() && due {
                 self.flashScrollers();
+                self.ivars().flashed.set(Some(Instant::now()));
             }
         }
         self.ivars().shown.set(true);
