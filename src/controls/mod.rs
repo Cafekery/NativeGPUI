@@ -17,7 +17,7 @@ pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
     SegmentStyle, TrackingMode, native_button, native_checkbox, native_radio, native_segmented,
 };
-pub use image::{NativeImage, native_image, native_symbol};
+pub use image::{NativeImage, native_image, native_raster, native_symbol};
 pub use label::{LabelAlign, NativeLabel, native_label};
 pub use menu::{
     MenuEntry, MenuOrigin, MenuView, NativeContextMenu, NativePopup, native_context_menu,

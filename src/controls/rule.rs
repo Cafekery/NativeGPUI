@@ -14,6 +14,7 @@ pub fn native_rule(id: impl Into<ElementId>) -> NativeRule {
         id: id.into(),
         color: SystemColor::Separator,
         tint: None,
+        corner_radius: 0.,
     }
 }
 
@@ -21,9 +22,15 @@ pub struct NativeRule {
     id: ElementId,
     color: SystemColor,
     tint: Option<Hsla>,
+    corner_radius: f64,
 }
 
 impl NativeRule {
+    pub fn corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = f64::from(radius);
+        self
+    }
+
     pub fn color(mut self, color: SystemColor) -> Self {
         self.color = color;
         self
@@ -49,6 +56,9 @@ impl NativeRule {
         };
         if !rule.fillColor().isEqual(Some(&**color)) {
             rule.setFillColor(&color);
+        }
+        if rule.cornerRadius() != self.corner_radius {
+            rule.setCornerRadius(self.corner_radius);
         }
     }
 }
