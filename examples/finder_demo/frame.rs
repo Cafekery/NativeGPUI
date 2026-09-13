@@ -50,7 +50,8 @@ impl Render for FinderDemo {
         if self.toolbar_for != (self.selected.rev(), self.cursor.clone()) {
             self.toolbar = false;
             let files = self
-                .chosen_keys()
+                .selected
+                .snapshot()
                 .iter()
                 .map(|key| key.to_string().into())
                 .collect();
