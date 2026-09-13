@@ -16,8 +16,12 @@ use crate::system::tokens::{Symbol, SystemColor, bitmap, ns_font_weight};
 
 const RASTERS_KEPT: usize = 256;
 
+type SymbolKey = (String, u32, u32);
+
 thread_local! {
     static RASTERS: RefCell<HashMap<ImageId, Retained<NSImage>>> = RefCell::new(HashMap::new());
+    static SYMBOLS: RefCell<HashMap<SymbolKey, Option<Retained<NSImage>>>> =
+        RefCell::new(HashMap::new());
 }
 
 pub fn native_image(id: impl Into<ElementId>, name: &str) -> NativeImage {
@@ -78,19 +82,13 @@ impl NativeImage {
     fn image(&self) -> Option<Retained<NSImage>> {
         match &self.source {
             Source::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
-            Source::Symbol { name, size, weight } => {
-                let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(name),
-                    None,
-                )?;
-                let configuration =
-                    NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
-                        f64::from(*size),
-                        ns_font_weight(*weight),
-                        NSImageSymbolScale::Medium,
-                    );
-                base.imageWithSymbolConfiguration(&configuration)
-            }
+            // A configured symbol is a new NSImage each time, and NSImage equality is identity.
+            Source::Symbol { name, size, weight } => SYMBOLS.with(|kept| {
+                kept.borrow_mut()
+                    .entry((name.clone(), size.to_bits(), weight.0.to_bits()))
+                    .or_insert_with(|| symbol_image(name, *size, *weight))
+                    .clone()
+            }),
             Source::Raster(raster) => RASTERS.with(|kept| {
                 let mut kept = kept.borrow_mut();
                 if let Some(hit) = kept.get(&raster.image.id) {
@@ -140,6 +138,19 @@ impl NativeImage {
 }
 
 hosted_element!(NativeImage);
+
+fn symbol_image(name: &str, size: f32, weight: FontWeight) -> Option<Retained<NSImage>> {
+    let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        None,
+    )?;
+    let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+        f64::from(size),
+        ns_font_weight(weight),
+        NSImageSymbolScale::Medium,
+    );
+    base.imageWithSymbolConfiguration(&configuration)
+}
 
 fn ns_image(raster: &Symbol) -> Option<Retained<NSImage>> {
     let pixels = raster.image.size(0);

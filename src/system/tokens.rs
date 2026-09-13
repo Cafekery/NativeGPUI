@@ -782,6 +782,8 @@ impl FileType<'_> {
     }
 }
 
+const FILE_ICONS_KEPT: usize = 512;
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FileIconKey {
     tag: String,
@@ -801,6 +803,11 @@ pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
         None => {
             cache.file_icon_rasters += 1;
             let icon = rasterize_file_icon(kind, size, scale);
+            if cache.file_icons.len() >= FILE_ICONS_KEPT {
+                cache
+                    .file_icons
+                    .retain(|key, _| !key.tag.starts_with("path:"));
+            }
             cache.file_icons.insert(key, icon.clone());
             icon
         }

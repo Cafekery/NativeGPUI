@@ -13,6 +13,8 @@ type Key = (FileType<'static>, u32);
 
 const WARM_BUDGET: Duration = Duration::from_millis(20);
 
+const ICONS_KEPT: usize = 2048;
+
 static ICONS: LazyLock<Mutex<HashMap<Key, Option<Symbol>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -73,8 +75,15 @@ fn undrawn(
 }
 
 fn draw(kind: FileType<'static>, size: f32) {
-    let drawn = file_icon(kind, px(size));
-    ICONS.lock().unwrap().insert((kind, size.to_bits()), drawn);
+    keep((kind, size.to_bits()), file_icon(kind, px(size)));
+}
+
+fn keep(key: Key, drawn: Option<Symbol>) {
+    let mut icons = ICONS.lock().unwrap();
+    if icons.len() >= ICONS_KEPT {
+        icons.retain(|(kind, _), _| !matches!(kind, FileType::Path(_) | FileType::FullPath(_)));
+    }
+    icons.insert(key, drawn);
 }
 
 fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
@@ -112,7 +121,7 @@ pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
                 .await;
             if demo
                 .update(cx, |_, cx| {
-                    ICONS.lock().unwrap().insert(key, drawn);
+                    keep(key, drawn);
                     cx.notify();
                 })
                 .is_err()
