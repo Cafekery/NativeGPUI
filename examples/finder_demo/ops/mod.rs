@@ -77,7 +77,12 @@ impl FinderDemo {
             let id = intern_path(dir);
             self.read_folder(id, cx);
         }
-        if after == After::Nothing {
+        let shown = |dir: &Path| {
+            let id = intern_path(dir);
+            id == self.here() || id == self.target() || self.expanded.contains(id)
+        };
+        let visible = results.iter().any(|path| path.parent().is_some_and(shown));
+        if after == After::Nothing || !visible {
             return;
         }
         let keys: Vec<SharedString> = results

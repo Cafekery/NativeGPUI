@@ -25,7 +25,7 @@ pub(crate) fn attach(
 ) -> NativeContextMenu {
     native_context_menu(id, child)
         .entries(menu.entries)
-        .on_select(picks(Rc::new(RefCell::new(menu.acts)), this))
+        .on_select(picks(Rc::new(RefCell::new(menu.acts)), Rc::default(), this))
 }
 
 fn menu_at(
@@ -35,7 +35,8 @@ fn menu_at(
     child: impl IntoElement,
 ) -> NativeContextMenu {
     let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
-    let built = acts.clone();
+    let aim: Rc<RefCell<Option<Line>>> = Rc::default();
+    let (built, aimed) = (acts.clone(), aim.clone());
     let demo = this.clone();
     let closing = this.clone();
     native_context_menu(id, child)
@@ -48,6 +49,7 @@ fn menu_at(
                 })
                 .unwrap_or_default();
             *built.borrow_mut() = menu.acts;
+            *aimed.borrow_mut() = menu.aim;
             menu.entries
         })
         .on_close(move |_, cx| {
@@ -58,7 +60,7 @@ fn menu_at(
                 })
                 .ok();
         })
-        .on_select(picks(acts, this))
+        .on_select(picks(acts, aim, this))
 }
 
 pub(crate) fn backdrop(
@@ -113,7 +115,10 @@ fn row_menu(
     let build = move |demo: &mut FinderDemo, at| match hit(demo, at) {
         Some(line) => {
             mark(demo, &line);
-            item(&demo.selected, &line)
+            Menu {
+                aim: Some(line.clone()),
+                ..item(&demo.selected, &line)
+            }
         }
         None => Menu::default(),
     };
@@ -122,11 +127,16 @@ fn row_menu(
 
 fn picks(
     acts: Rc<RefCell<Vec<Act>>>,
+    aim: Rc<RefCell<Option<Line>>>,
     this: WeakEntity<FinderDemo>,
 ) -> impl Fn(&usize, &mut Window, &mut App) {
     move |index, window, cx| {
         let act = acts.borrow().get(*index).copied().unwrap_or(Act::Nothing);
+        let aim = aim.borrow().clone();
         this.update(cx, |demo: &mut FinderDemo, cx| {
+            if let Some(line) = aim.filter(|line| !demo.selected.contains(&line.key)) {
+                demo.pick(&line, false, false);
+            }
             demo.run_menu(act, window, cx)
         })
         .ok();
@@ -138,6 +148,7 @@ fn picks(
 pub(crate) struct Menu {
     pub(crate) entries: Vec<MenuEntry>,
     pub(crate) acts: Vec<Act>,
+    pub(crate) aim: Option<Line>,
 }
 
 impl Menu {
