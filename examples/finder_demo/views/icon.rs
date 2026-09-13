@@ -170,7 +170,7 @@ impl Grid {
     }
 }
 
-struct TileDrag {
+pub(crate) struct TileDrag {
     key: SharedString,
     grab: Rc<Cell<Point<Pixels>>>,
 }

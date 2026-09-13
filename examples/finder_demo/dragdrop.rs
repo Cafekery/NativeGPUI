@@ -309,17 +309,22 @@ impl FinderDemo {
         true
     }
 
-    pub(crate) fn drag_to_sidebar(
+    /// Carried over the native sidebar or out of the window, a drag becomes a real file drag so
+    /// AppKit can deliver it there; other apps are only offered a copy.
+    pub(crate) fn hand_off_drag<D: Grabbed>(
         &mut self,
-        event: &DragMoveEvent<RowDrag>,
+        event: &DragMoveEvent<D>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if event.event.position.x >= self.metrics().left {
+        let at = event.event.position;
+        let size = window.viewport_size();
+        let outside = at.x < px(0.) || at.y < px(0.) || at.x >= size.width || at.y >= size.height;
+        if at.x >= self.metrics().left && !outside {
             return;
         }
         let paths: Vec<PathBuf> = self
-            .drag_keys(&event.drag(cx).key)
+            .drag_keys(event.drag(cx).key())
             .iter()
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();

@@ -155,7 +155,10 @@ impl Render for FinderDemo {
                                 this.pressed_at = event.position;
                             },
                         ))
-                        .on_drag_move(cx.listener(Self::drag_to_sidebar))
+                        .on_drag_move(cx.listener(Self::hand_off_drag::<crate::dragdrop::RowDrag>))
+                        .on_drag_move(
+                            cx.listener(Self::hand_off_drag::<crate::views::icon::TileDrag>),
+                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
