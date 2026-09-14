@@ -107,4 +107,4 @@ cargo run --release --example finder_demo
 ./scripts/check.sh
 ```
 
-Requires macOS 26 or later and rustc 1.97 or later.
+Requires macOS 26 or later and rustc 1.98 or later.
