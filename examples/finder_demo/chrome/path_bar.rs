@@ -3,7 +3,7 @@ use gpui::{
     px,
 };
 use native_gpui::tokens::{self, FileType, SystemColor};
-use native_gpui::{glass, native_label, native_raster, native_rule, native_symbol};
+use native_gpui::{native_label, native_raster, native_rule, native_symbol};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, folder_artwork};
@@ -24,7 +24,7 @@ const CRUMB_ICON: f32 = 13.;
 
 const DROP_RADIUS: f32 = 7.;
 
-const BAR_TINT: f32 = 0.6;
+const HAIRLINE: f32 = 0.5;
 
 fn is_alt_click(event: &ClickEvent) -> bool {
     matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
@@ -180,21 +180,14 @@ impl FinderDemo {
             .flex_none()
             .relative()
             .block_mouse_except_scroll()
-            .child(
-                div().absolute().inset_0().child(
-                    glass("ng.finder.path.glass")
-                        .corner_radius(px(0.))
-                        .tint(tokens::system_color(SystemColor::WindowBackground).opacity(BAR_TINT))
-                        .frosting_gpui(),
-                ),
-            )
+            // Finder's bar is bare window background under a half-point separator.
             .child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(px(1.))
+                    .h(px(HAIRLINE))
                     .child(native_rule("ng.finder.path.hairline")),
             )
             .child(trail)
