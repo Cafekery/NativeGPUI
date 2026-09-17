@@ -1315,8 +1315,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     }
 
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
-    // A transparent titlebar darkens the toolbar items' glass.
-    ns_window.setTitlebarAppearsTransparent(false);
+    // An opaque titlebar paints untinted window background under the sidebar's top.
+    ns_window.setTitlebarAppearsTransparent(true);
 
     // Collected before `setContentViewController:` orphans them.
     let orphans: Vec<Retained<NSView>> = if options.adopt_below_layer {
