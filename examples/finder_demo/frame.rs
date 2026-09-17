@@ -284,11 +284,7 @@ impl FinderDemo {
             .absolute()
             .left_0()
             .right_0()
-            .bottom(px(if matches!(self.view, LIST_VIEW | ICON_VIEW) {
-                0.
-            } else {
-                bar
-            }))
+            .bottom(px(bar))
             .top(if banded { px(0.) } else { top })
             .flex()
             .flex_col()
