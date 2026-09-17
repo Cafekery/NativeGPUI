@@ -114,12 +114,9 @@ pub(crate) fn can_paste() -> bool {
     }) {
         return answer;
     }
+    // Types only: fetching the data waits on whichever app promised it, for as long as it takes.
     let file_url = unsafe { NSPasteboardTypeFileURL };
-    let answer = board.pasteboardItems().is_some_and(|items| {
-        items
-            .iter()
-            .any(|item| item.stringForType(file_url).is_some())
-    });
+    let answer = board.canReadItemWithDataConformingToTypes(&NSArray::from_slice(&[file_url]));
     ANSWERED.with(|seen| seen.set((changed, answer)));
     answer
 }
