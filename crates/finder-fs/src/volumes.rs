@@ -1,4 +1,4 @@
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, OsStr, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
@@ -6,11 +6,10 @@ use std::ptr::null;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSArray, NSDictionary, NSFileManager, NSMutableDictionary, NSNumber, NSString, NSURL,
-    NSURLResourceKey, NSURLVolumeAvailableCapacityForImportantUsageKey,
-    NSURLVolumeAvailableCapacityKey, NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey,
-    NSURLVolumeIsRemovableKey, NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey,
-    NSURLVolumeTotalCapacityKey, NSVolumeEnumerationOptions,
+    NSArray, NSDictionary, NSMutableDictionary, NSNumber, NSString, NSURL, NSURLResourceKey,
+    NSURLVolumeAvailableCapacityForImportantUsageKey, NSURLVolumeAvailableCapacityKey,
+    NSURLVolumeIsEjectableKey, NSURLVolumeIsLocalKey, NSURLVolumeIsRemovableKey,
+    NSURLVolumeLocalizedFormatDescriptionKey, NSURLVolumeNameKey, NSURLVolumeTotalCapacityKey,
 };
 
 type Values = NSDictionary<NSURLResourceKey, AnyObject>;
@@ -105,23 +104,56 @@ fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
     })
 }
 
+/// From the kernel's cached mount table: a share that stopped answering cannot stall this, and
+/// Finder lists such a share all the same.
 pub fn mounted() -> Vec<Volume> {
-    let fm = NSFileManager::defaultManager();
-    let keys = keys();
-    let Some(urls) = fm.mountedVolumeURLsIncludingResourceValuesForKeys_options(
-        Some(&keys),
-        NSVolumeEnumerationOptions::SkipHiddenVolumes,
-    ) else {
-        return Vec::new();
-    };
-    let mut volumes: Vec<Volume> = urls
+    let mut stats: Vec<libc::statfs> = Vec::new();
+    // SAFETY: a null buffer asks only for the count; the second call passes a buffer of that size.
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    if count > 0 {
+        stats.reserve_exact(count as usize);
+        let bytes = (count as usize * std::mem::size_of::<libc::statfs>()) as libc::c_int;
+        let got = unsafe { libc::getfsstat(stats.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+        unsafe { stats.set_len(got.max(0) as usize) };
+    }
+    let mut volumes: Vec<Volume> = stats
         .iter()
-        .filter_map(|url| volume_at(&url, &keys))
+        .filter(|stats| stats.f_flags & libc::MNT_DONTBROWSE as u32 == 0)
+        .map(volume_from)
         .collect();
     if let Some(boot) = volumes.iter().position(|v| v.path == Path::new("/")) {
         volumes.swap(0, boot);
     }
     volumes
+}
+
+fn volume_from(stats: &libc::statfs) -> Volume {
+    // SAFETY: the kernel NUL-terminates the mount name.
+    let mount = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+    let path = PathBuf::from(OsStr::from_bytes(mount.to_bytes()));
+    let block = u64::from(stats.f_bsize);
+    let local = stats.f_flags & libc::MNT_LOCAL as u32 != 0;
+    let volume = Volume {
+        name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        path,
+        ejectable: !local,
+        network: !local,
+        capacity: stats.f_blocks * block,
+        available: stats.f_bavail * block,
+        // SAFETY: the kernel NUL-terminates the type name.
+        format: unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+    };
+    if !local {
+        return volume;
+    }
+    // Only a local volume is asked for its attributes: a disk read, never a network wait.
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&volume.path.to_string_lossy()));
+    volume_at(&url, &keys()).unwrap_or(volume)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +246,22 @@ mod tests {
         assert!(boot.available > 0);
         assert!(statfs_available(&boot.path) > 0);
         assert_eq!(statfs_available(Path::new("/no/such/volume")), 0);
+    }
+
+    #[test]
+    fn a_network_share_is_named_by_its_mount_point_and_never_asked() {
+        // SAFETY: statfs is plain data; all-zero is a valid, if empty, record.
+        let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+        for (at, byte) in b"/Volumes/Storage".iter().enumerate() {
+            stats.f_mntonname[at] = *byte as libc::c_char;
+        }
+        stats.f_bsize = 4096;
+        stats.f_blocks = 10;
+        stats.f_bavail = 4;
+        let volume = volume_from(&stats);
+        assert_eq!(volume.name, "Storage");
+        assert!(volume.network && volume.ejectable);
+        assert_eq!((volume.capacity, volume.available), (40960, 16384));
     }
 
     #[test]
