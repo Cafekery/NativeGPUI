@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -15,11 +15,17 @@ const WARM_BUDGET: Duration = Duration::from_millis(20);
 
 const ICONS_KEPT: usize = 2048;
 
+/// The icon service answers four requests in little more time than one, and no more past four.
+const LANES: usize = 4;
+
 static ICONS: LazyLock<Mutex<HashMap<Key, Option<Symbol>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 thread_local! {
     static WANTED: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
+    /// Asked for and not drawn, newest last, so a scroll draws what it landed on, not what it left.
+    static PENDING: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
+    static DRAWING: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
@@ -105,30 +111,31 @@ fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
 
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let wanted = WANTED.with(|wanted| wanted.take());
-    if wanted.is_empty() {
-        return;
+    if !wanted.is_empty() {
+        for key in &wanted {
+            let waiting = nearest(key.0, f32::from_bits(key.1));
+            ICONS.lock().unwrap().entry(*key).or_insert(waiting);
+        }
+        // Reversed, so that taking from the end draws a frame's rows top down.
+        PENDING.with(|pending| pending.borrow_mut().extend(wanted.into_iter().rev()));
     }
-    for key in &wanted {
-        let waiting = nearest(key.0, f32::from_bits(key.1));
-        ICONS.lock().unwrap().entry(*key).or_insert(waiting);
-    }
-    let demo = demo.downgrade();
-    cx.spawn(async move |cx| {
-        for key in wanted {
+    while DRAWING.with(Cell::get) < LANES {
+        let Some(key) = PENDING.with(|pending| pending.borrow_mut().pop()) else {
+            return;
+        };
+        DRAWING.with(|drawing| drawing.set(drawing.get() + 1));
+        let demo = demo.downgrade();
+        cx.spawn(async move |cx| {
             let drawn = cx
                 .background_executor()
                 .spawn(async move { file_icon(key.0, px(f32::from_bits(key.1))) })
                 .await;
-            if demo
-                .update(cx, |_, cx| {
-                    keep(key, drawn);
-                    cx.notify();
-                })
-                .is_err()
-            {
-                return;
-            }
-        }
-    })
-    .detach();
+            let _ = demo.update(cx, |_, cx| {
+                keep(key, drawn);
+                cx.notify();
+            });
+            DRAWING.with(|drawing| drawing.set(drawing.get() - 1));
+        })
+        .detach();
+    }
 }
