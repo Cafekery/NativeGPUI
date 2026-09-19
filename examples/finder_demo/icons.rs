@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,8 +18,14 @@ const ICONS_KEPT: usize = 2048;
 /// The icon service answers four requests in little more time than one, and no more past four.
 const LANES: usize = 4;
 
+/// How far past the rows on screen a listing draws ahead.
+const LOOK_AHEAD: usize = 512;
+
 static ICONS: LazyLock<Mutex<HashMap<Key, Option<Symbol>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The rest of a listing, newest last, drawn only while no row on screen is waiting.
+static AHEAD: LazyLock<Mutex<Vec<Key>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 thread_local! {
     static WANTED: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
@@ -52,16 +58,27 @@ pub(crate) const STAND_INS: [FileType<'static>; 5] = [
 
 pub(crate) fn warm(rows: &[Arc<Row>], size: f32) {
     let until = Instant::now() + WARM_BUDGET;
-    for kind in undrawn(rows.iter().filter_map(|row| row.artwork), size) {
-        if Instant::now() >= until {
-            return;
+    let mut ahead = Vec::new();
+    for kind in undrawn(rows.iter().filter_map(|row| row.artwork), size, LOOK_AHEAD) {
+        if Instant::now() < until {
+            draw(kind, size);
+        } else {
+            ahead.push((kind, size.to_bits()));
         }
-        draw(kind, size);
     }
+    if ahead.is_empty() {
+        return;
+    }
+    // Reversed, so that taking from the end draws the listing in row order.
+    ahead.reverse();
+    let mut queue = AHEAD.lock().unwrap();
+    queue.extend(ahead);
+    let over = queue.len().saturating_sub(LOOK_AHEAD);
+    queue.drain(..over);
 }
 
 pub(crate) fn draw_stand_ins(size: f32) {
-    for kind in undrawn(STAND_INS, size) {
+    for kind in undrawn(STAND_INS, size, STAND_INS.len()) {
         draw(kind, size);
     }
 }
@@ -69,15 +86,15 @@ pub(crate) fn draw_stand_ins(size: f32) {
 fn undrawn(
     kinds: impl IntoIterator<Item = FileType<'static>>,
     size: f32,
+    most: usize,
 ) -> Vec<FileType<'static>> {
     let icons = ICONS.lock().unwrap();
-    let mut undrawn = Vec::new();
-    for kind in kinds {
-        if !icons.contains_key(&(kind, size.to_bits())) && !undrawn.contains(&kind) {
-            undrawn.push(kind);
-        }
-    }
-    undrawn
+    let mut seen = HashSet::new();
+    kinds
+        .into_iter()
+        .filter(|kind| !icons.contains_key(&(*kind, size.to_bits())) && seen.insert(*kind))
+        .take(most)
+        .collect()
 }
 
 fn draw(kind: FileType<'static>, size: f32) {
@@ -109,6 +126,19 @@ fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
         })
 }
 
+/// A row that is waiting, or else the listing drawn ahead of one; the flag is which.
+fn next_to_draw() -> Option<(Key, bool)> {
+    if let Some(key) = PENDING.with(|pending| pending.borrow_mut().pop()) {
+        return Some((key, true));
+    }
+    loop {
+        let key = AHEAD.lock().unwrap().pop()?;
+        if !ICONS.lock().unwrap().contains_key(&key) {
+            return Some((key, false));
+        }
+    }
+}
+
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let wanted = WANTED.with(|wanted| wanted.take());
     if !wanted.is_empty() {
@@ -120,20 +150,29 @@ pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
         PENDING.with(|pending| pending.borrow_mut().extend(wanted.into_iter().rev()));
     }
     while DRAWING.with(Cell::get) < LANES {
-        let Some(key) = PENDING.with(|pending| pending.borrow_mut().pop()) else {
+        let Some(first) = next_to_draw() else {
             return;
         };
         DRAWING.with(|drawing| drawing.set(drawing.get() + 1));
         let demo = demo.downgrade();
         cx.spawn(async move |cx| {
-            let drawn = cx
-                .background_executor()
-                .spawn(async move { file_icon(key.0, px(f32::from_bits(key.1))) })
-                .await;
-            let _ = demo.update(cx, |_, cx| {
-                keep(key, drawn);
-                cx.notify();
-            });
+            let mut next = Some(first);
+            while let Some((key, waited_for)) = next {
+                let drawn = cx
+                    .background_executor()
+                    .spawn(async move { file_icon(key.0, px(f32::from_bits(key.1))) })
+                    .await;
+                let held = demo.update(cx, |_, cx| {
+                    keep(key, drawn);
+                    if waited_for {
+                        cx.notify();
+                    }
+                });
+                if held.is_err() {
+                    break;
+                }
+                next = next_to_draw();
+            }
             DRAWING.with(|drawing| drawing.set(drawing.get() - 1));
         })
         .detach();
