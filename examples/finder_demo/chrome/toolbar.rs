@@ -48,12 +48,11 @@ pub(crate) const ACTION_ID: &str = "ng.finder.action";
 pub(crate) const SEARCH_ID: &str = "ng.finder.search";
 pub(crate) const JOBS_ID: &str = "ng.finder.jobs";
 
-const VIEW_LABELS: &[&str] = &["as Icons", "as List", "as Columns", "as Gallery"];
-const VIEW_SYMBOLS: &[&str] = &[
-    "square.grid.2x2",
-    "list.bullet",
-    "rectangle.split.3x1",
-    "squares.below.rectangle",
+const VIEWS: [(&str, &str, &str); 4] = [
+    ("square.grid.2x2", "as Icons", "icon view"),
+    ("list.bullet", "as List", "list view"),
+    ("rectangle.split.3x1", "as Columns", "column view"),
+    ("squares.below.rectangle", "as Gallery", "gallery view"),
 ];
 const SEARCH_W: f32 = 240.;
 
@@ -171,6 +170,13 @@ impl FinderDemo {
         let rows = self.action_rows();
         let acts: Rc<[Act]> = rows.acts.into();
 
+        let picked = !self.selected.is_empty();
+        // Finder won't share a folder the user can't list, even beside readable items.
+        let shareable = picked
+            && self
+                .chosen_lines()
+                .iter()
+                .all(|line| line.row.opens.is_none() || line.row.readable);
         let mut items = vec![
             ToolbarItem::group(
                 NAV_ID,
@@ -188,21 +194,27 @@ impl FinderDemo {
                 nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
                     .ok();
             }),
-            // No flexible space: a unified toolbar right-aligns the items after the title by itself.
-            ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
-                .tool_tip("Share the selected items using AirDrop")
-                .on_click(move |_, cx| {
-                    airdrop
-                        .update(cx, |this: &mut Self, _| this.airdrop_selection())
-                        .ok();
-                }),
+        ];
+        // Finder shows AirDrop only where its own toolbar was given it.
+        if crate::prefs::finder().airdrop {
+            items.push(
+                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
+                    .tool_tip("Share the selected items using AirDrop")
+                    .enabled(shareable)
+                    .on_click(move |_, cx| {
+                        airdrop
+                            .update(cx, |this: &mut Self, _| this.airdrop_selection())
+                            .ok();
+                    }),
+            );
+        }
+        items.extend([
             ToolbarItem::group(
                 VIEW_ID,
                 "View",
-                VIEW_SYMBOLS
-                    .iter()
-                    .zip(VIEW_LABELS)
-                    .map(|(symbol, label)| ToolbarSegment::new(*symbol, *label)),
+                VIEWS.iter().map(|(symbol, label, spoken)| {
+                    ToolbarSegment::new(*symbol, *label).description(*spoken)
+                }),
                 self.view,
             )
             .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
@@ -224,7 +236,7 @@ impl FinderDemo {
                         .ok();
                 }),
             ToolbarItem::space(),
-        ];
+        ]);
         if self.progress_shown() {
             items.push(
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
@@ -240,9 +252,11 @@ impl FinderDemo {
         }
         items.extend([
             ToolbarItem::share(SHARE_ID, "Share", self.share_items())
-                .tool_tip("Share the selected items"),
-            ToolbarItem::symbol(TAG_ID, "tag", "Add Tags")
+                .tool_tip("Share the selected items")
+                .enabled(shareable),
+            ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
                 .tool_tip("Edit Tags")
+                .enabled(picked)
                 .on_click(move |window, cx| {
                     tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
                         .ok();
