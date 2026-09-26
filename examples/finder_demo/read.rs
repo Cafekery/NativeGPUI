@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use finder_fs::list::Identity;
@@ -131,13 +131,7 @@ fn sort_rows(rows: &mut Vec<Arc<Row>>, (sort, ascending): (Column, bool)) {
 }
 
 fn folders_first() -> bool {
-    static FOLDERS_FIRST: OnceLock<bool> = OnceLock::new();
-    *FOLDERS_FIRST.get_or_init(|| {
-        std::process::Command::new("defaults")
-            .args(["read", "com.apple.finder", "_FXSortFoldersFirst"])
-            .output()
-            .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"1")
-    })
+    crate::prefs::finder().folders_first
 }
 
 pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
@@ -163,9 +157,6 @@ pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Cont
             if this
                 .update(cx, |this, cx| {
                     this.changed(changed, cx);
-                    if tagged {
-                        this.resync_toolbar();
-                    }
                     if drawn || tagged {
                         cx.notify();
                     }
@@ -446,7 +437,6 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         (self.sort, self.ascending) = by;
-        self.resync_toolbar();
         if self
             .folders
             .get(id)
@@ -499,7 +489,6 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         (self.sort, self.ascending) = by;
-        self.resync_toolbar();
         let (mut folders, shape, walk) = sorted;
         let mut moved = false;
         for (id, count) in was {
