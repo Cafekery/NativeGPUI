@@ -1,13 +1,15 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
+use finder_fs::list::Identity;
 use gpui::{Context, Window};
 
 use crate::app::FinderDemo;
-use crate::data::{self, Column, Line, Row, intern};
+use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
@@ -23,18 +25,65 @@ struct Mail {
     lines: Option<(bool, Vec<Line>)>,
     listed: bool,
     done: bool,
-    gone: bool,
+    trouble: Option<Trouble>,
+}
+
+/// Why a folder could not be listed, worked out on the reading thread so the main thread never
+/// waits on a disk that stopped answering.
+enum Trouble {
+    /// Renamed where it stood: a Finder window follows it there.
+    Renamed(&'static str),
+    /// Deleted, trashed or moved elsewhere: a Finder window falls back to the nearest folder
+    /// above it that is left.
+    Gone(&'static str),
+    Refused(io::Error),
 }
 
 type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
 
 type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
 
-fn gone(error: &std::io::Error) -> bool {
-    matches!(
+/// Each folder as last listed, with its parent, so a rename can be told from a move once the
+/// name is gone.
+static IDENTITIES: LazyLock<Mutex<HashMap<&'static str, (Identity, Option<Identity>)>>> =
+    LazyLock::new(Mutex::default);
+
+fn remember(id: &'static str) {
+    let dir = Path::new(id);
+    if let Some(found) = finder_fs::list::identity(dir) {
+        let parent = dir.parent().and_then(finder_fs::list::identity);
+        IDENTITIES.lock().unwrap().insert(id, (found, parent));
+    }
+}
+
+fn trouble(id: &'static str, error: io::Error) -> Trouble {
+    if !matches!(
         error.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-    )
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    ) {
+        return Trouble::Refused(error);
+    }
+    let dir = Path::new(id);
+    let was = IDENTITIES.lock().unwrap().get(id).copied();
+    let renamed = was.and_then(|(found, parent)| {
+        let now = finder_fs::list::path_of(found)?;
+        let above = now.parent()?;
+        (finder_fs::list::identity(above) == parent).then_some(())?;
+        // Renamed where it stood: keep the path the window was given, not the kernel's.
+        match dir.parent().and_then(finder_fs::list::real_path).as_deref() == Some(above) {
+            true => Some(dir.with_file_name(now.file_name()?)),
+            false => Some(now),
+        }
+    });
+    match renamed {
+        Some(now) => Trouble::Renamed(intern_path(&now)),
+        None => Trouble::Gone(
+            dir.ancestors()
+                .skip(1)
+                .find(|up| finder_fs::list::is_dir(up))
+                .map_or("/", intern_path),
+        ),
+    }
 }
 
 fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
@@ -67,6 +116,7 @@ fn folders_first() -> bool {
 pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |this, cx| {
         let mut seen = 0;
+        let mut seen_tags = 0;
         let mut ticks = 0u64;
         loop {
             cx.background_executor().timer(TICK).await;
@@ -81,10 +131,15 @@ pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Cont
             crate::thumbs::sweep_thumbnails();
             let landed = crate::thumbs::thumbnails_landed();
             let drawn = std::mem::replace(&mut seen, landed) != landed;
+            let tags = crate::tags::tags_landed();
+            let tagged = std::mem::replace(&mut seen_tags, tags) != tags;
             if this
                 .update(cx, |this, cx| {
                     this.changed(changed, cx);
-                    if drawn {
+                    if tagged {
+                        this.resync_toolbar();
+                    }
+                    if drawn || tagged {
                         cx.notify();
                     }
                 })
@@ -117,12 +172,7 @@ pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
 
 impl FinderDemo {
     pub(crate) fn pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.vanished.take() {
-            match self.here() == id {
-                true => self.arrive(window, cx),
-                false => self.go(id, window, cx),
-            }
-        }
+        self.settle_vanished(window, cx);
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
@@ -177,7 +227,8 @@ impl FinderDemo {
         if !id.starts_with('/') || !self.folders.start(id) {
             return;
         }
-        if !self.folders.has(id) {
+        let fresh = !self.folders.has(id);
+        if fresh {
             self.folders.deliver(id, Vec::new(), true);
         }
         let mail = Arc::new(Mutex::new(Mail::default()));
@@ -217,11 +268,13 @@ impl FinderDemo {
                 post(rows);
             });
             if let Err(error) = read {
+                let trouble = trouble(id, error);
                 let mut mail = filling.lock().unwrap();
-                mail.gone = gone(&error);
+                mail.trouble = Some(trouble);
                 mail.done = true;
                 return;
             }
+            remember(id);
             if finder_fs::icloud::is_drive(dir) {
                 let apps = data::icloud_rows(index);
                 all.extend(apps.iter().cloned());
@@ -238,19 +291,26 @@ impl FinderDemo {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL).await;
-                let (batches, lines, done, gone) = {
+                let (batches, lines, done, trouble) = {
                     let mut mail = mail.lock().unwrap();
                     (
                         std::mem::take(&mut mail.batches),
                         mail.lines.take(),
                         mail.done,
-                        mail.gone,
+                        mail.trouble.take(),
                     )
                 };
                 let alive = this
-                    .update(cx, |this, cx| match gone {
-                        true => this.folder_gone(id, cx),
-                        false => this.deliver(id, batches, lines, done, sorted_by, cx),
+                    .update(cx, |this, cx| match trouble {
+                        Some(Trouble::Renamed(now)) => this.folder_renamed(id, now, cx),
+                        Some(Trouble::Gone(above)) => this.folder_gone(id, above, cx),
+                        Some(Trouble::Refused(error)) => {
+                            this.deliver(id, Vec::new(), None, true, sorted_by, cx);
+                            if fresh {
+                                this.folder_refused(id, &error, cx);
+                            }
+                        }
+                        None => this.deliver(id, batches, lines, done, sorted_by, cx),
                     })
                     .is_ok();
                 if done || !alive {
@@ -427,6 +487,10 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
+        IDENTITIES
+            .lock()
+            .unwrap()
+            .retain(|id, _| wanted.contains(id));
         // An FSEvents stream reports its whole subtree, so only the outermost folders are watched.
         let inside = |id: &str| {
             Path::new(id)
@@ -456,6 +520,7 @@ impl FinderDemo {
             return;
         }
         for dir in &dirs {
+            crate::tags::forget_tags_in(dir);
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
                 self.read_folder(id, cx);
             }

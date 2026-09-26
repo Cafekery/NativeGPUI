@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use gpui::{AnyElement, Context, Hsla, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
@@ -149,11 +152,52 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-pub(crate) fn row_tags(path: &str) -> Vec<usize> {
+/// Tags as the disk has them; background work only.
+pub(crate) fn read_row_tags(path: &str) -> Vec<usize> {
     finder_fs::tags::of(Path::new(path))
         .iter()
         .filter_map(|tag| tag_index(&tag.name))
         .collect()
+}
+
+/// Each path's tags once read; `None` while its read is queued.
+static KNOWN: LazyLock<Mutex<HashMap<String, Option<Vec<usize>>>>> = LazyLock::new(Mutex::default);
+static LANDED: AtomicU64 = AtomicU64::new(0);
+static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
+    let (send, paths) = channel::<String>();
+    std::thread::spawn(move || {
+        for path in paths {
+            let tags = read_row_tags(&path);
+            KNOWN.lock().unwrap().insert(path, Some(tags));
+            LANDED.fetch_add(1, Ordering::Release);
+        }
+    });
+    Mutex::new(send)
+});
+
+/// Menus ask for a row's tags as they are built; reading them there would stall the window on
+/// a share that stopped answering, so an unread row reads as untagged until its read lands.
+pub(crate) fn row_tags(path: &str) -> Vec<usize> {
+    let mut known = KNOWN.lock().unwrap();
+    if let Some(tags) = known.get(path) {
+        return tags.clone().unwrap_or_default();
+    }
+    known.insert(path.to_owned(), None);
+    let _ = READER.lock().unwrap().send(path.to_owned());
+    Vec::new()
+}
+
+/// How many reads have landed.
+pub(crate) fn tags_landed() -> u64 {
+    LANDED.load(Ordering::Acquire)
+}
+
+/// A folder changed on disk: its items' tags are read again when next asked for.
+pub(crate) fn forget_tags_in(dir: &Path) {
+    KNOWN
+        .lock()
+        .unwrap()
+        .retain(|path, _| Path::new(path).parent() != Some(dir));
 }
 
 impl FinderDemo {
@@ -189,7 +233,11 @@ impl FinderDemo {
                         .iter()
                         .map(|path| {
                             let key = path.to_string_lossy().into_owned();
-                            let tags = row_tags(&key);
+                            let tags = read_row_tags(&key);
+                            KNOWN
+                                .lock()
+                                .unwrap()
+                                .insert(key.clone(), Some(tags.clone()));
                             (key, tags)
                         })
                         .collect::<Vec<_>>()
@@ -199,6 +247,7 @@ impl FinderDemo {
                 for (key, tags) in carried {
                     this.tags.insert(key.into(), tags);
                 }
+                this.resync_toolbar();
                 cx.notify();
             })
             .ok();

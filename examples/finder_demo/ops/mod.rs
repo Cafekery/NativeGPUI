@@ -5,7 +5,7 @@ pub(crate) mod undo;
 
 use std::path::{Path, PathBuf};
 
-use finder_fs::ops::{Conflict, Op, locked};
+use finder_fs::ops::{Conflict, Op};
 use gpui::{Context, SharedString};
 
 use crate::app::FinderDemo;
@@ -49,11 +49,25 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
 
 impl FinderDemo {
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
-        let Some(op) = self.confirm_unlock(op) else {
-            return;
-        };
-        match conflicts::split(op, after) {
+        let checked = cx
+            .background_executor()
+            .spawn(async move { conflicts::split(op, after) });
+        cx.spawn(async move |this, cx| {
+            let split = checked.await;
+            this.update(cx, |this, cx| this.checked(split, after, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn checked(&mut self, split: conflicts::Split, after: After, cx: &mut Context<Self>) {
+        match split {
             conflicts::Split::Clean(op) => self.submit_op(op, Conflict::KeepBoth, after, cx),
+            conflicts::Split::Locked { op, locked } => {
+                if let Some(op) = self.confirm_unlock(op, &locked) {
+                    self.submit_op(op, Conflict::KeepBoth, after, cx);
+                }
+            }
             conflicts::Split::Conflicted { clean, sheet } => {
                 if let Some(clean) = clean {
                     self.submit_op(clean, Conflict::KeepBoth, After::Nothing, cx);
@@ -101,26 +115,22 @@ impl FinderDemo {
 
     /// Finder asks before it clears a lock: one question per locked item, with Apply to All once
     /// more than one of them is locked.
-    fn confirm_unlock(&self, op: Op) -> Option<Op> {
-        let (items, deleting) = match &op {
-            Op::Trash(items) => (items.clone(), false),
-            Op::DeleteImmediately(items) => (items.clone(), true),
-            _ => return Some(op),
+    fn confirm_unlock(&self, op: Op, locked: &[PathBuf]) -> Option<Op> {
+        let (items, deleting) = match op {
+            Op::Trash(items) => (items, false),
+            Op::DeleteImmediately(items) => (items, true),
+            op => return Some(op),
         };
-        let total = items.iter().filter(|item| locked(item)).count();
-        if total == 0 {
-            return Some(op);
-        }
         let mut kept = Vec::with_capacity(items.len());
         let mut for_all = None;
         for item in items {
-            if !locked(&item) {
+            if !locked.contains(&item) {
                 kept.push(item);
                 continue;
             }
             let (yes, all) = match for_all {
                 Some(yes) => (yes, true),
-                None => self.ask_unlock(&item, deleting, total > 1),
+                None => self.ask_unlock(&item, deleting, locked.len() > 1),
             };
             if all {
                 for_all = Some(yes);

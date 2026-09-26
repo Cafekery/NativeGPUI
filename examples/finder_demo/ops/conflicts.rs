@@ -3,7 +3,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use finder_fs::ops::{Conflict, Op};
+use finder_fs::ops::{Conflict, Op, locked};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, FileType};
 use native_gpui::{CheckState, Material, material, native_button, native_checkbox};
@@ -102,11 +102,27 @@ fn same_item(one: &Path, other: &Path) -> bool {
 
 pub(crate) enum Split {
     Clean(Op),
-    Conflicted { clean: Option<Op>, sheet: Sheet },
+    Conflicted {
+        clean: Option<Op>,
+        sheet: Sheet,
+    },
     Refused(String),
+    /// A trash or delete that holds locked items, which Finder asks about one by one.
+    Locked {
+        op: Op,
+        locked: Vec<PathBuf>,
+    },
 }
 
+/// Every stat an op needs before it is queued, so it can run where a stalled disk can't stall
+/// the window.
 pub(crate) fn split(op: Op, after: After) -> Split {
+    if let Op::Trash(items) | Op::DeleteImmediately(items) = &op {
+        let held: Vec<PathBuf> = items.iter().filter(|item| locked(item)).cloned().collect();
+        if !held.is_empty() {
+            return Split::Locked { op, locked: held };
+        }
+    }
     let (items, into, kind) = match op {
         Op::Move { items, into } => (items, into, Kind::Move),
         Op::Copy { items, into } => (items, into, Kind::Copy),
