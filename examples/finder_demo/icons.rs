@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -102,6 +102,18 @@ fn draw(key: Key) -> Option<Symbol> {
     draw_file_icon(key.0, px(f32::from_bits(key.1)))
 }
 
+/// Landings that brought an icon some frame asked for.
+static LANDED: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn landed() -> u64 {
+    LANDED.load(Ordering::Relaxed)
+}
+
+/// Lookups so far that found no icon drawn at their size.
+pub(crate) fn asks() -> usize {
+    STATE.with_borrow(|state| state.asks)
+}
+
 pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
     STATE.with_borrow_mut(|state| state.icon((kind, size.to_bits())))
 }
@@ -190,6 +202,11 @@ pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     for image in dropped {
         cx.drop_image(image, None);
     }
+    start_wanted(demo, cx);
+}
+
+/// Lanes for what a frame asked for, without starting a frame of its own.
+pub(crate) fn start_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let demo = demo.downgrade();
     cx.defer(move |cx| start(demo, cx));
 }
@@ -394,6 +411,7 @@ impl State {
                 self.keep(key, icon);
             }
         }
+        LANDED.fetch_add(u64::from(shown), Ordering::Relaxed);
         for key in left.into_iter().rev() {
             if self.busy.get(&key) == Some(&for_screen) {
                 self.busy.remove(&key);

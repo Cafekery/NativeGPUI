@@ -1,20 +1,22 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gpui::{
-    AnyElement, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, RenderImage, SharedString,
-    div, hsla, img, prelude::*, px,
+    AnyElement, App, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, RenderImage,
+    SharedString, div, hsla, img, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
 use native_gpui::tokens::{
-    self, Appearance, SymbolColor, SystemColor, sf_symbol_colored, system_color,
+    self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
 
 use super::stats::{CALCULATING, span};
 use super::{INSET, RESIZE_EDGE};
 use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
+use crate::signal::Signal;
+use crate::thumbs::thumb;
 use finder_fs::meta::Meta;
 
 use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, stamp, volume_at};
@@ -68,8 +70,15 @@ pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
     (-3., 0., 0.02, 1.),
 ];
 
+enum Hero {
+    Row(Arc<Row>),
+    Poster(Arc<Row>),
+    Stack(Vec<Line>),
+    Blank,
+}
+
 struct Card {
-    hero: AnyElement,
+    hero: Hero,
     title: SharedString,
     subtitle: SharedString,
     rows: Vec<(&'static str, SharedString)>,
@@ -77,6 +86,20 @@ struct Card {
     tags: Vec<usize>,
     many: bool,
     actions: &'static [(&'static str, &'static str)],
+}
+
+/// A card as its window's state had it, so a pane can draw it without reading that state: a
+/// window draws again whenever anything it read while drawing changes.
+pub(crate) struct Shown {
+    card: Card,
+    content: f32,
+    view: usize,
+    scale: f32,
+    pane_h: f32,
+    key: bool,
+    expanded: bool,
+    renaming: Option<Line>,
+    pub(super) list_focused: bool,
 }
 
 /// Finder's text over the pane's glass is vibrant, which no `NSColor` names: these are the
@@ -198,6 +221,113 @@ fn stack_image(images: &[Arc<RenderImage>], side: u32) -> Option<Arc<RenderImage
         .collect();
     let raster = RgbaImage::from_raw(side, side, bytes)?;
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
+}
+
+/// `image` is `None` while the stack is being made.
+struct Stacked {
+    from: Vec<Arc<RenderImage>>,
+    side: u32,
+    image: Option<Option<Arc<RenderImage>>>,
+}
+
+const STACKS_KEPT: usize = 4;
+
+/// Whether a thread is making stacks, and the stacks, oldest first.
+static STACKS: Mutex<(bool, Vec<Stacked>)> = Mutex::new((false, Vec::new()));
+/// Stacks pushed out of `STACKS`, for the GPU atlas to let go of.
+static RETIRED: Mutex<Vec<Arc<RenderImage>>> = Mutex::new(Vec::new());
+static STACKED: Signal = Signal::new();
+
+fn made_from(stack: &Stacked, from: &[Arc<RenderImage>], side: u32) -> bool {
+    stack.side == side
+        && stack.from.len() == from.len()
+        && stack.from.iter().zip(from).all(|(a, b)| Arc::ptr_eq(a, b))
+}
+
+fn stacked(from: Vec<Arc<RenderImage>>, side: u32) -> Option<Arc<RenderImage>> {
+    let mut stacks = STACKS.lock().unwrap();
+    if let Some(stack) = stacks.1.iter().find(|stack| made_from(stack, &from, side)) {
+        return stack.image.clone().flatten();
+    }
+    stacks.1.push(Stacked {
+        from,
+        side,
+        image: None,
+    });
+    if stacks.1.len() > STACKS_KEPT {
+        let gone = stacks.1.remove(0);
+        RETIRED.lock().unwrap().extend(gone.image.flatten());
+    }
+    if !std::mem::replace(&mut stacks.0, true) {
+        std::thread::spawn(make_stacks);
+    }
+    None
+}
+
+/// The newest stack asked for first: a pane being resized asks for one per frame.
+fn make_stacks() {
+    loop {
+        let wanted = {
+            let mut stacks = STACKS.lock().unwrap();
+            let wanted = stacks
+                .1
+                .iter()
+                .rev()
+                .find(|stack| stack.image.is_none())
+                .map(|stack| (stack.from.clone(), stack.side));
+            stacks.0 = wanted.is_some();
+            wanted
+        };
+        let Some((from, side)) = wanted else {
+            return;
+        };
+        let image = stack_image(&from, side);
+        let mut stacks = STACKS.lock().unwrap();
+        if let Some(stack) = stacks
+            .1
+            .iter_mut()
+            .find(|stack| made_from(stack, &from, side))
+        {
+            stack.image = Some(image);
+        }
+        drop(stacks);
+        STACKED.ring();
+    }
+}
+
+pub(crate) fn follow_stacks(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut seen = 0;
+        loop {
+            seen = STACKED.after(seen).await;
+            let retired = std::mem::take(&mut *RETIRED.lock().unwrap());
+            cx.update(|cx| {
+                for image in retired {
+                    cx.drop_image(image, None);
+                }
+                crate::read::notify_windows(cx);
+            });
+        }
+    })
+    .detach();
+}
+
+/// Everything a card draws from: a pane draws again only when this changes.
+#[derive(PartialEq)]
+pub(super) struct CardKey {
+    view: usize,
+    stats: ((u64, usize), Option<(u64, usize)>),
+    line: Option<(SharedString, usize)>,
+    tags: Option<Vec<usize>>,
+    meta: usize,
+    custom: bool,
+    thumbs: Vec<usize>,
+    stacks: u64,
+    volume: Option<(u64, u64)>,
+    size: [u32; 3],
+    look: (bool, bool, u64),
+    expanded: bool,
+    renaming: Option<SharedString>,
 }
 
 fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
@@ -333,20 +463,24 @@ impl FinderDemo {
         content: f32,
         finder: &Entity<FinderDemo>,
     ) -> AnyElement {
+        match self.shown(line, content) {
+            Some(shown) => shown.element(palette, finder, &self.stack),
+            None => div().into_any_element(),
+        }
+    }
+
+    pub(super) fn shown(&self, line: Option<&Line>, content: f32) -> Option<Shown> {
         let card = if self.selected.len() > 1 {
-            self.many_card(content)
+            self.many_card()
         } else {
-            let Some(line) = line else {
-                return div().into_any_element();
-            };
+            let line = line?;
             let row = &line.row;
             let meta = crate::meta::meta(&row.path);
             let (rows, show_more) = info_rows(row, meta.as_deref(), self.preview_expanded, content);
             Card {
-                hero: if self.view == GALLERY_VIEW {
-                    row_art(row, HEADER_ICON, self.scale, true)
-                } else {
-                    poster_art(row, content, self.hero_h(content), self.scale, Poster::Card)
+                hero: match self.view == GALLERY_VIEW {
+                    true => Hero::Row(row.clone()),
+                    false => Hero::Poster(row.clone()),
                 },
                 title: row.display.clone(),
                 subtitle: kind_line(row, self.weighed()),
@@ -357,7 +491,83 @@ impl FinderDemo {
                 actions: actions(row.face),
             }
         };
-        self.card_element(card, palette, content, finder)
+        let renaming = (self.view == GALLERY_VIEW && !card.many)
+            .then(|| self.cursor_line())
+            .flatten()
+            .filter(|line| self.renaming.as_ref() == Some(&line.key));
+        Some(Shown {
+            card,
+            content,
+            view: self.view,
+            scale: self.scale,
+            pane_h: self.pane_h,
+            key: self.host.as_ref().is_none_or(|host| host.isKeyWindow()),
+            expanded: self.preview_expanded,
+            renaming,
+            list_focused: self.list_focused,
+        })
+    }
+
+    /// Asked each frame the pane is open, for the hero's pictures just as drawing it asks.
+    pub(super) fn card_key(&self, content: f32, key: bool) -> CardKey {
+        let many = self.selected.len() > 1;
+        let line = self.cursor_line().filter(|_| !many);
+        let row = line.as_ref().map(|line| &line.row);
+        let thumbs = match (&self.stats, row) {
+            (Some(stats), _) if many => stack_thumbs(
+                &stats.head,
+                stack_side(self.view, self.pane_h, content),
+                self.scale,
+            ),
+            (_, Some(row)) if self.view == GALLERY_VIEW => {
+                vec![thumb(row, HEADER_ICON, self.scale, true, true)]
+            }
+            (_, Some(row)) => {
+                let side = content.max(hero_h(self.pane_h, content));
+                vec![thumb(row, side, self.scale, true, false)]
+            }
+            _ => Vec::new(),
+        };
+        let folder = |row: &Row| {
+            matches!(
+                row.artwork,
+                Some(FileType::Folder | FileType::FullFolder | FileType::FullPath(_))
+            )
+        };
+        CardKey {
+            view: self.view,
+            stats: (self.stats_key(), self.stats.as_ref().map(|stats| stats.key)),
+            tags: line
+                .as_ref()
+                .and_then(|line| self.tags.get(&line.key).cloned()),
+            meta: row
+                .and_then(|row| crate::meta::meta(&row.path))
+                .map_or(0, |meta| Arc::as_ptr(&meta) as usize),
+            custom: row.is_some_and(|row| folder(row) && crate::custom::custom_icon(&row.path)),
+            line: line
+                .as_ref()
+                .map(|line| (line.key.clone(), Arc::as_ptr(&line.row) as usize)),
+            thumbs: thumbs
+                .iter()
+                .map(|image| {
+                    image
+                        .as_ref()
+                        .map_or(0, |image| Arc::as_ptr(image) as usize)
+                })
+                .collect(),
+            stacks: STACKED.count(),
+            volume: row
+                .and_then(|row| volume_at(&row.path))
+                .map(|volume| (volume.capacity, volume.available)),
+            size: [
+                content.to_bits(),
+                self.pane_h.to_bits(),
+                self.scale.to_bits(),
+            ],
+            look: (self.list_focused, key, tokens::generation()),
+            expanded: self.preview_expanded,
+            renaming: self.renaming.clone(),
+        }
     }
 
     fn weighed(&self) -> Option<u64> {
@@ -368,22 +578,10 @@ impl FinderDemo {
             .filter(|bytes| *bytes > 0)
     }
 
-    pub(crate) fn hero_h(&self, content: f32) -> f32 {
-        let visible = self.pane_h + RESIZE_EDGE - ACTIONS_H;
-        (content * HERO_TALL + HERO_EXTRA)
-            .min(visible * HERO_CAP + HERO_CAP_EXTRA)
-            .floor()
-    }
-
-    fn many_card(&self, content: f32) -> Card {
-        let side = if self.view == GALLERY_VIEW {
-            HEADER_ICON
-        } else {
-            content.min(self.hero_h(content))
-        };
+    fn many_card(&self) -> Card {
         let hero = match self.stats.as_ref() {
-            Some(stats) => self.stack_hero(&stats.head, side),
-            None => div().w(px(side)).h(px(side)).into_any_element(),
+            Some(stats) => Hero::Stack(stats.head.clone()),
+            None => Hero::Blank,
         };
         let actions: &'static [(&'static str, &'static str)] =
             &[("ellipsis.circle", "More\u{2026}")];
@@ -428,84 +626,113 @@ impl FinderDemo {
     }
 
     pub(crate) fn stack_hero(&self, lines: &[Line], content: f32) -> AnyElement {
-        let Some(first) = lines.first() else {
-            return div().w(px(content)).h(px(content)).into_any_element();
-        };
-        let shown = &lines[..lines.len().min(3)];
-        let size = content * STACK_ICON;
-        let thumbs: Vec<Option<Arc<RenderImage>>> = shown
-            .iter()
-            .map(|line| crate::thumbs::thumb(&line.row, size, self.scale, true, true))
-            .collect();
-        let images: Vec<Arc<RenderImage>> = shown
-            .iter()
-            .zip(&thumbs)
-            .filter_map(|(line, thumb)| {
-                thumb
-                    .clone()
-                    .or_else(|| Some(crate::icons::icon(line.row.artwork?, size)?.image))
-            })
-            .collect();
-        let keys: Vec<SharedString> = shown.iter().map(|line| line.key.clone()).collect();
-        let thumb_widths: Vec<Option<u32>> = thumbs
-            .iter()
-            .map(|thumb| thumb.as_ref().map(|image| image.size(0).width.0 as u32))
-            .collect();
-        let side = (content * self.scale).round() as u32;
-        let cached = self
-            .stack
-            .borrow()
-            .as_ref()
-            .filter(|stack| {
-                stack.keys == keys && stack.side == side && stack.thumb_widths == thumb_widths
-            })
-            .map(|stack| stack.image.clone());
-        let drawn = shown
-            .iter()
-            .zip(&thumbs)
-            .filter(|(line, thumb)| thumb.is_some() || line.row.artwork.is_some())
-            .count()
-            == images.len();
-        let image = cached.or_else(|| {
-            let image = stack_image(&images, side)?;
-            if drawn {
-                *self.stack.borrow_mut() = Some(crate::app::Stack {
-                    keys,
-                    side,
-                    thumb_widths,
-                    image: image.clone(),
-                });
+        stack_hero(lines, content, self.scale, &self.stack)
+    }
+}
+
+fn hero_h(pane_h: f32, content: f32) -> f32 {
+    let visible = pane_h + RESIZE_EDGE - ACTIONS_H;
+    (content * HERO_TALL + HERO_EXTRA)
+        .min(visible * HERO_CAP + HERO_CAP_EXTRA)
+        .floor()
+}
+
+fn stack_side(view: usize, pane_h: f32, content: f32) -> f32 {
+    match view == GALLERY_VIEW {
+        true => HEADER_ICON,
+        false => content.min(hero_h(pane_h, content)),
+    }
+}
+
+fn stack_thumbs(lines: &[Line], content: f32, scale: f32) -> Vec<Option<Arc<RenderImage>>> {
+    lines[..lines.len().min(3)]
+        .iter()
+        .map(|line| thumb(&line.row, content * STACK_ICON, scale, true, true))
+        .collect()
+}
+
+/// `last` is the stack this holder showed last, which stands in until this one is made.
+fn stack_hero(
+    lines: &[Line],
+    content: f32,
+    scale: f32,
+    last: &RefCell<Option<Arc<RenderImage>>>,
+) -> AnyElement {
+    let Some(first) = lines.first() else {
+        return div().w(px(content)).h(px(content)).into_any_element();
+    };
+    let size = content * STACK_ICON;
+    let images: Vec<Arc<RenderImage>> = stack_thumbs(lines, content, scale)
+        .into_iter()
+        .zip(lines)
+        .filter_map(|(thumb, line)| {
+            thumb.or_else(|| Some(crate::icons::icon(line.row.artwork?, size)?.image))
+        })
+        .collect();
+    if images.is_empty() {
+        return square(content)
+            .child(artwork(&first.row, content))
+            .into_any_element();
+    }
+    let image = match stacked(images, (content * scale).round() as u32) {
+        Some(image) => Some(last.borrow_mut().insert(image).clone()),
+        None => last.borrow().clone(),
+    };
+    square(content)
+        .children(image.map(|image| img(image).w(px(content)).h(px(content))))
+        .into_any_element()
+}
+
+impl Shown {
+    pub(super) fn width(&self) -> f32 {
+        self.content + 2. * INSET
+    }
+
+    pub(super) fn element(
+        &self,
+        palette: &Palette,
+        finder: &Entity<FinderDemo>,
+        last: &RefCell<Option<Arc<RenderImage>>>,
+    ) -> AnyElement {
+        let (card, content) = (&self.card, self.content);
+        let hero = match &card.hero {
+            Hero::Row(row) => row_art(row, HEADER_ICON, self.scale, true),
+            Hero::Poster(row) => poster_art(
+                row,
+                content,
+                hero_h(self.pane_h, content),
+                self.scale,
+                Poster::Card,
+            ),
+            Hero::Stack(lines) => {
+                let side = stack_side(self.view, self.pane_h, content);
+                stack_hero(lines, side, self.scale, last)
             }
-            Some(image)
-        });
-        let art = match image {
-            Some(image) => img(image).w(px(content)).h(px(content)).into_any_element(),
-            None => artwork(&first.row, content),
+            Hero::Blank => {
+                let side = stack_side(self.view, self.pane_h, content);
+                div().w(px(side)).h(px(side)).into_any_element()
+            }
         };
-        square(content).child(art).into_any_element()
+        self.card_element(hero, palette, finder)
     }
 
     fn card_element(
         &self,
-        card: Card,
+        hero: AnyElement,
         palette: &Palette,
-        content: f32,
         finder: &Entity<FinderDemo>,
     ) -> AnyElement {
+        let (card, content) = (&self.card, self.content);
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
         let ink = match self.view == COLUMN_VIEW {
             true => Ink::plain(),
-            false => Ink::now(self.host.as_ref().is_none_or(|host| host.isKeyWindow())),
+            false => Ink::now(self.key),
         };
         let rows = card.rows.len();
-        let editing = (self.view == GALLERY_VIEW && !card.many)
-            .then(|| self.cursor_line())
-            .flatten()
-            .filter(|line| self.renaming.as_ref() == Some(&line.key));
-        let title: AnyElement = match editing {
-            Some(line) => rename_field(&line, 0, finder.downgrade()).into_any_element(),
-            None => card.title.into_any_element(),
+        let title: AnyElement = match &self.renaming {
+            Some(line) => rename_field(line, 0, finder.downgrade()).into_any_element(),
+            None => card.title.clone().into_any_element(),
         };
 
         let name = div()
@@ -522,7 +749,7 @@ impl FinderDemo {
             .line_height(px(LINE_H))
             .text_size(body)
             .text_color(ink.kind)
-            .child(card.subtitle);
+            .child(card.subtitle.clone());
 
         let mut content_column = div().flex_none().flex().flex_col().px(px(INSET));
         let mut lower = div().flex_none().flex().flex_col();
@@ -535,7 +762,7 @@ impl FinderDemo {
                         .flex()
                         .items_start()
                         .gap(px(GAP_HEADER_ICON))
-                        .child(card.hero)
+                        .child(hero)
                         .child(
                             div()
                                 .pt(px(GAP_HEADER_NAME))
@@ -554,13 +781,13 @@ impl FinderDemo {
                 .child(
                     div()
                         .w(px(content))
-                        .h(px(self.hero_h(content)))
+                        .h(px(hero_h(self.pane_h, content)))
                         .flex_none()
                         .flex()
                         .items_center()
                         .justify_center()
                         .overflow_hidden()
-                        .child(card.hero),
+                        .child(hero),
                 );
             lower = lower.mt(px(GAP_HERO_TEXT)).child(name).child(kind);
         }
@@ -591,7 +818,7 @@ impl FinderDemo {
                                     })
                                 }
                             })
-                            .child(if self.preview_expanded {
+                            .child(if self.expanded {
                                 "Show Less"
                             } else {
                                 "Show More"
@@ -712,7 +939,12 @@ impl FinderDemo {
         let head = match self.view == GALLERY_VIEW {
             true => GAP_HEADER + HEADER_ICON + GAP_HEADER_HEAD - GAP_KIND_HEAD,
             false => {
-                GAP_TOP + self.hero_h(content) + GAP_HERO_TEXT + NAME_H + GAP_NAME_KIND + LINE_H
+                GAP_TOP
+                    + hero_h(self.pane_h, content)
+                    + GAP_HERO_TEXT
+                    + NAME_H
+                    + GAP_NAME_KIND
+                    + LINE_H
             }
         };
         let content = content_column.child(lower);

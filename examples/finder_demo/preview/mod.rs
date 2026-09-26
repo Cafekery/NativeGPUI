@@ -1,15 +1,16 @@
 mod card;
 mod stats;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use block2::StackBlock;
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, MouseDownEvent, Render, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, point, prelude::*, px,
-    size,
+    App, Bounds, Context, DispatchPhase, Entity, EntityId, MouseDownEvent, Render, RenderImage,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, point,
+    prelude::*, px, size,
 };
 use native_gpui::tokens;
 use native_gpui::{chrome_host, native_root, native_screen_rect, tab_bar_height, window_options};
@@ -21,6 +22,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize};
 
+pub(crate) use self::card::follow_stacks;
 pub(crate) use self::stats::{Stats, summarize};
 use crate::app::FinderDemo;
 use crate::frame::ns_window;
@@ -42,7 +44,19 @@ pub(crate) struct PreviewWindow {
     window: Retained<NSWindow>,
     anchor: Rc<Cell<Anchor>>,
     follow: Retained<ProtocolObject<dyn NSObjectProtocol>>,
-    key: Cell<bool>,
+    pane: EntityId,
+    handed: Rc<Handed>,
+}
+
+/// What a window hands its pane to draw.
+#[derive(Default)]
+struct Handed {
+    /// What the card was drawn from; it is taken and drawn again only when this changes.
+    key: RefCell<Option<card::CardKey>>,
+    shown: RefCell<Option<card::Shown>>,
+    /// The icon landings seen when the pane last drew a stand-in for an icon.
+    waiting: Cell<Option<u64>>,
+    stack: RefCell<Option<Arc<RenderImage>>>,
 }
 
 impl Drop for PreviewWindow {
@@ -118,15 +132,7 @@ fn near(a: NSRect, b: NSRect) -> bool {
 /// Holds its Finder weakly: a strong handle here keeps a closed window's whole state alive.
 pub(crate) struct PreviewPane {
     finder: WeakEntity<FinderDemo>,
-}
-
-impl PreviewPane {
-    fn new(finder: Entity<FinderDemo>, cx: &mut Context<Self>) -> Self {
-        cx.observe(&finder, |_, _, cx| cx.notify()).detach();
-        Self {
-            finder: finder.downgrade(),
-        }
-    }
+    handed: Rc<Handed>,
 }
 
 impl Render for PreviewPane {
@@ -135,17 +141,23 @@ impl Render for PreviewPane {
             return div().into_any_element();
         };
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
-        let demo = finder.read(cx);
-        let palette = Palette::new(demo.list_focused);
-        let pane_w = demo.preview_w;
-        let card = demo.info_card(
-            demo.cursor_line().as_ref(),
-            &palette,
-            pane_w - 2. * INSET,
-            &finder,
-        );
-        crate::icons::draw_wanted(&finder, cx);
-        crate::meta::fetch_wanted(&finder, cx);
+        let shown = self.handed.shown.borrow();
+        let asked = crate::icons::asks();
+        let (card, pane_w) = match shown.as_ref() {
+            Some(shown) => (
+                shown.element(
+                    &Palette::new(shown.list_focused),
+                    &finder,
+                    &self.handed.stack,
+                ),
+                shown.width(),
+            ),
+            None => (div().into_any_element(), 0.),
+        };
+        self.handed
+            .waiting
+            .set((crate::icons::asks() != asked).then(crate::icons::landed));
+        crate::icons::start_wanted(&finder, cx);
         native_root(
             div()
                 .size_full()
@@ -195,6 +207,7 @@ fn open_preview_window(
     cx: &mut App,
 ) {
     let pane_finder = finder.clone();
+    let handed = Rc::new(Handed::default());
     let opened = parent.and_then(|parent| {
         let handle = cx
             .open_window(
@@ -211,13 +224,18 @@ fn open_preview_window(
                     })),
                     ..window_options()
                 },
-                |_, cx| cx.new(|cx| PreviewPane::new(pane_finder, cx)),
+                |_, cx| {
+                    cx.new(|_| PreviewPane {
+                        finder: pane_finder.downgrade(),
+                        handed: handed.clone(),
+                    })
+                },
             )
             .ok()?;
-        let window = handle
-            .update(cx, |_, window, _| ns_window(window))
-            .ok()
-            .flatten()?;
+        let (window, pane) = handle
+            .update(cx, |_, window, cx| (ns_window(window), cx.entity_id()))
+            .ok()?;
+        let window = window?;
         window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
         window.setHasShadow(false);
         // gpui takes drops on every window; this one has nowhere to put them.
@@ -239,11 +257,16 @@ fn open_preview_window(
             window,
             anchor,
             follow,
-            key: Cell::new(parent.isKeyWindow()),
+            pane,
+            handed,
         })
     });
     finder.update(cx, |this, _| {
         this.preview_opening = false;
+        if let Some(pane) = &opened {
+            let content = this.preview_w - 2. * INSET;
+            *pane.handed.shown.borrow_mut() = this.shown(this.cursor_line().as_ref(), content);
+        }
         this.preview_window = opened;
     });
 }
@@ -286,13 +309,6 @@ impl FinderDemo {
         let viewport = window.viewport_size();
         let key = window.is_window_active();
         self.list_focused = self.focus.is_focused(window) && key;
-        if self
-            .preview_window
-            .as_ref()
-            .is_some_and(|pane| pane.key.replace(key) != key)
-        {
-            cx.notify();
-        }
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
         let top = metrics.top - px(tab_bar_height(window));
@@ -339,6 +355,22 @@ impl FinderDemo {
                 let parent = ns_window(window);
                 cx.defer(move |cx| open_preview_window(finder, parent, frame, cx));
             }
+        }
+        let Some(pane) = &self.preview_window else {
+            return;
+        };
+        let content = self.preview_w - 2. * INSET;
+        let card = Some(self.card_key(content, key));
+        let handed = &pane.handed;
+        let landed = handed
+            .waiting
+            .get()
+            .is_some_and(|at| crate::icons::landed() != at);
+        if *handed.key.borrow() != card || landed {
+            *handed.shown.borrow_mut() = self.shown(self.cursor_line().as_ref(), content);
+            *handed.key.borrow_mut() = card;
+            handed.waiting.set(None);
+            App::notify(cx, pane.pane);
         }
     }
 }
