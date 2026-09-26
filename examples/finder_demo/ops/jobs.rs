@@ -83,6 +83,11 @@ fn describe(op: &Op) -> String {
 }
 
 impl FinderDemo {
+    /// Finder's toolbar has no progress item; ours stands there only while it has something to report.
+    pub(crate) fn progress_shown(&self) -> bool {
+        !self.jobs.is_empty() || self.jobs_open
+    }
+
     pub(crate) fn jobs_popover(&self, cx: &mut Context<Self>) -> AnyElement {
         let rows: Vec<AnyElement> = self
             .jobs

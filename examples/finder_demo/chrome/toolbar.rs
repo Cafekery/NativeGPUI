@@ -1,6 +1,6 @@
 use crate::menus::{Act, Menu};
 use block2::RcBlock;
-use gpui::{Context, Window, px};
+use gpui::{Context, SharedString, Window, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::{
     MenuEntry, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection, ToolbarStyle,
@@ -171,63 +171,62 @@ impl FinderDemo {
         let rows = self.action_rows();
         let acts: Rc<[Act]> = rows.acts.into();
 
-        set_toolbar(
-            window,
-            cx,
-            Some(ToolbarStyle::Unified),
-            &[
-                ToolbarItem::group(
-                    NAV_ID,
-                    "Back/Forward",
-                    [
-                        ToolbarSegment::new("chevron.left", "Back"),
-                        ToolbarSegment::new("chevron.right", "Forward"),
-                    ],
-                    0,
-                )
-                .tool_tip("See folders you viewed previously")
-                .selection(ToolbarSelection::Momentary)
-                .group_width(ToolbarGroupWidth::Expanded)
-                .on_select(move |index, window, cx| {
-                    nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
+        let mut items = vec![
+            ToolbarItem::group(
+                NAV_ID,
+                "Back/Forward",
+                [
+                    ToolbarSegment::new("chevron.left", "back").enabled(self.at > 0),
+                    ToolbarSegment::new("chevron.right", "forward")
+                        .enabled(self.at + 1 < self.history.len()),
+                ],
+                0,
+            )
+            .tool_tip("See folders you viewed previously")
+            .selection(ToolbarSelection::Momentary)
+            .on_select(move |index, window, cx| {
+                nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
+                    .ok();
+            }),
+            // No flexible space: a unified toolbar right-aligns the items after the title by itself.
+            ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
+                .tool_tip("Share the selected items using AirDrop")
+                .on_click(move |_, cx| {
+                    airdrop
+                        .update(cx, |this: &mut Self, _| this.airdrop_selection())
                         .ok();
                 }),
-                ToolbarItem::flexible_space(),
-                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
-                    .tool_tip("Share the selected items using AirDrop")
-                    .on_click(move |_, cx| {
-                        airdrop
-                            .update(cx, |this: &mut Self, _| this.airdrop_selection())
-                            .ok();
-                    }),
-                ToolbarItem::group(
-                    VIEW_ID,
-                    "View",
-                    VIEW_SYMBOLS
-                        .iter()
-                        .zip(VIEW_LABELS)
-                        .map(|(symbol, label)| ToolbarSegment::new(*symbol, *label)),
-                    self.view,
-                )
-                .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
-                // Automatic, not Expanded: the capsule has to collapse when the search field opens.
-                .group_width(ToolbarGroupWidth::Automatic)
+            ToolbarItem::group(
+                VIEW_ID,
+                "View",
+                VIEW_SYMBOLS
+                    .iter()
+                    .zip(VIEW_LABELS)
+                    .map(|(symbol, label)| ToolbarSegment::new(*symbol, *label)),
+                self.view,
+            )
+            .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
+            // Automatic, not Expanded: the capsule has to collapse when the search field opens.
+            .group_width(ToolbarGroupWidth::Automatic)
+            .on_select(move |index, _, cx| {
+                view.update(cx, |this: &mut Self, cx| {
+                    this.set_view(index);
+                    cx.notify();
+                })
+                .ok();
+            }),
+            ToolbarItem::space(),
+            ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
+                .tool_tip("Change the item grouping (hold down Option to change the sort)")
                 .on_select(move |index, _, cx| {
-                    view.update(cx, |this: &mut Self, cx| {
-                        this.set_view(index);
-                        cx.notify();
-                    })
-                    .ok();
+                    group
+                        .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
+                        .ok();
                 }),
-                ToolbarItem::space(),
-                ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
-                    .tool_tip("Change the item grouping (hold down Option to change the sort)")
-                    .on_select(move |index, _, cx| {
-                        group
-                            .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
-                            .ok();
-                    }),
-                ToolbarItem::space(),
+            ToolbarItem::space(),
+        ];
+        if self.progress_shown() {
+            items.push(
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
                     .tool_tip("See the progress of file operations")
                     .on_click(move |_, cx| {
@@ -237,41 +236,55 @@ impl FinderDemo {
                         })
                         .ok();
                     }),
-                ToolbarItem::share(SHARE_ID, "Share", self.share_items())
-                    .tool_tip("Share the selected items"),
-                ToolbarItem::symbol(TAG_ID, "tag", "Add Tags")
-                    .tool_tip("Edit Tags")
-                    .on_click(move |window, cx| {
-                        tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
-                            .ok();
-                    }),
-                ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
-                    .tool_tip("Perform tasks with the selected items")
-                    .on_select(move |index, window, cx| {
-                        let act = acts.get(index).copied().unwrap_or(Act::Nothing);
-                        action
-                            .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
-                            .ok();
-                    }),
-                ToolbarItem::space(),
-                ToolbarItem::search(SEARCH_ID, "Search")
-                    .placeholder("Search")
-                    .width(px(SEARCH_W))
-                    .on_change(move |text, _, cx| {
-                        let text = text.to_string();
-                        query
-                            .update(cx, |this: &mut Self, cx| this.search(text, cx))
-                            .ok();
-                    }),
-            ],
-        );
+            );
+        }
+        items.extend([
+            ToolbarItem::share(SHARE_ID, "Share", self.share_items())
+                .tool_tip("Share the selected items"),
+            ToolbarItem::symbol(TAG_ID, "tag", "Add Tags")
+                .tool_tip("Edit Tags")
+                .on_click(move |window, cx| {
+                    tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
+                        .ok();
+                }),
+            ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
+                .tool_tip("Perform tasks with the selected items")
+                .on_select(move |index, window, cx| {
+                    let act = acts.get(index).copied().unwrap_or(Act::Nothing);
+                    action
+                        .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
+                        .ok();
+                }),
+            ToolbarItem::space(),
+            ToolbarItem::search(SEARCH_ID, "Search")
+                .placeholder("Search")
+                .width(px(SEARCH_W))
+                .on_change(move |text, _, cx| {
+                    let text = text.to_string();
+                    query
+                        .update(cx, |this: &mut Self, cx| this.search(text, cx))
+                        .ok();
+                }),
+        ]);
+        set_toolbar(window, cx, Some(ToolbarStyle::Unified), &items);
         finish_toolbar_items(window);
         if let Some(ns_window) = chrome_host(window).window() {
             // GPUI hides the title whenever the titlebar is transparent, which `window_options` is.
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
         }
         self.toolbar = true;
-        self.toolbar_for = (self.selected.rev(), self.cursor.clone());
+        self.toolbar_for = self.toolbar_state();
+    }
+
+    /// What the toolbar was last built for: rebuild it when any of this moves.
+    pub(crate) fn toolbar_state(&self) -> (u64, Option<SharedString>, bool, usize, usize) {
+        (
+            self.selected.rev(),
+            self.cursor.clone(),
+            self.progress_shown(),
+            self.at,
+            self.history.len(),
+        )
     }
 
     fn action_rows(&self) -> Menu {

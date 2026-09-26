@@ -15,17 +15,17 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
+    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu, NSMenuItem,
     NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSSearchField, NSSearchToolbarItem,
-    NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
-    NSSharingServicePickerToolbarItemDelegate, NSSplitView, NSSplitViewController, NSTextAlignment,
-    NSTextField, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
-    NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
+    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSSharingServicePickerDelegate,
+    NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
+    NSSplitViewController, NSTextAlignment, NSTextField, NSToolTipTag, NSToolbar,
+    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemGroup, NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
-    NSTrackingSeparatorToolbarItem, NSView, NSViewController, NSWindow, NSWindowButton,
-    NSWindowCollectionBehavior, NSWindowLevel, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSTrackingSeparatorToolbarItem, NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowLevel, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
@@ -641,6 +641,7 @@ type ToolbarViewBuilder = Rc<dyn Fn(MainThreadMarker) -> Retained<NSView>>;
 pub struct ToolbarSegment {
     pub symbol: String,
     pub label: String,
+    pub enabled: bool,
 }
 
 impl ToolbarSegment {
@@ -648,7 +649,13 @@ impl ToolbarSegment {
         Self {
             symbol: symbol.into(),
             label: label.into(),
+            enabled: true,
         }
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
 }
 
@@ -1027,6 +1034,19 @@ define_class!(
             }
         }
 
+        #[unsafe(method(ngToolbarSegment:))]
+        fn segment(&self, sender: &AnyObject) {
+            let id: Option<Retained<NSString>> = unsafe { msg_send![sender, identifier] };
+            // A click reports its segment; an overflow menu row carries it as its tag.
+            let index: isize = match sender.downcast_ref::<NSSegmentedControl>() {
+                Some(control) => control.selectedSegment(),
+                None => unsafe { msg_send![sender, tag] },
+            };
+            if let (Some(id), Ok(index)) = (id, usize::try_from(index)) {
+                self.dispatch_index(&id.to_string(), index);
+            }
+        }
+
         #[unsafe(method(ngToolbarSearch:))]
         fn search(&self, sender: *mut AnyObject) {
             let text: Retained<NSString> = unsafe { msg_send![sender, stringValue] };
@@ -1187,7 +1207,6 @@ impl ToolbarDelegate {
                 width,
                 ..
             } => {
-                // The images constructor, not `subitems`: only it has a control to select in.
                 let images: Vec<Retained<NSImage>> = segments
                     .iter()
                     .map(|segment| {
@@ -1195,28 +1214,69 @@ impl ToolbarDelegate {
                     })
                     .collect();
                 let image_refs: Vec<&NSImage> = images.iter().map(|image| &**image).collect();
-                let labels: Vec<Retained<NSString>> = segments
-                    .iter()
-                    .map(|segment| NSString::from_str(&segment.label))
-                    .collect();
-                let label_refs: Vec<&NSString> = labels.iter().map(|text| &**text).collect();
-                let group = unsafe {
-                    NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
-                        ident,
-                        &NSArray::from_slice(&image_refs),
-                        selection.into(),
-                        Some(&NSArray::from_slice(&label_refs)),
-                        Some(self.as_ref()),
-                        Some(sel!(ngToolbarAction:)),
-                        mtm,
-                    )
-                };
-                group.setControlRepresentation(width.into());
-                if selection != ToolbarSelection::Momentary && selected < segments.len() {
-                    group.setSelectedIndex(selected as isize);
+                if selection == ToolbarSelection::Momentary {
+                    // The group constructor's control is a point wider than a separated one.
+                    let control = unsafe {
+                        NSSegmentedControl::segmentedControlWithImages_trackingMode_target_action(
+                            &NSArray::from_slice(&image_refs),
+                            NSSegmentSwitchTracking::Momentary,
+                            Some(self.as_ref()),
+                            Some(sel!(ngToolbarSegment:)),
+                            mtm,
+                        )
+                    };
+                    control.setSegmentStyle(NSSegmentStyle::Separated);
+                    control.setIdentifier(Some(ident));
+                    let rows = NSMenu::new(mtm);
+                    rows.setAutoenablesItems(false);
+                    for (index, segment) in segments.iter().enumerate() {
+                        let row = unsafe {
+                            NSMenuItem::initWithTitle_action_keyEquivalent(
+                                NSMenuItem::alloc(mtm),
+                                &NSString::from_str(&segment.label),
+                                Some(sel!(ngToolbarSegment:)),
+                                &NSString::new(),
+                            )
+                        };
+                        unsafe { row.setTarget(Some(self.as_ref())) };
+                        row.setTag(index as isize);
+                        row.setIdentifier(Some(ident));
+                        rows.addItem(&row);
+                    }
+                    let overflow = NSMenuItem::new(mtm);
+                    overflow.setTitle(&NSString::from_str(&label));
+                    overflow.setSubmenu(Some(&rows));
+                    let item =
+                        NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
+                    item.setLabel(&NSString::from_str(&label));
+                    item.setView(Some(&control));
+                    item.setMenuFormRepresentation(Some(&overflow));
+                    item
+                } else {
+                    // The images constructor, not `subitems`: only it has a control to select in.
+                    let labels: Vec<Retained<NSString>> = segments
+                        .iter()
+                        .map(|segment| NSString::from_str(&segment.label))
+                        .collect();
+                    let label_refs: Vec<&NSString> = labels.iter().map(|text| &**text).collect();
+                    let group = unsafe {
+                        NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
+                            ident,
+                            &NSArray::from_slice(&image_refs),
+                            selection.into(),
+                            Some(&NSArray::from_slice(&label_refs)),
+                            Some(self.as_ref()),
+                            Some(sel!(ngToolbarAction:)),
+                            mtm,
+                        )
+                    };
+                    group.setControlRepresentation(width.into());
+                    if selected < segments.len() {
+                        group.setSelectedIndex(selected as isize);
+                    }
+                    group.setLabel(&NSString::from_str(&label));
+                    Retained::into_super(group)
                 }
-                group.setLabel(&NSString::from_str(&label));
-                Retained::into_super(group)
             }
             ToolbarItem::Search {
                 label,
@@ -1345,6 +1405,24 @@ impl ToolbarDelegate {
                     width,
                     ..
                 } => {
+                    if *selection == ToolbarSelection::Momentary {
+                        let Some(control) = item
+                            .view()
+                            .and_then(|view| view.downcast::<NSSegmentedControl>().ok())
+                        else {
+                            continue;
+                        };
+                        let rows = item.menuFormRepresentation().and_then(|row| row.submenu());
+                        for (at, segment) in (0..).zip(segments) {
+                            if control.isEnabledForSegment(at) != segment.enabled {
+                                control.setEnabled_forSegment(segment.enabled, at);
+                            }
+                            if let Some(row) = rows.as_ref().and_then(|rows| rows.itemAtIndex(at)) {
+                                row.setEnabled(segment.enabled);
+                            }
+                        }
+                        continue;
+                    }
                     let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() else {
                         continue;
                     };
@@ -1450,8 +1528,6 @@ pub fn set_toolbar(
         })
         .clone()
     };
-    delegate.refresh();
-
     let unchanged = host
         .ivars()
         .toolbar_installed
@@ -1460,16 +1536,14 @@ pub fn set_toolbar(
         .is_some_and(|(installed_style, installed)| {
             *installed_style == style && *installed == identifiers
         });
-    if unchanged {
-        return;
+    if !unchanged {
+        toolbar.setItemIdentifiers(&identifier_array(&identifiers));
+        ns_window.setToolbarStyle(style.into());
+        ns_window.setToolbar(Some(&toolbar));
+        toolbar.setVisible(true);
+        *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
     }
-
-    toolbar.setItemIdentifiers(&identifier_array(&identifiers));
-
-    ns_window.setToolbarStyle(style.into());
-    ns_window.setToolbar(Some(&toolbar));
-    toolbar.setVisible(true);
-    *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
+    delegate.refresh();
 }
 
 pub fn toolbar_description(window: &Window) -> String {
