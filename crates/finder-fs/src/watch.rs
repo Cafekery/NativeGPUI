@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::ffi::c_void;
+use std::ffi::{CStr, OsStr, OsString, c_void};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,11 +16,12 @@ use objc2_core_services::{
     ConstFSEventStreamRef, FSEventStreamContext, FSEventStreamCreate, FSEventStreamEventFlags,
     FSEventStreamEventId, FSEventStreamGetLatestEventId, FSEventStreamInvalidate,
     FSEventStreamRelease, FSEventStreamStart, FSEventStreamStop, FSEventsGetCurrentEventId,
-    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamEventFlagEventIdsWrapped,
-    kFSEventStreamEventFlagHistoryDone, kFSEventStreamEventFlagKernelDropped,
-    kFSEventStreamEventFlagMount, kFSEventStreamEventFlagMustScanSubDirs,
-    kFSEventStreamEventFlagRootChanged, kFSEventStreamEventFlagUnmount,
-    kFSEventStreamEventFlagUserDropped, kFSEventStreamEventIdSinceNow,
+    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagWatchRoot,
+    kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagHistoryDone,
+    kFSEventStreamEventFlagKernelDropped, kFSEventStreamEventFlagMount,
+    kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagRootChanged,
+    kFSEventStreamEventFlagUnmount, kFSEventStreamEventFlagUserDropped,
+    kFSEventStreamEventIdSinceNow,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -43,8 +45,13 @@ const TICK: f64 = 1.0;
 
 type OnChange = Box<dyn Fn(Replay) + Send>;
 
+/// Each watched path beside the path FSEvents reports it by.
+type Views = Arc<Mutex<Vec<(PathBuf, PathBuf)>>>;
+
 struct Shared {
     paths: Mutex<HashSet<PathBuf>>,
+    /// Filled on the watcher's thread; `None` for a caller that wants the reported paths.
+    views: Option<Views>,
     changed: Condvar,
     since: AtomicU64,
     shutdown: AtomicBool,
@@ -70,31 +77,51 @@ pub struct Watcher {
     thread: Option<JoinHandle<()>>,
 }
 
+/// A reported folder, and the same folder under every watched path it lies beneath.
+fn as_watched(views: &[(PathBuf, PathBuf)], dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out: HashSet<PathBuf> = HashSet::with_capacity(dirs.len());
+    for dir in dirs {
+        for (real, asked) in views {
+            if let Ok(rest) = dir.strip_prefix(real) {
+                out.insert(match rest.as_os_str().is_empty() {
+                    true => asked.clone(),
+                    false => asked.join(rest),
+                });
+            }
+        }
+        out.insert(dir);
+    }
+    out.into_iter().collect()
+}
+
 impl Watcher {
+    /// Reports each changed folder as FSEvents names it and under every path it was watched by.
     pub fn new(on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Watcher {
+        let views = Views::default();
+        let seen = views.clone();
         Watcher::spawn(
             HashSet::new(),
             kFSEventStreamEventIdSinceNow,
             0.1,
+            Some(views),
             Box::new(move |replay: Replay| {
                 let mut dirs = replay.dirs;
                 dirs.extend(replay.rescan);
                 if !dirs.is_empty() {
-                    on_change(dirs);
+                    on_change(as_watched(&seen.lock().unwrap(), dirs));
                 }
             }),
         )
     }
 
+    /// Touches no disk: the watcher's own thread resolves the path.
     pub fn watch(&self, dir: &Path) {
-        let dir = watched_path(dir);
-        self.shared.paths.lock().unwrap().insert(dir);
+        self.shared.paths.lock().unwrap().insert(dir.to_path_buf());
         self.shared.wake();
     }
 
     pub fn unwatch(&self, dir: &Path) {
-        let dir = watched_path(dir);
-        self.shared.paths.lock().unwrap().remove(&dir);
+        self.shared.paths.lock().unwrap().remove(dir);
         self.shared.wake();
     }
 
@@ -102,10 +129,12 @@ impl Watcher {
         paths: HashSet<PathBuf>,
         since: FSEventStreamEventId,
         latency: f64,
+        views: Option<Views>,
         on_change: OnChange,
     ) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::new(paths),
+            views,
             changed: Condvar::new(),
             since: AtomicU64::new(since),
             shutdown: AtomicBool::new(false),
@@ -145,18 +174,88 @@ pub fn since(
     } else {
         event_id
     };
-    let paths = roots.into_iter().map(|p| watched_path(&p)).collect();
     // A folder written ten times a second is read once a second; the index can lag that much.
-    Watcher::spawn(paths, since_when, 1.0, Box::new(on_change))
+    Watcher::spawn(
+        roots.into_iter().collect(),
+        since_when,
+        1.0,
+        None,
+        Box::new(on_change),
+    )
 }
 
 pub fn latest_event_id() -> u64 {
     unsafe { FSEventsGetCurrentEventId() }
 }
 
-fn watched_path(dir: &Path) -> PathBuf {
-    let real = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+fn resolved(dir: &Path) -> PathBuf {
+    let real = crate::list::real_path(dir).unwrap_or_else(|| dir.to_path_buf());
     strip_trailing_slash(&real.to_string_lossy())
+}
+
+/// Mount points of network shares, from the kernel's cached table.
+fn shares() -> Vec<PathBuf> {
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    let mut stats: Vec<libc::statfs> = Vec::with_capacity(count.max(0) as usize);
+    let bytes = (stats.capacity() * std::mem::size_of::<libc::statfs>()) as libc::c_int;
+    let got = unsafe { libc::getfsstat(stats.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+    unsafe { stats.set_len(got.clamp(0, count.max(0)) as usize) };
+    stats
+        .iter()
+        .filter(|mount| mount.f_flags & libc::MNT_LOCAL as u32 == 0)
+        .map(|mount| {
+            let on = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
+            PathBuf::from(OsStr::from_bytes(on.to_bytes()))
+        })
+        .collect()
+}
+
+/// Whether a path leads onto a network share. Nothing there is watched: the kernel never hears
+/// of a change made on the server, and one call into a share that stopped answering would hold
+/// this thread and every folder it watches. Symlinks are followed only while the path so far is
+/// on this Mac, so nothing on a share is touched to find out.
+fn on_share(path: &Path) -> bool {
+    leads_into(path, &shares())
+}
+
+fn leads_into(path: &Path, shares: &[PathBuf]) -> bool {
+    if shares.is_empty() {
+        return false;
+    }
+    let reaches = |at: &Path| {
+        let bare = at
+            .strip_prefix("/System/Volumes/Data")
+            .map(|rest| Path::new("/").join(rest));
+        shares.iter().any(|share| {
+            at.starts_with(share) || bare.as_ref().is_ok_and(|bare| bare.starts_with(share))
+        })
+    };
+    let mut real = PathBuf::from("/");
+    let mut rest: Vec<OsString> = path.iter().rev().map(OsString::from).collect();
+    let mut hops = 0;
+    while let Some(part) = rest.pop() {
+        match part.as_bytes() {
+            b"/" => real = PathBuf::from("/"),
+            b"." => {}
+            b".." => {
+                real.pop();
+            }
+            _ => {
+                let next = real.join(&part);
+                if reaches(&next) {
+                    return true;
+                }
+                match std::fs::read_link(&next) {
+                    Ok(target) if hops < 32 => {
+                        hops += 1;
+                        rest.extend(target.iter().rev().map(OsString::from));
+                    }
+                    _ => real = next,
+                }
+            }
+        }
+    }
+    false
 }
 
 fn strip_trailing_slash(raw: &str) -> PathBuf {
@@ -173,21 +272,35 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
 
     while !shared.shutdown.load(Ordering::SeqCst) {
         shared.stale.store(false, Ordering::SeqCst);
-        let snapshot: Vec<PathBuf> = shared.paths.lock().unwrap().iter().cloned().collect();
+        let all: HashSet<PathBuf> = shared.paths.lock().unwrap().clone();
+        let snapshot: Vec<PathBuf> = all.iter().filter(|p| !on_share(p)).cloned().collect();
         if snapshot.is_empty() {
             let mut paths = shared.paths.lock().unwrap();
-            while paths.is_empty() && !shared.shutdown.load(Ordering::SeqCst) {
+            while *paths == all && !shared.shutdown.load(Ordering::SeqCst) {
                 paths = shared.changed.wait(paths).unwrap();
             }
             continue;
         }
 
-        let cf_paths: Vec<CFRetained<CFString>> = snapshot
+        let views: Vec<(PathBuf, PathBuf)> = snapshot
+            .into_iter()
+            .map(|asked| (resolved(&asked), asked))
+            .collect();
+        let roots: HashSet<&PathBuf> = views.iter().map(|(real, _)| real).collect();
+        let cf_paths: Vec<CFRetained<CFString>> = roots
             .iter()
             .map(|p| CFString::from_str(&p.to_string_lossy()))
             .collect();
+        if let Some(published) = &shared.views {
+            *published.lock().unwrap() = views;
+        }
         let refs: Vec<&CFString> = cf_paths.iter().map(|s| &**s).collect();
         let array = CFArray::from_objects(&refs);
+        // Without WatchRoot a stream says nothing when the folder it watches is renamed or deleted.
+        let flags = match shared.views {
+            Some(_) => kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot,
+            None => kFSEventStreamCreateFlagUseCFTypes,
+        };
         let since_when = shared.since.load(Ordering::SeqCst);
         let mut stream_context = FSEventStreamContext {
             version: 0,
@@ -204,7 +317,7 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
                 array.as_opaque(),
                 since_when,
                 shared.latency,
-                kFSEventStreamCreateFlagUseCFTypes,
+                flags,
             )
         };
         assert!(!stream.is_null(), "FSEventStreamCreate failed");
@@ -299,7 +412,7 @@ mod tests {
             std::env::temp_dir().join(format!("finder-fs-watch-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        watched_path(&dir)
+        resolved(&dir)
     }
 
     fn recv_containing(
@@ -327,7 +440,7 @@ mod tests {
         let dir = temp_dir("basic");
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
-        let sub = watched_path(&sub);
+        let sub = resolved(&sub);
 
         let (tx, rx) = mpsc::channel();
         let watcher = Watcher::new(move |dirs| {
@@ -373,6 +486,89 @@ mod tests {
         eprintln!("watch: delete -> callback in {:?}", started.elapsed());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_is_reported_under_every_path_its_folder_was_watched_by() {
+        let _serial = serial();
+        let real = temp_dir("shapes");
+        let linked = std::env::temp_dir().join(real.file_name().unwrap());
+        assert_ne!(linked, real, "the temp dir is under a symlink");
+        let firmlinked = Path::new("/System/Volumes/Data").join(real.strip_prefix("/").unwrap());
+        let holder = temp_dir("shapes-holder");
+        let through = holder.join("link");
+        std::os::unix::fs::symlink(&real, &through).unwrap();
+
+        let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
+        let watcher = Watcher::new(move |dirs| {
+            let _ = tx.send(dirs);
+        });
+        for asked in [&linked, &firmlinked, &holder, &through] {
+            watcher.watch(asked);
+        }
+        thread::sleep(Duration::from_millis(500));
+
+        fs::write(real.join("a.txt"), b"hi").unwrap();
+        let mut missing: HashSet<PathBuf> = HashSet::from([linked, firmlinked, through]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !missing.is_empty() {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(dirs) = rx.recv_timeout(remaining) else {
+                break;
+            };
+            for dir in dirs {
+                missing.remove(&dir);
+            }
+        }
+        assert!(missing.is_empty(), "never reported under {missing:?}");
+
+        let _ = fs::remove_dir_all(&real);
+        let _ = fs::remove_dir_all(&holder);
+    }
+
+    #[test]
+    fn a_path_through_symlinks_is_found_to_lead_onto_a_share() {
+        let base = temp_dir("shares");
+        fs::create_dir_all(base.join("share/in")).unwrap();
+        fs::create_dir_all(base.join("dir")).unwrap();
+        std::os::unix::fs::symlink(base.join("share"), base.join("abs")).unwrap();
+        std::os::unix::fs::symlink("../share/in", base.join("dir/rel")).unwrap();
+        let shares = [base.join("share")];
+        let linked = std::env::temp_dir().join(base.file_name().unwrap());
+        assert_ne!(linked, base, "the temp dir is under a symlink");
+
+        for onto in ["share/in", "abs", "abs/in", "dir/rel", "dir/../share"] {
+            assert!(leads_into(&linked.join(onto), &shares), "{onto}");
+        }
+        let firmlinked = Path::new("/System/Volumes/Data").join(base.strip_prefix("/").unwrap());
+        assert!(leads_into(&firmlinked.join("share"), &shares));
+        for off in ["dir", "dir/../abs-not-there", "shared"] {
+            assert!(!leads_into(&linked.join(off), &shares), "{off}");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_watched_folder_that_is_renamed_is_reported() {
+        let _serial = serial();
+        let dir = temp_dir("renamed");
+        let moved =
+            dir.with_file_name(format!("finder-fs-watch-renamed-to-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&moved);
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(move |dirs| {
+            let _ = tx.send(dirs);
+        });
+        watcher.watch(&dir);
+        thread::sleep(Duration::from_millis(500));
+
+        fs::rename(&dir, &moved).unwrap();
+        assert!(
+            recv_containing(&rx, &dir, Duration::from_secs(10)),
+            "the rename of the watched folder went unreported"
+        );
+
+        let _ = fs::remove_dir_all(&moved);
     }
 
     #[test]
