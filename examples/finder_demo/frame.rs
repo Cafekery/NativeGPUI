@@ -45,8 +45,9 @@ impl Render for FinderDemo {
         if self.sidebar.is_none() {
             self.install(window, cx);
         }
-        if self.toolbar_for != self.toolbar_state() {
-            self.toolbar = false;
+        let rev = self.selected.rev();
+        if self.services_for != rev {
+            self.services_for = rev;
             let files = self
                 .selected
                 .snapshot()
@@ -55,14 +56,14 @@ impl Render for FinderDemo {
                 .collect();
             native_gpui::services_selection(window, files);
         }
-        if !self.toolbar {
+        if self.toolbar_for != Some(self.toolbar_state()) {
             self.install_toolbar(window, cx);
         }
         menus::remember(self);
         let title = self.title();
         if self.titled != title {
             window.set_window_title(&title);
-            self.titled = title;
+            self.titled = title.into_owned();
         }
         if self.host.is_none() {
             self.host = ns_window(window);

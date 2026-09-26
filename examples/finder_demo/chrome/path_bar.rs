@@ -5,7 +5,7 @@ use std::path::Path;
 
 use gpui::{
     AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, ExternalPaths, FontWeight, Hsla,
-    Window, div, hsla, prelude::*, px,
+    SharedString, Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
@@ -65,8 +65,26 @@ fn crumb_art(id: impl Into<ElementId>, kind: FileType<'static>, face: Face) -> A
         .into_any_element()
 }
 
+const KEPT: usize = 256;
+
+type Art = HashMap<(&'static str, bool, bool), FileType<'static>>;
+
 thread_local! {
     static LABEL_W: RefCell<HashMap<String, f32>> = RefCell::default();
+    static ART: RefCell<(u64, Art)> = RefCell::default();
+}
+
+fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'static> {
+    let custom = crate::custom::custom_icon(&SharedString::new_static(path));
+    ART.with_borrow_mut(|(at, kept)| {
+        if *at != landed || kept.len() >= KEPT {
+            *at = landed;
+            kept.clear();
+        }
+        *kept
+            .entry((path, holds, custom))
+            .or_insert_with(|| folder_artwork(path, holds))
+    })
 }
 
 impl FinderDemo {
@@ -117,7 +135,11 @@ fn label_width(text: &str) -> f32 {
             )
         };
         let width = string.size().width.ceil() as f32 + 2. * LABEL_INSET;
-        kept.borrow_mut().insert(text.to_owned(), width);
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= KEPT {
+            kept.clear();
+        }
+        kept.insert(text.to_owned(), width);
         width
     })
 }
@@ -130,7 +152,14 @@ impl FinderDemo {
             .and_then(|line| split_key(&line.key))
             .map_or(self.target(), |(dir, _)| dir);
         let here = self.folders.get(holder);
-        let mut crumbs: Vec<&str> = here.map_or_else(Vec::new, |folder| folder.crumbs.clone());
+        let mut crumbs: Vec<SharedString> = here.map_or_else(Vec::new, |folder| {
+            folder
+                .crumbs
+                .iter()
+                .copied()
+                .map(SharedString::new_static)
+                .collect()
+        });
         let listed = here.is_some_and(|folder| !folder.rows.is_empty());
         let mut chain: Vec<&'static str> = Path::new(holder)
             .ancestors()
@@ -143,11 +172,12 @@ impl FinderDemo {
                 .chain(chain.into_iter().map(Some))
                 .collect();
         if let Some(line) = &lone {
-            crumbs.push(&line.row.display);
+            crumbs.push(line.row.display.clone());
             targets.push(line.row.opens);
         }
         let widths = self.crumb_widths(&crumbs);
         let lit = self.crumb_drop.filter(|_| cx.has_active_drag());
+        let landed = self.folders.changed();
         let mut trail = div().size_full().flex().items_center().pl(px(TRAIL_INSET));
 
         for (index, (crumb, target)) in crumbs.iter().zip(targets).enumerate() {
@@ -162,7 +192,7 @@ impl FinderDemo {
                 }
                 _ => (
                     target.map_or(FileType::Folder, |path| {
-                        folder_artwork(path, !last || listed)
+                        crumb_artwork(path, !last || listed, landed)
                     }),
                     Face::Folder,
                 ),
@@ -248,9 +278,10 @@ impl FinderDemo {
                     ))
             });
             trail = trail.child(match target {
-                Some(id) => menus::attach(
+                Some(id) => menus::crumb_menu(
                     ("ng.finder.crumb.menu", index),
-                    menus::crumb(id, crumb),
+                    id,
+                    crumb.clone(),
                     cx.entity().downgrade(),
                     segment,
                 )
@@ -286,7 +317,7 @@ impl FinderDemo {
 
     /// Label widths, `None` where only the icon fits. Finder keeps the first and last crumbs whole and
     /// narrows the widest of the rest to one shared width until the trail fits.
-    fn crumb_widths(&self, crumbs: &[&str]) -> Vec<Option<f32>> {
+    fn crumb_widths(&self, crumbs: &[SharedString]) -> Vec<Option<f32>> {
         let labels: Vec<f32> = crumbs.iter().map(|crumb| label_width(crumb)).collect();
         let Some(last) = labels.len().checked_sub(1).filter(|last| *last > 1) else {
             return labels.into_iter().map(Some).collect();

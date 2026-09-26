@@ -12,6 +12,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::controls::menu::nsstring_is;
 use crate::system::tokens::{
     SystemColor, ns_font, ns_font_weight, system_font_family, system_font_size,
 };
@@ -113,10 +114,9 @@ impl NativeLabel {
         f32::from(self.point_size()).to_bits().hash(&mut hasher);
         self.weight.0.to_bits().hash(&mut hasher);
         self.tabular.hash(&mut hasher);
-        let font = self.font();
         let fitting = fitting_size_keyed("NSTextField(label)", hasher.finish(), |mtm| {
             let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
-            probe.setFont(Some(&font));
+            probe.setFont(Some(&self.font()));
             probe.fittingSize()
         });
         let mut style = Style::default();
@@ -129,7 +129,7 @@ impl NativeLabel {
         let field = slot.place(Layer::Above, |mtm, _| Label::new(mtm));
 
         let want: &str = &self.text;
-        if field.stringValue().to_string() != want {
+        if !nsstring_is(&field.stringValue(), want) {
             field.setStringValue(&NSString::from_str(want));
         }
         let font = self.font();
