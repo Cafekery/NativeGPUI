@@ -23,6 +23,8 @@ pub struct Volume {
     pub capacity: u64,
     pub available: u64,
     pub format: String,
+    /// The host a network volume was mounted from.
+    pub server: Option<String>,
 }
 
 fn keys() -> Retained<NSArray<NSURLResourceKey>> {
@@ -101,6 +103,7 @@ fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
         available,
         format: string_value(&values, unsafe { NSURLVolumeLocalizedFormatDescriptionKey })
             .unwrap_or_default(),
+        server: None,
     })
 }
 
@@ -147,6 +150,12 @@ fn volume_from(stats: &libc::statfs) -> Volume {
         format: unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }
             .to_string_lossy()
             .into_owned(),
+        // SAFETY: the kernel NUL-terminates the source name.
+        server: (!local)
+            .then(|| {
+                host_of(&unsafe { CStr::from_ptr(stats.f_mntfromname.as_ptr()) }.to_string_lossy())
+            })
+            .flatten(),
     };
     if !local {
         return volume;
@@ -155,6 +164,14 @@ fn volume_from(stats: &libc::statfs) -> Volume {
     // deleted, which waits on any share that stopped answering while they read it.
     let url = NSURL::fileURLWithPath(&NSString::from_str(&volume.path.to_string_lossy()));
     volume_at(&url, &keys()).unwrap_or(volume)
+}
+
+/// `//user@host/share`, `scheme://user@host/path` and `host:/export` all name `host`.
+fn host_of(source: &str) -> Option<String> {
+    let rest = source.split_once("//").map_or(source, |(_, rest)| rest);
+    let host = rest.split('/').next()?.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_owned())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,19 +267,36 @@ mod tests {
     }
 
     #[test]
-    fn a_network_share_is_named_by_its_mount_point_and_never_asked() {
+    fn a_network_share_is_named_by_its_mount_point_listed_by_its_host_and_never_asked() {
         // SAFETY: statfs is plain data; all-zero is a valid, if empty, record.
         let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
         for (at, byte) in b"/Volumes/Storage".iter().enumerate() {
             stats.f_mntonname[at] = *byte as libc::c_char;
+        }
+        for (at, byte) in b"//jace@100.109.9.62/Storage".iter().enumerate() {
+            stats.f_mntfromname[at] = *byte as libc::c_char;
         }
         stats.f_bsize = 4096;
         stats.f_blocks = 10;
         stats.f_bavail = 4;
         let volume = volume_from(&stats);
         assert_eq!(volume.name, "Storage");
+        assert_eq!(volume.server.as_deref(), Some("100.109.9.62"));
         assert!(volume.network && volume.ejectable);
         assert_eq!((volume.capacity, volume.available), (40960, 16384));
+    }
+
+    #[test]
+    fn a_mount_source_names_its_host_without_user_share_or_port() {
+        for source in [
+            "//100.109.9.62/Storage",
+            "//jace@100.109.9.62/Storage",
+            "smb://jace@100.109.9.62:445/Storage",
+            "100.109.9.62:/export",
+        ] {
+            assert_eq!(host_of(source).as_deref(), Some("100.109.9.62"), "{source}");
+        }
+        assert_eq!(host_of("//"), None);
     }
 
     #[test]

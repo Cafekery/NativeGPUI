@@ -41,7 +41,7 @@ use crate::materials::RawMaterial;
 use crate::tokens;
 
 pub use self::cell::system_template;
-use self::cell::{SidebarCell, label_fades_itself, row_view, tint_selected_rows};
+use self::cell::{SidebarCell, row_view, tint_selected_rows};
 use self::diff::{SavedState, apply_diff, expand_groups, plan_diff, reveal};
 pub use self::dragdrop::drag_files;
 use self::dragdrop::{
@@ -69,6 +69,7 @@ pub struct SidebarItem {
     badge: Option<i64>,
     eject: bool,
     drops: bool,
+    muted: bool,
     group: bool,
     children: Vec<SidebarItem>,
 }
@@ -81,6 +82,7 @@ pub fn sidebar_item(id: impl Into<SharedString>, title: impl Into<SharedString>)
         badge: None,
         eject: false,
         drops: false,
+        muted: false,
         group: false,
         children: Vec::new(),
     }
@@ -114,6 +116,12 @@ impl SidebarItem {
 
     pub fn accepts_drops(mut self, accepts: bool) -> Self {
         self.drops = accepts;
+        self
+    }
+
+    /// Inks a template icon grey rather than in the accent colour while its window is key.
+    pub fn muted(mut self, muted: bool) -> Self {
+        self.muted = muted;
         self
     }
 
@@ -437,14 +445,10 @@ fn observe_inspector(
         )
     }
 }
-
 fn observe_key_state(
     window: &NSWindow,
     shared: &Rc<Shared>,
 ) -> Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>> {
-    if !label_fades_itself() {
-        return Vec::new();
-    }
     let center = NSNotificationCenter::defaultCenter();
     unsafe {
         [

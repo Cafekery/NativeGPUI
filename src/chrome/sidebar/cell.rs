@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -25,6 +25,7 @@ pub(super) struct CellIvars {
     pub(super) badge: RefCell<Option<Retained<NSTextField>>>,
     pub(super) eject: RefCell<Option<Retained<NSButton>>>,
     pub(super) tint: RefCell<Option<Retained<NSColor>>>,
+    pub(super) muted: Cell<bool>,
 }
 
 impl CellIvars {
@@ -121,6 +122,7 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
         badge: RefCell::new(None),
         eject: RefCell::new(None),
         tint: RefCell::new(None),
+        muted: Cell::new(false),
     });
     let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
     cell.setIdentifier(Some(&NSString::from_str(identifier)));
@@ -165,7 +167,6 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
         })
         .as_deref(),
     );
-    eject.setContentTintColor(Some(&NSColor::quaternaryLabelColor()));
     eject.setHidden(true);
     unsafe {
         eject.setTarget(Some(target));
@@ -289,7 +290,7 @@ fn tag_dot_image(icon: &SidebarIcon) -> Option<Retained<NSImage>> {
     Some(image)
 }
 
-pub(super) fn label_fades_itself() -> bool {
+fn label_fades_itself() -> bool {
     static SELF_FADE: OnceLock<bool> = OnceLock::new();
     *SELF_FADE.get_or_init(|| {
         NSProcessInfo::processInfo()
@@ -300,6 +301,20 @@ pub(super) fn label_fades_itself() -> bool {
 }
 
 fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
+    // A label colour on a vibrant image view draws far darker than the same colour as text.
+    let (icon_ink, eject_ink) = match key {
+        true => (
+            Some(NSColor::systemGrayColor()),
+            NSColor::tertiaryLabelColor(),
+        ),
+        false => (None, NSColor::quaternaryLabelColor()),
+    };
+    if let Some(icon) = unsafe { cell.imageView() } {
+        icon.setContentTintColor(icon_ink.filter(|_| cell.ivars().muted.get()).as_deref());
+    }
+    if let Some(eject) = cell.ivars().eject.borrow().as_ref() {
+        eject.setContentTintColor(Some(&eject_ink));
+    }
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
@@ -348,6 +363,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
         Some(SidebarIcon::Dot(Some(rgb))) => Some(srgb(rgb)),
         _ => None,
     };
+    cell.ivars().muted.set(node.muted);
 
     if let Some(view) = unsafe { cell.imageView() } {
         let image = match &node.icon {

@@ -20,6 +20,7 @@ pub(super) struct Node {
     pub(super) badge: Option<i64>,
     pub(super) eject: bool,
     pub(super) drops: bool,
+    pub(super) muted: bool,
     pub(super) group: bool,
     pub(super) parent: Option<usize>,
     pub(super) children: Vec<usize>,
@@ -33,6 +34,7 @@ impl Node {
         self.badge.hash(&mut hasher);
         self.eject.hash(&mut hasher);
         self.drops.hash(&mut hasher);
+        self.muted.hash(&mut hasher);
         self.group.hash(&mut hasher);
         self.children.is_empty().hash(&mut hasher);
         hasher.finish()
@@ -66,6 +68,7 @@ impl Model {
                 badge: item.badge,
                 eject: item.eject,
                 drops: item.drops,
+                muted: item.muted,
                 group: item.group,
                 parent,
                 children: Vec::new(),
