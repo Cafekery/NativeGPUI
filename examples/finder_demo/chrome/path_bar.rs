@@ -1,13 +1,13 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, FontWeight, Window, div, prelude::*,
-    px,
+    AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, ExternalPaths, FontWeight, Window,
+    div, prelude::*, px,
 };
 use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, folder_artwork};
-use crate::dragdrop::RowDrag;
+use crate::dragdrop::{Grabbed, RowDrag};
 use crate::menus;
 use crate::palette::Palette;
 use crate::ui::text_width;
@@ -48,6 +48,34 @@ fn crumb_art(id: impl Into<ElementId>, folder: Option<FileType<'static>>) -> Any
 }
 
 impl FinderDemo {
+    fn lit_crumb(&mut self, index: usize, over: bool, cx: &mut Context<Self>) {
+        let lit = match (over, self.crumb_drop == Some(index)) {
+            (true, _) => Some(index),
+            (false, true) => None,
+            (false, false) => return,
+        };
+        if self.crumb_drop != lit {
+            self.crumb_drop = lit;
+            cx.notify();
+        }
+    }
+
+    fn crumb_dropped<D: Grabbed>(
+        &mut self,
+        into: &'static str,
+        grab: &D,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.crumb_drop = None;
+        if !grab.wandered(window, self.pressed_at) {
+            return;
+        }
+        let keys = grab.keys(&self.selected.snapshot());
+        self.drop_into(into, &keys, window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn path_bar_h(&self) -> f32 {
         if self.path_bar_shown { PATH_H } else { 0. }
     }
@@ -142,26 +170,24 @@ impl FinderDemo {
                     }))
                     .on_drag_move(cx.listener(
                         move |this, event: &DragMoveEvent<RowDrag>, _, cx| {
-                            let over = event.bounds.contains(&event.event.position);
-                            let lit = match (over, this.crumb_drop == Some(index)) {
-                                (true, _) => Some(index),
-                                (false, true) => None,
-                                (false, false) => return,
-                            };
-                            if this.crumb_drop != lit {
-                                this.crumb_drop = lit;
-                                cx.notify();
-                            }
+                            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
+                        },
+                    ))
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
                         },
                     ))
                     .on_drop(
                         cx.listener(move |this, grab: &RowDrag, window: &mut Window, cx| {
-                            this.crumb_drop = None;
-                            let keys = this.drag_keys(&grab.key);
-                            this.drop_into(id, &keys, window, cx);
-                            cx.notify();
+                            this.crumb_dropped(id, grab, window, cx);
                         }),
                     )
+                    .on_drop(cx.listener(
+                        move |this, grab: &ExternalPaths, window: &mut Window, cx| {
+                            this.crumb_dropped(id, grab, window, cx);
+                        },
+                    ))
             });
             trail = trail.child(match target {
                 Some(id) => menus::attach(

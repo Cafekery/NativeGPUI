@@ -1,18 +1,18 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 use gpui::{
-    AnyElement, App, Div, Hsla, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
-    SharedString, TextAlign, Window, div, point, prelude::*, px,
+    AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollHandle, SharedString, TextAlign, Window, div, point, prelude::*, px,
 };
 use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
-use crate::dragdrop::{Grabbed, carries, drop_hover};
+use crate::dragdrop::{Grabbed, Lit, drop_hover, drop_target, row_carries, row_keys, row_wandered};
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
@@ -175,8 +175,16 @@ pub(crate) struct TileDrag {
 }
 
 impl Grabbed for TileDrag {
-    fn key(&self) -> &SharedString {
-        &self.key
+    fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool {
+        row_carries(&self.key, selected, key)
+    }
+
+    fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString> {
+        row_keys(&self.key, selected)
+    }
+
+    fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool {
+        row_wandered(window, pressed_at)
     }
 }
 
@@ -405,12 +413,20 @@ impl FinderDemo {
                 .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
                 .on_click(pick_on_click(line, this.clone()));
             let tile = match line.row.opens {
-                Some(into) => drop_hover::<TileDrag>(
-                    tile,
+                Some(into) => drop_target::<ExternalPaths>(
+                    drop_hover::<TileDrag>(
+                        tile,
+                        line.key.clone(),
+                        into,
+                        None,
+                        self.selected.snapshot(),
+                        this.clone(),
+                    ),
                     line.key.clone(),
                     into,
                     None,
                     self.selected.snapshot(),
+                    Lit::Drawn,
                     this.clone(),
                 ),
                 None => tile,
@@ -441,9 +457,12 @@ impl FinderDemo {
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
                     let into = under
-                        .filter(|line| !carries(&this.selected.snapshot(), drag, &line.key))
+                        .filter(|line| !drag.carries(&this.selected.snapshot(), &line.key))
                         .and_then(|line| line.row.opens);
                     if let Some(into) = into {
+                        if !drag.wandered(window, this.pressed_at) {
+                            return;
+                        }
                         let keys = this.drag_keys(&drag.key);
                         this.drop_into(into, &keys, window, cx);
                         this.icons.dragging = None;

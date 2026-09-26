@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use finder_fs::ops::Op;
 use gpui::{
-    Context, Div, DragMoveEvent, Hsla, IntoElement, Render, SharedString, Stateful, WeakEntity,
-    Window, div, prelude::*, px,
+    Context, Div, DragMoveEvent, ExternalPaths, Hsla, IntoElement, Pixels, Point, Render,
+    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
 };
 
 use crate::app::FinderDemo;
@@ -32,24 +32,74 @@ pub(crate) struct RowDrag {
 }
 
 pub(crate) trait Grabbed: 'static {
-    fn key(&self) -> &SharedString;
+    /// Whether `key` is one of the dragged rows or sits inside one, so it cannot be a target.
+    fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool;
+    /// The rows the drag carries.
+    fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString>;
+    /// Whether the press that started the drag travelled far enough to mean it. A drag from
+    /// another app always has.
+    fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool;
 }
 
-impl Grabbed for RowDrag {
-    fn key(&self) -> &SharedString {
-        &self.key
+pub(crate) fn row_wandered(window: &Window, pressed_at: Point<Pixels>) -> bool {
+    (window.mouse_position() - pressed_at).magnitude() >= DRAG_START
+}
+
+fn under(key: &SharedString, held: &str) -> bool {
+    Path::new(key.as_ref()).starts_with(held)
+}
+
+pub(crate) fn row_carries(
+    grabbed: &SharedString,
+    selected: &HashSet<SharedString>,
+    key: &SharedString,
+) -> bool {
+    match selected.contains(grabbed) {
+        true => selected.iter().any(|held| under(key, held)),
+        false => under(key, grabbed),
     }
 }
 
-pub(crate) fn carries<D: Grabbed>(
+pub(crate) fn row_keys(
+    grabbed: &SharedString,
     selected: &HashSet<SharedString>,
-    grab: &D,
-    key: &SharedString,
-) -> bool {
-    let under = |held: &SharedString| Path::new(key.as_ref()).starts_with(held.as_ref());
-    match selected.contains(grab.key()) {
-        true => selected.iter().any(under),
-        false => under(grab.key()),
+) -> Vec<SharedString> {
+    match selected.contains(grabbed) {
+        true => selected.iter().cloned().collect(),
+        false => vec![grabbed.clone()],
+    }
+}
+
+impl Grabbed for RowDrag {
+    fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool {
+        row_carries(&self.key, selected, key)
+    }
+
+    fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString> {
+        row_keys(&self.key, selected)
+    }
+
+    fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool {
+        row_wandered(window, pressed_at)
+    }
+}
+
+impl Grabbed for ExternalPaths {
+    fn carries(&self, _: &HashSet<SharedString>, key: &SharedString) -> bool {
+        self.paths()
+            .iter()
+            .any(|held| Path::new(key.as_ref()).starts_with(held))
+    }
+
+    fn keys(&self, _: &HashSet<SharedString>) -> Vec<SharedString> {
+        self.paths()
+            .iter()
+            .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    fn wandered(&self, _: &Window, _: Point<Pixels>) -> bool {
+        true
     }
 }
 
@@ -76,7 +126,7 @@ pub(crate) fn drop_hover<D: Grabbed>(
 ) -> Stateful<Div> {
     target.on_drag_move(move |event: &DragMoveEvent<D>, _, cx| {
         let at = event.event.position;
-        let over = (event.bounds.contains(&at) && !carries(&carried, event.drag(cx), &key))
+        let over = (event.bounds.contains(&at) && !event.drag(cx).carries(&carried, &key))
             .then(|| match band {
                 Some((twist, name)) => {
                     let twist = event.bounds.left() + px(twist);
@@ -105,7 +155,7 @@ pub(crate) fn drop_lands<D: Grabbed>(
         .drag_over::<D>({
             let carried = carried.clone();
             let key = key.clone();
-            move |style, grab: &D, _, _| match (carries(&carried, grab, &key), lit) {
+            move |style, grab: &D, _, _| match (grab.carries(&carried, &key), lit) {
                 (true, _) | (false, Lit::Drawn) => style,
                 (false, Lit::Outline(edge)) => style.border_color(edge),
             }
@@ -115,15 +165,17 @@ pub(crate) fn drop_lands<D: Grabbed>(
             let carried = carried.clone();
             let key = key.clone();
             move |grab: &D, window: &mut Window, cx| {
-                if carries(&carried, grab, &key) {
+                if grab.carries(&carried, &key) {
                     return;
                 }
-                let grabbed = grab.key().clone();
+                let keys = grab.keys(&carried);
                 this.update(cx, |demo: &mut FinderDemo, cx| {
                     if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
                         return;
                     }
-                    let keys = demo.drag_keys(&grabbed);
+                    if !grab.wandered(window, demo.pressed_at) {
+                        return;
+                    }
                     demo.drop_into(into, &keys, window, cx);
                     cx.notify();
                 })
@@ -321,8 +373,10 @@ impl FinderDemo {
         if at.x >= self.metrics().left && !outside {
             return;
         }
-        let paths: Vec<PathBuf> = self
-            .drag_keys(event.drag(cx).key())
+        let selected = self.selected.snapshot();
+        let paths: Vec<PathBuf> = event
+            .drag(cx)
+            .keys(&selected)
             .iter()
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();
@@ -332,10 +386,27 @@ impl FinderDemo {
     }
 
     pub(crate) fn drag_keys(&self, grabbed: &SharedString) -> Vec<SharedString> {
-        match self.selected.contains(grabbed) {
-            true => self.selected.iter().cloned().collect(),
-            false => vec![grabbed.clone()],
+        row_keys(grabbed, &self.selected.snapshot())
+    }
+
+    /// Files dragged in from another app land in the folder the pointer is over, or in the one
+    /// the window shows.
+    pub(crate) fn files_dropped(
+        &mut self,
+        dropped: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.mouse_position().x < self.metrics().left {
+            return;
         }
+        let into = self
+            .spring
+            .as_ref()
+            .map_or_else(|| self.here(), |spring| spring.into);
+        let keys = dropped.keys(&self.selected.snapshot());
+        self.drop_into(into, &keys, window, cx);
+        cx.notify();
     }
 
     /// Finder moves within a volume and copies onto another; Option always copies, Command
@@ -347,33 +418,43 @@ impl FinderDemo {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if (window.mouse_position() - self.pressed_at).magnitude() < DRAG_START {
-            return;
-        }
         let held = window.modifiers();
         let into = PathBuf::from(into);
-        let (copies, moves): (Vec<PathBuf>, Vec<PathBuf>) = keys
+        // A web link dragged from a browser arrives as its URL, not as a file.
+        let items: Vec<PathBuf> = keys
             .iter()
             .map(|key| PathBuf::from(key.as_ref()))
-            .filter(|path| path.parent() != Some(into.as_path()))
-            .partition(|path| held.alt || (!held.platform && !same_volume(path, &into)));
-        if !moves.is_empty() {
-            let op = Op::Move {
-                items: moves,
-                into: into.clone(),
-            };
-            self.run_op(op, After::Select, cx);
-        }
-        if !copies.is_empty() {
-            self.run_op(
-                Op::Copy {
-                    items: copies,
-                    into,
-                },
-                After::Select,
-                cx,
-            );
-        }
+            .filter(|path| path.is_absolute() && path.parent() != Some(into.as_path()))
+            .collect();
+        let sorted = cx.background_executor().spawn({
+            let into = into.clone();
+            async move {
+                items.into_iter().partition::<Vec<PathBuf>, _>(|path| {
+                    held.alt || (!held.platform && !same_volume(path, &into))
+                })
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let (copies, moves) = sorted.await;
+            this.update(cx, |this, cx| {
+                if !moves.is_empty() {
+                    let into = into.clone();
+                    this.run_op(Op::Move { items: moves, into }, After::Select, cx);
+                }
+                if !copies.is_empty() {
+                    this.run_op(
+                        Op::Copy {
+                            items: copies,
+                            into,
+                        },
+                        After::Select,
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
