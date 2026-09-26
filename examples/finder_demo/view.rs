@@ -118,20 +118,11 @@ impl FinderDemo {
         self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
     }
 
-    pub(crate) fn pane_w(&self) -> f32 {
-        if self.preview_shown() {
-            self.preview_w
-        } else {
-            0.
-        }
-    }
-
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let avail = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right)
-            - self.pane_w()
             - 24.;
         let tile = cell(self.icon_size as f32);
         ((avail / tile).floor() as usize).max(1)

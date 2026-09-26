@@ -32,6 +32,7 @@ const SELECTION_JOIN_TRAIL: f32 = 6.;
 const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
 pub(crate) const LIST_FOOT_GAP: f32 = 5.;
+const LIST_END_GAP: f32 = 10.;
 const BAND_INSET: f32 = 8.;
 const LABEL_GAP: f32 = 6.;
 const TAG_DOTS_GAP: f32 = 6.;
@@ -113,7 +114,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn list_tail(&self) -> (usize, f32) {
-        let foot = LIST_FOOT_GAP + self.path_bar_h();
+        let foot = LIST_END_GAP;
         let row_h = self.row_h();
         let rows = (foot / row_h).ceil() as usize;
         (rows, rows as f32 * row_h - foot)

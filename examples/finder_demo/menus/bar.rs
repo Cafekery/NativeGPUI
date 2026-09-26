@@ -508,9 +508,8 @@ impl FinderDemo {
                 this.path_bar_shown = !this.path_bar_shown;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ToggleStatusBar, _, cx| {
-                this.status_bar_shown = !this.status_bar_shown;
-                cx.notify();
+            .on_action(cx.listener(|this, _: &ToggleStatusBar, window, cx| {
+                this.toggle_status_bar(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
                 this.show_hidden = !this.show_hidden;
