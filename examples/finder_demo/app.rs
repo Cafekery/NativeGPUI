@@ -51,13 +51,6 @@ pub(crate) fn ask_sidebar() -> Receiver<Vec<sidebar::Group>> {
     answer
 }
 
-pub(crate) struct Stack {
-    pub(crate) keys: Vec<SharedString>,
-    pub(crate) side: u32,
-    pub(crate) thumb_widths: Vec<Option<u32>>,
-    pub(crate) image: Arc<RenderImage>,
-}
-
 pub(crate) struct FinderDemo {
     pub(crate) folders: Folders,
     pub(crate) sidebar: Option<NativeSidebar>,
@@ -93,7 +86,7 @@ pub(crate) struct FinderDemo {
     pub(crate) stats_pending: Option<(u64, usize)>,
     pub(crate) stats_stale: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) followed: Option<(u64, &'static str, &'static str, usize)>,
-    pub(crate) stack: RefCell<Option<Stack>>,
+    pub(crate) stack: RefCell<Option<Arc<RenderImage>>>,
     pub(crate) typed: String,
     pub(crate) typed_at: Option<Instant>,
     pub(crate) type_filter: Option<String>,
@@ -189,11 +182,13 @@ impl FinderDemo {
         let groups = groups.unwrap_or_default();
         let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = changes.clone();
-        read::spawn_folder_tick(changes, cx);
+        read::follow_events(changes, cx);
         let queue_events: Arc<Mutex<Vec<queue::Event>>> = Arc::new(Mutex::new(Vec::new()));
         let queue_sink = queue_events.clone();
-        let queue = Queue::new(move |event| queue_sink.lock().unwrap().push(event));
-        read::spawn_queue_tick(cx);
+        let queue = Queue::new(move |event| {
+            queue_sink.lock().unwrap().push(event);
+            read::EVENTS.ring();
+        });
         let view = prefs::view().unwrap_or(LIST_VIEW);
         let mut this = Self {
             titled: String::new(),
@@ -274,7 +269,10 @@ impl FinderDemo {
             icons: Grid::default(),
             scale: 2.,
             window_min_w: f32::NAN,
-            watcher: Watcher::new(move |dirs| sink.lock().unwrap().extend(dirs)),
+            watcher: Watcher::new(move |dirs| {
+                sink.lock().unwrap().extend(dirs);
+                read::EVENTS.ring();
+            }),
             watching: HashSet::new(),
             hits: Vec::new(),
             hits_rev: 0,

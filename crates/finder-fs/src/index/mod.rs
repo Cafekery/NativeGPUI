@@ -297,7 +297,8 @@ impl Index {
         })
     }
 
-    fn apply(self: &Arc<Self>, replay: Replay) {
+    /// Whether it put work off until a folder cools down or a check comes due.
+    fn apply(self: &Arc<Self>, replay: Replay) -> bool {
         let home = crawl::home();
         let open = |dir: &PathBuf| catchup::open_to_us(dir, &home);
         let rescans: Vec<PathBuf> = replay.rescan.into_iter().filter(open).collect();
@@ -353,6 +354,8 @@ impl Index {
         pending.applied = pending.applied.max(replay.event_id);
         drop(pending);
         self.walk_pending();
+        let pending = self.pending.lock().unwrap();
+        !pending.later.is_empty() || !pending.rechecks.is_empty()
     }
 
     /// With nothing left to walk, every followed root is current to the last event applied, so

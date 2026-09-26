@@ -1,11 +1,23 @@
 use std::collections::HashSet;
-use std::sync::{OnceLock, RwLock};
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
+use std::time::{Duration, Instant};
 
+use block2::StackBlock;
 use finder_fs::volumes;
-use objc2_foundation::{NSFileManager, NSString};
+use gpui::App;
+use objc2_app_kit::{
+    NSWorkspace, NSWorkspaceDidMountNotification, NSWorkspaceDidRenameVolumeNotification,
+    NSWorkspaceDidUnmountNotification,
+};
+use objc2_foundation::{NSFileManager, NSNotification, NSString};
 
 use super::paths::intern;
+use crate::app::FinderDemo;
+use crate::signal::Signal;
 
+#[derive(PartialEq)]
 struct Mounted {
     mount: String,
     name: &'static str,
@@ -15,14 +27,30 @@ struct Mounted {
     network: bool,
 }
 
-fn volumes_seen() -> &'static RwLock<Vec<Mounted>> {
-    static SEEN: OnceLock<RwLock<Vec<Mounted>>> = OnceLock::new();
-    SEEN.get_or_init(Default::default)
+/// Free space on screen is at most this stale while it is being drawn.
+const FRESH: Duration = Duration::from_millis(4800);
+
+static SEEN: RwLock<Vec<Mounted>> = RwLock::new(Vec::new());
+static REFRESHED: Mutex<Option<Instant>> = Mutex::new(None);
+/// Rung by a mount, an unmount or a rename, and by free space read from a stale snapshot.
+static VOLUMES: Signal = Signal::new();
+static MOUNTS: AtomicBool = AtomicBool::new(false);
+
+fn seen() -> RwLockReadGuard<'static, Vec<Mounted>> {
+    SEEN.read().unwrap()
 }
 
-/// Blocks for milliseconds: never call it from a frame.
-pub(crate) fn refresh_volumes() {
-    let mounted = volumes::mounted()
+fn fresh() {
+    let mut refreshed = REFRESHED.lock().unwrap();
+    if refreshed.is_some_and(|at| at.elapsed() >= FRESH) {
+        *refreshed = Some(Instant::now());
+        VOLUMES.ring();
+    }
+}
+
+/// Blocks for milliseconds: never call it from a frame. Whether anything changed.
+pub(crate) fn refresh_volumes() -> bool {
+    let mounted: Vec<Mounted> = volumes::mounted()
         .iter()
         .map(|volume| Mounted {
             mount: volume.path.to_string_lossy().into_owned(),
@@ -33,7 +61,60 @@ pub(crate) fn refresh_volumes() {
             network: volume.network,
         })
         .collect();
-    *volumes_seen().write().unwrap() = mounted;
+    *REFRESHED.lock().unwrap() = Some(Instant::now());
+    let mut seen = SEEN.write().unwrap();
+    let changed = *seen != mounted;
+    *seen = mounted;
+    changed
+}
+
+pub(crate) fn follow_volumes(cx: &mut App) {
+    let block = StackBlock::new(|_: NonNull<NSNotification>| {
+        MOUNTS.store(true, Ordering::Relaxed);
+        VOLUMES.ring();
+    })
+    .copy();
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    for name in unsafe {
+        [
+            NSWorkspaceDidMountNotification,
+            NSWorkspaceDidUnmountNotification,
+            NSWorkspaceDidRenameVolumeNotification,
+        ]
+    } {
+        unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+        };
+    }
+    cx.spawn(async move |cx| {
+        let mut seen = 0;
+        loop {
+            seen = VOLUMES.after(seen).await;
+            let mounts = MOUNTS.swap(false, Ordering::Relaxed);
+            let background = cx.background_executor().clone();
+            let changed = background.spawn(async { refresh_volumes() }).await;
+            if mounts {
+                let windows = cx.update(|cx| {
+                    cx.windows()
+                        .into_iter()
+                        .filter_map(|window| window.downcast::<FinderDemo>())
+                        .collect::<Vec<_>>()
+                });
+                for window in windows {
+                    let groups = background
+                        .spawn(async { crate::chrome::sidebar::groups() })
+                        .await;
+                    window
+                        .update(cx, |this, _, _| this.sidebar_took(groups))
+                        .ok();
+                }
+            }
+            if changed || mounts {
+                cx.update(crate::read::notify_windows);
+            }
+        }
+    })
+    .detach();
 }
 
 fn boot_name() -> &'static str {
@@ -49,9 +130,7 @@ fn boot_name() -> &'static str {
 pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
     let under =
         |mount: &str| mount == "/" || path == mount || path.starts_with(&format!("{mount}/"));
-    volumes_seen()
-        .read()
-        .unwrap()
+    seen()
         .iter()
         .filter(|volume| under(&volume.mount))
         .max_by_key(|volume| volume.mount.len())
@@ -60,18 +139,11 @@ pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
 }
 
 pub(crate) fn volume_roots() -> Vec<&'static str> {
-    volumes_seen()
-        .read()
-        .unwrap()
-        .iter()
-        .map(|volume| intern(&volume.mount))
-        .collect()
+    seen().iter().map(|volume| intern(&volume.mount)).collect()
 }
 
 pub(crate) fn network_roots() -> Vec<&'static str> {
-    volumes_seen()
-        .read()
-        .unwrap()
+    seen()
         .iter()
         .filter(|volume| volume.network)
         .map(|volume| intern(&volume.mount))
@@ -79,10 +151,9 @@ pub(crate) fn network_roots() -> Vec<&'static str> {
 }
 
 pub(crate) fn available_bytes(id: &str) -> u64 {
+    fresh();
     let (mount, _) = volume_of(id);
-    volumes_seen()
-        .read()
-        .unwrap()
+    seen()
         .iter()
         .find(|volume| volume.mount == mount)
         .map_or(0, |volume| volume.available)
@@ -96,9 +167,7 @@ pub(crate) struct VolumeInfo {
 }
 
 pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
-    volumes_seen()
-        .read()
-        .unwrap()
+    let info = seen()
         .iter()
         .find(|volume| volume.mount == id)
         .map(|volume| VolumeInfo {
@@ -106,7 +175,11 @@ pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
             capacity: volume.capacity,
             available: volume.available,
             format: volume.format,
-        })
+        });
+    if info.is_some() {
+        fresh();
+    }
+    info
 }
 
 pub(super) fn special() -> &'static HashSet<String> {
