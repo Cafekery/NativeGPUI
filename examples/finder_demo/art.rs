@@ -37,8 +37,19 @@ pub(crate) fn poster_art(
     match thumb(row, width.max(height), scale, true, false) {
         Some(image) => poster(image, width, height, scale, kind),
         None => slot(width, height)
-            .child(type_art(kind_of(row), row.face, width.min(height)))
+            .child(type_art(poster_kind(row), row.face, width.min(height)))
             .into_any_element(),
+    }
+}
+
+/// Finder badges an alias's icon, never its preview: a poster draws what the alias points at.
+fn poster_kind(row: &Row) -> Option<FileType<'static>> {
+    match (row.uti == "public.symlink")
+        .then(|| std::fs::canonicalize(row.path.as_ref()).ok())
+        .flatten()
+    {
+        Some(target) => Some(FileType::Path(crate::data::intern_path(&target))),
+        None => kind_of(row),
     }
 }
 

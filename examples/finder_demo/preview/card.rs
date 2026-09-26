@@ -41,8 +41,8 @@ const TAGS_WELL_H: f32 = 33.;
 const TAGS_TEXT_TOP: f32 = 1.;
 /// The pane scrolls, with this much room under the tags, once its content reaches the band.
 const BOTTOM_PAD: f32 = 16.;
-const ICON_H: f32 = 15.;
-const GAP_ICON_LABEL: f32 = 11.;
+const ICON_H: f32 = 16.5;
+const GAP_ICON_LABEL: f32 = 9.5;
 const GAP_TOP: f32 = 10.;
 const GAP_HERO_TEXT: f32 = 27.3;
 const HERO_TALL: f32 = 1.25;
@@ -93,7 +93,7 @@ struct Ink {
 }
 
 impl Ink {
-    fn now() -> Self {
+    fn now(key: bool) -> Self {
         match tokens::current_appearance() {
             Appearance::Dark => {
                 let white = |a| hsla(0., 0., 1., a);
@@ -110,17 +110,36 @@ impl Ink {
             }
             Appearance::Light => {
                 let black = |a| hsla(0., 0., 0., a);
+                // Light vibrant text darkens the glass by a fixed depth; the glass lightens off key.
+                let glass = if key { 237. } else { 242. };
+                let under = |depth: f32| hsla(0., 0., (glass - depth) / 255., 1.);
                 Self {
                     name: black(0.7),
-                    heading: black(0.753),
-                    value: black(0.775),
-                    title: black(0.428),
-                    kind: black(0.213),
+                    heading: under(178.5),
+                    value: under(178.5),
+                    title: under(102.),
+                    kind: under(51.5),
                     rule: black(0.094),
                     action: black(0.5),
                     well: hsla(0., 0., 1., 1.),
                 }
             }
+        }
+    }
+
+    /// Column view's preview has no glass under it, and Finder's text there is plain.
+    fn plain() -> Self {
+        let label = system_color(SystemColor::Label);
+        let secondary = system_color(SystemColor::SecondaryLabel);
+        Self {
+            name: label,
+            heading: label,
+            value: label,
+            title: secondary,
+            kind: secondary,
+            rule: system_color(SystemColor::Separator),
+            action: secondary,
+            well: hsla(0., 0., 0., 0.),
         }
     }
 }
@@ -475,7 +494,10 @@ impl FinderDemo {
     ) -> AnyElement {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
-        let ink = Ink::now();
+        let ink = match self.view == COLUMN_VIEW {
+            true => Ink::plain(),
+            false => Ink::now(self.host.as_ref().is_none_or(|host| host.isKeyWindow())),
+        };
         let rows = card.rows.len();
         let editing = (self.view == GALLERY_VIEW && !card.many)
             .then(|| self.cursor_line())
@@ -667,7 +689,8 @@ impl FinderDemo {
                     .flex_col()
                     .items_center()
                     .child(
-                        div().h(px(ICON_H)).flex().items_center().children(
+                        // Symbol images differ in height; AppKit's buttons sit them on one baseline.
+                        div().h(px(ICON_H)).flex().items_end().children(
                             sf_symbol_colored(
                                 symbol,
                                 px(ACTION_ICON_SIZE),
