@@ -58,6 +58,7 @@ const KINDS_WARM: usize = 400;
 const QUIT_WAIT: Duration = Duration::from_millis(150);
 
 fn main() {
+    app::EARLY_SIDEBAR.set(Some(app::ask_sidebar()));
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
@@ -98,7 +99,7 @@ fn main() {
         })
         .detach();
         warm.spawn(async {
-            let table = store().join("kinds.tsv");
+            let table = store().join("kinds-2.tsv");
             finder_fs::kind::load_kinds(&table);
             for path in index().extensions(KINDS_WARM) {
                 finder_fs::kind::kind_of_path(&path);
@@ -133,21 +134,22 @@ pub(crate) fn index() -> &'static Arc<Index> {
 }
 
 fn crawl(cx: &mut App) {
-    let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
-    // A network share is sealed below a root already; as a root it would be walked over the wire.
-    roots.extend(
-        volumes::mounted()
-            .into_iter()
-            .filter(|volume| !volume.network)
-            .map(|volume| volume.path)
-            .filter(|path| path != Path::new("/")),
-    );
-    let executor = cx.background_executor().clone();
     if env::var_os("NG_NO_CRAWL").is_none() {
         static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
-        // Off the main thread: the first `index()` loads the snapshot.
-        executor
+        // Off the main thread: the first `index()` loads the snapshot, and each local volume is
+        // asked for its attributes.
+        cx.background_executor()
             .spawn(async move {
+                let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
+                // A network share is sealed below a root already; as a root it would be walked over
+                // the wire.
+                roots.extend(
+                    volumes::mounted()
+                        .into_iter()
+                        .filter(|volume| !volume.network)
+                        .map(|volume| volume.path)
+                        .filter(|path| path != Path::new("/")),
+                );
                 FOLLOWING.get_or_init(|| index().follow(roots.clone()));
                 index().sync(roots, |_| {})
             })

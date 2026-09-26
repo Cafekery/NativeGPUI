@@ -4,8 +4,7 @@ use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSKeyedUnarchiver, NSNumber, NSString, NSURL,
-    NSURLBookmarkResolutionOptions,
+    NSArray, NSData, NSDictionary, NSKeyedUnarchiver, NSNumber, NSString, NSURL, NSURLPathKey,
 };
 
 const LISTS: &str = "Library/Application Support/com.apple.sharedfilelist";
@@ -133,7 +132,7 @@ fn entry(item: &AnyObject) -> Option<Item> {
         path: item
             .objectForKey(&NSString::from_str("Bookmark"))
             .and_then(|data| data.downcast::<NSData>().ok())
-            .and_then(|data| resolve(&data)),
+            .and_then(|data| stored_path(&data)),
         name: item
             .objectForKey(&NSString::from_str("Name"))
             .and_then(|name| name.downcast::<NSString>().ok())
@@ -150,18 +149,13 @@ fn number(dict: &NSDictionary, key: &str) -> Option<Retained<NSNumber>> {
         .ok()
 }
 
-fn resolve(bookmark: &NSData) -> Option<PathBuf> {
-    let url = unsafe {
-        NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(
-            bookmark,
-            NSURLBookmarkResolutionOptions::WithoutUI
-                | NSURLBookmarkResolutionOptions::WithoutMounting,
-            None,
-            std::ptr::null_mut(),
-        )
-    }
-    .ok()?;
-    Some(PathBuf::from(url.path()?.to_string()))
+/// Resolving a bookmark stats its target, which waits for as long as a dead network share does.
+fn stored_path(bookmark: &NSData) -> Option<PathBuf> {
+    let key = unsafe { NSURLPathKey };
+    let values =
+        NSURL::resourceValuesForKeys_fromBookmarkData(&NSArray::from_slice(&[key]), bookmark)?;
+    let path = values.objectForKey(key)?.downcast::<NSString>().ok()?;
+    Some(PathBuf::from(path.to_string()))
 }
 
 #[cfg(test)]

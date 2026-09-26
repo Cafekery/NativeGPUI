@@ -80,3 +80,20 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
 - Dark, the toolbar band over the list (x=600 pt, y 2..50): Finder 39 40 39, the demo 40 40 40.
 - Light mode shows no lift in either app, in any view: behind the traffic lights, across the header band
   and down the rows both read 236.8..237.0 key and 242.0 non-key.
+## Launch
+
+Measured on macOS 27.0 (26A428) against a WebDAV share mounted from this Mac whose server was
+stopped after the mount had settled.
+
+- A pin of the demo's own (not a Finder favourite) inside a share that stopped answering keeps
+  the whole sidebar empty until the share times out: the sidebar is built off the main thread, so
+  the window and the listing no longer wait, but its pinned-folder check stats the pin. A
+  `stat` into the stopped share took 84,907 ms before the server was resumed.
+- A symbolic link in the opened folder that points into a stopped share holds that folder's
+  listing: each link is followed to learn whether it opens as a folder. The same follow into the
+  stopped share took 9,959 ms, ending only when the server was resumed.
+- A share that stops answering while macOS is still reading it right after it mounts stalls
+  `coreservicesd`, and with it every process's first file-property call: `NSApplication.shared`
+  waited 15,440 ms inside `connectToCoreServicesD` before any of the demo's code ran.
+- A Favorites or Locations item names the path its bookmark stored, as Finder's list last wrote
+  it; an item whose folder has since moved or gone is not followed or dropped at launch.

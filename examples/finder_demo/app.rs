@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
@@ -31,6 +32,23 @@ use crate::views::list::{ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
+
+/// How long a new window waits for its sidebar before drawing without it.
+const SIDEBAR_WAIT: Duration = Duration::from_millis(100);
+
+thread_local! {
+    /// The first window's sidebar, asked for before AppKit comes up.
+    pub(crate) static EARLY_SIDEBAR: RefCell<Option<Receiver<Vec<sidebar::Group>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Every row asks the file system or a daemon something, and a share that stopped answering
+/// stalls whoever asks for as long as it takes, so no window waits on it.
+pub(crate) fn ask_sidebar() -> Receiver<Vec<sidebar::Group>> {
+    let (sent, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sent.send(sidebar::groups()).ok());
+    answer
+}
 
 pub(crate) struct Stack {
     pub(crate) keys: Vec<SharedString>,
@@ -141,7 +159,32 @@ pub(crate) struct FinderDemo {
 
 impl FinderDemo {
     pub(crate) fn new(start: &'static str, cx: &mut Context<Self>) -> Self {
-        let groups = sidebar::groups();
+        let answer = EARLY_SIDEBAR.take().unwrap_or_else(ask_sidebar);
+        let groups = answer.recv_timeout(SIDEBAR_WAIT).ok();
+        if groups.is_none() {
+            cx.spawn(async move |this, cx| {
+                let groups = loop {
+                    cx.background_executor().timer(SIDEBAR_WAIT).await;
+                    match answer.try_recv() {
+                        Ok(groups) => break groups,
+                        Err(TryRecvError::Empty) => continue,
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                };
+                this.update(cx, |this, cx| {
+                    this.sidebar_rows = sidebar::stored_rows(&groups);
+                    this.sidebar_groups = groups;
+                    if let Some(bar) = &this.sidebar {
+                        bar.update(&this.sidebar_items());
+                    }
+                    this.sidebar_follow();
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        let groups = groups.unwrap_or_default();
         let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = changes.clone();
         read::spawn_folder_tick(changes, cx);

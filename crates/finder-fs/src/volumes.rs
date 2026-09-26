@@ -151,7 +151,8 @@ fn volume_from(stats: &libc::statfs) -> Volume {
     if !local {
         return volume;
     }
-    // Only a local volume is asked for its attributes: a disk read, never a network wait.
+    // Only a local volume is asked, yet the asking is an XPC round trip to coreservicesd and
+    // deleted, which waits on any share that stopped answering while they read it.
     let url = NSURL::fileURLWithPath(&NSString::from_str(&volume.path.to_string_lossy()));
     volume_at(&url, &keys()).unwrap_or(volume)
 }
