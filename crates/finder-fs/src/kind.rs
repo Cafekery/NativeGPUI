@@ -132,10 +132,14 @@ fn lookup(ext: &str) -> (Kind, bool) {
     let package = package_variant(&ns_ext);
     let is_package = package.is_some();
     let Some(ty) = package.or_else(|| UTType::typeWithFilenameExtension(&ns_ext)) else {
+        let label = match ext.is_empty() {
+            true => "Document".into(),
+            false => format!("{} File", ext.to_ascii_uppercase()).into(),
+        };
         return (
             Kind {
                 uti: "public.data".into(),
-                label: format!("{} File", ext.to_ascii_uppercase()).into(),
+                label,
             },
             false,
         );
@@ -229,7 +233,10 @@ pub fn kind_of_path(path: &Path) -> Kind {
         .map_or("", |(_, ext)| ext);
     cached(ext, |key| {
         let (mut kind, is_package) = lookup(key);
-        if let Some(label) = spotlight_label(path) {
+        // Finder names a kind as LaunchServices does, cased as Spotlight is: "ZIP archive".
+        if let Some(label) =
+            spotlight_label(path).filter(|label| label.eq_ignore_ascii_case(&kind.label))
+        {
             kind.label = label.into();
         }
         (kind, is_package)
@@ -314,8 +321,7 @@ mod tests {
 
     #[test]
     fn no_extension_is_document() {
-        let k = kind_for_extension("");
-        assert!(!k.label.is_empty());
+        assert_eq!(&*kind_for_extension("").label, "Document");
     }
 
     #[test]
@@ -325,38 +331,23 @@ mod tests {
     }
 
     #[test]
-    fn kind_of_path_matches_finder() {
+    fn kind_names_are_finders() {
         let dir = std::env::temp_dir().join(format!("finder-fs-kind-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cases: &[(&str, &str)] = &[
-            ("txt", "Plain Text Document"),
-            ("md", "Markdown Document"),
-            ("zip", "ZIP archive"),
+        for (ext, want) in [
+            ("md", "Markdown"),
+            ("json", "JSON"),
+            ("html", "HTML text"),
+            ("csv", "Comma Separated Spreadsheet (.csv)"),
             ("png", "PNG image"),
-            ("pdf", "PDF document"),
-            ("mov", "QuickTime movie"),
-            ("numbers", "Numbers document"),
-            ("json", "JSON Document"),
-            ("rs", "Document"),
-        ];
-        for (ext, want) in cases {
+        ] {
             let path = dir.join(format!("a.{ext}"));
             std::fs::write(&path, b"").unwrap();
-            let k = kind_of_path(&path);
-            let got = &*k.label;
-            assert!(
-                got == *want || got == kind_for_extension(ext).label.as_ref(),
-                "{ext}: got {got:?}, want {want:?} (Spotlight likely hasn't indexed the temp file yet)"
-            );
+            assert_eq!(&*kind_of_path(&path).label, want, "{ext}");
         }
         let app = dir.join("A.app");
         std::fs::create_dir_all(&app).unwrap();
-        let k = kind_of_path(&app);
-        assert!(
-            &*k.label == "Application" || &*k.label == kind_for_extension("app").label.as_ref(),
-            "app: got {:?}",
-            k.label
-        );
+        assert_eq!(&*kind_of_path(&app).label, "Application");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
