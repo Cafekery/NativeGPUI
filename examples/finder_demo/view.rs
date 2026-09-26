@@ -131,6 +131,7 @@ impl FinderDemo {
         let avail = f32::from(window.viewport_size().width)
             - f32::from(metrics.left)
             - f32::from(metrics.right)
+            - self.pane_w()
             - 24.;
         let tile = cell(self.icon_size as f32);
         ((avail / tile).floor() as usize).max(1)

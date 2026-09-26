@@ -21,9 +21,10 @@ pub(crate) const HEADER_H: f32 = 28.;
 
 pub(crate) const PANE_INSET: f32 = 10.;
 
-pub(crate) const HEADER_LABEL_X: f32 = 47.;
-pub(crate) const SEP_TOP: f32 = 4.;
-pub(crate) const SEP_H: f32 = 19.;
+pub(crate) const HEADER_LABEL_X: f32 = 53.;
+const LABEL_PAD: f32 = 3.;
+pub(crate) const SEP_TOP: f32 = 6.;
+pub(crate) const SEP_H: f32 = 16.;
 pub(crate) const CELL_PAD: f32 = 7.;
 pub(crate) const CELL_TRAIL: f32 = 6.;
 pub(crate) const SORT_INSET: f32 = 5.;
@@ -104,10 +105,10 @@ fn cell_body(
     let inset = if matches!(column, Column::Name) {
         HEADER_LABEL_X
     } else {
-        CELL_PAD
+        LABEL_PAD
     };
     // Hosted, not GPUI: the band's material sits above the whole Metal layer and would blur it.
-    let label = div().flex_1().mb(px(2.)).child(
+    let label = div().flex_1().child(
         native_label(id, column_title(column))
             .font_size(tokens::small_system_font_size())
             .weight(if sorted {
@@ -325,15 +326,17 @@ impl FinderDemo {
         if dragged == Some(column) {
             cell = cell.child(overlay(palette.surface).child(overlay(wash)));
         }
-        cell = cell.child(
-            div()
-                .absolute()
-                .right_0()
-                .top(px(SEP_TOP))
-                .w(px(1.))
-                .h(px(SEP_H))
-                .child(native_rule(("ng.finder.header.sep", slot))),
-        );
+        if slot < self.list_columns.len() {
+            cell = cell.child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top(px(SEP_TOP))
+                    .w(px(1.))
+                    .h(px(SEP_H))
+                    .child(native_rule(("ng.finder.header.sep", slot))),
+            );
+        }
         let with_menu = |cell: AnyElement| {
             menus::attach(
                 ("ng.finder.header.menu", slot),
