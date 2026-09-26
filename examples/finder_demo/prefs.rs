@@ -31,6 +31,7 @@ pub(crate) struct Finder {
     pub(crate) icon_size: f32,
     pub(crate) relative_dates: bool,
     pub(crate) airdrop: bool,
+    pub(crate) folders_first: bool,
     pub(crate) sort: (Column, bool),
 }
 
@@ -81,10 +82,13 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         Some("kind") => Some(Column::Kind),
         _ => None,
     };
-    Finder {
-        posix_title: read("_FXShowPosixPathInTitle")
+    let flag = |key: &str| {
+        read(key)
             .and_then(|on| on.downcast::<NSNumber>().ok())
-            .is_some_and(|on| on.boolValue()),
+            .is_some_and(|on| on.boolValue())
+    };
+    Finder {
+        posix_title: flag("_FXShowPosixPathInTitle"),
         text_size: number("textSize").unwrap_or(13.) as f32,
         icon_size: number("iconSize").unwrap_or(16.) as f32,
         relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
@@ -94,6 +98,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
                     .is_some_and(|id| id.to_string() == "com.apple.finder.AirD")
             })
         }),
+        folders_first: flag("_FXSortFoldersFirst"),
         sort: sort.map_or((Column::Name, true), |column| {
             (column, ascending.unwrap_or(true))
         }),

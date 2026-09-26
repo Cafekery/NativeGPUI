@@ -9,6 +9,7 @@ use gpui::{
     Context, Div, DragMoveEvent, ExternalPaths, Hsla, IntoElement, Pixels, Point, Render,
     SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
 };
+use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
 use crate::ops::After;
@@ -249,13 +250,11 @@ fn springing_delay() -> Option<Duration> {
 }
 
 fn global_default(key: &str) -> Option<String> {
-    let out = std::process::Command::new("defaults")
-        .args(["read", "-g", key])
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(out.stdout.trim_ascii()).into_owned())
+    let value = NSUserDefaults::standardUserDefaults().objectForKey(&NSString::from_str(key))?;
+    match value.downcast::<NSNumber>() {
+        Ok(number) => Some(number.stringValue().to_string()),
+        Err(value) => Some(value.downcast::<NSString>().ok()?.to_string()),
+    }
 }
 
 pub(crate) struct DragGhost;
