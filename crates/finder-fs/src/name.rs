@@ -1,4 +1,7 @@
 use std::borrow::Cow;
+use std::path::Path;
+
+use objc2_foundation::{NSFileManager, NSString};
 
 /// A name as Finder draws it: `:` as the `/` the user typed, a control character as `?`, and a
 /// direction override closed before the extension, so `\u{202e}gnp.txt` can't pass for a
@@ -29,6 +32,31 @@ pub fn display(name: &str) -> Cow<'_, str> {
             .chain(extension.chars().map(map))
             .collect(),
     )
+}
+
+/// The name Finder shows for a path: LaunchServices' display name, which leaves off an
+/// extension the item hides or an application's, keeps it under "Show all filename extensions",
+/// and drops `.localized`.
+pub fn of_path(path: &Path) -> String {
+    let path = NSString::from_str(&path.to_string_lossy());
+    display(
+        &NSFileManager::defaultManager()
+            .displayNameAtPath(&path)
+            .to_string(),
+    )
+    .into_owned()
+}
+
+/// `of_path` for an item a listing read, asked of LaunchServices only when the item can lose
+/// part of its name: the answer costs about 40 µs an item.
+pub fn shown(dir: &Path, name: &str, ext_hidden: bool) -> String {
+    let hides = name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && (ext_hidden || ext.eq_ignore_ascii_case("app") || ext == "localized")
+    });
+    match hides {
+        true => of_path(&dir.join(name)),
+        false => display(name).into_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +94,33 @@ mod tests {
     fn a_name_with_nothing_to_map_is_not_copied() {
         assert!(matches!(display("Report.pdf"), Cow::Borrowed(_)));
         assert!(matches!(display("a:b"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn only_names_launch_services_leaves_alone_skip_it() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-shown-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Loc.localized")).unwrap();
+        std::fs::create_dir_all(dir.join("Dir.app")).unwrap();
+        for name in [
+            "Doc.txt",
+            "Two.pdf.txt",
+            "Up.APP",
+            "Trail.",
+            "noext",
+            "a:b.txt",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        std::os::unix::fs::symlink("/System/Applications/Calculator.app", dir.join("Calc.app"))
+            .unwrap();
+        for name in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = name.file_name().to_string_lossy().into_owned();
+            assert_eq!(
+                shown(&dir, &name, false),
+                of_path(&dir.join(&name)),
+                "{name}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

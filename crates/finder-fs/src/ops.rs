@@ -176,7 +176,7 @@ fn io_error(err: Retained<NSError>) -> io::Error {
     io::Error::new(kind, message)
 }
 
-pub(crate) fn walk_size(path: &Path) -> u64 {
+pub fn walk_size(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
     };

@@ -11,7 +11,7 @@ use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{click_kind, text_width};
-use crate::views::list::{ROW_FONT, column_text, name_prefix};
+use crate::views::list::{column_text, name_prefix, row_font};
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -496,7 +496,7 @@ impl FinderDemo {
         };
         let lines = self.focused_lines();
         let icon = self.list_icon_now();
-        let size = px(ROW_FONT);
+        let size = px(row_font());
         let widest = lines.iter().fold(0_f32, |widest, line| {
             let text_w = text_width(window, column_text(column, line), size);
             let total = if column == Column::Name {

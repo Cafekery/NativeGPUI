@@ -46,6 +46,8 @@ pub(crate) struct Row {
     /// Finder gives an alias no triangle, however its target opens.
     pub(crate) discloses: bool,
     pub(crate) dataless: bool,
+    pub(crate) readable: bool,
+    pub(crate) package: bool,
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
@@ -57,7 +59,8 @@ fn folder_full(entry: &Entry, path: &str, index: &Index) -> bool {
 }
 
 fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<FileType<'static>> {
-    if entry.package || entry.kind == EntryKind::Symlink {
+    // `iconForFile:` badges a folder the user can't open with Finder's no-entry sign.
+    if entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable {
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
@@ -94,45 +97,74 @@ pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'stati
     folder_kind(path, seen.map_or(holds, |seen| seen > 0))
 }
 
-fn target_folder(path: &str) -> Option<&'static str> {
-    let path = Path::new(path);
-    path.is_dir()
+/// Where a symlink leads: a folder it opens, or whether it is an app, which launches instead.
+fn target_of(path: &str) -> (Option<&'static str>, bool) {
+    let target = Path::new(path)
+        .is_dir()
         .then(|| std::fs::canonicalize(path).ok())
-        .flatten()
-        .map(|target| intern_path(&target))
+        .flatten();
+    let app = target
+        .as_ref()
+        .and_then(|target| target.file_name())
+        .is_some_and(|name| kind::is_package_name(&name.to_string_lossy()));
+    (
+        target.filter(|_| !app).map(|target| intern_path(&target)),
+        app,
+    )
+}
+
+/// Finder weighs every package it lists, whatever "Calculate all sizes" says; the index has not
+/// always weighed them.
+pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.package && row.size == "--")
+    {
+        let bytes = finder_fs::ops::walk_size(Path::new(&*row.path));
+        *row = Arc::new(Row {
+            size: byte_string(bytes).into(),
+            bytes,
+            ..(**row).clone()
+        });
+    }
 }
 
 fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
     let path = join(dir, &entry.name);
     let kind = match entry.kind {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
+        EntryKind::File if entry.alias => kind::kind_of(entry),
         _ => kind::kind_of_path(Path::new(&path)),
     };
-    let directory = entry.kind == EntryKind::Directory;
-    let bytes = match directory {
-        true => index.folder_size(Path::new(&path)).unwrap_or(0),
-        false => entry.size,
+    let bytes = match entry.kind == EntryKind::Directory {
+        true => index
+            .folder_size(Path::new(&path))
+            .filter(|bytes| *bytes > 0 || entry.package),
+        false => Some(entry.size),
+    };
+    let (opens, app) = match entry.kind {
+        EntryKind::Symlink => target_of(&path),
+        _ => (entry.is_dir().then(|| intern(&path)), false),
     };
     Row {
         name: entry.name.clone().into(),
-        display: finder_fs::name::display(&entry.name).into_owned().into(),
-        size: match directory && bytes == 0 {
-            true => "--".into(),
-            false => byte_string(bytes).into(),
-        },
-        bytes,
+        display: finder_fs::name::shown(Path::new(dir), &entry.name, entry.ext_hidden).into(),
+        size: bytes.map_or("--".into(), |bytes| byte_string(bytes).into()),
+        bytes: bytes.unwrap_or(0),
         modified_at: reference_seconds(entry.modified),
         created_at: reference_seconds(entry.created),
         kind: kind.label.to_string().into(),
         uti: kind.uti.to_string().into(),
-        face: face_of(&kind.uti),
-        hidden: entry.hidden,
-        opens: match entry.kind {
-            EntryKind::Symlink => target_folder(&path),
-            _ => entry.is_dir().then(|| intern(&path)),
+        face: match app {
+            true => Face::Program,
+            false => face_of(&kind.uti),
         },
+        hidden: entry.hidden,
+        opens,
         discloses: entry.is_dir(),
         dataless: entry.dataless,
+        readable: entry.readable,
+        package: entry.package,
         artwork: artwork_of(entry, &path, &kind.uti, index),
         path: path.into(),
     }
@@ -232,6 +264,8 @@ fn volume_row(id: &'static str) -> Option<Row> {
         opens: Some(id),
         discloses: true,
         dataless: false,
+        readable: true,
+        package: false,
         artwork: Some(FileType::Path(id)),
     })
 }

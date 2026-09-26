@@ -41,7 +41,11 @@ impl FinderDemo {
         let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
         let mut edits: Vec<Edit> = Vec::new();
         let mut take = |at: usize, line: &Line| {
-            if let Some(into) = line.row.opens.filter(|_| line.row.discloses) {
+            if let Some(into) = line
+                .row
+                .opens
+                .filter(|_| line.row.discloses && line.row.readable)
+            {
                 folders.push((line.key.clone(), into));
                 edits.push((at, line.key.clone(), open.then_some(into)));
             }
@@ -317,6 +321,12 @@ impl FinderDemo {
             self.anchor = Some(line.key.clone());
         }
         self.cursor = Some(line.key.clone());
+    }
+
+    pub(crate) fn deselect(&mut self) {
+        self.selected.clear();
+        self.cursor = None;
+        self.anchor = None;
     }
 
     pub(crate) fn disclose(&mut self, key: &SharedString, open: bool) {

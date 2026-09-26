@@ -696,7 +696,10 @@ impl Tree {
             added: (node.added != NO_TIME).then(|| time(node.added)),
             hidden: node.flags & HIDDEN != 0,
             package: node.flags & PACKAGE != 0,
+            ext_hidden: false,
+            alias: false,
             dataless: false,
+            readable: true,
             file_id: 0,
             children: (node.state & LISTED != 0).then(|| self.children(id).count() as u32),
         }

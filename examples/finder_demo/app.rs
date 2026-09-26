@@ -192,6 +192,7 @@ impl FinderDemo {
         let queue_sink = queue_events.clone();
         let queue = Queue::new(move |event| queue_sink.lock().unwrap().push(event));
         read::spawn_queue_tick(cx);
+        let view = prefs::view().unwrap_or(LIST_VIEW);
         let mut this = Self {
             titled: String::new(),
             criteria: vec![Default::default()],
@@ -203,9 +204,9 @@ impl FinderDemo {
             toolbar_for: (0, None, false, 0, 0),
             history: vec![start],
             at: 0,
-            view: prefs::view().unwrap_or(LIST_VIEW),
-            sort: Column::Name,
-            ascending: true,
+            view,
+            sort: prefs::finder().sort.0,
+            ascending: prefs::finder().sort.1,
             list_columns: default_columns(),
             name_w: NAME_MIN_W,
             header_drag: None,
@@ -231,7 +232,7 @@ impl FinderDemo {
             type_filter: None,
             type_filter_seen_match: false,
             tags: HashMap::new(),
-            preview: true,
+            preview: prefs::preview(view),
             preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
             preview_window: None,
             preview_opening: false,
@@ -255,7 +256,7 @@ impl FinderDemo {
             tag_editor: None,
             ql_shown: None,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
-            list_icon: prefs::list_icon().unwrap_or(ICON_SIZE),
+            list_icon: prefs::list_icon().unwrap_or(prefs::finder().icon_size),
             list_zoom: None,
             strip_icon: prefs::strip_icon().unwrap_or(48.),
             scroll: UniformListScrollHandle::new(),

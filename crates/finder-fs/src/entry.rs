@@ -19,7 +19,11 @@ pub struct Entry {
     pub added: Option<SystemTime>,
     pub hidden: bool,
     pub package: bool,
+    pub ext_hidden: bool,
+    /// A Finder alias file (FinderInfo's alias flag).
+    pub alias: bool,
     pub dataless: bool,
+    pub readable: bool,
     pub file_id: u64,
     pub children: Option<u32>,
 }

@@ -2,14 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, ExternalPaths, Font, FontWeight, Hsla, MouseButton, Pixels, Point,
-    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Div, ExternalPaths, Font, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, Pixels, Point, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
+    uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, list_art, small_glyph};
-use crate::data::{Column, Line, date_text, enclosing_name};
+use crate::data::{Column, Line, date_style, date_text, enclosing_name, kind_text, list_date};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
@@ -23,8 +24,10 @@ pub(crate) const ICON_SMALL: f32 = 16.;
 pub(crate) const ICON_X: f32 = 26.;
 pub(crate) const INDENT: f32 = 15.;
 pub(crate) const TWIST_W: f32 = 15.;
-pub(crate) const ROW_FONT: f32 = 14.;
-pub(crate) const ROW_PILL_RADIUS: f32 = 6.;
+pub(crate) fn row_font() -> f32 {
+    crate::prefs::finder().text_size
+}
+pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
 const SELECTION_JOIN_ALPHA: f32 = 0.1;
 const SELECTION_JOIN_SHADE: f32 = 0.05;
 const SELECTION_JOIN_LEAD: f32 = 30.;
@@ -59,6 +62,7 @@ struct Look {
     selection_join: Hsla,
     focused: bool,
     dates: Font,
+    date_style: usize,
     searching: bool,
     columns: Vec<ColumnSpec>,
 }
@@ -95,8 +99,13 @@ pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
     ICON_X + line.depth as f32 * INDENT + icon + LABEL_GAP
 }
 
+/// Finder's list: the taller of the icon and the list font's line, and 4 points.
 pub(crate) fn row_h(icon: f32) -> f32 {
-    icon + 5.
+    static LINE: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| {
+        let font = tokens::system_font_metrics(px(row_font()), FontWeight::NORMAL);
+        (font.ascent + font.descent.abs()).ceil()
+    });
+    icon.max(*LINE) + 4.
 }
 
 impl FinderDemo {
@@ -142,6 +151,11 @@ impl FinderDemo {
             },
             focused: palette.focused,
             dates: tokens::system_font_tabular(FontWeight::NORMAL),
+            date_style: self
+                .list_columns
+                .iter()
+                .find(|spec| spec.column == Column::Modified)
+                .map_or(3, |spec| date_style(spec.width, row_font())),
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
             columns: self.list_columns.clone(),
@@ -163,13 +177,18 @@ impl FinderDemo {
         let slots = self.slots(&lines);
         let hit = self.row_at(pads, look.row_h);
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
+        let rows_end = px((pads + count) as f32 * look.row_h);
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = self.list_tail();
         let items = pads + count + tails;
         // Finder stripes the empty rows below the last one; drawn under the list, which cannot scroll there.
         let (stripe, pitch) = (look.stripe, look.row_h);
-        let top = f32::from(self.scroll.0.borrow().base_handle.offset().y);
+        let top = {
+            let list = &self.scroll.0.borrow().base_handle;
+            // A scroll past the end reaches here before the list clamps it in prepaint.
+            f32::from(list.offset().y.max(-list.max_offset().y))
+        };
         let fill = (count..count + pads + (self.pane_h / pitch) as usize + 2)
             .filter(|at| at % 2 == 1)
             .map(move |at| {
@@ -222,6 +241,7 @@ impl FinderDemo {
         })
         .flex_1()
         .track_scroll(&self.scroll);
+        let scroll = self.scroll.clone();
 
         div()
             .flex_1()
@@ -237,6 +257,18 @@ impl FinderDemo {
                 hit,
                 axis_locked(list),
             ))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    let state = scroll.0.borrow();
+                    let list = &state.base_handle;
+                    let y = event.position.y - list.bounds().origin.y - list.offset().y;
+                    if y >= rows_end && !event.modifiers.shift && !event.modifiers.platform {
+                        this.deselect();
+                        cx.notify();
+                    }
+                }),
+            )
             .into_any_element()
     }
 
@@ -320,7 +352,7 @@ fn twist(
         .flex()
         .items_center()
         .justify_center();
-    if !line.row.discloses {
+    if !line.row.discloses || !line.row.readable {
         return slot;
     }
     let arrow = if open {
@@ -424,19 +456,21 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             .child(line.row.size.clone()),
         Column::Modified => cell
             .pl(px(CELL_PAD))
-            .font(look.dates.clone())
+            .when(look.date_style >= 2, |cell| cell.font(look.dates.clone()))
             .whitespace_nowrap()
             .overflow_hidden()
-            .child(date_text(line.row.modified_at)),
+            .child(list_date(line.row.modified_at, look.date_style)),
         Column::Kind => cell
             .pl(px(CELL_PAD))
             .whitespace_nowrap()
             .overflow_hidden()
-            .text_ellipsis()
-            .child(if look.searching {
-                enclosing_name(&line.key)
-            } else {
-                line.row.kind.clone()
+            .map(|cell| match look.searching {
+                true => cell.text_ellipsis().child(enclosing_name(&line.key)),
+                false => cell.text_ellipsis_middle().child(kind_text(
+                    &line.row.kind,
+                    spec.width - 20.,
+                    row_font(),
+                )),
             }),
         // `list_columns` never holds Name; this only keeps the match exhaustive.
         Column::Name => cell,
@@ -449,7 +483,7 @@ fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
     let name = twist
         + look.icon
         + LABEL_GAP
-        + text_width(window, line.row.display.clone(), px(ROW_FONT))
+        + text_width(window, line.row.display.clone(), px(row_font()))
         + LABEL_GAP;
     (twist, name.min(look.name_w))
 }
@@ -496,7 +530,7 @@ fn row(
         .flex()
         .items_center()
         .font_family(tokens::system_font_family())
-        .text_size(px(ROW_FONT))
+        .text_size(px(row_font()))
         .text_color(text)
         .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
         .children(fill.map(|(fill, run)| pill(fill, run)))

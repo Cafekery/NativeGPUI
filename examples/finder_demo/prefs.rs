@@ -1,13 +1,16 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
+use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSString, NSUserDefaults,
+    NSNumber, NSString, NSUserDefaults,
 };
 
 use crate::data::Column;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
 const VIEW: &str = "ng.finder.view";
 const SIDEBAR: &str = "sidebar.json";
@@ -19,6 +22,86 @@ const STRIP_ICON: &str = "ng.finder.strip.icon";
 
 fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
+}
+
+/// Finder's own settings for the windows it draws, read once.
+pub(crate) struct Finder {
+    pub(crate) posix_title: bool,
+    pub(crate) text_size: f32,
+    pub(crate) icon_size: f32,
+    pub(crate) relative_dates: bool,
+    pub(crate) airdrop: bool,
+    pub(crate) sort: (Column, bool),
+}
+
+fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
+    of.objectForKey(&NSString::from_str(key))
+}
+
+static FINDER: LazyLock<Finder> = LazyLock::new(|| {
+    let suite = NSString::from_str("com.apple.finder");
+    let defaults = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite));
+    let read = |key: &str| defaults.as_ref()?.objectForKey(&NSString::from_str(key));
+    let dict = |key: &str| read(key)?.downcast::<NSDictionary>().ok();
+    let list = dict("StandardViewSettings")
+        .and_then(|all| value(&all, "ExtendedListViewSettingsV2")?.downcast().ok());
+    let number = |key: &str| {
+        let found = value(list.as_ref()?, key)?.downcast::<NSNumber>().ok()?;
+        Some(found.doubleValue())
+    };
+    let toolbar = dict("NSToolbar Configuration Browser").and_then(|bar| {
+        value(&bar, "TB Item Identifiers")?
+            .downcast::<NSArray>()
+            .ok()
+    });
+    let text = |of: &NSDictionary, key: &str| {
+        Some(value(of, key)?.downcast::<NSString>().ok()?.to_string())
+    };
+    let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
+    let ascending = list
+        .as_deref()
+        .zip(sort_id.as_deref())
+        .and_then(|(list, id)| {
+            let columns = value(list, "columns")?.downcast::<NSArray>().ok()?;
+            columns.iter().find_map(|column| {
+                let column = column.downcast::<NSDictionary>().ok()?;
+                (text(&column, "identifier")? == id).then_some(())?;
+                Some(
+                    value(&column, "ascending")?
+                        .downcast::<NSNumber>()
+                        .ok()?
+                        .boolValue(),
+                )
+            })
+        });
+    let sort = match sort_id.as_deref() {
+        Some("name") => Some(Column::Name),
+        Some("dateModified") => Some(Column::Modified),
+        Some("size") => Some(Column::Size),
+        Some("kind") => Some(Column::Kind),
+        _ => None,
+    };
+    Finder {
+        posix_title: read("_FXShowPosixPathInTitle")
+            .and_then(|on| on.downcast::<NSNumber>().ok())
+            .is_some_and(|on| on.boolValue()),
+        text_size: number("textSize").unwrap_or(13.) as f32,
+        icon_size: number("iconSize").unwrap_or(16.) as f32,
+        relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
+        airdrop: toolbar.is_some_and(|ids| {
+            ids.iter().any(|id| {
+                id.downcast_ref::<NSString>()
+                    .is_some_and(|id| id.to_string() == "com.apple.finder.AirD")
+            })
+        }),
+        sort: sort.map_or((Column::Name, true), |column| {
+            (column, ascending.unwrap_or(true))
+        }),
+    }
+});
+
+pub(crate) fn finder() -> &'static Finder {
+    &FINDER
 }
 
 fn read(key: &str) -> Option<f64> {
@@ -153,6 +236,23 @@ pub(crate) fn pane_width() -> Option<f32> {
 
 pub(crate) fn set_pane_width(width: f32) {
     write(PANE, width as f64);
+}
+
+/// Finder keeps one Show Preview for icon and list views, one for columns and one for gallery.
+fn preview_key(view: usize) -> &'static str {
+    match view {
+        COLUMN_VIEW => "ng.finder.preview.column",
+        GALLERY_VIEW => "ng.finder.preview.gallery",
+        _ => "ng.finder.preview",
+    }
+}
+
+pub(crate) fn preview(view: usize) -> bool {
+    read(preview_key(view)).is_none_or(|shown| shown != 0.)
+}
+
+pub(crate) fn set_preview(view: usize, shown: bool) {
+    write(preview_key(view), f64::from(u8::from(shown)));
 }
 
 pub(crate) fn icon_size() -> Option<f32> {

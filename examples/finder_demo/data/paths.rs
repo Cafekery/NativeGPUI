@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
 
@@ -35,11 +36,19 @@ pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
     Some((intern(if dir.is_empty() { "/" } else { dir }), name))
 }
 
+/// Drawn every frame for each search result on screen, so LaunchServices is asked once a folder.
 pub(crate) fn enclosing_name(key: &str) -> SharedString {
-    match Path::new(key).parent().and_then(Path::file_name) {
-        Some(name) => finder_fs::name::display(&name.to_string_lossy())
-            .into_owned()
-            .into(),
-        None => "/".into(),
+    thread_local! {
+        static SEEN: RefCell<HashMap<String, SharedString>> = RefCell::new(HashMap::new());
     }
+    let parent = Path::new(key).parent().unwrap_or(Path::new("/"));
+    let parent = parent.to_string_lossy();
+    SEEN.with_borrow_mut(|seen| {
+        if let Some(name) = seen.get(parent.as_ref()) {
+            return name.clone();
+        }
+        let name = SharedString::from(finder_fs::name::of_path(Path::new(parent.as_ref())));
+        seen.insert(parent.into_owned(), name.clone());
+        name
+    })
 }
