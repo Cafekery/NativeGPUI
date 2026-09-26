@@ -175,3 +175,47 @@ Traffic lights, corner radius, window shadow and title type measure identical.
 - [ ] Get Info, Go to Folder, Connect to Server, New Folder, rename,
   conflicts, the tag editor, the tab bar and the progress window were captured from Finder 27 but
   not yet compared with the demo's.
+## Capability, speed and reliability
+
+Measured against Finder 27.0 (26A428) on the same Mac, on a fixture tree of hostile names,
+symlinks, permission cases, 100 000- and 500 000-item folders and a WebDAV share made to stop
+answering.
+
+- A folder Finder can't open (no read or search permission, or an ACL denying list) gets Finder's
+  own words, “The folder “X” can’t be opened because you don’t have permission to see its
+  contents.”, and the window stays where it was with the folder selected. Finder shows that text
+  in a dialog centred on the screen (260×208 at 993,343 for a window at 240,120); the demo shows
+  it as a sheet on the window (260×144), because a modal alert run from a GPUI event re-enters
+  GPUI's borrow of the app. The same holds for “The operation can’t be completed because the
+  original item for “X” can’t be found.” on a dangling symlink.
+- Finder badges an unreadable folder's icon with a red no-entry sign; the demo draws the plain
+  folder.
+- An operation the user's permissions refuse (copying a file they can't read, pasting into a
+  folder they can't write): Finder offers to do it as an administrator, “Finder wants to copy
+  “noread.txt”. Touch ID or enter your password to continue with “Finder”.”, and for a folder it
+  can't read it makes the empty destination first and then asks “You may need to enter the name
+  and password for an administrator on this computer to change the item named “noread”.” (Stop,
+  Continue). The demo has no privileged helper to act as an administrator, so it reports the
+  failure in a sheet instead, in the system's words, which for an unreadable file name the
+  destination: “noread.txt” couldn’t be copied because you don’t have permission to access
+  “drop2”.
+- A link dragged from a browser: Finder saves `<page title>.webloc` (an XML property list with one
+  `URL` key, type `ilht`, creator `MACS`, extension hidden). The demo's window accepts the drop
+  (the source is told Copy) and saves nothing: GPUI's drop hands it the address without the title.
+- Dragged text: Finder saves `<first words>.textClipping`; GPUI does not take text drags, so the
+  demo refuses them (the source is told None).
+- The demo does not watch folders on a network share: one call into a share that stops answering
+  would hold the watcher and every other folder it watches. A folder there refreshes when it is
+  opened and after the demo's own operations. Whether Finder shows a change made on the server as
+  it happens was not measured.
+- A folder on a share that stops answering stays empty while the window stays responsive (largest
+  gap on the main thread 33 ms across the 4.6 s the share was stopped); nothing says why. What
+  Finder shows while a share times out was not measured.
+- Renaming with a new extension or a leading dot happens without a question. Finder's questions
+  were not captured: typing into Finder's name field by synthetic keys did not register in three
+  attempts.
+- When a folder above the one shown is renamed, the demo follows to the new path; Finder's window
+  title still read the old path 2.5 s later.
+- Names are always shown with their extension; this Mac has “Show all filename extensions” on
+  (`AppleShowAllExtensions` = 1), so Finder shows them too, but a file whose extension was hidden
+  (Finder's own `.webloc`, for one) keeps it here.

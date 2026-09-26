@@ -160,6 +160,7 @@ impl Render for FinderDemo {
                         ))
                         .on_drag_move(cx.listener(Self::hand_off_drag::<RowDrag>))
                         .on_drag_move(cx.listener(Self::hand_off_drag::<TileDrag>))
+                        .on_drop(cx.listener(Self::files_dropped))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| {

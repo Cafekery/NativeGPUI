@@ -168,8 +168,7 @@ impl FinderDemo {
         self.reveal_next = Some(key);
     }
 
-    pub(crate) fn folder_gone(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        cx.notify();
+    fn forget_under(&mut self, id: &'static str) -> bool {
         let inside = |path: &str| {
             path == id
                 || path
@@ -186,19 +185,104 @@ impl FinderDemo {
             .count();
         self.history.retain(|been| !inside(been));
         self.at -= before;
-        if !leaving {
+        leaving
+    }
+
+    pub(crate) fn folder_gone(
+        &mut self,
+        id: &'static str,
+        above: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        if !self.forget_under(id) {
             return;
         }
-        let above = Path::new(id)
-            .ancestors()
-            .skip(1)
-            .find(|up| up.is_dir())
-            .map_or("/", intern_path);
         if self.history.is_empty() {
             self.history.push(above);
         }
         self.at = self.at.min(self.history.len() - 1);
         self.vanished = Some(above);
+    }
+
+    pub(crate) fn folder_renamed(
+        &mut self,
+        id: &'static str,
+        now: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+        let moved = |path: &'static str| match path.strip_prefix(id) {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                intern(&format!("{now}{rest}"))
+            }
+            _ => path,
+        };
+        let leaving = moved(self.here()) != self.here();
+        self.folders.forget(id);
+        self.expanded
+            .retain(|key| !Path::new(key.as_ref()).starts_with(id));
+        self.history = self.history.iter().map(|&been| moved(been)).collect();
+        if leaving {
+            self.vanished = Some(self.here());
+        }
+    }
+
+    /// Finder won't open a folder it can't list: it says why and stays where it was, with the
+    /// folder still selected.
+    pub(crate) fn folder_refused(
+        &mut self,
+        id: &'static str,
+        error: &std::io::Error,
+        cx: &mut Context<Self>,
+    ) {
+        if id != self.here() {
+            return;
+        }
+        self.recents.retain(|(seen, _)| *seen != id);
+        native_gpui::set_menu("Go", menus::go_rows(&self.recents));
+        self.folders.forget(id);
+        self.history.remove(self.at);
+        match self.at.checked_sub(1) {
+            Some(back) => self.at = back,
+            None => self
+                .history
+                .insert(0, Path::new(id).parent().map_or("/", intern_path)),
+        }
+        self.vanished = Some(self.here());
+        self.reveal_next = Some(SharedString::from(id));
+        cx.notify();
+        let name = Path::new(id)
+            .file_name()
+            .map_or_else(|| id.into(), |name| name.to_string_lossy());
+        let name = finder_fs::name::display(&name);
+        let text = match error.kind() {
+            std::io::ErrorKind::PermissionDenied => format!(
+                "The folder \u{201c}{name}\u{201d} can\u{2019}t be opened because you don\u{2019}t have permission to see its contents."
+            ),
+            _ => {
+                let why = error.to_string();
+                let why = why.split(" (os error").next().unwrap_or_default();
+                format!("The folder \u{201c}{name}\u{201d} can\u{2019}t be opened. {why}.")
+            }
+        };
+        self.complain(&text);
+    }
+
+    /// A folder that went away, or would not open, hands the window back to one that is there.
+    pub(crate) fn settle_vanished(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.vanished.take() else {
+            return;
+        };
+        if self.here() != id {
+            self.go(id, window, cx);
+            return;
+        }
+        let chosen = self.reveal_next.take();
+        self.arrive(window, cx);
+        if let Some(key) = chosen {
+            self.choose_revealed(key);
+        }
     }
 
     pub(crate) fn step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -238,7 +322,55 @@ impl FinderDemo {
             self.go(id, window, cx);
         } else if crate::smart::is_saved(&line.key) {
             self.go(intern(&line.key), window, cx);
+        } else {
+            self.open_files(vec![PathBuf::from(line.key.as_ref())], cx);
         }
+    }
+
+    /// Off the main thread, which a file on a share that stopped answering would stall.
+    fn open_files(&self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if files.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let (folder, lost) = cx
+                .background_executor()
+                .spawn(async move {
+                    let (found, lost): (Vec<PathBuf>, Vec<PathBuf>) = files
+                        .into_iter()
+                        .partition(|file| std::fs::metadata(file).is_ok());
+                    let mut folder = None;
+                    let mut documents = Vec::with_capacity(found.len());
+                    for file in found {
+                        match crate::openwith::alias_folder(&file) {
+                            Some(target) => folder = folder.or(Some(target)),
+                            None => documents.push(file),
+                        }
+                    }
+                    crate::openwith::open_default(&documents);
+                    let lost = lost
+                        .into_iter()
+                        .find(|link| std::fs::symlink_metadata(link).is_ok());
+                    (folder, lost)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(folder) = folder {
+                    this.vanished = Some(intern_path(&folder));
+                    cx.notify();
+                }
+                let Some(link) = lost else {
+                    return;
+                };
+                let name = link.file_name().unwrap_or_default().to_string_lossy();
+                this.complain(&format!(
+                    "The operation can\u{2019}t be completed because the original item for \u{201c}{}\u{201d} can\u{2019}t be found.",
+                    finder_fs::name::display(&name)
+                ));
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -264,18 +396,16 @@ impl FinderDemo {
     }
 
     pub(crate) fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view == COLUMN_VIEW {
-            return;
-        }
-        let chosen: Vec<Line> = self
-            .lines(self.view == LIST_VIEW)
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .cloned()
-            .collect();
+        let chosen = self.chosen_lines();
         for line in chosen.iter().filter(|line| line.row.dataless) {
             let _ = finder_fs::icloud::download(Path::new(line.key.as_ref()));
         }
+        let files = chosen
+            .iter()
+            .filter(|line| line.row.opens.is_none() && !crate::smart::is_saved(&line.key))
+            .map(|line| PathBuf::from(line.key.as_ref()))
+            .collect();
+        self.open_files(files, cx);
         let folders: Vec<&'static str> = chosen.iter().filter_map(|line| line.row.opens).collect();
         let Some((first, rest)) = folders.split_first() else {
             if let Some(saved) = chosen.iter().find(|line| crate::smart::is_saved(&line.key)) {

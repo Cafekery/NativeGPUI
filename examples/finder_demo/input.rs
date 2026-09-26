@@ -52,8 +52,9 @@ impl FinderDemo {
         let last = lines.len() - 1;
         let tree = self.view == LIST_VIEW;
         match key {
-            "up" if modifiers.platform => self.up(window, cx),
-            "down" | "o" if modifiers.platform => self.open_selected(window, cx),
+            // The menu bar acts on a chord it carries once this handler lets the key pass.
+            "up" | "o" if modifiers.platform => {}
+            "down" if modifiers.platform => self.open_selected(window, cx),
             "up" | "down" | "left" | "right" if self.view == ICON_VIEW => {
                 let columns = self.columns(window);
                 let next = match current {
@@ -75,8 +76,8 @@ impl FinderDemo {
                     self.pick(line, false, false);
                 }
                 let visible = gpui::size(
-                    self.list_room - self.pane_w(),
-                    f32::from(self.icons.scroll.bounds().size.height) - self.path_bar_h(),
+                    self.list_room,
+                    f32::from(self.icons.scroll.bounds().size.height),
                 );
                 self.icons
                     .reveal(&line.key, next, columns, self.icon_size as f32, visible);

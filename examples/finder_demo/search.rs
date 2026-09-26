@@ -146,7 +146,7 @@ impl FinderDemo {
                     };
                     let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()
-                        .map(|row| (row.path.clone(), crate::tags::row_tags(&row.path)))
+                        .map(|row| (row.path.clone(), crate::tags::read_row_tags(&row.path)))
                         .filter(|(_, carried)| !carried.is_empty())
                         .collect();
                     (rows, marks)

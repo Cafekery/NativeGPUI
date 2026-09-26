@@ -158,8 +158,9 @@ fn tag_dict() -> Option<Vec<u8>> {
     })
 }
 
+/// `fileURLWithPath:` alone stats the path to learn whether it is a folder.
 fn url(path: &Path) -> Retained<NSURL> {
-    NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()))
+    NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), false)
 }
 
 fn read_xattr(path: &Path, name: &str) -> Option<Vec<u8>> {

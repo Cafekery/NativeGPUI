@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::io::RawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::entry::{Entry, EntryKind};
@@ -62,6 +62,65 @@ fn open_dir(dir: &Path) -> io::Result<FdGuard> {
 
 pub fn is_dir(path: &Path) -> bool {
     open_dir(path).is_ok()
+}
+
+/// The path the kernel knows a folder by: symlinks resolved, case as stored, and a firmlink's
+/// `/System/Volumes/Data` form folded the way FSEvents reports it, which `realpath` does not.
+/// Needs no permission on the folder itself.
+pub fn real_path(path: &Path) -> Option<PathBuf> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_EVTONLY) };
+    if fd < 0 {
+        return None;
+    }
+    let open = FdGuard(fd);
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(open.0, libc::F_GETPATH, buf.as_mut_ptr()) } < 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+/// Which item a path names, whatever it is called later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    volume: [i32; 2],
+    file: u64,
+}
+
+pub fn identity(path: &Path) -> Option<Identity> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut volume: libc::statfs = unsafe { std::mem::zeroed() };
+    let mut item: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut volume) } != 0
+        || unsafe { libc::stat(c_path.as_ptr(), &mut item) } != 0
+    {
+        return None;
+    }
+    Some(Identity {
+        volume: unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(volume.f_fsid) },
+        file: item.st_ino,
+    })
+}
+
+unsafe extern "C" {
+    fn fsgetpath(
+        buf: *mut libc::c_char,
+        size: libc::size_t,
+        fsid: *mut libc::fsid_t,
+        objid: u64,
+    ) -> libc::ssize_t;
+}
+
+/// Where the item is now, if it still exists.
+pub fn path_of(identity: Identity) -> Option<PathBuf> {
+    let mut fsid = unsafe { std::mem::transmute::<[i32; 2], libc::fsid_t>(identity.volume) };
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    let len = unsafe { fsgetpath(buf.as_mut_ptr().cast(), buf.len(), &mut fsid, identity.file) };
+    let len = usize::try_from(len).ok()?;
+    let bytes = buf[..len].split(|&b| b == 0).next()?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
 }
 
 pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
@@ -305,6 +364,20 @@ mod tests {
         entries.iter().map(|e| (e.name.as_str(), e)).collect()
     }
 
+    #[test]
+    fn a_folder_is_found_by_identity_after_a_rename() {
+        let base = std::env::temp_dir().join(format!("finder-fs-identity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("before")).unwrap();
+        let found = identity(&base.join("before")).unwrap();
+        fs::rename(base.join("before"), base.join("after")).unwrap();
+
+        let now = path_of(found).unwrap();
+        assert_eq!(now, real_path(&base.join("after")).unwrap());
+        assert_ne!(now, base.join("after"), "the temp dir is under a symlink");
+        fs::remove_dir_all(&base).unwrap();
+        assert_eq!(path_of(found), None);
+    }
     #[test]
     fn reads_every_kind_of_entry() {
         let dir = std::env::temp_dir().join(format!("finder-fs-list-{}", std::process::id()));

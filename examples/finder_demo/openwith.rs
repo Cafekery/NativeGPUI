@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSWorkspace, NSWorkspaceLaunchOptions};
-use objc2_foundation::{NSDictionary, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSString, NSURL, NSURLBookmarkResolutionOptions};
 
 pub(crate) struct App {
     pub(crate) name: String,
@@ -59,6 +59,28 @@ pub(crate) fn print(files: &[PathBuf]) -> Result<(), String> {
         .map_err(|error| error.localizedDescription().to_string())?;
     }
     Ok(())
+}
+
+/// Each file in the app it is set to open in; LaunchServices asks the user when there is none,
+/// as it does for Finder.
+pub(crate) fn open_default(files: &[PathBuf]) {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let configuration = objc2_app_kit::NSWorkspaceOpenConfiguration::configuration();
+    for url in files.iter().filter_map(|file| url(file)) {
+        workspace.openURL_configuration_completionHandler(&url, &configuration, None);
+    }
+}
+
+/// The folder a Finder alias points at, which Finder opens in its own window.
+pub(crate) fn alias_folder(file: &Path) -> Option<PathBuf> {
+    let alias = url(file)?;
+    let target = NSURL::URLByResolvingAliasFileAtURL_options_error(
+        &alias,
+        NSURLBookmarkResolutionOptions::WithoutUI,
+    )
+    .ok()?;
+    let target = PathBuf::from(target.path()?.to_string());
+    (target != file && target.is_dir()).then_some(target)
 }
 
 pub(crate) fn open_with(files: &[PathBuf], app: &Path) {
