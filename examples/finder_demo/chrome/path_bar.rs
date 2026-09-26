@@ -1,42 +1,60 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::iter;
+use std::path::Path;
+
 use gpui::{
-    AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, ExternalPaths, FontWeight, Window,
-    div, prelude::*, px,
+    AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, ExternalPaths, FontWeight, Hsla,
+    Window, div, hsla, prelude::*, px,
 };
-use native_gpui::tokens::{self, FileType, SystemColor};
+use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
+use objc2::AnyThread;
+use objc2::runtime::AnyObject;
+use objc2_app_kit::{NSAttributedStringNSStringDrawing, NSFont, NSFontAttributeName};
+use objc2_foundation::{NSAttributedString, NSDictionary, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Face, folder_artwork};
+use crate::data::{Face, Line, folder_artwork, intern_path, split_key};
 use crate::dragdrop::{Grabbed, RowDrag};
 use crate::menus;
 use crate::palette::Palette;
-use crate::ui::text_width;
+use crate::view::COLUMN_VIEW;
 
 pub(crate) const PATH_H: f32 = 28.;
 
-const CHEVRON_W: f32 = 8.;
+const TRAIL_INSET: f32 = 6.;
 
-const CRUMB_INSET: f32 = 16.;
+const TRAIL_ROOM: f32 = 16.;
 
-const CRUMB_GAP: f32 = 5.;
+const ICON_LEAD: f32 = 5.;
 
-const CRUMB_ICON: f32 = 13.;
+const CRUMB_ICON: f32 = 16.;
+
+const CRUMB_ART: f32 = 15.;
+
+// An NSTextField label draws its text 2pt inside its frame.
+const LABEL_INSET: f32 = 2.;
+
+const LABEL_LEAD: f32 = 1.;
+
+const CHEVRON_LEAD: f32 = 1.;
+
+const CRUMB_CHROME: f32 = 29.;
+
+const LAST_CHROME: f32 = 24.;
 
 const DROP_RADIUS: f32 = 7.;
 
-const HAIRLINE: f32 = 0.5;
+pub(crate) const EDGE_ROW: f32 = 0.5;
 
 fn is_alt_click(event: &ClickEvent) -> bool {
     matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
 }
 
-fn crumb_art(id: impl Into<ElementId>, folder: Option<FileType<'static>>) -> AnyElement {
-    let (kind, face) = match folder {
-        None => (FileType::Path("/"), Face::Volume),
-        Some(kind) => (kind, Face::Folder),
-    };
-    let raster = crate::icons::icon(kind, CRUMB_ICON)
-        .or_else(|| crate::icons::icon(face.stand_in(), CRUMB_ICON));
+fn crumb_art(id: impl Into<ElementId>, kind: FileType<'static>, face: Face) -> AnyElement {
+    let raster = crate::icons::icon(kind, CRUMB_ART)
+        .or_else(|| crate::icons::icon(face.stand_in(), CRUMB_ART));
     div()
         .size(px(CRUMB_ICON))
         .flex_none()
@@ -45,6 +63,10 @@ fn crumb_art(id: impl Into<ElementId>, folder: Option<FileType<'static>>) -> Any
         .justify_center()
         .children(raster.map(|raster| native_raster(id, raster)))
         .into_any_element()
+}
+
+thread_local! {
+    static LABEL_W: RefCell<HashMap<String, f32>> = RefCell::default();
 }
 
 impl FinderDemo {
@@ -75,55 +97,90 @@ impl FinderDemo {
         self.drop_into(into, &keys, window, cx);
         cx.notify();
     }
+}
 
-    pub(crate) fn path_bar_h(&self) -> f32 {
-        if self.path_bar_shown { PATH_H } else { 0. }
-    }
+/// The frame an `NSTextField` label needs to show `text` whole, kerned as AppKit sets it.
+fn label_width(text: &str) -> f32 {
+    LABEL_W.with(|kept| {
+        if let Some(width) = kept.borrow().get(text) {
+            return *width;
+        }
+        let size = f64::from(f32::from(tokens::small_system_font_size()));
+        let font = NSFont::systemFontOfSize(size);
+        let font: &AnyObject = font.as_ref();
+        let attrs = NSDictionary::from_slices(&[unsafe { NSFontAttributeName }], &[font]);
+        let string = unsafe {
+            NSAttributedString::initWithString_attributes(
+                NSAttributedString::alloc(),
+                &NSString::from_str(text),
+                Some(&attrs),
+            )
+        };
+        let width = string.size().width.ceil() as f32 + 2. * LABEL_INSET;
+        kept.borrow_mut().insert(text.to_owned(), width);
+        width
+    })
+}
 
-    pub(crate) fn path_bar(
-        &self,
-        palette: &Palette,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let here = self.folders.get(self.target());
-        let crumbs: &[&str] = here.map_or(&[][..], |folder| folder.crumbs.as_slice());
+impl FinderDemo {
+    pub(crate) fn path_bar(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let lone = self.lone_pick();
+        let holder = lone
+            .as_ref()
+            .and_then(|line| split_key(&line.key))
+            .map_or(self.target(), |(dir, _)| dir);
+        let here = self.folders.get(holder);
+        let mut crumbs: Vec<&str> = here.map_or_else(Vec::new, |folder| folder.crumbs.clone());
         let listed = here.is_some_and(|folder| !folder.rows.is_empty());
-        let chain = self.crumb_ids();
-        let widths = self.crumb_widths(crumbs, window);
+        let mut chain: Vec<&'static str> = Path::new(holder)
+            .ancestors()
+            .take(crumbs.len())
+            .map(intern_path)
+            .collect();
+        chain.reverse();
+        let mut targets: Vec<Option<&'static str>> =
+            iter::repeat_n(None, crumbs.len() - chain.len())
+                .chain(chain.into_iter().map(Some))
+                .collect();
+        if let Some(line) = &lone {
+            crumbs.push(&line.row.display);
+            targets.push(line.row.opens);
+        }
+        let widths = self.crumb_widths(&crumbs);
         let lit = self.crumb_drop.filter(|_| cx.has_active_drag());
-        let mut trail = div()
-            .size_full()
-            .flex()
-            .items_center()
-            .gap(px(CRUMB_GAP))
-            .pl(px(CRUMB_INSET))
-            .pr(px(CRUMB_INSET));
+        let mut trail = div().size_full().flex().items_center().pl(px(TRAIL_INSET));
 
-        for (index, crumb) in crumbs.iter().enumerate() {
-            let target = index
-                .checked_sub(crumbs.len() - chain.len())
-                .and_then(|step| chain.get(step).copied());
-            let art =
-                (index > 0 || target.is_some_and(|path| crate::data::is_trash(path))).then(|| {
+        for (index, (crumb, target)) in crumbs.iter().zip(targets).enumerate() {
+            let last = index + 1 == crumbs.len();
+            let (kind, face) = match &lone {
+                Some(line) if last => (
+                    line.row.artwork.unwrap_or(line.row.face.stand_in()),
+                    line.row.face,
+                ),
+                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => {
+                    (FileType::Path("/"), Face::Volume)
+                }
+                _ => (
                     target.map_or(FileType::Folder, |path| {
-                        folder_artwork(path, index + 1 < crumbs.len() || listed)
-                    })
-                });
+                        folder_artwork(path, !last || listed)
+                    }),
+                    Face::Folder,
+                ),
+            };
             let mut segment = div()
                 .id(("ng.finder.crumb", index))
                 .h_full()
                 .flex()
                 .items_center()
-                .min_w(px(CRUMB_ICON))
-                .gap(px(CRUMB_GAP))
-                .child(crumb_art(("ng.finder.crumb.art", index), art));
+                .pl(px(ICON_LEAD))
+                .child(crumb_art(("ng.finder.crumb.art", index), kind, face));
             if let Some(width) = widths[index] {
                 let dropping = lit == Some(index);
                 segment = segment.child(
                     div()
                         .relative()
-                        .min_w(px(0.))
+                        .flex_none()
+                        .ml(px(LABEL_LEAD))
                         .w(px(width))
                         .when(dropping, |name| {
                             name.child(
@@ -137,6 +194,7 @@ impl FinderDemo {
                         .child(
                             native_label(("ng.finder.crumb.name", index), crumb)
                                 .font_size(tokens::small_system_font_size())
+                                .truncates(false)
                                 .color(if dropping {
                                     SystemColor::AlternateSelectedControlText
                                 } else {
@@ -145,14 +203,14 @@ impl FinderDemo {
                         ),
                 );
             }
-            if index + 1 < crumbs.len() {
+            if !last {
                 segment = segment.child(
-                    div().flex_none().mr(px(1.)).child(
+                    div().flex_none().ml(px(CHEVRON_LEAD)).child(
                         native_symbol(
                             ("ng.finder.crumb.chevron", index),
                             "chevron.right",
-                            7.,
-                            FontWeight::SEMIBOLD,
+                            6.5,
+                            FontWeight::EXTRA_BOLD,
                         )
                         .tint(SystemColor::SecondaryLabel),
                     ),
@@ -201,45 +259,102 @@ impl FinderDemo {
             });
         }
 
+        let paint = BarPaint::now();
         div()
             .h(px(PATH_H))
             .flex_none()
             .relative()
             .block_mouse_except_scroll()
-            // Finder's bar is bare window background under a half-point separator.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(HAIRLINE))
-                    .child(native_rule("ng.finder.path.hairline")),
-            )
+            .bg(paint.lift)
+            .child(edge_row(0., paint.rim[0]))
+            .child(edge_row(EDGE_ROW, paint.rim[1]))
             .child(trail)
             .into_any_element()
     }
 
-    fn crumb_widths(&self, crumbs: &[&str], window: &Window) -> Vec<Option<f32>> {
-        let size = tokens::small_system_font_size();
-        // An NSTextField label insets its text 2pt a side.
-        let mut widths: Vec<Option<f32>> = crumbs
-            .iter()
-            .map(|crumb| Some(text_width(window, crumb.to_string(), size).ceil() + 4.))
-            .collect();
-        let room = self.list_room - self.pane_w() - 2. * CRUMB_INSET;
-        let trail = |widths: &[Option<f32>]| {
-            let icons = crumbs.len() as f32 * (CRUMB_ICON + CRUMB_GAP);
-            let chevrons = (crumbs.len().saturating_sub(1)) as f32 * (CHEVRON_W + CRUMB_GAP + 1.);
-            let names: f32 = widths.iter().flatten().map(|width| width + CRUMB_GAP).sum();
-            icons + chevrons + names
+    /// Finder's trail ends at a lone selection; in column view the target already follows it.
+    fn lone_pick(&self) -> Option<Line> {
+        (self.view != COLUMN_VIEW && self.selected.len() == 1)
+            .then(|| self.cursor_line())
+            .flatten()
+            .filter(|line| self.selected.contains(&line.key))
+    }
+
+    /// Label widths, `None` where only the icon fits. Finder keeps the first and last crumbs whole and
+    /// narrows the widest of the rest to one shared width until the trail fits.
+    fn crumb_widths(&self, crumbs: &[&str]) -> Vec<Option<f32>> {
+        let labels: Vec<f32> = crumbs.iter().map(|crumb| label_width(crumb)).collect();
+        let Some(last) = labels.len().checked_sub(1).filter(|last| *last > 1) else {
+            return labels.into_iter().map(Some).collect();
         };
-        for index in 0..widths.len().saturating_sub(1) {
-            if trail(&widths) <= room {
+        let room = self.list_room - TRAIL_ROOM;
+        let fixed = labels[0] + CRUMB_CHROME + labels[last] + LAST_CHROME;
+        let mut middle: Vec<f32> = labels[1..last]
+            .iter()
+            .map(|label| label + CRUMB_CHROME)
+            .collect();
+        if fixed + middle.iter().sum::<f32>() <= room {
+            return labels.into_iter().map(Some).collect();
+        }
+        middle.sort_by(f32::total_cmp);
+        let mut spare = room - fixed;
+        let mut cap = 0.;
+        for (at, item) in middle.iter().enumerate() {
+            let rest = (middle.len() - at) as f32;
+            if item * rest > spare {
+                cap = (spare / rest * self.scale).ceil() / self.scale;
                 break;
             }
-            widths[index] = None;
+            spare -= item;
         }
-        widths
+        labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                if index == 0 || index == last {
+                    return Some(*label);
+                }
+                let label = (label + CRUMB_CHROME).min(cap) - CRUMB_CHROME;
+                (label > 2. * LABEL_INSET).then_some(label)
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn edge_row(top: f32, color: Hsla) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(px(top))
+        .left_0()
+        .right_0()
+        .h(px(EDGE_ROW))
+        .bg(color)
+}
+
+/// Finder's bottom bars carry no separator view: each top edge is two device rows no `NSColor`
+/// names, and the fills under them are none of the window's own colours either.
+pub(crate) struct BarPaint {
+    pub(crate) lift: Hsla,
+    pub(crate) rim: [Hsla; 2],
+    pub(crate) floor: Hsla,
+    pub(crate) rule: [Hsla; 2],
+}
+
+impl BarPaint {
+    pub(crate) fn now() -> Self {
+        match tokens::current_appearance() {
+            Appearance::Dark => Self {
+                lift: hsla(0., 0., 1., 0.04),
+                rim: [hsla(0., 0., 1., 0.16), hsla(0., 0., 1., 0.068)],
+                floor: hsla(0., 0., 1., 0.037),
+                rule: [hsla(0., 0., 0., 0.27), hsla(0., 0., 0., 1.)],
+            },
+            Appearance::Light => Self {
+                lift: hsla(0., 0., 1., 0.04),
+                rim: [hsla(0., 0., 0., 0.129), hsla(0., 0., 0., 0.055)],
+                floor: hsla(0., 0., 1., 0.04),
+                rule: [hsla(0., 0., 0., 0.051), hsla(0., 0., 0., 0.145)],
+            },
+        }
     }
 }

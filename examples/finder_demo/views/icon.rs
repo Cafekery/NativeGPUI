@@ -345,7 +345,7 @@ impl FinderDemo {
             .child(
                 div()
                     .w(px(width))
-                    .h(px(height + self.path_bar_h()))
+                    .h(px(height))
                     .flex_none(),
             );
 

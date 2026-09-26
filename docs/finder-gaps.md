@@ -111,6 +111,22 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
 ## List view, measured against Finder on macOS 27
 
 - [ ] Finder draws its list view's alternating stripes on past the last row; the demo stops.
+## Path bar and status bar
+
+Measured against Finder 27.0 (26A428) on a 2x display, both windows at 240,120 1100x680 pt in list
+view, points from the window's top-left, colours as sRGB 0–255.
+
+- [ ] Finder's list runs on beneath the path bar, which lets a heavily blurred trace of it through:
+  with a selected row under the bar the fill reads 40,42,43 in dark (40,41,40 without) and
+  252,253,255 in light (255). The demo's list stops at the bar, so its bar stays 41,41,41 / 255.
+- [ ] A crumb name cut to the shared width fades out over its last ~9 pt in Finder (140 → 32 across
+  x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x.
+- [ ] The startup-disk crumb's icon ink is 12 × 13.5 pt against Finder's 11 × 12.5 pt, on the same
+  centre. Folder crumb icons match in dark and run 0.5 pt wider a side in light.
+- [ ] Finder paints the next alternating row into the 10 pt between the last row and the path bar
+  (y 642–652 is 42,42,42 in dark); the demo leaves it the list's background (32,32,32).
+- [ ] Fills are a level off on one channel: the path bar 41,41,41 against Finder's 40,41,40, the status
+  bar 39,40,40 against 39,40,39, and the light status divider's first row 241 against 242.
 
 ## Left alone
 

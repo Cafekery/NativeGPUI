@@ -92,10 +92,8 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self
-            .path_bar_shown
-            .then(|| self.path_bar(&palette, window, cx));
-        let status_bar = self.status_bar_shown.then(|| self.status_bar(&palette, cx));
+        let path_bar = self.path_bar_shown.then(|| self.path_bar(&palette, cx));
+        let status_bar = self.status_bar_shown.then(|| self.status_bar(cx));
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
             COLUMN_VIEW => self.column_body(&palette, window, cx),
