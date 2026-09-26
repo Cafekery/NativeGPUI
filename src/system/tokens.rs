@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use block2::StackBlock;
 use gpui::{
@@ -69,9 +69,15 @@ thread_local! {
         const { Cell::new((ptr::null(), Appearance::Light)) };
 }
 
+static DARK: AtomicBool = AtomicBool::new(false);
+
+/// Off the main thread, the appearance the main thread last resolved.
 pub fn current_appearance() -> Appearance {
     let Some(mtm) = MainThreadMarker::new() else {
-        return Appearance::Light;
+        return match DARK.load(Ordering::Relaxed) {
+            true => Appearance::Dark,
+            false => Appearance::Light,
+        };
     };
     let effective = NSApplication::sharedApplication(mtm).effectiveAppearance();
     let key = Retained::as_ptr(&effective);
@@ -81,6 +87,7 @@ pub fn current_appearance() -> Appearance {
             return cached;
         }
         let resolved = Appearance::of(&effective);
+        DARK.store(resolved == Appearance::Dark, Ordering::Relaxed);
         memo.set((key, resolved));
         resolved
     })
@@ -792,20 +799,22 @@ struct FileIconKey {
     tag: String,
     size: u32,
     scale: u32,
+    appearance: Appearance,
 }
 
 pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
-    let scale = display_scale();
+    let (scale, appearance) = (display_scale(), current_appearance());
     let key = FileIconKey {
         tag: kind.tag(),
         size: f32::from(size).to_bits(),
         scale: scale.to_bits(),
+        appearance,
     };
     with_cache(|cache| match cache.file_icons.get(&key) {
         Some(hit) => hit.clone(),
         None => {
             cache.file_icon_rasters += 1;
-            let icon = rasterize_file_icon(kind, size, scale);
+            let icon = rasterize_file_icon(kind, size, scale, appearance);
             if cache.file_icons.len() >= FILE_ICONS_KEPT {
                 cache
                     .file_icons
@@ -815,6 +824,11 @@ pub fn file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
             icon
         }
     })
+}
+
+/// [`file_icon`] without its per-thread cache, for a caller that keeps and bounds its own.
+pub fn draw_file_icon(kind: FileType<'_>, size: Pixels) -> Option<Symbol> {
+    rasterize_file_icon(kind, size, display_scale(), current_appearance())
 }
 
 pub fn folder_icon(size: Pixels) -> Option<Symbol> {
@@ -881,7 +895,12 @@ fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
     unsafe { msg_send![class, typeWithFilenameExtension: &*text] }
 }
 
-fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<Symbol> {
+fn rasterize_file_icon(
+    kind: FileType<'_>,
+    size: Pixels,
+    scale: f32,
+    appearance: Appearance,
+) -> Option<Symbol> {
     let workspace = NSWorkspace::sharedWorkspace();
     let image: Option<Retained<NSImage>> = match kind {
         FileType::Path(path) | FileType::FullPath(path) => {
@@ -920,7 +939,8 @@ fn rasterize_file_icon(kind: FileType<'_>, size: Pixels, scale: f32) -> Option<S
         ],
         None => vec![(&*image, NSCompositingOperation::SourceOver)],
     };
-    symbol(&layers, points, scale)
+    // IconServices caches renditions per appearance; drawn in any but the app's, each renders cold.
+    with_appearance(appearance, || symbol(&layers, points, scale))
 }
 
 fn folder_parts(points: f64) -> Option<[Retained<NSImage>; 2]> {

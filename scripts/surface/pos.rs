@@ -39,8 +39,8 @@ use native_gpui::{
 };
 
 use native_gpui::tokens::{
-    Appearance, FileType, Symbol, SymbolColor, SystemColor, WINDOW_BACKGROUND, accent, file_icon,
-    srgb, system_color, system_font, window_background,
+    Appearance, FileType, Symbol, SymbolColor, SystemColor, WINDOW_BACKGROUND, accent,
+    draw_file_icon, file_icon, srgb, system_color, system_font, window_background,
 };
 
 fn main() {

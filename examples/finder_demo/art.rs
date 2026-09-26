@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
-use gpui::{AnyElement, Div, FontWeight, Hsla, ObjectFit, RenderImage, div, img, prelude::*, px};
+use gpui::{
+    AnyElement, Div, FontWeight, Hsla, ObjectFit, RenderImage, SharedString, div, img, prelude::*,
+    px,
+};
 use native_gpui::native_anchor;
-use native_gpui::tokens::{FileType, SymbolColor, SystemColor, sf_symbol_colored};
+use native_gpui::tokens::{
+    Appearance, FileType, SymbolColor, SystemColor, current_appearance, sf_symbol_colored,
+};
 
 use crate::data::{Face, Row};
 use crate::thumbs::thumb;
@@ -11,6 +16,14 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     match thumb(row, size, scale, visible, true) {
         Some(image) => picture(image, size),
         None => artwork(row, size),
+    }
+}
+
+/// A list row previews pictures and movies only; every other view previews documents too.
+pub(crate) fn list_art(row: &Row, size: f32, scale: f32) -> AnyElement {
+    match row.face {
+        Face::Image | Face::Movie => row_art(row, size, scale, true),
+        _ => artwork(row, size),
     }
 }
 
@@ -75,41 +88,44 @@ fn poster(
     kind: Poster,
 ) -> AnyElement {
     let fit = image.size(0);
-    let (radius, keyline) = match kind {
-        Poster::Hero => (
-            6.5,
-            Hsla {
-                h: 0.,
-                s: 0.,
-                l: 1.,
-                a: 0.1,
-            },
-        ),
-        Poster::Card => (
-            2.5,
-            Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.24,
-            },
-        ),
-    };
     let (w, h) = (
         u32::from(fit.width) as f32 / scale,
         u32::from(fit.height) as f32 / scale,
     );
     let zoom = (width / w.max(1.)).min(height / h.max(1.));
-    slot(width, height)
-        .child(
-            img(image)
-                .w(px(w * zoom))
-                .h(px(h * zoom))
-                .rounded(px(radius))
-                .border(px(0.5))
-                .border_color(keyline),
-        )
-        .into_any_element()
+    let (w, h) = (px(w * zoom), px(h * zoom));
+    let framed = match kind {
+        Poster::Hero => img(image)
+            .w(w)
+            .h(h)
+            .rounded(px(6.5))
+            .border(px(0.5))
+            .border_color(Hsla {
+                h: 0.,
+                s: 0.,
+                l: 1.,
+                a: 0.1,
+            })
+            .into_any_element(),
+        // The rim sits outside the picture and darkens the glass behind it.
+        Poster::Card => div()
+            .w(w)
+            .h(h)
+            .rounded(px(4.5))
+            .border(px(0.5))
+            .border_color(Hsla {
+                h: 0.,
+                s: 0.,
+                l: 0.,
+                a: match current_appearance() {
+                    Appearance::Dark => 0.1,
+                    Appearance::Light => 0.02,
+                },
+            })
+            .child(img(image).size_full().rounded(px(4.)))
+            .into_any_element(),
+    };
+    slot(width, height).child(framed).into_any_element()
 }
 
 pub(crate) type Anchor = native_gpui::SurfaceAnchor;
@@ -133,9 +149,18 @@ pub(crate) fn artwork(row: &Row, size: f32) -> AnyElement {
 }
 
 fn kind_of(row: &Row) -> Option<FileType<'static>> {
+    folder_kind(row, crate::custom::custom_icon)
+}
+
+/// Off the main thread, knowing a folder's own icon before its row is drawn.
+pub(crate) fn kind_now(row: &Row) -> Option<FileType<'static>> {
+    folder_kind(row, crate::custom::custom_icon_now)
+}
+
+fn folder_kind(row: &Row, custom: fn(&SharedString) -> bool) -> Option<FileType<'static>> {
     match row.artwork {
         Some(FileType::Folder | FileType::FullFolder | FileType::FullPath(_))
-            if crate::custom::custom_icon(&row.path) =>
+            if custom(&row.path) =>
         {
             Some(FileType::Path(crate::data::intern(&row.path)))
         }

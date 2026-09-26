@@ -8,7 +8,7 @@ use gpui::{
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, art_at, row_art, small_glyph};
+use crate::art::{Anchor, art_at, list_art, small_glyph};
 use crate::data::{Column, Line, date_text, enclosing_name};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
@@ -380,7 +380,7 @@ fn name_cell(
                 .child(twist(line, at, open, lit, this.clone())),
         )
         .child(art_at(
-            row_art(&line.row, look.icon, look.scale, true),
+            list_art(&line.row, look.icon, look.scale),
             look.icon,
             (marks.cursor.as_ref() == Some(&line.key)).then(|| marks.ql_icon.clone()),
         ))

@@ -1,52 +1,35 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use gpui::{App, Entity, px, size};
-use native_gpui::tokens::{FileType, Symbol, file_icon};
+use gpui::{App, Entity, Priority, RenderImage, WeakEntity, px, size};
+use native_gpui::tokens::{FileType, Symbol, draw_file_icon, generation};
 
 use crate::app::FinderDemo;
-use crate::data::Row;
+use crate::data::{Line, Row};
+use crate::view::LIST_VIEW;
 
 type Key = (FileType<'static>, u32);
 
-const WARM_BUDGET: Duration = Duration::from_millis(20);
-
-const ICONS_KEPT: usize = 2048;
-
-/// The icon service answers four requests in little more time than one, and no more past four.
+/// Four lanes draw about twice as many warm icons a second as one; more add little.
 const LANES: usize = 4;
 
-/// How far past the rows on screen a listing draws ahead.
-const LOOK_AHEAD: usize = 512;
+const BATCH: usize = 16;
+const SLICE: Duration = Duration::from_millis(4);
+const KEPT_BYTES: usize = 48 << 20;
+/// Frames a key stays asked for: rows scrolled past longer ago lose their priority.
+const FRESH: u64 = 8;
 
-static ICONS: LazyLock<Mutex<HashMap<Key, Option<Symbol>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Finder's first frame of a folder already has its icons.
+const FIRST_ROWS: usize = 64;
+const PREPARE: Duration = Duration::from_millis(60);
 
-/// The rest of a listing, newest last, drawn only while no row on screen is waiting.
-static AHEAD: LazyLock<Mutex<Vec<Key>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-
-thread_local! {
-    static WANTED: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
-    /// Asked for and not drawn, newest last, so a scroll draws what it landed on, not what it left.
-    static PENDING: RefCell<Vec<Key>> = const { RefCell::new(Vec::new()) };
-    static DRAWING: Cell<usize> = const { Cell::new(0) };
-}
-
-pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
-    let key = (kind, size.to_bits());
-    if let Some(icon) = ICONS.lock().unwrap().get(&key) {
-        return icon.clone();
-    }
-    WANTED.with(|wanted| {
-        let mut wanted = wanted.borrow_mut();
-        if !wanted.contains(&key) {
-            wanted.push(key);
-        }
-    });
-    nearest(kind, size)
-}
+static WAITING: AtomicBool = AtomicBool::new(false);
+static KEPT: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(Default::default);
+static PREPARED: Mutex<Vec<(Key, Option<Symbol>)>> = Mutex::new(Vec::new());
 
 pub(crate) const STAND_INS: [FileType<'static>; 5] = [
     FileType::Folder,
@@ -56,125 +39,473 @@ pub(crate) const STAND_INS: [FileType<'static>; 5] = [
     FileType::Uti("public.data"),
 ];
 
-pub(crate) fn warm(rows: &[Arc<Row>], size: f32) {
-    let until = Instant::now() + WARM_BUDGET;
-    let mut ahead = Vec::new();
-    for kind in undrawn(rows.iter().filter_map(|row| row.artwork), size, LOOK_AHEAD) {
-        if Instant::now() < until {
-            draw(kind, size);
-        } else {
-            ahead.push((kind, size.to_bits()));
-        }
-    }
-    if ahead.is_empty() {
-        return;
-    }
-    // Reversed, so that taking from the end draws the listing in row order.
-    ahead.reverse();
-    let mut queue = AHEAD.lock().unwrap();
-    queue.extend(ahead);
-    let over = queue.len().saturating_sub(LOOK_AHEAD);
-    queue.drain(..over);
+thread_local! {
+    static STATE: RefCell<State> = RefCell::new(State {
+        generation: generation(),
+        ..State::default()
+    });
+}
+
+#[derive(Default)]
+struct State {
+    frame: u64,
+    generation: u64,
+    held: HashMap<Key, Held>,
+    sizes: HashMap<FileType<'static>, Vec<u32>>,
+    per_file_bytes: usize,
+    /// Keys a frame painted a stand-in for: that frame, then the order it asked in.
+    asked: HashMap<Key, (u64, usize)>,
+    asks: usize,
+    waited: u64,
+    /// Keys a lane is drawing, and whether for a row on screen.
+    busy: HashMap<Key, bool>,
+    lanes: usize,
+    ahead: Ahead,
+}
+
+struct Held {
+    icon: Option<Symbol>,
+    used: u64,
+}
+
+#[derive(Default)]
+struct Ahead {
+    lines: usize,
+    size: u32,
+    keys: Vec<Key>,
+    at: HashMap<Key, usize>,
+    center: usize,
+    step: usize,
+    seen: u64,
+    back: Vec<Key>,
+}
+
+struct Job {
+    keys: Vec<Key>,
+    shown: bool,
+    generation: u64,
+}
+
+type Drawn = (Vec<(Key, Option<Symbol>)>, Vec<Key>);
+
+fn per_file(kind: FileType<'static>) -> bool {
+    matches!(kind, FileType::Path(_) | FileType::FullPath(_))
+}
+
+fn bytes_of(icon: &Option<Symbol>) -> usize {
+    icon.as_ref()
+        .and_then(|icon| icon.image.as_bytes(0))
+        .map_or(0, <[u8]>::len)
+}
+
+fn draw(key: Key) -> Option<Symbol> {
+    draw_file_icon(key.0, px(f32::from_bits(key.1)))
+}
+
+pub(crate) fn icon(kind: FileType<'static>, size: f32) -> Option<Symbol> {
+    STATE.with_borrow_mut(|state| state.icon((kind, size.to_bits())))
 }
 
 pub(crate) fn draw_stand_ins(size: f32) {
-    for kind in undrawn(STAND_INS, size, STAND_INS.len()) {
-        draw(kind, size);
+    STATE.with_borrow_mut(|state| {
+        for kind in STAND_INS {
+            let key = (kind, size.to_bits());
+            if !state.held.contains_key(&key) {
+                state.keep(key, draw(key));
+            }
+        }
+    });
+}
+
+/// On the thread that read a listing, before it is shown.
+pub(crate) fn prepare(rows: &[Arc<Row>], size: f32) {
+    let until = Instant::now() + PREPARE;
+    let keys: Arc<Vec<Key>> = {
+        let mut seen: HashSet<Key> = PREPARED
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+        seen.extend(KEPT.lock().unwrap().iter());
+        Arc::new(
+            rows.iter()
+                .take(FIRST_ROWS)
+                .filter_map(|row| Some((crate::art::kind_now(row)?, size.to_bits())))
+                .filter(|key| seen.insert(*key))
+                .collect(),
+        )
+    };
+    let lanes = LANES.min(keys.len());
+    let next = Arc::new(AtomicUsize::new(0));
+    let (done, finished) = mpsc::channel();
+    for _ in 0..lanes {
+        let (keys, next, done) = (keys.clone(), next.clone(), done.clone());
+        std::thread::spawn(move || {
+            while Instant::now() < until {
+                let Some(key) = keys.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    break;
+                };
+                let icon = draw(*key);
+                PREPARED.lock().unwrap().push((*key, icon));
+            }
+            done.send(()).ok();
+        });
     }
-}
-
-fn undrawn(
-    kinds: impl IntoIterator<Item = FileType<'static>>,
-    size: f32,
-    most: usize,
-) -> Vec<FileType<'static>> {
-    let icons = ICONS.lock().unwrap();
-    let mut seen = HashSet::new();
-    kinds
-        .into_iter()
-        .filter(|kind| !icons.contains_key(&(*kind, size.to_bits())) && seen.insert(*kind))
-        .take(most)
-        .collect()
-}
-
-fn draw(kind: FileType<'static>, size: f32) {
-    keep((kind, size.to_bits()), file_icon(kind, px(size)));
-}
-
-fn keep(key: Key, drawn: Option<Symbol>) {
-    let mut icons = ICONS.lock().unwrap();
-    if icons.len() >= ICONS_KEPT {
-        icons.retain(|(kind, _), _| !matches!(kind, FileType::Path(_) | FileType::FullPath(_)));
-    }
-    icons.insert(key, drawn);
-}
-
-fn nearest(kind: FileType<'static>, at: f32) -> Option<Symbol> {
-    ICONS
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|((drawn, _), icon)| (*drawn == kind).then_some(icon.as_ref()?))
-        .min_by(|a, b| {
-            (f32::from(a.size.width) - at)
-                .abs()
-                .total_cmp(&(f32::from(b.size.width) - at).abs())
-        })
-        .map(|icon| Symbol {
-            size: size(px(at), px(at)),
-            ..icon.clone()
-        })
-}
-
-/// A row that is waiting, or else the listing drawn ahead of one; the flag is which.
-fn next_to_draw() -> Option<(Key, bool)> {
-    if let Some(key) = PENDING.with(|pending| pending.borrow_mut().pop()) {
-        return Some((key, true));
-    }
-    loop {
-        let key = AHEAD.lock().unwrap().pop()?;
-        if !ICONS.lock().unwrap().contains_key(&key) {
-            return Some((key, false));
+    for _ in 0..lanes {
+        if finished
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
+            break;
         }
     }
 }
 
+/// Once per frame, before its rows ask; the lanes start after it, on what it asked for.
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
-    let wanted = WANTED.with(|wanted| wanted.take());
-    if !wanted.is_empty() {
-        for key in &wanted {
-            let waiting = nearest(key.0, f32::from_bits(key.1));
-            ICONS.lock().unwrap().entry(*key).or_insert(waiting);
+    let prepared = std::mem::take(&mut *PREPARED.lock().unwrap());
+    let dropped = STATE.with_borrow_mut(|state| {
+        state.frame += 1;
+        let stale = state.frame.saturating_sub(FRESH);
+        state.asked.retain(|_, (frame, _)| *frame >= stale);
+        let dropped = state.refresh();
+        for (key, icon) in prepared {
+            if !state.held.contains_key(&key) {
+                state.keep(key, icon);
+            }
         }
-        // Reversed, so that taking from the end draws a frame's rows top down.
-        PENDING.with(|pending| pending.borrow_mut().extend(wanted.into_iter().rev()));
+        dropped
+    });
+    for image in dropped {
+        cx.drop_image(image, None);
     }
-    while DRAWING.with(Cell::get) < LANES {
-        let Some(first) = next_to_draw() else {
-            return;
+    let demo = demo.downgrade();
+    cx.defer(move |cx| start(demo, cx));
+}
+
+fn start(demo: WeakEntity<FinderDemo>, cx: &mut App) {
+    if let Some(finder) = demo.upgrade() {
+        let finder = finder.read(cx);
+        let list = finder.view == LIST_VIEW;
+        // The size a list settles at, not the one its zoom is passing through.
+        let size = match list {
+            true => finder.list_icon,
+            false => finder.art_size(),
         };
-        DRAWING.with(|drawing| drawing.set(drawing.get() + 1));
-        let demo = demo.downgrade();
+        let lines = finder.lines(list);
+        STATE.with_borrow_mut(|state| state.ahead.follow(&lines, size));
+    }
+    while let Some(job) = STATE.with_borrow_mut(State::lane) {
+        let demo = demo.clone();
         cx.spawn(async move |cx| {
-            let mut next = Some(first);
-            while let Some((key, waited_for)) = next {
+            let mut next = Some(job);
+            while let Some(job) = next {
+                let priority = match job.shown {
+                    true => Priority::High,
+                    false => Priority::Low,
+                };
+                let (generation, for_screen) = (job.generation, job.shown);
                 let drawn = cx
                     .background_executor()
-                    .spawn(async move { file_icon(key.0, px(f32::from_bits(key.1))) })
+                    .spawn_with_priority(priority, async move { job.run() })
                     .await;
-                let held = demo.update(cx, |_, cx| {
-                    keep(key, drawn);
-                    if waited_for {
+                let (shown, dropped) =
+                    STATE.with_borrow_mut(|state| state.land(drawn, generation, for_screen));
+                let alive = demo.update(cx, |_, cx| {
+                    for image in dropped {
+                        cx.drop_image(image, None);
+                    }
+                    if shown {
                         cx.notify();
                     }
                 });
-                if held.is_err() {
-                    break;
-                }
-                next = next_to_draw();
+                next = alive.ok().and_then(|()| {
+                    STATE.with_borrow_mut(|state| state.pick(LANES + 1 - state.lanes))
+                });
             }
-            DRAWING.with(|drawing| drawing.set(drawing.get() - 1));
+            STATE.with_borrow_mut(|state| state.lanes -= 1);
         })
         .detach();
+    }
+}
+
+impl Job {
+    fn run(self) -> Drawn {
+        let until = Instant::now() + SLICE;
+        let mut keys = self.keys.into_iter().peekable();
+        let mut drawn = Vec::new();
+        while let Some(key) = keys.next_if(|_| self.shown || !WAITING.load(Ordering::Relaxed)) {
+            drawn.push((key, draw(key)));
+            if Instant::now() >= until {
+                break;
+            }
+        }
+        (drawn, keys.collect())
+    }
+}
+
+impl State {
+    fn icon(&mut self, key: Key) -> Option<Symbol> {
+        let frame = self.frame;
+        if per_file(key.0) {
+            self.ahead.saw(key, frame);
+        }
+        if let Some(held) = self.held.get_mut(&key) {
+            held.used = frame;
+            return held.icon.clone();
+        }
+        self.asks += 1;
+        self.asked.insert(key, (frame, self.asks));
+        self.waited = frame;
+        if self.busy.get(&key) != Some(&true) {
+            WAITING.store(true, Ordering::Relaxed);
+        }
+        self.nearest(key)
+    }
+
+    fn nearest(&self, (kind, at): Key) -> Option<Symbol> {
+        let at = f32::from_bits(at);
+        self.sizes
+            .get(&kind)?
+            .iter()
+            .filter_map(|drawn| self.held.get(&(kind, *drawn))?.icon.as_ref())
+            .min_by(|a, b| {
+                (f32::from(a.size.width) - at)
+                    .abs()
+                    .total_cmp(&(f32::from(b.size.width) - at).abs())
+            })
+            .map(|icon| Symbol {
+                size: size(px(at), px(at)),
+                ..icon.clone()
+            })
+    }
+
+    fn refresh(&mut self) -> Vec<Arc<RenderImage>> {
+        let now = generation();
+        if now == self.generation {
+            return Vec::new();
+        }
+        self.generation = now;
+        self.per_file_bytes = 0;
+        self.sizes.clear();
+        KEPT.lock().unwrap().clear();
+        self.ahead.restart();
+        self.held
+            .drain()
+            .filter_map(|(_, held)| Some(held.icon?.image))
+            .collect()
+    }
+
+    fn lane(&mut self) -> Option<Job> {
+        if self.lanes == LANES {
+            return None;
+        }
+        let job = self.pick(LANES - self.lanes)?;
+        self.lanes += 1;
+        Some(job)
+    }
+
+    /// Rows on screen first, the newest frame's in paint order; then the listing, outward from them.
+    fn pick(&mut self, free: usize) -> Option<Job> {
+        let mut shown: Vec<(Key, (u64, usize))> = self
+            .asked
+            .iter()
+            .filter(|(key, _)| self.busy.get(key) != Some(&true))
+            .map(|(key, stamp)| (*key, *stamp))
+            .collect();
+        let job = match shown.is_empty() {
+            false => {
+                shown.sort_unstable_by_key(|(_, (frame, order))| (Reverse(*frame), *order));
+                // Dealt like cards: the service renders cold icons in arrival order, top down.
+                let keys = shown
+                    .into_iter()
+                    .step_by(free)
+                    .take(BATCH)
+                    .map(|(key, _)| key);
+                Some(Job {
+                    keys: keys.collect(),
+                    shown: true,
+                    generation: self.generation,
+                })
+            }
+            true => self.ahead_job(),
+        };
+        if let Some(job) = &job {
+            self.busy
+                .extend(job.keys.iter().map(|key| (*key, job.shown)));
+        }
+        let waiting = self
+            .asked
+            .keys()
+            .any(|key| self.busy.get(key) != Some(&true));
+        WAITING.store(waiting, Ordering::Relaxed);
+        job
+    }
+
+    /// IconServices renders cold icons one at a time, so drawing ahead waits for a frame with no
+    /// stand-in, holds one lane, and a row coming on screen waits behind one icon at most.
+    fn ahead_job(&mut self) -> Option<Job> {
+        if self.waited == self.frame
+            || self.per_file_bytes >= KEPT_BYTES
+            || self.busy.values().any(|shown| !shown)
+        {
+            return None;
+        }
+        let mut keys = Vec::new();
+        while keys.len() < BATCH {
+            let Some(key) = self.ahead.next() else {
+                break;
+            };
+            if !self.held.contains_key(&key) && !self.busy.contains_key(&key) {
+                keys.push(key);
+            }
+        }
+        (!keys.is_empty()).then(|| Job {
+            keys,
+            shown: false,
+            generation: self.generation,
+        })
+    }
+
+    fn land(
+        &mut self,
+        (drawn, left): Drawn,
+        generation: u64,
+        for_screen: bool,
+    ) -> (bool, Vec<Arc<RenderImage>>) {
+        let mut shown = false;
+        for (key, icon) in drawn {
+            if self.busy.get(&key) == Some(&for_screen) {
+                self.busy.remove(&key);
+            }
+            if generation == self.generation {
+                shown |= self.asked.remove(&key).is_some();
+                self.keep(key, icon);
+            }
+        }
+        for key in left.into_iter().rev() {
+            if self.busy.get(&key) == Some(&for_screen) {
+                self.busy.remove(&key);
+                self.ahead.back.push(key);
+            }
+        }
+        let dropped = match shown && self.per_file_bytes > KEPT_BYTES {
+            true => self.evict(),
+            false => Vec::new(),
+        };
+        (shown, dropped)
+    }
+
+    fn keep(&mut self, key: Key, icon: Option<Symbol>) {
+        KEPT.lock().unwrap().insert(key);
+        if per_file(key.0) {
+            self.per_file_bytes += bytes_of(&icon);
+        }
+        let held = Held {
+            icon,
+            used: self.frame,
+        };
+        match self.held.insert(key, held) {
+            Some(old) if per_file(key.0) => self.per_file_bytes -= bytes_of(&old.icon),
+            Some(_) => {}
+            None => self.sizes.entry(key.0).or_default().push(key.1),
+        }
+    }
+
+    fn evict(&mut self) -> Vec<Arc<RenderImage>> {
+        let fresh = self.frame.saturating_sub(FRESH);
+        let mut far: Vec<(usize, Key)> = self
+            .held
+            .iter()
+            .filter(|(key, held)| per_file(key.0) && held.used < fresh)
+            .map(|(key, _)| (self.ahead.distance(key), *key))
+            .collect();
+        far.sort_unstable_by_key(|(distance, _)| Reverse(*distance));
+        let mut dropped = Vec::new();
+        for (_, key) in far {
+            if self.per_file_bytes <= KEPT_BYTES / 2 {
+                break;
+            }
+            let Some(held) = self.held.remove(&key) else {
+                continue;
+            };
+            KEPT.lock().unwrap().remove(&key);
+            self.per_file_bytes -= bytes_of(&held.icon);
+            if let Some(sizes) = self.sizes.get_mut(&key.0) {
+                sizes.retain(|size| *size != key.1);
+                if sizes.is_empty() {
+                    self.sizes.remove(&key.0);
+                }
+            }
+            dropped.extend(held.icon.map(|icon| icon.image));
+        }
+        self.ahead.restart();
+        dropped
+    }
+}
+
+impl Ahead {
+    fn follow(&mut self, lines: &Arc<Vec<Line>>, size: f32) {
+        let id = Arc::as_ptr(lines) as usize;
+        if id == self.lines && size.to_bits() == self.size {
+            return;
+        }
+        self.lines = id;
+        self.size = size.to_bits();
+        self.keys.clear();
+        self.at.clear();
+        for kind in lines.iter().filter_map(|line| line.row.artwork) {
+            let key = (kind, size.to_bits());
+            if !self.at.contains_key(&key) {
+                self.at.insert(key, self.keys.len());
+                self.keys.push(key);
+            }
+        }
+        self.center = self.center.min(self.keys.len().saturating_sub(1));
+        self.restart();
+    }
+
+    fn restart(&mut self) {
+        self.step = 0;
+        self.back.clear();
+    }
+
+    fn saw(&mut self, key: Key, frame: u64) {
+        if self.seen == frame {
+            return;
+        }
+        if let Some(&at) = self.at.get(&key) {
+            self.seen = frame;
+            if at != self.center {
+                self.center = at;
+                self.restart();
+            }
+        }
+    }
+
+    fn distance(&self, key: &Key) -> usize {
+        self.at
+            .get(key)
+            .map_or(usize::MAX, |at| at.abs_diff(self.center))
+    }
+
+    fn next(&mut self) -> Option<Key> {
+        if let Some(key) = self.back.pop() {
+            return Some(key);
+        }
+        let reach = self.center.max(self.keys.len().saturating_sub(self.center));
+        while self.step / 2 <= reach {
+            let step = self.step;
+            self.step += 1;
+            let at = match step % 2 {
+                0 => self.center.checked_add(step / 2),
+                _ => self.center.checked_sub(step / 2 + 1),
+            };
+            if let Some(key) = at.and_then(|at| self.keys.get(at)) {
+                return Some(*key);
+            }
+        }
+        None
     }
 }
