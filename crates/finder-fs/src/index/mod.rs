@@ -167,7 +167,8 @@ impl Index {
 
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
-        let id = listed_dir(&tree, dir)?;
+        // Asked while a frame draws, so never of the disk: a share that stopped answering would stall it.
+        let id = listed(&tree, tree.find(dir)?)?;
         Some(
             tree.children(id)
                 .filter(|&child| tree.nodes[child as usize].flags & HIDDEN == 0)
@@ -620,7 +621,10 @@ fn claim(store: &Path) -> (bool, Option<File>) {
 }
 
 fn listed_dir(tree: &Tree, dir: &Path) -> Option<u32> {
-    let id = resolve(tree, dir)?;
+    listed(tree, resolve(tree, dir)?)
+}
+
+fn listed(tree: &Tree, id: u32) -> Option<u32> {
     let node = tree.nodes[id as usize];
     (node.is_dir() && node.flags & PACKAGE == 0 && node.state & LISTED != 0).then_some(id)
 }
