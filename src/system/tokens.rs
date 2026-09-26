@@ -478,6 +478,13 @@ pub const fn text_font_family_name() -> &'static str {
 }
 
 pub fn text_font_family(cx: &App) -> Option<&'static str> {
+    thread_local! {
+        static FAMILY: Cell<Option<(u64, Option<&'static str>)>> = const { Cell::new(None) };
+    }
+    let generation = generation();
+    if let Some((_, family)) = FAMILY.get().filter(|(at, _)| *at == generation) {
+        return family;
+    }
     let text_system = cx.text_system();
     let resolve = |family: &str| {
         let mut font = system_font(FontWeight::NORMAL);
@@ -486,10 +493,11 @@ pub fn text_font_family(cx: &App) -> Option<&'static str> {
     };
     // gpui resolves an unknown family to a silent fallback, so two nonexistent names pin its id.
     let fallback = resolve("NG-No-Such-Family-9x7");
-    if fallback != resolve("NG-Also-Not-Installed-4b2") {
-        return None;
-    }
-    (resolve(text_font_family_name()) != fallback).then(text_font_family_name)
+    let family = (fallback == resolve("NG-Also-Not-Installed-4b2")
+        && resolve(text_font_family_name()) != fallback)
+        .then(text_font_family_name);
+    FAMILY.set(Some((generation, family)));
+    family
 }
 
 pub fn system_font_size() -> Pixels {

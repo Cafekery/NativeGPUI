@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use gpui::{Context, SharedString, Window};
@@ -19,6 +21,19 @@ pub(crate) fn typed_path(text: &str) -> PathBuf {
     PathBuf::from(match trimmed.is_empty() {
         true => "/",
         false => trimmed,
+    })
+}
+
+fn display_name(path: &'static str) -> String {
+    thread_local! {
+        static NAMED: RefCell<Option<(&'static str, String)>> = const { RefCell::new(None) };
+    }
+    NAMED.with_borrow_mut(|named| match named {
+        Some((at, name)) if *at == path => name.clone(),
+        _ => named
+            .insert((path, finder_fs::name::of_path(Path::new(path))))
+            .1
+            .clone(),
     })
 }
 
@@ -100,18 +115,16 @@ impl FinderDemo {
         self.target().to_string()
     }
 
-    pub(crate) fn title(&self) -> String {
+    pub(crate) fn title(&self) -> Cow<'static, str> {
         if self.in_search() {
-            return format!("Searching \u{201c}{}\u{201d}", self.scope_name());
+            return format!("Searching \u{201c}{}\u{201d}", self.scope_name()).into();
         }
         match self.tag_listing.map(tag_title) {
-            Some(title) => title.to_string(),
-            None if crate::prefs::finder().posix_title => {
-                finder_fs::name::display(&self.crumb_path()).into_owned()
-            }
+            Some(title) => title.into(),
+            None if crate::prefs::finder().posix_title => finder_fs::name::display(self.target()),
             None => match self.folders.get(self.target()) {
-                Some(folder) => folder.title.to_string(),
-                None => finder_fs::name::of_path(Path::new(self.target())),
+                Some(folder) => folder.title.into(),
+                None => display_name(self.target()).into(),
             },
         }
     }

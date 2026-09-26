@@ -443,7 +443,7 @@ fn dot_image(color: (u8, u8, u8)) -> Retained<NSImage> {
     image
 }
 
-fn nsstring_is(text: &NSString, want: &str) -> bool {
+pub(crate) fn nsstring_is(text: &NSString, want: &str) -> bool {
     let ptr = text.UTF8String();
     if ptr.is_null() {
         return want.is_empty();
