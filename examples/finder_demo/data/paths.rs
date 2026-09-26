@@ -5,6 +5,8 @@ use std::sync::{OnceLock, RwLock};
 
 use gpui::SharedString;
 
+const SEEN_MAX: usize = 4096;
+
 pub(crate) fn intern(text: &str) -> &'static str {
     static POOL: OnceLock<RwLock<HashSet<&'static str>>> = OnceLock::new();
     let pool = POOL.get_or_init(Default::default);
@@ -46,6 +48,9 @@ pub(crate) fn enclosing_name(key: &str) -> SharedString {
     SEEN.with_borrow_mut(|seen| {
         if let Some(name) = seen.get(parent.as_ref()) {
             return name.clone();
+        }
+        if seen.len() >= SEEN_MAX {
+            seen.clear();
         }
         let name = SharedString::from(finder_fs::name::of_path(Path::new(parent.as_ref())));
         seen.insert(parent.into_owned(), name.clone());

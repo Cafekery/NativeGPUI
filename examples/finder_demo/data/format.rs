@@ -1,6 +1,8 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::hash::Hash;
+use std::rc::Rc;
+use std::sync::{LazyLock, Mutex};
 use std::thread::LocalKey;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,14 +16,16 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSAttributedString, NSBundle, NSByteCountFormatter, NSByteCountFormatterCountStyle,
-    NSByteCountFormatterUnits, NSCalendar, NSCalendarOptions, NSDate, NSDateFormatter,
-    NSDateFormatterStyle, NSDictionary, NSString,
+    NSByteCountFormatterUnits, NSCalendar, NSCalendarOptions, NSCalendarUnit, NSDate,
+    NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSString,
 };
 
 use super::face::Face;
 use super::row::{Column, Row};
 
 const UNIX_TO_REFERENCE: f64 = 978_307_200.;
+const SEEN_MAX: usize = 4096;
+const BYTES_HELD: usize = 16_384;
 
 pub(super) fn reference_seconds(at: SystemTime) -> f64 {
     match at.duration_since(UNIX_EPOCH) {
@@ -30,21 +34,69 @@ pub(super) fn reference_seconds(at: SystemTime) -> f64 {
     }
 }
 
-type Cache = LocalKey<RefCell<HashMap<i64, SharedString>>>;
+/// The midnights starting the days 30, 7 and 1 before today, today and the two after it.
+fn midnights() -> [f64; 6] {
+    thread_local! {
+        static DAYS: Cell<[f64; 6]> = const { Cell::new([0.; 6]) };
+    }
+    let now = reference_seconds(SystemTime::now());
+    let days = DAYS.get();
+    if (days[3]..days[4]).contains(&now) {
+        return days;
+    }
+    let calendar = NSCalendar::currentCalendar();
+    let today = calendar.startOfDayForDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(now));
+    let days = [-30, -7, -1, 0, 1, 2].map(|offset| {
+        calendar
+            .dateByAddingUnit_value_toDate_options(
+                NSCalendarUnit::Day,
+                offset,
+                &today,
+                NSCalendarOptions::empty(),
+            )
+            .map_or(f64::NAN, |day| day.timeIntervalSinceReferenceDate())
+    });
+    DAYS.set(days);
+    days
+}
 
-fn per_minute(
-    seconds: f64,
-    seen: &'static Cache,
-    write: impl FnOnce(f64) -> SharedString,
+/// Today's midnight: the day relative dates are written for.
+pub(crate) fn today() -> f64 {
+    midnights()[3]
+}
+
+/// Texts for one day at most: relative dates name another day after midnight.
+struct Seen<K> {
+    day: f64,
+    texts: HashMap<K, SharedString>,
+}
+
+type Cache<K> = LocalKey<RefCell<Seen<K>>>;
+
+fn remembered<K: Hash + Eq>(
+    seen: &'static Cache<K>,
+    key: K,
+    write: impl FnOnce() -> SharedString,
 ) -> SharedString {
-    let minute = (seconds / 60.).floor() as i64;
-    seen.with(|seen| {
-        if let Some(text) = seen.borrow().get(&minute) {
+    let day = today();
+    seen.with_borrow_mut(|seen| {
+        if seen.day != day || seen.texts.len() >= SEEN_MAX {
+            seen.day = day;
+            seen.texts.clear();
+        }
+        if let Some(text) = seen.texts.get(&key) {
             return text.clone();
         }
-        let text = write(seconds);
-        seen.borrow_mut().insert(minute, text.clone());
+        let text = write();
+        seen.texts.insert(key, text.clone());
         text
+    })
+}
+
+fn seen<K>() -> RefCell<Seen<K>> {
+    RefCell::new(Seen {
+        day: f64::NAN,
+        texts: HashMap::new(),
     })
 }
 
@@ -65,9 +117,9 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
             formatter.setDoesRelativeDateFormatting(true);
             formatter
         };
-        static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
+        static SEEN: RefCell<Seen<i64>> = seen();
     }
-    per_minute(seconds, &SEEN, |seconds| {
+    remembered(&SEEN, (seconds / 60.).floor() as i64, || {
         FORMATTER.with(|formatter| formatted(formatter, seconds))
     })
 }
@@ -87,26 +139,24 @@ pub(crate) fn stamp(seconds: f64, room: f32) -> SharedString {
             formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
             formatter
         });
-        static SEEN: RefCell<HashMap<(i64, i32), SharedString>> = RefCell::new(HashMap::new());
+        static SEEN: RefCell<Seen<(i64, i32)>> = seen();
     }
-    if days_ago(seconds).abs() <= 1 {
+    let days = midnights();
+    if (days[2]..days[5]).contains(&seconds) {
         return date_text(seconds);
     }
     let key = ((seconds / 60.).floor() as i64, (room * 2.) as i32);
-    if let Some(text) = SEEN.with_borrow(|seen| seen.get(&key).cloned()) {
-        return text;
-    }
-    let text = FORMATTERS.with(|all| {
-        let mut texts = all.iter().map(|formatter| formatted(formatter, seconds));
-        let mut text = texts.next().unwrap_or_default();
-        while small_text_width(&text) > room {
-            let Some(shorter) = texts.next() else { break };
-            text = shorter;
-        }
-        text
-    });
-    SEEN.with_borrow_mut(|seen| seen.insert(key, text.clone()));
-    text
+    remembered(&SEEN, key, || {
+        FORMATTERS.with(|all| {
+            let mut texts = all.iter().map(|formatter| formatted(formatter, seconds));
+            let mut text = texts.next().unwrap_or_default();
+            while small_text_width(&text) > room {
+                let Some(shorter) = texts.next() else { break };
+                text = shorter;
+            }
+            text
+        })
+    })
 }
 
 pub(crate) fn small_text_width(text: &str) -> f32 {
@@ -162,42 +212,51 @@ pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
             })
             .collect()
         };
-        static SEEN: RefCell<HashMap<(i64, usize), SharedString>> = RefCell::new(HashMap::new());
+        static SEEN: RefCell<Seen<(i64, usize)>> = seen();
     }
-    let today = style == 3 && crate::prefs::finder().relative_dates && days_ago(seconds) == 0;
+    let days = midnights();
+    let today = style == 3
+        && crate::prefs::finder().relative_dates
+        && (days[3]..days[4]).contains(&seconds);
     let style = if today { 4 } else { style };
-    let key = ((seconds / 60.).floor() as i64, style);
-    if let Some(text) = SEEN.with_borrow(|seen| seen.get(&key).cloned()) {
-        return text;
-    }
-    let text = FORMATTERS.with(|all| formatted(&all[style], seconds));
-    SEEN.with_borrow_mut(|seen| seen.insert(key, text.clone()));
-    text
+    remembered(&SEEN, ((seconds / 60.).floor() as i64, style), || {
+        FORMATTERS.with(|all| formatted(&all[style], seconds))
+    })
 }
 
 /// Finder's date column takes one style for every row, whatever they hold: the fullest whose
 /// samples, yesterday at 10 PM and six days ago at 10 AM, leave 16 points of the column, the short
 /// styles set in monospaced digits; else the date alone.
 pub(crate) fn date_style(width: f32, size: f32) -> usize {
-    let at = |days: f64, hour: isize| {
-        let day = NSDate::dateWithTimeIntervalSinceNow(-days * 86_400.);
-        NSCalendar::currentCalendar()
-            .dateBySettingHour_minute_second_ofDate_options(
-                hour,
-                0,
-                0,
-                &day,
-                NSCalendarOptions::empty(),
-            )
-            .map_or(0., |date| date.timeIntervalSinceReferenceDate())
-    };
-    let samples = [at(1., 22), at(6., 10)];
+    thread_local! {
+        static WIDEST: Cell<(u32, f64, [f32; 3])> = const { Cell::new((0, f64::NAN, [0.; 3])) };
+    }
+    let day = today();
+    let (measured, on, mut widest) = WIDEST.get();
+    if measured != size.to_bits() || on != day {
+        let at = |days: f64, hour: isize| {
+            let day = NSDate::dateWithTimeIntervalSinceNow(-days * 86_400.);
+            NSCalendar::currentCalendar()
+                .dateBySettingHour_minute_second_ofDate_options(
+                    hour,
+                    0,
+                    0,
+                    &day,
+                    NSCalendarOptions::empty(),
+                )
+                .map_or(0., |date| date.timeIntervalSinceReferenceDate())
+        };
+        let samples = [at(1., 22), at(6., 10)];
+        widest = [0, 1, 2].map(|style| {
+            samples
+                .iter()
+                .map(|&sample| appkit_width(&list_date(sample, style), size, style == 2))
+                .fold(0., f32::max)
+        });
+        WIDEST.set((size.to_bits(), day, widest));
+    }
     (0..3)
-        .find(|&style| {
-            samples.iter().all(|&sample| {
-                appkit_width(&list_date(sample, style), size, style == 2) + 16. <= width
-            })
-        })
+        .find(|&style| widest[style] + 16. <= width)
         .unwrap_or(3)
 }
 
@@ -235,99 +294,161 @@ static KIND_NAMES: LazyLock<KindNames> = LazyLock::new(|| {
 /// Finder's kind column: a kind Finder knows by several names shows the fullest of them that
 /// fits `room`, else its shortest; any other kind shows as it is.
 pub(crate) fn kind_text(kind: &SharedString, room: f32, size: f32) -> SharedString {
+    type Names = Rc<[(SharedString, f32)]>;
     thread_local! {
-        static SEEN: RefCell<HashMap<(SharedString, i32, i32), SharedString>> =
-            RefCell::new(HashMap::new());
+        static MEASURED: RefCell<HashMap<SharedString, (u32, Names)>> = RefCell::new(HashMap::new());
     }
-    let key = (kind.clone(), room as i32, (size * 2.) as i32);
-    if let Some(text) = SEEN.with_borrow(|seen| seen.get(&key).cloned()) {
-        return text;
-    }
-    let text = match KIND_NAMES.by_name.get(&kind.to_lowercase()) {
-        Some(&at) => {
-            let names = &KIND_NAMES.names[at];
-            let fits = |name: &&String| appkit_width(name, size, false) <= room;
-            SharedString::from(
-                names
-                    .iter()
-                    .find(fits)
-                    .unwrap_or(&names[names.len() - 1])
-                    .clone(),
-            )
+    let names = MEASURED.with_borrow_mut(|measured| {
+        if let Some((_, names)) = measured.get(kind).filter(|(at, _)| *at == size.to_bits()) {
+            return names.clone();
         }
+        let names: Names = match KIND_NAMES.by_name.get(&kind.to_lowercase()) {
+            Some(&at) => KIND_NAMES.names[at]
+                .iter()
+                .map(|name| (name.clone().into(), appkit_width(name, size, false)))
+                .collect(),
+            None => Rc::new([]),
+        };
+        if measured.len() >= SEEN_MAX {
+            measured.clear();
+        }
+        measured.insert(kind.clone(), (size.to_bits(), names.clone()));
+        names
+    });
+    match names.last() {
+        Some(shortest) => names
+            .iter()
+            .find(|(_, width)| *width <= room)
+            .unwrap_or(shortest)
+            .0
+            .clone(),
         None => kind.clone(),
-    };
-    SEEN.with_borrow_mut(|seen| seen.insert(key, text.clone()));
-    text
-}
-
-pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {
-    match sort {
-        Column::Name => match row.name.chars().next() {
-            Some(first) if first.is_ascii_digit() => "0 \u{2013} 9".into(),
-            Some(first) => SharedString::from(first.to_uppercase().to_string()),
-            None => "\u{2014}".into(),
-        },
-        Column::Kind => plural(&row.kind),
-        Column::Size if row.face == Face::Folder => "Folders".into(),
-        Column::Size => match row.bytes {
-            0 => "Zero KB".into(),
-            bytes if bytes < 1_000_000 => "Under 1 MB".into(),
-            bytes if bytes < 10_000_000 => "1 MB to 10 MB".into(),
-            bytes if bytes < 100_000_000 => "10 MB to 100 MB".into(),
-            bytes if bytes < 1_000_000_000 => "100 MB to 1 GB".into(),
-            _ => "Over 1 GB".into(),
-        },
-        Column::Modified => match days_ago(row.modified_at) {
-            0 => "Today".into(),
-            1 => "Yesterday".into(),
-            2..=7 => "Previous 7 Days".into(),
-            8..=30 => "Previous 30 Days".into(),
-            _ => month_string(row.modified_at),
-        },
     }
 }
 
-fn plural(kind: &str) -> SharedString {
-    match kind.ends_with('s') {
-        true => SharedString::from(kind.to_string()),
-        false => SharedString::from(format!("{kind}s")),
+/// The bands of a grouped listing, named once per band rather than once per row.
+pub(crate) struct Bands {
+    sort: Column,
+    days: [f64; 6],
+    months: Vec<(f64, f64, SharedString)>,
+}
+
+impl Bands {
+    pub(crate) fn new(sort: Column) -> Self {
+        Self {
+            sort,
+            days: match sort {
+                Column::Modified => midnights(),
+                _ => [0.; 6],
+            },
+            months: Vec::new(),
+        }
     }
-}
 
-fn days_ago(seconds: f64) -> i64 {
-    let now = NSDate::date().timeIntervalSinceReferenceDate();
-    let calendar = NSCalendar::currentCalendar();
-    let then = NSDate::dateWithTimeIntervalSinceReferenceDate(seconds);
-    let start_of = |date: &NSDate| {
-        calendar
-            .startOfDayForDate(date)
-            .timeIntervalSinceReferenceDate()
-    };
-    let gap = start_of(&NSDate::dateWithTimeIntervalSinceReferenceDate(now)) - start_of(&then);
-    (gap / 86_400.0).round() as i64
-}
+    /// The band `row` falls in, when it is not `band`.
+    pub(crate) fn next(&mut self, row: &Row, band: Option<&SharedString>) -> Option<SharedString> {
+        let named = |name: &str| band.is_some_and(|band| band.as_ref() == name);
+        let fixed = |name: &'static str| (!named(name)).then(|| SharedString::new_static(name));
+        match self.sort {
+            Column::Name => match row.name.chars().next() {
+                Some(first) if first.is_ascii_digit() => fixed("0 \u{2013} 9"),
+                Some(first) => band
+                    .is_none_or(|band| !band.chars().eq(first.to_uppercase()))
+                    .then(|| SharedString::from(first.to_uppercase().to_string())),
+                None => fixed("\u{2014}"),
+            },
+            Column::Kind => {
+                let kind = row.kind.as_ref();
+                let same = band.is_some_and(|band| match kind.ends_with('s') {
+                    true => band.as_ref() == kind,
+                    false => band.strip_suffix('s') == Some(kind),
+                });
+                (!same).then(|| match kind.ends_with('s') {
+                    true => row.kind.clone(),
+                    false => SharedString::from(format!("{kind}s")),
+                })
+            }
+            Column::Size if row.face == Face::Folder => fixed("Folders"),
+            Column::Size => fixed(match row.bytes {
+                0 => "Zero KB",
+                bytes if bytes < 1_000_000 => "Under 1 MB",
+                bytes if bytes < 10_000_000 => "1 MB to 10 MB",
+                bytes if bytes < 100_000_000 => "10 MB to 100 MB",
+                bytes if bytes < 1_000_000_000 => "100 MB to 1 GB",
+                _ => "Over 1 GB",
+            }),
+            Column::Modified => {
+                let (at, days) = (row.modified_at, self.days);
+                match () {
+                    _ if (days[3]..days[4]).contains(&at) => fixed("Today"),
+                    _ if (days[2]..days[3]).contains(&at) => fixed("Yesterday"),
+                    _ if (days[1]..days[2]).contains(&at) => fixed("Previous 7 Days"),
+                    _ if (days[0]..days[1]).contains(&at) => fixed("Previous 30 Days"),
+                    _ => {
+                        let month = self.month(at);
+                        (band != Some(&month)).then_some(month)
+                    }
+                }
+            }
+        }
+    }
 
-fn month_string(seconds: f64) -> SharedString {
-    let formatter = NSDateFormatter::new();
-    formatter.setDateFormat(Some(&NSString::from_str("LLLL yyyy")));
-    SharedString::from(
-        formatter
-            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-            .to_string(),
-    )
+    fn month(&mut self, at: f64) -> SharedString {
+        thread_local! {
+            static FORMATTER: Retained<NSDateFormatter> = {
+                let formatter = NSDateFormatter::new();
+                formatter.setDateFormat(Some(&NSString::from_str("LLLL yyyy")));
+                formatter
+            };
+        }
+        if let Some((_, _, name)) = self
+            .months
+            .iter()
+            .find(|(from, to, _)| (*from..*to).contains(&at))
+        {
+            return name.clone();
+        }
+        let date = NSDate::dateWithTimeIntervalSinceReferenceDate(at);
+        let mut start = None;
+        let mut length = 0.;
+        let found = unsafe {
+            NSCalendar::currentCalendar().rangeOfUnit_startDate_interval_forDate(
+                NSCalendarUnit::Month,
+                Some(&mut start),
+                &mut length,
+                &date,
+            )
+        };
+        let name = FORMATTER.with(|formatter| formatted(formatter, at));
+        if let Some(start) = start.filter(|_| found) {
+            let from = start.timeIntervalSinceReferenceDate();
+            self.months.push((from, from + length, name.clone()));
+        }
+        name
+    }
 }
 
 pub(crate) fn day_string(seconds: f64) -> String {
-    let formatter = NSDateFormatter::new();
-    formatter.setDateStyle(NSDateFormatterStyle::MediumStyle);
-    formatter.setTimeStyle(NSDateFormatterStyle::NoStyle);
-    formatter
-        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-        .to_string()
+    thread_local! {
+        static FORMATTER: Retained<NSDateFormatter> = {
+            let formatter = NSDateFormatter::new();
+            formatter.setDateStyle(NSDateFormatterStyle::MediumStyle);
+            formatter.setTimeStyle(NSDateFormatterStyle::NoStyle);
+            formatter
+        };
+    }
+    FORMATTER.with(|formatter| {
+        formatter
+            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+            .to_string()
+    })
 }
 
 pub(crate) fn byte_string(bytes: u64) -> String {
+    static SEEN: LazyLock<Mutex<HashMap<u64, String>>> = LazyLock::new(Mutex::default);
+    if let Some(text) = SEEN.lock().unwrap().get(&bytes) {
+        return text.clone();
+    }
     thread_local! {
         static FORMATTER: Retained<NSByteCountFormatter> = {
             let formatter = NSByteCountFormatter::new();
@@ -344,5 +465,11 @@ pub(crate) fn byte_string(bytes: u64) -> String {
             formatter
         };
     }
-    FORMATTER.with(|formatter| formatter.stringFromByteCount(bytes as i64).to_string())
+    let text = FORMATTER.with(|formatter| formatter.stringFromByteCount(bytes as i64).to_string());
+    let mut seen = SEEN.lock().unwrap();
+    if seen.len() >= BYTES_HELD {
+        seen.clear();
+    }
+    seen.insert(bytes, text.clone());
+    text
 }

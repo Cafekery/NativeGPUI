@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
     MouseDownEvent, Window, div, prelude::*, px,
@@ -497,8 +499,12 @@ impl FinderDemo {
         let lines = self.focused_lines();
         let icon = self.list_icon_now();
         let size = px(row_font());
+        let mut measured = HashMap::new();
         let widest = lines.iter().fold(0_f32, |widest, line| {
-            let text_w = text_width(window, column_text(column, line), size);
+            let text = column_text(column, line);
+            let text_w = *measured
+                .entry(text.clone())
+                .or_insert_with(|| text_width(window, text, size));
             let total = if column == Column::Name {
                 name_prefix(line, icon) + text_w + CELL_PAD
             } else {

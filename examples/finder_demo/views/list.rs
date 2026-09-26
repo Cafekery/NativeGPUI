@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
-use crate::tags::tag_dots;
+use crate::tags::{Tags, tag_dots};
 use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::views::header::{CELL_PAD, CELL_TRAIL, ColumnSpec, HEADER_H, PANE_INSET};
 
@@ -47,6 +48,11 @@ const PILL_PAD_X: f32 = 8.;
 const PILL_PAD_Y: f32 = 3.;
 const PILL_FONT: f32 = 11.;
 const PILL_RADIUS: f32 = 6.;
+const WIDTHS_HELD: usize = 4096;
+
+thread_local! {
+    static DATES: Font = tokens::system_font_tabular(FontWeight::NORMAL);
+}
 
 struct Look {
     icon: f32,
@@ -71,7 +77,7 @@ struct Marks {
     selected: Arc<HashSet<SharedString>>,
     cut: Arc<HashSet<SharedString>>,
     expanded: Arc<HashSet<SharedString>>,
-    tags: HashMap<SharedString, Vec<usize>>,
+    tags: Tags,
     renaming: Option<SharedString>,
     menu_row: Option<SharedString>,
     cursor: Option<SharedString>,
@@ -150,7 +156,7 @@ impl FinderDemo {
                 false => tokens::system_color(SystemColor::Shadow).opacity(SELECTION_JOIN_SHADE),
             },
             focused: palette.focused,
-            dates: tokens::system_font_tabular(FontWeight::NORMAL),
+            dates: DATES.with(Font::clone),
             date_style: self
                 .list_columns
                 .iter()
@@ -479,12 +485,23 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
 
 /// Finder takes the disclosure triangle, the icon and the name it labels, and no more of the row.
 fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
+    thread_local! {
+        static WIDTHS: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
+    }
+    let display = &line.row.display;
+    let known = WIDTHS.with_borrow(|widths| widths.get(display).copied());
+    let text = known.unwrap_or_else(|| {
+        let width = text_width(window, display.clone(), px(row_font()));
+        WIDTHS.with_borrow_mut(|widths| {
+            if widths.len() >= WIDTHS_HELD {
+                widths.clear();
+            }
+            widths.insert(display.clone(), width);
+        });
+        width
+    });
     let twist = ICON_X + line.depth as f32 * INDENT;
-    let name = twist
-        + look.icon
-        + LABEL_GAP
-        + text_width(window, line.row.display.clone(), px(row_font()))
-        + LABEL_GAP;
+    let name = twist + look.icon + LABEL_GAP + text + LABEL_GAP;
     (twist, name.min(look.name_w))
 }
 
@@ -564,20 +581,21 @@ fn row(
             },
             move |_, _, _, cx| cx.new(|_| DragGhost),
         );
+    let band = line.row.opens.map(|_| drop_band(line, look, window));
     match line.row.opens {
         Some(into) => drop_target::<ExternalPaths>(
             drop_target::<RowDrag>(
                 row,
                 line.key.clone(),
                 into,
-                Some(drop_band(line, look, window)),
+                band,
                 marks.selected.clone(),
                 Lit::Drawn,
                 this.clone(),
             ),
             line.key.clone(),
             into,
-            Some(drop_band(line, look, window)),
+            band,
             marks.selected.clone(),
             Lit::Drawn,
             this,
