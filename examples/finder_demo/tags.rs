@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
-use gpui::{AnyElement, Context, Hsla, div, prelude::*, px};
+use gpui::{AnyElement, Context, Hsla, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
 use objc2_core_foundation::CGFloat;
@@ -16,6 +18,39 @@ const TAG_DOT_PITCH: f32 = 5.;
 const TAG_DOTS_MAX: usize = 3;
 const TAG_LIGHTEN: f32 = 0.2;
 const TAG_PILL_ALPHA: f32 = 0.85;
+const KNOWN_MAX: usize = 20_000;
+
+/// The tags this window shows, shared with each frame rather than copied into it.
+#[derive(Clone, Default)]
+pub(crate) struct Tags(Arc<HashMap<SharedString, Vec<usize>>>);
+
+impl Tags {
+    pub(crate) fn insert(&mut self, key: SharedString, tags: Vec<usize>) -> Option<Vec<usize>> {
+        Arc::make_mut(&mut self.0).insert(key, tags)
+    }
+
+    pub(crate) fn remove(&mut self, key: &SharedString) -> Option<Vec<usize>> {
+        Arc::make_mut(&mut self.0).remove(key)
+    }
+
+    pub(crate) fn entry(&mut self, key: SharedString) -> Entry<'_, SharedString, Vec<usize>> {
+        Arc::make_mut(&mut self.0).entry(key)
+    }
+}
+
+impl Deref for Tags {
+    type Target = HashMap<SharedString, Vec<usize>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Extend<(SharedString, Vec<usize>)> for Tags {
+    fn extend<I: IntoIterator<Item = (SharedString, Vec<usize>)>>(&mut self, marks: I) {
+        Arc::make_mut(&mut self.0).extend(marks);
+    }
+}
 
 pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
     static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
@@ -160,8 +195,64 @@ pub(crate) fn read_row_tags(path: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Each path's tags once read; `None` while its read is queued.
-static KNOWN: LazyLock<Mutex<HashMap<String, Option<Vec<usize>>>>> = LazyLock::new(Mutex::default);
+/// Each path's tags once read, by folder; `None` while its read is queued.
+#[derive(Default)]
+struct Known {
+    dirs: HashMap<PathBuf, HashMap<String, Option<Vec<usize>>>>,
+    order: VecDeque<PathBuf>,
+    held: usize,
+}
+
+fn split(path: &str) -> (&Path, &str) {
+    let at = Path::new(path);
+    match (at.parent(), at.file_name().and_then(|name| name.to_str())) {
+        (Some(dir), Some(name)) => (dir, name),
+        _ => (Path::new(""), path),
+    }
+}
+
+impl Known {
+    fn get(&self, path: &str) -> Option<&Option<Vec<usize>>> {
+        let (dir, name) = split(path);
+        self.dirs.get(dir)?.get(name)
+    }
+
+    fn insert(&mut self, path: String, tags: Option<Vec<usize>>) {
+        let (dir, name) = split(&path);
+        let names = match self.dirs.entry(dir.to_path_buf()) {
+            Entry::Occupied(names) => names.into_mut(),
+            Entry::Vacant(room) => {
+                self.order.push_back(dir.to_path_buf());
+                room.insert(HashMap::new())
+            }
+        };
+        if names.insert(name.to_owned(), tags).is_none() {
+            self.held += 1;
+        }
+        for _ in 0..self.order.len() {
+            if self.held <= KNOWN_MAX {
+                break;
+            }
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if oldest == dir {
+                self.order.push_back(oldest);
+            } else if let Some(names) = self.dirs.remove(&oldest) {
+                self.held -= names.len();
+            }
+        }
+    }
+
+    fn forget(&mut self, dir: &Path) {
+        if let Some(names) = self.dirs.remove(dir) {
+            self.held -= names.len();
+            self.order.retain(|held| held != dir);
+        }
+    }
+}
+
+static KNOWN: LazyLock<Mutex<Known>> = LazyLock::new(Mutex::default);
 static LANDED: AtomicU64 = AtomicU64::new(0);
 static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
     let (send, paths) = channel::<String>();
@@ -194,10 +285,7 @@ pub(crate) fn tags_landed() -> u64 {
 
 /// A folder changed on disk: its items' tags are read again when next asked for.
 pub(crate) fn forget_tags_in(dir: &Path) {
-    KNOWN
-        .lock()
-        .unwrap()
-        .retain(|path, _| Path::new(path).parent() != Some(dir));
+    KNOWN.lock().unwrap().forget(dir);
 }
 
 impl FinderDemo {
