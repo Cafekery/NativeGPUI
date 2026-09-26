@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::thread::LocalKey;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gpui::SharedString;
+use gpui::{FontWeight, SharedString};
+use native_gpui::tokens;
 use objc2::rc::Retained;
 use objc2_foundation::{
     NSByteCountFormatter, NSByteCountFormatterCountStyle, NSByteCountFormatterUnits, NSCalendar,
@@ -64,22 +65,51 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
     })
 }
 
-pub(crate) fn stamp(seconds: f64) -> SharedString {
+/// The preview card's date: relative within a day, otherwise the longest of the full, long and
+/// medium styles whose text is at most `room` points wide in the small system font.
+pub(crate) fn stamp(seconds: f64, room: f32) -> SharedString {
     thread_local! {
-        static FORMATTER: Retained<NSDateFormatter> = {
+        static FORMATTERS: [Retained<NSDateFormatter>; 3] = [
+            NSDateFormatterStyle::FullStyle,
+            NSDateFormatterStyle::LongStyle,
+            NSDateFormatterStyle::MediumStyle,
+        ]
+        .map(|style| {
             let formatter = NSDateFormatter::new();
-            formatter.setDateStyle(NSDateFormatterStyle::FullStyle);
+            formatter.setDateStyle(style);
             formatter.setTimeStyle(NSDateFormatterStyle::ShortStyle);
             formatter
-        };
-        static SEEN: RefCell<HashMap<i64, SharedString>> = RefCell::new(HashMap::new());
+        });
+        static SEEN: RefCell<HashMap<(i64, i32), SharedString>> = RefCell::new(HashMap::new());
     }
-    per_minute(seconds, &SEEN, |seconds| {
-        match days_ago(seconds).abs() <= 1 {
-            true => date_text(seconds),
-            false => FORMATTER.with(|formatter| formatted(formatter, seconds)),
+    if days_ago(seconds).abs() <= 1 {
+        return date_text(seconds);
+    }
+    let key = ((seconds / 60.).floor() as i64, (room * 2.) as i32);
+    if let Some(text) = SEEN.with_borrow(|seen| seen.get(&key).cloned()) {
+        return text;
+    }
+    let text = FORMATTERS.with(|all| {
+        let mut texts = all.iter().map(|formatter| formatted(formatter, seconds));
+        let mut text = texts.next().unwrap_or_default();
+        while small_text_width(&text) > room {
+            let Some(shorter) = texts.next() else { break };
+            text = shorter;
         }
-    })
+        text
+    });
+    SEEN.with_borrow_mut(|seen| seen.insert(key, text.clone()));
+    text
+}
+
+pub(crate) fn small_text_width(text: &str) -> f32 {
+    tokens::appkit_string_width(
+        &tokens::system_font_family(),
+        tokens::small_system_font_size(),
+        FontWeight::NORMAL,
+        text,
+    )
+    .unwrap_or(f32::MAX)
 }
 
 pub(crate) fn group_of(row: &Row, sort: Column) -> SharedString {

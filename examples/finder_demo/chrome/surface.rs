@@ -1,5 +1,5 @@
-use gpui::{AnyElement, Hsla, Pixels, div, hsla, prelude::*, px};
-use native_gpui::{Blending, Layer, Material, glass, material, native_rule};
+use gpui::{AnyElement, Hsla, Pixels, div, hsla, prelude::*};
+use native_gpui::{Blending, Layer, Material, material, native_rule};
 use objc2_foundation::NSProcessInfo;
 
 /// macOS 27's Finder lifts its bars off the material by a tint no `NSColor` names; 26's do not.
@@ -18,45 +18,12 @@ pub(crate) fn toolbar_rule() -> bool {
         < 27
 }
 
-pub(crate) fn pane_surface(width: Pixels, corner: Pixels) -> AnyElement {
-    div()
-        .absolute()
-        .top_0()
-        .right_0()
-        .bottom_0()
-        .w(width)
-        .overflow_hidden()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .bottom_0()
-                .left(-corner)
-                .child(
-                    glass("ng.finder.pane")
-                        .frosting_gpui()
-                        .corner_radius(corner),
-                ),
-        )
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .bottom_0()
-                .w(px(1.))
-                .child(native_rule("ng.finder.pane.edge")),
-        )
-        .into_any_element()
-}
-
-pub(crate) fn band_glass(right: Pixels, height: Pixels) -> AnyElement {
+pub(crate) fn band_glass(height: Pixels) -> AnyElement {
     div()
         .absolute()
         .top_0()
         .left_0()
-        .right(right)
+        .right_0()
         .h(height)
         .block_mouse_except_scroll()
         .child(

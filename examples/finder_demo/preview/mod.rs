@@ -7,21 +7,17 @@ use std::rc::Rc;
 
 use block2::StackBlock;
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Render, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions, canvas, div, point, prelude::*, px, size,
+    App, Bounds, Context, DispatchPhase, Entity, MouseDownEvent, Render, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, point, prelude::*, px,
+    size,
 };
 use native_gpui::tokens;
-use native_gpui::{
-    Cursor, chrome_host, cursor_region, native_root, native_screen_rect, tab_bar_height,
-    window_options,
-};
+use native_gpui::{chrome_host, native_root, native_screen_rect, tab_bar_height, window_options};
 use objc2::msg_send;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
-    NSColor, NSEvent, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode,
-    NSWindowStyleMask,
+    NSColor, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode, NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize};
 
@@ -30,16 +26,16 @@ use crate::app::FinderDemo;
 use crate::frame::ns_window;
 use crate::palette::Palette;
 
-pub(crate) const PREVIEW_W: f32 = 366.;
+pub(crate) const PREVIEW_W: f32 = 250.;
 
 const MIN_W: f32 = 240.;
 const MAX_W: f32 = 480.;
 pub(crate) const LIST_MIN_W: f32 = 316.;
 
-const GRIP_W: f32 = 6.;
-
 pub(crate) const INSET: f32 = 10.;
 const RESIZE_EDGE: f32 = 6.;
+/// The split view takes a click within 2pt of its divider for itself.
+const DIVIDER_GRAB: f32 = 3.;
 
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
@@ -121,7 +117,6 @@ fn near(a: NSRect, b: NSRect) -> bool {
 /// Holds its Finder weakly: a strong handle here keeps a closed window's whole state alive.
 pub(crate) struct PreviewPane {
     finder: WeakEntity<FinderDemo>,
-    drag: Option<f32>,
 }
 
 impl PreviewPane {
@@ -129,37 +124,7 @@ impl PreviewPane {
         cx.observe(&finder, |_, _, cx| cx.notify()).detach();
         Self {
             finder: finder.downgrade(),
-            drag: None,
         }
-    }
-
-    fn resize_start(&mut self, _: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
-        self.drag = ns_window(window).map(|window| {
-            let frame = window.frame();
-            (frame.origin.x + frame.size.width) as f32
-        });
-    }
-
-    fn resize(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let (Some(right), Some(finder)) = (self.drag, self.finder.upgrade()) else {
-            return;
-        };
-        // A mouse-up outside the window never arrives, so the next move back inside ends the drag.
-        if !event.dragging() {
-            self.drag = None;
-            return;
-        }
-        // The pointer's screen position: GPUI re-sends the last window-local one while dragging.
-        let pointer = NSEvent::mouseLocation().x as f32;
-        let room = finder.read(cx).list_room;
-        let width = (right - pointer).clamp(MIN_W, MAX_W.min(room - LIST_MIN_W).max(MIN_W));
-        finder.update(cx, |this, cx| {
-            if width != this.preview_w {
-                this.preview_w = width;
-                crate::prefs::set_pane_width(width);
-                cx.notify();
-            }
-        });
     }
 }
 
@@ -171,52 +136,40 @@ impl Render for PreviewPane {
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
         let demo = finder.read(cx);
         let palette = Palette::new(demo.list_focused);
-        let content = demo.preview_w - 1. - 2. * INSET;
-        let card = demo.info_card(demo.cursor_line().as_ref(), &palette, content, &finder);
+        let pane_w = demo.preview_w;
+        let card = demo.info_card(
+            demo.cursor_line().as_ref(),
+            &palette,
+            pane_w - 2. * INSET,
+            &finder,
+        );
         crate::icons::draw_wanted(&finder, cx);
         crate::meta::fetch_wanted(&finder, cx);
-        let pane = cx.entity();
         native_root(
             div()
                 .size_full()
+                .relative()
                 .font_family(family)
                 .text_size(tokens::system_font_size())
-                // Window-level: the pointer leaves the grip's window as soon as the pane grows.
-                .child(canvas(|_, _, _| (), move |_, _, window, _| {
-                    // A non-activating panel: a click here must still bring the app forward.
-                    window.on_mouse_event(|_: &MouseDownEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Capture {
-                            cx.activate(true);
-                        }
-                    });
-                    let moved = pane.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                        if phase == DispatchPhase::Bubble {
-                            moved.update(cx, |pane, cx| pane.resize(event, window, cx));
-                        }
-                    });
-                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Bubble {
-                            pane.update(cx, |pane, _| pane.drag = None);
-                        }
-                    });
-                }))
+                .child(canvas(
+                    |_, _, _| (),
+                    |_, _, window, _| {
+                        // A non-activating panel: a click here must still bring the app forward.
+                        window.on_mouse_event(|_: &MouseDownEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture {
+                                cx.activate(true);
+                            }
+                        });
+                    },
+                ))
                 .child(
                     div()
-                        .size_full()
-                        .relative()
-                        .child(card)
-                        .child(cursor_region(
-                            "finder.preview.grip",
-                            Cursor::ColumnResize,
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(GRIP_W))
-                                .on_mouse_down(MouseButton::Left, cx.listener(Self::resize_start)),
-                        )),
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(-DIVIDER_GRAB))
+                        .w(px(pane_w))
+                        .child(card),
                 ),
         )
         .into_any_element()
@@ -266,6 +219,8 @@ fn open_preview_window(
             .flatten()?;
         window.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
         window.setHasShadow(false);
+        // gpui takes drops on every window; this one has nowhere to put them.
+        window.unregisterDraggedTypes();
         // Changing the style mask hands back an opaque window.
         window.setOpaque(false);
         window.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -293,6 +248,32 @@ fn open_preview_window(
 
 impl FinderDemo {
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(sidebar) = &self.sidebar {
+            // Whole points: a window resize can hand the pane back half a point short.
+            match sidebar
+                .take_inspector_resize()
+                .map(|width| f32::from(width).round())
+            {
+                // Finder hides the preview when its divider is dragged shut.
+                Some(width) if width <= 0. => {
+                    self.preview = false;
+                    cx.notify();
+                }
+                Some(width) if width != self.preview_w => {
+                    self.preview_w = width;
+                    crate::prefs::set_pane_width(width);
+                    cx.notify();
+                }
+                _ => {}
+            }
+            sidebar.set_inspector(
+                self.preview_shown().then(|| px(self.preview_w)),
+                px(MIN_W),
+                px(MAX_W),
+            );
+            let card = self.selected.len() > 1 || self.cursor_line().is_some();
+            sidebar.set_inspector_footer(px(if card { card::ACTIONS_H } else { 0. }));
+        }
         let metrics = self.metrics();
         let viewport = window.viewport_size();
         self.list_focused = self.focus.is_focused(window) && window.is_window_active();
@@ -302,7 +283,8 @@ impl FinderDemo {
         self.pane_h = f32::from(viewport.height - top - metrics.bottom) - RESIZE_EDGE;
         self.fit_name_column();
 
-        if !self.preview_shown() {
+        // The card rides the pane while it slides in or out, and goes once it is shut.
+        if metrics.right <= px(DIVIDER_GRAB + RESIZE_EDGE) {
             if let Some(pane) = self.preview_window.take() {
                 cx.defer(move |cx| {
                     pane.handle
@@ -313,13 +295,13 @@ impl FinderDemo {
             return;
         }
 
-        // Short of the parent's resize edges, which a child window over them would steal.
+        // Clear of the divider's grab and the parent's resize edges, which a child window takes.
         let bounds = Bounds {
-            origin: point(
-                px(f32::from(viewport.width) - f32::from(metrics.right) - self.preview_w),
-                top,
+            origin: point(viewport.width - metrics.right + px(DIVIDER_GRAB), top),
+            size: size(
+                metrics.right - px(DIVIDER_GRAB + RESIZE_EDGE),
+                px(self.pane_h),
             ),
-            size: size(px(self.preview_w - RESIZE_EDGE), px(self.pane_h)),
         };
         let frame = native_screen_rect(&chrome_host(window), bounds);
         match &self.preview_window {

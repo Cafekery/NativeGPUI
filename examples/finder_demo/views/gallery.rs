@@ -63,7 +63,7 @@ impl FinderDemo {
             .cloned()
             .collect();
         let strip = Strip::at(self.strip_icon);
-        let room_w = self.list_room - self.pane_w();
+        let room_w = self.list_room;
         let room_h = f32::from(window.viewport_size().height)
             - f32::from(self.metrics().top)
             - strip.height();
@@ -133,7 +133,6 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .pr(px(self.pane_w()))
             .child(
                 div()
                     .flex_1()

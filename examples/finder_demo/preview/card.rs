@@ -1,47 +1,65 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Entity, FontWeight, MouseButton, MouseDownEvent, RenderImage, SharedString, div,
-    img, prelude::*, px,
+    AnyElement, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, RenderImage, SharedString,
+    div, hsla, img, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
-use native_gpui::tokens::{self, SymbolColor, SystemColor, sf_symbol_colored, system_color};
+use native_gpui::tokens::{
+    self, Appearance, SymbolColor, SystemColor, sf_symbol_colored, system_color,
+};
 
-use super::INSET;
 use super::stats::{CALCULATING, span};
+use super::{INSET, RESIZE_EDGE};
 use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
 use finder_fs::meta::Meta;
 
-use crate::data::{Face, Line, Row, byte_string, stamp, volume_at};
+use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, stamp, volume_at};
 use crate::palette::Palette;
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
-use crate::view::GALLERY_VIEW;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
 const NAME_SIZE: f32 = 15.;
 const NAME_H: f32 = 18.;
 const LINE_H: f32 = 15.;
 const SMALL_H: f32 = 13.;
-const GAP_NAME_KIND: f32 = 4.;
+const ROW_H: f32 = 16.;
+const GAP_NAME_KIND: f32 = 4.75;
 const GAP_KIND_HEAD: f32 = 9.;
-const GAP_HEAD_ROWS: f32 = 8.5;
-const ROW_GAP: f32 = 8.;
-const GAP_ROWS_TAGS: f32 = 17.;
-const GAP_TAGS_ADD: f32 = 6.5;
-const ICON_H: f32 = 16.;
-const GAP_ICON_LABEL: f32 = 10.5;
-const BOTTOM_INSET: f32 = 16.;
+const GAP_HEAD_ROWS: f32 = 7.25;
+const ROW_GAP: f32 = 7.;
+const ROW_TITLE_GAP: f32 = 10.;
+/// Finder drops to a shorter date style once a value would crowd its row's title by this much.
+const ROW_FIT_MARGIN: f32 = 14.;
+const GAP_ROWS_TAGS: f32 = 17.25;
+const GAP_TAGS_ADD: f32 = 5.9;
+const TAGS_WELL_H: f32 = 33.;
+const TAGS_TEXT_TOP: f32 = 1.;
+/// The pane scrolls, with this much room under the tags, once its content reaches the band.
+const BOTTOM_PAD: f32 = 16.;
+const ICON_H: f32 = 15.;
+const GAP_ICON_LABEL: f32 = 11.;
 const GAP_TOP: f32 = 10.;
-const GAP_HERO_TEXT: f32 = 27.;
-const HERO_TALL: f32 = 1.31;
-const HERO_CAP: f32 = 0.5;
-const HEADER_ICON: f32 = 48.;
-const GAP_HEADER: f32 = 26.;
-const GAP_HEADER_ICON: f32 = 10.;
-const GAP_HEADER_HEAD: f32 = 14.;
-const ACTION_SLOT_W: f32 = 75.5;
-const ACTION_ICON_SIZE: f32 = 15.;
+const GAP_HERO_TEXT: f32 = 27.3;
+const HERO_TALL: f32 = 1.25;
+const HERO_EXTRA: f32 = 15.;
+const HERO_CAP: f32 = 0.48;
+const HERO_CAP_EXTRA: f32 = 49.2;
+const HEADER_ICON: f32 = 50.;
+const GAP_HEADER: f32 = 19.;
+const GAP_HEADER_ICON: f32 = 9.;
+const GAP_HEADER_NAME: f32 = 6.8;
+const GAP_HEADER_HEAD: f32 = 19.6;
+/// Finder's quick actions: a band of the content background along the pane's foot.
+pub(super) const ACTIONS_H: f32 = 70.;
+const ACTION_TOP: f32 = 15.5;
+const ACTION_SLOT_W: f32 = 76.;
+const ACTION_ICON_SIZE: f32 = 14.;
+const COLUMN_BOTTOM: f32 = 16.;
 const STACK_ICON: f32 = 0.62;
 
 pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
@@ -59,6 +77,52 @@ struct Card {
     tags: Vec<usize>,
     many: bool,
     actions: &'static [(&'static str, &'static str)],
+}
+
+/// Finder's text over the pane's glass is vibrant, which no `NSColor` names: these are the
+/// colours it lands on. The tags well is the actions band's content material, opaque.
+struct Ink {
+    name: Hsla,
+    heading: Hsla,
+    value: Hsla,
+    title: Hsla,
+    kind: Hsla,
+    rule: Hsla,
+    action: Hsla,
+    well: Hsla,
+}
+
+impl Ink {
+    fn now() -> Self {
+        match tokens::current_appearance() {
+            Appearance::Dark => {
+                let white = |a| hsla(0., 0., 1., a);
+                Self {
+                    name: white(0.9),
+                    heading: white(0.9),
+                    value: white(0.9),
+                    title: white(0.36),
+                    kind: white(0.18),
+                    rule: white(0.138),
+                    action: white(0.5),
+                    well: hsla(0., 0., 32. / 255., 1.),
+                }
+            }
+            Appearance::Light => {
+                let black = |a| hsla(0., 0., 0., a);
+                Self {
+                    name: black(0.7),
+                    heading: black(0.753),
+                    value: black(0.775),
+                    title: black(0.428),
+                    kind: black(0.213),
+                    rule: black(0.094),
+                    action: black(0.5),
+                    well: hsla(0., 0., 1., 1.),
+                }
+            }
+        }
+    }
 }
 
 /// Straight-alpha BGRA in and out.
@@ -117,13 +181,6 @@ fn stack_image(images: &[Arc<RenderImage>], side: u32) -> Option<Arc<RenderImage
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 
-fn title_line(row: &Row) -> SharedString {
-    match row.display.strip_suffix(".app") {
-        Some(stem) if row.face == Face::Program => stem.to_string().into(),
-        _ => row.display.clone(),
-    }
-}
-
 fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
     match (row.size.as_ref(), weighed) {
         ("--", None) => row.kind.clone(),
@@ -136,10 +193,11 @@ fn info_rows(
     row: &Row,
     meta: Option<&Meta>,
     expanded: bool,
+    content: f32,
 ) -> (Vec<(&'static str, SharedString)>, bool) {
     let none = Meta::default();
     let meta = match row.face {
-        Face::Folder | Face::Volume => &none,
+        Face::Volume => &none,
         _ => meta.unwrap_or(&none),
     };
     let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}\u{d7}{h}"));
@@ -148,16 +206,21 @@ fn info_rows(
         all.push(("Capacity", byte_string(volume.capacity).into(), false));
         all.push(("Available", byte_string(volume.available).into(), false));
     }
-    all.push(("Created", stamp(row.created_at), false));
-    all.push(("Modified", stamp(row.modified_at), false));
+    let date = |label, at| stamp(at, content - label_width(label) - ROW_FIT_MARGIN);
+    all.push(("Created", date("Created", row.created_at), false));
+    all.push(("Modified", date("Modified", row.modified_at), false));
     let mut add = |label, value: Option<SharedString>, under_more| {
         all.extend(value.map(|value| (label, value, under_more)));
     };
-    add("Last opened", meta.last_used.map(stamp), false);
-    let media = meta.pixels.is_some() || meta.duration.is_some();
+    add(
+        "Last opened",
+        meta.last_used.map(|at| date("Last opened", at)),
+        false,
+    );
+    let media = matches!(row.face, Face::Image | Face::Movie | Face::Audio);
     add(
         "Content created",
-        meta.content_created.filter(|_| media).map(stamp),
+        meta.content_created.filter(|_| media).map(date_text),
         true,
     );
     add("Dimensions", meta.pixels.map(size), false);
@@ -207,6 +270,17 @@ fn info_rows(
     (rows, more)
 }
 
+fn label_width(label: &'static str) -> f32 {
+    thread_local! {
+        static WIDTHS: RefCell<HashMap<&'static str, f32>> = RefCell::new(HashMap::new());
+    }
+    WIDTHS.with_borrow_mut(|widths| {
+        *widths
+            .entry(label)
+            .or_insert_with(|| small_text_width(label))
+    })
+}
+
 fn clock(seconds: f64) -> SharedString {
     let seconds = seconds.max(0.).round() as u64;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -223,7 +297,11 @@ fn actions(face: Face) -> &'static [(&'static str, &'static str)] {
             ("timeline.selection", "Trim"),
             ("ellipsis.circle", "More…"),
         ],
-        Face::Image => &[("rotate.left", "Rotate Left"), ("ellipsis.circle", "More…")],
+        Face::Image => &[
+            ("rotate.left", "Rotate Left"),
+            ("pencil.tip.crop.circle", "Markup"),
+            ("ellipsis.circle", "More…"),
+        ],
         _ => &[("ellipsis.circle", "More…")],
     }
 }
@@ -244,14 +322,14 @@ impl FinderDemo {
             };
             let row = &line.row;
             let meta = crate::meta::meta(&row.path);
-            let (rows, show_more) = info_rows(row, meta.as_deref(), self.preview_expanded);
+            let (rows, show_more) = info_rows(row, meta.as_deref(), self.preview_expanded, content);
             Card {
                 hero: if self.view == GALLERY_VIEW {
                     row_art(row, HEADER_ICON, self.scale, true)
                 } else {
                     poster_art(row, content, self.hero_h(content), self.scale, Poster::Card)
                 },
-                title: title_line(row),
+                title: row.display.clone(),
                 subtitle: kind_line(row, self.weighed()),
                 rows,
                 show_more,
@@ -272,7 +350,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn hero_h(&self, content: f32) -> f32 {
-        (content * HERO_TALL).min(self.pane_h * HERO_CAP)
+        let visible = self.pane_h + RESIZE_EDGE - ACTIONS_H;
+        (content * HERO_TALL + HERO_EXTRA)
+            .min(visible * HERO_CAP + HERO_CAP_EXTRA)
+            .floor()
     }
 
     fn many_card(&self, content: f32) -> Card {
@@ -394,7 +475,8 @@ impl FinderDemo {
     ) -> AnyElement {
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
-        let hairline = system_color(SystemColor::QuaternarySystemFill);
+        let ink = Ink::now();
+        let rows = card.rows.len();
         let editing = (self.view == GALLERY_VIEW && !card.many)
             .then(|| self.cursor_line())
             .flatten()
@@ -408,7 +490,7 @@ impl FinderDemo {
             .line_height(px(NAME_H))
             .text_size(px(NAME_SIZE))
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(palette.label)
+            .text_color(ink.name)
             .overflow_hidden()
             .text_ellipsis()
             .whitespace_nowrap()
@@ -417,46 +499,47 @@ impl FinderDemo {
             .mt(px(GAP_NAME_KIND))
             .line_height(px(LINE_H))
             .text_size(body)
-            .text_color(palette.secondary)
+            .text_color(ink.kind)
             .child(card.subtitle);
 
-        let mut top = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .px(px(INSET))
-            .pb(px(BOTTOM_INSET));
+        let mut content_column = div().flex_none().flex().flex_col().px(px(INSET));
         let mut lower = div().flex_none().flex().flex_col();
         if self.view == GALLERY_VIEW {
-            top = top.child(div().h(px(GAP_HEADER)).flex_none()).child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(px(GAP_HEADER_ICON))
-                    .child(card.hero)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(name)
-                            .child(kind),
-                    ),
-            );
+            content_column = content_column
+                .child(div().h(px(GAP_HEADER)).flex_none())
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_start()
+                        .gap(px(GAP_HEADER_ICON))
+                        .child(card.hero)
+                        .child(
+                            div()
+                                .pt(px(GAP_HEADER_NAME))
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(name)
+                                .child(kind),
+                        ),
+                );
             lower = lower.mt(px(GAP_HEADER_HEAD - GAP_KIND_HEAD));
         } else {
-            top = top.child(div().h(px(GAP_TOP)).flex_none()).child(
-                div()
-                    .w(px(content))
-                    .h(px(self.hero_h(content)))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .overflow_hidden()
-                    .child(card.hero),
-            );
+            content_column = content_column
+                .child(div().h(px(GAP_TOP)).flex_none())
+                .child(
+                    div()
+                        .w(px(content))
+                        .h(px(self.hero_h(content)))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .overflow_hidden()
+                        .child(card.hero),
+                );
             lower = lower.mt(px(GAP_HERO_TEXT)).child(name).child(kind);
         }
         lower = lower.child(
@@ -468,7 +551,7 @@ impl FinderDemo {
                 .line_height(px(LINE_H))
                 .text_size(body)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette.label)
+                .text_color(ink.heading)
                 .child("Information")
                 .when(card.show_more, |heading| {
                     heading.child(
@@ -504,28 +587,26 @@ impl FinderDemo {
                         .flex()
                         .flex_col()
                         .justify_center()
-                        .child(div().h(px(1.)).bg(hairline)),
+                        .child(div().h(px(1.)).bg(ink.rule)),
                 );
             }
             block = block.child(
                 div()
                     .flex()
                     .justify_between()
-                    .gap(px(8.))
-                    .line_height(px(LINE_H))
-                    .text_size(body)
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(palette.secondary)
-                            .child(*label),
-                    )
+                    .gap(px(ROW_TITLE_GAP))
+                    .line_height(px(ROW_H))
+                    .text_size(small)
+                    .whitespace_nowrap()
+                    .child(div().flex_none().text_color(ink.title).child(*label))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .text_right()
-                            .text_color(palette.label)
+                            .text_color(ink.value)
                             .child(value.clone()),
                     ),
             );
@@ -536,18 +617,17 @@ impl FinderDemo {
                 .line_height(px(LINE_H))
                 .text_size(body)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette.label)
+                .text_color(ink.heading)
                 .child("Tags"),
         );
 
         let tags = div()
-            .mt(px(GAP_TAGS_ADD))
             .flex()
             .items_center()
             .gap(px(5.))
             .line_height(px(LINE_H))
             .text_size(body);
-        lower = lower.child(match (card.many, card.tags.first()) {
+        let tags = match (card.many, card.tags.first()) {
             (false, Some(tag)) => tags.child(tag_dot(*tag)).child(
                 div()
                     .text_color(palette.label)
@@ -562,43 +642,108 @@ impl FinderDemo {
                         .text_color(system_color(SystemColor::Link))
                         .child("Add Tag"),
                 ),
-        });
+        };
+        lower = lower.child(
+            div()
+                .mt(px(GAP_TAGS_ADD))
+                .flex_none()
+                .h(px(TAGS_WELL_H))
+                .w_full()
+                .pt(px(TAGS_TEXT_TOP))
+                .bg(ink.well)
+                .child(tags),
+        );
 
-        let actions = card.actions;
-        let slot = ACTION_SLOT_W.min(content / actions.len() as f32);
-        top.child(lower)
-            .child(div().flex_1())
-            .child(
+        let actions = div()
+            .flex_none()
+            .pt(px(ACTION_TOP))
+            .flex()
+            .justify_center()
+            .children(card.actions.iter().map(|(symbol, label)| {
                 div()
                     .flex_none()
+                    .w(px(ACTION_SLOT_W))
                     .flex()
-                    .justify_center()
-                    .children(actions.iter().map(|(symbol, label)| {
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div().h(px(ICON_H)).flex().items_center().children(
+                            sf_symbol_colored(
+                                symbol,
+                                px(ACTION_ICON_SIZE),
+                                FontWeight::NORMAL,
+                                &SymbolColor::Hierarchical(SystemColor::SecondaryLabel),
+                            )
+                            .map(|glyph| glyph.img()),
+                        ),
+                    )
+                    .child(
                         div()
-                            .w(px(slot))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(
-                                div().h(px(ICON_H)).flex().items_center().children(
-                                    sf_symbol_colored(
-                                        symbol,
-                                        px(ACTION_ICON_SIZE),
-                                        FontWeight::NORMAL,
-                                        &SymbolColor::Hierarchical(SystemColor::SecondaryLabel),
-                                    )
-                                    .map(|glyph| glyph.img()),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .mt(px(GAP_ICON_LABEL))
-                                    .line_height(px(SMALL_H))
-                                    .text_size(small)
-                                    .text_color(palette.secondary)
-                                    .child(*label),
-                            )
-                    })),
+                            .mt(px(GAP_ICON_LABEL))
+                            .line_height(px(SMALL_H))
+                            .text_size(small)
+                            .text_color(ink.action)
+                            .child(*label),
+                    )
+            }));
+        let head = match self.view == GALLERY_VIEW {
+            true => GAP_HEADER + HEADER_ICON + GAP_HEADER_HEAD - GAP_KIND_HEAD,
+            false => {
+                GAP_TOP + self.hero_h(content) + GAP_HERO_TEXT + NAME_H + GAP_NAME_KIND + LINE_H
+            }
+        };
+        let content = content_column.child(lower);
+        let tall = head + GAP_KIND_HEAD + LINE_H + GAP_HEAD_ROWS + rows as f32 * (ROW_H + ROW_GAP)
+            - ROW_GAP
+            + GAP_ROWS_TAGS
+            + LINE_H
+            + GAP_TAGS_ADD
+            + TAGS_WELL_H
+            + BOTTOM_PAD;
+        if self.view == COLUMN_VIEW {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(content)
+                .child(div().flex_1())
+                .child(actions.pb(px(COLUMN_BOTTOM)))
+                .into_any_element();
+        }
+        // The pane scrolls above the actions band, which stays at its foot.
+        div()
+            .size_full()
+            .relative()
+            .child(
+                div()
+                    .id("ng.finder.preview.card")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(ACTIONS_H - RESIZE_EDGE))
+                    .overflow_y_scroll()
+                    .child(content.pb(px(BOTTOM_PAD))),
+            )
+            // Finder rules the band off only while the content runs down to it.
+            .when(tall > self.pane_h + RESIZE_EDGE - ACTIONS_H, |pane| {
+                pane.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(ACTIONS_H - RESIZE_EDGE - 0.5))
+                        .h(px(1.))
+                        .bg(ink.rule),
+                )
+            })
+            .child(
+                actions
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(ACTIONS_H - RESIZE_EDGE)),
             )
             .into_any_element()
     }

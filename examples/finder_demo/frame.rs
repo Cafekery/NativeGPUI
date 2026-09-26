@@ -2,12 +2,10 @@ use std::env;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use gpui::{
-    AnyElement, Context, MouseButton, Pixels, Render, Window, div, prelude::*, px, relative,
-};
+use gpui::{AnyElement, Context, MouseButton, Render, Window, div, prelude::*, px, relative};
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
-use native_gpui::{NativeScrollBars, native_root, native_scroll_bars, system_corner_radius};
+use native_gpui::{NativeScrollBars, native_root, native_scroll_bars};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -16,7 +14,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::app::FinderDemo;
 use crate::app::LIST_CONTEXT;
 use crate::chrome::path_bar::PATH_H;
-use crate::chrome::surface::{band_glass, pane_surface, toolbar_rule};
+use crate::chrome::surface::{band_glass, toolbar_rule};
 use crate::dragdrop::RowDrag;
 use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
@@ -80,7 +78,7 @@ impl Render for FinderDemo {
         }
         self.sync_window_min(window);
         self.sync_preview_window(window, cx);
-        native_gpui::set_trailing_inset(window, self.pane_w());
+        native_gpui::set_trailing_inset(window, f32::from(self.metrics().right));
         self.spring_tick(window, cx);
         if let Some((_, _, started)) = self.list_zoom {
             if started.elapsed().as_secs_f32() >= LIST_ZOOM_SECS {
@@ -91,7 +89,6 @@ impl Render for FinderDemo {
         }
 
         let metrics = self.metrics();
-        let corner = system_corner_radius(window);
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
@@ -186,7 +183,6 @@ impl Render for FinderDemo {
                                     },
                                     &palette,
                                     metrics,
-                                    corner,
                                     cx,
                                 )),
                         )
@@ -263,7 +259,6 @@ impl FinderDemo {
         column: Column,
         palette: &Palette,
         metrics: SidebarMetrics,
-        corner: Pixels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Column {
@@ -294,10 +289,8 @@ impl FinderDemo {
                 !banded && self.view != ICON_VIEW && toolbar_rule(),
                 |column| column.border_t_1().border_color(palette.separator),
             );
-        // The list stops at the pane until its columns no longer fit, then runs on beneath it.
-        let pane = self.pane_w();
-        let band = (self.list_room - pane).max(self.list_content_w());
-        let width = metrics.left + px(band + pane);
+        let band = self.list_room.max(self.list_content_w());
+        let width = metrics.left + px(band);
         if banded {
             surface = surface.child(
                 axis_locked(
@@ -313,7 +306,6 @@ impl FinderDemo {
                         .w(width)
                         .min_w(relative(1.))
                         .pl(metrics.left)
-                        .pr(px(pane))
                         .flex()
                         .flex_col()
                         .child(rows),
@@ -327,17 +319,17 @@ impl FinderDemo {
             .relative()
             .overflow_hidden()
             .child(surface)
-            // A Layer::Above material blurs only what is painted before it: rows, glass, header.
+            // A Layer::Above material blurs only what is painted before it: the rows and the header.
             .when(banded || scope_h > 0., |column| {
                 let height = top + if banded { px(HEADER_H) } else { px(0.) };
-                column.child(band_glass(px(pane), height))
+                column.child(band_glass(height))
             })
             .children(search_bars.map(|(scope, criteria)| {
                 div()
                     .absolute()
                     .top(above)
                     .left_0()
-                    .right(px(pane))
+                    .right_0()
                     .h(px(scope_h))
                     .pl(metrics.left)
                     .flex()
@@ -345,13 +337,12 @@ impl FinderDemo {
                     .child(scope)
                     .child(criteria)
             }))
-            .when(pane > 0., |column| column.child(pane_surface(px(pane), corner)))
             .children(path_bar.map(|bar| {
                 div()
                     .absolute()
                     .bottom_0()
                     .left_0()
-                    .right(px(pane))
+                    .right_0()
                     // Only the list view reaches here unshifted; the others are already inset.
                     .when(banded, |bar_row| bar_row.pl(metrics.left))
                     .child(bar)
@@ -364,7 +355,7 @@ impl FinderDemo {
                         .absolute()
                         .top(top)
                         .left_0()
-                        .right(px(pane))
+                        .right_0()
                         .h(px(HEADER_H))
                         .overflow_x_scroll()
                         .track_scroll(&self.hscroll),
@@ -372,7 +363,7 @@ impl FinderDemo {
                 .child(
                     div()
                         .h_full()
-                        .w(width - px(pane))
+                        .w(width)
                         .min_w(relative(1.))
                         .pl(metrics.left)
                         .child(headers),
@@ -384,12 +375,12 @@ impl FinderDemo {
                     .top(top + px(if banded { HEADER_H } else { 0. }))
                     .bottom(px(bar))
                     .left(metrics.left)
-                    .right(px(pane))
+                    .right_0()
                     .child(bars)
             }))
             .children(
                 (self.view == LIST_VIEW)
-                    .then(|| self.type_filter_pill(palette, pane, bar + LIST_FOOT_GAP))
+                    .then(|| self.type_filter_pill(palette, bar + LIST_FOOT_GAP))
                     .flatten(),
             )
             .into_any_element()
