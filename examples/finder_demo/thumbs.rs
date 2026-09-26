@@ -11,12 +11,9 @@ use native_gpui::thumbnails;
 use crate::app::FinderDemo;
 use crate::data::{Face, Row};
 
-const RENDERABLE: &[&str] = &[
-    "pdf", "png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "tif", "bmp", "webp", "mov", "mp4",
-    "m4v", "key", "pages", "numbers",
-];
-
 type Thumb = (SharedString, u32, bool);
+
+type Ask = (PathBuf, Option<SystemTime>, Thumb, f32, f32, bool);
 
 type Landed = HashMap<(SharedString, bool), (u32, Arc<RenderImage>)>;
 
@@ -29,6 +26,7 @@ thread_local! {
     static FRAMES: Cell<u64> = const { Cell::new(0) };
     static WATCHING: Cell<bool> = const { Cell::new(false) };
     static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
+    static HELD: RefCell<Vec<Ask>> = const { RefCell::new(Vec::new()) };
 }
 
 static DELIVERED: AtomicUsize = AtomicUsize::new(0);
@@ -42,6 +40,8 @@ const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
 const KEPT: usize = 512;
 const KEPT_BYTES: usize = 256 << 20;
+/// The thumbnail service's own limit; past it, requests queue there and the newest goes first.
+const LANES: usize = 8;
 
 pub(crate) fn thumbnails_landed() -> usize {
     DELIVERED.load(Ordering::Relaxed)
@@ -82,6 +82,10 @@ pub(crate) fn watch_thumbnails(demo: &Entity<FinderDemo>, cx: &mut App) {
 
 /// Main thread only.
 pub(crate) fn collect_thumbnails() -> bool {
+    // Bottom row first: the service serves its newest request first, so a frame fills top down.
+    for ask in HELD.take().into_iter().rev() {
+        send(ask);
+    }
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
     let any = !landed.is_empty();
     for (key, image) in landed {
@@ -183,20 +187,7 @@ pub(crate) fn sweep_thumbnails() {
 }
 
 fn renderable(row: &Row) -> bool {
-    if row.opens.is_some() {
-        return false;
-    }
-    if matches!(
-        row.face,
-        Face::Image | Face::Movie | Face::Pdf | Face::Slides | Face::Pages | Face::Sheet
-    ) {
-        return true;
-    }
-    row.name.rsplit_once('.').is_some_and(|(_, extension)| {
-        RENDERABLE
-            .iter()
-            .any(|kind| extension.eq_ignore_ascii_case(kind))
-    })
+    row.opens.is_none() && row.face != Face::Program
 }
 
 pub(crate) fn thumb(
@@ -251,8 +242,16 @@ fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: 
     if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
         return;
     }
+    let ask = (path.to_path_buf(), modified, key, size, scale, icon);
+    match INFLIGHT.load(Ordering::Relaxed) < LANES {
+        true => send(ask),
+        false => HELD.with_borrow_mut(|held| held.push(ask)),
+    }
+}
+
+fn send((path, modified, key, size, scale, icon): Ask) {
     INFLIGHT.fetch_add(1, Ordering::Relaxed);
-    thumbnails::thumbnail(path, modified, px(size), scale, icon, move |image| {
+    thumbnails::thumbnail(&path, modified, px(size), scale, icon, move |image| {
         LANDED.lock().unwrap().push((key, image));
         DELIVERED.fetch_add(1, Ordering::Relaxed);
         INFLIGHT.fetch_sub(1, Ordering::Relaxed);
