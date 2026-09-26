@@ -111,7 +111,9 @@ fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
         .map(|(_, image)| image)
 }
 
-/// `icon` is Finder's icon rendering; a cache hit calls `done` at once, on this thread.
+/// `icon` is Finder's icon rendering; a cache hit calls `done` at once, on this thread. Past
+/// eight in flight the newest request goes first, so a scrolled list gets the rows it landed on.
+/// A file Quick Look cannot preview gets `None`: its stand-in icon is not the one Finder shows.
 pub fn thumbnail(
     path: &Path,
     modified: Option<SystemTime>,
@@ -174,8 +176,7 @@ fn generate(key: Key) {
             &url,
             points,
             1.0,
-            QLThumbnailGenerationRequestRepresentationTypes::Thumbnail
-                | QLThumbnailGenerationRequestRepresentationTypes::Icon,
+            QLThumbnailGenerationRequestRepresentationTypes::Thumbnail,
         )
     };
     unsafe { request.setIconMode(key.icon) };
@@ -229,7 +230,7 @@ fn complete(key: Key, result: Option<Arc<RenderImage>>) {
         }
         let callbacks = state.waiters.remove(&key).unwrap_or_default();
         let next = (state.active < MAX_INFLIGHT)
-            .then(|| state.queue.pop_front())
+            .then(|| state.queue.pop_back())
             .flatten();
         if next.is_some() {
             state.active += 1;
