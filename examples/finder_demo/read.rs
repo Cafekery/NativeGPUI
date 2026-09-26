@@ -11,7 +11,7 @@ use gpui::{Context, Window};
 use crate::app::FinderDemo;
 use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
-use crate::view::{COLUMN_VIEW, LIST_VIEW};
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 512;
@@ -94,13 +94,13 @@ fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
         }
     }
     let by = match sort {
-        Column::Name => Ordering::Equal,
+        Column::Name => finder_fs::sort::name_cmp(&a.name, &b.name),
         Column::Modified => a.modified_at.total_cmp(&b.modified_at),
         Column::Size => a.bytes.cmp(&b.bytes),
         Column::Kind => finder_fs::sort::name_cmp(&a.kind, &b.kind),
     };
-    let by = by.then_with(|| finder_fs::sort::name_cmp(&a.name, &b.name));
-    if ascending { by } else { by.reverse() }
+    let by = if ascending { by } else { by.reverse() };
+    by.then_with(|| finder_fs::sort::name_cmp(&a.name, &b.name))
 }
 
 fn folders_first() -> bool {
@@ -280,6 +280,7 @@ impl FinderDemo {
                 all.extend(apps.iter().cloned());
                 post(apps);
             }
+            data::weigh_packages(&mut all);
             sort(&mut all);
             icons::prepare(&all, art);
             let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
@@ -349,6 +350,9 @@ impl FinderDemo {
         }
         if done {
             self.expand_landed(id);
+            if id == self.here() && self.view == GALLERY_VIEW {
+                self.settle();
+            }
         }
         let landed_row = self.reveal_next.clone().filter(|key| {
             self.folders

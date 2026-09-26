@@ -12,6 +12,8 @@ const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
 const HAS_BUNDLE: u16 = 0x2000;
+const EXT_HIDDEN: u16 = 0x0010;
+const IS_ALIAS: u16 = 0x8000;
 const SF_DATALESS: u32 = 0x4000_0000;
 
 const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
@@ -23,6 +25,7 @@ const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
     | libc::ATTR_CMN_ADDEDTIME
     | libc::ATTR_CMN_FNDRINFO
     | libc::ATTR_CMN_FLAGS
+    | libc::ATTR_CMN_USERACCESS
     | libc::ATTR_CMN_FILEID;
 
 const OPEN_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
@@ -146,7 +149,7 @@ pub fn entry_at(path: &Path) -> io::Result<Entry> {
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: COMMON_ATTRS & !ATTR_CMN_ERROR,
+        commonattr: COMMON_ATTRS & !(ATTR_CMN_ERROR | libc::ATTR_CMN_USERACCESS),
         volattr: 0,
         dirattr: libc::ATTR_DIR_ENTRYCOUNT,
         fileattr: libc::ATTR_FILE_DATALENGTH,
@@ -259,6 +262,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut fndrinfo: Option<[u8; 32]> = None;
     let mut flags = 0u32;
     let mut file_id = 0u64;
+    let mut readable = true;
     let mut added = None;
 
     // `ATTR_CMN_ERROR` alone is packed straight after `returned`, not in bit order.
@@ -292,6 +296,14 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     }
     if returned_common & libc::ATTR_CMN_FLAGS != 0 {
         flags = u32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
+    }
+    if returned_common & libc::ATTR_CMN_USERACCESS != 0 {
+        let access = i32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
+        let wanted = match objtype {
+            VDIR => libc::R_OK | libc::X_OK,
+            _ => libc::R_OK,
+        };
+        readable = access & wanted == wanted;
     }
     if returned_common & libc::ATTR_CMN_FILEID != 0 {
         file_id = u64::from_ne_bytes(take(record, &mut p, 8).try_into().unwrap());
@@ -333,9 +345,9 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         None => name,
     };
     let hidden = name.starts_with('.') || flags & libc::UF_HIDDEN != 0;
+    let finder_flags = fndrinfo.map_or(0, |fi| u16::from_be_bytes([fi[8], fi[9]]));
     let package = kind == EntryKind::Directory
-        && (fndrinfo.is_some_and(|fi| u16::from_be_bytes([fi[8], fi[9]]) & HAS_BUNDLE != 0)
-            || crate::kind::is_package_name(&name));
+        && (finder_flags & HAS_BUNDLE != 0 || crate::kind::is_package_name(&name));
 
     Some(Entry {
         name,
@@ -346,7 +358,10 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         added,
         hidden,
         package,
+        ext_hidden: finder_flags & EXT_HIDDEN != 0,
+        alias: kind == EntryKind::File && finder_flags & IS_ALIAS != 0,
         dataless,
+        readable,
         file_id,
         children,
     })
@@ -357,7 +372,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::os::unix::fs::{MetadataExt as _, symlink};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
     use std::path::PathBuf;
 
     fn by_name(entries: &[Entry]) -> BTreeMap<&str, &Entry> {
@@ -455,6 +470,40 @@ mod tests {
         }
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_the_user_cannot_list_is_unreadable() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-access-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let modes = [
+            ("open", 0o755),
+            ("none", 0o000),
+            ("search", 0o111),
+            ("read", 0o444),
+        ];
+        for (name, mode) in modes {
+            fs::create_dir_all(dir.join(name)).unwrap();
+            fs::set_permissions(dir.join(name), fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let entries = list_dir(&dir).unwrap();
+        for (name, _) in modes {
+            fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::remove_dir_all(&dir).unwrap();
+        let readable: BTreeMap<_, _> = entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.readable))
+            .collect();
+        assert_eq!(
+            readable,
+            BTreeMap::from([
+                ("none", false),
+                ("open", true),
+                ("read", false),
+                ("search", false)
+            ])
+        );
     }
 
     #[test]

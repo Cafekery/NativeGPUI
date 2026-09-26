@@ -217,6 +217,10 @@ pub fn kind_of(entry: &Entry) -> Kind {
             uti: "public.symlink".into(),
             label: "Alias".into(),
         },
+        EntryKind::File if entry.alias => Kind {
+            uti: "com.apple.alias-file".into(),
+            label: "Alias".into(),
+        },
         _ => kind_for_extension(entry.extension().unwrap_or("")),
     }
 }
@@ -270,7 +274,10 @@ mod tests {
             added: None,
             hidden: false,
             package: false,
+            ext_hidden: false,
+            alias: false,
             dataless: false,
+            readable: true,
             file_id: 0,
             children: None,
         }
