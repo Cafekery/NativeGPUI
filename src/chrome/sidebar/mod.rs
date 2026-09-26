@@ -25,8 +25,8 @@ use objc2_app_kit::{
     NSTableViewRowSizeStyle, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
     NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification, NSWindowDidUpdateNotification, NSWindowOrderingMode,
-    NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
@@ -381,24 +381,6 @@ impl Drop for SidebarState {
         for observer in self.observers.drain(..) {
             unsafe { center.removeObserver(observer.as_ref()) };
         }
-    }
-}
-
-// AppKit builds the toolbar background after the pane's layouts, so it is re-hidden on every update.
-fn observe_toolbar_background(
-    window: &NSWindow,
-    pane: &NSView,
-) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
-    let pane = pane.retain();
-    let block =
-        StackBlock::new(move |_: NonNull<NSNotification>| hide_toolbar_background(&pane)).copy();
-    unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSWindowDidUpdateNotification),
-            Some(window),
-            None,
-            &block,
-        )
     }
 }
 
@@ -982,23 +964,6 @@ define_class!(
     }
 );
 
-fn hide_toolbar_background(pane: &NSView) {
-    let Some(split) = (unsafe { pane.superview().and_then(|wrapper| wrapper.superview()) }) else {
-        return;
-    };
-    for view in split.subviews().iter() {
-        if !view.isHidden()
-            && view
-                .class()
-                .name()
-                .to_string_lossy()
-                .contains("NSTitlebarBackgroundView")
-        {
-            view.setHidden(true);
-        }
-    }
-}
-
 impl ContentPane {
     fn new(mtm: MainThreadMarker, frame: NSRect, shared: Rc<PaneShared>) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(shared);
@@ -1315,7 +1280,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     }
 
     ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::FullSizeContentView);
-    // An opaque titlebar paints untinted window background under the sidebar's top.
+    // Opaque, AppKit shows its toolbar background again on key changes.
     ns_window.setTitlebarAppearsTransparent(true);
 
     // Collected before `setContentViewController:` orphans them.
@@ -1379,8 +1344,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     pane_shared.align(&pane);
     outline.sizeLastColumnToFit();
 
-    let mut observers = observe_key_state(&ns_window, &shared);
-    observers.push(observe_toolbar_background(&ns_window, &pane));
+    let observers = observe_key_state(&ns_window, &shared);
     let state = SidebarState {
         views: Views {
             outline,
