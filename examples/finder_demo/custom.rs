@@ -1,22 +1,34 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 
 use gpui::{App, Entity, SharedString};
 
 use crate::app::FinderDemo;
 
+static SEEN: LazyLock<Mutex<HashMap<SharedString, bool>>> = LazyLock::new(Default::default);
+
 thread_local! {
-    static SEEN: RefCell<HashMap<SharedString, bool>> = RefCell::new(HashMap::new());
     static WANTED: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
 }
 
 pub(crate) fn custom_icon(path: &SharedString) -> bool {
-    if let Some(found) = SEEN.with(|seen| seen.borrow().get(path).copied()) {
+    if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
         return found;
     }
     WANTED.with(|wanted| wanted.borrow_mut().insert(path.clone()));
     false
+}
+
+/// Off the main thread: asks the file now.
+pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
+    if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
+        return found;
+    }
+    let found = native_gpui::tokens::has_custom_icon(Path::new(path.as_ref()));
+    SEEN.lock().unwrap().insert(path.clone(), found);
+    found
 }
 
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
@@ -24,8 +36,11 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     if wanted.is_empty() {
         return;
     }
-    for path in &wanted {
-        SEEN.with(|seen| seen.borrow_mut().insert(path.clone(), false));
+    {
+        let mut seen = SEEN.lock().unwrap();
+        for path in &wanted {
+            seen.entry(path.clone()).or_insert(false);
+        }
     }
     let demo = demo.downgrade();
     cx.spawn(async move |cx| {
@@ -35,8 +50,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
                 wanted
                     .into_iter()
                     .map(|path| {
-                        let custom =
-                            native_gpui::tokens::has_custom_icon(&PathBuf::from(path.as_ref()));
+                        let custom = native_gpui::tokens::has_custom_icon(Path::new(path.as_ref()));
                         (path, custom)
                     })
                     .collect::<Vec<_>>()
@@ -44,7 +58,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
             .await;
         let any = found.iter().any(|(_, custom)| *custom);
         demo.update(cx, |_, cx| {
-            SEEN.with(|seen| seen.borrow_mut().extend(found));
+            SEEN.lock().unwrap().extend(found);
             if any {
                 cx.notify();
             }

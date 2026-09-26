@@ -76,6 +76,14 @@ space and, last, items into the overflow menu. Every threshold moves 4/3pt per p
 - [ ] The view switcher's segments read “as Icons”, “as List”, “as Columns”, “as Gallery” to
   VoiceOver; Finder's read “icon view”, “list view”, “column view”, “gallery view”, and its collapsed
   popup “list view”.
+## Icons and thumbnails
+
+Read off Finder 27 on the test Mac beside the demo, same window, folder, view and icon size.
+
+- [ ] A folder the user cannot open (mode 000, 111, 444, or an ACL that denies list and search) wears Finder's red no-entry badge; the demo draws a plain folder. `iconForFile:` on the path returns the badged icon, but knowing which folders need it takes an access check per folder, which on the home listing reaches Desktop, Documents and Downloads before any grant.
+- [ ] Like Finder, the demo shows a folder's first frame with its icons, but it waits at most 60 ms for them: an icon IconServices has never rendered (an app just installed, a size never drawn) lands a frame or more after the listing. Warm, /Applications in list and icon view had 0 ms of fill after the listing in 5 of 5 runs.
+- [ ] A folder with a custom icon that scrolls into view shows the plain folder for a frame or two before its own icon (Adobe's folders in /Applications: 1 frame in a 3 s scroll through); Finder has it at once. The demo learns of a custom icon when the row is first drawn, or for a listing's first 64 rows, while it reads the listing.
+- [ ] Whether a 32 pt list row previews documents was not read off Finder: its AppleScript view options ignored the size change. The demo previews pictures and movies only in list rows, as Finder does at 16 pt, and documents in icon, column and gallery views.
 
 ## Left alone
 

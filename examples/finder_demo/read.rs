@@ -194,21 +194,21 @@ impl FinderDemo {
             let mut all: Vec<Arc<Row>> = Vec::new();
             if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
                 let mut rows = data::rows_of(id, &known, index);
-                icons::warm(&rows, art);
                 sort(&mut rows);
+                icons::prepare(&rows, art);
                 let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                 let mut mail = filling.lock().unwrap();
                 mail.batches.push((rows, true));
                 mail.lines = lines;
             }
             let post = |mut rows: Vec<Arc<Row>>| {
-                icons::warm(&rows, art);
-                let mut mail = filling.lock().unwrap();
-                let replace = !mail.listed;
-                mail.listed = true;
+                let replace = !filling.lock().unwrap().listed;
                 if replace {
                     sort(&mut rows);
+                    icons::prepare(&rows, art);
                 }
+                let mut mail = filling.lock().unwrap();
+                mail.listed = true;
                 mail.batches.push((rows, replace));
             };
             let read = finder_fs::list::list_dir_batched(dir, BATCH, |entries| {
@@ -228,6 +228,7 @@ impl FinderDemo {
                 post(apps);
             }
             sort(&mut all);
+            icons::prepare(&all, art);
             let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
             let mut mail = filling.lock().unwrap();
             mail.batches.push((all, true));

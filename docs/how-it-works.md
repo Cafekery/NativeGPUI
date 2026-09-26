@@ -82,7 +82,7 @@ Popovers, sheets and the share picker are their own `NSWindow`s. `native_anchor(
 
 ## Tokens
 
-`tokens::init(cx)` snapshots the system's colours and fonts into a `SystemTheme` global and republishes it when the appearance or accent changes. `system_color`, `system_font`, `sf_symbol` and `file_icon` are the accessors; every value is rasterised or resolved by macOS, never approximated.
+`tokens::init(cx)` snapshots the system's colours and fonts into a `SystemTheme` global and republishes it when the appearance or accent changes. `system_color`, `system_font`, `sf_symbol` and `file_icon` are the accessors; every value is rasterised or resolved by macOS, never approximated. A file icon is drawn in the app's appearance on any thread: IconServices keeps a rendition per appearance, and drawing one the system does not show renders it cold. `draw_file_icon` is `file_icon` without its per-thread cache, for a caller that keeps and bounds its own.
 
 ## The gpui pin
 
