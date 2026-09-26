@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::SharedString;
 
@@ -26,7 +28,8 @@ pub(crate) fn summarize(
     lines: &[Line],
     chosen: &HashSet<SharedString>,
     tags: &HashMap<SharedString, Vec<usize>>,
-) -> Stats {
+    stale: &AtomicBool,
+) -> Option<Stats> {
     let mut stats = Stats {
         key,
         items: 0,
@@ -38,15 +41,19 @@ pub(crate) fn summarize(
         tags: Vec::new(),
         head: Vec::new(),
     };
+    let mut weighed = HashMap::new();
     let picked = lines
         .iter()
         .filter(|line| chosen.contains(&line.key))
         .take(STATS_CAP);
     for line in picked {
+        if stale.load(Ordering::Relaxed) {
+            return None;
+        }
         let row = &line.row;
         stats.items += 1;
         stats.folders += usize::from(row.face == Face::Folder);
-        stats.bytes += total_bytes(row);
+        stats.bytes += total_bytes(row, &mut weighed);
         stats.flat_bytes += row.bytes;
         stats.created = (
             stats.created.0.min(row.created_at),
@@ -66,16 +73,28 @@ pub(crate) fn summarize(
         }
     }
     stats.tags.sort_unstable();
-    stats
+    Some(stats)
 }
 
-fn total_bytes(row: &Row) -> u64 {
-    match row.opens.filter(|_| row.discloses) {
-        Some(id) => crate::index()
-            .folder_size(std::path::Path::new(id))
-            .unwrap_or(row.bytes),
-        None => row.bytes,
-    }
+type Weighed = HashMap<&'static Path, HashMap<String, (Option<u64>, Option<usize>)>>;
+
+fn total_bytes(row: &Row, weighed: &mut Weighed) -> u64 {
+    let Some(id) = row.opens.filter(|_| row.discloses) else {
+        return row.bytes;
+    };
+    let path = Path::new(id);
+    let size = match (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        (Some(dir), Some(name)) => weighed
+            .entry(dir)
+            .or_insert_with(|| crate::index().folders_in(dir))
+            .get(name)
+            .and_then(|(size, _)| *size),
+        _ => crate::index().folder_size(path),
+    };
+    size.unwrap_or(row.bytes)
 }
 
 pub(super) fn span((lo, hi): (f64, f64)) -> SharedString {

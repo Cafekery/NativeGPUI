@@ -166,6 +166,32 @@ fn children_and_sizes() {
 }
 
 #[test]
+fn folders_in_answers_as_each_folder_does() {
+    let temp = tree("folders-in");
+    let root = &temp.0;
+    let index = crawled(root);
+    let link = std::env::temp_dir().join(format!("finder-fs-index-link-{}", std::process::id()));
+    let _ = fs::remove_file(&link);
+    symlink(root, &link).unwrap();
+    for dir in [root, &link] {
+        let folders = index.folders_in(dir);
+        for name in ["a", "many", "Demo.app", "locked", "ring"] {
+            let path = dir.join(name);
+            let each = (index.folder_size(&path), index.visible_children(&path));
+            assert_eq!(folders[name], each, "{}", path.display());
+        }
+    }
+    assert_eq!(index.folders_in(root)["many"].1, Some(MANY));
+    assert!(
+        index
+            .folders_in(&link)
+            .values()
+            .all(|(_, seen)| seen.is_none())
+    );
+    fs::remove_file(&link).unwrap();
+}
+
+#[test]
 fn a_second_crawl_is_ignored() {
     let temp = tree("second");
     let root = &temp.0;

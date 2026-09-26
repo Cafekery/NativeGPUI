@@ -69,32 +69,22 @@ pub fn fold(s: &str) -> String {
     folded.to_string()
 }
 
-pub fn sort_names(names: &mut [String]) {
-    let cf_strings: Vec<CFRetained<CFString>> =
-        names.iter().map(|s| unsafe { borrow_cf_str(s) }).collect();
-    let ranges: Vec<CFRange> = cf_strings
-        .iter()
-        .map(|s| CFRange::new(0, s.length()))
-        .collect();
+/// Each name's place in `name_cmp` order, equal names sharing one, so a sort compares integers.
+pub fn ranks<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u32> {
+    let names: Vec<CFRetained<CFString>> = names.map(|s| unsafe { borrow_cf_str(s) }).collect();
     let locale = current_locale();
+    let cmp = |a: usize, b: usize| -> Ordering {
+        let range = CFRange::new(0, names[a].length());
+        unsafe { names[a].compare_with_options_and_locale(Some(&names[b]), range, OPTIONS, locale) }
+            .into()
+    };
     let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_unstable_by(|&i, &j| {
-        unsafe {
-            cf_strings[i].compare_with_options_and_locale(
-                Some(&cf_strings[j]),
-                ranges[i],
-                OPTIONS,
-                locale,
-            )
-        }
-        .into()
-    });
-    drop(cf_strings);
-
-    let mut originals: Vec<String> = names.iter_mut().map(std::mem::take).collect();
-    for (dst, &src) in names.iter_mut().zip(&order) {
-        *dst = std::mem::take(&mut originals[src]);
+    order.sort_unstable_by(|&a, &b| cmp(a, b));
+    let mut ranks = vec![0; names.len()];
+    for pair in order.windows(2) {
+        ranks[pair[1]] = ranks[pair[0]] + u32::from(cmp(pair[0], pair[1]) != Ordering::Equal);
     }
+    ranks
 }
 
 #[cfg(test)]
@@ -150,18 +140,37 @@ mod tests {
 
     #[test]
     fn dot_and_underscore_prefixes() {
-        let mut names = vec![
-            "_underscore".to_string(),
-            ".hidden".to_string(),
-            "file".to_string(),
+        assert_eq!(
+            ranks(["file", ".hidden", "_underscore"].into_iter()),
+            [2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn ranks_order_as_name_cmp_does() {
+        let names = [
+            "_underscore",
+            ".hidden",
+            "file",
+            "File",
+            "file 10",
+            "file 2",
+            "é",
+            "e",
+            "f",
+            "file",
         ];
-        sort_names(&mut names);
-        assert_eq!(names, vec!["_underscore", ".hidden", "file"]);
+        let ranked = ranks(names.into_iter());
+        for (a, x) in names.iter().enumerate() {
+            for (b, y) in names.iter().enumerate() {
+                assert_eq!(ranked[a].cmp(&ranked[b]), name_cmp(x, y), "{x} {y}");
+            }
+        }
     }
 
     #[test]
     fn bench_20k_names() {
-        let mut names: Vec<String> = (0..20_000)
+        let names: Vec<String> = (0..20_000)
             .map(|i| match i % 3 {
                 0 => format!("File {i}"),
                 1 => format!("document_{i}.txt"),
@@ -169,9 +178,9 @@ mod tests {
             })
             .collect();
         let start = Instant::now();
-        sort_names(&mut names);
+        ranks(names.iter().map(String::as_str));
         let elapsed = start.elapsed();
-        println!("sorted 20000 names in {:?}", elapsed);
+        println!("ranked 20000 names in {:?}", elapsed);
         assert!(elapsed.as_millis() < 200, "took {:?}", elapsed);
     }
 }
