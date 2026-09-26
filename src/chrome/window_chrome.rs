@@ -15,13 +15,14 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu, NSMenuItem,
-    NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSSearchField, NSSearchToolbarItem,
-    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSSharingServicePickerDelegate,
-    NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
-    NSSplitViewController, NSTextAlignment, NSTextField, NSToolTipTag, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemGroup, NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
+    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
+    NSMenuDelegate, NSMenuItem, NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSSearchField,
+    NSSearchToolbarItem, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
+    NSSharingServicePickerToolbarItemDelegate, NSSplitView, NSSplitViewController, NSTextAlignment,
+    NSTextField, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
+    NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
     NSTrackingSeparatorToolbarItem, NSUserInterfaceItemIdentification, NSView, NSViewController,
     NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowLevel, NSWindowOrderingMode,
@@ -636,6 +637,8 @@ type ToolbarHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type ToolbarIndexHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type ToolbarTextHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 type ToolbarViewBuilder = Rc<dyn Fn(MainThreadMarker) -> Retained<NSView>>;
+type ToolbarEntriesBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Vec<MenuEntry>>;
+type ToolbarItemsBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Vec<String>>;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ToolbarSegment {
@@ -738,6 +741,7 @@ pub enum ToolbarItem {
         entries: Vec<MenuEntry>,
         tool_tip: Option<String>,
         on_select: Option<ToolbarIndexHandler>,
+        on_open: Option<ToolbarEntriesBuilder>,
     },
     Share {
         id: String,
@@ -745,6 +749,7 @@ pub enum ToolbarItem {
         items: Vec<String>,
         tool_tip: Option<String>,
         enabled: bool,
+        on_open: Option<ToolbarItemsBuilder>,
     },
     Separator {
         id: String,
@@ -820,6 +825,7 @@ impl ToolbarItem {
             entries: entries.into_iter().collect(),
             tool_tip: None,
             on_select: None,
+            on_open: None,
         }
     }
 
@@ -834,6 +840,7 @@ impl ToolbarItem {
             items: items.into_iter().map(Into::into).collect(),
             tool_tip: None,
             enabled: true,
+            on_open: None,
         }
     }
 
@@ -888,6 +895,28 @@ impl ToolbarItem {
     pub fn on_change(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
         if let ToolbarItem::Search { on_change, .. } = &mut self {
             *on_change = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    /// Refills the menu as it opens; a menu given no entries until then hides its first row.
+    pub fn entries_on_open(
+        mut self,
+        build: impl Fn(&mut Window, &mut App) -> Vec<MenuEntry> + 'static,
+    ) -> Self {
+        if let ToolbarItem::Menu { on_open, .. } = &mut self {
+            *on_open = Some(Rc::new(build));
+        }
+        self
+    }
+
+    /// Asks for the shared items each time the picker opens, in place of the ones given.
+    pub fn items_on_open(
+        mut self,
+        build: impl Fn(&mut Window, &mut App) -> Vec<String> + 'static,
+    ) -> Self {
+        if let ToolbarItem::Share { on_open, .. } = &mut self {
+            *on_open = Some(Rc::new(build));
         }
         self
     }
@@ -1025,20 +1054,55 @@ define_class!(
 
     unsafe impl NSSharingServicePickerDelegate for ToolbarDelegate {}
 
+    unsafe impl NSMenuDelegate for ToolbarDelegate {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let Some(id) = self.menu_owner(menu) else {
+                return;
+            };
+            let build = self.ivars().items.borrow().iter().find_map(|spec| match spec {
+                ToolbarItem::Menu {
+                    id: found, on_open, ..
+                } if *found == id => on_open.clone(),
+                _ => None,
+            });
+            let Some(build) = build else {
+                return;
+            };
+            if let Ok(entries) = self.ivars().cx.clone().update(|window, cx| build(window, cx)) {
+                sync_menu(mtm, menu, &entries, Some((self.as_ref(), sel!(ngToolbarMenu:))));
+            }
+        }
+    }
+
     unsafe impl NSSharingServicePickerToolbarItemDelegate for ToolbarDelegate {
         #[unsafe(method_id(itemsForSharingServicePickerToolbarItem:))]
         fn share_items(&self, item: &NSSharingServicePickerToolbarItem) -> Retained<NSArray> {
             let wanted = item.itemIdentifier().to_string();
-            let texts = self
+            let (items, build) = self
                 .ivars()
                 .items
                 .borrow()
                 .iter()
                 .find_map(|spec| match spec {
-                    ToolbarItem::Share { id, items, .. } if *id == wanted => Some(items.clone()),
+                    ToolbarItem::Share {
+                        id, items, on_open, ..
+                    } if *id == wanted => Some((items.clone(), on_open.clone())),
                     _ => None,
                 })
                 .unwrap_or_default();
+            let texts = match build {
+                Some(build) => self
+                    .ivars()
+                    .cx
+                    .clone()
+                    .update(|window, cx| build(window, cx))
+                    .unwrap_or(items),
+                None => items,
+            };
             let owned: Vec<Retained<NSString>> =
                 texts.iter().map(|text| NSString::from_str(text)).collect();
             let refs: Vec<&AnyObject> = owned.iter().map(|text| text.as_ref()).collect();
@@ -1108,13 +1172,7 @@ define_class!(
         fn menu_action(&self, sender: *mut AnyObject) {
             let index: isize = unsafe { msg_send![sender, tag] };
             let menu: Option<Retained<NSMenu>> = unsafe { msg_send![sender, menu] };
-            let Some(menu) = menu else {
-                return;
-            };
-            let found = self.ivars().built.borrow().iter().find_map(|(id, item)| {
-                let owned = item.downcast_ref::<NSMenuToolbarItem>()?.menu();
-                ptr::eq(Retained::as_ptr(&owned), Retained::as_ptr(&menu)).then(|| id.clone())
-            });
+            let found = menu.and_then(|menu| self.menu_owner(&menu));
             if let (Some(id), Ok(index)) = (found, usize::try_from(index)) {
                 self.dispatch_index(&id, index);
             }
@@ -1152,6 +1210,13 @@ impl ToolbarDelegate {
                 let _ = cx.update(run);
             })
             .detach();
+    }
+
+    fn menu_owner(&self, menu: &NSMenu) -> Option<String> {
+        self.ivars().built.borrow().iter().find_map(|(id, item)| {
+            let owned = item.downcast_ref::<NSMenuToolbarItem>()?.menu();
+            ptr::eq(Retained::as_ptr(&owned), menu).then(|| id.clone())
+        })
     }
 
     // The sender's position among the subitems: `selectedIndex` is -1 for Momentary.
@@ -1340,6 +1405,7 @@ impl ToolbarDelegate {
                 symbol,
                 label,
                 entries,
+                on_open,
                 ..
             } => {
                 let item =
@@ -1352,6 +1418,9 @@ impl ToolbarDelegate {
                 // No action on the item: with one, only the chevron half would open the menu.
                 item.setShowsIndicator(true);
                 let menu = NSMenu::new(mtm);
+                if on_open.is_some() {
+                    menu.setDelegate(Some(ProtocolObject::from_ref(self)));
+                }
                 sync_menu(
                     mtm,
                     &menu,

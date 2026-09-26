@@ -1,6 +1,6 @@
 use crate::menus::{Act, Menu};
 use block2::RcBlock;
-use gpui::{Context, SharedString, Window, px};
+use gpui::{Context, Window, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::{
     MenuEntry, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection, ToolbarStyle,
@@ -10,11 +10,15 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use std::cell::RefCell;
 use std::path::Path;
+use std::ptr;
 use std::rc::Rc;
 
 use crate::app::FinderDemo;
 use crate::data::Column;
+
+pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, usize, Column, bool);
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
@@ -113,29 +117,45 @@ fn group_glyph() -> Retained<NSImage> {
     image
 }
 
+thread_local! {
+    static GLYPHS: (Option<Retained<NSImage>>, Retained<NSImage>) =
+        (airdrop_glyph(), group_glyph());
+}
+
 pub(crate) fn finish_toolbar_items(window: &Window) {
     let Some(toolbar) = chrome_host(window).window().and_then(|w| w.toolbar()) else {
         return;
     };
-    for item in toolbar.items().iter() {
-        let id = item.itemIdentifier().to_string();
-        match id.as_str() {
-            // Without this AppKit lays the item run out after the window title.
-            NAV_ID => item.setNavigational(true),
-            AIRDROP_ID => {
-                if let Some(image) = airdrop_glyph() {
-                    item.setImage(Some(&image));
+    GLYPHS.with(|(airdrop, group)| {
+        for item in toolbar.items().iter() {
+            let id = item.itemIdentifier().to_string();
+            let glyph = match id.as_str() {
+                // Without this AppKit lays the item run out after the window title.
+                NAV_ID if !item.isNavigational() => {
+                    item.setNavigational(true);
+                    None
+                }
+                AIRDROP_ID => airdrop.as_deref(),
+                GROUP_ID => Some(&**group),
+                _ => None,
+            };
+            if let Some(glyph) =
+                glyph.filter(|glyph| !item.image().is_some_and(|have| ptr::eq(&*have, *glyph)))
+            {
+                item.setImage(Some(glyph));
+            }
+            if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
+                let rows = menu.menu();
+                // `MenuEntry::disabled` is a no-op while automatic validation is on.
+                if rows.autoenablesItems() {
+                    rows.setAutoenablesItems(false);
+                }
+                if menu.showsIndicator() != (id == GROUP_ID) {
+                    menu.setShowsIndicator(id == GROUP_ID);
                 }
             }
-            GROUP_ID => item.setImage(Some(&group_glyph())),
-            _ => {}
         }
-        if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
-            // `MenuEntry::disabled` is a no-op while automatic validation is on.
-            menu.menu().setAutoenablesItems(false);
-            menu.setShowsIndicator(id == GROUP_ID);
-        }
-    }
+    });
 }
 
 pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
@@ -158,6 +178,8 @@ impl FinderDemo {
         if self.sidebar.is_none() {
             return;
         }
+        let state = self.toolbar_state();
+        let (_, _, picked, shareable, ..) = state;
         let this = cx.entity().downgrade();
         let nav = this.clone();
         let view = this.clone();
@@ -166,17 +188,12 @@ impl FinderDemo {
         let query = this.clone();
         let jobs = this.clone();
         let group = this.clone();
-        let action = this.clone();
+        let sharing = this.clone();
+        let opening = this.clone();
+        let action = this;
         let rows = self.action_rows();
-        let acts: Rc<[Act]> = rows.acts.into();
-
-        let picked = !self.selected.is_empty();
-        // Finder won't share a folder the user can't list, even beside readable items.
-        let shareable = picked
-            && self
-                .chosen_lines()
-                .iter()
-                .all(|line| line.row.opens.is_none() || line.row.readable);
+        let acts = Rc::new(RefCell::new(rows.acts));
+        let built = acts.clone();
         let mut items = vec![
             ToolbarItem::group(
                 NAV_ID,
@@ -251,7 +268,12 @@ impl FinderDemo {
             );
         }
         items.extend([
-            ToolbarItem::share(SHARE_ID, "Share", self.share_items())
+            ToolbarItem::share(SHARE_ID, "Share", Vec::<String>::new())
+                .items_on_open(move |_, cx| {
+                    sharing
+                        .upgrade()
+                        .map_or_else(Vec::new, |this| this.read(cx).share_items())
+                })
                 .tool_tip("Share the selected items")
                 .enabled(shareable),
             ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
@@ -263,8 +285,16 @@ impl FinderDemo {
                 }),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")
+                .entries_on_open(move |_, cx| {
+                    let menu = opening
+                        .upgrade()
+                        .map(|this| this.read(cx).action_rows())
+                        .unwrap_or_default();
+                    *built.borrow_mut() = menu.acts;
+                    menu.entries
+                })
                 .on_select(move |index, window, cx| {
-                    let act = acts.get(index).copied().unwrap_or(Act::Nothing);
+                    let act = acts.borrow().get(index).copied().unwrap_or(Act::Nothing);
                     action
                         .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
                         .ok();
@@ -286,18 +316,21 @@ impl FinderDemo {
             // GPUI hides the title whenever the titlebar is transparent, which `window_options` is.
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
         }
-        self.toolbar = true;
-        self.toolbar_for = self.toolbar_state();
+        self.toolbar_for = Some(state);
     }
 
-    /// What the toolbar was last built for: rebuild it when any of this moves.
-    pub(crate) fn toolbar_state(&self) -> (u64, Option<SharedString>, bool, usize, usize) {
+    /// What the toolbar shows: rebuild it when any of this moves.
+    pub(crate) fn toolbar_state(&self) -> ToolbarState {
+        let picked = !self.selected.is_empty();
         (
-            self.selected.rev(),
-            self.cursor.clone(),
-            self.progress_shown(),
             self.at,
             self.history.len(),
+            picked,
+            picked && crate::menus::chosen_state(self).1,
+            self.progress_shown(),
+            self.view,
+            self.sort,
+            self.grouped,
         )
     }
 
@@ -311,10 +344,6 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn resync_toolbar(&mut self) {
-        self.toolbar = false;
-    }
-
     fn group_by(&mut self, index: usize, cx: &mut Context<Self>) {
         // Row 0 is "None", row 1 its separator.
         match index.checked_sub(2).map(|at| GROUPINGS.get(at)) {
@@ -325,7 +354,6 @@ impl FinderDemo {
             }
             Some(_) => return,
         }
-        self.resync_toolbar();
         cx.notify();
     }
 

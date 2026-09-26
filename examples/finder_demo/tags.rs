@@ -247,7 +247,6 @@ impl FinderDemo {
                 for (key, tags) in carried {
                     this.tags.insert(key.into(), tags);
                 }
-                this.resync_toolbar();
                 cx.notify();
             })
             .ok();
