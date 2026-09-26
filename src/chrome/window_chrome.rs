@@ -642,6 +642,8 @@ pub struct ToolbarSegment {
     pub symbol: String,
     pub label: String,
     pub enabled: bool,
+    /// What VoiceOver reads for the segment; the label when `None`.
+    pub description: Option<String>,
 }
 
 impl ToolbarSegment {
@@ -650,11 +652,17 @@ impl ToolbarSegment {
             symbol: symbol.into(),
             label: label.into(),
             enabled: true,
+            description: None,
         }
     }
 
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    pub fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
         self
     }
 }
@@ -703,6 +711,7 @@ pub enum ToolbarItem {
         label: String,
         tool_tip: Option<String>,
         on_click: Option<ToolbarHandler>,
+        enabled: bool,
     },
     Group {
         id: String,
@@ -735,6 +744,7 @@ pub enum ToolbarItem {
         label: String,
         items: Vec<String>,
         tool_tip: Option<String>,
+        enabled: bool,
     },
     Separator {
         id: String,
@@ -764,6 +774,7 @@ impl ToolbarItem {
             label: label.into(),
             tool_tip: None,
             on_click: None,
+            enabled: true,
         }
     }
 
@@ -822,6 +833,7 @@ impl ToolbarItem {
             label: label.into(),
             items: items.into_iter().map(Into::into).collect(),
             tool_tip: None,
+            enabled: true,
         }
     }
 
@@ -923,6 +935,24 @@ impl ToolbarItem {
             _ => {}
         }
         self
+    }
+
+    /// A button or share item AppKit greys out and does not send.
+    pub fn enabled(mut self, on: bool) -> Self {
+        if let ToolbarItem::Symbol { enabled, .. } | ToolbarItem::Share { enabled, .. } = &mut self
+        {
+            *enabled = on;
+        }
+        self
+    }
+
+    fn enabled_state(&self) -> Option<bool> {
+        match self {
+            ToolbarItem::Symbol { enabled, .. } | ToolbarItem::Share { enabled, .. } => {
+                Some(*enabled)
+            }
+            _ => None,
+        }
     }
 
     fn tip(&self) -> Option<&str> {
@@ -1178,6 +1208,7 @@ impl ToolbarDelegate {
             .cloned()?;
 
         let tip = spec.tip().map(NSString::from_str);
+        let enabled = spec.enabled_state();
         let item: Retained<NSToolbarItem> = match spec {
             ToolbarItem::Symbol {
                 symbol,
@@ -1210,7 +1241,8 @@ impl ToolbarDelegate {
                 let images: Vec<Retained<NSImage>> = segments
                     .iter()
                     .map(|segment| {
-                        symbol_image(&segment.symbol, &segment.label).unwrap_or_default()
+                        let spoken = segment.description.as_deref().unwrap_or(&segment.label);
+                        symbol_image(&segment.symbol, spoken).unwrap_or_default()
                     })
                     .collect();
                 let image_refs: Vec<&NSImage> = images.iter().map(|image| &**image).collect();
@@ -1377,6 +1409,10 @@ impl ToolbarDelegate {
             ToolbarItem::FlexibleSpace | ToolbarItem::Space => return None,
         };
         item.setToolTip(tip.as_deref());
+        if let Some(enabled) = enabled {
+            item.setAutovalidates(false);
+            item.setEnabled(enabled);
+        }
 
         let mut built = self.ivars().built.borrow_mut();
         match built.iter_mut().find(|(id, _)| *id == wanted) {
@@ -1464,7 +1500,18 @@ impl ToolbarDelegate {
                         Some((self.as_ref(), sel!(ngToolbarMenu:))),
                     );
                 }
-                _ => {}
+                _ => {
+                    if let Some(enabled) = spec.enabled_state() {
+                        if item.isEnabled() != enabled {
+                            item.setEnabled(enabled);
+                        }
+                    }
+                    if let ToolbarItem::Symbol { label, .. } = spec {
+                        if item.label().to_string() != *label {
+                            item.setLabel(&NSString::from_str(label));
+                        }
+                    }
+                }
             }
         }
     }
