@@ -54,6 +54,29 @@ Finder swaps some context-menu rows while ⌥ is held. These were read off Finde
 - [x] A sidebar item: Open in New Tab becomes Open in New Window
 - [ ] A selected file or folder, not yet read off Finder: Copy becomes Copy as Pathname, Quick Look becomes Slideshow, Move to Trash becomes Delete Immediately…, Get Info becomes Show Inspector. Finder on the test Mac refused to open an item's menu over accessibility after the first read, so these rest on memory of Finder, not on this probe
 
+## Toolbar: where the search field shrinks and collapses
+
+Read over accessibility from Finder 27.0 on the test Mac and from the demo, same folder, list view,
+preview pane at 241, window width stepped 1pt around every transition, at sidebar 300, 216, 158 and
+hidden. Every toolbar item's x and width, the search field's width and state, the view switcher's
+state and the overflow order now match Finder at every width both sampled (about 600 rows). Finder's
+rule: the title keeps a quarter of the window width; the search field gives way first (329 → 164,
+then its 40pt button), then the view switcher (164 → 50pt popup), then the title (to 160), the last
+space and, last, items into the overflow menu. Every threshold moves 4/3pt per point of sidebar.
+
+- [ ] The demo's sidebar opens at 192pt, a new Finder window's at 216, so at default widths the demo
+  starts shrinking the field at 1333 (Finder 1365), collapses it at 1113 (Finder 1145) and collapses
+  the view switcher at 947 (Finder 979). Finder's sidebar stops at 158; the demo's at 120.
+- [ ] The demo's preview pane is 304–366pt wide, Finder's 241, so the demo's window stops shrinking
+  63–125pt earlier and never reaches Finder's narrowest toolbar states (title at 160, overflow).
+- [ ] After one resize that re-expands a collapsed search field (773 → 1400 at sidebar 216), Finder
+  keeps the item 4pt wider (333, title 372) until the next resize; the demo settles at 329 and 376.
+- [ ] Growing 1pt at a time from Finder's minimum width, the demo read a 44pt search button and a
+  title 2–4pt short at 781, 783 and 785 (Finder: 40pt, title 160–164), on a 200ms settle.
+- [ ] The view switcher's segments read “as Icons”, “as List”, “as Columns”, “as Gallery” to
+  VoiceOver; Finder's read “icon view”, “list view”, “column view”, “gallery view”, and its collapsed
+  popup “list view”.
+
 ## Left alone
 
 - Burn folders and Burn Disc: the hardware is gone.

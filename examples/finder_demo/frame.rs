@@ -47,7 +47,7 @@ impl Render for FinderDemo {
         if self.sidebar.is_none() {
             self.install(window, cx);
         }
-        if self.toolbar_for != (self.selected.rev(), self.cursor.clone()) {
+        if self.toolbar_for != self.toolbar_state() {
             self.toolbar = false;
             let files = self
                 .selected
