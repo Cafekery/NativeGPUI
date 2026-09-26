@@ -61,3 +61,22 @@ Finder swaps some context-menu rows while ⌥ is held. These were read off Finde
 - Eject One and Eject All: the demo ejects the selection, which is the same act.
 - View ▸ Clean Up Selection: the demo's icon view is a grid in sort order with nothing placed by
   hand, so there is no stray icon to snap back.
+
+## Sidebar surface
+
+Read off Finder 27.0 in the same frame as the demo (1100x680 pt at 240,120, sidebar 216 pt, a 7-item
+folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app.
+
+- List view, dark, behind the traffic lights (x 3..6.5 pt, y 8..44): Finder 41.0 41.6 41.0, the demo
+  41.0 41.0 41.0. Over saturated wallpaper (window at 280,280): Finder 39.6 41.0 41.0, the demo 40.0
+  41.0 41.0. Finder's carries a little more of the desktop picture's tint.
+- List view, dark, under the column-header band (x 6, y 50..66): Finder 40.0 41.0 40.0, the demo 41.0
+  41.0 41.0. Ending the demo's band at the toolbar's bottom instead measured 39.0 there, further off.
+- Column view: Finder scrolls the earlier columns of the path under the sidebar, so their selected rows
+  show through the glass at its right edge (x 207..210.5, y 56..76: 44.3 44.7 44.7 key, 46.2 non-key).
+  The demo's column view starts at the current folder: 39.0 40.5 40.3.
+- The "Favorites" header's accessibility frame is 198x21 at y=51 in Finder and 198x16 at y=55 in the
+  demo. The glyphs land on the same pixels (x 16.5..65.5, y 58..67.5).
+- Dark, the toolbar band over the list (x=600 pt, y 2..50): Finder 39 40 39, the demo 40 40 40.
+- Light mode shows no lift in either app, in any view: behind the traffic lights, across the header band
+  and down the rows both read 236.8..237.0 key and 242.0 non-key.

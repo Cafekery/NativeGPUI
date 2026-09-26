@@ -60,7 +60,7 @@ Handlers are registered every paint (`slot.on_change(kind, handler)`) and remove
 
 `Layer::Above` is a subview of GPUI's Metal view: it draws over GPUI content and takes input. `Layer::Below` is a sibling beneath it: GPUI composites over it and it can never receive input; it needs the non-opaque window `window_options()` sets up and a rect GPUI leaves unpainted.
 
-A window is one surface: `SidebarOptions::backdrop` spans it, the sidebar pane's own vibrancy sits over it and the content pane is left unpainted, so both read as material — exactly as in Finder, whose content background tracks what is behind the window. Only `backdrop: None`, or no sidebar at all, leaves the opaque `tokens::WINDOW_BACKGROUND`.
+A window is one surface: `SidebarOptions::backdrop` spans it, the sidebar's own glass sits over it and the content pane is left unpainted, so both read as material, as in Finder, whose window background takes its tint from the desktop picture beneath the window rather than from the windows behind it. Only `backdrop: None`, or no sidebar at all, leaves the opaque `tokens::WINDOW_BACKGROUND`.
 
 One thing a single window cannot do: GPUI content over a blur of GPUI content. GPUI is one Metal layer, so it is either entirely under a material (`Layer::Above`, which blurs it) or entirely over it (`Layer::Below`, which cannot see it). Finder's preview pane is both, a blur of the list with a card on top, and the Finder demo splits it: a `glass` in the main window frosts the rows (and its rim is the hairline Finder shows on the pane's edges), and a borderless, non-activating, transparent child window laid over it paints the card with its own GPUI. See `pane_surface` in [`examples/finder_demo/chrome/surface.rs`](../examples/finder_demo/chrome/surface.rs) and `PreviewPane` in [`examples/finder_demo/preview/mod.rs`](../examples/finder_demo/preview/mod.rs).
 
@@ -70,7 +70,7 @@ One thing a single window cannot do: GPUI content over a blur of GPUI content. G
 
 ## Sidebar
 
-`NativeSidebar::install(window, cx, options)` wraps GPUI's view in an `NSSplitViewController` with a real sidebar item: outline view, vibrancy, the toolbar toggle. Each frame you call `update(&items)`, which diffs against what the outline view shows and applies inserts, removes and moves. `metrics()` gives the insets to lay GPUI content out beside it; `on_select` reports the row.
+`NativeSidebar::install(window, cx, options)` wraps GPUI's view in an `NSSplitViewController` with a real sidebar item: outline view, the item's glass, the toolbar toggle. Each frame you call `update(&items)`, which diffs against what the outline view shows and applies inserts, removes and moves. `metrics()` gives the insets to lay GPUI content out beside it; `on_select` reports the row.
 
 ## Menus
 
