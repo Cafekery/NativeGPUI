@@ -1,5 +1,5 @@
 use gpui::{
-    AnyElement, ClickEvent, DispatchPhase, FontWeight, Hsla, Modifiers, MouseButton,
+    AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
     UniformListScrollHandle, Window, canvas, div, prelude::*, px, transparent_black, uniform_list,
 };
@@ -258,7 +258,7 @@ impl FinderDemo {
                             .child(if renaming.as_ref() == Some(&line.key) {
                                 name.child(rename_field(&line, row, this.clone()))
                             } else {
-                                name.text_ellipsis()
+                                name.text_ellipsis_middle()
                                     .whitespace_nowrap()
                                     .child(line.row.display.clone())
                             });
@@ -297,8 +297,16 @@ impl FinderDemo {
                                 move |_, _, _, cx| cx.new(|_| DragGhost),
                             );
                         match line.row.opens {
-                            Some(into) => drop_target::<RowDrag>(
-                                cell,
+                            Some(into) => drop_target::<ExternalPaths>(
+                                drop_target::<RowDrag>(
+                                    cell,
+                                    line.key.clone(),
+                                    into,
+                                    None,
+                                    chosen.clone(),
+                                    Lit::Drawn,
+                                    this.clone(),
+                                ),
                                 line.key.clone(),
                                 into,
                                 None,
@@ -328,13 +336,20 @@ impl FinderDemo {
                 ..system_color(SystemColor::ControlAccent)
             },
         };
-        let area = drop_lands::<RowDrag>(
-            div()
-                .id(("ng.finder.column.area", index))
-                .absolute()
-                .inset_0()
-                .border(px(AREA_EDGE))
-                .border_color(transparent_black()),
+        let area = drop_lands::<ExternalPaths>(
+            drop_lands::<RowDrag>(
+                div()
+                    .id(("ng.finder.column.area", index))
+                    .absolute()
+                    .inset_0()
+                    .border(px(AREA_EDGE))
+                    .border_color(transparent_black()),
+                SharedString::from(folder),
+                folder,
+                self.selected.snapshot(),
+                Lit::Outline(edge),
+                this_drop.clone(),
+            ),
             SharedString::from(folder),
             folder,
             self.selected.snapshot(),

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, Font, FontWeight, Hsla, MouseButton, Pixels, Point, SharedString,
-    Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnyElement, ClickEvent, Div, ExternalPaths, Font, FontWeight, Hsla, MouseButton, Pixels, Point,
+    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -393,7 +393,7 @@ fn name_cell(
             div()
                 .ml(px(LABEL_GAP))
                 .overflow_hidden()
-                .text_ellipsis()
+                .text_ellipsis_middle()
                 .child(line.row.display.clone())
         });
     if let Some(dots) = marks
@@ -535,8 +535,16 @@ fn row(
             move |_, _, _, cx| cx.new(|_| DragGhost),
         );
     match line.row.opens {
-        Some(into) => drop_target::<RowDrag>(
-            row,
+        Some(into) => drop_target::<ExternalPaths>(
+            drop_target::<RowDrag>(
+                row,
+                line.key.clone(),
+                into,
+                Some(drop_band(line, look, window)),
+                marks.selected.clone(),
+                Lit::Drawn,
+                this.clone(),
+            ),
             line.key.clone(),
             into,
             Some(drop_band(line, look, window)),

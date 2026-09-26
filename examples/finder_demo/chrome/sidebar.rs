@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use finder_fs::ops::Op;
 use gpui::{SharedString, Window, prelude::*, px};
 use native_gpui::Material;
 use native_gpui::sidebar::{
@@ -9,6 +10,7 @@ use native_gpui::sidebar::{
 
 use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, volume_roots};
+use crate::ops::After;
 use crate::prefs;
 use crate::tags::finder_color_rgb;
 
@@ -39,6 +41,7 @@ pub(crate) struct Row {
     pub(crate) title: SharedString,
     pub(crate) glyph: Glyph,
     pub(crate) eject: bool,
+    pub(crate) drops: bool,
 }
 
 pub(crate) struct Group {
@@ -53,6 +56,16 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
         title: title.into(),
         glyph,
         eject: false,
+        drops: false,
+    }
+}
+
+impl Row {
+    /// A row an item can be filed into. Never stat a path to decide: a row can name a share
+    /// that stopped answering.
+    fn dropping(mut self) -> Row {
+        self.drops = true;
+        self
     }
 }
 
@@ -60,7 +73,7 @@ fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
     let path = finder_fs::volumes::standard(which)?;
     let id = intern_path(&path);
     let title = path.file_name()?.to_string_lossy().into_owned();
-    Some(row(id, title, glyph_of(&path)))
+    Some(row(id, title, glyph_of(&path)).dropping())
 }
 
 fn glyph_of(path: &Path) -> Glyph {
@@ -125,7 +138,7 @@ fn folder_row(path: &Path, name: Option<&str>) -> Option<Row> {
         Some(name) => name.to_owned(),
         None => path.file_name()?.to_string_lossy().into_owned(),
     };
-    Some(row(intern_path(path), title, glyph_of(path)))
+    Some(row(intern_path(path), title, glyph_of(path)).dropping())
 }
 
 fn volume_row(volume: &finder_fs::volumes::Volume) -> Row {
@@ -136,7 +149,7 @@ fn volume_row(volume: &finder_fs::volumes::Volume) -> Row {
     };
     Row {
         eject: volume.ejectable,
-        ..row(intern_path(&volume.path), volume.name.clone(), glyph)
+        ..row(intern_path(&volume.path), volume.name.clone(), glyph).dropping()
     }
 }
 
@@ -145,12 +158,16 @@ fn icloud_drive() -> Option<Row> {
         .join("Library/Mobile Documents/com~apple~CloudDocs");
     drive
         .is_dir()
-        .then(|| row(intern_path(&drive), "iCloud Drive", Glyph::Symbol("icloud")))
+        .then(|| row(intern_path(&drive), "iCloud Drive", Glyph::Symbol("icloud")).dropping())
+}
+
+fn trash_path() -> Option<PathBuf> {
+    finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash)
 }
 
 fn trash_row() -> Option<Row> {
-    let trash = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash)?;
-    Some(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")))
+    let trash = trash_path()?;
+    Some(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")).dropping())
 }
 
 fn favourites() -> Vec<Row> {
@@ -254,6 +271,7 @@ pub(crate) fn groups() -> Vec<Group> {
                 tag.name.clone(),
                 Glyph::Tag(tag.color),
             )
+            .dropping()
         })
         .collect();
     tags.push(row("tag:", "All Tags…", Glyph::AllTags));
@@ -282,14 +300,16 @@ pub(crate) fn groups() -> Vec<Group> {
             .retain(|row| !removed.iter().any(|gone| gone == row.id));
         for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
             let id = intern_path(&path);
-            if !(path.is_dir() || crate::smart::is_saved(id) && path.is_file())
+            let folder = path.is_dir();
+            if !(folder || crate::smart::is_saved(id) && path.is_file())
                 || group.rows.iter().any(|row| row.id == id)
             {
                 continue;
             }
-            group
-                .rows
-                .push(row(id, pinned_title(&path), glyph_of(&path)));
+            group.rows.push(Row {
+                drops: folder,
+                ..row(id, pinned_title(&path), glyph_of(&path))
+            });
         }
     }
     groups
@@ -337,7 +357,7 @@ impl FinderDemo {
                         sidebar_item(row.id, row.title.clone())
                             .icon(row.glyph.icon())
                             .ejectable(row.eject)
-                            .accepts_drops(matches!(row.glyph, Glyph::Tag(_))),
+                            .accepts_drops(row.drops),
                     )
                 }))
             })
@@ -398,9 +418,23 @@ impl FinderDemo {
             this.reorder(moved);
             cx.notify();
         }));
-        sidebar.on_drop_paths(cx.listener(|this, dropped: &SidebarDrop, _, cx| {
-            match dropped.onto.as_ref().and_then(|id| id.strip_prefix("tag:")) {
-                Some(tag) => this.tag_dropped(tag, &dropped.paths, cx),
+        sidebar.on_drop_paths(cx.listener(|this, dropped: &SidebarDrop, window, cx| {
+            match dropped.onto.as_deref() {
+                Some(onto) if onto.starts_with("tag:") => {
+                    this.tag_dropped(&onto["tag:".len()..], &dropped.paths, cx)
+                }
+                Some(onto) if Some(Path::new(onto)) == trash_path().as_deref() => {
+                    this.run_op(Op::Trash(dropped.paths.clone()), After::Nothing, cx)
+                }
+                // Any other row that reported itself is a folder: only those take drops.
+                Some(onto) => {
+                    let keys: Vec<SharedString> = dropped
+                        .paths
+                        .iter()
+                        .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
+                        .collect();
+                    this.drop_into(intern(onto), &keys, window, cx);
+                }
                 None => this.pin(dropped),
             }
             cx.notify();

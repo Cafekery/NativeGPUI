@@ -316,18 +316,10 @@ define_class!(
     unsafe impl NSObjectProtocol for FileDragSource {}
 
     unsafe impl NSDraggingSource for FileDragSource {
+        // Finder moves a dragged file itself; this source deletes nothing, whatever the answer.
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
-        fn operation_mask(
-            &self,
-            _: &NSDraggingSession,
-            context: NSDraggingContext,
-        ) -> NSDragOperation {
-            match context {
-                NSDraggingContext::WithinApplication => {
-                    NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy
-                }
-                _ => NSDragOperation::Copy,
-            }
+        fn operation_mask(&self, _: &NSDraggingSession, _: NSDraggingContext) -> NSDragOperation {
+            NSDragOperation::Generic | NSDragOperation::Move | NSDragOperation::Copy
         }
     }
 );
