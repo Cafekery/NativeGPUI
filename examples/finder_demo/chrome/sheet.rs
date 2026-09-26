@@ -17,7 +17,7 @@ use crate::ui::{focus_gpui, key_to_parent, native_text_field, text_width};
 use crate::{home, index};
 
 const SHEET_W: f32 = 520.;
-const PANEL_TOP: f32 = 60.;
+const PANEL_TOP: f32 = 102.;
 // Finder's Go to Folder window, measured in points.
 const PANEL_W: f32 = 460.;
 const PANEL_H: f32 = 183.;
@@ -373,7 +373,6 @@ impl FinderDemo {
             return;
         }
         self.go_typed(&target, window, cx);
-        self.close_go(window, cx);
     }
 
     fn close_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -387,23 +386,31 @@ impl FinderDemo {
     fn go_typed(&mut self, typed: &str, window: &mut Window, cx: &mut Context<Self>) {
         let typed = typed.to_string();
         cx.spawn_in(window, async move |this, cx| {
-            let (folder, item) = cx
+            let (folder, item, refused) = cx
                 .background_executor()
                 .spawn(async move {
                     let folder = folder_at_path(&typed);
                     let path = typed_path(&typed);
-                    let item = (folder.is_none() && path.symlink_metadata().is_ok())
+                    // Finder leaves the sheet up, and says nothing, on a folder it can't list.
+                    let refused = folder.is_none() && path.is_dir();
+                    let item = (folder.is_none() && !refused && path.symlink_metadata().is_ok())
                         .then(|| intern_path(&path));
                     if folder.is_some() || item.is_some() {
                         remember_go(&path.to_string_lossy());
                     }
-                    (folder, item)
+                    (folder, item, refused)
                 })
                 .await;
-            this.update_in(cx, |this, window, cx| match (folder, item) {
-                (Some(id), _) => this.go(id, window, cx),
-                (None, Some(item)) => this.show_enclosing(item, window, cx),
-                (None, None) => {}
+            this.update_in(cx, |this, window, cx| {
+                if refused {
+                    return;
+                }
+                this.close_go(window, cx);
+                match (folder, item) {
+                    (Some(id), _) => this.go(id, window, cx),
+                    (None, Some(item)) => this.show_enclosing(item, window, cx),
+                    (None, None) => {}
+                }
             })
             .ok();
         })
@@ -549,13 +556,16 @@ impl FinderDemo {
                 .left_0()
                 .right_0()
         };
+        let metrics = self.metrics();
+        let width = f32::from(window.viewport_size().width);
+        // Centred on the window as Finder's; the sidebar and pane are native views drawn over GPUI.
+        let left = ((width - PANEL_W) / 2.)
+            .min(width - f32::from(metrics.right) - PANEL_W)
+            .max(f32::from(metrics.left));
         div()
             .absolute()
             .top(px(PANEL_TOP))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
+            .left(px(left))
             .child(
                 div()
                     .relative()

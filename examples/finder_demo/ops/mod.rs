@@ -224,6 +224,21 @@ impl FinderDemo {
         }
     }
 
+    /// Finder's own alert for a folder it won't open: app-modal, centred on the screen.
+    pub(crate) fn refuse(&self, text: String, cx: &mut Context<Self>) {
+        // From a task, outside GPUI's borrow of the app, which the modal loop would re-enter.
+        cx.spawn(async move |_, _| {
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
+                return;
+            };
+            let alert = objc2_app_kit::NSAlert::new(mtm);
+            alert.setAlertStyle(objc2_app_kit::NSAlertStyle::Critical);
+            alert.setMessageText(&objc2_foundation::NSString::from_str(&text));
+            alert.runModal();
+        })
+        .detach();
+    }
+
     /// A typed `/` is stored as `:`, the byte Finder draws as a slash.
     pub(crate) fn rename(&mut self, key: &SharedString, name: &str, cx: &mut Context<Self>) {
         let Some((_, old)) = split_key(key) else {

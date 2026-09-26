@@ -29,6 +29,7 @@ impl FinderDemo {
 
     pub(crate) fn set_view(&mut self, view: usize) {
         self.view = view;
+        self.preview = prefs::preview(view);
         prefs::set_view(view);
         self.settle();
     }
@@ -120,11 +121,17 @@ impl FinderDemo {
 
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
-        let avail = f32::from(window.viewport_size().width)
-            - f32::from(metrics.left)
-            - f32::from(metrics.right)
-            - 24.;
+        let pane = match self.preview_shown() {
+            true => self.preview_w,
+            false => 0.,
+        };
+        let avail = f32::from(window.viewport_size().width) - f32::from(metrics.left) - pane - 24.;
         let tile = cell(self.icon_size as f32);
-        ((avail / tile).floor() as usize).max(1)
+        let fits = ((avail / tile).floor() as usize).max(1);
+        // Finder arranges a folder when its items first show, not while the window is still opening.
+        match metrics == SidebarMetrics::default() || self.lines(false).is_empty() {
+            true => fits,
+            false => self.icons.hold(fits, tile),
+        }
     }
 }

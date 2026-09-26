@@ -272,12 +272,16 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Finder's trail ends at a lone selection; in column view the target already follows it.
+    /// Finder's trail ends at a lone selection; in column view a folder's already does, as the target.
     fn lone_pick(&self) -> Option<Line> {
-        (self.view != COLUMN_VIEW && self.selected.len() == 1)
-            .then(|| self.cursor_line())
-            .flatten()
-            .filter(|line| self.selected.contains(&line.key))
+        if self.selected.len() != 1 {
+            return None;
+        }
+        let line = match self.view {
+            COLUMN_VIEW => self.column_chain().1,
+            _ => self.cursor_line(),
+        };
+        line.filter(|line| self.selected.contains(&line.key))
     }
 
     /// Label widths, `None` where only the icon fits. Finder keeps the first and last crumbs whole and
