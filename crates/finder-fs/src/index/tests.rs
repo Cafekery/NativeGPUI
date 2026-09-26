@@ -24,7 +24,7 @@ impl Drop for Temp {
 }
 
 fn tree(name: &str) -> Temp {
-    let root = std::env::temp_dir().join(format!("finder-fs-index-{name}"));
+    let root = std::env::temp_dir().join(format!("finder-fs-index-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let deep = root.join("a/b/c");
     fs::create_dir_all(&deep).unwrap();
@@ -73,7 +73,8 @@ fn sync(index: &Arc<Index>, root: &Path) {
 }
 
 fn store(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("finder-fs-store-{name}.bin"));
+    let path =
+        std::env::temp_dir().join(format!("finder-fs-store-{name}-{}.bin", std::process::id()));
     let _ = fs::remove_file(&path);
     path
 }
@@ -227,7 +228,7 @@ fn search_ranks_and_scopes() {
 
 #[test]
 fn a_hit_below_a_byte_of_depth_carries_its_real_path() {
-    let root = std::env::temp_dir().join("finder-fs-index-depth");
+    let root = std::env::temp_dir().join(format!("finder-fs-index-depth-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let temp = Temp(fs::canonicalize(&root).unwrap());
@@ -255,7 +256,7 @@ fn dated(dir: &Path, name: &str, at: SystemTime) {
 
 #[test]
 fn a_date_outside_the_unsigned_epoch_reads_alike_from_the_index_and_the_disk() {
-    let root = std::env::temp_dir().join("finder-fs-index-dates");
+    let root = std::env::temp_dir().join(format!("finder-fs-index-dates-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     let temp = Temp(fs::canonicalize(&root).unwrap());
