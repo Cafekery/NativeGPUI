@@ -73,17 +73,43 @@ space and, last, items into the overflow menu. Every threshold moves 4/3pt per p
   keeps the item 4pt wider (333, title 372) until the next resize; the demo settles at 329 and 376.
 - [ ] Growing 1pt at a time from Finder's minimum width, the demo read a 44pt search button and a
   title 2–4pt short at 781, 783 and 785 (Finder: 40pt, title 160–164), on a 200ms settle.
-- [ ] The view switcher's segments read “as Icons”, “as List”, “as Columns”, “as Gallery” to
-  VoiceOver; Finder's read “icon view”, “list view”, “column view”, “gallery view”, and its collapsed
-  popup “list view”.
+- [x] The view switcher's segments read “icon view”, “list view”, “column view”, “gallery view” to
+  VoiceOver, as Finder's, and its collapsed popup “list view” (its value stays “as List”).
 ## Icons and thumbnails
 
 Read off Finder 27 on the test Mac beside the demo, same window, folder, view and icon size.
 
-- [ ] A folder the user cannot open (mode 000, 111, 444, or an ACL that denies list and search) wears Finder's red no-entry badge; the demo draws a plain folder. `iconForFile:` on the path returns the badged icon, but knowing which folders need it takes an access check per folder, which on the home listing reaches Desktop, Documents and Downloads before any grant.
+- [x] A folder the user cannot open (mode 000, 111, 444, or an ACL that denies list and search) wears Finder's red no-entry badge. The demo takes the user's access from the listing it already makes (`ATTR_CMN_USERACCESS` in `getattrlistbulk`, which the file system answers from its catalogue without opening the folder, so Desktop, Documents and Downloads are not touched) and draws such a folder with `iconForFile:`, which carries the badge.
 - [ ] Like Finder, the demo shows a folder's first frame with its icons, but it waits at most 60 ms for them: an icon IconServices has never rendered (an app just installed, a size never drawn) lands a frame or more after the listing. Warm, /Applications in list and icon view had 0 ms of fill after the listing in 5 of 5 runs.
 - [ ] A folder with a custom icon that scrolls into view shows the plain folder for a frame or two before its own icon (Adobe's folders in /Applications: 1 frame in a 3 s scroll through); Finder has it at once. The demo learns of a custom icon when the row is first drawn, or for a listing's first 64 rows, while it reads the listing.
 - [ ] Whether a 32 pt list row previews documents was not read off Finder: its AppleScript view options ignored the size change. The demo previews pictures and movies only in list rows, as Finder does at 16 pt, and documents in icon, column and gallery views.
+## Behaviour against Finder 27 on the test Mac
+
+- [x] A symlink to an app (and an app itself) is a leaf in column view: no chevron, no “Contents”
+  column, the preview column beside it, the window titled by the folder that holds it, the path
+  bar ending at it; a double-click launches it.
+- [x] Show Preview is kept as Finder keeps it: one setting for icon and list views
+  (`ShowPreviewPane`), one for gallery (`GalleryViewOptions.ShowPreviewPane`) and one for the
+  column view's preview column. Watched on the user's Mac: hiding it in list or icon view hides
+  it in the other and leaves gallery and columns; hiding it in gallery or columns leaves the other
+  three; a reopened window keeps each (the demo: a relaunch). Finder holds the column setting for
+  every window and folder without rewriting `ColumnViewOptions.ShowPreview` while it runs.
+- [ ] Icon view keeps the columns of the first frame that shows a folder's items, whatever the pane
+  or the window does next (a narrower window scrolls sideways), as Finder's free arrangement does.
+  On the user's Mac both lay the 17-item fixture out in 5 columns with the pane shown (label centres
+  282–730 pt) and keep 5 through a hidden pane and windows of 900, 1300 and 1100 pt; laid out with
+  the pane hidden both keep 7 and cut them at the pane. Left: Finder shows the icons beneath its
+  pane's glass (88 over an icon, 38 around it; the demo's canvas stops at the pane), places a new
+  folder's icons in name order where the demo uses the list's sort, and keeps each icon's place
+  across visits; the demo lays a folder out afresh each time it opens.
+- [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
+  opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
+  reads “Folder - Zero bytes”, the demo's “Folder”.
+- [ ] Column view sorts every column by name (`ColumnViewOptions.ArrangeBy` dnam) and gallery view
+  by name (`GalleryViewSettings.arrangeBy`); the demo uses the list's sort in both (Date Modified ⌄
+  on the user's Mac: Notes.txt first where Finder has Archive.zip), so a folder opened in gallery
+  view picks a different first item.
+- [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.
@@ -104,29 +130,54 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   Mac); the demo has one width for every view.
 - [ ] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
   created"); the demo's list is fixed.
-- [ ] Light appearance: Finder's vibrant text lands on the glass at a different darkness per text
-  (name 71, headings 58, values 51, row titles 134, kind 185 over glass 235); the card uses those
-  as flat colours, so antialiased edges differ by a few levels.
-
-## List view, measured against Finder on macOS 27
-
-- [ ] Finder draws its list view's alternating stripes on past the last row; the demo stops.
+- [x] Light appearance: Finder's vibrant text darkens the glass by a fixed depth (headings and
+  values 178.5, row titles 102, kind 51.5), and the glass lightens from 237 to 242 when the window
+  resigns key; the card follows both, within a level key and non-key. The name is a flat 70% black
+  (Finder 71 key, 73 non-key).
+- [ ] After a live appearance switch Finder's kind line turns secondary (116 dark, 134 light) until
+  its window is reopened; the card keeps the tertiary a window opens with (77 dark, 185 light).
+- [x] The tags well: Finder fills it on the user's Mac (32 dark, 255 light, x 869–1090, y 549–582,
+  "Add Tags…" at x 870, y 552–564.5, ink 87 dark, 189 light) and draws no rule under the tags row,
+  key and non-key, for a picture and a text file; the card matches within a level, its placeholder
+  1 pt wider. On the mini (26A5416b) Finder drew a rule there instead.
+- [ ] Show Preview after Hide Preview brings Finder's pane back 288 wide in list and gallery view,
+  at any window width (900–1300), selection or earlier width (241 and 240 set by the divider), and
+  Finder saves 288; the demo's comes back at the width it had (241).
+- [ ] Once the content runs into the actions band (a window 600 tall), Finder rules the band off
+  across the pane, x 859–1100 (y 529.5: 68 dark, 214 light; y 530: 63, 230); the card's rule has
+  the same rows and inks but spans x 862–1094, since its window keeps clear of the divider's grab
+  and the window's resize edge.
+- [ ] The quick actions' Rotate Left symbol sits 0.5 pt left of Finder's (x 897–911 against
+  897.5–911.5); its row, Markup and More… match (626–641, 627–641).
+- [x] Column view's preview column has no glass under it, and Finder draws its text in plain label
+  colours there (dark: name and values 221, kind, titles and action labels 154, rules 54 on the
+  column's 32; light: 39, 128, 230 on 255); the card uses them in column view.
+- [ ] In column view the card's text sits 0.5 pt above Finder's (name 380.5 against 381.0, the
+  same for every row down to "Add Tags…"), and its quick actions 3 pt above (symbols 595–610
+  against 598–613, labels 622.5–633 against 625.5–636), Photo.png at 1100x680.
 ## Path bar and status bar
 
 Measured against Finder 27.0 (26A428) on a 2x display, both windows at 240,120 1100x680 pt in list
-view, points from the window's top-left, colours as sRGB 0–255.
+view, points from the window's top-left, colours as sRGB 0–255. Re-measured on the integrated build,
+dark and light: the edge rows (75, 56 dark; 221, 240 light) and every crumb's name start and
+chevron (Δ 0.0) match; what is left:
 
 - [ ] Finder's list runs on beneath the path bar, which lets a heavily blurred trace of it through:
-  with a selected row under the bar the fill reads 40,42,43 in dark (40,41,40 without) and
-  252,253,255 in light (255). The demo's list stops at the bar, so its bar stays 41,41,41 / 255.
+  with a selected row under the bar the fill reads 40,42,43 in dark and 252,253,255 in light (255).
+  The demo's list stops at the bar, so its bar stays 41,41,41 / 255.
 - [ ] A crumb name cut to the shared width fades out over its last ~9 pt in Finder (140 → 32 across
-  x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x.
+  x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x, so
+  three capped names end 0.5 pt later.
 - [ ] The startup-disk crumb's icon ink is 12 × 13.5 pt against Finder's 11 × 12.5 pt, on the same
   centre. Folder crumb icons match in dark and run 0.5 pt wider a side in light.
-- [ ] Finder paints the next alternating row into the 10 pt between the last row and the path bar
-  (y 642–652 is 42,42,42 in dark); the demo leaves it the list's background (32,32,32).
-- [ ] Fills are a level off on one channel: the path bar 41,41,41 against Finder's 40,41,40, the status
-  bar 39,40,40 against 39,40,39, and the light status divider's first row 241 against 242.
+- [x] Like Finder, the demo paints the next alternating row into the 10 pt between the last row and
+  the path bar (y 642–652, 42,42,42 in dark), including right after a scroll that ran past the end.
+- [x] In column view the trail ends at a lone selected item that opens no column (an app, a symlink
+  to one, a folder the user can't list), as Finder's does.
+- [ ] Fills are a level off on one channel: the path bar 41,41,41 against Finder's 41,41,40 (40,41,40
+  in a 3-item or empty folder), its bottom rim 62,62,62 against 61,62,61, the status bar 39,40,40
+  against 39,40,39 with its divider 29,29,29 against 29,30,29, and the light status divider's first
+  row 241 against 242.
 
 ## Left alone
 
@@ -154,6 +205,30 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
 - Dark, the toolbar band over the list (x=600 pt, y 2..50): Finder 39 40 39, the demo 40 40 40.
 - Light mode shows no lift in either app, in any view: behind the traffic lights, across the header band
   and down the rows both read 236.8..237.0 key and 242.0 non-key.
+- The sidebar's tint comes from where the window sits on the desktop picture, one tint for the whole
+  window (AppKit's own window-background chameleon, in both apps), never from what lies behind the
+  window: grey, magenta and a copy of the wallpaper behind it read identically. Over the yellow half of
+  the desktop both read 40 40 37 across the rows, key and non-key, and the selection pill 71.3 71.5
+  67.4 (Finder) against 70.4 71.2 67.4 (the demo); over the warm corner both read 38 38 38. A second
+  `CAChameleonLayer` the demo once laid under its rows took the blue channel 1–2 levels low and was
+  removed.
+- Ink, dark: Favorites icons, labels (255 key, 147 non-key) and the eject key ink (105.5) match Finder.
+  Locations icons are `systemGrayColor` while key (181 181 186 in both) and AppKit's inactive tint
+  otherwise (144 in both): a label colour on a vibrant image view draws far darker than as text
+  (secondary 94, tertiary 32). The non-key eject reads 72.8 against Finder's 70.5.
+- Favorites and Locations come from Finder's lists through `sharedfilelistd`: macOS refuses an app
+  (not a shell) the list files themselves, which left the demo on its built-in rows. Tags stay the 7
+  standard ones where Finder lists its 14: Finder keeps them in its iCloud key-value store, whose
+  database an app may not open either.
+- A mounted server is one row named by its host, as in Finder, with CoreTypes' `SidebarDisplay`;
+  Finder 27 draws a flat box with a rule and a dot, not yet compared glyph for glyph. The row opens the
+  first share mounted from that host, where Finder shows the host's shares, and its eject unmounts that
+  share only.
+- A cloud storage row (a File Provider domain) shows `externaldrive.badge.icloud`; Finder shows the
+  provider's own icon.
+- Finder's Computer and Remote Disc rows are not shown; Network always is.
+- The demo reads Finder's lists and never writes them, so Remove from Sidebar and reordering of a row
+  that comes from them last until the next launch.
 ## Launch
 
 Measured on macOS 27.0 (26A428) against a WebDAV share mounted from this Mac whose server was
@@ -177,14 +252,16 @@ Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both wi
 1100x680 in list view on the same folder, sidebar 216 and preview pane 241 wide, nothing selected.
 Traffic lights, corner radius, window shadow and title type measure identical.
 
-- [ ] Rows: Finder is 21pt at 16pt icons and 14pt text, as the demo now is; the pitch at 32pt icons is
-  unmeasured, the demo's is 37.
+- [ ] Rows: the demo now takes Finder's list text and icon sizes and Finder's own row rule,
+  max(icon, ceil(ascent + descent)) + 4 (20 at 13 pt text, 21 at 14, 36 at 32 pt icons); only 20
+  (mini) and 21 (this Mac) were read off Finder's windows.
 - [ ] Header rule, dark: Finder 1pt #414241 with 0.5pt #303030 beneath; the demo 1pt #3d3d3d.
-- [ ] Kind column: Finder 27 reads "Plain Text", "RTF Document", "PDF Document", "ZIP archive", "JSON",
-  "Markdown", "HTML text"; the demo "Plain Text Document", "Rich Text Document", "PDF document", "ZIP
-  archive", "JSON Document", "Markdown Document", "HTML document". `LSCopyKindStringForTypeInfo` and
-  `NSURLLocalizedTypeDescriptionKey` give Finder's "JSON", "Markdown" and "HTML text", `kMDItemKind`
-  its "ZIP archive"; no public API gives "Plain Text", "RTF Document" or "PDF Document".
+- [ ] Kind column: Finder shortens a kind to the fullest of its own names for it that fits
+  (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text", "PDF
+  document" → "PDF Document", "QuickTime movie" → "QT movie", "Pages document" → "Pages" at 121 pt).
+  The demo reads the same table and fits 20 pt inside the column: 17 kinds matched on the mini;
+  Finder's exact slack lies between 100.87 and 102.95 pt of text for a 121 pt column, not swept.
+- [x] Date column: one style for the whole column, as Finder; see the user's Mac below.
 - [ ] Column view with nothing selected: Finder shows the ancestor columns with the current folder
   selected in its parent's; the demo shows only the current folder's column.
 - [ ] Menu enabling: with nothing selected Finder disables New Folder with Selection, Rename, Compress,
@@ -212,12 +289,35 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   to Folder…; the demo has Recent Folders last. Help: Finder lists Mac User Guide and Tips for Your
   Mac, the demo "Found'er Help" (⌘?).
 - [ ] Toolbar: Finder's back and forward segments are 36 and 37 wide in a 75pt group, the demo's 38 and
-  38 in 76, which moves the title 1pt right; AirDrop is 44 wide, the demo's 40. With no history and
-  nothing selected Finder disables back, forward, AirDrop, Share and Edit Tags; the demo leaves them
-  enabled. The demo's Progress item has no Finder counterpart and narrows the title from 365 to 324.
-- [ ] Get Info, Go to Folder, Connect to Server, New Folder, rename,
-  conflicts, the tag editor, the tab bar and the progress window were captured from Finder 27 but
-  not yet compared with the demo's.
+  38 in 76, which moves the title 1pt right; AirDrop is 44 wide, the demo's 40. With nothing
+  selected the demo greys Share, Tags ("Edit Tags"; "Add Tags" with a selection) and AirDrop as
+  Finder does, greys Share and AirDrop while any chosen item is a folder the user can't list (Tags
+  stays on), and shows AirDrop only when Finder's toolbar has it. The demo's Progress item has no
+  Finder counterpart.
+- [ ] Get Info, Connect to Server, New Folder, rename, conflicts, the tag editor, the tab bar and
+  the progress window were captured from Finder 27 but not yet compared with the demo's.
+- [ ] Go to Folder: the demo's panel sits where Finder's default one does on the user's Mac
+  (460×183, centred on the window, 102 pt below its top); Finder reopens it at the size it was last
+  resized to (`NSWindow Frame GoToSheet`, 854×345 there). A path longer than the field wraps to a
+  second line in the demo, and for a folder the user can't list Finder lists nothing under the
+  field where the demo lists its path.
+- Measured on the user's Mac (textSize 14, iconSize 16, "Show all filename extensions" on, so both
+  apps show full names): rows 21 pt and stripes below the last row on the same 21 pt pitch, header
+  labels within 0.5 pt, titles in the same glyph positions. Differences left:
+  - Date column: Finder shows one style for the whole column, whatever the rows hold (a 17-row
+    folder and two one-file folders switched at the same widths): long from 229 pt (225 is medium),
+    medium from 183 (181 is short), short from 148 (147 is the date alone, today's row its time).
+    The demo now picks one style from two samples (yesterday at 10 PM, six days ago at 10 AM) with
+    16 pt to spare, short styles in monospaced digits, which lands on those widths at 14 pt text;
+    that the samples are Finder's own was inferred from the thresholds on one day, not read from it.
+  - A kind too long for the column: both cut in the middle now, at different places ("Comm…t
+    (.csv)" in Finder, "Comma S….csv)" in the demo).
+  - The window title's ink is 233 in Finder and 223 in the demo (same glyphs, dark, key).
+  - Header rule, dark: Finder 65,66,65 for a point then 48 for half a point, the demo 61 for a point.
+  - Toolbar: Finder greys Share, Tags and AirDrop whenever nothing is selected, as the demo does,
+    and a click below the last row empties the selection in both. A window Finder opens in the
+    user's gallery style has its first item (by name) selected, which list view keeps: that was
+    the "enabled in a new window" reading.
 ## Capability, speed and reliability
 
 Measured against Finder 27.0 (26A428) on the same Mac, on a fixture tree of hostile names,
@@ -226,13 +326,16 @@ answering.
 
 - A folder Finder can't open (no read or search permission, or an ACL denying list) gets Finder's
   own words, “The folder “X” can’t be opened because you don’t have permission to see its
-  contents.”, and the window stays where it was with the folder selected. Finder shows that text
-  in a dialog centred on the screen (260×208 at 993,343 for a window at 240,120); the demo shows
-  it as a sheet on the window (260×144), because a modal alert run from a GPUI event re-enters
-  GPUI's borrow of the app. The same holds for “The operation can’t be completed because the
-  original item for “X” can’t be found.” on a dangling symlink.
-- Finder badges an unreadable folder's icon with a red no-entry sign; the demo draws the plain
-  folder.
+  contents.”, in an app-modal critical alert centred on the screen (260×208, caution icon), and
+  the window stays where it was with the folder selected. The demo shows the same alert, run from
+  a task so its modal loop does not re-enter GPUI's borrow of the app. As in Finder, only a
+  double-click shows it: File ▸ Open, Open in New Tab and Open in New Window are off and ⌘↓ does
+  nothing while every chosen item is such a folder, Share and AirDrop are off while any is, its list
+  row has no disclosure triangle and its column row no chevron, and Go to Folder on one leaves its
+  sheet up and says nothing. On the user's Mac both alerts are 260×208 at 993,343, layer 8, with
+  the same text and button frames; the alert's badge is the demo's own app icon where Finder's is
+  Finder's. “The operation can’t be completed because the original item for “X” can’t be found.”
+  on a dangling symlink is still a sheet on the window.
 - An operation the user's permissions refuse (copying a file they can't read, pasting into a
   folder they can't write): Finder offers to do it as an administrator, “Finder wants to copy
   “noread.txt”. Touch ID or enter your password to continue with “Finder”.”, and for a folder it
@@ -259,6 +362,8 @@ answering.
   attempts.
 - When a folder above the one shown is renamed, the demo follows to the new path; Finder's window
   title still read the old path 2.5 s later.
-- Names are always shown with their extension; this Mac has “Show all filename extensions” on
-  (`AppleShowAllExtensions` = 1), so Finder shows them too, but a file whose extension was hidden
-  (Finder's own `.webloc`, for one) keeps it here.
+- Names follow LaunchServices' display name wherever an item can lose part of it (Finder's
+  hide-extension flag, any `.app`, `.localized`), which on the mini matched Finder for all 40 names
+  probed, quirks included ("Up.APP" shows as "Up.APP.app"). Search results come from the index,
+  which keeps no hide-extension flag, so a flagged document there keeps its extension. A rename
+  field shows the whole name where Finder's shows the displayed one.

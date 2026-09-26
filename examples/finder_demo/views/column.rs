@@ -8,7 +8,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
-use crate::data::{Face, Line, split_key};
+use crate::data::{Line, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
@@ -93,11 +93,10 @@ impl FinderDemo {
                 },
             })
             .collect();
-        let alone = self.selected.len() <= 1;
-        match row.opens.filter(|_| alone).or(match row.face {
-            Face::Folder if alone => Some(""),
-            _ => None,
-        }) {
+        match row
+            .opens
+            .filter(|_| self.selected.len() <= 1 && row.readable)
+        {
             Some(into) => {
                 chain.push(Rung {
                     folder: into,
@@ -262,7 +261,7 @@ impl FinderDemo {
                                     .whitespace_nowrap()
                                     .child(line.row.display.clone())
                             });
-                        if line.row.opens.is_some() {
+                        if line.row.opens.is_some() && line.row.readable {
                             let color = if dropping || (is_selected && emphasized) {
                                 SystemColor::AlternateSelectedControlText
                             } else {
@@ -512,7 +511,7 @@ impl FinderDemo {
                 self.ruled(column, false, Some((index, rung.folder)), cx)
             })
             .collect();
-        if let Some(leaf) = &leaf {
+        if let Some(leaf) = leaf.as_ref().filter(|_| self.preview) {
             columns.push(self.ruled(self.preview_column(leaf, palette, cx), true, None, cx));
         }
 

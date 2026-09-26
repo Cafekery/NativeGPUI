@@ -42,6 +42,7 @@ pub(crate) struct PreviewWindow {
     window: Retained<NSWindow>,
     anchor: Rc<Cell<Anchor>>,
     follow: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    key: Cell<bool>,
 }
 
 impl Drop for PreviewWindow {
@@ -238,6 +239,7 @@ fn open_preview_window(
             window,
             anchor,
             follow,
+            key: Cell::new(parent.isKeyWindow()),
         })
     });
     finder.update(cx, |this, _| {
@@ -247,6 +249,11 @@ fn open_preview_window(
 }
 
 impl FinderDemo {
+    pub(crate) fn show_preview(&mut self, shown: bool) {
+        self.preview = shown;
+        crate::prefs::set_preview(self.view, shown);
+    }
+
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let Some(sidebar) = &self.sidebar {
             // Whole points: a window resize can hand the pane back half a point short.
@@ -257,6 +264,7 @@ impl FinderDemo {
                 // Finder hides the preview when its divider is dragged shut.
                 Some(width) if width <= 0. => {
                     self.preview = false;
+                    crate::prefs::set_preview(self.view, false);
                     cx.notify();
                 }
                 Some(width) if width != self.preview_w => {
@@ -276,7 +284,15 @@ impl FinderDemo {
         }
         let metrics = self.metrics();
         let viewport = window.viewport_size();
-        self.list_focused = self.focus.is_focused(window) && window.is_window_active();
+        let key = window.is_window_active();
+        self.list_focused = self.focus.is_focused(window) && key;
+        if self
+            .preview_window
+            .as_ref()
+            .is_some_and(|pane| pane.key.replace(key) != key)
+        {
+            cx.notify();
+        }
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
         let top = metrics.top - px(tab_bar_height(window));

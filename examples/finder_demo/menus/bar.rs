@@ -106,20 +106,41 @@ actions!(
 
 thread_local! {
     /// Menu validation cannot read the window, so check marks and enabling follow this mirror.
-    static STATE: Cell<(usize, Column, bool, bool)> =
-        const { Cell::new((LIST_VIEW, Column::Name, false, false)) };
+    static STATE: Cell<(usize, Column, bool, bool, bool)> =
+        const { Cell::new((LIST_VIEW, Column::Name, false, false, false)) };
+    static REFUSED: Cell<((u64, u64), bool)> = const { Cell::new(((u64::MAX, 0), false)) };
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
+    let seen = (demo.selected.rev(), demo.folders.changed());
+    // Finder keeps the Open rows off while every chosen item is a folder the user can't list.
+    let refused = match REFUSED.get() {
+        (at, refused) if at == seen => refused,
+        _ => {
+            let chosen = demo.chosen_lines();
+            let refused = !chosen.is_empty()
+                && chosen
+                    .iter()
+                    .all(|line| line.row.opens.is_some() && !line.row.readable);
+            REFUSED.set((seen, refused));
+            refused
+        }
+    };
     STATE.set((
         demo.view,
         demo.sort,
         demo.grouped,
         !demo.selected.is_empty(),
+        refused,
     ));
 }
 
 fn enabled(action: &dyn Action) -> bool {
+    let (_, _, _, chosen, refused) = STATE.get();
+    let opens: [&dyn Action; 3] = [&OpenSelection, &OpenInNewTab, &OpenInNewWindow];
+    if opens.iter().any(|row| action.partial_eq(*row)) {
+        return !refused;
+    }
     let rows: [&dyn Action; 13] = [
         &NewFolderWithSelection,
         &RenameSelection,
@@ -135,11 +156,11 @@ fn enabled(action: &dyn Action) -> bool {
         &Print,
         &DeselectAll,
     ];
-    STATE.get().3 || !rows.iter().any(|row| action.partial_eq(*row))
+    chosen || !rows.iter().any(|row| action.partial_eq(*row))
 }
 
 fn checked(action: &dyn Action) -> Option<bool> {
-    let (view, sort, grouped, _) = STATE.get();
+    let (view, sort, grouped, _, _) = STATE.get();
     let rows: [(&dyn Action, bool); 9] = [
         (&ViewIcons, view == ICON_VIEW),
         (&ViewList, view == LIST_VIEW),
@@ -501,7 +522,7 @@ impl FinderDemo {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &TogglePreview, _, cx| {
-                this.preview = !this.preview;
+                this.show_preview(!this.preview);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &TogglePathBar, _, cx| {

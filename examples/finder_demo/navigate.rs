@@ -48,6 +48,23 @@ fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
     }
 }
 
+fn refusal(id: &str, error: &std::io::Error) -> String {
+    let name = Path::new(id)
+        .file_name()
+        .map_or_else(|| id.into(), |name| name.to_string_lossy());
+    let name = finder_fs::name::display(&name);
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => format!(
+            "The folder \u{201c}{name}\u{201d} can\u{2019}t be opened because you don\u{2019}t have permission to see its contents."
+        ),
+        _ => {
+            let why = error.to_string();
+            let why = why.split(" (os error").next().unwrap_or_default();
+            format!("The folder \u{201c}{name}\u{201d} can\u{2019}t be opened. {why}.")
+        }
+    }
+}
+
 impl FinderDemo {
     pub(crate) fn here(&self) -> &'static str {
         self.history[self.at]
@@ -74,6 +91,7 @@ impl FinderDemo {
         self.folders
             .get(holder)
             .and_then(|folder| folder.rows.iter().find(|row| row.name == name))
+            .filter(|row| row.readable)
             .and_then(|row| row.opens)
             .unwrap_or(holder)
     }
@@ -88,7 +106,13 @@ impl FinderDemo {
         }
         match self.tag_listing.map(tag_title) {
             Some(title) => title.to_string(),
-            None => finder_fs::name::display(&self.crumb_path()).into_owned(),
+            None if crate::prefs::finder().posix_title => {
+                finder_fs::name::display(&self.crumb_path()).into_owned()
+            }
+            None => match self.folders.get(self.target()) {
+                Some(folder) => folder.title.to_string(),
+                None => finder_fs::name::of_path(Path::new(self.target())),
+            },
         }
     }
 
@@ -252,21 +276,7 @@ impl FinderDemo {
         self.vanished = Some(self.here());
         self.reveal_next = Some(SharedString::from(id));
         cx.notify();
-        let name = Path::new(id)
-            .file_name()
-            .map_or_else(|| id.into(), |name| name.to_string_lossy());
-        let name = finder_fs::name::display(&name);
-        let text = match error.kind() {
-            std::io::ErrorKind::PermissionDenied => format!(
-                "The folder \u{201c}{name}\u{201d} can\u{2019}t be opened because you don\u{2019}t have permission to see its contents."
-            ),
-            _ => {
-                let why = error.to_string();
-                let why = why.split(" (os error").next().unwrap_or_default();
-                format!("The folder \u{201c}{name}\u{201d} can\u{2019}t be opened. {why}.")
-            }
-        };
-        self.complain(&text);
+        self.refuse(refusal(id, error), cx);
     }
 
     /// A folder that went away, or would not open, hands the window back to one that is there.
@@ -318,7 +328,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn open(&mut self, line: &Line, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = line.row.opens {
+        if line.row.opens.is_some() && !line.row.readable {
+            let denied = std::io::ErrorKind::PermissionDenied.into();
+            self.refuse(refusal(&line.key, &denied), cx);
+        } else if let Some(id) = line.row.opens {
             self.go(id, window, cx);
         } else if crate::smart::is_saved(&line.key) {
             self.go(intern(&line.key), window, cx);
@@ -406,7 +419,11 @@ impl FinderDemo {
             .map(|line| PathBuf::from(line.key.as_ref()))
             .collect();
         self.open_files(files, cx);
-        let folders: Vec<&'static str> = chosen.iter().filter_map(|line| line.row.opens).collect();
+        let folders: Vec<&'static str> = chosen
+            .iter()
+            .filter(|line| line.row.readable)
+            .filter_map(|line| line.row.opens)
+            .collect();
         let Some((first, rest)) = folders.split_first() else {
             if let Some(saved) = chosen.iter().find(|line| crate::smart::is_saved(&line.key)) {
                 self.go(intern(&saved.key), window, cx);

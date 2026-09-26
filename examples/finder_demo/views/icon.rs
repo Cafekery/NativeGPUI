@@ -70,6 +70,8 @@ pub(crate) struct Layout {
 pub(crate) struct Grid {
     placed: HashMap<SharedString, Point<Pixels>>,
     moved: u64,
+    /// Finder leaves icons where it first put them, whatever the pane or the window does next.
+    kept: Cell<Option<(usize, f32)>>,
     layout: Option<Rc<Layout>>,
     dragging: Option<SharedString>,
     pub(crate) scroll: ScrollHandle,
@@ -95,9 +97,20 @@ impl Grid {
             .insert(key, point(at.x.max(px(0.)), at.y.max(px(0.))));
     }
 
+    pub(crate) fn hold(&self, fits: usize, cell: f32) -> usize {
+        match self.kept.get() {
+            Some((columns, at)) if at == cell => columns,
+            _ => {
+                self.kept.set(Some((fits, cell)));
+                fits
+            }
+        }
+    }
+
     pub(crate) fn forget(&mut self) {
         self.moved += 1;
         self.placed.clear();
+        self.kept.set(None);
         self.dragging = None;
     }
 
@@ -507,9 +520,7 @@ impl FinderDemo {
                     return;
                 }
                 this.update(cx, |this: &mut FinderDemo, cx| {
-                    this.selected.clear();
-                    this.cursor = None;
-                    this.anchor = None;
+                    this.deselect();
                     cx.notify();
                 })
                 .ok();

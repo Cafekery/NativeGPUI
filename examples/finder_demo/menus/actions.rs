@@ -101,11 +101,11 @@ impl FinderDemo {
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
             Act::Inspector => {
-                self.preview = true;
+                self.show_preview(true);
                 self.inspecting = None;
             }
             Act::InspectorAt(id) => {
-                self.preview = true;
+                self.show_preview(true);
                 self.inspecting = crate::data::path_line(id);
             }
             Act::GetInfo => {
