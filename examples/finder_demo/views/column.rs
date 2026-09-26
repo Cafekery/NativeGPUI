@@ -30,10 +30,12 @@ const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
 const REVEAL_SECS: f32 = 0.2;
 const COL_MIN: f32 = 100.;
+const WIDTHS_HELD: usize = 256;
 
 const AREA_ALPHA: f32 = 0.3;
 const AREA_EDGE: f32 = 2.;
 
+#[derive(Clone)]
 pub(crate) struct Rung {
     pub(crate) folder: &'static str,
     pub(crate) selected: Option<SharedString>,
@@ -44,7 +46,7 @@ fn divider() -> Hsla {
 }
 
 impl FinderDemo {
-    pub(crate) fn column_chain(&self) -> (Vec<Rung>, Option<Line>) {
+    pub(crate) fn walk_chain(&self) -> (Vec<Rung>, Option<Line>) {
         let root = || {
             (
                 vec![Rung {
@@ -501,6 +503,15 @@ impl FinderDemo {
         let (chain, leaf) = self.column_chain();
         while self.column_scrolls.len() < chain.len() {
             self.column_scrolls.push(UniformListScrollHandle::new());
+        }
+        for rung in &chain {
+            if !self.column_widths.contains_key(rung.folder) {
+                if self.column_widths.len() >= WIDTHS_HELD && self.column_grab.is_none() {
+                    self.column_widths.clear();
+                }
+                let width = prefs::column_view_width(rung.folder).unwrap_or(COL_W);
+                self.column_widths.insert(rung.folder, width);
+            }
         }
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
         let mut columns: Vec<AnyElement> = chain

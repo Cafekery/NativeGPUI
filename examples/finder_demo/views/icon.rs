@@ -64,6 +64,30 @@ pub(crate) struct Layout {
     moved: u64,
     pub(crate) tiles: Vec<Tile>,
     pub(crate) height: f32,
+    /// The tiles placed by hand, which may stand anywhere.
+    placed: Vec<usize>,
+}
+
+impl Layout {
+    /// The tiles on screen, in order: those on the grid found from the rows in view.
+    fn visible(&self, top: f32, room: f32) -> Vec<usize> {
+        let seen = |index: &usize| {
+            let y = f32::from(self.tiles[*index].1.y);
+            y + 2. * self.cell > top && y < top + room + self.cell
+        };
+        let first = ((top / self.cell).floor() - 2.).max(0.) as usize;
+        let last = ((top + room) / self.cell).ceil().max(0.) as usize + 2;
+        let grid = (first * self.columns).min(self.tiles.len())
+            ..((last + 1) * self.columns).min(self.tiles.len());
+        let mut shown: Vec<usize> = grid.clone().filter(seen).collect();
+        shown.extend(
+            self.placed
+                .iter()
+                .filter(|index| !grid.contains(index) && seen(index)),
+        );
+        shown.sort_unstable();
+        shown
+    }
 }
 
 #[derive(Default)]
@@ -133,6 +157,12 @@ impl Grid {
             .iter()
             .map(|(_, at)| f32::from(at.y) + cell)
             .fold(cell, f32::max);
+        let placed = match self.placed.is_empty() {
+            true => Vec::new(),
+            false => (0..tiles.len())
+                .filter(|&index| self.placed.contains_key(&tiles[index].0))
+                .collect(),
+        };
         let built = Rc::new(Layout {
             lines: Arc::downgrade(lines),
             columns,
@@ -140,6 +170,7 @@ impl Grid {
             moved: self.moved,
             tiles,
             height,
+            placed,
         });
         self.layout = Some(built.clone());
         built
@@ -311,15 +342,22 @@ fn tile_at(
 fn elide(name: &SharedString, room: f32) -> SharedString {
     let per_line = (room / (LABEL_FONT * 0.58)).floor() as usize;
     let budget = per_line * LABEL_LINES;
-    if name.chars().count() <= budget || budget < 12 {
+    let count = name.chars().count();
+    if count <= budget || budget < 12 {
         return name.clone();
     }
-    let chars: Vec<char> = name.chars().collect();
     let tail = 8;
     let head = budget - 1 - tail;
-    let front: String = chars[..head].iter().collect();
-    let back: String = chars[chars.len() - tail..].iter().collect();
-    SharedString::from(format!("{front}…{back}"))
+    let at = |nth: usize| {
+        name.char_indices()
+            .nth(nth)
+            .map_or(name.len(), |(at, _)| at)
+    };
+    SharedString::from(format!(
+        "{}…{}",
+        &name[..at(head)],
+        &name[at(count - tail)..]
+    ))
 }
 
 impl FinderDemo {
@@ -364,13 +402,9 @@ impl FinderDemo {
 
         let top = -f32::from(self.icons.scroll.offset().y);
         let room = f32::from(window.viewport_size().height);
-        for (index, line) in lines.iter().enumerate() {
+        for index in layout.visible(top, room) {
+            let line = &lines[index];
             let at = layout.tiles[index].1;
-            let y = f32::from(at.y);
-            let on_screen = y + 2. * cell > top && y < top + room + cell;
-            if !on_screen {
-                continue;
-            }
             let is_selected = self.selected.contains(&line.key);
             let carried = self.tags.get(&line.key).cloned().unwrap_or_default();
             let held = dragging.as_ref() == Some(&line.key);
@@ -393,7 +427,7 @@ impl FinderDemo {
                     is_selected,
                     &carried,
                     editor,
-                    on_screen,
+                    true,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
                     self.drop_fill(&line.key, look.selection),
                 ))

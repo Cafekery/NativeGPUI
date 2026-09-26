@@ -5,7 +5,6 @@ use native_gpui::{native_callout, native_scroll_bars};
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
-use crate::data::Line;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::ui::pick_on_click;
@@ -56,12 +55,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let lines = self.lines(false);
-        let chosen: Vec<Line> = lines
-            .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .take(self.selected.len().min(3))
-            .cloned()
-            .collect();
+        let chosen = self.chosen_in(&lines, 3);
         let strip = Strip::at(self.strip_icon);
         let room_w = self.list_room;
         let room_h = f32::from(window.viewport_size().height)
