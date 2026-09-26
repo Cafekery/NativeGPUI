@@ -8,6 +8,7 @@ use finder_fs::volumes::{Standard, standard};
 use super::paths::{intern, intern_path};
 use super::row::Row;
 use super::volumes::volume_of;
+use crate::listing::next_rev;
 
 const CACHED: usize = 64;
 
@@ -15,9 +16,11 @@ pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,
     pub(crate) crumbs: Vec<&'static str>,
-    pub(crate) rows: Vec<Arc<Row>>,
+    pub(crate) rows: Arc<Vec<Arc<Row>>>,
     staged: Option<Vec<Arc<Row>>>,
     pub(crate) loading: bool,
+    rev: u64,
+    stale: bool,
 }
 
 pub(crate) fn folder_of(id: &'static str) -> Folder {
@@ -38,9 +41,11 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
         title: crumbs.last().copied().unwrap_or(volume),
         parent: Path::new(id).parent().map(intern_path),
         crumbs,
-        rows: Vec::new(),
+        rows: Arc::default(),
         staged: None,
         loading: true,
+        rev: next_rev(),
+        stale: false,
     }
 }
 
@@ -53,30 +58,47 @@ pub(crate) struct Folders {
     wanted: RefCell<Vec<&'static str>>,
     pinned: HashSet<&'static str>,
     changed: u64,
+    grew: u64,
 }
 
 impl Folders {
-    /// A miss asks for a read at the next pump and draws nothing until it lands.
+    /// A miss asks for a read at the next pump and draws nothing until it lands; a folder that
+    /// changed while nobody showed it draws as it was and is read again.
     pub(crate) fn get(&self, id: &'static str) -> Option<&Folder> {
-        if let Some(folder) = self.cache.get(id) {
-            return Some(folder);
-        }
-        if id.starts_with('/') && !self.reading.contains(id) {
+        let folder = self.cache.get(id);
+        let read = match folder {
+            Some(folder) => folder.stale,
+            None => id.starts_with('/') && !self.reading.contains(id),
+        };
+        if read {
             let mut wanted = self.wanted.borrow_mut();
             if !wanted.contains(&id) {
                 wanted.push(id);
             }
         }
-        None
+        folder
     }
 
     pub(crate) fn get_mut(&mut self, id: &'static str) -> Option<&mut Folder> {
         self.changed += 1;
-        self.cache.get_mut(id)
+        let folder = self.cache.get_mut(id)?;
+        folder.rev = next_rev();
+        Some(folder)
     }
 
+    /// Moves whenever a listing's rows are replaced or a folder leaves the cache.
     pub(crate) fn changed(&self) -> u64 {
         self.changed
+    }
+
+    /// Moves whenever a folder joins the cache or shows more rows.
+    pub(crate) fn grew(&self) -> u64 {
+        self.grew
+    }
+
+    /// Moves when this folder's rows are replaced; zero while it is not cached.
+    pub(crate) fn rev(&self, id: &'static str) -> u64 {
+        self.cache.get(id).map_or(0, |folder| folder.rev)
     }
 
     pub(crate) fn pin(&mut self, ids: impl IntoIterator<Item = &'static str>) {
@@ -92,6 +114,17 @@ impl Folders {
         self.cache.get_key_value(path).map(|(id, _)| *id)
     }
 
+    /// Whether a change to this folder is read now rather than when it is next shown.
+    pub(crate) fn shown(&self, id: &'static str) -> bool {
+        self.pinned.contains(id)
+    }
+
+    pub(crate) fn stale(&mut self, id: &'static str) {
+        if let Some(folder) = self.cache.get_mut(id) {
+            folder.stale = true;
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.cache.len()
     }
@@ -102,6 +135,9 @@ impl Folders {
 
     /// A folder already being read owes a second read: the change may have missed the first.
     pub(crate) fn start(&mut self, id: &'static str) -> bool {
+        if let Some(folder) = self.cache.get_mut(id) {
+            folder.stale = false;
+        }
         let fresh = self.reading.insert(id);
         if !fresh {
             self.owed.insert(id);
@@ -115,8 +151,9 @@ impl Folders {
         self.changed += 1;
         if let Some(folder) = self.cache.get_mut(id) {
             folder.loading = false;
+            folder.rev = next_rev();
             if let Some(staged) = folder.staged.take() {
-                folder.rows = staged;
+                folder.rows = Arc::new(staged);
             }
         }
         self.owed.remove(id)
@@ -132,19 +169,24 @@ impl Folders {
         }
     }
 
-    pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) {
+    /// Whether the rows show now: a read that replaces a listing holds them back until it ends.
+    pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) -> bool {
         let folder = self.cache.entry(id).or_insert_with(|| {
             self.order.push(id);
+            self.grew += 1;
             folder_of(id)
         });
         if replace {
             folder.staged = (!folder.rows.is_empty()).then(Vec::new);
         }
+        let shown = folder.staged.is_none() && !rows.is_empty();
         match &mut folder.staged {
             Some(staged) => staged.extend(rows),
-            None => folder.rows.extend(rows),
+            None => Arc::make_mut(&mut folder.rows).extend(rows),
         }
+        self.grew += shown as u64;
         self.evict(id);
+        shown
     }
 
     fn evict(&mut self, keep: &'static str) {
@@ -172,14 +214,18 @@ impl Folders {
             .collect();
     }
 
-    pub(crate) fn cached(&self) -> Vec<&'static str> {
-        self.order.clone()
+    pub(crate) fn held(&self) -> Vec<(&'static str, Vec<Arc<Row>>)> {
+        self.order
+            .iter()
+            .filter_map(|&id| self.cache.get(id).map(|folder| (id, folder.rows.to_vec())))
+            .collect()
     }
 
-    pub(crate) fn held(&self) -> Vec<(&'static str, Vec<Arc<Row>>)> {
-        self.cached()
-            .into_iter()
-            .filter_map(|id| self.get(id).map(|folder| (id, folder.rows.clone())))
+    /// Every cached listing as it stands, without copying a row.
+    pub(crate) fn shared(&self) -> HashMap<&'static str, Arc<Vec<Arc<Row>>>> {
+        self.cache
+            .iter()
+            .map(|(&id, folder)| (id, folder.rows.clone()))
             .collect()
     }
 }

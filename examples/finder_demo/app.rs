@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -97,7 +98,7 @@ pub(crate) struct FinderDemo {
     pub(crate) typed_at: Option<Instant>,
     pub(crate) type_filter: Option<String>,
     pub(crate) type_filter_seen_match: bool,
-    pub(crate) tags: HashMap<SharedString, Vec<usize>>,
+    pub(crate) tags: crate::tags::Tags,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
     pub(crate) preview_window: Option<PreviewWindow>,
@@ -141,7 +142,7 @@ pub(crate) struct FinderDemo {
     pub(crate) watching: HashSet<&'static str>,
     pub(crate) hits: Vec<Arc<Row>>,
     pub(crate) hits_rev: u64,
-    pub(crate) search_gen: u64,
+    pub(crate) search_gen: Arc<AtomicU64>,
     pub(crate) tag_listing: Option<&'static str>,
     pub(crate) inspecting: Option<Line>,
     pub(crate) reveal_next: Option<SharedString>,
@@ -233,7 +234,7 @@ impl FinderDemo {
             typed_at: None,
             type_filter: None,
             type_filter_seen_match: false,
-            tags: HashMap::new(),
+            tags: Default::default(),
             preview: prefs::preview(view),
             preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
             preview_window: None,
@@ -277,7 +278,7 @@ impl FinderDemo {
             watching: HashSet::new(),
             hits: Vec::new(),
             hits_rev: 0,
-            search_gen: 0,
+            search_gen: Arc::default(),
             tag_listing: None,
             inspecting: None,
             reveal_next: None,

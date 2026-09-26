@@ -367,13 +367,12 @@ impl FinderDemo {
         sorted_by: (Column, bool),
         cx: &mut Context<Self>,
     ) {
-        let landed = !batches.is_empty();
+        let mut landed = lines.is_some();
         for (rows, replace) in batches {
-            self.folders.deliver(id, rows, replace);
+            landed |= self.folders.deliver(id, rows, replace);
         }
         if done {
             let owed = self.folders.finish(id);
-            self.landed(id);
             if owed {
                 self.read_folder(id, cx);
             }
@@ -404,7 +403,7 @@ impl FinderDemo {
     }
 
     fn sort_folder(&mut self, id: &'static str, by: (Column, bool), cx: &mut Context<Self>) {
-        let Some(rows) = self.folders.get(id).map(|folder| folder.rows.clone()) else {
+        let Some(rows) = self.folders.get(id).map(|folder| folder.rows.to_vec()) else {
             return;
         };
         let was = rows.len();
@@ -447,7 +446,7 @@ impl FinderDemo {
         }
         let (rows, lines) = sorted;
         if let Some(folder) = self.folders.get_mut(id) {
-            folder.rows = rows;
+            folder.rows = rows.into();
         }
         if let Some((hidden, lines)) = lines {
             self.built(id, hidden, lines);
@@ -496,7 +495,7 @@ impl FinderDemo {
                 continue;
             };
             match self.folders.get_mut(id) {
-                Some(folder) if folder.rows.len() == *count => folder.rows = rows,
+                Some(folder) if folder.rows.len() == *count => folder.rows = rows.into(),
                 Some(_) => {
                     moved = true;
                     self.sort_folder(id, by, cx);
@@ -559,7 +558,10 @@ impl FinderDemo {
         for dir in &dirs {
             crate::tags::forget_tags_in(dir);
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
-                self.read_folder(id, cx);
+                match self.folders.shown(id) {
+                    true => self.read_folder(id, cx),
+                    false => self.folders.stale(id),
+                }
             }
         }
         cx.background_executor()
