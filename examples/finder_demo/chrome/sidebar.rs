@@ -42,6 +42,7 @@ pub(crate) struct Row {
     pub(crate) glyph: Glyph,
     pub(crate) eject: bool,
     pub(crate) drops: bool,
+    pub(crate) muted: bool,
 }
 
 pub(crate) struct Group {
@@ -57,6 +58,7 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
         glyph,
         eject: false,
         drops: false,
+        muted: false,
     }
 }
 
@@ -67,13 +69,6 @@ impl Row {
         self.drops = true;
         self
     }
-}
-
-fn place(which: finder_fs::volumes::Standard) -> Option<Row> {
-    let path = finder_fs::volumes::standard(which)?;
-    let id = intern_path(&path);
-    let title = path.file_name()?.to_string_lossy().into_owned();
-    Some(row(id, title, glyph_of(&path)).dropping())
 }
 
 fn glyph_of(path: &Path) -> Glyph {
@@ -133,135 +128,47 @@ fn pinned_glyph(path: &Path) -> Glyph {
     }
 }
 
-fn folder_row(path: &Path, name: Option<&str>) -> Option<Row> {
-    let title = match name {
-        Some(name) => name.to_owned(),
-        None => path.file_name()?.to_string_lossy().into_owned(),
-    };
-    Some(row(intern_path(path), title, glyph_of(path)).dropping())
-}
-
-fn volume_row(volume: &finder_fs::volumes::Volume) -> Row {
-    let glyph = match (volume.network, volume.ejectable) {
-        (true, _) => Glyph::Symbol("externaldrive.connected.to.line.below"),
-        (_, true) => Glyph::Symbol("externaldrive"),
-        _ => Glyph::Symbol("internaldrive"),
-    };
-    Row {
-        eject: volume.ejectable,
-        ..row(intern_path(&volume.path), volume.name.clone(), glyph).dropping()
-    }
-}
-
-fn icloud_drive() -> Option<Row> {
-    let drive = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home)?
-        .join("Library/Mobile Documents/com~apple~CloudDocs");
-    drive
-        .is_dir()
-        .then(|| row(intern_path(&drive), "iCloud Drive", Glyph::Symbol("icloud")).dropping())
-}
-
 fn trash_path() -> Option<PathBuf> {
     finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash)
 }
 
-fn trash_row() -> Option<Row> {
-    let trash = trash_path()?;
-    Some(row(intern_path(&trash), "Trash", Glyph::Symbol("trash")).dropping())
-}
-
-fn favourites() -> Vec<Row> {
-    use finder_fs::volumes::Standard::*;
-
-    let listed = finder_fs::sidebar::favorites().map(|items| {
-        items
-            .iter()
-            .filter(|item| item.visible)
-            .filter_map(|item| folder_row(item.path.as_deref()?, item.name.as_deref()))
-            .collect::<Vec<Row>>()
-    });
-    match listed {
-        Some(rows) if !rows.is_empty() => rows,
-        _ => [Applications, Desktop, Documents, Downloads, Home]
-            .into_iter()
-            .filter_map(place)
-            .collect(),
-    }
-}
-
-fn shown(list: &finder_fs::sidebar::Locations, volume: &finder_fs::volumes::Volume) -> bool {
-    let names = |item: &&finder_fs::sidebar::Item| {
-        item.path.as_deref() == Some(volume.path.as_path())
-            || (item.path.is_none() && item.name.as_deref() == Some(volume.name.as_str()))
+fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row> {
+    use finder_fs::sidebar::Special::*;
+    let id = match (&listed.path, listed.special) {
+        (Some(path), _) => intern_path(path),
+        (None, Some(AirDrop)) => "airdrop",
+        (None, Some(Network)) => "/Network",
+        _ => return None,
     };
-    if list.items.iter().filter(names).any(|item| !item.visible) {
-        return false;
-    }
-    match (volume.network, volume.ejectable) {
-        (true, _) => list.network,
-        (_, true) => list.ejectable,
-        _ => list.hard_drives,
-    }
-}
-
-fn locations() -> Vec<Row> {
-    use finder_fs::sidebar::Special;
-
-    let mounted = finder_fs::volumes::mounted();
-    let Some(list) = finder_fs::sidebar::locations() else {
-        return default_locations(&mounted);
+    let glyph = match listed.special {
+        Some(ICloudDrive) => Glyph::Symbol("icloud"),
+        Some(FileProvider) => Glyph::Symbol("externaldrive.badge.icloud"),
+        Some(AirDrop) => Glyph::Artwork("SidebarAirDrop"),
+        Some(Network) => Glyph::Symbol("network"),
+        Some(Trash) => Glyph::Symbol("trash"),
+        _ if listed.network => Glyph::Artwork("SidebarDisplay"),
+        _ if listed.ejectable => Glyph::Symbol("externaldrive"),
+        None if location => Glyph::Symbol("internaldrive"),
+        _ => glyph_of(Path::new(id)),
     };
-    let mut rows: Vec<Row> = Vec::new();
-    let mut placed: Vec<&Path> = Vec::new();
-    let mut trash = None;
-    for item in list.items.iter().filter(|item| item.visible) {
-        match item.special {
-            Some(Special::ICloudDrive) => rows.extend(icloud_drive()),
-            Some(Special::Home) => rows.extend(
-                finder_fs::volumes::standard(finder_fs::volumes::Standard::Home)
-                    .and_then(|home| folder_row(&home, None)),
-            ),
-            Some(Special::AirDrop) => {
-                rows.push(row("airdrop", "AirDrop", Glyph::Artwork("SidebarAirDrop")))
-            }
-            Some(Special::Network) => {
-                rows.push(row("/Network", "Network", Glyph::Symbol("network")))
-            }
-            Some(Special::Trash) => trash = trash_row(),
-            Some(Special::Computer | Special::RemoteDisc) => {}
-            None => {
-                if let Some(volume) = mounted.iter().find(|volume| {
-                    item.path.as_deref() == Some(volume.path.as_path())
-                        || (item.path.is_none() && item.name.as_deref() == Some(&volume.name))
-                }) {
-                    rows.push(volume_row(volume));
-                    placed.push(&volume.path);
-                }
-            }
-        }
-    }
-    for volume in &mounted {
-        if !placed.contains(&volume.path.as_path()) && shown(&list, volume) {
-            rows.push(volume_row(volume));
-        }
-    }
-    rows.extend(trash);
-    rows
+    Some(Row {
+        eject: listed.ejectable,
+        drops: listed.path.is_some(),
+        muted: location,
+        ..row(id, listed.title, glyph)
+    })
 }
 
-fn default_locations(mounted: &[finder_fs::volumes::Volume]) -> Vec<Row> {
-    let mut rows: Vec<Row> = icloud_drive().into_iter().collect();
-    rows.extend(mounted.iter().map(volume_row));
-    if Path::new("/Network").is_dir() {
-        rows.push(row("/Network", "Network", Glyph::Symbol("network")));
-    }
-    rows.extend(trash_row());
-    rows
+fn listed_rows(listed: Vec<finder_fs::sidebar::Listed>, location: bool) -> Vec<Row> {
+    listed
+        .into_iter()
+        .filter_map(|listed| listed_row(listed, location))
+        .collect()
 }
 
 pub(crate) fn groups() -> Vec<Group> {
-    let favourites = favourites();
-    let locations = locations();
+    let favourites = listed_rows(finder_fs::sidebar::listed_favorites(), false);
+    let locations = listed_rows(finder_fs::sidebar::listed_locations(), true);
 
     let mut tags: Vec<Row> = crate::tags::all()
         .iter()
@@ -274,7 +181,10 @@ pub(crate) fn groups() -> Vec<Group> {
             .dropping()
         })
         .collect();
-    tags.push(row("tag:", "All Tags…", Glyph::AllTags));
+    tags.push(Row {
+        muted: true,
+        ..row("tag:", "All Tags…", Glyph::AllTags)
+    });
 
     let mut groups = vec![
         Group {
@@ -294,10 +204,13 @@ pub(crate) fn groups() -> Vec<Group> {
         },
     ];
     for group in &mut groups {
-        let removed = prefs::removed(group.id);
-        group
-            .rows
-            .retain(|row| !removed.iter().any(|gone| gone == row.id));
+        // Finder's own lists decide which of their rows show, and the demo never writes them.
+        if !matches!(group.id, FAVOURITES | LOCATIONS) {
+            let removed = prefs::removed(group.id);
+            group
+                .rows
+                .retain(|row| !removed.iter().any(|gone| gone == row.id));
+        }
         for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
             let id = intern_path(&path);
             let folder = path.is_dir();
@@ -325,7 +238,11 @@ pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
     groups
         .iter()
         .map(|group| {
-            let mut rows: Vec<&'static str> = prefs::sidebar_rows(group.id)
+            let saved = match group.id {
+                FAVOURITES | LOCATIONS => Vec::new(),
+                id => prefs::sidebar_rows(id),
+            };
+            let mut rows: Vec<&'static str> = saved
                 .iter()
                 .filter_map(|kept| {
                     group
@@ -357,7 +274,8 @@ impl FinderDemo {
                         sidebar_item(row.id, row.title.clone())
                             .icon(row.glyph.icon())
                             .ejectable(row.eject)
-                            .accepts_drops(row.drops),
+                            .accepts_drops(row.drops)
+                            .muted(row.muted),
                     )
                 }))
             })
