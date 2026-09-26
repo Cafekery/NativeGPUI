@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::index::Index;
@@ -13,6 +13,8 @@ use super::face::{Face, face_of};
 use super::format::{byte_string, reference_seconds};
 use super::paths::{intern, intern_path, join};
 use super::volumes::{special, volume_at};
+
+const PACKAGES_HELD: usize = 4096;
 
 #[derive(Clone)]
 pub(crate) struct Line {
@@ -51,20 +53,29 @@ pub(crate) struct Row {
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
-fn folder_full(entry: &Entry, path: &str, index: &Index) -> bool {
-    entry.children.is_some_and(|held| held > 0)
-        && index
-            .visible_children(Path::new(path))
-            .is_none_or(|seen| seen > 0)
+type Facts = (Option<u64>, Option<usize>);
+
+fn facts(dir: &str, entry: &Entry, index: &Index) -> Facts {
+    if entry.kind != EntryKind::Directory {
+        return (None, None);
+    }
+    let path = Path::new(dir).join(&entry.name);
+    (index.folder_size(&path), index.visible_children(&path))
 }
 
-fn artwork_of(entry: &Entry, path: &str, uti: &str, index: &Index) -> Option<FileType<'static>> {
+fn artwork_of(
+    entry: &Entry,
+    path: &str,
+    uti: &str,
+    seen: Option<usize>,
+) -> Option<FileType<'static>> {
     // `iconForFile:` badges a folder the user can't open with Finder's no-entry sign.
     if entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable {
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
-        return Some(folder_kind(intern(path), folder_full(entry, path, index)));
+        let full = entry.children.is_some_and(|held| held > 0) && seen.is_none_or(|seen| seen > 0);
+        return Some(folder_kind(intern(path), full));
     }
     Some(match entry.extension() {
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
@@ -116,11 +127,23 @@ fn target_of(path: &str) -> (Option<&'static str>, bool) {
 /// Finder weighs every package it lists, whatever "Calculate all sizes" says; the index has not
 /// always weighed them.
 pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
+    static WEIGHED: LazyLock<Mutex<HashMap<(SharedString, u64), u64>>> =
+        LazyLock::new(Mutex::default);
     for row in rows
         .iter_mut()
         .filter(|row| row.package && row.size == "--")
     {
-        let bytes = finder_fs::ops::walk_size(Path::new(&*row.path));
+        let key = (row.path.clone(), row.modified_at.to_bits());
+        let known = WEIGHED.lock().unwrap().get(&key).copied();
+        let bytes = known.unwrap_or_else(|| {
+            let bytes = finder_fs::ops::walk_size(Path::new(&*row.path));
+            let mut weighed = WEIGHED.lock().unwrap();
+            if weighed.len() >= PACKAGES_HELD {
+                weighed.clear();
+            }
+            weighed.insert(key, bytes);
+            bytes
+        });
         *row = Arc::new(Row {
             size: byte_string(bytes).into(),
             bytes,
@@ -129,7 +152,7 @@ pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
     }
 }
 
-fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
+fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
     let path = join(dir, &entry.name);
     let kind = match entry.kind {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
@@ -137,9 +160,7 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         _ => kind::kind_of_path(Path::new(&path)),
     };
     let bytes = match entry.kind == EntryKind::Directory {
-        true => index
-            .folder_size(Path::new(&path))
-            .filter(|bytes| *bytes > 0 || entry.package),
+        true => size.filter(|bytes| *bytes > 0 || entry.package),
         false => Some(entry.size),
     };
     let (opens, app) = match entry.kind {
@@ -153,8 +174,8 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         bytes: bytes.unwrap_or(0),
         modified_at: reference_seconds(entry.modified),
         created_at: reference_seconds(entry.created),
-        kind: kind.label.to_string().into(),
-        uti: kind.uti.to_string().into(),
+        kind: (&kind.label).into(),
+        uti: (&kind.uti).into(),
         face: match app {
             true => Face::Program,
             false => face_of(&kind.uti),
@@ -165,21 +186,31 @@ fn row_of(dir: &'static str, entry: &Entry, index: &Index) -> Row {
         dataless: entry.dataless,
         readable: entry.readable,
         package: entry.package,
-        artwork: artwork_of(entry, &path, &kind.uti, index),
+        artwork: artwork_of(entry, &path, &kind.uti, seen),
         path: path.into(),
     }
 }
 
-pub(crate) fn rows_of(dir: &'static str, entries: &[Entry], index: &Index) -> Vec<Arc<Row>> {
+pub(crate) fn rows_of(
+    dir: &'static str,
+    entries: &[Entry],
+    folders: &HashMap<String, Facts>,
+) -> Vec<Arc<Row>> {
     entries
         .iter()
-        .map(|entry| Arc::new(row_of(dir, entry, index)))
+        .map(|entry| {
+            let facts = match entry.kind {
+                EntryKind::Directory => folders.get(&entry.name).copied().unwrap_or_default(),
+                _ => (None, None),
+            };
+            Arc::new(row_of(dir, entry, facts))
+        })
         .collect()
 }
 
 pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
     let dir = path.parent().map_or("/", intern_path);
-    Arc::new(row_of(dir, entry, index))
+    Arc::new(row_of(dir, entry, facts(dir, entry, index)))
 }
 
 pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
@@ -240,7 +271,7 @@ pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -
             entries
                 .iter()
                 .filter(|entry| names.contains(&entry.name))
-                .map(|entry| Arc::new(row_of(dir, entry, index))),
+                .map(|entry| Arc::new(row_of(dir, entry, facts(dir, entry, index)))),
         );
     }
     rows
@@ -279,7 +310,7 @@ pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
                 .ok()?
                 .into_iter()
                 .find(|entry| entry.name == "Documents")?;
-            let mut row = row_of(dir, &entry, index);
+            let mut row = row_of(dir, &entry, facts(dir, &entry, index));
             row.name = folder.name.clone().into();
             row.display = folder.name.into();
             Some(Arc::new(row))
@@ -298,7 +329,7 @@ pub(crate) fn path_line(id: &'static str) -> Option<Line> {
     let path = Path::new(id);
     let dir = path.parent().map_or("/", intern_path);
     let entry = finder_fs::list::entry_at(path).ok()?;
-    let row = Arc::new(row_of(dir, &entry, crate::index()));
+    let row = Arc::new(row_of(dir, &entry, facts(dir, &entry, crate::index())));
     Some(Line {
         key: row.path.clone(),
         row,

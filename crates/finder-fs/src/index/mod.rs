@@ -168,18 +168,34 @@ impl Index {
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
         // Asked while a frame draws, so never of the disk: a share that stopped answering would stall it.
-        let id = listed(&tree, tree.find(dir)?)?;
-        Some(
-            tree.children(id)
-                .filter(|&child| tree.nodes[child as usize].flags & HIDDEN == 0)
-                .count(),
-        )
+        visible(&tree, tree.find(dir)?)
     }
 
     pub fn folder_size(&self, dir: &Path) -> Option<u64> {
         let tree = self.read();
         let node = tree.nodes[resolve(&tree, dir)? as usize];
         (node.is_dir() && node.state & COMPLETE != 0).then_some(node.size)
+    }
+
+    /// `folder_size` and `visible_children` of every folder in `dir`, by name, in one pass.
+    pub fn folders_in(&self, dir: &Path) -> HashMap<String, (Option<u64>, Option<usize>)> {
+        let tree = self.read();
+        let named = tree
+            .find(dir)
+            .filter(|&id| tree.nodes[id as usize].is_dir());
+        let Some(id) = named.or_else(|| tree.find(&std::fs::canonicalize(dir).ok()?)) else {
+            return HashMap::new();
+        };
+        tree.children(id)
+            .filter(|&child| tree.nodes[child as usize].is_dir())
+            .map(|child| {
+                let node = tree.nodes[child as usize];
+                let name = tree.names.bytes(tree.name_of[child as usize]);
+                let size = (node.state & COMPLETE != 0).then_some(node.size);
+                let seen = named.and_then(|_| visible(&tree, child));
+                (String::from_utf8_lossy(name).into_owned(), (size, seen))
+            })
+            .collect()
     }
 
     pub fn warm(self: &Arc<Self>) {
@@ -627,4 +643,10 @@ fn listed_dir(tree: &Tree, dir: &Path) -> Option<u32> {
 fn listed(tree: &Tree, id: u32) -> Option<u32> {
     let node = tree.nodes[id as usize];
     (node.is_dir() && node.flags & PACKAGE == 0 && node.state & LISTED != 0).then_some(id)
+}
+
+fn visible(tree: &Tree, id: u32) -> Option<usize> {
+    let id = listed(tree, id)?;
+    let shown = |child: &u32| tree.nodes[*child as usize].flags & HIDDEN == 0;
+    Some(tree.children(id).filter(shown).count())
 }

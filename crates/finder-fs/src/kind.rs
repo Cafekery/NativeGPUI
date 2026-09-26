@@ -1,13 +1,16 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 use objc2::rc::Retained;
 use objc2_foundation::NSString;
 use objc2_uniform_type_identifiers::UTType;
 
 use crate::entry::{Entry, EntryKind};
+
+const KINDS_HELD: usize = 4096;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -152,14 +155,23 @@ fn lookup(ext: &str) -> (Kind, bool) {
 }
 
 fn cached(ext: &str, resolve: impl FnOnce(&str) -> (Kind, bool)) -> Kind {
-    let key = ext.to_ascii_lowercase();
-    if let Some(hit) = cache().read().unwrap().get(&key) {
+    let key = match ext.bytes().any(|b| b.is_ascii_uppercase()) {
+        true => Cow::Owned(ext.to_ascii_lowercase()),
+        false => Cow::Borrowed(ext),
+    };
+    if let Some(hit) = cache().read().unwrap().get(&*key) {
         return hit.clone();
     }
     let (kind, is_package) = resolve(&key);
-    cache().write().unwrap().insert(key.clone(), kind.clone());
+    let mut cache = cache().write().unwrap();
+    if cache.len() >= KINDS_HELD {
+        cache.clear();
+        package_names().write().unwrap().clear();
+    }
+    cache.insert(key.to_string(), kind.clone());
+    drop(cache);
     if is_package {
-        package_names().write().unwrap().insert(key);
+        package_names().write().unwrap().insert(key.into_owned());
     }
     kind
 }
@@ -208,19 +220,21 @@ pub fn save_kinds(to: &Path) -> usize {
 }
 
 pub fn kind_of(entry: &Entry) -> Kind {
+    static FIXED: LazyLock<[Kind; 3]> = LazyLock::new(|| {
+        [
+            ("public.folder", "Folder"),
+            ("public.symlink", "Alias"),
+            ("com.apple.alias-file", "Alias"),
+        ]
+        .map(|(uti, label)| Kind {
+            uti: uti.into(),
+            label: label.into(),
+        })
+    });
     match entry.kind {
-        EntryKind::Directory if !entry.package => Kind {
-            uti: "public.folder".into(),
-            label: "Folder".into(),
-        },
-        EntryKind::Symlink => Kind {
-            uti: "public.symlink".into(),
-            label: "Alias".into(),
-        },
-        EntryKind::File if entry.alias => Kind {
-            uti: "com.apple.alias-file".into(),
-            label: "Alias".into(),
-        },
+        EntryKind::Directory if !entry.package => FIXED[0].clone(),
+        EntryKind::Symlink => FIXED[1].clone(),
+        EntryKind::File if entry.alias => FIXED[2].clone(),
         _ => kind_for_extension(entry.extension().unwrap_or("")),
     }
 }

@@ -86,21 +86,48 @@ fn trouble(id: &'static str, error: io::Error) -> Trouble {
     }
 }
 
-fn order(sort: Column, ascending: bool, a: &Row, b: &Row) -> Ordering {
-    if folders_first() || sort == Column::Kind {
-        let by_kind = b.discloses.cmp(&a.discloses);
-        if by_kind != Ordering::Equal {
-            return by_kind;
+/// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once.
+fn sort_rows(rows: &mut Vec<Arc<Row>>, (sort, ascending): (Column, bool)) {
+    let kinds: Vec<u32> = match sort {
+        Column::Kind => {
+            let distinct: HashSet<&str> = rows.iter().map(|row| &*row.kind).collect();
+            let distinct: Vec<&str> = distinct.into_iter().collect();
+            let ranks = finder_fs::sort::ranks(distinct.iter().copied());
+            let rank: HashMap<&str, u32> = distinct.into_iter().zip(ranks).collect();
+            rows.iter().map(|row| rank[&*row.kind]).collect()
+        }
+        _ => vec![0; rows.len()],
+    };
+    let first = folders_first() || sort == Column::Kind;
+    let by = |(ka, a): &(u32, Arc<Row>), (kb, b): &(u32, Arc<Row>)| {
+        let by = match sort {
+            Column::Name => Ordering::Equal,
+            Column::Modified => a.modified_at.total_cmp(&b.modified_at),
+            Column::Size => a.bytes.cmp(&b.bytes),
+            Column::Kind => ka.cmp(kb),
+        };
+        let folders = match first {
+            true => b.discloses.cmp(&a.discloses),
+            false => Ordering::Equal,
+        };
+        folders.then(if ascending { by } else { by.reverse() })
+    };
+    let mut keyed: Vec<(u32, Arc<Row>)> = kinds.into_iter().zip(rows.drain(..)).collect();
+    keyed.sort_by(by);
+    for run in keyed.chunk_by_mut(|a, b| by(a, b) == Ordering::Equal) {
+        if run.len() < 2 {
+            continue;
+        }
+        let names = finder_fs::sort::ranks(run.iter().map(|(_, row)| &*row.name));
+        for ((key, _), name) in run.iter_mut().zip(names) {
+            *key = name;
+        }
+        match sort == Column::Name && !ascending {
+            true => run.sort_by_key(|(name, _)| std::cmp::Reverse(*name)),
+            false => run.sort_by_key(|(name, _)| *name),
         }
     }
-    let by = match sort {
-        Column::Name => finder_fs::sort::name_cmp(&a.name, &b.name),
-        Column::Modified => a.modified_at.total_cmp(&b.modified_at),
-        Column::Size => a.bytes.cmp(&b.bytes),
-        Column::Kind => finder_fs::sort::name_cmp(&a.kind, &b.kind),
-    };
-    let by = if ascending { by } else { by.reverse() };
-    by.then_with(|| finder_fs::sort::name_cmp(&a.name, &b.name))
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
 }
 
 fn folders_first() -> bool {
@@ -195,6 +222,8 @@ impl FinderDemo {
         if self.selected.is_empty() {
             self.stats = None;
             self.stats_pending = None;
+            self.stats_stale
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         let key = self.stats_key();
@@ -203,14 +232,21 @@ impl FinderDemo {
             return;
         }
         self.stats_pending = Some(key);
+        self.stats_stale
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_stale = Arc::default();
+        let stale = self.stats_stale.clone();
         let lines = self.focused_lines();
         let chosen = self.selected.snapshot();
         let tags = self.tags.clone();
         cx.spawn(async move |this, cx| {
-            let stats = cx
+            let summary = cx
                 .background_executor()
-                .spawn(async move { preview::summarize(key, &lines, &chosen, &tags) })
+                .spawn(async move { preview::summarize(key, &lines, &chosen, &tags, &stale) })
                 .await;
+            let Some(stats) = summary else {
+                return;
+            };
             this.update(cx, |this, cx| {
                 if this.stats_pending == Some(key) {
                     this.stats_pending = None;
@@ -231,22 +267,30 @@ impl FinderDemo {
         if fresh {
             self.folders.deliver(id, Vec::new(), true);
         }
+        let shown = self
+            .folders
+            .get(id)
+            .is_some_and(|folder| folder.rows.is_empty());
         let mail = Arc::new(Mutex::new(Mail::default()));
         let filling = mail.clone();
         let sorted_by = (self.sort, self.ascending);
         let art = self.art_size();
         let plain = self.plain();
+        let executor = cx.background_executor().clone();
         let read = cx.background_executor().spawn(async move {
             let dir = Path::new(id);
             let index = index();
-            let sort = |rows: &mut Vec<Arc<Row>>| {
-                rows.sort_by(|a, b| order(sorted_by.0, sorted_by.1, a, b))
-            };
+            let folders = index.folders_in(dir);
             let mut all: Vec<Arc<Row>> = Vec::new();
-            if let Some(known) = index.children(dir).filter(|known| !known.is_empty()) {
-                let mut rows = data::rows_of(id, &known, index);
-                sort(&mut rows);
-                icons::prepare(&rows, art);
+            let known = shown
+                .then(|| index.children(dir))
+                .flatten()
+                .filter(|known| !known.is_empty());
+            let indexed = known.is_some();
+            if let Some(known) = known {
+                let mut rows = data::rows_of(id, &known, &folders);
+                sort_rows(&mut rows, sorted_by);
+                icons::prepare(&rows, art, &executor);
                 let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                 let mut mail = filling.lock().unwrap();
                 mail.batches.push((rows, true));
@@ -254,16 +298,16 @@ impl FinderDemo {
             }
             let post = |mut rows: Vec<Arc<Row>>| {
                 let replace = !filling.lock().unwrap().listed;
-                if replace {
-                    sort(&mut rows);
-                    icons::prepare(&rows, art);
+                if replace && shown && !indexed {
+                    sort_rows(&mut rows, sorted_by);
+                    icons::prepare(&rows, art, &executor);
                 }
                 let mut mail = filling.lock().unwrap();
                 mail.listed = true;
                 mail.batches.push((rows, replace));
             };
             let read = finder_fs::list::list_dir_batched(dir, BATCH, |entries| {
-                let rows = data::rows_of(id, &entries, index);
+                let rows = data::rows_of(id, &entries, &folders);
                 all.extend(rows.iter().cloned());
                 post(rows);
             });
@@ -281,8 +325,8 @@ impl FinderDemo {
                 post(apps);
             }
             data::weigh_packages(&mut all);
-            sort(&mut all);
-            icons::prepare(&all, art);
+            sort_rows(&mut all, sorted_by);
+            icons::prepare(&all, art, &executor);
             let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
             let mut mail = filling.lock().unwrap();
             mail.batches.push((all, true));
@@ -379,7 +423,7 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let mut rows = rows;
-                    rows.sort_by(|a, b| order(by.0, by.1, a, b));
+                    sort_rows(&mut rows, by);
                     let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                     (rows, lines)
                 })
@@ -432,7 +476,7 @@ impl FinderDemo {
                     let mut folders: HashMap<&'static str, Vec<Arc<Row>>> =
                         held.into_iter().collect();
                     for rows in folders.values_mut() {
-                        rows.sort_by(|a, b| order(by.0, by.1, a, b));
+                        sort_rows(rows, by);
                     }
                     let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
                     (folders, shape, walk)

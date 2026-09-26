@@ -117,48 +117,58 @@ pub(crate) fn draw_stand_ins(size: f32) {
     });
 }
 
-/// On the thread that read a listing, before it is shown.
-pub(crate) fn prepare(rows: &[Arc<Row>], size: f32) {
-    let until = Instant::now() + PREPARE;
-    let keys: Arc<Vec<Key>> = {
-        let mut seen: HashSet<Key> = PREPARED
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(key, _)| *key)
-            .collect();
-        seen.extend(KEPT.lock().unwrap().iter());
-        Arc::new(
-            rows.iter()
-                .take(FIRST_ROWS)
-                .filter_map(|row| Some((crate::art::kind_now(row)?, size.to_bits())))
-                .filter(|key| seen.insert(*key))
-                .collect(),
-        )
-    };
-    let lanes = LANES.min(keys.len());
-    let next = Arc::new(AtomicUsize::new(0));
-    let (done, finished) = mpsc::channel();
-    for _ in 0..lanes {
-        let (keys, next, done) = (keys.clone(), next.clone(), done.clone());
-        std::thread::spawn(move || {
-            while Instant::now() < until {
-                let Some(key) = keys.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                    break;
-                };
-                let icon = draw(*key);
-                PREPARED.lock().unwrap().push((*key, icon));
+/// On the thread that read a listing, before it is shown; that thread draws as one of the lanes.
+pub(crate) fn prepare(rows: &[Arc<Row>], size: f32, executor: &gpui::BackgroundExecutor) {
+    let wanted: Vec<Key> = rows
+        .iter()
+        .take(FIRST_ROWS)
+        .filter_map(|row| Some((crate::art::kind_now(row)?, size.to_bits())))
+        .collect();
+    let mut keys: Vec<Key> = Vec::new();
+    {
+        let kept = KEPT.lock().unwrap();
+        let prepared = PREPARED.lock().unwrap();
+        for key in wanted {
+            let drawn = kept.contains(&key) || prepared.iter().any(|(held, _)| *held == key);
+            if !drawn && !keys.contains(&key) {
+                keys.push(key);
             }
-            done.send(()).ok();
-        });
+        }
     }
-    for _ in 0..lanes {
-        if finished
+    if keys.is_empty() {
+        return;
+    }
+    let until = Instant::now() + PREPARE;
+    let (keys, next) = (Arc::new(keys), Arc::new(AtomicUsize::new(0)));
+    let (drawn, landed) = mpsc::channel();
+    for _ in 1..LANES.min(keys.len()) {
+        let (keys, next, drawn) = (keys.clone(), next.clone(), drawn.clone());
+        executor
+            .spawn_with_priority(
+                Priority::High,
+                async move { lane(&keys, &next, &drawn, until) },
+            )
+            .detach();
+    }
+    lane(&keys, &next, &drawn, until);
+    for _ in 0..next.load(Ordering::Relaxed).min(keys.len()) {
+        if landed
             .recv_timeout(until.saturating_duration_since(Instant::now()))
             .is_err()
         {
             break;
         }
+    }
+}
+
+fn lane(keys: &[Key], next: &AtomicUsize, drawn: &mpsc::Sender<()>, until: Instant) {
+    while Instant::now() < until {
+        let Some(key) = keys.get(next.fetch_add(1, Ordering::Relaxed)) else {
+            break;
+        };
+        let icon = draw(*key);
+        PREPARED.lock().unwrap().push((*key, icon));
+        drawn.send(()).ok();
     }
 }
 
