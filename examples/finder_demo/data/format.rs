@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::SharedString;
 use objc2::rc::Retained;
 use objc2_foundation::{
-    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSCalendar, NSDate, NSDateFormatter,
-    NSDateFormatterStyle, NSString,
+    NSByteCountFormatter, NSByteCountFormatterCountStyle, NSByteCountFormatterUnits, NSCalendar,
+    NSDate, NSDateFormatter, NSDateFormatterStyle, NSString,
 };
 
 use super::face::Face;
@@ -153,6 +153,15 @@ pub(crate) fn byte_string(bytes: u64) -> String {
         static FORMATTER: Retained<NSByteCountFormatter> = {
             let formatter = NSByteCountFormatter::new();
             formatter.setCountStyle(NSByteCountFormatterCountStyle::File);
+            // The default units read an empty file as "Zero KB"; Finder says "Zero bytes".
+            formatter.setAllowedUnits(
+                NSByteCountFormatterUnits::UseBytes
+                    | NSByteCountFormatterUnits::UseKB
+                    | NSByteCountFormatterUnits::UseMB
+                    | NSByteCountFormatterUnits::UseGB
+                    | NSByteCountFormatterUnits::UseTB
+                    | NSByteCountFormatterUnits::UsePB,
+            );
             formatter
         };
     }
