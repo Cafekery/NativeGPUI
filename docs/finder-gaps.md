@@ -17,7 +17,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 ## Small features
 
-- [x] File ▸ Find by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
+- [x] Edit ▸ Search by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
 - [x] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
 - [ ] Edit ▸ Copy as Link (⌥⌃⌘C): Finder keeps it disabled on a local file and on an iCloud Drive
   file alike, so what it copies is unconfirmed
@@ -120,3 +120,50 @@ stopped after the mount had settled.
   waited 15,440 ms inside `connectToCoreServicesD` before any of the demo's code ran.
 - A Favorites or Locations item names the path its bookmark stored, as Finder's list last wrote
   it; an item whose folder has since moved or gone is not followed or dropped at launch.
+## macOS 27 audit
+
+Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both windows at 240,120
+1100x680 in list view on the same folder, sidebar 216 and preview pane 241 wide, nothing selected.
+Traffic lights, corner radius, window shadow and title type measure identical.
+
+- [ ] Rows: Finder is 21pt at 16pt icons and 14pt text, as the demo now is; the pitch at 32pt icons is
+  unmeasured, the demo's is 37.
+- [ ] Header rule, dark: Finder 1pt #414241 with 0.5pt #303030 beneath; the demo 1pt #3d3d3d.
+- [ ] Kind column: Finder 27 reads "Plain Text", "RTF Document", "PDF Document", "ZIP archive", "JSON",
+  "Markdown", "HTML text"; the demo "Plain Text Document", "Rich Text Document", "PDF document", "ZIP
+  archive", "JSON Document", "Markdown Document", "HTML document". `LSCopyKindStringForTypeInfo` and
+  `NSURLLocalizedTypeDescriptionKey` give Finder's "JSON", "Markdown" and "HTML text", `kMDItemKind`
+  its "ZIP archive"; no public API gives "Plain Text", "RTF Document" or "PDF Document".
+- [ ] Column view with nothing selected: Finder shows the ancestor columns with the current folder
+  selected in its parent's; the demo shows only the current folder's column.
+- [ ] Menu enabling: with nothing selected Finder disables New Folder with Selection, Rename, Compress,
+  Duplicate, Make Alias, Share…, Show Original, Move to Trash, Eject, Print, Cut, Copy, Deselect
+  All, Back and Forward without history, Clean Up in list view and Show Progress Window with no
+  operation running. The demo now disables its own selection rows the same way; Back and Forward,
+  Clean Up and Show Progress Window stay enabled.
+- [ ] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
+  Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item. The demo's titles are fixed.
+- [ ] File menu order, Finder: New Finder Window, New Folder, New Folder with Selection, New Smart
+  Folder, New Tab, Open, Open With, Close Window (⌥ Close All), Get Info, Rename, Compress, Duplicate,
+  Make Alias, Quick Look, Share…, Manage Shared Folder…, Show Original, Add to Sidebar (⌥ Add to
+  Dock), Move to Trash, Eject, the tag swatches, Print. The demo adds New Text File, puts New Tab,
+  Close and Close All last, and has no Open With, Add to Dock, Manage Shared Folder… or tag row. ⌥⌘O is Open and Close Window in Finder, Open in New Window in the demo.
+- [ ] Edit menu: Finder puts Show Clipboard, Search (⌘F) and Search by Name… (⇧⌃⌘F) above Writing
+  Tools, AutoFill, Start Dictation and Emoji & Symbols, and has no Paste and Match Style or Delete;
+  the demo keeps AppKit's Paste and Match Style and Delete.
+- [ ] View menu, Finder: Use Groups before Sort By; Sort By adds Date Last Opened (⌃⌥⌘3), Date Added
+  (⌃⌥⌘4), Date Created and Tags (⌃⌥⌘7); Clean Up Selection; after Hide Sidebar: Hide Preview, Hide
+  Toolbar, Hide Path Bar, Show Status Bar, Customize Toolbar…, Show View Options, Show Preview
+  Options. The demo's Show Preview and Show Path Bar do not flip their titles and it lists Show
+  Hidden Files (⇧⌘.), which Finder's menu does not.
+- [ ] App menu: Settings… (⌘,), and the ⌥ rows Empty Trash and Quit and Keep Windows (⌥⌘Q).
+- [ ] Go menu: Shared (⇧⌘S), Library under ⌥, the user's own locations, and Recent Folders above Go
+  to Folder…; the demo has Recent Folders last. Help: Finder lists Mac User Guide and Tips for Your
+  Mac, the demo "Found'er Help" (⌘?).
+- [ ] Toolbar: Finder's back and forward segments are 36 and 37 wide in a 75pt group, the demo's 38 and
+  38 in 76, which moves the title 1pt right; AirDrop is 44 wide, the demo's 40. With no history and
+  nothing selected Finder disables back, forward, AirDrop, Share and Edit Tags; the demo leaves them
+  enabled. The demo's Progress item has no Finder counterpart and narrows the title from 365 to 324.
+- [ ] Get Info, Go to Folder, Connect to Server, New Folder, rename,
+  conflicts, the tag editor, the tab bar and the progress window were captured from Finder 27 but
+  not yet compared with the demo's.

@@ -95,7 +95,7 @@ pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
 }
 
 pub(crate) fn row_h(icon: f32) -> f32 {
-    icon + 4.
+    icon + 5.
 }
 
 impl FinderDemo {
@@ -166,6 +166,21 @@ impl FinderDemo {
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = self.list_tail();
         let items = pads + count + tails;
+        // Finder stripes the empty rows below the last one; drawn under the list, which cannot scroll there.
+        let (stripe, pitch) = (look.stripe, look.row_h);
+        let top = f32::from(self.scroll.0.borrow().base_handle.offset().y);
+        let fill = (count..count + pads + (self.pane_h / pitch) as usize + 2)
+            .filter(|at| at % 2 == 1)
+            .map(move |at| {
+                div()
+                    .absolute()
+                    .top(px((pads + at) as f32 * pitch + top))
+                    .h(px(pitch))
+                    .left(px(PANE_INSET))
+                    .right(px(PANE_INSET))
+                    .rounded(px(ROW_PILL_RADIUS))
+                    .bg(stripe)
+            });
         let list = uniform_list("ng.finder.list", items, move |range, window, _| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
@@ -211,8 +226,10 @@ impl FinderDemo {
             .flex_1()
             .flex()
             .flex_col()
+            .relative()
             .mt(px(-lift))
             .mb(px(-trim))
+            .children(fill)
             .child(rows_menu(
                 "ng.finder.list.menu",
                 cx.entity().downgrade(),
