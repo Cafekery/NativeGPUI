@@ -333,6 +333,13 @@ fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuComman
     let start = match (first, section) {
         (_, MenuSection::App) => 2,
         (true, _) => 0,
+        // AppKit appends Writing Tools, AutoFill, Dictation and Emoji to Edit; an app's rows go above.
+        (false, MenuSection::Edit) => {
+            match menu.indexOfItemWithTitle(&NSString::from_str("Select All")) {
+                -1 => menu.numberOfItems(),
+                at => at + 1,
+            }
+        }
         (false, _) => menu.numberOfItems(),
     };
     for (offset, command) in commands.into_iter().enumerate() {
@@ -500,6 +507,11 @@ pub fn on_menu_state(check: impl Fn(&dyn Action) -> Option<bool> + 'static) {
     STATE.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
 }
 
+/// Rows it answers `false` for are disabled; the rest stay enabled.
+pub fn on_menu_enabled(check: impl Fn(&dyn Action) -> bool + 'static) {
+    ENABLED.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
+}
+
 fn action_of(item: &NSMenuItem) -> Option<Box<dyn Action>> {
     let index = item
         .representedObject()
@@ -545,12 +557,15 @@ define_class!(
             if editing_text() && edits_text(item) {
                 return Bool::NO;
             }
-            let check = STATE.with_borrow(|slot| slot.clone());
-            if let Some(on) = check.zip(action_of(item)).and_then(|(check, action)| check(&*action))
+            let Some(action) = action_of(item) else {
+                return Bool::YES;
+            };
+            if let Some(on) = STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
             {
                 set_state(item, on);
             }
-            Bool::YES
+            let enabled = ENABLED.with_borrow(|slot| slot.clone());
+            Bool::new(enabled.is_none_or(|enabled| enabled(&*action)))
         }
     }
 );
@@ -558,6 +573,7 @@ define_class!(
 thread_local! {
     static SHARED: RefCell<Option<Retained<CommandSink>>> = const { RefCell::new(None) };
     static STATE: RefCell<Option<Rc<MenuState>>> = const { RefCell::new(None) };
+    static ENABLED: RefCell<Option<Rc<dyn Fn(&dyn Action) -> bool>>> = const { RefCell::new(None) };
     static COMMANDS: RefCell<Vec<Box<dyn Action>>> = const { RefCell::new(Vec::new()) };
 }
 

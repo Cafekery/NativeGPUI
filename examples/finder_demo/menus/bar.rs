@@ -4,7 +4,7 @@ use std::path::Path;
 use finder_fs::volumes::{self, Standard};
 use gpui::{Action, AnyWindowHandle, App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{
-    MenuCommand, MenuSection, add_menu, extend_menu, on_menu_state, prepend_menu,
+    MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, prepend_menu,
     set_toolbar_search_active,
 };
 
@@ -105,16 +105,41 @@ actions!(
 );
 
 thread_local! {
-    /// Menu validation cannot read the window, so check marks follow this mirror.
-    static STATE: Cell<(usize, Column, bool)> = const { Cell::new((LIST_VIEW, Column::Name, false)) };
+    /// Menu validation cannot read the window, so check marks and enabling follow this mirror.
+    static STATE: Cell<(usize, Column, bool, bool)> =
+        const { Cell::new((LIST_VIEW, Column::Name, false, false)) };
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
-    STATE.set((demo.view, demo.sort, demo.grouped));
+    STATE.set((
+        demo.view,
+        demo.sort,
+        demo.grouped,
+        !demo.selected.is_empty(),
+    ));
+}
+
+fn enabled(action: &dyn Action) -> bool {
+    let rows: [&dyn Action; 13] = [
+        &NewFolderWithSelection,
+        &RenameSelection,
+        &Compress,
+        &Duplicate,
+        &DuplicateExactly,
+        &MakeAlias,
+        &Share,
+        &ShowOriginal,
+        &Trash,
+        &DeleteImmediately,
+        &EjectSelection,
+        &Print,
+        &DeselectAll,
+    ];
+    STATE.get().3 || !rows.iter().any(|row| action.partial_eq(*row))
 }
 
 fn checked(action: &dyn Action) -> Option<bool> {
-    let (view, sort, grouped) = STATE.get();
+    let (view, sort, grouped, _) = STATE.get();
     let rows: [(&dyn Action, bool); 9] = [
         (&ViewIcons, view == ICON_VIEW),
         (&ViewList, view == LIST_VIEW),
@@ -153,6 +178,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(crate::clipboard_window::show);
     cx.on_action(crate::progress_window::show);
     on_menu_state(checked);
+    on_menu_enabled(enabled);
     prepend_menu(
         MenuSection::File,
         [
@@ -182,7 +208,6 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Slideshow", Slideshow)
                 .key("cmd-alt-y")
                 .option_alternate(),
-            MenuCommand::new("Print", Print).key("cmd-p"),
             MenuCommand::separator(),
             MenuCommand::new("Share…", Share),
             MenuCommand::separator(),
@@ -195,7 +220,7 @@ pub(crate) fn install(cx: &mut App) {
                 .option_alternate(),
             MenuCommand::new("Eject", EjectSelection).key("cmd-e"),
             MenuCommand::separator(),
-            MenuCommand::new("Find by Name…", FindByName).key("cmd-ctrl-shift-f"),
+            MenuCommand::new("Print", Print).key("cmd-p"),
             MenuCommand::separator(),
         ],
     );
@@ -221,6 +246,7 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Show Clipboard", ShowClipboard),
             MenuCommand::separator(),
             MenuCommand::new("Search", FindHere).key("cmd-f"),
+            MenuCommand::new("Search by Name…", FindByName).key("cmd-ctrl-shift-f"),
         ],
     );
     prepend_menu(

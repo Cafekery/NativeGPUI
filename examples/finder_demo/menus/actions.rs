@@ -117,7 +117,7 @@ impl FinderDemo {
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
             Act::Sort(column) => self.sort_by(column, cx),
-            Act::Open => self.open_here(window, cx),
+            Act::Open => self.open_selected(window, cx),
             Act::OpenWindow => self.open_in_window(cx),
             Act::Trash => self.trash_selection(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
@@ -360,19 +360,6 @@ impl FinderDemo {
         self.run_op(op, After::Nothing, cx);
     }
 
-    fn open_here(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let opens = self.chosen_folders();
-        if let Some(first) = opens.first() {
-            self.go(first, window, cx);
-        } else if let Some(saved) = self
-            .chosen_keys()
-            .into_iter()
-            .find(|key| crate::smart::is_saved(key))
-        {
-            self.go(crate::data::intern(&saved), window, cx);
-        }
-    }
-
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
         let start = match id.starts_with("tag:") {
@@ -400,7 +387,7 @@ impl FinderDemo {
     pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
         let ascending = match self.sort == column {
             true => !self.ascending,
-            false => true,
+            false => matches!(column, Column::Name | Column::Kind),
         };
         self.resort((column, ascending), cx);
     }
