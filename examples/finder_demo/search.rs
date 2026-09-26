@@ -1,17 +1,17 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use gpui::{Context, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::chrome::{criteria_bar, scope_bar};
-use crate::data::{self, Row};
+use crate::data;
 use crate::listing::next_rev;
 use crate::{index, prefs};
 
 const HITS: usize = 200;
-const ALL_HITS: usize = usize::MAX;
+const ALL_HITS: usize = 10_000;
+const CHUNK: usize = 256;
 pub(crate) const RECENTS: &str = "recents";
 
 impl FinderDemo {
@@ -39,8 +39,8 @@ impl FinderDemo {
     pub(crate) fn run_search(&mut self, cx: &mut Context<Self>) {
         self.tag_listing = None;
         cx.notify();
-        self.search_gen += 1;
-        let generation = self.search_gen;
+        let live = self.search_gen.clone();
+        let generation = live.fetch_add(1, Ordering::Relaxed) + 1;
         let wanted = self.query.trim().to_string();
         let criteria = self.criteria.clone();
         let everywhere = self.scope == scope_bar::THIS_MAC;
@@ -52,12 +52,12 @@ impl FinderDemo {
         cx.spawn(async move |this, cx| {
             for limit in [HITS, ALL_HITS] {
                 let query = wanted.clone();
-                let (under, criteria) = (under.clone(), criteria.clone());
-                let (hits, complete) = cx
+                let (under, criteria, pass) = (under.clone(), criteria.clone(), live.clone());
+                let found = cx
                     .background_executor()
                     .spawn(async move {
                         if query.is_empty() {
-                            return (Vec::new(), true);
+                            return Some((Vec::new(), true));
                         }
                         let index = index();
                         let mut found = match everywhere {
@@ -69,21 +69,33 @@ impl FinderDemo {
                         };
                         let complete = found.len() < limit;
                         found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-                        let rows = found
-                            .iter()
-                            .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
-                            .filter(|row| criteria.iter().all(|it| it.holds(row)))
-                            .take(limit)
-                            .collect::<Vec<_>>();
-                        (rows, complete)
+                        let mut rows = Vec::new();
+                        for hits in found.chunks(CHUNK) {
+                            if pass.load(Ordering::Relaxed) != generation {
+                                return None;
+                            }
+                            rows.extend(
+                                hits.iter()
+                                    .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
+                                    .filter(|row| criteria.iter().all(|it| it.holds(row))),
+                            );
+                            if rows.len() >= limit {
+                                rows.truncate(limit);
+                                break;
+                            }
+                        }
+                        Some((rows, complete))
                     })
                     .await;
+                let Some((hits, complete)) = found else {
+                    return;
+                };
                 let rev = next_rev();
                 let taken = this.update(cx, |this, _| {
-                    (this.search_gen == generation).then(|| {
+                    (live.load(Ordering::Relaxed) == generation).then(|| {
                         (
-                            this.shape_filtered(&wanted, &hits, rev),
-                            this.folders.held(),
+                            this.shape_filtered(&wanted, hits, rev),
+                            this.folders.shared(),
                         )
                     })
                 });
@@ -93,19 +105,17 @@ impl FinderDemo {
                 let filtered = cx
                     .background_executor()
                     .spawn(async move {
-                        let folders: HashMap<&'static str, Vec<Arc<Row>>> =
-                            held.into_iter().collect();
-                        let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
+                        let walk = shape.build(&|id| held.get(id).map(|rows| rows.as_slice()));
                         (shape, walk)
                     })
                     .await;
                 let shown = this.update(cx, |this, cx| {
-                    if this.search_gen != generation {
+                    if live.load(Ordering::Relaxed) != generation {
                         return false;
                     }
-                    let (shape, walk) = filtered;
+                    let (mut shape, walk) = filtered;
                     this.filtered = wanted.clone();
-                    this.hits = hits;
+                    this.hits = shape.take_hits();
                     this.hits_rev = rev;
                     this.shaped(&shape, walk);
                     cx.notify();

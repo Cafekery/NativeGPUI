@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use finder_fs::index;
@@ -7,7 +8,7 @@ use gpui::{Context, ScrollStrategy, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::data::Line;
-use crate::listing::Edit;
+use crate::listing::{Edit, folds_to};
 use crate::menus::SelectAll;
 use crate::view::LIST_VIEW;
 
@@ -35,9 +36,7 @@ impl FinderDemo {
             1 => chosen.iter().next().cloned(),
             _ => None,
         };
-        let only = one
-            .as_ref()
-            .and_then(|key| lines.iter().position(|line| &line.key == key));
+        let only = one.as_ref().and_then(|key| self.line_at(&lines, key));
         let mut folders: Vec<(SharedString, &'static str)> = Vec::new();
         let mut edits: Vec<Edit> = Vec::new();
         let mut take = |at: usize, line: &Line| {
@@ -142,10 +141,28 @@ impl FinderDemo {
     }
 
     pub(crate) fn chosen_lines(&self) -> Vec<Line> {
-        self.focused_lines()
+        self.chosen_in(&self.focused_lines(), usize::MAX)
+    }
+
+    /// The first `most` selected lines in listing order.
+    pub(crate) fn chosen_in(&self, lines: &Arc<Vec<Line>>, most: usize) -> Vec<Line> {
+        if self.selected.len() * 16 >= lines.len() {
+            return lines
+                .iter()
+                .filter(|line| self.selected.contains(&line.key))
+                .take(most)
+                .cloned()
+                .collect();
+        }
+        let mut at: Vec<usize> = self
+            .selected
             .iter()
-            .filter(|line| self.selected.contains(&line.key))
-            .cloned()
+            .filter_map(|key| self.line_at(lines, key))
+            .collect();
+        at.sort_unstable();
+        at.into_iter()
+            .take(most)
+            .map(|at| lines[at].clone())
             .collect()
     }
 
@@ -237,9 +254,18 @@ impl FinderDemo {
         self.typed.push_str(&typed.to_lowercase());
         self.typed_at = Some(now);
         let lines = self.focused_lines();
+        let typed = self.typed.as_str();
         let prefix = lines
             .iter()
-            .find(|line| finder_fs::sort::starts_with(&line.row.name, &self.typed))
+            .find(|line| match typed.is_ascii() && line.row.name.is_ascii() {
+                true => line
+                    .row
+                    .name
+                    .as_bytes()
+                    .get(..typed.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(typed.as_bytes())),
+                false => finder_fs::sort::starts_with(&line.row.name, typed),
+            })
             .cloned();
         match prefix {
             Some(line) => {
@@ -250,10 +276,7 @@ impl FinderDemo {
             }
             None => {
                 let wanted = finder_fs::sort::fold(&self.typed);
-                if !lines
-                    .iter()
-                    .any(|line| finder_fs::sort::fold(&line.row.name).contains(&wanted))
-                {
+                if !lines.iter().any(|line| folds_to(&line.row.name, &wanted)) {
                     return;
                 }
                 self.type_filter = Some(self.typed.clone());
@@ -297,7 +320,13 @@ impl FinderDemo {
         self.pick_in(&lines, line, extend, toggle);
     }
 
-    pub(crate) fn pick_in(&mut self, lines: &[Line], line: &Line, extend: bool, toggle: bool) {
+    pub(crate) fn pick_in(
+        &mut self,
+        lines: &Arc<Vec<Line>>,
+        line: &Line,
+        extend: bool,
+        toggle: bool,
+    ) {
         self.inspecting = None;
         if toggle {
             if !self.selected.remove(&line.key) {
