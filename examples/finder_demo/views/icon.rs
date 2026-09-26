@@ -333,7 +333,7 @@ impl FinderDemo {
         let layout = self.icons.layout(&lines, columns, cell);
         let height = layout.height;
 
-        let width = GRID_X + columns as f32 * cell + self.pane_w();
+        let width = GRID_X + columns as f32 * cell;
         let mut canvas = div()
             .id("ng.finder.icons")
             .flex_1()

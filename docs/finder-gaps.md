@@ -84,6 +84,33 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [ ] Like Finder, the demo shows a folder's first frame with its icons, but it waits at most 60 ms for them: an icon IconServices has never rendered (an app just installed, a size never drawn) lands a frame or more after the listing. Warm, /Applications in list and icon view had 0 ms of fill after the listing in 5 of 5 runs.
 - [ ] A folder with a custom icon that scrolls into view shows the plain folder for a frame or two before its own icon (Adobe's folders in /Applications: 1 frame in a 3 s scroll through); Finder has it at once. The demo learns of a custom icon when the row is first drawn, or for a listing's first 64 rows, while it reads the listing.
 - [ ] Whether a 32 pt list row previews documents was not read off Finder: its AppleScript view options ignored the size change. The demo previews pictures and movies only in list rows, as Finder does at 16 pt, and documents in icon, column and gallery views.
+## Preview pane, measured against Finder on macOS 27
+
+Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.
+
+- [ ] After a window resize AppKit leaves the demo's inspector 240.5 wide, its divider at x 859.0
+  where Finder's is at 858.5; the card itself sits where Finder's does.
+- [ ] GPUI shapes the system font without AppKit's per-size tracking: 11 pt values run 1.5–3.5 pt
+  narrower than Finder's, 13–15 pt headings and names 1–2 pt wider.
+- [ ] The rim around a picture: Finder's darkens a full point at the top and bottom edges, the
+  demo's half a point, and on the right edge the demo's reads 8 levels lighter.
+- [ ] Calculator.app: Finder's Quick Look draws the bundle's asset catalogue as a grid ("Showing 47
+  of 275 assets"); the card shows the app's icon.
+- [ ] A text file: Finder's Quick Look draws the text in a rounded, monospaced page 221x291; the
+  card shows the document's thumbnail.
+- [ ] Finder's kind line weighs a folder ("Folder - 6 bytes", "Folder - Zero bytes"); the card
+  says "Folder" until the index has weighed it, and never says "Zero bytes".
+- [ ] Finder keeps a second pane width for gallery view (`PreviewPaneGalleryWidth`, 240 on the test
+  Mac); the demo has one width for every view.
+- [ ] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
+  created"); the demo's list is fixed.
+- [ ] Light appearance: Finder's vibrant text lands on the glass at a different darkness per text
+  (name 71, headings 58, values 51, row titles 134, kind 185 over glass 235); the card uses those
+  as flat colours, so antialiased edges differ by a few levels.
+
+## List view, measured against Finder on macOS 27
+
+- [ ] Finder draws its list view's alternating stripes on past the last row; the demo stops.
 
 ## Left alone
 

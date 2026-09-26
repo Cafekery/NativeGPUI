@@ -157,7 +157,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn fit_name_column(&mut self) {
-        let span = self.list_room - self.pane_w();
+        let span = self.list_room;
         let fixed = self.list_content_w() - self.name_w;
         if self.list_span.is_nan() {
             self.name_w = (span - fixed).max(NAME_MIN_W);

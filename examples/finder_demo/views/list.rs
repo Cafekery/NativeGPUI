@@ -258,17 +258,12 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn type_filter_pill(
-        &self,
-        palette: &Palette,
-        right: f32,
-        bottom: f32,
-    ) -> Option<AnyElement> {
+    pub(crate) fn type_filter_pill(&self, palette: &Palette, bottom: f32) -> Option<AnyElement> {
         let text = self.type_filter.clone()?;
         Some(
             div()
                 .absolute()
-                .right(px(right + PILL_INSET))
+                .right(px(PILL_INSET))
                 .bottom(px(bottom + PILL_INSET))
                 .px(px(PILL_PAD_X))
                 .py(px(PILL_PAD_Y))

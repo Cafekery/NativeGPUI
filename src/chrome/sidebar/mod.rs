@@ -364,8 +364,24 @@ struct Views {
     _toolbar_delegate: Retained<SidebarToolbarDelegate>,
     _sidebar_vc: Retained<NSViewController>,
     _content_vc: Retained<NSViewController>,
-    _content_item: Retained<NSSplitViewItem>,
+    content_item: Retained<NSSplitViewItem>,
+    inspector: RefCell<Option<Inspector>>,
     backdrop: Option<Retained<NSVisualEffectView>>,
+}
+
+struct Inspector {
+    item: Retained<NSSplitViewItem>,
+    controller: Retained<NSViewController>,
+    footer: Retained<NSVisualEffectView>,
+    resized: Rc<Cell<Option<f64>>>,
+    sliding: Rc<Cell<bool>>,
+    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+}
+
+impl Drop for Inspector {
+    fn drop(&mut self) {
+        unsafe { NSNotificationCenter::defaultCenter().removeObserver(self.observer.as_ref()) };
+    }
 }
 
 struct SidebarState {
@@ -381,6 +397,44 @@ impl Drop for SidebarState {
         for observer in self.observers.drain(..) {
             unsafe { center.removeObserver(observer.as_ref()) };
         }
+    }
+}
+
+// Only a divider the user drags posts its index, which is how a drag shut tells itself apart
+// from a collapse the app asked for.
+fn observe_inspector(
+    split: &NSSplitViewController,
+    item: &NSSplitViewItem,
+    view: &NSView,
+    resized: &Rc<Cell<Option<f64>>>,
+    sliding: &Rc<Cell<bool>>,
+) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let (item, view) = (item.retain(), view.retain());
+    let (resized, sliding) = (resized.clone(), sliding.clone());
+    let key = NSString::from_str("NSSplitViewDividerIndex");
+    let block = StackBlock::new(move |note: NonNull<NSNotification>| {
+        if sliding.get() {
+            return;
+        }
+        let dragged = unsafe { note.as_ref() }.userInfo().is_some_and(|info| {
+            let index: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*info, objectForKey: &*key] };
+            index.is_some()
+        });
+        match item.isCollapsed() {
+            true if dragged => resized.set(Some(0.)),
+            true => {}
+            false => resized.set(Some(view.frame().size.width)),
+        }
+    })
+    .copy();
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSSplitViewDidResizeSubviewsNotification),
+            Some(&split.splitView()),
+            None,
+            &block,
+        )
     }
 }
 
@@ -576,6 +630,110 @@ impl NativeSidebar {
         item.setMaximumThickness(max.to_f64());
         self.0.views.split.view().layoutSubtreeIfNeeded();
         self.0.pane_shared.align(&self.0.views.pane);
+    }
+
+    /// A trailing inspector: AppKit's own split item, so macOS draws its glass and its divider,
+    /// which drags it between `min` and `max` or shut. `Some` shows it, starting at that
+    /// thickness the first time; `None` collapses it. Both animate once the window is on screen.
+    pub fn set_inspector(&self, thickness: Option<Pixels>, min: Pixels, max: Pixels) {
+        let mtm = MainThreadMarker::new().expect("set_inspector is a main-thread path");
+        let mut slot = self.0.views.inspector.borrow_mut();
+        let on_screen = self
+            .window_frame_window()
+            .is_some_and(|window| window.isVisible());
+        let created = slot.is_none();
+        let inspector = match (thickness, slot.as_ref()) {
+            (None, None) => return,
+            (_, Some(inspector)) => inspector,
+            (Some(thickness), None) => {
+                let controller = NSViewController::init(NSViewController::alloc(mtm));
+                // An item starts at its view's width; AppKit has no thickness to set.
+                let view = NSView::initWithFrame(
+                    NSView::alloc(mtm),
+                    NSRect::new(NSPoint::ZERO, NSSize::new(thickness.to_f64(), 0.)),
+                );
+                let footer =
+                    NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), NSRect::ZERO);
+                footer.setMaterial(RawMaterial::ContentBackground.appkit());
+                footer.setBlendingMode(NSVisualEffectBlendingMode::WithinWindow);
+                footer.setAutoresizingMask(
+                    NSAutoresizingMaskOptions::ViewWidthSizable
+                        | NSAutoresizingMaskOptions::ViewMaxYMargin,
+                );
+                footer.setHidden(true);
+                view.addSubview(&footer);
+                controller.setView(&view);
+                let item = NSSplitViewItem::inspectorWithViewController(&controller);
+                item.setCanCollapse(true);
+                item.setCollapsed(on_screen);
+                item.setHoldingPriority(self.0.views.content_item.holdingPriority() + 1.);
+                item.setMinimumThickness(min.to_f64());
+                item.setMaximumThickness(max.to_f64());
+                self.0.views.split.addSplitViewItem(&item);
+                let resized = Rc::new(Cell::new(None));
+                let sliding = Rc::new(Cell::new(false));
+                let observer =
+                    observe_inspector(&self.0.views.split, &item, &view, &resized, &sliding);
+                slot.insert(Inspector {
+                    item,
+                    controller,
+                    footer,
+                    resized,
+                    sliding,
+                    observer,
+                })
+            }
+        };
+        let collapse = thickness.is_none();
+        let settled = inspector.item.isCollapsed() == collapse;
+        match (settled, on_screen) {
+            (true, _) => {}
+            (false, true) => {
+                inspector.sliding.set(true);
+                let item = inspector.item.clone();
+                let sliding = inspector.sliding.clone();
+                objc2_app_kit::NSAnimationContext::runAnimationGroup_completionHandler(
+                    &StackBlock::new(move |_| {
+                        let animator: Retained<NSSplitViewItem> =
+                            unsafe { msg_send![&*item, animator] };
+                        animator.setCollapsed(collapse);
+                    }),
+                    Some(&StackBlock::new(move || sliding.set(false)).copy()),
+                );
+            }
+            (false, false) => inspector.item.setCollapsed(collapse),
+        }
+        if settled && !created {
+            return;
+        }
+        self.0.views.split.view().layoutSubtreeIfNeeded();
+        self.0.pane_shared.align(&self.0.views.pane);
+    }
+
+    /// The inspector's thickness after AppKit resized it since the previous call, by its
+    /// divider or otherwise; zero once its divider has dragged it shut. Its own slides report
+    /// nothing.
+    pub fn take_inspector_resize(&self) -> Option<Pixels> {
+        let slot = self.0.views.inspector.borrow();
+        slot.as_ref()?.resized.take().map(|width| px(width as f32))
+    }
+
+    /// The content background along the inspector's foot, `height` tall; zero hides it.
+    pub fn set_inspector_footer(&self, height: Pixels) {
+        let slot = self.0.views.inspector.borrow();
+        let Some(inspector) = slot.as_ref() else {
+            return;
+        };
+        let footer = &inspector.footer;
+        let hidden = height <= px(0.);
+        if footer.isHidden() != hidden {
+            footer.setHidden(hidden);
+        }
+        let width = inspector.controller.view().bounds().size.width;
+        let wanted = NSRect::new(NSPoint::ZERO, NSSize::new(width, height.to_f64()));
+        if !hidden && !rects_equal(footer.frame(), wanted) {
+            footer.setFrame(wanted);
+        }
     }
 
     pub fn set_toolbar(&self, visible: bool) {
@@ -1357,7 +1515,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             _toolbar_delegate: toolbar_delegate,
             _sidebar_vc: sidebar_vc,
             _content_vc: content_vc,
-            _content_item: content_item,
+            content_item,
+            inspector: RefCell::new(None),
             backdrop,
         },
         shared,
