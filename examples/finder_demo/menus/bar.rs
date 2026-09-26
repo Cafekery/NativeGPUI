@@ -108,30 +108,37 @@ thread_local! {
     /// Menu validation cannot read the window, so check marks and enabling follow this mirror.
     static STATE: Cell<(usize, Column, bool, bool, bool)> =
         const { Cell::new((LIST_VIEW, Column::Name, false, false, false)) };
-    static REFUSED: Cell<((u64, u64), bool)> = const { Cell::new(((u64::MAX, 0), false)) };
+    static CHOSEN: Cell<((u64, u64, usize), bool, bool)> =
+        const { Cell::new(((u64::MAX, 0, 0), false, false)) };
+}
+
+pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool) {
+    let seen = (demo.selected.rev(), demo.folders.changed(), demo.view);
+    let (at, refused, shareable) = CHOSEN.get();
+    if at == seen {
+        return (refused, shareable);
+    }
+    let chosen = demo.chosen_lines();
+    // Finder keeps the Open rows off while every chosen item is a folder the user can't list.
+    let refused = !chosen.is_empty()
+        && chosen
+            .iter()
+            .all(|line| line.row.opens.is_some() && !line.row.readable);
+    // Finder won't share a folder the user can't list, even beside readable items.
+    let shareable = chosen
+        .iter()
+        .all(|line| line.row.opens.is_none() || line.row.readable);
+    CHOSEN.set((seen, refused, shareable));
+    (refused, shareable)
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
-    let seen = (demo.selected.rev(), demo.folders.changed());
-    // Finder keeps the Open rows off while every chosen item is a folder the user can't list.
-    let refused = match REFUSED.get() {
-        (at, refused) if at == seen => refused,
-        _ => {
-            let chosen = demo.chosen_lines();
-            let refused = !chosen.is_empty()
-                && chosen
-                    .iter()
-                    .all(|line| line.row.opens.is_some() && !line.row.readable);
-            REFUSED.set((seen, refused));
-            refused
-        }
-    };
     STATE.set((
         demo.view,
         demo.sort,
         demo.grouped,
         !demo.selected.is_empty(),
-        refused,
+        chosen_state(demo).0,
     ));
 }
 

@@ -92,10 +92,7 @@ impl FinderDemo {
             },
             Act::NewFolder => self.new_folder(cx),
             Act::NewFolderWith => self.new_folder_with_selection(cx),
-            Act::Groups => {
-                self.grouped = !self.grouped;
-                self.resync_toolbar();
-            }
+            Act::Groups => self.grouped = !self.grouped,
             Act::ViewOptions => {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));

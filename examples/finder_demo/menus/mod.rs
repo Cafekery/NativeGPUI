@@ -5,15 +5,15 @@ mod context;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, IntoElement, Pixels, Point, WeakEntity, Window};
+use gpui::{App, ElementId, IntoElement, Pixels, Point, SharedString, WeakEntity, Window};
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 pub(crate) use self::actions::Act;
 pub(crate) use self::bar::{
     Back, CopyNames, Cut, Forward, MoveHere, NewTab, Paste, SelectAll, ShowClipboard,
-    ShowProgressWindow, ZoomIn, ZoomOut, go_rows, install, remember,
+    ShowProgressWindow, ZoomIn, ZoomOut, chosen_state, go_rows, install, remember,
 };
-pub(crate) use self::context::{background, crumb, header, item, sidebar};
+pub(crate) use self::context::{background, header, item, sidebar};
 use crate::app::FinderDemo;
 use crate::data::Line;
 
@@ -26,6 +26,24 @@ pub(crate) fn attach(
     native_context_menu(id, child)
         .entries(menu.entries)
         .on_select(picks(Rc::new(RefCell::new(menu.acts)), Rc::default(), this))
+}
+
+pub(crate) fn crumb_menu(
+    id: impl Into<ElementId>,
+    target: &'static str,
+    name: SharedString,
+    this: WeakEntity<FinderDemo>,
+    child: impl IntoElement,
+) -> NativeContextMenu {
+    let acts: Rc<RefCell<Vec<Act>>> = Rc::default();
+    let built = acts.clone();
+    native_context_menu(id, child)
+        .entries_at(move |_, _, _| {
+            let menu = context::crumb(target, &name);
+            *built.borrow_mut() = menu.acts;
+            menu.entries
+        })
+        .on_select(picks(acts, Rc::default(), this))
 }
 
 fn menu_at(
