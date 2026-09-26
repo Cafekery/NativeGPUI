@@ -1,14 +1,16 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::ffi::{CStr, OsStr, OsString, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
-use std::ptr::NonNull;
+use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use objc2_core_foundation::{
-    CFArray, CFRetained, CFRunLoop, CFRunLoopRunResult, CFString, kCFRunLoopDefaultMode,
+    CFArray, CFRetained, CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext,
+    CFString, kCFRunLoopDefaultMode,
 };
 #[allow(deprecated)]
 use objc2_core_services::FSEventStreamScheduleWithRunLoop;
@@ -40,10 +42,12 @@ const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
     | kFSEventStreamEventFlagMount
     | kFSEventStreamEventFlagUnmount;
 
-/// A callback also gets an empty replay each second: a tick for work it put off.
+/// A `since` callback that put work off, and says so, gets an empty replay a second later.
 const TICK: f64 = 1.0;
+/// Otherwise the thread sleeps until an event or a change of paths.
+const IDLE: f64 = 1.0e10;
 
-type OnChange = Box<dyn Fn(Replay) + Send>;
+type OnChange = Box<dyn Fn(Replay) -> bool + Send>;
 
 /// Each watched path beside the path FSEvents reports it by.
 type Views = Arc<Mutex<Vec<(PathBuf, PathBuf)>>>;
@@ -55,9 +59,9 @@ struct Shared {
     changed: Condvar,
     since: AtomicU64,
     shutdown: AtomicBool,
-    /// `None` while idle, so a stray wake-up can't poison the next run.
-    run_loop: Mutex<Option<usize>>,
-    /// A stop that lands between two runs of the loop is dropped; this carries it to the next.
+    /// The watcher's run loop and the source that wakes it, while its thread runs.
+    run_loop: Mutex<Option<(usize, usize)>>,
+    /// The paths moved since the stream was made.
     stale: AtomicBool,
     latency: f64,
 }
@@ -66,8 +70,12 @@ impl Shared {
     fn wake(&self) {
         self.stale.store(true, Ordering::SeqCst);
         self.changed.notify_all();
-        if let Some(addr) = *self.run_loop.lock().unwrap() {
-            unsafe { (&*(addr as *const CFRunLoop)).stop() };
+        if let Some((run_loop, source)) = *self.run_loop.lock().unwrap() {
+            // A stop lands only in a run already under way; a signalled source waits for the next.
+            unsafe {
+                (&*(source as *const CFRunLoopSource)).signal();
+                (&*(run_loop as *const CFRunLoop)).wake_up();
+            }
         }
     }
 }
@@ -110,7 +118,9 @@ impl Watcher {
                 if !dirs.is_empty() {
                     on_change(as_watched(&seen.lock().unwrap(), dirs));
                 }
+                false
             }),
+            false,
         )
     }
 
@@ -131,6 +141,7 @@ impl Watcher {
         latency: f64,
         views: Option<Views>,
         on_change: OnChange,
+        tick: bool,
     ) -> Watcher {
         let shared = Arc::new(Shared {
             paths: Mutex::new(paths),
@@ -145,7 +156,7 @@ impl Watcher {
         let thread_shared = shared.clone();
         let thread = thread::spawn(move || {
             crate::utility_qos();
-            run(thread_shared, on_change)
+            run(thread_shared, on_change, tick)
         });
         Watcher {
             shared,
@@ -164,10 +175,11 @@ impl Drop for Watcher {
     }
 }
 
+/// `on_change` answers whether it put work off; until it says it has not, it ticks.
 pub fn since(
     event_id: u64,
     roots: Vec<PathBuf>,
-    on_change: impl Fn(Replay) + Send + 'static,
+    on_change: impl Fn(Replay) -> bool + Send + 'static,
 ) -> Watcher {
     let since_when = if event_id == 0 {
         kFSEventStreamEventIdSinceNow
@@ -181,6 +193,7 @@ pub fn since(
         1.0,
         None,
         Box::new(on_change),
+        true,
     )
 }
 
@@ -265,10 +278,31 @@ fn strip_trailing_slash(raw: &str) -> PathBuf {
     }
 }
 
-fn run(shared: Arc<Shared>, on_change: OnChange) {
+/// The callback, and whether it last asked for a tick.
+type Context = (OnChange, Cell<bool>);
+
+fn run(shared: Arc<Shared>, on_change: OnChange, tick: bool) {
     let run_loop = CFRunLoop::current().expect("watcher thread has a run loop");
-    let run_loop_addr = (&*run_loop) as *const CFRunLoop as usize;
-    let context = Box::into_raw(Box::new(on_change));
+    let mode = unsafe { kCFRunLoopDefaultMode };
+    let mut stirred = CFRunLoopSourceContext {
+        version: 0,
+        info: null_mut(),
+        retain: None,
+        release: None,
+        copyDescription: None,
+        equal: None,
+        hash: None,
+        schedule: None,
+        cancel: None,
+        perform: Some(woken),
+    };
+    let source = unsafe { CFRunLoopSource::new(None, 0, &mut stirred) }.expect("run loop source");
+    run_loop.add_source(Some(&source), mode);
+    *shared.run_loop.lock().unwrap() = Some((
+        (&*run_loop) as *const CFRunLoop as usize,
+        (&*source) as *const CFRunLoopSource as usize,
+    ));
+    let context: *mut Context = Box::into_raw(Box::new((on_change, Cell::new(tick))));
 
     while !shared.shutdown.load(Ordering::SeqCst) {
         shared.stale.store(false, Ordering::SeqCst);
@@ -327,20 +361,19 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
             FSEventStreamScheduleWithRunLoop(
                 stream,
                 &run_loop,
-                kCFRunLoopDefaultMode.expect("default run loop mode"),
+                mode.expect("default run loop mode"),
             );
             FSEventStreamStart(stream);
         }
-        *shared.run_loop.lock().unwrap() = Some(run_loop_addr);
 
-        while CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, TICK, false)
-            == CFRunLoopRunResult::TimedOut
-            && !shared.stale.load(Ordering::SeqCst)
-        {
-            unsafe { (*context)(Replay::default()) };
+        while !shared.stale.load(Ordering::SeqCst) {
+            let (on_change, ticking) = unsafe { &*context };
+            let wait = if ticking.get() { TICK } else { IDLE };
+            if CFRunLoop::run_in_mode(mode, wait, true) == CFRunLoopRunResult::TimedOut {
+                ticking.set(on_change(Replay::default()));
+            }
         }
 
-        *shared.run_loop.lock().unwrap() = None;
         unsafe {
             FSEventStreamStop(stream);
             shared
@@ -351,8 +384,12 @@ fn run(shared: Arc<Shared>, on_change: OnChange) {
         }
     }
 
+    *shared.run_loop.lock().unwrap() = None;
+    run_loop.remove_source(Some(&source), mode);
     drop(unsafe { Box::from_raw(context) });
 }
+
+unsafe extern "C-unwind" fn woken(_: *mut c_void) {}
 
 unsafe extern "C-unwind" fn callback(
     _stream: ConstFSEventStreamRef,
@@ -362,7 +399,7 @@ unsafe extern "C-unwind" fn callback(
     event_flags: NonNull<FSEventStreamEventFlags>,
     event_ids: NonNull<FSEventStreamEventId>,
 ) {
-    let on_change = unsafe { &*(info as *const OnChange) };
+    let (on_change, ticking) = unsafe { &*(info as *const Context) };
     let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
     let ids = unsafe { std::slice::from_raw_parts(event_ids.as_ptr(), num_events) };
@@ -388,7 +425,7 @@ unsafe extern "C-unwind" fn callback(
     if replay.dirs.is_empty() && replay.rescan.is_empty() && !replay.history_done {
         return;
     }
-    on_change(replay);
+    ticking.set(on_change(replay));
 }
 
 #[cfg(test)]
@@ -613,6 +650,7 @@ mod tests {
             if !replay.dirs.is_empty() {
                 let _ = tx.send((replay.dirs, replay.event_id));
             }
+            false
         });
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -673,6 +711,7 @@ mod tests {
                 let _ = ticked.send(());
                 thread::sleep(Duration::from_millis(300));
             }
+            true
         });
         tick.recv_timeout(Duration::from_secs(3)).unwrap();
         let (dropped, done) = mpsc::channel();

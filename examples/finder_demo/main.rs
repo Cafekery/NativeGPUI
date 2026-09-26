@@ -24,6 +24,7 @@ mod quicklook;
 mod read;
 mod search;
 mod select;
+mod signal;
 mod smart;
 mod tag_editor;
 mod tags;
@@ -32,7 +33,6 @@ mod ui;
 mod view;
 mod views;
 
-use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -114,6 +114,9 @@ fn main() {
         .detach();
         open_finder_window(intern_path(&home()), 0, cx);
         crawl(cx);
+        thumbs::follow_thumbnails(cx);
+        preview::follow_stacks(cx);
+        data::follow_volumes(cx);
         cx.activate(true);
     });
 }
@@ -151,34 +154,25 @@ fn crawl(cx: &mut App) {
                         .filter(|path| path != Path::new("/")),
                 );
                 FOLLOWING.get_or_init(|| index().follow(roots.clone()));
-                index().sync(roots, |_| {})
+                // TCC-gated folders join the crawl only once a visit has listed them, so no prompt is
+                // raised.
+                index().sync(roots, |progress| {
+                    let index = index();
+                    if !progress.done {
+                        return;
+                    }
+                    let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
+                        .iter()
+                        .map(|name| home().join(name))
+                        .filter(|dir| index.children(dir).is_some())
+                        .collect();
+                    if !granted.is_empty() {
+                        index.crawl(granted, |_| {});
+                    }
+                })
             })
             .detach();
     }
-    // TCC-gated folders join the crawl only once a visit has listed them, so no prompt is raised.
-    let launched = std::time::SystemTime::now();
-    let follow = cx.background_executor().clone();
-    cx.background_executor()
-        .spawn(async move {
-            let mut joined: HashSet<PathBuf> = HashSet::new();
-            loop {
-                follow.timer(Duration::from_secs(20)).await;
-                let index = index();
-                if !index.stats().crawled_at.is_some_and(|at| at > launched) {
-                    continue;
-                }
-                let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
-                    .iter()
-                    .map(|name| home().join(name))
-                    .filter(|dir| !joined.contains(dir) && index.children(dir).is_some())
-                    .collect();
-                if !granted.is_empty() {
-                    joined.extend(granted.iter().cloned());
-                    index.crawl(granted, |_| {});
-                }
-            }
-        })
-        .detach();
     let ticker = cx.background_executor().clone();
     cx.background_executor()
         .spawn(async move {

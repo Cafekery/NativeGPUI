@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gpui::{App, Entity, RenderImage, SharedString, px};
+use gpui::{App, RenderImage, SharedString, px};
 use native_gpui::thumbnails;
 
-use crate::app::FinderDemo;
 use crate::data::{Face, Row};
+use crate::signal::Signal;
 
 type Thumb = (SharedString, u32, bool);
 
@@ -24,18 +24,15 @@ thread_local! {
     static DRAWN: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
     static RETRY: RefCell<HashMap<Thumb, (u32, Instant)>> = RefCell::new(HashMap::new());
     static FRAMES: Cell<u64> = const { Cell::new(0) };
-    static WATCHING: Cell<bool> = const { Cell::new(false) };
     static SWEPT: Cell<(Option<Instant>, u64)> = const { Cell::new((None, 0)) };
     static HELD: RefCell<Vec<Ask>> = const { RefCell::new(Vec::new()) };
 }
 
-static DELIVERED: AtomicUsize = AtomicUsize::new(0);
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static LANDED: Mutex<Vec<(Thumb, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
+static LANDING: Signal = Signal::new();
 
 const SWEEP: Duration = Duration::from_millis(250);
-const WATCH: Duration = Duration::from_millis(8);
-const GIVE_UP: u32 = 250;
 const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
 const KEPT: usize = 512;
@@ -43,51 +40,27 @@ const KEPT_BYTES: usize = 256 << 20;
 /// The thumbnail service's own limit; past it, requests queue there and the newest goes first.
 const LANES: usize = 8;
 
-pub(crate) fn thumbnails_landed() -> usize {
-    DELIVERED.load(Ordering::Relaxed)
-}
-
-pub(crate) fn pending() -> bool {
-    INFLIGHT.load(Ordering::Relaxed) > 0
-}
-
-pub(crate) fn watch_thumbnails(demo: &Entity<FinderDemo>, cx: &mut App) {
-    if !pending() || WATCHING.with(|watching| watching.replace(true)) {
-        return;
-    }
-    let demo = demo.downgrade();
+pub(crate) fn follow_thumbnails(cx: &mut App) {
     cx.spawn(async move |cx| {
-        let mut quiet = 0;
+        let mut seen = 0;
         loop {
-            cx.background_executor().timer(WATCH).await;
-            let landed = collect_thumbnails();
-            // A generation whose handler is never called would leave this looking for ever.
-            quiet = if landed { 0 } else { quiet + 1 };
-            let done = !pending() || quiet > GIVE_UP;
-            let alive = demo
-                .update(cx, |_, cx| {
-                    if landed {
-                        cx.notify();
-                    }
-                })
-                .is_ok();
-            if done || !alive {
-                break;
-            }
+            seen = LANDING.after(seen).await;
+            cx.update(|cx| {
+                collect_thumbnails();
+                crate::read::notify_windows(cx);
+            });
         }
-        WATCHING.with(|watching| watching.set(false));
     })
     .detach();
 }
 
 /// Main thread only.
-pub(crate) fn collect_thumbnails() -> bool {
+pub(crate) fn collect_thumbnails() {
     // Bottom row first: the service serves its newest request first, so a frame fills top down.
     for ask in HELD.take().into_iter().rev() {
         send(ask);
     }
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
-    let any = !landed.is_empty();
     for (key, image) in landed {
         let Some(image) = image else {
             retry(&key);
@@ -96,7 +69,7 @@ pub(crate) fn collect_thumbnails() -> bool {
         keep(&key, &image);
         THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
     }
-    any
+    sweep_thumbnails();
 }
 
 /// An empty delivery is often a cancelled generation, so ask again, backing off.
@@ -139,7 +112,7 @@ pub(crate) fn frame_drawn() {
     FRAMES.with(|frames| frames.set(frames.get() + 1));
 }
 
-pub(crate) fn sweep_thumbnails() {
+fn sweep_thumbnails() {
     let now = Instant::now();
     let frames = FRAMES.with(|frames| frames.get());
     let (swept_at, swept_after) = SWEPT.with(|swept| swept.get());
@@ -253,7 +226,7 @@ fn send((path, modified, key, size, scale, icon): Ask) {
     INFLIGHT.fetch_add(1, Ordering::Relaxed);
     thumbnails::thumbnail(&path, modified, px(size), scale, icon, move |image| {
         LANDED.lock().unwrap().push((key, image));
-        DELIVERED.fetch_add(1, Ordering::Relaxed);
         INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+        LANDING.ring();
     });
 }

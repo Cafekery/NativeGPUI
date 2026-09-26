@@ -91,6 +91,7 @@ fn replay(plan: &Plan) -> (Batch, bool) {
     let (tx, rx) = mpsc::channel();
     let _watcher = watch::since(plan.since_when, plan.warm.clone(), move |replay| {
         let _ = tx.send(replay);
+        false
     });
     let deadline = Instant::now() + REPLAY_TIMEOUT;
     let mut batch = Batch::default();

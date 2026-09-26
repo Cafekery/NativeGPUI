@@ -261,6 +261,7 @@ static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
             let tags = read_row_tags(&path);
             KNOWN.lock().unwrap().insert(path, Some(tags));
             LANDED.fetch_add(1, Ordering::Release);
+            crate::read::EVENTS.ring();
         }
     });
     Mutex::new(send)

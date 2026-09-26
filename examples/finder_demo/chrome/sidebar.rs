@@ -283,12 +283,20 @@ impl FinderDemo {
     }
 
     pub(crate) fn refresh_sidebar(&mut self) {
-        self.sidebar_groups = groups();
+        self.sidebar_took(groups());
+    }
+
+    pub(crate) fn sidebar_took(&mut self, groups: Vec<Group>) {
+        self.sidebar_groups = groups;
         for (rows, group) in self.sidebar_rows.iter_mut().zip(&self.sidebar_groups) {
             rows.retain(|id| group.rows.iter().any(|row| row.id == *id));
-            for row in &group.rows {
+            for (at, row) in group.rows.iter().enumerate() {
                 if !rows.contains(&row.id) {
-                    rows.push(row.id);
+                    let after = group.rows[..at]
+                        .iter()
+                        .rev()
+                        .find_map(|before| rows.iter().position(|id| *id == before.id));
+                    rows.insert(after.map_or(0, |at| at + 1), row.id);
                 }
             }
         }

@@ -6,18 +6,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use finder_fs::list::Identity;
-use gpui::{Context, Window};
+use gpui::{App, Context, Window};
 
 use crate::app::FinderDemo;
 use crate::data::{self, Column, Line, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
+use crate::signal::Signal;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 512;
 const POLL: Duration = Duration::from_millis(5);
 const TICK: Duration = Duration::from_millis(120);
-const VOLUMES_EVERY: u64 = 40;
 
 #[derive(Default)]
 struct Mail {
@@ -134,30 +134,23 @@ fn folders_first() -> bool {
     crate::prefs::finder().folders_first
 }
 
-pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
+/// Rung by each window's folder watcher and job queue, and by every tag read.
+pub(crate) static EVENTS: Signal = Signal::new();
+
+pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |this, cx| {
-        let mut seen = 0;
-        let mut seen_tags = 0;
-        let mut ticks = 0u64;
+        let (mut seen, mut seen_tags) = (0, 0);
         loop {
-            cx.background_executor().timer(TICK).await;
+            seen = EVENTS.after(seen).await;
             let changed = std::mem::take(&mut *changes.lock().unwrap());
-            ticks += 1;
-            if ticks.is_multiple_of(VOLUMES_EVERY) {
-                cx.background_executor()
-                    .spawn(async { data::refresh_volumes() })
-                    .detach();
-            }
-            crate::thumbs::collect_thumbnails();
-            crate::thumbs::sweep_thumbnails();
-            let landed = crate::thumbs::thumbnails_landed();
-            let drawn = std::mem::replace(&mut seen, landed) != landed;
             let tags = crate::tags::tags_landed();
             let tagged = std::mem::replace(&mut seen_tags, tags) != tags;
             if this
                 .update(cx, |this, cx| {
                     this.changed(changed, cx);
-                    if drawn || tagged {
+                    let events = std::mem::take(&mut *this.queue_events.lock().unwrap());
+                    this.handle_queue_events(events, cx);
+                    if tagged {
                         cx.notify();
                     }
                 })
@@ -165,27 +158,19 @@ pub(crate) fn spawn_folder_tick(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Cont
             {
                 break;
             }
+            // A burst of tag reads or job progress lands once a tick, not once per item.
+            cx.background_executor().timer(TICK).await;
         }
     })
     .detach();
 }
 
-pub(crate) fn spawn_queue_tick(cx: &mut Context<FinderDemo>) {
-    cx.spawn(async move |this, cx| {
-        loop {
-            cx.background_executor().timer(TICK).await;
-            if this
-                .update(cx, |this, cx| {
-                    let events = std::mem::take(&mut *this.queue_events.lock().unwrap());
-                    this.handle_queue_events(events, cx);
-                })
-                .is_err()
-            {
-                break;
-            }
+pub(crate) fn notify_windows(cx: &mut App) {
+    for window in cx.windows() {
+        if let Some(demo) = window.downcast::<FinderDemo>() {
+            demo.update(cx, |_, _, cx| cx.notify()).ok();
         }
-    })
-    .detach();
+    }
 }
 
 impl FinderDemo {
@@ -200,8 +185,7 @@ impl FinderDemo {
         crate::custom::fetch_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
         // A row asks for its thumbnail as the list lays itself out, which is after this runs.
-        let demo = cx.entity();
-        cx.defer(move |cx| crate::thumbs::watch_thumbnails(&demo, cx));
+        cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.follow();
     }
 

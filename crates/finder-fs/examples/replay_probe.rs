@@ -13,6 +13,7 @@ fn main() {
     let (tx, rx) = mpsc::channel();
     let _watcher = finder_fs::watch::since(since, roots, move |replay| {
         let _ = tx.send(replay);
+        false
     });
     let start = Instant::now();
     let (mut batches, mut dirs, mut rescans, mut wrapped, mut reached) = (0, 0, 0, false, since);
