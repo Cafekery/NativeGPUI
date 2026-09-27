@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -23,10 +23,9 @@ pub(crate) struct Stats {
     pub(crate) head: Vec<Line>,
 }
 
-pub(crate) fn summarize(
+pub(crate) fn summarize<'a>(
     key: (u64, usize),
-    lines: &[Line],
-    chosen: &HashSet<SharedString>,
+    picked: impl IntoIterator<Item = &'a Line>,
     tags: &HashMap<SharedString, Vec<usize>>,
     stale: &AtomicBool,
 ) -> Option<Stats> {
@@ -42,11 +41,7 @@ pub(crate) fn summarize(
         head: Vec::new(),
     };
     let mut weighed = HashMap::new();
-    let picked = lines
-        .iter()
-        .filter(|line| chosen.contains(&line.key))
-        .take(STATS_CAP);
-    for line in picked {
+    for line in picked.into_iter().take(STATS_CAP) {
         if stale.load(Ordering::Relaxed) {
             return None;
         }
@@ -78,8 +73,12 @@ pub(crate) fn summarize(
 
 type Weighed = HashMap<&'static Path, HashMap<String, (Option<u64>, Option<usize>)>>;
 
+pub(crate) fn sized_by_index(row: &Row) -> Option<&'static str> {
+    row.opens.filter(|_| row.discloses)
+}
+
 fn total_bytes(row: &Row, weighed: &mut Weighed) -> u64 {
-    let Some(id) = row.opens.filter(|_| row.discloses) else {
+    let Some(id) = sized_by_index(row) else {
         return row.bytes;
     };
     let path = Path::new(id);

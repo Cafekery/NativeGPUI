@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,7 @@ use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
 use crate::views::icon::Grid;
-use crate::views::list::{ICON_SIZE, ICON_SMALL};
+use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
@@ -113,6 +114,7 @@ pub(crate) struct FinderDemo {
     pub(crate) connect_sheet: Option<ConnectSheet>,
     pub(crate) save_sheet: Option<String>,
     pub(crate) ql_icon: Anchor,
+    pub(crate) faces: Rc<RefCell<Faces>>,
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
     pub(crate) icon_size: f64,
@@ -252,6 +254,7 @@ impl FinderDemo {
             connect_sheet: None,
             save_sheet: None,
             ql_icon: Anchor::default(),
+            faces: Rc::default(),
             tag_editor: None,
             ql_shown: None,
             icon_size: prefs::icon_size().unwrap_or(64.) as f64,
