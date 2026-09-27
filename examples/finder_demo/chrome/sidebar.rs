@@ -153,11 +153,17 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
         None if location => Glyph::Symbol("internaldrive"),
         _ => glyph_of(Path::new(id)),
     };
+    let title = match listed.special {
+        Some(ICloudDrive | AirDrop | Network | Trash) => {
+            finder_fs::words::say(&listed.title).into_owned()
+        }
+        _ => listed.title,
+    };
     Some(Row {
         eject: listed.ejectable,
         drops: listed.path.is_some(),
         muted: location,
-        ..row(id, listed.title, glyph)
+        ..row(id, title, glyph)
     })
 }
 
@@ -186,7 +192,11 @@ pub(crate) fn groups() -> Vec<Group> {
         .collect();
     tags.push(Row {
         muted: true,
-        ..row("tag:", "All Tags…", Glyph::AllTags)
+        ..row(
+            "tag:",
+            finder_fs::words::say("All Tags…").into_owned(),
+            Glyph::AllTags,
+        )
     });
 
     let mut groups = vec![
@@ -271,16 +281,18 @@ impl FinderDemo {
             .iter()
             .zip(&self.sidebar_rows)
             .map(|(group, order)| {
-                sidebar_group(group.id, group.title).children(order.iter().filter_map(|wanted| {
-                    let row = group.rows.iter().find(|row| row.id == *wanted)?;
-                    Some(
-                        sidebar_item(row.id, row.title.clone())
-                            .icon(row.glyph.icon())
-                            .ejectable(row.eject)
-                            .accepts_drops(row.drops)
-                            .muted(row.muted),
-                    )
-                }))
+                sidebar_group(group.id, finder_fs::words::say(group.title).into_owned()).children(
+                    order.iter().filter_map(|wanted| {
+                        let row = group.rows.iter().find(|row| row.id == *wanted)?;
+                        Some(
+                            sidebar_item(row.id, row.title.clone())
+                                .icon(row.glyph.icon())
+                                .ejectable(row.eject)
+                                .accepts_drops(row.drops)
+                                .muted(row.muted),
+                        )
+                    }),
+                )
             })
             .collect()
     }

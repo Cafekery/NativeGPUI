@@ -867,7 +867,7 @@ impl Shown {
                 .text_size(body)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ink.heading)
-                .child("Tags"),
+                .child(finder_fs::words::say("Tags").into_owned()),
         );
 
         let tags = div()

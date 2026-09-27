@@ -175,7 +175,7 @@ pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
 
 pub(crate) fn tag_title(id: &str) -> String {
     if id == crate::search::RECENTS {
-        return "Recents".to_string();
+        return finder_fs::words::say("Recents").into_owned();
     }
     if let Some(file) = crate::smart::file_of(id) {
         let stem = Path::new(file).file_stem().unwrap_or_default();

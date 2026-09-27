@@ -18,8 +18,8 @@ pub(crate) const NETWORK: usize = 2;
 impl FinderDemo {
     pub(crate) fn scope_name(&self) -> String {
         match self.scope {
-            THIS_MAC => "This Mac".to_string(),
-            NETWORK => "Network".to_string(),
+            THIS_MAC => finder_fs::words::say("This Mac").into_owned(),
+            NETWORK => finder_fs::words::say("Network").into_owned(),
             _ => self
                 .folder()
                 .map_or_else(|| "This Mac".to_string(), |folder| folder.title.to_string()),
@@ -51,7 +51,11 @@ impl FinderDemo {
             )
             .child(
                 native_segmented("ng.finder.scope.segments", self.scope)
-                    .segments(["This Mac".to_string(), folder_name, "Network".to_string()])
+                    .segments([
+                        finder_fs::words::say("This Mac").into_owned(),
+                        folder_name,
+                        finder_fs::words::say("Network").into_owned(),
+                    ])
                     .style(SegmentStyle::Capsule)
                     .control_size(ControlSize::Small)
                     .selected_bezel_color(SystemColor::UnemphasizedSelectedContentBackground)
