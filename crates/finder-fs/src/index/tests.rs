@@ -376,6 +376,27 @@ fn note_changed_moves_sizes_up() {
 }
 
 #[test]
+fn a_folder_read_again_shows_its_new_date_in_its_parent() {
+    let temp = tree("own-date");
+    let root = &temp.0;
+    let index = crawled(root);
+    let long_ago = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    let b = fs::File::open(root.join("a/b")).unwrap();
+    b.set_times(fs::FileTimes::new().set_modified(long_ago))
+        .unwrap();
+    index.note_changed(&[root.join("a")]);
+
+    fs::write(root.join("a/b/fresh.txt"), b"f").unwrap();
+    index.note_changed(&[root.join("a/b")]);
+
+    let listed = index.children(&root.join("a")).unwrap();
+    let listed = listed.iter().find(|entry| entry.name == "b").unwrap();
+    let now = fs::metadata(root.join("a/b")).unwrap().modified().unwrap();
+    let secs = |at: SystemTime| at.duration_since(UNIX_EPOCH).unwrap().as_secs();
+    assert_eq!(secs(listed.modified), secs(now));
+}
+
+#[test]
 fn snapshot_round_trip() {
     let temp = tree("snapshot");
     let root = &temp.0;
@@ -708,11 +729,11 @@ fn a_followed_change_moves_the_snapshot_forward_without_rewriting_it() {
     let root = &temp.0;
     let store = store("follow-id");
     let index = Index::open(&store);
+    let _following = index.follow(vec![root.clone()]);
     crawl(&index, root);
     let landed = index.stats().event_id;
     let written = fs::metadata(&store).unwrap().modified().unwrap();
     let roots = index.read().roots.len();
-    let _following = index.follow(vec![root.clone()]);
     std::thread::sleep(SETTLE);
 
     fs::create_dir_all(root.join("fresh/inner")).unwrap();
@@ -723,6 +744,22 @@ fn a_followed_change_moves_the_snapshot_forward_without_rewriting_it() {
     assert_eq!(index.read().roots.len(), roots);
     assert_eq!(fs::metadata(&store).unwrap().modified().unwrap(), written);
     let _ = fs::remove_file(&store);
+}
+
+#[test]
+fn a_root_walked_before_the_follower_started_is_not_moved_forward_by_it() {
+    let temp = tree("follow-late");
+    let root = &temp.0;
+    let index = crawled(root);
+    let landed = index.stats().event_id;
+    let _following = index.follow(vec![root.clone()]);
+    std::thread::sleep(SETTLE);
+
+    fs::write(root.join("a/late.txt"), b"l").unwrap();
+
+    assert!(eventually(|| index.search("late", None, 4).len() == 1));
+    std::thread::sleep(SETTLE);
+    assert_eq!(index.stats().event_id, landed);
 }
 
 #[test]
@@ -838,4 +875,10 @@ fn a_root_rescan_reads_again_only_the_folders_changed_since_the_tree_was_in_sync
     assert!(reads.contains(&root.join("a/b")));
     assert!(!reads.contains(&root.join("a/b/c")));
     assert!(!reads.contains(&root.join("many")));
+    let exact = |dir: &Path| {
+        let tree = index.read();
+        tree.nodes[tree.find(dir).unwrap() as usize].state & super::store::EXACT != 0
+    };
+    assert!(exact(&root.join("a/b")));
+    assert!(!exact(&root.join("many")));
 }

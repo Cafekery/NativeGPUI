@@ -17,6 +17,8 @@ pub const DELETED: u8 = 1 << 4;
 pub const LISTED: u8 = 1 << 0;
 pub const VISITED: u8 = 1 << 1;
 pub const COMPLETE: u8 = 1 << 2;
+/// Listed from the disk since the last time it may have missed an event.
+pub const EXACT: u8 = 1 << 3;
 
 const CHUNK: usize = 1 << 19;
 
@@ -358,11 +360,12 @@ impl Tree {
         }
     }
 
-    pub fn advance(&mut self, followed: &[PathBuf], event_id: u64) {
+    /// A root caught up before `from`, when the follower started, still owes what came between.
+    pub fn advance(&mut self, followed: &[PathBuf], event_id: u64, from: u64) {
         for root in self
             .roots
             .iter_mut()
-            .filter(|root| followed.contains(&root.path))
+            .filter(|root| root.event_id >= from && followed.contains(&root.path))
         {
             root.event_id = root.event_id.max(event_id);
         }
@@ -384,7 +387,7 @@ impl Tree {
         })
     }
 
-    pub fn listed_under(&self, roots: &[PathBuf]) -> Vec<PathBuf> {
+    pub fn listed_under(&self, roots: &[PathBuf]) -> Vec<(u32, PathBuf)> {
         let mut stack: Vec<(u32, PathBuf)> = roots
             .iter()
             .filter_map(|root| Some((self.find(root)?, root.clone())))
@@ -401,7 +404,7 @@ impl Tree {
                     stack.push((child, path.join(name)));
                 }
             }
-            listed.push(path);
+            listed.push((id, path));
         }
         listed
     }
@@ -476,7 +479,7 @@ impl Tree {
         id
     }
 
-    fn write(&mut self, id: u32, entry: &Entry, sealed: bool) {
+    pub fn write(&mut self, id: u32, entry: &Entry, sealed: bool) {
         let was_dir = self.nodes[id as usize].is_dir();
         let node = &mut self.nodes[id as usize];
         node.flags = kind_bits(entry.kind)
@@ -555,7 +558,7 @@ impl Tree {
                 self.tombstone(id);
             }
         }
-        self.nodes[dir as usize].state |= LISTED | VISITED;
+        self.nodes[dir as usize].state |= LISTED | VISITED | EXACT;
         ids
     }
 
