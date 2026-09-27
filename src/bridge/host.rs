@@ -629,15 +629,11 @@ fn restack(state: &HostState, created: &[u64]) {
     if survivors.eq(order.iter().filter(|key| !new(key))) {
         for (at, key) in order.iter().enumerate().filter(|(_, key)| new(key)) {
             let home = container(key);
-            let sibling = |other: &&u64| ptr::eq(container(other), home);
-            let (edge, neighbour) = match order[..at].iter().rev().find(sibling) {
-                Some(below) => (NSWindowOrderingMode::Above, below),
-                None => match order[at + 1..].iter().find(sibling) {
-                    Some(above) => (NSWindowOrderingMode::Below, above),
-                    None => continue,
-                },
+            let sibling = |other: &u64| ptr::eq(container(other), home);
+            let Some((edge, neighbour)) = anchor(order, at, sibling, new) else {
+                continue;
             };
-            let neighbour: &NSView = &state.slots[neighbour].clip;
+            let neighbour: &NSView = &state.slots[&neighbour].clip;
             home.addSubview_positioned_relativeTo(&state.slots[key].clip, edge, Some(neighbour));
         }
     } else {
@@ -668,6 +664,22 @@ fn restack(state: &HostState, created: &[u64]) {
             unsafe { view(from).setNextKeyView(next) };
         }
     }
+}
+
+fn anchor(
+    order: &[u64],
+    at: usize,
+    sibling: impl Fn(&u64) -> bool,
+    new: impl Fn(&u64) -> bool,
+) -> Option<(NSWindowOrderingMode, u64)> {
+    if let Some(below) = order[..at].iter().rev().find(|key| sibling(key)) {
+        return Some((NSWindowOrderingMode::Above, *below));
+    }
+    // `addSubview:` left each view created this frame topmost, wherever it belongs.
+    let above = order[at + 1..]
+        .iter()
+        .find(|key| sibling(key) && !new(key))?;
+    Some((NSWindowOrderingMode::Below, *above))
 }
 
 pub struct Slot<'a> {
@@ -767,6 +779,9 @@ pub(crate) use hosted_element;
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, point, px, size};
+    use objc2_app_kit::NSWindowOrderingMode;
+
+    use super::anchor;
 
     #[test]
     fn a_mask_clear_of_the_bounds_leaves_an_empty_rect_not_a_negative_one() {
@@ -780,5 +795,21 @@ mod tests {
             assert!(visible.is_empty());
             assert!(visible.size.width >= px(0.) && visible.size.height >= px(0.));
         }
+    }
+
+    #[test]
+    fn views_created_around_older_ones_stack_in_paint_order() {
+        let order = [1, 2, 10, 11, 3, 4, 12];
+        let new = |key: &u64| *key < 10;
+        let mut stack: Vec<u64> = order.iter().copied().filter(|key| !new(key)).collect();
+        stack.extend(order.iter().copied().filter(new));
+        for (at, key) in order.iter().enumerate().filter(|(_, key)| new(key)) {
+            if let Some((edge, neighbour)) = anchor(&order, at, |_| true, new) {
+                stack.retain(|other| other != key);
+                let to = stack.iter().position(|other| *other == neighbour).unwrap();
+                stack.insert(to + usize::from(edge == NSWindowOrderingMode::Above), *key);
+            }
+        }
+        assert_eq!(stack, order);
     }
 }
