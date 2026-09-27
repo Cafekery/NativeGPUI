@@ -12,8 +12,8 @@ use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSKeyedUnarchiver, NSNumber, NSString, NSURL, NSURLPathKey,
 };
 
-use crate::icloud;
 use crate::volumes::{self, Standard, Volume};
+use crate::{icloud, servers, sort};
 
 const LISTS: &str = "Library/Application Support/com.apple.sharedfilelist";
 
@@ -77,6 +77,8 @@ pub struct Listed {
     pub special: Option<Special>,
     pub network: bool,
     pub ejectable: bool,
+    /// The host a server row's volume was mounted from.
+    pub server: Option<String>,
 }
 
 impl Listed {
@@ -87,6 +89,7 @@ impl Listed {
             special,
             network: false,
             ejectable: false,
+            server: None,
         }
     }
 
@@ -94,6 +97,7 @@ impl Listed {
         Listed {
             network: volume.network,
             ejectable: volume.ejectable,
+            server: volume.server.clone(),
             ..Listed::new(title, Some(volume.path.clone()), None)
         }
     }
@@ -210,12 +214,15 @@ fn arrange(
     if listed(Special::AirDrop).next().is_some() {
         rows.push(Listed::new("AirDrop", None, Some(Special::AirDrop)));
     }
+    let mut servers: Vec<Listed> = Vec::new();
     for volume in mounted.iter().filter(|volume| volume.network).filter(shown) {
-        let host = volume.server.clone().unwrap_or_else(|| volume.name.clone());
-        if !rows.iter().any(|row| row.network && row.title == host) {
-            rows.push(Listed::volume(host, volume));
+        let title = servers::title(volume.server.as_deref().unwrap_or(&volume.name));
+        if !servers.iter().any(|row| row.title == title) {
+            servers.push(Listed::volume(title, volume));
         }
     }
+    servers.sort_by(|a, b| sort::name_cmp(&a.title, &b.title));
+    rows.extend(servers);
     rows.push(Listed::new("Network", None, Some(Special::Network)));
     if listed(Special::Trash).next().is_some() {
         let trash = volumes::standard(Standard::Trash);
@@ -419,11 +426,15 @@ mod tests {
             item(Some(Trash), Some("Trash"), Some("/"), true),
             item(None, Some("Gone"), Some("/Volumes/Gone"), false),
         ];
+        let bonjour = "NG%20Jace%E2%80%99s%20Mini._smb._tcp.local";
         let mounted = [
             volume("Macintosh HD", "/", false, None),
+            volume("share", "/Volumes/share", false, Some(bonjour)),
             volume("Storage", "/Volumes/Storage", false, Some("100.109.9.62")),
             volume("Queue", "/Volumes/Queue", true, None),
+            volume("Photos", "/Volumes/Photos", false, Some("nas.local")),
             volume("Media", "/Volumes/Media", false, Some("100.109.9.62")),
+            volume("Backup", "/Volumes/Backup", false, Some("10.0.0.9")),
             volume("Gone", "/Volumes/Gone", true, None),
         ];
         let rows = arrange(&items, [true; 3], &mounted);
@@ -439,7 +450,10 @@ mod tests {
                 "Macintosh HD",
                 "Queue",
                 "AirDrop",
+                "10.0.0.9",
                 "100.109.9.62",
+                "nas.local",
+                "NG Jace’s Mini",
                 "Network",
                 "Trash"
             ]
@@ -449,11 +463,21 @@ mod tests {
             .filter(|row| row.ejectable)
             .map(|row| row.title.as_str())
             .collect();
-        assert_eq!(ejects, ["Queue", "100.109.9.62"]);
         assert_eq!(
-            rows[6].path.as_deref(),
+            ejects,
+            [
+                "Queue",
+                "10.0.0.9",
+                "100.109.9.62",
+                "nas.local",
+                "NG Jace’s Mini"
+            ]
+        );
+        assert_eq!(
+            rows[7].path.as_deref(),
             Some(PathBuf::from("/Volumes/Storage").as_path())
         );
+        assert_eq!(rows[9].server.as_deref(), Some(bonjour));
 
         let titles: Vec<String> = arrange(&items, [false; 3], &mounted)
             .into_iter()

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use block2::StackBlock;
 use finder_fs::volumes;
-use gpui::App;
+use gpui::{App, Window};
 use objc2_app_kit::{
     NSWorkspace, NSWorkspaceDidMountNotification, NSWorkspaceDidRenameVolumeNotification,
     NSWorkspaceDidUnmountNotification,
@@ -35,6 +35,16 @@ static REFRESHED: Mutex<Option<Instant>> = Mutex::new(None);
 /// Rung by a mount, an unmount or a rename, and by free space read from a stale snapshot.
 static VOLUMES: Signal = Signal::new();
 static MOUNTS: AtomicBool = AtomicBool::new(false);
+/// Servers asked while mounted: a remount asks again.
+static ASKED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+/// Each server's model and Finder's glyph for it, newest first. Kept across launches, since
+/// sharingd answers nothing for minutes after a mount.
+static KNOWN: Mutex<Option<Vec<(String, String, &'static str)>>> = Mutex::new(None);
+const KEPT: usize = 64;
+/// sharingd can take minutes to learn the model of a server mounted in a burst.
+const SERVER_WAIT: Duration = Duration::from_secs(300);
+/// Servers are asked only once the first window has drawn.
+static ASKING: AtomicBool = AtomicBool::new(false);
 
 fn seen() -> RwLockReadGuard<'static, Vec<Mounted>> {
     SEEN.read().unwrap()
@@ -50,7 +60,11 @@ fn fresh() {
 
 /// Blocks for milliseconds: never call it from a frame. Whether anything changed.
 pub(crate) fn refresh_volumes() -> bool {
-    let mounted: Vec<Mounted> = volumes::mounted()
+    let volumes = volumes::mounted();
+    if ASKING.load(Ordering::Relaxed) {
+        ask_servers(&volumes);
+    }
+    let mounted: Vec<Mounted> = volumes
         .iter()
         .map(|volume| Mounted {
             mount: volume.path.to_string_lossy().into_owned(),
@@ -66,6 +80,74 @@ pub(crate) fn refresh_volumes() -> bool {
     let changed = *seen != mounted;
     *seen = mounted;
     changed
+}
+
+pub(crate) fn server_symbol(host: &str) -> &'static str {
+    let mut known = KNOWN.lock().unwrap();
+    let known = known.get_or_insert_with(read_servers);
+    let found = known.iter().find(|(known, ..)| known == host);
+    found.map_or("display", |&(.., symbol)| symbol)
+}
+
+/// Each mounted host is asked once, on its own thread; an answer that changes a glyph rebuilds
+/// the sidebar.
+fn ask_servers(volumes: &[volumes::Volume]) {
+    let mut asked = ASKED.lock().unwrap();
+    asked.retain(|host| {
+        volumes
+            .iter()
+            .any(|volume| volume.server.as_ref() == Some(host))
+    });
+    let hosts: Vec<String> = volumes
+        .iter()
+        .filter_map(|volume| volume.server.clone())
+        .filter(|host| asked.insert(host.clone()))
+        .collect();
+    drop(asked);
+    if hosts.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        finder_fs::servers::models(&hosts, SERVER_WAIT, |host, model| {
+            if remember(host, model) {
+                MOUNTS.store(true, Ordering::Relaxed);
+                VOLUMES.ring();
+            }
+        })
+    });
+}
+
+/// Whether the host's glyph changed.
+fn remember(host: &str, model: Option<&str>) -> bool {
+    let symbol = model.map(|model| intern(&finder_fs::servers::symbol(Some(model))));
+    let mut known = KNOWN.lock().unwrap();
+    let known = known.get_or_insert_with(read_servers);
+    let was = known
+        .iter()
+        .position(|(known, ..)| known == host)
+        .map(|at| known.remove(at).2);
+    if let (Some(model), Some(symbol)) = (model, symbol) {
+        known.insert(0, (host.to_owned(), model.to_owned(), symbol));
+        known.truncate(KEPT);
+    }
+    let text: String = known
+        .iter()
+        .map(|(host, model, symbol)| format!("{host}\t{model}\t{symbol}\n"))
+        .collect();
+    std::fs::write(crate::store().join("servers.tsv"), text).ok();
+    was.unwrap_or("display") != symbol.unwrap_or("display")
+}
+
+fn read_servers() -> Vec<(String, String, &'static str)> {
+    let text = std::fs::read_to_string(crate::store().join("servers.tsv")).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (host, model) = (fields.next()?.to_owned(), fields.next()?.to_owned());
+            Some((host, model, intern(fields.next()?)))
+        })
+        .take(KEPT)
+        .collect()
 }
 
 pub(crate) fn follow_volumes(cx: &mut App) {
@@ -85,6 +167,18 @@ pub(crate) fn follow_volumes(cx: &mut App) {
         unsafe {
             center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
         };
+    }
+    if let Some(window) = cx.windows().first() {
+        // A callback queued before a frame runs before that frame draws.
+        let drawn = |window: &mut Window, _: &mut App| {
+            window.on_next_frame(|_, _| {
+                ASKING.store(true, Ordering::Relaxed);
+                VOLUMES.ring();
+            })
+        };
+        window
+            .update(cx, |_, window, _| window.on_next_frame(drawn))
+            .ok();
     }
     cx.spawn(async move |cx| {
         let mut seen = 0;
