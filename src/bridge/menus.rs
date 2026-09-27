@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem};
 use objc2::rc::{Retained, Weak};
@@ -127,12 +128,12 @@ const CMD_CTRL: NSEventModifierFlags = CMD.union(CTRL);
 const CTRL_SHIFT: NSEventModifierFlags = CTRL.union(NSEventModifierFlags::Shift);
 
 fn menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
-    NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title))
+    NSMenu::initWithTitle(NSMenu::alloc(mtm), &worded(title))
 }
 
 fn submenu_row(mtm: MainThreadMarker, title: &str, submenu: &NSMenu) -> Retained<NSMenuItem> {
     let row = NSMenuItem::new(mtm);
-    row.setTitle(&NSString::from_str(title));
+    row.setTitle(&worded(title));
     row.setSubmenu(Some(submenu));
     row
 }
@@ -153,7 +154,7 @@ impl Rows for NSMenu {
         let row = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(MainThreadMarker::from(self)),
-                &NSString::from_str(title),
+                &worded(title),
                 Some(action),
                 &NSString::from_str(key),
             )
@@ -383,7 +384,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             let row = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    &NSString::from_str(&command.title),
+                    &worded(&command.title),
                     Some(sel!(ngMenuCommand:)),
                     &NSString::from_str(&key),
                 )

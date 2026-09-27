@@ -32,3 +32,4 @@ pub use services::services_selection;
 pub use surfaces::*;
 pub use system::thumbnails;
 pub use system::tokens;
+pub use system::wording::set_wording;
