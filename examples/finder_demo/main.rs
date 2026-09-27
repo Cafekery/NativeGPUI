@@ -93,6 +93,7 @@ fn main() {
             index().warm();
         })
         .detach();
+        warm.spawn(async { icons::ask_app_management() }).detach();
         warm.spawn(async {
             tags::all();
             tags::tags();
