@@ -140,6 +140,12 @@ impl FinderDemo {
         self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
     }
 
+    /// The columns overflow the list, which then scrolls sideways: rounded to hundredths as GPUI
+    /// rounds a scroll range, so drift in Name's fill never counts.
+    pub(crate) fn list_bleeds(&self) -> bool {
+        ((self.list_content_w() - self.list_room) * 100.).round() > 0.
+    }
+
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let metrics = self.metrics();
         let pane = match self.preview_shown() {

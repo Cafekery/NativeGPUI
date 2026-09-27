@@ -13,7 +13,7 @@ use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::click_kind;
-use crate::views::list::{name_prefix, row_font};
+use crate::views::list::{ICON_SMALL, name_prefix, row_font};
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -32,7 +32,6 @@ pub(crate) const CELL_TRAIL: f32 = 6.;
 pub(crate) const SORT_INSET: f32 = 5.;
 const SORT_TOP: f32 = 10.;
 
-pub(crate) const NAME_MIN_W: f32 = 168.;
 const NAME_FIT: f32 = 14.;
 const NAME_FIT_LEAST: f32 = 128.;
 const NAME_FIT_PER_POINT: f32 = 5.;
@@ -45,6 +44,16 @@ const DIVIDER_GRAB: f32 = 5.;
 const DIVIDER_LEAD: f32 = 3.;
 const PRESS_ALPHA: f32 = 0.31;
 
+/// Finder never narrows Name below its fit's least, which grows with the icon. Finder's widths
+/// count from the column, which starts a row inset in; `name_w` counts from the row.
+fn name_least(size: f32, icon: f32) -> f32 {
+    PANE_INSET + NAME_FIT_LEAST + icon - ICON_SMALL + NAME_FIT_PER_POINT * size
+}
+
+pub(crate) fn name_min_w(icon: f32) -> f32 {
+    name_least(row_font(), icon)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ColumnSpec {
     pub(crate) column: Column,
@@ -54,7 +63,7 @@ pub(crate) struct ColumnSpec {
 impl ColumnSpec {
     pub(crate) fn of(column: Column) -> Self {
         let width = match column {
-            Column::Name => NAME_MIN_W,
+            Column::Name => name_min_w(ICON_SMALL),
             Column::Modified => COL_MODIFIED,
             Column::Size => COL_SIZE,
             Column::Kind => COL_KIND,
@@ -169,7 +178,7 @@ impl FinderDemo {
         let span = self.list_room;
         let fixed = self.list_content_w() - self.name_w;
         if self.list_span.is_nan() {
-            self.name_w = (span - fixed).max(NAME_MIN_W);
+            self.name_w = (span - fixed).max(name_min_w(self.list_icon));
         } else if span != self.list_span {
             let delta = span - self.list_span;
             let overflow = (self.list_content_w() - self.list_span).max(0.);
@@ -178,7 +187,7 @@ impl FinderDemo {
             } else {
                 (delta - overflow).max(0.)
             };
-            self.name_w = (self.name_w + change).max(NAME_MIN_W);
+            self.name_w = (self.name_w + change).max(name_min_w(self.list_icon));
         }
         self.list_span = span;
     }
@@ -228,7 +237,7 @@ impl FinderDemo {
 
     fn resized_column(&self, index: usize) -> (f32, f32) {
         match index {
-            0 => (self.name_w, NAME_MIN_W),
+            0 => (self.name_w, name_min_w(self.list_icon)),
             index => (
                 self.list_columns
                     .get(index - 1)
@@ -340,7 +349,8 @@ impl FinderDemo {
 
     pub(crate) fn load_column_widths(&mut self) {
         let here = self.here();
-        self.name_w = prefs::list_column_width(here, Column::Name).unwrap_or(NAME_MIN_W);
+        self.name_w = prefs::list_column_width(here, Column::Name)
+            .unwrap_or_else(|| name_min_w(self.list_icon));
         for spec in &mut self.list_columns {
             spec.width = prefs::list_column_width(here, spec.column)
                 .unwrap_or_else(|| ColumnSpec::of(spec.column).width);
@@ -353,7 +363,7 @@ impl FinderDemo {
             0 => Column::Name,
             index => self.list_columns[index - 1].column,
         };
-        let size = row_font();
+        let (size, icon) = (row_font(), self.list_icon);
         if column == Column::Modified {
             return self.fitted(index, column, date_fit(size), cx);
         }
@@ -361,7 +371,7 @@ impl FinderDemo {
         let here = self.here();
         fit::in_background(
             cx,
-            move |texts| fit_width(texts, column, &rows, size),
+            move |texts| fit_width(texts, column, &rows, size, icon),
             move |this, width, cx| {
                 let now = match index {
                     0 => Some(Column::Name),
@@ -617,9 +627,10 @@ fn fit_width(
     column: Column,
     rows: &[(f32, SharedString)],
     size: f32,
+    icon: f32,
 ) -> f32 {
     let (margin, least) = match column {
-        Column::Name => (NAME_FIT, NAME_FIT_LEAST + NAME_FIT_PER_POINT * size),
+        Column::Name => (PANE_INSET + NAME_FIT, name_least(size, icon)),
         Column::Size => (SIZE_FIT, SIZE_FIT_LEAST),
         _ => (KIND_FIT, KIND_FIT_LEAST),
     };

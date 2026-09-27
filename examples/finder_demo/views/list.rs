@@ -5,9 +5,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, ExternalPaths, Font, FontWeight,
-    Hsla, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, StyleRefinement,
-    WeakEntity, Window, div, prelude::*, px, uniform_list,
+    AnyElement, AnyView, App, Bounds, ClickEvent, Context, Div, Entity, ExternalPaths, Font,
+    FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful,
+    StyleRefinement, UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*,
+    px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -33,7 +34,7 @@ pub(crate) fn row_font() -> f32 {
 pub(crate) const ROW_PILL_RADIUS: f32 = 8.;
 const SELECTION_JOIN_ALPHA: f32 = 0.1;
 const SELECTION_JOIN_SHADE: f32 = 0.05;
-const SELECTION_JOIN_LEAD: f32 = 30.;
+const SELECTION_JOIN_LEAD: f32 = 15.;
 const SELECTION_JOIN_TRAIL: f32 = 6.;
 const SELECTION_DETAIL_ALPHA: f32 = 0.7;
 pub(crate) const LIST_TOP_GAP: f32 = 5.;
@@ -74,6 +75,7 @@ struct Look {
     date_style: usize,
     searching: bool,
     columns: Vec<ColumnSpec>,
+    bleed: bool,
     day: f64,
 }
 
@@ -256,6 +258,7 @@ impl FinderDemo {
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
             columns: self.list_columns.clone(),
+            bleed: self.list_bleeds(),
             day: today(),
         });
         let marks = Marks {
@@ -281,25 +284,7 @@ impl FinderDemo {
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = self.list_tail();
         let items = pads + count + tails;
-        // Finder stripes the empty rows below the last one; drawn under the list, which cannot scroll there.
-        let (stripe, pitch) = (look.stripe, look.row_h);
-        let top = {
-            let list = &self.scroll.0.borrow().base_handle;
-            // A scroll past the end reaches here before the list clamps it in prepaint.
-            f32::from(list.offset().y.max(-list.max_offset().y))
-        };
-        let fill = (count..count + pads + (self.pane_h / pitch) as usize + 2)
-            .filter(|at| at % 2 == 1)
-            .map(move |at| {
-                div()
-                    .absolute()
-                    .top(px((pads + at) as f32 * pitch + top))
-                    .h(px(pitch))
-                    .left(px(PANE_INSET))
-                    .right(px(PANE_INSET))
-                    .rounded(px(ROW_PILL_RADIUS))
-                    .bg(stripe)
-            });
+        let below = stripes(self.scroll.clone(), pads + (count | 1), &look);
         let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
@@ -359,7 +344,7 @@ impl FinderDemo {
             .relative()
             .mt(px(-lift))
             .mb(px(-trim))
-            .children(fill)
+            .child(below)
             .child(rows_menu(
                 "ng.finder.list.menu",
                 cx.entity().downgrade(),
@@ -420,14 +405,24 @@ impl FinderDemo {
     }
 }
 
+/// Finder's rows are inset, rounded pills until its columns overflow the list, then run edge to
+/// edge, square.
+fn edge(bleed: bool) -> (f32, f32) {
+    match bleed {
+        true => (0., 0.),
+        false => (PANE_INSET, ROW_PILL_RADIUS),
+    }
+}
+
 /// Finder's selection pill: a run of adjacent selected rows is one block, only its ends rounded,
-/// with a hairline at each join.
-fn pill(fill: Hsla, run: Run) -> Div {
-    let radius = |end: bool| px(if end { ROW_PILL_RADIUS } else { 0. });
+/// with a hairline at each join, which stays put when the rows run edge to edge.
+fn pill(fill: Hsla, run: Run, bleed: bool) -> Div {
+    let (inset, corner) = edge(bleed);
+    let radius = |end: bool| px(if end { corner } else { 0. });
     div()
         .absolute()
-        .left(px(PANE_INSET))
-        .right(px(PANE_INSET))
+        .left(px(inset))
+        .right(px(inset))
         .top_0()
         .bottom_0()
         .rounded_t(radius(!run.above))
@@ -437,13 +432,46 @@ fn pill(fill: Hsla, run: Run) -> Div {
             pill.child(
                 div()
                     .absolute()
-                    .left(px(SELECTION_JOIN_LEAD))
-                    .right(px(SELECTION_JOIN_TRAIL))
+                    .left(px(PANE_INSET - inset + SELECTION_JOIN_LEAD))
+                    .right(px(PANE_INSET - inset + SELECTION_JOIN_TRAIL))
                     .bottom_0()
                     .h(px(1.))
                     .bg(colour),
             )
         })
+}
+
+/// Finder stripes the empty rows below the last one, into the overscroll, and nothing above the
+/// first. Placed at paint from the bounds and offset the list's prepaint just laid its rows out at.
+fn stripes(list: UniformListScrollHandle, first: usize, look: &Look) -> impl IntoElement {
+    let (colour, pitch) = (look.stripe, look.row_h);
+    let (inset, radius) = edge(look.bleed);
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let state = list.0.borrow();
+            let (rows, offset) = (state.base_handle.bounds(), state.base_handle.offset());
+            let pitch = window.pixel_snap(px(pitch));
+            for at in (first..).step_by(2) {
+                let top = rows.top() + offset.y + pitch * at as f32;
+                if top >= bounds.bottom() {
+                    break;
+                }
+                window.paint_quad(
+                    gpui::fill(
+                        Bounds::from_corners(
+                            point(rows.left() + px(inset), top),
+                            point(rows.right() - px(inset), top + pitch),
+                        ),
+                        colour,
+                    )
+                    .corner_radii(px(radius)),
+                );
+            }
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 fn twist(
@@ -602,18 +630,25 @@ fn painted(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
         .relative()
         .flex()
         .items_center()
-        .children(fill.map(|(fill, run)| pill(fill, run)))
-        .children(drawn.dropping.map(|fill| pill(fill, Run::default())))
+        .children(fill.map(|(fill, run)| pill(fill, run, look.bleed)))
+        .children(
+            drawn
+                .dropping
+                .map(|fill| pill(fill, Run::default(), look.bleed)),
+        )
         .children(drawn.ring.then(|| {
             let colour = if over {
                 look.selection_text
             } else {
                 look.selection
             };
+            // Finder's edge-to-edge ring stands a point outside its row.
+            let (inset, radius) = edge(look.bleed);
+            let outset = if look.bleed { -1. } else { 0. };
             menu_ring(
                 colour,
-                PANE_INSET,
-                ROW_PILL_RADIUS,
+                (inset + outset, outset),
+                radius,
                 (drawn.run.above, drawn.run.join.is_some()),
                 over,
             )

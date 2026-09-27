@@ -28,7 +28,7 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::LIST_VIEW;
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, NAME_MIN_W, default_columns};
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, default_columns, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
@@ -209,7 +209,7 @@ impl FinderDemo {
             sort: prefs::finder().sort.0,
             ascending: prefs::finder().sort.1,
             list_columns: default_columns(),
-            name_w: NAME_MIN_W,
+            name_w: name_min_w(ICON_SMALL),
             header_drag: None,
             header: None,
             header_press: None,
