@@ -1,19 +1,18 @@
-use std::collections::HashMap;
-
 use gpui::{
     AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, Window, div, prelude::*, px,
+    MouseDownEvent, SharedString, Window, WindowTextSystem, div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{native_label, native_rule, native_symbol};
 
 use crate::app::FinderDemo;
-use crate::data::Column;
+use crate::data::{Column, date_fit};
+use crate::fit;
 use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, text_width};
-use crate::views::list::{column_text, name_prefix, row_font};
+use crate::ui::click_kind;
+use crate::views::list::{name_prefix, row_font};
 
 pub(crate) const COL_MODIFIED: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
@@ -33,6 +32,13 @@ pub(crate) const SORT_INSET: f32 = 5.;
 const SORT_TOP: f32 = 10.;
 
 pub(crate) const NAME_MIN_W: f32 = 168.;
+const NAME_FIT: f32 = 14.;
+const NAME_FIT_LEAST: f32 = 128.;
+const NAME_FIT_PER_POINT: f32 = 5.;
+const SIZE_FIT: f32 = 18.;
+const SIZE_FIT_LEAST: f32 = 75.;
+const KIND_FIT: f32 = 24.;
+const KIND_FIT_LEAST: f32 = 66.;
 const COL_MIN_W: f32 = 10.;
 const DIVIDER_GRAB: f32 = 5.;
 const DIVIDER_LEAD: f32 = 3.;
@@ -227,10 +233,10 @@ impl FinderDemo {
                     .left(px(boundary - DIVIDER_LEAD))
                     .w(px(DIVIDER_GRAB))
                     .cursor_ew_resize()
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         let (_, _, twice) = click_kind(event);
                         if twice {
-                            this.fit_list_column(index, window, cx);
+                            this.fit_list_column(index, cx);
                         }
                     }))
                     .on_mouse_down(
@@ -491,37 +497,79 @@ impl FinderDemo {
         self.refit_name_column();
     }
 
-    fn fit_list_column(&mut self, index: usize, window: &Window, cx: &mut Context<Self>) {
+    fn fit_list_column(&mut self, index: usize, cx: &mut Context<Self>) {
         let column = match index {
             0 => Column::Name,
             index => self.list_columns[index - 1].column,
         };
-        let lines = self.focused_lines();
-        let icon = self.list_icon_now();
-        let size = px(row_font());
-        let mut measured = HashMap::new();
-        let widest = lines.iter().fold(0_f32, |widest, line| {
-            let text = column_text(column, line);
-            let text_w = *measured
-                .entry(text.clone())
-                .or_insert_with(|| text_width(window, text, size));
-            let total = if column == Column::Name {
-                name_prefix(line, icon) + text_w + CELL_PAD
-            } else {
-                text_w + CELL_PAD + CELL_TRAIL
-            };
-            widest.max(total)
-        });
-        let fitted = widest.max(self.resized_column(index).1);
-        match index {
-            0 => self.name_w = fitted,
-            index => {
-                if let Some(spec) = self.list_columns.get_mut(index - 1) {
-                    spec.width = fitted;
-                }
-            }
+        let size = row_font();
+        if column == Column::Modified {
+            return self.fitted(index, column, date_fit(size), cx);
         }
-        prefs::set_list_column_width(self.here(), column, fitted);
+        let rows = self.fit_rows(column);
+        let here = self.here();
+        fit::in_background(
+            cx,
+            move |texts| fit_width(texts, column, &rows, size),
+            move |this, width, cx| {
+                let now = match index {
+                    0 => Some(Column::Name),
+                    index => this.list_columns.get(index - 1).map(|spec| spec.column),
+                };
+                if this.here() == here && now == Some(column) {
+                    this.fitted(index, column, width, cx);
+                }
+            },
+        );
+    }
+
+    /// Each row's lead before its text, and the text as `fit_width` measures it.
+    fn fit_rows(&self, column: Column) -> Vec<(f32, SharedString)> {
+        let icon = self.list_icon_now();
+        self.focused_lines()
+            .iter()
+            .map(|line| match column {
+                Column::Name => (name_prefix(line, icon), line.row.display.clone()),
+                Column::Size => (0., line.row.size.clone()),
+                _ => (0., line.row.kind.clone()),
+            })
+            .collect()
+    }
+
+    fn fitted(&mut self, index: usize, column: Column, width: f32, cx: &mut Context<Self>) {
+        match index {
+            0 => self.name_w = width,
+            index => self.list_columns[index - 1].width = width,
+        }
+        prefs::set_list_column_width(self.here(), column, width);
         cx.notify();
     }
+}
+
+/// The width Finder fits a list column to: its widest cell, in the font the cell draws, plus a
+/// margin, rounded up and no narrower than its least.
+fn fit_width(
+    texts: &WindowTextSystem,
+    column: Column,
+    rows: &[(f32, SharedString)],
+    size: f32,
+) -> f32 {
+    let (margin, least) = match column {
+        Column::Name => (NAME_FIT, NAME_FIT_LEAST + NAME_FIT_PER_POINT * size),
+        Column::Size => (SIZE_FIT, SIZE_FIT_LEAST),
+        _ => (KIND_FIT, KIND_FIT_LEAST),
+    };
+    let font = match column {
+        Column::Size => tokens::system_font_tabular(FontWeight::NORMAL),
+        _ => tokens::system_font(FontWeight::NORMAL),
+    };
+    let widest = fit::widest(
+        texts,
+        &font,
+        px(size),
+        rows,
+        |row| row.1.clone(),
+        |row, text_w| row.0 + text_w + margin,
+    );
+    widest.ceil().max(least)
 }
