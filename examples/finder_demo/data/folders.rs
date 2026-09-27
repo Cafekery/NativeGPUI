@@ -27,7 +27,7 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
     // Finder roots the Trash's path at "Trash", not at .Trash inside the home folder.
     let trash = standard(Standard::Trash).filter(|trash| Path::new(id).starts_with(trash));
     let (mount, volume) = match trash {
-        Some(trash) => (intern_path(&trash), "Trash"),
+        Some(trash) => (intern_path(&trash), intern(&finder_fs::words::say("Trash"))),
         None => volume_of(id),
     };
     let rest = id.strip_prefix(mount.trim_end_matches('/')).unwrap_or("");

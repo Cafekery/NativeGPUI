@@ -61,6 +61,11 @@ const QUIT_WAIT: Duration = Duration::from_millis(150);
 
 fn main() {
     app::EARLY_SIDEBAR.set(Some(app::ask_sidebar()));
+    std::thread::spawn(|| finder_fs::words::say(""));
+    native_gpui::set_wording(|text| match finder_fs::words::say(text) {
+        std::borrow::Cow::Owned(said) => Some(said),
+        std::borrow::Cow::Borrowed(_) => None,
+    });
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
