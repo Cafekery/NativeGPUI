@@ -108,15 +108,16 @@ thread_local! {
     /// Menu validation cannot read the window, so check marks and enabling follow this mirror.
     static STATE: Cell<(usize, Column, bool, bool, bool)> =
         const { Cell::new((LIST_VIEW, Column::Name, false, false, false)) };
-    static CHOSEN: Cell<((u64, u64, usize), bool, bool)> =
-        const { Cell::new(((u64::MAX, 0, 0), false, false)) };
+    static CHOSEN: Cell<((u64, u64, usize), bool, bool, bool)> =
+        const { Cell::new(((u64::MAX, 0, 0), false, false, false)) };
 }
 
-pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool) {
+/// Whether the chosen items refuse to open, can be shared, and all sit in iCloud Drive.
+pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool, bool) {
     let seen = (demo.selected.rev(), demo.folders.changed(), demo.view);
-    let (at, refused, shareable) = CHOSEN.get();
+    let (at, refused, shareable, cloud) = CHOSEN.get();
     if at == seen {
-        return (refused, shareable);
+        return (refused, shareable, cloud);
     }
     let chosen = demo.chosen_lines();
     // Finder keeps the Open rows off while every chosen item is a folder the user can't list.
@@ -128,8 +129,15 @@ pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool) {
     let shareable = chosen
         .iter()
         .all(|line| line.row.opens.is_none() || line.row.readable);
-    CHOSEN.set((seen, refused, shareable));
-    (refused, shareable)
+    let cloud = finder_fs::icloud::drive().is_some_and(|drive| {
+        shareable
+            && !chosen.is_empty()
+            && chosen
+                .iter()
+                .all(|line| Path::new(line.key.as_ref()).starts_with(&drive))
+    });
+    CHOSEN.set((seen, refused, shareable, cloud));
+    (refused, shareable, cloud)
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {

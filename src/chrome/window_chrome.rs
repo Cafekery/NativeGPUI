@@ -5,6 +5,7 @@ use std::panic::Location;
 use std::ptr;
 use std::rc::Rc;
 
+use block2::RcBlock;
 use gpui::{
     AnyElement, App, AsyncWindowContext, Bounds, CursorStyle, Element, ElementId, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels,
@@ -12,13 +13,15 @@ use gpui::{
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{
+    AnyThread, ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSImage, NSLayoutConstraint, NSMenu,
-    NSMenuDelegate, NSMenuItem, NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSSearchField,
-    NSSearchToolbarItem, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
+    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
+    NSImage, NSLayoutConstraint, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuToolbarItem, NSPopover,
+    NSPopoverBehavior, NSSearchField, NSSearchToolbarItem, NSSegmentStyle, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
     NSSharingServicePickerToolbarItemDelegate, NSSplitView, NSSplitViewController, NSTextAlignment,
     NSTextField, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
@@ -30,7 +33,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
-    NSString,
+    NSString, NSUserDefaults,
 };
 
 use crate::bridge::appkit::{Container, gpui_view, to_rect};
@@ -1016,6 +1019,8 @@ impl ToolbarItem {
 struct ToolbarIvars {
     items: RefCell<Vec<ToolbarItem>>,
     built: RefCell<Vec<(String, Retained<NSToolbarItem>)>>,
+    customization: RefCell<Option<ToolbarCustomization>>,
+    monitor: RefCell<Option<Retained<AnyObject>>>,
     // Weak: the window owns the toolbar, which owns this delegate.
     window: Weak<NSWindow>,
     cx: AsyncWindowContext,
@@ -1038,7 +1043,10 @@ define_class!(
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_items(&self, _: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-            self.identifiers()
+            match &*self.ivars().customization.borrow() {
+                Some(customization) => identifier_array(&customization.defaults),
+                None => self.identifiers(),
+            }
         }
 
         #[unsafe(method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:))]
@@ -1046,9 +1054,9 @@ define_class!(
             &self,
             _: &NSToolbar,
             ident: &NSString,
-            _: bool,
+            inserted: bool,
         ) -> Option<Retained<NSToolbarItem>> {
-            self.build_item(ident)
+            self.build_item(ident, inserted)
         }
     }
 
@@ -1186,15 +1194,101 @@ fn identifier_array(ids: &[String]) -> Retained<NSArray<NSToolbarItemIdentifier>
     NSArray::from_slice(&refs)
 }
 
+impl Drop for ToolbarIvars {
+    fn drop(&mut self) {
+        if let Some(monitor) = self.monitor.get_mut().take() {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    }
+}
+
+/// The deepest view outside `content` whose menu is the toolbar's own.
+fn toolbar_menu(
+    view: &NSView,
+    content: &NSView,
+    event: &NSEvent,
+) -> Option<(Retained<NSMenu>, Retained<NSView>)> {
+    if ptr::eq(view, content) {
+        return None;
+    }
+    let deeper = view
+        .subviews()
+        .iter()
+        .find_map(|sub| toolbar_menu(&sub, content, event));
+    if deeper.is_some() {
+        return deeper;
+    }
+    let menu = view.menuForEvent(event)?;
+    let customizes = menu
+        .itemArray()
+        .iter()
+        .any(|row| row.action() == Some(sel!(runToolbarCustomizationPalette:)));
+    customizes.then(|| (menu, view.retain()))
+}
+
 impl ToolbarDelegate {
     fn new(mtm: MainThreadMarker, window: &NSWindow, cx: AsyncWindowContext) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ToolbarIvars {
             items: RefCell::new(Vec::new()),
             built: RefCell::new(Vec::new()),
+            customization: RefCell::new(None),
+            monitor: RefCell::new(None),
             window: Weak::new(window),
             cx,
         });
         unsafe { msg_send![super(this), init] }
+    }
+
+    // Under a transparent titlebar AppKit hands a click on empty toolbar space to the content below.
+    fn watch_band(this: &Retained<Self>) {
+        let weak = Weak::new(&**this);
+        let block = RcBlock::new(move |event: ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            let answered = weak
+                .load()
+                .is_some_and(|this| this.band_menu(unsafe { event.as_ref() }));
+            if answered {
+                ptr::null_mut()
+            } else {
+                event.as_ptr()
+            }
+        });
+        let mask = NSEventMask::RightMouseDown | NSEventMask::LeftMouseDown;
+        let monitor =
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        *this.ivars().monitor.borrow_mut() = monitor;
+    }
+
+    fn band_menu(&self, event: &NSEvent) -> bool {
+        let secondary = event.r#type() == NSEventType::RightMouseDown
+            || event
+                .modifierFlags()
+                .contains(NSEventModifierFlags::Control);
+        let Some(window) = self.ivars().window.load() else {
+            return false;
+        };
+        let point = event.locationInWindow();
+        let layout = window.contentLayoutRect();
+        let ours = event.windowNumber() == window.windowNumber();
+        if !secondary || !ours || point.y < layout.origin.y + layout.size.height {
+            return false;
+        }
+        let (Some(toolbar), Some(content)) = (window.toolbar(), window.contentView()) else {
+            return false;
+        };
+        let Some(theme) = (unsafe { content.superview() }) else {
+            return false;
+        };
+        let inside = theme
+            .hitTest(point)
+            .is_some_and(|hit| hit.isDescendantOf(&content));
+        if !inside || !toolbar.isVisible() {
+            return false;
+        }
+        let Some((menu, view)) = toolbar_menu(&theme, &content, event) else {
+            return false;
+        };
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &view);
+        true
     }
 
     fn identifiers(&self) -> Retained<NSArray<NSToolbarItemIdentifier>> {
@@ -1261,7 +1355,7 @@ impl ToolbarDelegate {
         }
     }
 
-    fn build_item(&self, ident: &NSString) -> Option<Retained<NSToolbarItem>> {
+    fn build_item(&self, ident: &NSString, inserted: bool) -> Option<Retained<NSToolbarItem>> {
         let mtm = MainThreadMarker::new()?;
         let wanted = ident.to_string();
         let spec = self
@@ -1478,6 +1572,17 @@ impl ToolbarDelegate {
             ToolbarItem::FlexibleSpace | ToolbarItem::Space => return None,
         };
         item.setToolTip(tip.as_deref());
+        if let Some(customization) = &*self.ivars().customization.borrow() {
+            (customization.finish)(&item);
+        }
+        // The customization palette asks for copies of its own, which must stay out of `built`.
+        if !inserted {
+            // An automatic group draws collapsed in the palette; Finder's palette shows its segments.
+            if let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() {
+                group.setControlRepresentation(NSToolbarItemGroupControlRepresentation::Expanded);
+            }
+            return Some(item);
+        }
         if let Some(enabled) = enabled {
             item.setAutovalidates(false);
             item.setEnabled(enabled);
@@ -1603,12 +1708,45 @@ fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
     )
 }
 
+/// Where a toolbar the user arranges starts; AppKit keeps the user's arrangement and display mode
+/// in the app's defaults from then on.
+#[derive(Clone, Debug)]
+pub struct ToolbarCustomization {
+    /// The palette's default set.
+    pub defaults: Vec<String>,
+    /// The first arrangement, less anything the palette doesn't offer.
+    pub initial: Vec<String>,
+    /// Runs on every item built, the palette's copies included.
+    pub finish: fn(&NSToolbarItem),
+}
+
 /// Conflicts with `traffic_light_position`.
 pub fn set_toolbar(
     window: &mut Window,
     cx: &mut App,
     style: Option<ToolbarStyle>,
     items: &[ToolbarItem],
+) {
+    install_toolbar(window, cx, style, items, None);
+}
+
+/// A toolbar the user arranges from a palette offering `items`, in their order.
+pub fn set_customizable_toolbar(
+    window: &mut Window,
+    cx: &mut App,
+    style: ToolbarStyle,
+    items: &[ToolbarItem],
+    customization: &ToolbarCustomization,
+) {
+    install_toolbar(window, cx, Some(style), items, Some(customization));
+}
+
+fn install_toolbar(
+    window: &mut Window,
+    cx: &mut App,
+    style: Option<ToolbarStyle>,
+    items: &[ToolbarItem],
+    customization: Option<&ToolbarCustomization>,
 ) {
     let host = chrome(window);
     let ns_window = ns_window_of(window);
@@ -1630,16 +1768,33 @@ pub fn set_toolbar(
     };
     *delegate.ivars().items.borrow_mut() = items.to_vec();
 
+    let mut seed = None;
     let toolbar = {
         let mut slot = host.ivars().toolbar.borrow_mut();
         slot.get_or_insert_with(|| {
-            let toolbar = NSToolbar::initWithIdentifier(
-                NSToolbar::alloc(mtm),
-                &NSString::from_str("ng.window_chrome.toolbar"),
-            );
+            let name = "ng.window_chrome.toolbar";
+            let toolbar =
+                NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str(name));
             toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
-            toolbar.setAllowsUserCustomization(false);
+            toolbar.setAllowsUserCustomization(customization.is_some());
+            if let Some(customization) = customization {
+                // AppKit's autosave key; the first window of a first run finds nothing there.
+                let key = NSString::from_str(&format!("NSToolbar Configuration {name}"));
+                if NSUserDefaults::standardUserDefaults()
+                    .objectForKey(&key)
+                    .is_none()
+                {
+                    let offered = customization
+                        .initial
+                        .iter()
+                        .filter(|id| identifiers.contains(id));
+                    seed = Some(offered.cloned().collect::<Vec<String>>());
+                }
+                *delegate.ivars().customization.borrow_mut() = Some(customization.clone());
+                toolbar.setAutosavesConfiguration(true);
+                ToolbarDelegate::watch_band(&delegate);
+            }
             toolbar
         })
         .clone()
@@ -1650,12 +1805,17 @@ pub fn set_toolbar(
         .borrow()
         .as_ref()
         .is_some_and(|(installed_style, installed)| {
-            *installed_style == style && *installed == identifiers
+            *installed_style == style && (customization.is_some() || *installed == identifiers)
         });
     if !unchanged {
-        toolbar.setItemIdentifiers(&identifier_array(&identifiers));
+        if customization.is_none() {
+            toolbar.setItemIdentifiers(&identifier_array(&identifiers));
+        }
         ns_window.setToolbarStyle(style.into());
         ns_window.setToolbar(Some(&toolbar));
+        if let Some(seed) = &seed {
+            toolbar.setItemIdentifiers(&identifier_array(seed));
+        }
         toolbar.setVisible(true);
         *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
     }
