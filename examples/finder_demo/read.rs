@@ -5,28 +5,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
+use finder_fs::entry::Entry;
 use finder_fs::list::Identity;
-use gpui::{App, Context, Window};
+use gpui::{App, BackgroundExecutor, Context, Task, Window};
+use native_gpui::tokens::FileType;
 
 use crate::app::FinderDemo;
-use crate::data::{self, Column, Line, Row, intern, intern_path};
+use crate::data::{self, Column, Facts, Line, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
 use crate::signal::Signal;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
 use crate::{icons, index, listing, preview};
 
-const BATCH: usize = 512;
-const POLL: Duration = Duration::from_millis(5);
+const BATCH: usize = 64;
 const TICK: Duration = Duration::from_millis(120);
-
-#[derive(Default)]
-struct Mail {
-    batches: Vec<(Vec<Arc<Row>>, bool)>,
-    lines: Option<(bool, Vec<Line>)>,
-    listed: bool,
-    done: bool,
-    trouble: Option<Trouble>,
-}
 
 /// Why a folder could not be listed, worked out on the reading thread so the main thread never
 /// waits on a disk that stopped answering.
@@ -42,6 +34,19 @@ enum Trouble {
 type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
 
 type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
+
+/// A read's first screenful, in the order of the whole listing, and the whole listing to come.
+struct Listed {
+    first: Option<(Vec<Arc<Row>>, (bool, Vec<Line>))>,
+    rest: Task<Result<Sorted, Trouble>>,
+}
+
+/// What a sort compares before names: whether an item discloses, then its column.
+struct Key {
+    discloses: bool,
+    modified_at: f64,
+    rank: u64,
+}
 
 /// Each folder as last listed, with its parent, so a rename can be told from a move once the
 /// name is gone.
@@ -86,52 +91,265 @@ fn trouble(id: &'static str, error: io::Error) -> Trouble {
     }
 }
 
-/// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once.
-fn sort_rows(rows: &mut Vec<Arc<Row>>, (sort, ascending): (Column, bool)) {
-    let kinds: Vec<u32> = match sort {
-        Column::Kind => {
-            let distinct: HashSet<&str> = rows.iter().map(|row| &*row.kind).collect();
-            let distinct: Vec<&str> = distinct.into_iter().collect();
-            let ranks = finder_fs::sort::ranks(distinct.iter().copied());
-            let rank: HashMap<&str, u32> = distinct.into_iter().zip(ranks).collect();
-            rows.iter().map(|row| rank[&*row.kind]).collect()
-        }
-        _ => vec![0; rows.len()],
-    };
-    let first = folders_first() || sort == Column::Kind;
-    let by = |(ka, a): &(u32, Arc<Row>), (kb, b): &(u32, Arc<Row>)| {
-        let by = match sort {
+fn by(keys: &[Key], (sort, ascending): (Column, bool)) -> impl Fn(usize, usize) -> Ordering + '_ {
+    let first = crate::prefs::finder().folders_first || sort == Column::Kind;
+    move |a, b| {
+        let (a, b) = (&keys[a], &keys[b]);
+        let column = match sort {
             Column::Name => Ordering::Equal,
             Column::Modified => a.modified_at.total_cmp(&b.modified_at),
-            Column::Size => a.bytes.cmp(&b.bytes),
-            Column::Kind => ka.cmp(kb),
+            Column::Size | Column::Kind => a.rank.cmp(&b.rank),
         };
         let folders = match first {
             true => b.discloses.cmp(&a.discloses),
             false => Ordering::Equal,
         };
-        folders.then(if ascending { by } else { by.reverse() })
-    };
-    let mut keyed: Vec<(u32, Arc<Row>)> = kinds.into_iter().zip(rows.drain(..)).collect();
-    keyed.sort_by(by);
-    for run in keyed.chunk_by_mut(|a, b| by(a, b) == Ordering::Equal) {
-        if run.len() < 2 {
-            continue;
-        }
-        let names = finder_fs::sort::ranks(run.iter().map(|(_, row)| &*row.name));
-        for ((key, _), name) in run.iter_mut().zip(names) {
-            *key = name;
-        }
-        match sort == Column::Name && !ascending {
-            true => run.sort_by_key(|(name, _)| std::cmp::Reverse(*name)),
-            false => run.sort_by_key(|(name, _)| *name),
-        }
+        folders.then(if ascending { column } else { column.reverse() })
     }
-    rows.extend(keyed.into_iter().map(|(_, row)| row));
 }
 
-fn folders_first() -> bool {
-    crate::prefs::finder().folders_first
+fn kind_ranks(kinds: &[&str]) -> Vec<u64> {
+    let distinct: Vec<&str> = kinds
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let ranks = finder_fs::sort::ranks(distinct.iter().copied());
+    let rank: HashMap<&str, u32> = distinct.into_iter().zip(ranks).collect();
+    kinds.iter().map(|kind| u64::from(rank[kind])).collect()
+}
+
+fn names_descend((sort, ascending): (Column, bool)) -> bool {
+    sort == Column::Name && !ascending
+}
+
+/// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once.
+fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
+    let ranks = match sorted_by.0 {
+        Column::Kind => kind_ranks(&rows.iter().map(|row| &*row.kind).collect::<Vec<_>>()),
+        Column::Size => rows.iter().map(|row| row.bytes).collect(),
+        _ => vec![0; rows.len()],
+    };
+    let keys: Vec<Key> = rows
+        .iter()
+        .zip(ranks)
+        .map(|(row, rank)| Key {
+            discloses: row.discloses,
+            modified_at: row.modified_at,
+            rank,
+        })
+        .collect();
+    let order = finder_fs::sort::order(
+        rows.len(),
+        by(&keys, sorted_by),
+        |at| &rows[at].name,
+        names_descend(sorted_by),
+    );
+    let mut held: Vec<Option<Arc<Row>>> = rows.drain(..).map(Some).collect();
+    rows.extend(order.into_iter().filter_map(|at| held[at].take()));
+}
+
+/// The entries a first screenful shows: the first `count` listed, in the order of the whole
+/// listing. `None` while a package that sizes sort waits to be weighed.
+fn first_screen(
+    id: &'static str,
+    entries: &[&Entry],
+    folders: &HashMap<String, Facts>,
+    sorted_by: (Column, bool),
+    hidden: bool,
+    count: usize,
+) -> Option<Vec<usize>> {
+    let listed: Vec<usize> = (0..entries.len())
+        .filter(|&at| hidden || !entries[at].hidden)
+        .collect();
+    let ranks = match sorted_by.0 {
+        Column::Kind => {
+            let kinds: Vec<_> = listed
+                .iter()
+                .map(|&at| data::kind_at(&data::join(id, &entries[at].name), entries[at]).label)
+                .collect();
+            kind_ranks(&kinds.iter().map(|kind| &**kind).collect::<Vec<_>>())
+        }
+        Column::Size => listed
+            .iter()
+            .map(|&at| {
+                let entry = entries[at];
+                match data::bytes_of(entry, data::facts_of(entry, folders).0) {
+                    None if entry.package => None,
+                    bytes => Some(bytes.unwrap_or(0)),
+                }
+            })
+            .collect::<Option<_>>()?,
+        _ => vec![0; listed.len()],
+    };
+    let keys: Vec<Key> = listed
+        .iter()
+        .zip(ranks)
+        .map(|(&at, rank)| Key {
+            discloses: entries[at].is_dir(),
+            modified_at: data::modified_at(entries[at]),
+            rank,
+        })
+        .collect();
+    let first = finder_fs::sort::first(
+        listed.len(),
+        count,
+        by(&keys, sorted_by),
+        |at| &entries[listed[at]].name,
+        names_descend(sorted_by),
+    );
+    Some(first.into_iter().map(|at| listed[at]).collect())
+}
+
+type Batches = Vec<(Arc<Vec<Entry>>, Task<Vec<Arc<Row>>>)>;
+
+/// A folder's entries as the listing reads them, each batch's rows already being built.
+fn read_batches(
+    id: &'static str,
+    folders: &Arc<HashMap<String, Facts>>,
+    executor: &BackgroundExecutor,
+) -> Result<Batches, Trouble> {
+    let mut batches: Batches = Vec::new();
+    finder_fs::list::list_dir_batched(Path::new(id), BATCH, |entries| {
+        let (entries, facts) = (Arc::new(entries), folders.clone());
+        let listed = entries.clone();
+        let rows = executor.spawn(async move { data::rows_of(id, listed.iter(), &facts) });
+        batches.push((entries, rows));
+    })
+    .map_err(|error| trouble(id, error))?;
+    remember(id);
+    Ok(batches)
+}
+
+async fn finish(
+    id: &'static str,
+    batches: Batches,
+    shared: Option<(Vec<usize>, Vec<Arc<Row>>)>,
+    (sorted_by, plain): ((Column, bool), Option<bool>),
+    (count, art): (usize, f32),
+) -> Sorted {
+    let mut all: Vec<Arc<Row>> = Vec::new();
+    for (_, rows) in batches {
+        all.extend(rows.await);
+    }
+    for (at, row) in shared
+        .into_iter()
+        .flat_map(|(chosen, rows)| chosen.into_iter().zip(rows))
+    {
+        all[at] = row;
+    }
+    if finder_fs::icloud::is_drive(Path::new(id)) {
+        all.extend(data::icloud_rows(index()));
+    }
+    data::weigh_packages(&mut all);
+    sort_rows(&mut all, sorted_by);
+    icons::prepare(&all, count, art);
+    let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
+    (all, lines)
+}
+
+/// A first screenful's rows, its items' own icons drawn while the rows are built.
+fn screen_rows<'a>(
+    id: &'static str,
+    entries: impl Iterator<Item = &'a Entry> + Clone,
+    folders: &HashMap<String, Facts>,
+    (count, art): (usize, f32),
+) -> Vec<Arc<Row>> {
+    let own = entries.clone().filter(|entry| data::own_icon(entry));
+    let own = own.map(|entry| FileType::Path(intern(&data::join(id, &entry.name))));
+    let drawing = icons::begin(own, art);
+    let rows = data::rows_of(id, entries, folders);
+    drawing.finish();
+    icons::prepare(&rows, count, art);
+    rows
+}
+
+/// A name sort's first screenful from the index, while the folder's modification time is still the
+/// one the index recorded; each item is read again from disk and must agree.
+fn indexed_screen(
+    id: &'static str,
+    folders: &HashMap<String, Facts>,
+    sorted_by: (Column, bool),
+    hidden: bool,
+    count: usize,
+) -> Option<Vec<Entry>> {
+    let dir = Path::new(id);
+    let index = index();
+    let seconds =
+        |at: std::time::SystemTime| Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs());
+    let now = std::fs::metadata(dir).ok()?.modified().ok()?;
+    (seconds(index.modified(dir)?)? == seconds(now)?).then_some(())?;
+    let known = index.children(dir)?;
+    let chosen = first_screen(
+        id,
+        &known.iter().collect::<Vec<_>>(),
+        folders,
+        sorted_by,
+        hidden,
+        count,
+    )?;
+    (!chosen.is_empty()).then_some(())?;
+    chosen
+        .into_iter()
+        .map(|at| {
+            let was = &known[at];
+            let entry = finder_fs::list::listed_entry_at(&dir.join(&was.name)).ok()?;
+            let same = (&entry.name, entry.kind, entry.package, entry.hidden)
+                == (&was.name, was.kind, was.package, was.hidden);
+            same.then_some(entry)
+        })
+        .collect()
+}
+
+/// Reads a folder, building its rows as the listing comes in. A name sort the index can vouch for
+/// shows its first screenful before the listing; otherwise it is sorted out of the whole listing.
+fn list(
+    id: &'static str,
+    sorted_by: (Column, bool),
+    (first, plain): (Option<bool>, Option<bool>),
+    screen: (usize, f32),
+    executor: BackgroundExecutor,
+) -> Result<Listed, Trouble> {
+    let count = screen.0;
+    let folders = Arc::new(index().folders_in(Path::new(id)));
+    let icloud = finder_fs::icloud::is_drive(Path::new(id));
+    let known = first
+        .filter(|_| sorted_by.0 == Column::Name && !icloud)
+        .and_then(|hidden| {
+            let entries = indexed_screen(id, &folders, sorted_by, hidden, count)?;
+            let rows = screen_rows(id, entries.iter(), &folders, screen);
+            let lines = listing::lines_of(&rows, hidden);
+            Some((rows, (hidden, lines)))
+        });
+    if known.is_some() {
+        let spawner = executor.clone();
+        let rest = spawner.spawn(async move {
+            let batches = read_batches(id, &folders, &executor)?;
+            Ok(finish(id, batches, None, (sorted_by, plain), screen).await)
+        });
+        return Ok(Listed { first: known, rest });
+    }
+    let batches = read_batches(id, &folders, &executor)?;
+    let entries: Vec<&Entry> = batches
+        .iter()
+        .flat_map(|(entries, _)| entries.iter())
+        .collect();
+    let first = first.filter(|_| !icloud).and_then(|hidden| {
+        let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count)?;
+        let rows = screen_rows(id, chosen.iter().map(|&at| entries[at]), &folders, screen);
+        Some((chosen, rows, hidden))
+    });
+    let shared = first
+        .as_ref()
+        .map(|(chosen, rows, _)| (chosen.clone(), rows.clone()));
+    let rest = executor
+        .spawn(async move { Ok(finish(id, batches, shared, (sorted_by, plain), screen).await) });
+    let first = first.map(|(_, rows, hidden)| {
+        let lines = listing::lines_of(&rows, hidden);
+        (rows, (hidden, lines))
+    });
+    Ok(Listed { first, rest })
 }
 
 /// Rung by each window's folder watcher and job queue, and by every tag read.
@@ -242,118 +460,75 @@ impl FinderDemo {
         if fresh {
             self.folders.deliver(id, Vec::new(), true);
         }
-        let shown = self
+        let empty = self
             .folders
             .get(id)
             .is_some_and(|folder| folder.rows.is_empty());
-        let mail = Arc::new(Mutex::new(Mail::default()));
-        let filling = mail.clone();
         let sorted_by = (self.sort, self.ascending);
-        let art = self.art_size();
         let plain = self.plain();
+        // A disclosed folder shows its rows at once: rows landing later would push down those below.
+        let first = plain.filter(|_| empty && id == self.here());
+        let screen = (self.on_screen(), self.art_size());
         let executor = cx.background_executor().clone();
-        let read = cx.background_executor().spawn(async move {
-            let dir = Path::new(id);
-            let index = index();
-            let folders = index.folders_in(dir);
-            let mut all: Vec<Arc<Row>> = Vec::new();
-            let known = shown
-                .then(|| index.children(dir))
-                .flatten()
-                .filter(|known| !known.is_empty());
-            let indexed = known.is_some();
-            if let Some(known) = known {
-                let mut rows = data::rows_of(id, &known, &folders);
-                sort_rows(&mut rows, sorted_by);
-                icons::prepare(&rows, art, &executor);
-                let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
-                let mut mail = filling.lock().unwrap();
-                mail.batches.push((rows, true));
-                mail.lines = lines;
-            }
-            let post = |mut rows: Vec<Arc<Row>>| {
-                let replace = !filling.lock().unwrap().listed;
-                if replace && shown && !indexed {
-                    sort_rows(&mut rows, sorted_by);
-                    icons::prepare(&rows, art, &executor);
-                }
-                let mut mail = filling.lock().unwrap();
-                mail.listed = true;
-                mail.batches.push((rows, replace));
-            };
-            let read = finder_fs::list::list_dir_batched(dir, BATCH, |entries| {
-                let rows = data::rows_of(id, &entries, &folders);
-                all.extend(rows.iter().cloned());
-                post(rows);
-            });
-            if let Err(error) = read {
-                let trouble = trouble(id, error);
-                let mut mail = filling.lock().unwrap();
-                mail.trouble = Some(trouble);
-                mail.done = true;
-                return;
-            }
-            remember(id);
-            if finder_fs::icloud::is_drive(dir) {
-                let apps = data::icloud_rows(index);
-                all.extend(apps.iter().cloned());
-                post(apps);
-            }
-            data::weigh_packages(&mut all);
-            sort_rows(&mut all, sorted_by);
-            icons::prepare(&all, art, &executor);
-            let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
-            let mut mail = filling.lock().unwrap();
-            mail.batches.push((all, true));
-            mail.lines = lines;
-            mail.done = true;
-        });
+        let listed = cx
+            .background_executor()
+            .spawn(async move { list(id, sorted_by, (first, plain), screen, executor) });
         cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(POLL).await;
-                let (batches, lines, done, trouble) = {
-                    let mut mail = mail.lock().unwrap();
-                    (
-                        std::mem::take(&mut mail.batches),
-                        mail.lines.take(),
-                        mail.done,
-                        mail.trouble.take(),
-                    )
-                };
-                let alive = this
-                    .update(cx, |this, cx| match trouble {
-                        Some(Trouble::Renamed(now)) => this.folder_renamed(id, now, cx),
-                        Some(Trouble::Gone(above)) => this.folder_gone(id, above, cx),
-                        Some(Trouble::Refused(error)) => {
-                            this.deliver(id, Vec::new(), None, true, sorted_by, cx);
-                            if fresh {
-                                this.folder_refused(id, &error, cx);
-                            }
+            let rest = match listed.await {
+                Ok(Listed { first, rest }) => {
+                    if let Some((rows, lines)) = first {
+                        let alive = this.update(cx, |this, cx| {
+                            this.deliver(id, Some(rows), Some(lines), false, sorted_by, cx)
+                        });
+                        if alive.is_err() {
+                            return;
                         }
-                        None => this.deliver(id, batches, lines, done, sorted_by, cx),
-                    })
-                    .is_ok();
-                if done || !alive {
-                    break;
+                    }
+                    rest.await
                 }
-            }
-            read.await;
+                Err(trouble) => Err(trouble),
+            };
+            this.update(cx, |this, cx| match rest {
+                Ok((rows, lines)) => this.deliver(id, Some(rows), lines, true, sorted_by, cx),
+                Err(trouble) => this.troubled(id, trouble, fresh, sorted_by, cx),
+            })
+            .ok();
         })
         .detach();
+    }
+
+    fn troubled(
+        &mut self,
+        id: &'static str,
+        trouble: Trouble,
+        fresh: bool,
+        sorted_by: (Column, bool),
+        cx: &mut Context<Self>,
+    ) {
+        match trouble {
+            Trouble::Renamed(now) => self.folder_renamed(id, now, cx),
+            Trouble::Gone(above) => self.folder_gone(id, above, cx),
+            Trouble::Refused(error) => {
+                self.deliver(id, None, None, true, sorted_by, cx);
+                if fresh {
+                    self.folder_refused(id, &error, cx);
+                }
+            }
+        }
     }
 
     fn deliver(
         &mut self,
         id: &'static str,
-        batches: Vec<(Vec<Arc<Row>>, bool)>,
+        rows: Option<Vec<Arc<Row>>>,
         lines: Option<(bool, Vec<Line>)>,
         done: bool,
         sorted_by: (Column, bool),
         cx: &mut Context<Self>,
     ) {
         let mut landed = lines.is_some();
-        for (rows, replace) in batches {
-            landed |= self.folders.deliver(id, rows, replace);
+        if let Some(rows) = rows {
+            landed |= self.folders.deliver(id, rows, true);
         }
         if done {
             let owed = self.folders.finish(id);

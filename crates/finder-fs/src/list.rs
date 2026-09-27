@@ -135,6 +135,18 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
 /// One item's entry without listing its whole folder. The listing stays the fallback: past
 /// `PATH_MAX`, and for an evicted iCloud file whose name on disk is its stand-in's.
 pub fn entry_at(path: &Path) -> io::Result<Entry> {
+    entry_with(
+        path,
+        COMMON_ATTRS & !(ATTR_CMN_ERROR | libc::ATTR_CMN_USERACCESS),
+    )
+}
+
+/// `entry_at` as a listing of its folder reads it, readability included.
+pub fn listed_entry_at(path: &Path) -> io::Result<Entry> {
+    entry_with(path, COMMON_ATTRS & !ATTR_CMN_ERROR)
+}
+
+fn entry_with(path: &Path, common: libc::attrgroup_t) -> io::Result<Entry> {
     let dir = path.parent().unwrap_or(Path::new("/"));
     let listed = || {
         let wanted = path.file_name().map(|name| name.to_string_lossy());
@@ -149,7 +161,7 @@ pub fn entry_at(path: &Path) -> io::Result<Entry> {
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: COMMON_ATTRS & !(ATTR_CMN_ERROR | libc::ATTR_CMN_USERACCESS),
+        commonattr: common,
         volattr: 0,
         dirattr: libc::ATTR_DIR_ENTRYCOUNT,
         fileattr: libc::ATTR_FILE_DATALENGTH,

@@ -53,7 +53,7 @@ pub(crate) struct Row {
     pub(crate) artwork: Option<FileType<'static>>,
 }
 
-type Facts = (Option<u64>, Option<usize>);
+pub(crate) type Facts = (Option<u64>, Option<usize>);
 
 fn facts(dir: &str, entry: &Entry, index: &Index) -> Facts {
     if entry.kind != EntryKind::Directory {
@@ -63,14 +63,19 @@ fn facts(dir: &str, entry: &Entry, index: &Index) -> Facts {
     (index.folder_size(&path), index.visible_children(&path))
 }
 
+/// Whether an item shows its own file's icon; `iconForFile:` badges a folder the user can't open
+/// with Finder's no-entry sign.
+pub(crate) fn own_icon(entry: &Entry) -> bool {
+    entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable
+}
+
 fn artwork_of(
     entry: &Entry,
     path: &str,
     uti: &str,
     seen: Option<usize>,
 ) -> Option<FileType<'static>> {
-    // `iconForFile:` badges a folder the user can't open with Finder's no-entry sign.
-    if entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable {
+    if own_icon(entry) {
         return Some(FileType::Path(intern(path)));
     }
     if entry.kind == EntryKind::Directory {
@@ -152,17 +157,38 @@ pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
     }
 }
 
-fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
-    let path = join(dir, &entry.name);
-    let kind = match entry.kind {
+/// The kind a row names for the entry at `path`.
+pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
+    match entry.kind {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
         EntryKind::File if entry.alias => kind::kind_of(entry),
-        _ => kind::kind_of_path(Path::new(&path)),
-    };
-    let bytes = match entry.kind == EntryKind::Directory {
+        _ => kind::kind_of_path(Path::new(path)),
+    }
+}
+
+/// The bytes a row shows: a folder's are the index's, and `None` shows "--".
+pub(crate) fn bytes_of(entry: &Entry, size: Option<u64>) -> Option<u64> {
+    match entry.kind == EntryKind::Directory {
         true => size.filter(|bytes| *bytes > 0 || entry.package),
         false => Some(entry.size),
-    };
+    }
+}
+
+pub(crate) fn modified_at(entry: &Entry) -> f64 {
+    reference_seconds(entry.modified)
+}
+
+pub(crate) fn facts_of(entry: &Entry, folders: &HashMap<String, Facts>) -> Facts {
+    match entry.kind {
+        EntryKind::Directory => folders.get(&entry.name).copied().unwrap_or_default(),
+        _ => (None, None),
+    }
+}
+
+fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
+    let path = join(dir, &entry.name);
+    let kind = kind_at(&path, entry);
+    let bytes = bytes_of(entry, size);
     let (opens, app) = match entry.kind {
         EntryKind::Symlink => target_of(&path),
         _ => (entry.is_dir().then(|| intern(&path)), false),
@@ -172,7 +198,7 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         display: finder_fs::name::shown(Path::new(dir), &entry.name, entry.ext_hidden).into(),
         size: bytes.map_or("--".into(), |bytes| byte_string(bytes).into()),
         bytes: bytes.unwrap_or(0),
-        modified_at: reference_seconds(entry.modified),
+        modified_at: modified_at(entry),
         created_at: reference_seconds(entry.created),
         kind: (&kind.label).into(),
         uti: (&kind.uti).into(),
@@ -191,20 +217,14 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
     }
 }
 
-pub(crate) fn rows_of(
+pub(crate) fn rows_of<'a>(
     dir: &'static str,
-    entries: &[Entry],
+    entries: impl IntoIterator<Item = &'a Entry>,
     folders: &HashMap<String, Facts>,
 ) -> Vec<Arc<Row>> {
     entries
-        .iter()
-        .map(|entry| {
-            let facts = match entry.kind {
-                EntryKind::Directory => folders.get(&entry.name).copied().unwrap_or_default(),
-                _ => (None, None),
-            };
-            Arc::new(row_of(dir, entry, facts))
-        })
+        .into_iter()
+        .map(|entry| Arc::new(row_of(dir, entry, facts_of(entry, folders))))
         .collect()
 }
 

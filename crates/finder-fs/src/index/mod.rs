@@ -165,6 +165,13 @@ impl Index {
         Some(tree.children(id).map(|child| tree.entry(child)).collect())
     }
 
+    /// A listed folder's modification time as the index recorded it, in whole seconds.
+    pub fn modified(&self, dir: &Path) -> Option<SystemTime> {
+        let tree = self.read();
+        let node = tree.nodes[listed_dir(&tree, dir)? as usize];
+        (node.modified != store::NO_TIME).then(|| store::time(node.modified))
+    }
+
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
         // Asked while a frame draws, so never of the disk: a share that stopped answering would stall it.

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
 use gpui::{
-    Bounds, Context, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString,
+    Bounds, Context, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Size,
     UniformListScrollHandle,
 };
 use native_gpui::sidebar::NativeSidebar;
@@ -130,6 +130,7 @@ pub(crate) struct FinderDemo {
     pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
     pub(crate) scale: f32,
+    pub(crate) viewport: Size<Pixels>,
     pub(crate) window_min_w: f32,
     pub(crate) watcher: Watcher,
     pub(crate) watching: HashSet<&'static str>,
@@ -268,6 +269,7 @@ impl FinderDemo {
             column_grab: None,
             icons: Grid::default(),
             scale: 2.,
+            viewport: Size::default(),
             window_min_w: f32::NAN,
             watcher: Watcher::new(move |dirs| {
                 sink.lock().unwrap().extend(dirs);
