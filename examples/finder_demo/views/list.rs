@@ -5,10 +5,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, Context, Div, Entity, ExternalPaths, Font,
-    FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful,
-    StyleRefinement, UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*,
-    px, uniform_list,
+    AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, ExternalPaths, Font, FontWeight,
+    Hsla, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, StyleRefinement,
+    WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
@@ -286,7 +285,6 @@ impl FinderDemo {
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = self.list_tail();
         let items = pads + count + tails;
-        let below = stripes(self.scroll.clone(), pads + (count | 1), &look, stretch);
         let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
@@ -356,7 +354,6 @@ impl FinderDemo {
             .relative()
             .mt(px(-lift))
             .mb(px(-trim))
-            .child(below)
             .child(rows_menu(
                 "ng.finder.list.menu",
                 cx.entity().downgrade(),
@@ -455,45 +452,6 @@ fn pill(fill: Hsla, run: Run, bleed: bool) -> Div {
                     .bg(colour),
             )
         })
-}
-
-/// Finder stripes the empty rows below the last one, into the overscroll, and nothing above the
-/// first. Placed at paint from the bounds and offset the list's prepaint just laid its rows out at,
-/// shifted by the same stretch as its rows.
-fn stripes(
-    list: UniformListScrollHandle,
-    first: usize,
-    look: &Look,
-    stretch: f32,
-) -> impl IntoElement {
-    let (colour, pitch) = (look.stripe, look.row_h);
-    let (inset, radius) = edge(look.bleed);
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let state = list.0.borrow();
-            let (rows, offset) = (state.base_handle.bounds(), state.base_handle.offset());
-            let pitch = window.pixel_snap(px(pitch));
-            for at in (first..).step_by(2) {
-                let top = rows.top() + offset.y + px(stretch) + pitch * at as f32;
-                if top >= bounds.bottom() {
-                    break;
-                }
-                window.paint_quad(
-                    gpui::fill(
-                        Bounds::from_corners(
-                            point(rows.left() + px(inset), top),
-                            point(rows.right() - px(inset), top + pitch),
-                        ),
-                        colour,
-                    )
-                    .corner_radii(px(radius)),
-                );
-            }
-        },
-    )
-    .absolute()
-    .size_full()
 }
 
 fn twist(
