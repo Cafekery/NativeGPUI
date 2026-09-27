@@ -9,7 +9,7 @@ use native_gpui::sidebar::{
 };
 
 use crate::app::FinderDemo;
-use crate::data::{intern, intern_path, volume_roots};
+use crate::data::{intern, intern_path, server_symbol, volume_roots};
 use crate::ops::After;
 use crate::prefs;
 use crate::tags::finder_color_rgb;
@@ -146,7 +146,9 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
         Some(AirDrop) => Glyph::Artwork("SidebarAirDrop"),
         Some(Network) => Glyph::Symbol("network"),
         Some(Trash) => Glyph::Symbol("trash"),
-        _ if listed.network => Glyph::Artwork("SidebarDisplay"),
+        _ if listed.network => Glyph::Symbol(server_symbol(
+            listed.server.as_deref().unwrap_or(&listed.title),
+        )),
         _ if listed.ejectable => Glyph::Symbol("externaldrive"),
         None if location => Glyph::Symbol("internaldrive"),
         _ => glyph_of(Path::new(id)),

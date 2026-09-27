@@ -8,6 +8,7 @@ pub mod meta;
 pub mod name;
 pub mod ops;
 pub mod queue;
+pub mod servers;
 pub mod sidebar;
 pub mod sort;
 pub mod tags;
