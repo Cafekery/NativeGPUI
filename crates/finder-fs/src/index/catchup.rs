@@ -54,10 +54,14 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
             };
             return crawl::spawn(&index, walk, report);
         }
-        let (batch, history_done) = replay(&plan);
+        let (mut batch, history_done) = replay(&plan);
         let since = match history_done {
             true => now,
-            false => batch.reached.max(plan.since_when),
+            // A replay cut short lost the rest of its events, as dropped ones are lost.
+            false => {
+                batch.rescan.extend(plan.warm.iter().cloned());
+                batch.reached.max(plan.since_when)
+            }
         };
         let walk = reconcile(&index, &plan, batch, whole, since);
         crawl::spawn(&index, walk, report);

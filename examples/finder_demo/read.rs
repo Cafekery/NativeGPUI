@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use finder_fs::entry::Entry;
+use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::list::Identity;
 use gpui::{App, BackgroundExecutor, Context, Task, Window};
 use native_gpui::tokens::FileType;
@@ -20,6 +20,9 @@ use crate::{icons, index, listing, preview};
 const BATCH: usize = 64;
 const TICK: Duration = Duration::from_millis(120);
 const STATS_NOW: usize = 256;
+const REREAD: usize = 256;
+/// A smaller folder lists from disk before fseventsd answers whether the index still holds it.
+const BIG: usize = 20_000;
 
 /// Why a folder could not be listed, worked out on the reading thread so the main thread never
 /// waits on a disk that stopped answering.
@@ -152,7 +155,8 @@ fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
 }
 
 /// The entries a first screenful shows: the first `count` listed, in the order of the whole
-/// listing. `None` while a package that sizes sort waits to be weighed.
+/// listing. `None` while a package that sizes sort waits to be weighed. With dates in `coarse`
+/// whole seconds, every entry that could be among them instead, in listing order.
 fn first_screen(
     id: &'static str,
     entries: &[&Entry],
@@ -160,6 +164,7 @@ fn first_screen(
     sorted_by: (Column, bool),
     hidden: bool,
     count: usize,
+    coarse: bool,
 ) -> Option<Vec<usize>> {
     let listed: Vec<usize> = (0..entries.len())
         .filter(|&at| hidden || !entries[at].hidden)
@@ -184,7 +189,7 @@ fn first_screen(
             .collect::<Option<_>>()?,
         _ => vec![0; listed.len()],
     };
-    let keys: Vec<Key> = listed
+    let mut keys: Vec<Key> = listed
         .iter()
         .zip(ranks)
         .map(|(&at, rank)| Key {
@@ -200,7 +205,17 @@ fn first_screen(
         |at| &entries[listed[at]].name,
         names_descend(sorted_by),
     );
-    Some(first.into_iter().map(|at| listed[at]).collect())
+    let Some(&last) = first.last().filter(|_| coarse) else {
+        return Some(first.into_iter().map(|at| listed[at]).collect());
+    };
+    let (edge, later) = (keys.len(), if sorted_by.1 { 1. } else { -1. });
+    keys.push(Key {
+        modified_at: keys[last].modified_at + later,
+        ..keys[last]
+    });
+    let before = by(&keys, sorted_by);
+    let near = (0..listed.len()).filter(|&at| before(at, edge) != Ordering::Greater);
+    Some(near.map(|at| listed[at]).collect())
 }
 
 type Batches = Vec<(Arc<Vec<Entry>>, Task<Vec<Arc<Row>>>)>;
@@ -266,8 +281,9 @@ fn screen_rows<'a>(
     rows
 }
 
-/// A name sort's first screenful from the index, while the folder's modification time is still the
-/// one the index recorded; each item is read again from disk and must agree.
+/// A first screenful from the index, each item read again from disk and agreeing with it: a name
+/// sort's while the folder's modification time is still the one the index recorded, a date or
+/// size sort's while the index holds every change FSEvents has for the folder.
 fn indexed_screen(
     id: &'static str,
     folders: &HashMap<String, Facts>,
@@ -279,32 +295,45 @@ fn indexed_screen(
     let index = index();
     let seconds =
         |at: std::time::SystemTime| Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs());
-    let now = std::fs::metadata(dir).ok()?.modified().ok()?;
-    (seconds(index.modified(dir)?)? == seconds(now)?).then_some(())?;
-    let known = index.children(dir)?;
-    let chosen = first_screen(
-        id,
-        &known.iter().collect::<Vec<_>>(),
-        folders,
-        sorted_by,
-        hidden,
-        count,
-    )?;
-    (!chosen.is_empty()).then_some(())?;
-    chosen
+    let named = sorted_by.0 == Column::Name;
+    let known = match named {
+        true => {
+            let now = std::fs::metadata(dir).ok()?.modified().ok()?;
+            (seconds(index.modified(dir)?)? == seconds(now)?).then_some(())?;
+            index.children(dir)?
+        }
+        false => {
+            (index.visible_children(dir)? >= BIG).then_some(())?;
+            index.current_children(dir)?
+        }
+    };
+    let coarse = sorted_by.0 == Column::Modified;
+    let listed: Vec<&Entry> = known.iter().collect();
+    let chosen = first_screen(id, &listed, folders, sorted_by, hidden, count, coarse)?;
+    (!chosen.is_empty() && chosen.len() <= REREAD).then_some(())?;
+    let read: Vec<Entry> = chosen
         .into_iter()
         .map(|at| {
             let was = &known[at];
             let entry = finder_fs::list::listed_entry_at(&dir.join(&was.name)).ok()?;
             let same = (&entry.name, entry.kind, entry.package, entry.hidden)
-                == (&was.name, was.kind, was.package, was.hidden);
+                == (&was.name, was.kind, was.package, was.hidden)
+                && (named
+                    || seconds(entry.modified) == seconds(was.modified)
+                        && (entry.kind == EntryKind::Directory || entry.size == was.size));
             same.then_some(entry)
         })
-        .collect()
+        .collect::<Option<_>>()?;
+    if !coarse {
+        return Some(read);
+    }
+    let refs: Vec<&Entry> = read.iter().collect();
+    let exact = first_screen(id, &refs, folders, sorted_by, hidden, count, false)?;
+    Some(exact.into_iter().map(|at| read[at].clone()).collect())
 }
 
-/// Reads a folder, building its rows as the listing comes in. A name sort the index can vouch for
-/// shows its first screenful before the listing; otherwise it is sorted out of the whole listing.
+/// Reads a folder, building its rows as the listing comes in. A sort the index can vouch for shows
+/// its first screenful before the listing; otherwise it is sorted out of the whole listing.
 fn list(
     id: &'static str,
     sorted_by: (Column, bool),
@@ -315,8 +344,15 @@ fn list(
     let count = screen.0;
     let folders = Arc::new(index().folders_in(Path::new(id)));
     let icloud = finder_fs::icloud::is_drive(Path::new(id));
+    let read = {
+        let (folders, executor) = (folders.clone(), executor.clone());
+        move || read_batches(id, &folders, &executor)
+    };
+    // A date or size sort's pick from the index waits on fseventsd, so its disk pass starts first.
+    let early = (sorted_by.0 != Column::Name).then(|| std::thread::spawn(read.clone()));
+    let batches = move || early.map_or_else(read, |early| early.join().unwrap());
     let known = first
-        .filter(|_| sorted_by.0 == Column::Name && !icloud)
+        .filter(|_| sorted_by.0 != Column::Kind && !icloud)
         .and_then(|hidden| {
             let entries = indexed_screen(id, &folders, sorted_by, hidden, count)?;
             let rows = screen_rows(id, entries.iter(), &folders, screen);
@@ -324,20 +360,18 @@ fn list(
             Some((rows, (hidden, lines)))
         });
     if known.is_some() {
-        let spawner = executor.clone();
-        let rest = spawner.spawn(async move {
-            let batches = read_batches(id, &folders, &executor)?;
-            Ok(finish(id, batches, None, (sorted_by, plain), screen).await)
+        let rest = executor.spawn(async move {
+            Ok(finish(id, batches()?, None, (sorted_by, plain), screen).await)
         });
         return Ok(Listed { first: known, rest });
     }
-    let batches = read_batches(id, &folders, &executor)?;
+    let batches = batches()?;
     let entries: Vec<&Entry> = batches
         .iter()
         .flat_map(|(entries, _)| entries.iter())
         .collect();
     let first = first.filter(|_| !icloud).and_then(|hidden| {
-        let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count)?;
+        let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count, false)?;
         let rows = screen_rows(id, chosen.iter().map(|&at| entries[at]), &folders, screen);
         Some((chosen, rows, hidden))
     });

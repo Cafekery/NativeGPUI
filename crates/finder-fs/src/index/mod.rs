@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind};
 use crate::list::list_dir;
 use crate::watch::Replay;
 use crawl::Walk;
-use store::{COMPLETE, HIDDEN, LISTED, PACKAGE, Tree, VISITED};
+use store::{COMPLETE, EXACT, HIDDEN, LISTED, PACKAGE, Tree, VISITED};
 
 pub use crawl::off_limits;
 
@@ -37,6 +37,8 @@ const MIN_GAP: Duration = Duration::from_secs(2);
 const SYNC_MARGIN: Duration = Duration::from_secs(2);
 /// A snapshot can be saved while the tree trails the disk, so its catch-up looks this far back.
 const SAVE_GAP: Duration = Duration::from_secs(3600);
+/// fseventsd answers a history query only after several milliseconds.
+const PROBE_WAIT: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
@@ -64,11 +66,12 @@ pub struct Stats {
 }
 
 /// What the live follower still owes the tree: folders to walk, folders put off while they cool
-/// down, and the last event it applied.
+/// down, and the last event it applied since the one it started from.
 #[derive(Default)]
 struct Pending {
     roots: Vec<PathBuf>,
     dirs: Vec<PathBuf>,
+    from: u64,
     applied: u64,
     advanced: u64,
     later: HashMap<PathBuf, Instant>,
@@ -170,6 +173,38 @@ impl Index {
         let tree = self.read();
         let node = tree.nodes[listed_dir(&tree, dir)? as usize];
         (node.modified != store::NO_TIME).then(|| store::time(node.modified))
+    }
+
+    /// `children`, while the index holds every change FSEvents has for the folder's entries and
+    /// its folders' own. A write to a file held open reports only when it closes.
+    pub fn current_children(&self, dir: &Path) -> Option<Vec<Entry>> {
+        let real = crate::watch::resolved(dir);
+        catchup::open_to_us(&real, &crawl::home()).then_some(())?;
+        let (from, applied) = {
+            let pending = self.pending.lock().unwrap();
+            let at = |path: &PathBuf| path == &real || path.parent() == Some(real.as_path());
+            let owed = self.checking.load(Ordering::SeqCst)
+                || pending.later.keys().any(at)
+                || pending
+                    .rescans
+                    .iter()
+                    .chain(pending.rechecks.keys())
+                    .any(|path| at(path) || real.starts_with(path));
+            let followed = pending.roots.iter().any(|root| real.starts_with(root));
+            (followed && !owed).then_some((pending.from, pending.applied))?
+        };
+        let tree = self.read();
+        let since = tree
+            .roots
+            .iter()
+            .filter(|root| root.event_id >= from && real.starts_with(&root.path))
+            .map(|root| root.event_id.max(applied))
+            .max()?;
+        let id = listed_dir(&tree, &real)?;
+        (tree.nodes[id as usize].state & EXACT != 0).then_some(())?;
+        let children = tree.children(id).map(|child| tree.entry(child)).collect();
+        drop(tree);
+        (!crate::watch::changed_since(&real, since, PROBE_WAIT)).then_some(children)
     }
 
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
@@ -297,11 +332,14 @@ impl Index {
     }
 
     pub fn follow(self: &Arc<Self>, roots: Vec<PathBuf>) -> crate::watch::Watcher {
-        self.pending.lock().unwrap().roots = roots.iter().map(|root| crawl::real(root)).collect();
+        let from = crate::watch::latest_event_id();
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.roots = roots.iter().map(|root| crawl::real(root)).collect();
+            pending.from = from;
+        }
         let index = self.clone();
-        crate::watch::since(crate::watch::latest_event_id(), roots, move |replay| {
-            index.apply(replay)
-        })
+        crate::watch::since(from, roots, move |replay| index.apply(replay))
     }
 
     /// Whether it put work off until a folder cools down or a check comes due.
@@ -428,14 +466,14 @@ impl Index {
                 && pending.rescans.is_empty()
                 && !self.checking.load(Ordering::SeqCst)
                 && pending.applied > pending.advanced;
-            let (roots, applied) = (pending.roots.clone(), pending.applied);
+            let (roots, applied, from) = (pending.roots.clone(), pending.applied, pending.from);
             if settled {
                 pending.advanced = applied;
                 pending.synced = Some(SystemTime::now());
             }
             drop(pending);
             if settled {
-                self.write().advance(&roots, applied);
+                self.write().advance(&roots, applied, from);
             }
             self.crawling.store(false, Ordering::SeqCst);
             let pending = self.pending.lock().unwrap();
@@ -457,13 +495,19 @@ impl Index {
         }
     }
 
-    /// Every change adds, removes or renames an entry, which moves its folder's modification time:
-    /// after dropped events, the folders to read again are the ones modified since `since`.
+    /// After dropped events, the folders read again are the ones modified since `since`: an added,
+    /// removed or renamed entry moves its folder's time, new contents in a file do not.
     fn verify(&self, roots: &[PathBuf], since: SystemTime, home: &Path) -> Vec<PathBuf> {
         let dirs = self.read().listed_under(&outermost(roots.to_vec()));
+        {
+            let mut tree = self.write();
+            for &(id, _) in &dirs {
+                tree.nodes[id as usize].state &= !EXACT;
+            }
+        }
         let (known, mut refreshed) = (dirs.len(), 0);
         let mut deeper = Vec::new();
-        for dir in dirs {
+        for (_, dir) in dirs {
             let changed = std::fs::symlink_metadata(&dir)
                 .and_then(|meta| meta.modified())
                 .map_or(true, |at| at >= since);
@@ -512,8 +556,13 @@ impl Index {
             .iter()
             .map(|entry| crawl::sealed(&dir.join(&entry.name), entry, home))
             .collect();
+        let own = crate::list::entry_at(dir).ok();
         let ids = relist(self, id, &entries, &sealed);
         let mut tree = self.write();
+        // FSEvents names only this folder when an entry moves its time, which its parent lists.
+        if let Some(own) = own.filter(|own| own.kind == EntryKind::Directory) {
+            tree.write(id, &own, false);
+        }
         let before = tree.nodes[id as usize].size;
         let after: u64 = tree
             .children(id)

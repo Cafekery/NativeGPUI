@@ -7,6 +7,7 @@ use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
     CFArray, CFRetained, CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext,
@@ -201,7 +202,56 @@ pub fn latest_event_id() -> u64 {
     unsafe { FSEventsGetCurrentEventId() }
 }
 
-fn resolved(dir: &Path) -> PathBuf {
+/// Whether FSEvents holds a change since `event_id` that could alter what `dir` lists: in it, in a
+/// folder in it, or dropped above it. Unanswered within `wait`, it says there may be one.
+pub fn changed_since(dir: &Path, event_id: u64, wait: Duration) -> bool {
+    let probe: Probe = (resolved(dir), Cell::new(false), Cell::new(false));
+    let path = CFString::from_str(&probe.0.to_string_lossy());
+    let array = CFArray::from_objects(&[&*path]);
+    let mut context = FSEventStreamContext {
+        version: 0,
+        info: &probe as *const Probe as *mut c_void,
+        retain: None,
+        release: None,
+        copyDescription: None,
+    };
+    let stream = unsafe {
+        FSEventStreamCreate(
+            None,
+            Some(probed),
+            &mut context,
+            array.as_opaque(),
+            event_id,
+            0.0,
+            kFSEventStreamCreateFlagUseCFTypes,
+        )
+    };
+    let Some(run_loop) = CFRunLoop::current().filter(|_| !stream.is_null()) else {
+        return true;
+    };
+    let mode = CFString::from_static_str("finder-fs.changed-since");
+    #[allow(deprecated)]
+    let started = unsafe {
+        FSEventStreamScheduleWithRunLoop(stream, &run_loop, &mode);
+        FSEventStreamStart(stream)
+    };
+    let deadline = Instant::now() + wait;
+    while started && !probe.1.get() && !probe.2.get() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        CFRunLoop::run_in_mode(Some(&mode), left.as_secs_f64(), true);
+    }
+    unsafe {
+        FSEventStreamStop(stream);
+        FSEventStreamInvalidate(stream);
+        FSEventStreamRelease(stream);
+    }
+    probe.1.get() || !probe.2.get()
+}
+
+pub(crate) fn resolved(dir: &Path) -> PathBuf {
     let real = crate::list::real_path(dir).unwrap_or_else(|| dir.to_path_buf());
     strip_trailing_slash(&real.to_string_lossy())
 }
@@ -426,6 +476,36 @@ unsafe extern "C-unwind" fn callback(
         return;
     }
     ticking.set(on_change(replay));
+}
+
+/// The folder asked about, whether a change to it came, and whether history is done.
+type Probe = (PathBuf, Cell<bool>, Cell<bool>);
+
+unsafe extern "C-unwind" fn probed(
+    _stream: ConstFSEventStreamRef,
+    info: *mut c_void,
+    num_events: usize,
+    event_paths: NonNull<c_void>,
+    event_flags: NonNull<FSEventStreamEventFlags>,
+    _event_ids: NonNull<FSEventStreamEventId>,
+) {
+    let (dir, changed, done) = unsafe { &*(info as *const Probe) };
+    let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
+    let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
+    for (i, flag) in flags.iter().enumerate() {
+        if flag & kFSEventStreamEventFlagHistoryDone != 0 {
+            done.set(true);
+            continue;
+        }
+        let Some(path) = paths.get(i) else { continue };
+        let path = strip_trailing_slash(&path.to_string());
+        if flag & kFSEventStreamEventFlagEventIdsWrapped != 0
+            || path.parent() == Some(dir.as_path())
+            || dir.starts_with(&path)
+        {
+            changed.set(true);
+        }
+    }
 }
 
 #[cfg(test)]
