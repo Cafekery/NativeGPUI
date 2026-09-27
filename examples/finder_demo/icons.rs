@@ -129,6 +129,18 @@ pub(crate) fn draw_stand_ins(size: f32) {
     });
 }
 
+/// A process's first check of write access to an app bundle that App Management guards waits on
+/// TCC, and checks meanwhile queue behind it; the answer then holds for the process. Drawing an
+/// app's icon makes that check.
+pub(crate) fn ask_app_management() {
+    let apps = std::path::Path::new("/Applications");
+    for entry in finder_fs::list::list_dir(apps).unwrap_or_default() {
+        if entry.package {
+            finder_fs::list::listed_entry_at(&apps.join(&entry.name)).ok();
+        }
+    }
+}
+
 /// On the thread that read a listing, before it is shown; that thread draws as one of the lanes.
 pub(crate) fn prepare(rows: &[Arc<Row>], shown: usize, size: f32) {
     let kinds = rows
