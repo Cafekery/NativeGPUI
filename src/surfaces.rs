@@ -9,7 +9,7 @@ use gpui::{
     AnyElement, App, AsyncWindowContext, Bounds, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Pixels, Size, Window, px,
 };
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
@@ -23,7 +23,7 @@ use objc2_foundation::{
 };
 
 use crate::bridge::appkit::{Container, gpui_view};
-use crate::bridge::host::{Layer, NativeHost};
+use crate::bridge::host::{Layer, NativeHost, Target};
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
 #[derive(Clone, Default)]
@@ -32,7 +32,9 @@ pub struct SurfaceAnchor(Rc<AnchorState>);
 #[derive(Default)]
 struct AnchorState {
     bounds: Cell<Option<Bounds<Pixels>>>,
+    mask: Cell<Option<Bounds<Pixels>>>,
     tracker: RefCell<Option<Retained<Container>>>,
+    popover: RefCell<Option<Weak<NSPopover>>>,
 }
 
 impl SurfaceAnchor {
@@ -57,6 +59,23 @@ impl SurfaceAnchor {
     fn key(&self) -> u64 {
         Rc::as_ptr(&self.0) as u64
     }
+
+    fn holds_popover(&self) -> bool {
+        let mut popover = self.0.popover.borrow_mut();
+        if popover
+            .as_ref()
+            .and_then(Weak::load)
+            .is_some_and(|popover| popover.isShown())
+        {
+            return true;
+        }
+        *popover = None;
+        false
+    }
+}
+
+fn new_tracker(mtm: MainThreadMarker, _: &Target) -> Retained<Container> {
+    Container::new(mtm, NSRect::ZERO, false)
 }
 
 pub fn native_anchor(anchor: &SurfaceAnchor, child: impl IntoElement) -> NativeAnchor {
@@ -116,14 +135,19 @@ impl Element for NativeAnchor {
         cx: &mut App,
     ) {
         self.anchor.0.bounds.set(Some(bounds));
-
-        let key = self.anchor.key();
         let mask = window.content_mask().bounds;
-        let tracker =
-            NativeHost::get(window, cx).place(key, Layer::Above, bounds, mask, |mtm, _| {
-                Container::new(mtm, NSRect::ZERO, false)
-            });
-        self.anchor.0.tracker.replace(Some(tracker));
+        self.anchor.0.mask.set(Some(mask));
+        // Moving a hosted view costs AppKit a layout pass: only a shown popover's anchor follows.
+        let tracker = self.anchor.holds_popover().then(|| {
+            NativeHost::get(window, cx).place(
+                self.anchor.key(),
+                Layer::Above,
+                bounds,
+                mask,
+                new_tracker,
+            )
+        });
+        self.anchor.0.tracker.replace(tracker);
 
         self.child.paint(window, cx);
     }
@@ -307,7 +331,19 @@ pub fn present_popover(
     spec: PopoverOptions,
     build: impl FnOnce(MainThreadMarker, &SurfaceActions) -> Retained<NSView>,
 ) -> Option<NativePopover> {
-    let positioning = anchor.tracker()?;
+    let (Some(bounds), Some(mask)) = (anchor.bounds(), anchor.0.mask.get()) else {
+        return None;
+    };
+    let positioning = anchor.tracker().unwrap_or_else(|| {
+        NativeHost::get(window, cx).place_between_frames(
+            anchor.key(),
+            Layer::Above,
+            None,
+            bounds,
+            mask,
+            new_tracker,
+        )
+    });
     let mtm = MainThreadMarker::new().expect("gpui runs its windows on the main thread");
     let actions = SurfaceActions::new(window, cx);
     let content_size = NSSize::new(spec.size.width.to_f64(), spec.size.height.to_f64());
@@ -327,6 +363,11 @@ pub fn present_popover(
         &positioning,
         spec.edge.rect_edge(),
     );
+    anchor.0.tracker.replace(Some(positioning));
+    anchor
+        .0
+        .popover
+        .replace(Some(Weak::from_retained(&popover)));
 
     Some(NativePopover {
         popover,

@@ -1,12 +1,14 @@
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::{iter, ptr};
 
 use gpui::{
-    AnyWindowHandle, App, AsyncWindowContext, Bounds, Global, GlobalElementId, Pixels, Window,
+    AnyWindowHandle, App, AsyncWindowContext, Bounds, EntityId, Global, GlobalElementId, Pixels,
+    Window,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -258,7 +260,8 @@ struct HostState {
     slots: HashMap<u64, Pooled>,
     order: Vec<u64>,
     last_order: Vec<u64>,
-    recreated: bool,
+    created: Vec<u64>,
+    kept: HashMap<EntityId, (Vec<u64>, u64)>,
     generation: u64,
 }
 
@@ -344,7 +347,8 @@ impl NativeHost {
             slots: HashMap::new(),
             order: Vec::new(),
             last_order: Vec::new(),
-            recreated: false,
+            created: Vec::new(),
+            kept: HashMap::new(),
             generation: 1,
         })))
     }
@@ -416,6 +420,20 @@ impl NativeHost {
         mask: Bounds<Pixels>,
         new: impl FnOnce(MainThreadMarker, &Target) -> Retained<V>,
     ) -> Retained<V> {
+        let view = self.place_between_frames(key, layer, parent, bounds, mask, new);
+        self.0.borrow_mut().order.push(key);
+        view
+    }
+
+    pub(crate) fn place_between_frames<V: Message + AsRef<NSView> + 'static>(
+        &self,
+        key: u64,
+        layer: Layer,
+        parent: Option<&NSView>,
+        bounds: Bounds<Pixels>,
+        mask: Bounds<Pixels>,
+        new: impl FnOnce(MainThreadMarker, &Target) -> Retained<V>,
+    ) -> Retained<V> {
         let state = &mut *self.0.borrow_mut();
         let visible = bounds.intersect(&mask);
         let clip_frame = to_rect(visible);
@@ -431,7 +449,7 @@ impl NativeHost {
             state.slots.remove(&key).unwrap().clip.removeFromSuperview();
         }
         if !state.slots.contains_key(&key) {
-            state.recreated = true;
+            state.created.push(key);
         }
 
         let slot = state.slots.entry(key).or_insert_with(|| {
@@ -473,13 +491,10 @@ impl NativeHost {
         }
         slot.generation = state.generation;
 
-        let view = slot
-            .typed
+        slot.typed
             .downcast_ref::<Retained<V>>()
             .expect("slot type was checked above")
-            .clone();
-        state.order.push(key);
-        view
+            .clone()
     }
 
     pub fn on_change(&self, key: u64, kind: ValueKind, handler: Option<NativeHandler>) {
@@ -532,6 +547,35 @@ impl NativeHost {
         }
     }
 
+    pub(crate) fn placed(&self) -> usize {
+        self.0.borrow().order.len()
+    }
+
+    /// A cached view that placed nothing replayed its last paint: its views stay placed.
+    pub(crate) fn keep(&self, owner: EntityId, from: usize, fresh: bool) {
+        let HostState {
+            slots,
+            order,
+            kept,
+            generation,
+            ..
+        } = &mut *self.0.borrow_mut();
+        if fresh || order.len() > from {
+            kept.insert(owner, (order[from..].to_vec(), *generation));
+            return;
+        }
+        let Some((keys, seen)) = kept.get_mut(&owner) else {
+            return;
+        };
+        *seen = *generation;
+        for key in keys.iter() {
+            if let Some(slot) = slots.get_mut(key) {
+                slot.generation = *generation;
+                order.push(*key);
+            }
+        }
+    }
+
     pub fn commit(&self) {
         let state = &mut *self.0.borrow_mut();
         let generation = state.generation;
@@ -553,42 +597,76 @@ impl NativeHost {
                 .retain(|_, entry| !retired.contains(&entry.owner));
         }
 
-        // A rebuilt view lands topmost and drops out of the key loop, with `order` unchanged.
-        if std::mem::take(&mut state.recreated) || state.order != state.last_order {
-            for key in &state.order {
-                let Some(slot) = state.slots.get(key) else {
-                    continue;
-                };
-                let container: &NSView = match &slot.parent {
-                    Some(parent) => parent,
-                    None => match slot.layer {
-                        Layer::Above => &state.above,
-                        Layer::Below => &state.below,
-                    },
-                };
-                container.addSubview_positioned_relativeTo(
-                    &slot.clip,
-                    NSWindowOrderingMode::Above,
-                    None,
-                );
-            }
-
-            let start: &NSView = &state.terminus;
-            let mut previous = start;
-            for key in &state.order {
-                let Some(slot) = state.slots.get(key) else {
-                    continue;
-                };
-                unsafe { previous.setNextKeyView(Some(&slot.view)) };
-                previous = &slot.view;
-            }
-            let close = (!std::ptr::eq(previous, start)).then_some(start);
-            unsafe { previous.setNextKeyView(close) };
+        let created = std::mem::take(&mut state.created);
+        if !created.is_empty() || state.order != state.last_order {
+            restack(state, &created);
         }
 
+        state.kept.retain(|_, (_, seen)| *seen == generation);
         std::mem::swap(&mut state.order, &mut state.last_order);
         state.order.clear();
         state.generation += 1;
+    }
+}
+
+fn restack(state: &HostState, created: &[u64]) {
+    let new = |key: &u64| created.contains(key);
+    let container = |key: &u64| -> &NSView {
+        let slot = &state.slots[key];
+        match &slot.parent {
+            Some(parent) => parent,
+            None => match slot.layer {
+                Layer::Above => &state.above,
+                Layer::Below => &state.below,
+            },
+        }
+    };
+    let order = &state.order;
+    let survivors = state
+        .last_order
+        .iter()
+        .filter(|key| state.slots.contains_key(key) && !new(key));
+    if survivors.eq(order.iter().filter(|key| !new(key))) {
+        for (at, key) in order.iter().enumerate().filter(|(_, key)| new(key)) {
+            let home = container(key);
+            let sibling = |other: &&u64| ptr::eq(container(other), home);
+            let (edge, neighbour) = match order[..at].iter().rev().find(sibling) {
+                Some(below) => (NSWindowOrderingMode::Above, below),
+                None => match order[at + 1..].iter().find(sibling) {
+                    Some(above) => (NSWindowOrderingMode::Below, above),
+                    None => continue,
+                },
+            };
+            let neighbour: &NSView = &state.slots[neighbour].clip;
+            home.addSubview_positioned_relativeTo(&state.slots[key].clip, edge, Some(neighbour));
+        }
+    } else {
+        for key in order {
+            container(key).addSubview_positioned_relativeTo(
+                &state.slots[key].clip,
+                NSWindowOrderingMode::Above,
+                None,
+            );
+        }
+    }
+
+    // AppKit relinks no key loop when a view leaves it: every link that differs is set.
+    fn links(order: &[u64]) -> impl Iterator<Item = (Option<u64>, Option<u64>)> + '_ {
+        let keys = order.iter().copied().map(Some);
+        iter::once(None)
+            .chain(keys.clone())
+            .zip(keys.chain(iter::once(None)))
+    }
+    let before: HashSet<_> = links(&state.last_order).collect();
+    let fresh = |key: Option<u64>| key.is_some_and(|key| new(&key));
+    let view = |key: Option<u64>| -> &NSView {
+        key.map_or(&state.terminus, |key| &state.slots[&key].view)
+    };
+    for (from, to) in links(order) {
+        if !before.contains(&(from, to)) || fresh(from) || fresh(to) {
+            let next = (to.is_some() || !order.is_empty()).then(|| view(to));
+            unsafe { view(from).setNextKeyView(next) };
+        }
     }
 }
 
