@@ -228,6 +228,7 @@ fn read_batches(
 ) -> Result<Batches, Trouble> {
     let mut batches: Batches = Vec::new();
     finder_fs::list::list_dir_batched(Path::new(id), BATCH, |entries| {
+        ask_for_apps(id, &entries);
         let (entries, facts) = (Arc::new(entries), folders.clone());
         let listed = entries.clone();
         let rows = executor.spawn(async move { data::rows_of(id, listed.iter(), &facts) });
@@ -236,6 +237,13 @@ fn read_batches(
     .map_err(|error| trouble(id, error))?;
     remember(id);
     Ok(batches)
+}
+
+fn ask_for_apps<'a>(id: &str, entries: impl IntoIterator<Item = &'a Entry>) {
+    let apps = entries
+        .into_iter()
+        .filter(|entry| entry.package && entry.name.ends_with(".app"));
+    icons::ask_app_management(apps.map(|entry| PathBuf::from(data::join(id, &entry.name))));
 }
 
 async fn finish(
@@ -273,6 +281,7 @@ fn screen_rows<'a>(
     (count, art): (usize, f32),
 ) -> Vec<Arc<Row>> {
     let own = entries.clone().filter(|entry| data::own_icon(entry));
+    ask_for_apps(id, own.clone());
     let own = own.map(|entry| FileType::Path(intern(&data::join(id, &entry.name))));
     let drawing = icons::begin(own, art);
     let rows = data::rows_of(id, entries, folders);

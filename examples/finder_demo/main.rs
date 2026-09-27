@@ -94,7 +94,8 @@ fn main() {
             index().warm();
         })
         .detach();
-        warm.spawn(async { icons::ask_app_management() }).detach();
+        warm.spawn(async { icons::ask_app_management(icons::installed_apps()) })
+            .detach();
         warm.spawn(async {
             tags::all();
             tags::tags();
@@ -208,9 +209,12 @@ fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> Window
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
                 // The Edit menu is app-wide; it names the undo of whichever window is in front.
-                cx.observe_window_activation(window, |this: &mut FinderDemo, window, _| {
+                cx.observe_window_activation(window, |this: &mut FinderDemo, window, cx| {
                     if window.is_window_active() {
                         ops::undo::refresh_edit_menu(&this.journal);
+                        cx.background_executor()
+                            .spawn(async { icons::ask_app_management(icons::installed_apps()) })
+                            .detach();
                     }
                 })
                 .detach();
