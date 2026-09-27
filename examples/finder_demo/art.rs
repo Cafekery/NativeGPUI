@@ -6,7 +6,7 @@ use gpui::{
 };
 use native_gpui::native_anchor;
 use native_gpui::tokens::{
-    Appearance, FileType, SymbolColor, SystemColor, current_appearance, sf_symbol_colored,
+    Appearance, FileType, Symbol, SymbolColor, SystemColor, current_appearance, sf_symbol_colored,
 };
 
 use crate::data::{Face, Row};
@@ -19,11 +19,45 @@ pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyEle
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum Art {
+    Picture(Arc<RenderImage>),
+    Icon(Symbol),
+    Glyph(Face),
+}
+
+impl PartialEq for Art {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Art::Picture(a), Art::Picture(b)) => Arc::ptr_eq(a, b),
+            (Art::Icon(a), Art::Icon(b)) => Arc::ptr_eq(&a.image, &b.image) && a.size == b.size,
+            (Art::Glyph(a), Art::Glyph(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Art {
+    pub(crate) fn element(&self, size: f32) -> AnyElement {
+        match self {
+            Art::Picture(image) => picture(image.clone(), size),
+            Art::Icon(symbol) => square(size).child(symbol.img()).into_any_element(),
+            Art::Glyph(face) => square(size).child(glyph(*face, size)).into_any_element(),
+        }
+    }
+}
+
 /// A list row previews pictures and movies only; every other view previews documents too.
-pub(crate) fn list_art(row: &Row, size: f32, scale: f32) -> AnyElement {
-    match row.face {
-        Face::Image | Face::Movie => row_art(row, size, scale, true),
-        _ => artwork(row, size),
+pub(crate) fn list_art(row: &Row, size: f32, scale: f32) -> Art {
+    let picture = matches!(row.face, Face::Image | Face::Movie)
+        .then(|| thumb(row, size, scale, true, true))
+        .flatten();
+    match picture {
+        Some(image) => Art::Picture(image),
+        None => match type_symbol(kind_of(row), row.face, size) {
+            Some(symbol) => Art::Icon(symbol),
+            None => Art::Glyph(row.face),
+        },
     }
 }
 
@@ -67,9 +101,13 @@ fn slot(width: f32, height: f32) -> Div {
         .justify_center()
 }
 
-fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
+fn type_symbol(kind: Option<FileType<'static>>, face: Face, size: f32) -> Option<Symbol> {
     kind.and_then(|kind| crate::icons::icon(kind, size))
         .or_else(|| crate::icons::icon(face.stand_in(), size))
+}
+
+fn type_art(kind: Option<FileType<'static>>, face: Face, size: f32) -> AnyElement {
+    type_symbol(kind, face, size)
         .map(|symbol| symbol.img().into_any_element())
         .unwrap_or_else(|| glyph(face, size))
 }
