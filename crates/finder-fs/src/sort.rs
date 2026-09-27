@@ -87,6 +87,63 @@ pub fn ranks<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u32> {
     ranks
 }
 
+/// Positions of `n` items in listing order: `by`, then names (reversed when `descending`), then
+/// as given. Names are ranked only among items that tie on `by`.
+pub fn order<'a>(
+    n: usize,
+    by: impl Fn(usize, usize) -> Ordering,
+    name: impl Fn(usize) -> &'a str,
+    descending: bool,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| by(a, b));
+    for run in order.chunk_by_mut(|&a, &b| by(a, b) == Ordering::Equal) {
+        if run.len() < 2 {
+            continue;
+        }
+        let mut ranked: Vec<(u32, usize)> = ranks(run.iter().map(|&at| name(at)))
+            .into_iter()
+            .zip(run.iter().copied())
+            .collect();
+        match descending {
+            true => ranked.sort_by_key(|&(rank, _)| std::cmp::Reverse(rank)),
+            false => ranked.sort_by_key(|&(rank, _)| rank),
+        }
+        for (slot, (_, at)) in run.iter_mut().zip(ranked) {
+            *slot = at;
+        }
+    }
+    order
+}
+
+/// The first `k` positions of `order`, comparing names only against the `k` kept so far.
+pub fn first<'a>(
+    n: usize,
+    k: usize,
+    by: impl Fn(usize, usize) -> Ordering,
+    name: impl Fn(usize) -> &'a str,
+    descending: bool,
+) -> Vec<usize> {
+    let before = |a: usize, b: usize| {
+        by(a, b)
+            .then_with(|| match descending {
+                true => name_cmp(name(b), name(a)),
+                false => name_cmp(name(a), name(b)),
+            })
+            .then(a.cmp(&b))
+    };
+    let mut kept: Vec<usize> = Vec::with_capacity(k + 1);
+    for at in 0..n {
+        if kept.len() == k && kept.last().is_none_or(|&last| before(at, last).is_gt()) {
+            continue;
+        }
+        let slot = kept.partition_point(|&held| before(held, at).is_lt());
+        kept.insert(slot, at);
+        kept.truncate(k);
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +221,41 @@ mod tests {
         for (a, x) in names.iter().enumerate() {
             for (b, y) in names.iter().enumerate() {
                 assert_eq!(ranked[a].cmp(&ranked[b]), name_cmp(x, y), "{x} {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_screenful_is_the_head_of_the_whole_order() {
+        let stems = [
+            "file", "File", "file 2", "file 10", "é", "e", "_x", ".x", "Zed", "zed",
+        ];
+        let mut seed = 7u64;
+        let mut next = |bound: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % bound
+        };
+        let items: Vec<(u64, String)> = (0..400)
+            .map(|_| {
+                let stem = stems[next(stems.len() as u64) as usize];
+                (next(6), format!("{stem} {}", next(40)))
+            })
+            .collect();
+        for descending in [false, true] {
+            let by = |a: usize, b: usize| items[b].0.cmp(&items[a].0);
+            let name = |at: usize| items[at].1.as_str();
+            let whole = order(items.len(), by, name, descending);
+            let mut expected: Vec<usize> = (0..items.len()).collect();
+            expected.sort_by(|&a, &b| {
+                let names = name_cmp(name(a), name(b));
+                by(a, b).then(if descending { names.reverse() } else { names })
+            });
+            assert_eq!(whole, expected, "descending {descending}");
+            for k in [0, 1, 7, 64, 399, 400, 450] {
+                let head = &whole[..k.min(whole.len())];
+                assert_eq!(first(items.len(), k, by, name, descending), head, "k {k}");
             }
         }
     }

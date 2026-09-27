@@ -70,6 +70,7 @@ impl Render for FinderDemo {
         }
         let began = Instant::now();
         self.scale = window.scale_factor();
+        self.viewport = window.viewport_size();
         self.frames += 1;
         if let Some(limit) = self.quit_at {
             window.request_animation_frame();

@@ -4,6 +4,7 @@ use gpui::{Context, Window};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
 use crate::app::FinderDemo;
+use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
 use crate::views::header::PANE_INSET;
@@ -78,6 +79,26 @@ impl FinderDemo {
 
     pub(crate) fn row_h(&self) -> f32 {
         row_h(self.list_icon_now())
+    }
+
+    /// Items a folder's first frame shows in this view.
+    pub(crate) fn on_screen(&self) -> usize {
+        let (width, height) = (
+            f32::from(self.viewport.width),
+            f32::from(self.viewport.height),
+        );
+        let fits = match self.view {
+            ICON_VIEW => {
+                let tile = cell(self.icon_size as f32);
+                (width / tile).floor().max(1.) * (height / tile).ceil()
+            }
+            GALLERY_VIEW => width / self.strip_icon,
+            _ => height / self.row_h(),
+        };
+        match fits >= 1. {
+            true => (fits as usize + 1).min(FIRST_ROWS),
+            false => FIRST_ROWS,
+        }
     }
 
     pub(crate) fn zoom(&mut self, larger: bool, cx: &mut Context<Self>) {

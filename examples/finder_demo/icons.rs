@@ -24,7 +24,7 @@ const KEPT_BYTES: usize = 48 << 20;
 const FRESH: u64 = 8;
 
 /// Finder's first frame of a folder already has its icons.
-const FIRST_ROWS: usize = 64;
+pub(crate) const FIRST_ROWS: usize = 64;
 const PREPARE: Duration = Duration::from_millis(60);
 
 static WAITING: AtomicBool = AtomicBool::new(false);
@@ -130,45 +130,61 @@ pub(crate) fn draw_stand_ins(size: f32) {
 }
 
 /// On the thread that read a listing, before it is shown; that thread draws as one of the lanes.
-pub(crate) fn prepare(rows: &[Arc<Row>], size: f32, executor: &gpui::BackgroundExecutor) {
-    let wanted: Vec<Key> = rows
+pub(crate) fn prepare(rows: &[Arc<Row>], shown: usize, size: f32) {
+    let kinds = rows
         .iter()
-        .take(FIRST_ROWS)
-        .filter_map(|row| Some((crate::art::kind_now(row)?, size.to_bits())))
-        .collect();
+        .take(shown)
+        .filter_map(|row| crate::art::kind_now(row));
+    begin(kinds, size).finish();
+}
+
+/// A listing's icons, drawing on lanes until its thread finishes them as one more lane. The lanes
+/// are threads of their own: the listing's row tasks can hold every thread the executor has.
+pub(crate) struct Drawing {
+    keys: Arc<Vec<Key>>,
+    next: Arc<AtomicUsize>,
+    drawn: mpsc::Sender<()>,
+    landed: mpsc::Receiver<()>,
+    until: Instant,
+}
+
+pub(crate) fn begin(kinds: impl IntoIterator<Item = FileType<'static>>, size: f32) -> Drawing {
     let mut keys: Vec<Key> = Vec::new();
     {
         let kept = KEPT.lock().unwrap();
         let prepared = PREPARED.lock().unwrap();
-        for key in wanted {
+        for key in kinds.into_iter().map(|kind| (kind, size.to_bits())) {
             let drawn = kept.contains(&key) || prepared.iter().any(|(held, _)| *held == key);
             if !drawn && !keys.contains(&key) {
                 keys.push(key);
             }
         }
     }
-    if keys.is_empty() {
-        return;
-    }
     let until = Instant::now() + PREPARE;
     let (keys, next) = (Arc::new(keys), Arc::new(AtomicUsize::new(0)));
     let (drawn, landed) = mpsc::channel();
     for _ in 1..LANES.min(keys.len()) {
         let (keys, next, drawn) = (keys.clone(), next.clone(), drawn.clone());
-        executor
-            .spawn_with_priority(
-                Priority::High,
-                async move { lane(&keys, &next, &drawn, until) },
-            )
-            .detach();
+        std::thread::spawn(move || lane(&keys, &next, &drawn, until));
     }
-    lane(&keys, &next, &drawn, until);
-    for _ in 0..next.load(Ordering::Relaxed).min(keys.len()) {
-        if landed
-            .recv_timeout(until.saturating_duration_since(Instant::now()))
-            .is_err()
-        {
-            break;
+    Drawing {
+        keys,
+        next,
+        drawn,
+        landed,
+        until,
+    }
+}
+
+impl Drawing {
+    /// Draws as one more lane, then waits for the icons the others took.
+    pub(crate) fn finish(self) {
+        lane(&self.keys, &self.next, &self.drawn, self.until);
+        for _ in 0..self.next.load(Ordering::Relaxed).min(self.keys.len()) {
+            let left = self.until.saturating_duration_since(Instant::now());
+            if self.landed.recv_timeout(left).is_err() {
+                break;
+            }
         }
     }
 }
