@@ -213,6 +213,7 @@ impl FinderDemo {
                             .overflow_hidden();
                         let mut cell = div()
                             .id(("ng.finder.column.row", row))
+                            .font_family(tokens::system_font_family())
                             .w(px(content_w))
                             .h(px(ROW_H))
                             .relative()
