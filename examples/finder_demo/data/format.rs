@@ -228,6 +228,18 @@ pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
 /// samples, yesterday at 10 PM and six days ago at 10 AM, leave 16 points of the column, the short
 /// styles set in monospaced digits; else the date alone.
 pub(crate) fn date_style(width: f32, size: f32) -> usize {
+    let widest = date_samples(size);
+    (0..3)
+        .find(|&style| widest[style] + 16. <= width)
+        .unwrap_or(3)
+}
+
+/// Finder fits its date column to the long style's samples and 20 points, whatever the rows hold.
+pub(crate) fn date_fit(size: f32) -> f32 {
+    (date_samples(size)[0] + 20.).round()
+}
+
+fn date_samples(size: f32) -> [f32; 3] {
     thread_local! {
         static WIDEST: Cell<(u32, f64, [f32; 3])> = const { Cell::new((0, f64::NAN, [0.; 3])) };
     }
@@ -255,9 +267,7 @@ pub(crate) fn date_style(width: f32, size: f32) -> usize {
         });
         WIDEST.set((size.to_bits(), day, widest));
     }
-    (0..3)
-        .find(|&style| widest[style] + 16. <= width)
-        .unwrap_or(3)
+    widest
 }
 
 /// Finder's own names for a kind, fullest first (`KIND_FORMATTER_<kind>_<n>` in its strings),

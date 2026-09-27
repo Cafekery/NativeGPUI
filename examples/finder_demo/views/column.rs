@@ -1,19 +1,21 @@
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
-    UniformListScrollHandle, Window, canvas, div, prelude::*, px, transparent_black, uniform_list,
+    UniformListScrollHandle, Window, WindowTextSystem, canvas, div, prelude::*, px,
+    transparent_black, uniform_list,
 };
 use native_gpui::native_scroll_bars;
-use native_gpui::tokens::{SystemColor, system_color};
+use native_gpui::tokens::{self, SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Line, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed};
+use crate::fit;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, menu_ring, rename_field, text_width};
+use crate::ui::{click_kind, menu_ring, rename_field};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -30,6 +32,7 @@ const TOP_GAP: f32 = 6.;
 const GRIP_W: f32 = 7.;
 const REVEAL_SECS: f32 = 0.2;
 const COL_MIN: f32 = 100.;
+const BROWSER_FIT: f32 = 77.;
 const WIDTHS_HELD: usize = 256;
 
 const AREA_ALPHA: f32 = 0.3;
@@ -414,15 +417,22 @@ impl FinderDemo {
             .unwrap_or_else(|| prefs::column_view_width(folder).unwrap_or(COL_W))
     }
 
-    fn fit_browser_column(&mut self, folder: &'static str, window: &Window) {
-        let lines = self.column_listing(folder);
-        let size = px(ROW_H - 8.);
-        let widest = lines.iter().fold(0_f32, |widest, line| {
-            widest.max(text_width(window, line.row.display.clone(), size))
-        });
-        let width = (LABEL_X + widest + PREVIEW_INSET).max(COL_MIN);
-        self.column_widths.insert(folder, width);
-        prefs::set_column_view_width(folder, width);
+    fn fit_browser_column(&mut self, folder: &'static str, cx: &mut Context<Self>) {
+        let names: Vec<SharedString> = self
+            .column_listing(folder)
+            .iter()
+            .map(|line| line.row.display.clone())
+            .collect();
+        let size = tokens::system_font_size();
+        fit::in_background(
+            cx,
+            move |texts| browser_fit_width(texts, &names, size),
+            move |this, width, cx| {
+                this.column_widths.insert(folder, width);
+                prefs::set_column_view_width(folder, width);
+                cx.notify();
+            },
+        );
     }
 
     fn ruled(
@@ -444,11 +454,10 @@ impl FinderDemo {
                 .id(("ng.finder.column.grip", index))
                 .w(px(GRIP_W))
                 .cursor_ew_resize()
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                     let (_, _, twice) = click_kind(event);
                     if twice {
-                        this.fit_browser_column(folder, window);
-                        cx.notify();
+                        this.fit_browser_column(folder, cx);
                     }
                 }))
                 .on_mouse_down(
@@ -679,4 +688,19 @@ impl FinderDemo {
             self.pick_in(&listing, &line, false, false);
         }
     }
+}
+
+/// The width Finder fits a browser column to: its widest name plus a margin, rounded up, and no
+/// narrower than a new column.
+fn browser_fit_width(texts: &WindowTextSystem, names: &[SharedString], size: Pixels) -> f32 {
+    let font = tokens::system_font(FontWeight::NORMAL);
+    let widest = fit::widest(
+        texts,
+        &font,
+        size,
+        names,
+        |name| name.clone(),
+        |_, width| width,
+    );
+    (widest + BROWSER_FIT).ceil().max(COL_W)
 }

@@ -5,6 +5,7 @@ mod clipboard_window;
 mod custom;
 mod data;
 mod dragdrop;
+mod fit;
 mod frame;
 mod icons;
 mod info;

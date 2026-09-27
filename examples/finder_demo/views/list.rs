@@ -13,9 +13,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{
-    Column, Line, date_style, date_text, enclosing_name, kind_text, list_date, today,
-};
+use crate::data::{Column, Line, date_style, enclosing_name, kind_text, list_date, today};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
@@ -164,15 +162,6 @@ impl Faces {
             }
         };
         paint.into()
-    }
-}
-
-pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
-    match column {
-        Column::Name => line.row.display.clone(),
-        Column::Modified => date_text(line.row.modified_at),
-        Column::Size => line.row.size.clone(),
-        Column::Kind => line.row.kind.clone(),
     }
 }
 

@@ -1,8 +1,7 @@
 use gpui::{
-    App, ClickEvent, Div, FontWeight, Hsla, IntoElement, MouseDownEvent, Pixels, SharedString,
-    Styled, TextRun, WeakEntity, Window, div, hsla, prelude::*, px,
+    App, ClickEvent, Div, Hsla, IntoElement, MouseDownEvent, Pixels, SharedString, Styled,
+    WeakEntity, Window, div, prelude::*, px,
 };
-use native_gpui::tokens;
 
 pub(crate) use native_gpui::{focus_gpui, native_text_field};
 
@@ -11,21 +10,7 @@ use crate::data::Line;
 use crate::frame::ns_window;
 
 pub(crate) fn text_width(window: &Window, text: impl Into<SharedString>, size: Pixels) -> f32 {
-    let text = text.into();
-    let run = TextRun {
-        len: text.len(),
-        font: tokens::system_font(FontWeight::NORMAL),
-        color: hsla(0., 0., 0., 1.),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    f32::from(
-        window
-            .text_system()
-            .shape_line(text, size, &[run], None)
-            .width,
-    )
+    crate::fit::line_width(window.text_system(), text.into(), size)
 }
 
 const RING_W: f32 = 2.;
