@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -130,15 +131,27 @@ pub(crate) fn draw_stand_ins(size: f32) {
 }
 
 /// A process's first check of write access to an app bundle that App Management guards waits on
-/// TCC, and checks meanwhile queue behind it; the answer then holds for the process. Drawing an
-/// app's icon makes that check.
-pub(crate) fn ask_app_management() {
-    let apps = std::path::Path::new("/Applications");
-    for entry in finder_fs::list::list_dir(apps).unwrap_or_default() {
-        if entry.package {
-            finder_fs::list::listed_entry_at(&apps.join(&entry.name)).ok();
-        }
+/// TCC, and every check made meanwhile sends a request of its own; the answer then holds for
+/// minutes. Drawing an app's icon or reading its display name makes that check.
+pub(crate) fn ask_app_management(apps: impl IntoIterator<Item = PathBuf>) {
+    static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut asked = ASKED.lock().unwrap();
+    if asked.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+        return;
     }
+    for app in apps {
+        finder_fs::list::listed_entry_at(&app).ok();
+        *asked = Some(Instant::now());
+    }
+}
+
+pub(crate) fn installed_apps() -> impl Iterator<Item = PathBuf> {
+    let apps = Path::new("/Applications");
+    let listed = finder_fs::list::list_dir(apps).unwrap_or_default();
+    listed
+        .into_iter()
+        .filter(|entry| entry.package)
+        .map(|entry| apps.join(entry.name))
 }
 
 /// On the thread that read a listing, before it is shown; that thread draws as one of the lanes.
