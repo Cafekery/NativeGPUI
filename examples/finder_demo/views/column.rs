@@ -249,7 +249,7 @@ impl FinderDemo {
                                 let over = is_selected && emphasized;
                                 cell.child(menu_ring(
                                     if over { selection_text } else { highlight },
-                                    PILL_INSET,
+                                    (PILL_INSET, 0.),
                                     PILL_RADIUS,
                                     (joins_above, joins_below),
                                     over,

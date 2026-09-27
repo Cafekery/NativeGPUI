@@ -18,28 +18,25 @@ const RING_INSET: f32 = 1.;
 
 pub(crate) fn menu_ring(
     colour: Hsla,
-    pane_inset: f32,
+    (inset_x, inset_y): (f32, f32),
     radius: f32,
     run: (bool, bool),
     on_selection: bool,
 ) -> Div {
     let step = if on_selection { RING_INSET } else { 0. };
+    let corner = px((radius - step).max(0.));
     let (above, below) = run;
     div()
         .absolute()
-        .left(px(pane_inset + step))
-        .right(px(pane_inset + step))
-        .top(px(if above { 0. } else { step }))
-        .bottom(px(if below { 0. } else { step }))
+        .left(px(inset_x + step))
+        .right(px(inset_x + step))
+        .top(px(if above { 0. } else { inset_y + step }))
+        .bottom(px(if below { 0. } else { inset_y + step }))
         .border_l(px(RING_W))
         .border_r(px(RING_W))
         .border_color(colour)
-        .when(!above, |ring| {
-            ring.border_t(px(RING_W)).rounded_t(px(radius - step))
-        })
-        .when(!below, |ring| {
-            ring.border_b(px(RING_W)).rounded_b(px(radius - step))
-        })
+        .when(!above, |ring| ring.border_t(px(RING_W)).rounded_t(corner))
+        .when(!below, |ring| ring.border_b(px(RING_W)).rounded_b(corner))
 }
 
 pub(crate) fn click_kind(event: &ClickEvent) -> (bool, bool, bool) {
