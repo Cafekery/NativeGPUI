@@ -24,6 +24,7 @@ use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::dragdrop::Spring;
+use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
@@ -132,6 +133,7 @@ pub(crate) struct FinderDemo {
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
+    pub(crate) bands: Bands,
     pub(crate) scale: f32,
     pub(crate) viewport: Size<Pixels>,
     pub(crate) window_min_w: f32,
@@ -273,6 +275,7 @@ impl FinderDemo {
             column_scrolls: Vec::new(),
             column_grab: None,
             icons: Grid::default(),
+            bands: Bands::default(),
             scale: 2.,
             viewport: Size::default(),
             window_min_w: f32::NAN,

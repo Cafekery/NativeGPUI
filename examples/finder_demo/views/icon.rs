@@ -13,6 +13,7 @@ use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::Line;
 use crate::dragdrop::{Grabbed, Lit, drop_hover, drop_target, row_carries, row_keys, row_wandered};
+use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::tags::{tag_dots, tag_dots_w};
@@ -385,6 +386,7 @@ impl FinderDemo {
         let height = layout.height;
 
         let width = GRID_X + columns as f32 * cell;
+        let shift = self.bands.icons.shown();
         let mut canvas = div()
             .id("ng.finder.icons")
             .flex_1()
@@ -392,6 +394,10 @@ impl FinderDemo {
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&scroll)
+            .on_scroll_wheel(stretching(
+                |this| (&mut this.bands.icons, this.icons.scroll.clone()),
+                cx,
+            ))
             // The only child in flow: the tiles are absolute and contribute no scrollable size.
             .child(
                 div()
@@ -415,8 +421,8 @@ impl FinderDemo {
             let tile = div()
                 .id(("ng.finder.tile", index))
                 .absolute()
-                .left(at.x)
-                .top(at.y)
+                .left(at.x + shift.x)
+                .top(at.y + shift.y)
                 .w(px(cell))
                 .h(px(cell))
                 .child(tile(
@@ -486,8 +492,10 @@ impl FinderDemo {
             else {
                 return;
             };
-            let landed =
-                window.mouse_position() - drop_scroll.bounds().origin - drop_scroll.offset();
+            let landed = window.mouse_position()
+                - drop_scroll.bounds().origin
+                - drop_scroll.offset()
+                - shift;
             let delta = landed - drag.grab.get() - from;
             let moved = dropped.clone();
             let under = tile_at(&dropped.tiles, landed, cell)
@@ -530,7 +538,7 @@ impl FinderDemo {
         let hit_layout = layout.clone();
         let hit_scroll = scroll.clone();
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
-            let at = at - hit_scroll.offset();
+            let at = at - hit_scroll.offset() - shift;
             let index = tile_at(&hit_layout.tiles, at, cell)?;
             demo.lines(false).get(index).cloned()
         };
@@ -541,7 +549,8 @@ impl FinderDemo {
         // Hit-tested by hand: GPUI's drag is a bubble listener and misses a press a tile swallows.
         let canvas =
             canvas.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                let at = event.position - empty_scroll.bounds().origin - empty_scroll.offset();
+                let at =
+                    event.position - empty_scroll.bounds().origin - empty_scroll.offset() - shift;
                 if tile_at(&empty.tiles, at, cell).is_some() {
                     return;
                 }

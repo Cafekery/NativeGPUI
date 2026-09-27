@@ -11,11 +11,12 @@ use crate::app::FinderDemo;
 use crate::art::{art_at, row_art, small_glyph};
 use crate::data::{Line, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed};
+use crate::elastic::{shifted, stretching};
 use crate::fit;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::ui::{click_kind, menu_ring, rename_field};
+use crate::ui::{axis_locked, click_kind, menu_ring, rename_field};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
@@ -151,8 +152,9 @@ impl FinderDemo {
         let this_menu = this.clone();
         let this_drop = this.clone();
         let hit_scroll = handle.clone();
+        let stretch = self.bands.columns[index].shown().y;
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
-            let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y);
+            let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y + stretch);
             let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
             (row >= 0.)
                 .then(|| demo.column_listing(folder).get(row as usize).cloned())
@@ -321,11 +323,19 @@ impl FinderDemo {
                             None => cell.into_any_element(),
                         }
                     })
+                    .map(|row| shifted(row, stretch))
                     .collect()
             },
         )
         .flex_1()
-        .track_scroll(&handle);
+        .track_scroll(&handle)
+        .on_scroll_wheel(stretching(
+            move |this| {
+                let handle = this.column_scrolls[index].0.borrow().base_handle.clone();
+                (&mut this.bands.columns[index], handle)
+            },
+            cx,
+        ));
 
         let bars = native_scroll_bars(("ng.finder.column.scroll_bars", index))
             .vertical(&handle.0.borrow().base_handle);
@@ -466,7 +476,9 @@ impl FinderDemo {
                 )
                 .into_any_element(),
         };
+        let shift = self.bands.browser.shown().x;
         div()
+            .when(shift != px(0.), |wrap| wrap.relative().left(shift))
             .map(|wrap| match grow {
                 true => wrap.flex_1(),
                 false => wrap.flex_none(),
@@ -509,6 +521,7 @@ impl FinderDemo {
         let (chain, leaf) = self.column_chain();
         while self.column_scrolls.len() < chain.len() {
             self.column_scrolls.push(UniformListScrollHandle::new());
+            self.bands.columns.push(Default::default());
         }
         for rung in &chain {
             if !self.column_widths.contains_key(rung.folder) {
@@ -556,7 +569,7 @@ impl FinderDemo {
         }
 
         let this = cx.entity();
-        let browser = div()
+        let browser = axis_locked(div())
             .id("ng.finder.columns")
             .flex_1()
             .flex()
@@ -586,6 +599,10 @@ impl FinderDemo {
             ))
             .overflow_x_scroll()
             .track_scroll(&self.column_scroll)
+            .on_scroll_wheel(stretching(
+                |this| (&mut this.bands.browser, this.column_scroll.clone()),
+                cx,
+            ))
             .children(columns);
         // Beside the browser, not in it: a child of a scrolled element scrolls away with it.
         div()

@@ -16,6 +16,7 @@ use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
 use crate::data::{Column, Line, date_style, enclosing_name, kind_text, list_date, today};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
+use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
@@ -280,11 +281,12 @@ impl FinderDemo {
         let hit = self.row_at(pads, look.row_h);
         let count = slots.as_ref().map_or(lines.len(), |slots| slots.len());
         let rows_end = px((pads + count) as f32 * look.row_h);
+        let stretch = f32::from(self.bands.rows.shown().y);
 
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let (tails, trim) = self.list_tail();
         let items = pads + count + tails;
-        let below = stripes(self.scroll.clone(), pads + (count | 1), &look);
+        let below = stripes(self.scroll.clone(), pads + (count | 1), &look, stretch);
         let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
@@ -331,10 +333,20 @@ impl FinderDemo {
                         this.clone(),
                     )
                 })
+                .map(|row| shifted(row, px(stretch)))
                 .collect::<Vec<_>>()
         })
         .flex_1()
-        .track_scroll(&self.scroll);
+        .track_scroll(&self.scroll)
+        .on_scroll_wheel(stretching(
+            |this| {
+                (
+                    &mut this.bands.rows,
+                    this.scroll.0.borrow().base_handle.clone(),
+                )
+            },
+            cx,
+        ));
         let scroll = self.scroll.clone();
 
         div()
@@ -356,7 +368,10 @@ impl FinderDemo {
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     let state = scroll.0.borrow();
                     let list = &state.base_handle;
-                    let y = event.position.y - list.bounds().origin.y - list.offset().y;
+                    let y = event.position.y
+                        - list.bounds().origin.y
+                        - list.offset().y
+                        - this.bands.rows.shown().y;
                     if y >= rows_end && !event.modifiers.shift && !event.modifiers.platform {
                         this.deselect();
                         cx.notify();
@@ -373,7 +388,8 @@ impl FinderDemo {
     ) -> impl Fn(&FinderDemo, Point<Pixels>) -> Option<Line> + use<> {
         let scroll = self.scroll.clone();
         move |demo, at| {
-            let top = f32::from(scroll.0.borrow().base_handle.offset().y);
+            let top =
+                f32::from(scroll.0.borrow().base_handle.offset().y + demo.bands.rows.shown().y);
             let index = ((f32::from(at.y) - top) / row_h).floor();
             let at = (index.max(0.) as usize).checked_sub(pads)?;
             let lines = demo.lines(true);
@@ -442,8 +458,14 @@ fn pill(fill: Hsla, run: Run, bleed: bool) -> Div {
 }
 
 /// Finder stripes the empty rows below the last one, into the overscroll, and nothing above the
-/// first. Placed at paint from the bounds and offset the list's prepaint just laid its rows out at.
-fn stripes(list: UniformListScrollHandle, first: usize, look: &Look) -> impl IntoElement {
+/// first. Placed at paint from the bounds and offset the list's prepaint just laid its rows out at,
+/// shifted by the same stretch as its rows.
+fn stripes(
+    list: UniformListScrollHandle,
+    first: usize,
+    look: &Look,
+    stretch: f32,
+) -> impl IntoElement {
     let (colour, pitch) = (look.stripe, look.row_h);
     let (inset, radius) = edge(look.bleed);
     canvas(
@@ -453,7 +475,7 @@ fn stripes(list: UniformListScrollHandle, first: usize, look: &Look) -> impl Int
             let (rows, offset) = (state.base_handle.bounds(), state.base_handle.offset());
             let pitch = window.pixel_snap(px(pitch));
             for at in (first..).step_by(2) {
-                let top = rows.top() + offset.y + pitch * at as f32;
+                let top = rows.top() + offset.y + px(stretch) + pitch * at as f32;
                 if top >= bounds.bottom() {
                     break;
                 }
