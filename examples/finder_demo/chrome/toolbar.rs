@@ -1,24 +1,29 @@
+use crate::chrome::sheet::ConnectSheet;
 use crate::menus::{Act, Menu};
 use block2::RcBlock;
 use gpui::{Context, Window, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::{
-    MenuEntry, ToolbarGroupWidth, ToolbarItem, ToolbarSegment, ToolbarSelection, ToolbarStyle,
-    chrome_host, set_toolbar,
+    MenuEntry, ToolbarCustomization, ToolbarGroupWidth, ToolbarItem, ToolbarSegment,
+    ToolbarSelection, ToolbarStyle, chrome_host, set_customizable_toolbar,
 };
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
-use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSWindowTitleVisibility};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_app_kit::{
+    NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSToolbarItem, NSWindowTitleVisibility,
+};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::path::Path;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use crate::app::FinderDemo;
-use crate::data::Column;
+use crate::data::{Column, intern_path};
 
-pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, usize, Column, bool);
+pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, Column, bool);
 
 pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
@@ -42,15 +47,105 @@ const GRID_GAP: f64 = 1.5;
 const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
 const GRID_BOX_W: f64 = 22.;
 
-pub(crate) const NAV_ID: &str = "ng.finder.nav";
-pub(crate) const AIRDROP_ID: &str = "ng.finder.airdrop";
-pub(crate) const VIEW_ID: &str = "ng.finder.view";
-pub(crate) const GROUP_ID: &str = "ng.finder.group";
-pub(crate) const SHARE_ID: &str = "ng.finder.share";
-pub(crate) const TAG_ID: &str = "ng.finder.tag";
-pub(crate) const ACTION_ID: &str = "ng.finder.action";
-pub(crate) const SEARCH_ID: &str = "ng.finder.search";
+pub(crate) const NAV_ID: &str = "com.apple.finder.BACK";
+pub(crate) const AIRDROP_ID: &str = "com.apple.finder.AirD";
+pub(crate) const VIEW_ID: &str = "com.apple.finder.SWCH";
+pub(crate) const GROUP_ID: &str = "com.apple.finder.ARNG";
+pub(crate) const SHARE_ID: &str = "com.apple.finder.SHAR";
+pub(crate) const TAG_ID: &str = "com.apple.finder.LABL";
+pub(crate) const ACTION_ID: &str = "com.apple.finder.ACTN";
+pub(crate) const SEARCH_ID: &str = "com.apple.finder.SRCH";
 pub(crate) const JOBS_ID: &str = "ng.finder.jobs";
+const PATH_ID: &str = "com.apple.finder.PATH";
+const SPACE_ID: &str = "NSToolbarSpaceItem";
+
+const DEFAULTS: [&str; 10] = [
+    NAV_ID, VIEW_ID, SPACE_ID, GROUP_ID, SPACE_ID, SHARE_ID, TAG_ID, ACTION_ID, SPACE_ID, SEARCH_ID,
+];
+
+type Run = fn(&mut FinderDemo, &mut Window, &mut Context<FinderDemo>);
+/// A plain button: identifier, SF Symbol, label, tooltip and what it does.
+type Tool = (&'static str, &'static str, &'static str, &'static str, Run);
+
+const EJECT: Tool = (
+    "com.apple.finder.EJCT",
+    "eject",
+    "Eject",
+    "Eject disks and unmount servers",
+    |this, window, cx| this.eject_selection(window, cx),
+);
+const NEW_FOLDER: Tool = (
+    "com.apple.finder.NFLD",
+    "folder.badge.plus",
+    "New Folder",
+    "Create a new folder in the current location",
+    |this, _, cx| this.new_folder(cx),
+);
+const DELETE: Tool = (
+    "com.apple.finder.TRSH",
+    "trash",
+    "Delete",
+    "Move the selected items to the Trash",
+    |this, window, cx| this.run_menu(Act::Trash, window, cx),
+);
+const CONNECT: Tool = (
+    "com.apple.finder.CNCT",
+    "rectangle.connected.to.line.below",
+    "Connect",
+    "Connect to a server",
+    |this, _, _| this.connect_sheet = Some(ConnectSheet::default()),
+);
+const INFO: Tool = (
+    "com.apple.finder.INFO",
+    "info",
+    "Get Info",
+    "See information about the selected files and folders",
+    |this, window, cx| this.run_menu(Act::GetInfo, window, cx),
+);
+const QUICK_LOOK: Tool = (
+    "com.apple.finder.QUIK",
+    "eye",
+    "Quick Look",
+    "Show items with Quick Look or as an instant slideshow",
+    |this, window, cx| this.toggle_quick_look(window, cx),
+);
+const PREVIEW: Tool = (
+    "com.apple.finder.PTGL",
+    "sidebar.right",
+    "Preview",
+    "Show or hide the Preview pane",
+    |this, _, _| this.show_preview(!this.preview),
+);
+const ICLOUD: Tool = (
+    "com.apple.finder.AddP",
+    "person.badge.plus",
+    "iCloud",
+    "Share the selected items using iCloud Drive",
+    |this, window, cx| this.share_selection(window, cx),
+);
+
+static CUSTOMIZATION: LazyLock<ToolbarCustomization> = LazyLock::new(|| {
+    let defaults: Vec<String> = DEFAULTS.iter().map(|id| id.to_string()).collect();
+    let mut initial = crate::prefs::finder().toolbar.clone();
+    if initial.is_empty() {
+        initial.clone_from(&defaults);
+    }
+    ToolbarCustomization {
+        defaults,
+        initial,
+        finish: finish_item,
+    }
+});
+
+#[link(name = "SystemConfiguration", kind = "framework")]
+extern "C" {
+    fn SCDynamicStoreCopyComputerName(store: *const c_void, encoding: *mut u32) -> *mut NSString;
+}
+
+static COMPUTER: LazyLock<String> = LazyLock::new(|| {
+    let name = unsafe { SCDynamicStoreCopyComputerName(ptr::null(), ptr::null_mut()) };
+    unsafe { Retained::from_raw(name) }.map_or_else(String::new, |name| name.to_string())
+});
 
 const VIEWS: [(&str, &str, &str); 4] = [
     ("square.grid.2x2", "as Icons", "icon view"),
@@ -122,40 +217,44 @@ thread_local! {
         (airdrop_glyph(), group_glyph());
 }
 
-pub(crate) fn finish_toolbar_items(window: &Window) {
-    let Some(toolbar) = chrome_host(window).window().and_then(|w| w.toolbar()) else {
+fn finish_item(item: &NSToolbarItem) {
+    let id = item.itemIdentifier().to_string();
+    GLYPHS.with(|(airdrop, group)| match id.as_str() {
+        // Without this AppKit lays the item run out after the window title.
+        NAV_ID => item.setNavigational(true),
+        AIRDROP_ID => item.setImage(airdrop.as_deref()),
+        GROUP_ID => item.setImage(Some(group)),
+        _ => {}
+    });
+    if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
+        // `MenuEntry::disabled` is a no-op while automatic validation is on.
+        menu.menu().setAutoenablesItems(false);
+        menu.setShowsIndicator(id != ACTION_ID);
+    }
+}
+
+// Inserted while a job runs rather than kept hidden: AppKit shows hidden items in its palette.
+fn place_progress(window: &Window, shown: bool) {
+    let Some(toolbar) = chrome_host(window)
+        .window()
+        .and_then(|window| window.toolbar())
+    else {
         return;
     };
-    GLYPHS.with(|(airdrop, group)| {
-        for item in toolbar.items().iter() {
-            let id = item.itemIdentifier().to_string();
-            let glyph = match id.as_str() {
-                // Without this AppKit lays the item run out after the window title.
-                NAV_ID if !item.isNavigational() => {
-                    item.setNavigational(true);
-                    None
-                }
-                AIRDROP_ID => airdrop.as_deref(),
-                GROUP_ID => Some(&**group),
-                _ => None,
-            };
-            if let Some(glyph) =
-                glyph.filter(|glyph| !item.image().is_some_and(|have| ptr::eq(&*have, *glyph)))
-            {
-                item.setImage(Some(glyph));
-            }
-            if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
-                let rows = menu.menu();
-                // `MenuEntry::disabled` is a no-op while automatic validation is on.
-                if rows.autoenablesItems() {
-                    rows.setAutoenablesItems(false);
-                }
-                if menu.showsIndicator() != (id == GROUP_ID) {
-                    menu.setShowsIndicator(id == GROUP_ID);
-                }
-            }
+    let ids: Vec<String> = toolbar
+        .items()
+        .iter()
+        .map(|item| item.itemIdentifier().to_string())
+        .collect();
+    match (shown, ids.iter().position(|id| id == JOBS_ID)) {
+        (true, None) => {
+            let before = ids.iter().position(|id| id == SHARE_ID || id == SEARCH_ID);
+            let at = before.unwrap_or(ids.len()) as isize;
+            toolbar.insertItemWithItemIdentifier_atIndex(&NSString::from_str(JOBS_ID), at);
         }
-    });
+        (false, Some(at)) => toolbar.removeItemAtIndex(at as isize),
+        _ => {}
+    }
 }
 
 pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
@@ -179,9 +278,11 @@ impl FinderDemo {
             return;
         }
         let state = self.toolbar_state();
-        let (_, _, picked, shareable, ..) = state;
+        let (_, _, picked, shareable, cloud, progress, ..) = state;
         let this = cx.entity().downgrade();
         let nav = this.clone();
+        let path = this.clone();
+        let going = this.clone();
         let view = this.clone();
         let airdrop = this.clone();
         let tag = this.clone();
@@ -190,7 +291,20 @@ impl FinderDemo {
         let group = this.clone();
         let sharing = this.clone();
         let opening = this.clone();
-        let action = this;
+        let action = this.clone();
+        let tool = |(id, symbol, label, tip, run): Tool, enabled: bool| {
+            let this = this.clone();
+            ToolbarItem::symbol(id, symbol, label)
+                .tool_tip(tip)
+                .enabled(enabled)
+                .on_click(move |window, cx| {
+                    this.update(cx, |this: &mut Self, cx| {
+                        run(this, window, cx);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+        };
         let rows = self.action_rows();
         let acts = Rc::new(RefCell::new(rows.acts));
         let built = acts.clone();
@@ -211,21 +325,28 @@ impl FinderDemo {
                 nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
                     .ok();
             }),
-        ];
-        // Finder shows AirDrop only where its own toolbar was given it.
-        if crate::prefs::finder().airdrop {
-            items.push(
-                ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
-                    .tool_tip("Share the selected items using AirDrop")
-                    .enabled(shareable)
-                    .on_click(move |_, cx| {
-                        airdrop
-                            .update(cx, |this: &mut Self, _| this.airdrop_selection())
-                            .ok();
-                    }),
-            );
-        }
-        items.extend([
+            ToolbarItem::menu(PATH_ID, "list.bullet.indent", "Path", self.path_rows())
+                .tool_tip("See the location of the current folder")
+                .entries_on_open(move |_, cx| {
+                    path.upgrade()
+                        .map_or_else(Vec::new, |this| this.read(cx).path_rows())
+                })
+                .on_select(move |index, window, cx| {
+                    going
+                        .update(cx, |this: &mut Self, cx| {
+                            if let Some(id) = this.path_targets().get(index).copied() {
+                                this.go(id, window, cx);
+                            }
+                        })
+                        .ok();
+                }),
+            ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
+                .tool_tip("Change the item grouping (hold down Option to change the sort)")
+                .on_select(move |index, _, cx| {
+                    group
+                        .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
+                        .ok();
+                }),
             ToolbarItem::group(
                 VIEW_ID,
                 "View",
@@ -244,45 +365,6 @@ impl FinderDemo {
                 })
                 .ok();
             }),
-            ToolbarItem::space(),
-            ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
-                .tool_tip("Change the item grouping (hold down Option to change the sort)")
-                .on_select(move |index, _, cx| {
-                    group
-                        .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
-                        .ok();
-                }),
-            ToolbarItem::space(),
-        ]);
-        if self.progress_shown() {
-            items.push(
-                ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
-                    .tool_tip("See the progress of file operations")
-                    .on_click(move |_, cx| {
-                        jobs.update(cx, |this: &mut Self, cx| {
-                            this.jobs_open = !this.jobs_open;
-                            cx.notify();
-                        })
-                        .ok();
-                    }),
-            );
-        }
-        items.extend([
-            ToolbarItem::share(SHARE_ID, "Share", Vec::<String>::new())
-                .items_on_open(move |_, cx| {
-                    sharing
-                        .upgrade()
-                        .map_or_else(Vec::new, |this| this.read(cx).share_items())
-                })
-                .tool_tip("Share the selected items")
-                .enabled(shareable),
-            ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
-                .tool_tip("Edit Tags")
-                .enabled(picked)
-                .on_click(move |window, cx| {
-                    tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
-                        .ok();
-                }),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")
                 .entries_on_open(move |_, cx| {
@@ -299,7 +381,13 @@ impl FinderDemo {
                         .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
                         .ok();
                 }),
+            tool(EJECT, picked),
             ToolbarItem::space(),
+            ToolbarItem::flexible_space(),
+            tool(NEW_FOLDER, true),
+            tool(DELETE, picked),
+            tool(CONNECT, true),
+            tool(INFO, true),
             ToolbarItem::search(SEARCH_ID, "Search")
                 .placeholder("Search")
                 .width(px(SEARCH_W))
@@ -309,9 +397,48 @@ impl FinderDemo {
                         .update(cx, |this: &mut Self, cx| this.search(text, cx))
                         .ok();
                 }),
-        ]);
-        set_toolbar(window, cx, Some(ToolbarStyle::Unified), &items);
-        finish_toolbar_items(window);
+            tool(QUICK_LOOK, picked),
+            ToolbarItem::share(SHARE_ID, "Share", Vec::<String>::new())
+                .items_on_open(move |_, cx| {
+                    sharing
+                        .upgrade()
+                        .map_or_else(Vec::new, |this| this.read(cx).share_items())
+                })
+                .tool_tip("Share the selected items")
+                .enabled(shareable),
+            ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
+                .tool_tip("Edit Tags")
+                .enabled(picked)
+                .on_click(move |window, cx| {
+                    tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
+                        .ok();
+                }),
+            tool(PREVIEW, true),
+            ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
+                .tool_tip("Share the selected items using AirDrop")
+                .enabled(shareable)
+                .on_click(move |_, cx| {
+                    airdrop
+                        .update(cx, |this: &mut Self, _| this.airdrop_selection())
+                        .ok();
+                }),
+            tool(ICLOUD, cloud),
+        ];
+        if progress {
+            items.push(
+                ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
+                    .tool_tip("See the progress of file operations")
+                    .on_click(move |_, cx| {
+                        jobs.update(cx, |this: &mut Self, cx| {
+                            this.jobs_open = !this.jobs_open;
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            );
+        }
+        set_customizable_toolbar(window, cx, ToolbarStyle::Unified, &items, &CUSTOMIZATION);
+        place_progress(window, progress);
         if let Some(ns_window) = chrome_host(window).window() {
             // GPUI hides the title whenever the titlebar is transparent, which `window_options` is.
             ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
@@ -322,16 +449,46 @@ impl FinderDemo {
     /// What the toolbar shows: rebuild it when any of this moves.
     pub(crate) fn toolbar_state(&self) -> ToolbarState {
         let picked = !self.selected.is_empty();
+        let (_, shareable, cloud) = picked
+            .then(|| crate::menus::chosen_state(self))
+            .unwrap_or_default();
         (
             self.at,
             self.history.len(),
             picked,
-            picked && crate::menus::chosen_state(self).1,
+            shareable,
+            cloud,
             self.progress_shown(),
             self.view,
             self.sort,
             self.grouped,
         )
+    }
+
+    /// Finder's Path button: this folder, checked, each folder holding it, then the Mac.
+    fn path_rows(&self) -> Vec<MenuEntry> {
+        let crumbs = self
+            .folder()
+            .map_or(&[][..], |folder| folder.crumbs.as_slice());
+        crumbs
+            .iter()
+            .rev()
+            .copied()
+            .chain([COMPUTER.as_str()])
+            .enumerate()
+            .map(|(at, name)| MenuEntry::item(name).checked(at == 0))
+            .collect()
+    }
+
+    fn path_targets(&self) -> Vec<&'static str> {
+        let crumbs = self.folder().map_or(0, |folder| folder.crumbs.len());
+        let mut targets: Vec<&'static str> = Path::new(self.here())
+            .ancestors()
+            .take(crumbs)
+            .map(intern_path)
+            .collect();
+        targets.push("/");
+        targets
     }
 
     fn action_rows(&self) -> Menu {
