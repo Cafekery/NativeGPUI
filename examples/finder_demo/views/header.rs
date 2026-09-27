@@ -38,7 +38,7 @@ const DIVIDER_GRAB: f32 = 5.;
 const DIVIDER_LEAD: f32 = 3.;
 const PRESS_ALPHA: f32 = 0.31;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ColumnSpec {
     pub(crate) column: Column,
     pub(crate) width: f32,

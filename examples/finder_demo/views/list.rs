@@ -1,17 +1,21 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::mem;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClickEvent, Div, ExternalPaths, Font, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, Pixels, Point, SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
-    uniform_list,
+    AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, ExternalPaths, Font, FontWeight,
+    Hsla, MouseButton, MouseDownEvent, Pixels, Point, SharedString, Stateful, StyleRefinement,
+    WeakEntity, Window, div, prelude::*, px, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, art_at, list_art, small_glyph};
-use crate::data::{Column, Line, date_style, date_text, enclosing_name, kind_text, list_date};
+use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
+use crate::data::{
+    Column, Line, date_style, date_text, enclosing_name, kind_text, list_date, today,
+};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
@@ -54,6 +58,7 @@ thread_local! {
     static DATES: Font = tokens::system_font_tabular(FontWeight::NORMAL);
 }
 
+#[derive(PartialEq)]
 struct Look {
     icon: f32,
     row_h: f32,
@@ -71,6 +76,7 @@ struct Look {
     date_style: usize,
     searching: bool,
     columns: Vec<ColumnSpec>,
+    day: f64,
 }
 
 struct Marks {
@@ -86,10 +92,79 @@ struct Marks {
     springing: Option<SharedString>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Run {
     above: bool,
     join: Option<Hsla>,
+}
+
+/// Everything a row paints and nothing it handles: an unchanged row replays its last frame.
+struct Drawn {
+    line: Line,
+    odd: bool,
+    run: Run,
+    look: Rc<Look>,
+    selected: bool,
+    cut: bool,
+    ring: bool,
+    dropping: Option<Hsla>,
+    tags: Option<Vec<usize>>,
+    art: Art,
+}
+
+impl PartialEq for Drawn {
+    fn eq(&self, other: &Self) -> bool {
+        self.line.key == other.line.key
+            && Arc::ptr_eq(&self.line.row, &other.line.row)
+            && self.line.depth == other.line.depth
+            && (self.odd, self.run, self.selected, self.cut, self.ring)
+                == (other.odd, other.run, other.selected, other.cut, other.ring)
+            && self.dropping == other.dropping
+            && self.tags == other.tags
+            && self.art == other.art
+            && self.look == other.look
+    }
+}
+
+struct RowPaint(Drawn);
+
+impl Render for RowPaint {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        painted(&self.0, None, None)
+    }
+}
+
+/// A row whose pixels change gets a fresh view: a notify made during a draw lands a frame late.
+#[derive(Default)]
+pub(crate) struct Faces {
+    look: Option<Rc<Look>>,
+    held: HashMap<SharedString, (Entity<RowPaint>, bool)>,
+}
+
+impl Faces {
+    fn frame(&mut self, look: Look) -> Rc<Look> {
+        self.held.retain(|_, (_, used)| mem::take(used));
+        match &self.look {
+            Some(held) if **held == look => held.clone(),
+            _ => self.look.insert(Rc::new(look)).clone(),
+        }
+    }
+
+    fn view(&mut self, drawn: Drawn, cx: &mut App) -> AnyView {
+        let paint = match self.held.get_mut(&drawn.line.key) {
+            Some((paint, used)) if paint.read(cx).0 == drawn => {
+                *used = true;
+                paint.clone()
+            }
+            _ => {
+                let key = drawn.line.key.clone();
+                let paint = cx.new(|_| RowPaint(drawn));
+                self.held.insert(key, (paint.clone(), true));
+                paint
+            }
+        };
+        paint.into()
+    }
 }
 
 pub(crate) fn column_text(column: Column, line: &Line) -> SharedString {
@@ -139,7 +214,8 @@ impl FinderDemo {
         let lines = self.lines(true);
         let this = cx.entity().downgrade();
         let icon = self.list_icon_now();
-        let look = Look {
+        let faces = self.faces.clone();
+        let look = faces.borrow_mut().frame(Look {
             icon,
             row_h: row_h(icon),
             name_w: self.name_w,
@@ -165,7 +241,8 @@ impl FinderDemo {
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
             columns: self.list_columns.clone(),
-        };
+            day: today(),
+        });
         let marks = Marks {
             selected: self.selected.snapshot(),
             cut: self.cut.snapshot(),
@@ -207,7 +284,7 @@ impl FinderDemo {
                     .rounded(px(ROW_PILL_RADIUS))
                     .bg(stripe)
             });
-        let list = uniform_list("ng.finder.list", items, move |range, window, _| {
+        let list = uniform_list("ng.finder.list", items, move |range, window, cx| {
             let selected = |index: usize| {
                 index.checked_sub(pads).is_some_and(|at| {
                     let at = match slots.as_ref().map(|slots| slots.get(at)) {
@@ -241,7 +318,17 @@ impl FinderDemo {
                         above: index.checked_sub(1).is_some_and(&selected),
                         join: selected(index + 1).then_some(look.selection_join),
                     };
-                    row(&lines[at], at, run, &look, &marks, window, this.clone())
+                    row(
+                        &lines[at],
+                        at,
+                        run,
+                        &look,
+                        &marks,
+                        &faces,
+                        window,
+                        cx,
+                        this.clone(),
+                    )
                 })
                 .collect::<Vec<_>>()
         })
@@ -358,9 +445,6 @@ fn twist(
         .flex()
         .items_center()
         .justify_center();
-    if !line.row.discloses || !line.row.readable {
-        return slot;
-    }
     let arrow = if open {
         "chevron.down"
     } else {
@@ -385,16 +469,8 @@ fn twist(
     })
 }
 
-fn name_cell(
-    line: &Line,
-    at: usize,
-    look: &Look,
-    marks: &Marks,
-    lit: bool,
-    this: WeakEntity<FinderDemo>,
-) -> Div {
-    let open = marks.expanded.contains(&line.key);
-    let indent = line.depth as f32 * INDENT;
+fn name_cell(drawn: &Drawn, anchor: Option<Anchor>, rename: Option<AnyElement>) -> Div {
+    let (line, look) = (&drawn.line, &drawn.look);
     let mut name = div()
         .w(px(look.name_w))
         .flex_none()
@@ -405,36 +481,20 @@ fn name_cell(
         .whitespace_nowrap()
         .child(
             div()
-                .w(px(ICON_X + indent))
+                .w(px(ICON_X + line.depth as f32 * INDENT))
                 .h_full()
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_end()
-                .child(twist(line, at, open, lit, this.clone())),
+                .flex_none(),
         )
-        .child(art_at(
-            list_art(&line.row, look.icon, look.scale),
-            look.icon,
-            (marks.cursor.as_ref() == Some(&line.key)).then(|| marks.ql_icon.clone()),
-        ))
-        .child(if marks.renaming.as_ref() == Some(&line.key) {
-            div()
-                .ml(px(LABEL_GAP))
-                .flex_1()
-                .child(rename_field(line, at, this))
-        } else {
-            div()
+        .child(art_at(drawn.art.element(look.icon), look.icon, anchor))
+        .child(match rename {
+            Some(field) => div().ml(px(LABEL_GAP)).flex_1().child(field),
+            None => div()
                 .ml(px(LABEL_GAP))
                 .overflow_hidden()
                 .text_ellipsis_middle()
-                .child(line.row.display.clone())
+                .child(line.row.display.clone()),
         });
-    if let Some(dots) = marks
-        .tags
-        .get(&line.key)
-        .and_then(|carried| tag_dots(carried))
-    {
+    if let Some(dots) = drawn.tags.as_deref().and_then(tag_dots) {
         name = name.child(div().ml(px(TAG_DOTS_GAP)).child(dots));
     }
     if line.row.dataless {
@@ -505,55 +565,26 @@ fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
     (twist, name.min(look.name_w))
 }
 
-fn row(
-    line: &Line,
-    at: usize,
-    run: Run,
-    look: &Look,
-    marks: &Marks,
-    window: &Window,
-    this: WeakEntity<FinderDemo>,
-) -> AnyElement {
-    let is_selected = marks.selected.contains(&line.key);
-    let aimed =
-        |row: &SharedString| *row == line.key || (is_selected && marks.selected.contains(row));
-    let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
-        match marks.springing.as_ref() == Some(&line.key) {
-            true => flashed(look.selection),
-            false => look.selection,
-        }
-    });
-    let lit = dropping.is_some() || (is_selected && look.focused);
-    let text = if is_selected || dropping.is_some() {
-        look.selection_text
-    } else {
-        look.label
+fn painted(drawn: &Drawn, anchor: Option<Anchor>, rename: Option<AnyElement>) -> Div {
+    let look = &drawn.look;
+    let over = drawn.selected && look.focused;
+    let detail = match drawn.dropping.is_some() || over {
+        true => look.selection_detail,
+        false => look.secondary,
     };
-    let detail = if lit {
-        look.selection_detail
-    } else {
-        look.secondary
-    };
-    let fill = match (is_selected, at % 2 == 1) {
-        (true, _) => Some((look.selection, run)),
+    let fill = match (drawn.selected, drawn.odd) {
+        (true, _) => Some((look.selection, drawn.run)),
         (false, true) => Some((look.stripe, Run::default())),
         (false, false) => None,
     };
     let mut row = div()
-        .id(("ng.finder.row", at))
-        .w_full()
-        .h(px(look.row_h))
+        .size_full()
         .relative()
         .flex()
         .items_center()
-        .font_family(tokens::system_font_family())
-        .text_size(px(row_font()))
-        .text_color(text)
-        .when(marks.cut.contains(&line.key), |row| row.opacity(0.5))
         .children(fill.map(|(fill, run)| pill(fill, run)))
-        .children(dropping.map(|fill| pill(fill, Run::default())))
-        .children(marks.menu_row.as_ref().filter(|row| aimed(row)).map(|_| {
-            let over = is_selected && look.focused;
+        .children(drawn.dropping.map(|fill| pill(fill, Run::default())))
+        .children(drawn.ring.then(|| {
             let colour = if over {
                 look.selection_text
             } else {
@@ -563,16 +594,97 @@ fn row(
                 colour,
                 PANE_INSET,
                 ROW_PILL_RADIUS,
-                (run.above, run.join.is_some()),
+                (drawn.run.above, drawn.run.join.is_some()),
                 over,
             )
         }))
-        .child(name_cell(line, at, look, marks, lit, this.clone()));
+        .child(name_cell(drawn, anchor, rename));
     for spec in &look.columns {
-        row = row.child(detail_cell(spec, line, look, detail));
+        row = row.child(detail_cell(spec, &drawn.line, look, detail));
     }
-    let row = row
-        .child(div().w(px(PANE_INSET)).flex_none())
+    row.child(div().w(px(PANE_INSET)).flex_none())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row(
+    line: &Line,
+    at: usize,
+    run: Run,
+    look: &Rc<Look>,
+    marks: &Marks,
+    faces: &RefCell<Faces>,
+    window: &Window,
+    cx: &mut App,
+    this: WeakEntity<FinderDemo>,
+) -> AnyElement {
+    let selected = marks.selected.contains(&line.key);
+    let dropping = (marks.dropping.as_ref() == Some(&line.key)).then(|| {
+        match marks.springing.as_ref() == Some(&line.key) {
+            true => flashed(look.selection),
+            false => look.selection,
+        }
+    });
+    let lit = dropping.is_some() || (selected && look.focused);
+    let text = if selected || dropping.is_some() {
+        look.selection_text
+    } else {
+        look.label
+    };
+    let drawn = Drawn {
+        line: line.clone(),
+        odd: at % 2 == 1,
+        run,
+        look: look.clone(),
+        selected,
+        cut: marks.cut.contains(&line.key),
+        ring: marks
+            .menu_row
+            .as_ref()
+            .is_some_and(|row| *row == line.key || (selected && marks.selected.contains(row))),
+        dropping,
+        tags: marks.tags.get(&line.key).cloned(),
+        art: list_art(&line.row, look.icon, look.scale),
+    };
+    let cut = drawn.cut;
+    let cursor = marks.cursor.as_ref() == Some(&line.key);
+    let renaming = marks.renaming.as_ref() == Some(&line.key);
+    // Its anchor and its rename field are AppKit views, placed only by a row that paints.
+    let pixels = match cursor || renaming {
+        true => painted(
+            &drawn,
+            cursor.then(|| marks.ql_icon.clone()),
+            renaming.then(|| rename_field(line, at, this.clone()).into_any_element()),
+        )
+        .into_any_element(),
+        false => faces
+            .borrow_mut()
+            .view(drawn, cx)
+            .cached(StyleRefinement::default().size_full())
+            .into_any_element(),
+    };
+    let twist = (line.row.discloses && line.row.readable).then(|| {
+        twist(
+            line,
+            at,
+            marks.expanded.contains(&line.key),
+            lit,
+            this.clone(),
+        )
+        .absolute()
+        .top_0()
+        .left(px(ICON_X + line.depth as f32 * INDENT - TWIST_W))
+    });
+    let row = div()
+        .id(("ng.finder.row", at))
+        .w_full()
+        .h(px(look.row_h))
+        .relative()
+        .font_family(tokens::system_font_family())
+        .text_size(px(row_font()))
+        .text_color(text)
+        .when(cut, |row| row.opacity(0.5))
+        .child(pixels)
+        .children(twist)
         .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
         .on_click(pick_on_click(line, this.clone()))
         .on_drag(
