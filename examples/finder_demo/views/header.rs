@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use gpui::{
     AnyElement, ClickEvent, Context, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
     MouseDownEvent, Render, SharedString, StyleRefinement, WeakEntity, Window, WindowTextSystem,
@@ -101,12 +103,22 @@ pub(crate) enum HeaderDrag {
 }
 
 pub(crate) fn column_title(column: Column) -> &'static str {
-    match column {
-        Column::Name => "Name",
-        Column::Modified => "Date Modified",
-        Column::Size => "Size",
-        Column::Kind => "Kind",
-    }
+    static TITLES: LazyLock<[String; 4]> = LazyLock::new(|| {
+        [
+            ("N220", "Name"),
+            ("N221", "Date Modified"),
+            ("N223", "Size"),
+            ("N224", "Kind"),
+        ]
+        .map(|(key, english)| finder_fs::words::finder(key, english))
+    });
+    let at = match column {
+        Column::Name => 0,
+        Column::Modified => 1,
+        Column::Size => 2,
+        Column::Kind => 3,
+    };
+    &TITLES[at]
 }
 
 fn overlay(fill: Hsla) -> Div {

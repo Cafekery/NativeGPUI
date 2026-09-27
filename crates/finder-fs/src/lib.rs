@@ -14,6 +14,7 @@ pub mod sort;
 pub mod tags;
 pub mod volumes;
 pub mod watch;
+pub mod words;
 
 pub use entry::{Entry, EntryKind};
 

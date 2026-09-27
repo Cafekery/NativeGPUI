@@ -17,8 +17,11 @@ use objc2_app_kit::{
 use objc2_foundation::{
     NSAttributedString, NSBundle, NSByteCountFormatter, NSByteCountFormatterCountStyle,
     NSByteCountFormatterUnits, NSCalendar, NSCalendarOptions, NSCalendarUnit, NSDate,
-    NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSString,
+    NSDateFormatter, NSDateFormatterStyle, NSDictionary, NSNumber, NSNumberFormatter,
+    NSNumberFormatterStyle, NSString,
 };
+
+use finder_fs::words;
 
 use super::face::Face;
 use super::row::{Column, Row};
@@ -359,6 +362,10 @@ impl Bands {
     pub(crate) fn next(&mut self, row: &Row, band: Option<&SharedString>) -> Option<SharedString> {
         let named = |name: &str| band.is_some_and(|band| band.as_ref() == name);
         let fixed = |name: &'static str| (!named(name)).then(|| SharedString::new_static(name));
+        let finder = |key: &str, english: &str, args: &[&str]| {
+            let name = words::fill(&words::finder(key, english), args);
+            (!named(&name)).then(|| SharedString::from(name))
+        };
         match self.sort {
             Column::Name => match row.name.chars().next() {
                 Some(first) if first.is_ascii_digit() => fixed("0 \u{2013} 9"),
@@ -378,10 +385,15 @@ impl Bands {
                     false => SharedString::from(format!("{kind}s")),
                 })
             }
-            Column::Size if row.face == Face::Folder => fixed("Folders"),
+            Column::Size if row.face == Face::Folder => finder("GROUP_DIRECTORIES", "Folders", &[]),
+            Column::Size if row.bytes == 0 => {
+                let zero = band_bytes(0);
+                (!named(&zero)).then(|| zero.into())
+            }
+            Column::Size if row.bytes < 1_000_000 => {
+                finder("GV10", "Under ^0", &[&band_bytes(1_000_000)])
+            }
             Column::Size => fixed(match row.bytes {
-                0 => "Zero KB",
-                bytes if bytes < 1_000_000 => "Under 1 MB",
                 bytes if bytes < 10_000_000 => "1 MB to 10 MB",
                 bytes if bytes < 100_000_000 => "10 MB to 100 MB",
                 bytes if bytes < 1_000_000_000 => "100 MB to 1 GB",
@@ -390,10 +402,16 @@ impl Bands {
             Column::Modified => {
                 let (at, days) = (row.modified_at, self.days);
                 match () {
-                    _ if (days[3]..days[4]).contains(&at) => fixed("Today"),
-                    _ if (days[2]..days[3]).contains(&at) => fixed("Yesterday"),
-                    _ if (days[1]..days[2]).contains(&at) => fixed("Previous 7 Days"),
-                    _ if (days[0]..days[1]).contains(&at) => fixed("Previous 30 Days"),
+                    _ if (days[3]..days[4]).contains(&at) => finder("GROUP_TODAY", "Today", &[]),
+                    _ if (days[2]..days[3]).contains(&at) => {
+                        finder("GROUP_YESTERDAY", "Yesterday", &[])
+                    }
+                    _ if (days[1]..days[2]).contains(&at) => {
+                        finder("GROUP_PREVIOUS7DAYS", "Previous ^0 Days", &[&count(7)])
+                    }
+                    _ if (days[0]..days[1]).contains(&at) => {
+                        finder("GROUP_PREVIOUS30DAYS", "Previous ^0 Days", &[&count(30)])
+                    }
                     _ => {
                         let month = self.month(at);
                         (band != Some(&month)).then_some(month)
@@ -407,7 +425,7 @@ impl Bands {
         thread_local! {
             static FORMATTER: Retained<NSDateFormatter> = {
                 let formatter = NSDateFormatter::new();
-                formatter.setDateFormat(Some(&NSString::from_str("LLLL yyyy")));
+                formatter.setLocalizedDateFormatFromTemplate(&NSString::from_str("MMMMyyyy"));
                 formatter
             };
         }
@@ -452,6 +470,24 @@ pub(crate) fn day_string(seconds: f64) -> String {
             .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
             .to_string()
     })
+}
+
+/// A size band's bound as Finder words it: the formatter's default units, so zero reads "Zero KB".
+fn band_bytes(bytes: u64) -> String {
+    NSByteCountFormatter::stringFromByteCount_countStyle(
+        bytes as i64,
+        NSByteCountFormatterCountStyle::File,
+    )
+    .to_string()
+}
+
+/// A count in the user's digits and grouping.
+pub(crate) fn count(n: usize) -> String {
+    NSNumberFormatter::localizedStringFromNumber_numberStyle(
+        &NSNumber::new_usize(n),
+        NSNumberFormatterStyle::DecimalStyle,
+    )
+    .to_string()
 }
 
 pub(crate) fn byte_string(bytes: u64) -> String {
