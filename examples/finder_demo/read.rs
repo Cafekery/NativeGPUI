@@ -19,6 +19,7 @@ use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 64;
 const TICK: Duration = Duration::from_millis(120);
+const STATS_NOW: usize = 256;
 
 /// Why a folder could not be listed, worked out on the reading thread so the main thread never
 /// waits on a disk that stopped answering.
@@ -397,7 +398,6 @@ impl FinderDemo {
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
-        self.sync_stats(cx);
         crate::icons::draw_wanted(&cx.entity(), cx);
         crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::custom::fetch_wanted(&cx.entity(), cx);
@@ -411,7 +411,7 @@ impl FinderDemo {
         (self.selected.rev(), self.focused_lines().len())
     }
 
-    fn sync_stats(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_stats(&mut self, cx: &mut Context<Self>) {
         if self.selected.is_empty() {
             self.stats = None;
             self.stats_pending = None;
@@ -424,18 +424,32 @@ impl FinderDemo {
         if known || self.stats_pending == Some(key) {
             return;
         }
-        self.stats_pending = Some(key);
         self.stats_stale
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.stats_stale = Arc::default();
-        let stale = self.stats_stale.clone();
         let lines = self.focused_lines();
+        if self.selected.len() <= STATS_NOW {
+            let chosen = self.chosen_in(&lines, usize::MAX);
+            if chosen
+                .iter()
+                .all(|line| preview::sized_by_index(&line.row).is_none())
+            {
+                self.stats_pending = None;
+                self.stats = preview::summarize(key, &chosen, &self.tags, &self.stats_stale);
+                return;
+            }
+        }
+        self.stats_pending = Some(key);
+        let stale = self.stats_stale.clone();
         let chosen = self.selected.snapshot();
         let tags = self.tags.clone();
         cx.spawn(async move |this, cx| {
             let summary = cx
                 .background_executor()
-                .spawn(async move { preview::summarize(key, &lines, &chosen, &tags, &stale) })
+                .spawn(async move {
+                    let picked = lines.iter().filter(|line| chosen.contains(&line.key));
+                    preview::summarize(key, picked, &tags, &stale)
+                })
                 .await;
             let Some(stats) = summary else {
                 return;

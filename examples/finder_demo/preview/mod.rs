@@ -23,7 +23,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize};
 
 pub(crate) use self::card::follow_stacks;
-pub(crate) use self::stats::{Stats, summarize};
+pub(crate) use self::stats::{Stats, sized_by_index, summarize};
 use crate::app::FinderDemo;
 use crate::frame::ns_window;
 use crate::palette::Palette;
