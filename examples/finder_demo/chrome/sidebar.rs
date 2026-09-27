@@ -174,8 +174,9 @@ pub(crate) fn groups() -> Vec<Group> {
 
     let mut tags: Vec<Row> = crate::tags::all()
         .iter()
-        .map(|tag| {
-            row(
+        .map(|tag| Row {
+            muted: finder_color_rgb(tag.color).is_none(),
+            ..row(
                 intern(&format!("tag:{}", tag.name)),
                 tag.name.clone(),
                 Glyph::Tag(tag.color),

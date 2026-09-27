@@ -8,6 +8,8 @@ use std::process::Command;
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2_core_foundation::{CFArray, CFBoolean, CFNumber, CFRetained, CFString};
+use objc2_core_services::{LSSharedFileList, LSSharedFileListItem};
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions,
     NSPropertyListSerialization, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults,
@@ -33,16 +35,43 @@ fn standard() -> Vec<Tag> {
     STANDARD
         .iter()
         .map(|&(name, color)| Tag {
-            name: name.into(),
+            name: crate::words::finder(&format!("TG_COLOR_{color}"), name),
             color,
         })
         .collect()
 }
 
+/// Every tag Finder's sidebar lists, in its order. Their colours are in Finder's tag store, which
+/// an app opened from the Dock may not read; a standard colour's name still says its colour.
 pub fn all() -> Vec<Tag> {
-    finder_tags()
-        .filter(|tags| !tags.is_empty())
-        .unwrap_or_else(standard)
+    let known = finder_tags().filter(|tags| !tags.is_empty());
+    let Some(names) = sidebar_tag_names().filter(|names| !names.is_empty()) else {
+        return known.unwrap_or_else(standard);
+    };
+    names
+        .into_iter()
+        .map(|name| Tag {
+            color: known
+                .iter()
+                .flatten()
+                .find(|tag| tag.name == name)
+                .map(|tag| tag.color)
+                .or_else(|| standard_color(&name))
+                .unwrap_or_default(),
+            name,
+        })
+        .collect()
+}
+
+fn standard_color(name: &str) -> Option<u8> {
+    let named = |&(english, color): &(&str, u8)| {
+        english == name || crate::words::finder(&format!("TG_COLOR_{color}"), english) == name
+    };
+    STANDARD
+        .iter()
+        .find(|standard| named(standard))
+        .map(|&(_, color)| color)
+        .or((name == "Grey").then_some(1))
 }
 
 pub fn favorites() -> Vec<Tag> {
@@ -54,7 +83,9 @@ pub fn favorites() -> Vec<Tag> {
             .map(|tag| tag.color)
             .unwrap_or_default()
     };
-    let favorites: Vec<Tag> = favorite_tag_names()
+    let favorites: Vec<Tag> = sidebar_tag_names()
+        .filter(|names| !names.is_empty())
+        .or_else(favorite_tag_names)
         .unwrap_or_default()
         .into_iter()
         .filter(|name| !name.is_empty())
@@ -67,6 +98,35 @@ pub fn favorites() -> Vec<Tag> {
         true => standard(),
         false => favorites,
     }
+}
+
+/// The tags Finder's sidebar lists, in its order: `sharedfilelistd`'s projects list, which
+/// Finder keeps and `FavoriteTagNames` no longer follows.
+#[allow(deprecated)]
+fn sidebar_tag_names() -> Option<Vec<String>> {
+    let name = CFString::from_static_str("com.apple.LSSharedFileList.ProjectsItems");
+    let list = unsafe { LSSharedFileList::new(None, &name, None) }?;
+    let snapshot = unsafe { list.snapshot(std::ptr::null_mut()) }?;
+    let snapshot: CFRetained<CFArray<LSSharedFileListItem>> =
+        unsafe { CFRetained::cast_unchecked(snapshot) };
+    let hidden = CFString::from_static_str("com.apple.LSSharedFileList.ItemIsHidden");
+    Some(
+        snapshot
+            .iter()
+            .filter(|item| {
+                unsafe { item.property(&hidden) }.is_none_or(|value| {
+                    match value.downcast_ref::<CFBoolean>() {
+                        Some(on) => !on.as_bool(),
+                        None => {
+                            value.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()) == Some(0)
+                        }
+                    }
+                })
+            })
+            .map(|item| unsafe { item.display_name() }.to_string())
+            .filter(|name| !name.is_empty())
+            .collect(),
+    )
 }
 
 fn favorite_tag_names() -> Option<Vec<String>> {
@@ -282,6 +342,14 @@ pub fn apply(paths: &[PathBuf], add: &[Tag], remove: &[String]) -> io::Result<()
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_standard_colours_name_says_its_colour_in_either_spelling() {
+        assert_eq!(standard_color("Red"), Some(6));
+        assert_eq!(standard_color("Gray"), Some(1));
+        assert_eq!(standard_color("Grey"), Some(1));
+        assert_eq!(standard_color("Work"), None);
+    }
 
     fn names(path: &Path) -> Vec<String> {
         of(path).into_iter().map(|tag| tag.name).collect()
