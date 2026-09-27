@@ -12,7 +12,7 @@ use crate::data::{Column, Line, intern};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
 use crate::view::ICON_VIEW;
-use crate::views::header::column_title;
+use crate::views::header::{ColumnSpec, column_title};
 
 thread_local! {
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
@@ -304,12 +304,12 @@ fn holds(path: &Path) -> bool {
         || path == Path::new("/Network"))
 }
 
-pub(crate) fn header(demo: &FinderDemo) -> Menu {
+pub(crate) fn header(columns: &[ColumnSpec]) -> Menu {
     let mut menu = Menu::default();
     for (title, column) in COLUMNS {
         match column {
             Some(column) => {
-                let shown = demo.list_columns.iter().any(|spec| spec.column == column);
+                let shown = columns.iter().any(|spec| spec.column == column);
                 menu.item(MenuEntry::item(title).checked(shown), Act::Toggle(column));
             }
             None => menu.item(MenuEntry::item(title).disabled(), Act::Nothing),

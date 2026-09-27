@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
 use gpui::{
-    Bounds, Context, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Size,
+    Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Size,
     UniformListScrollHandle,
 };
 use native_gpui::sidebar::NativeSidebar;
@@ -28,7 +28,7 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::LIST_VIEW;
-use crate::views::header::{ColumnSpec, HeaderDrag, NAME_MIN_W, default_columns};
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, NAME_MIN_W, default_columns};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
@@ -67,6 +67,7 @@ pub(crate) struct FinderDemo {
     pub(crate) list_columns: Vec<ColumnSpec>,
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
+    pub(crate) header: Option<Entity<HeaderBand>>,
     pub(crate) header_press: Option<f32>,
     pub(crate) query: String,
     pub(crate) titled: String,
@@ -210,6 +211,7 @@ impl FinderDemo {
             list_columns: default_columns(),
             name_w: NAME_MIN_W,
             header_drag: None,
+            header: None,
             header_press: None,
             query: String::new(),
             filtered: String::new(),
@@ -298,6 +300,8 @@ impl FinderDemo {
             jobs_open: false,
         };
         this.load_column_widths();
+        cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
+            .detach();
         this
     }
 

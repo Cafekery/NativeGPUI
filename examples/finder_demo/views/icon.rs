@@ -461,18 +461,10 @@ impl FinderDemo {
                 .on_click(pick_on_click(line, this.clone()));
             let tile = match line.row.opens {
                 Some(into) => drop_target::<ExternalPaths>(
-                    drop_hover::<TileDrag>(
-                        tile,
-                        line.key.clone(),
-                        into,
-                        None,
-                        self.selected.snapshot(),
-                        this.clone(),
-                    ),
+                    drop_hover::<TileDrag>(tile, line.key.clone(), into, None, this.clone()),
                     line.key.clone(),
                     into,
                     None,
-                    self.selected.snapshot(),
                     Lit::Drawn,
                     this.clone(),
                 ),

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use finder_fs::ops::Op;
 use gpui::{
-    Context, Div, DragMoveEvent, ExternalPaths, Hsla, IntoElement, Pixels, Point, Render,
+    App, Context, Div, DragMoveEvent, ExternalPaths, Hsla, IntoElement, Pixels, Point, Render,
     SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
 };
 use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
@@ -117,26 +117,32 @@ pub(crate) fn flashed(fill: Hsla) -> Hsla {
     }
 }
 
+fn carried(this: &WeakEntity<FinderDemo>, cx: &App) -> Arc<HashSet<SharedString>> {
+    this.upgrade()
+        .map(|demo| demo.read(cx).selected.snapshot())
+        .unwrap_or_default()
+}
+
 pub(crate) fn drop_hover<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
     into: &'static str,
     band: Option<(f32, f32)>,
-    carried: Arc<HashSet<SharedString>>,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     target.on_drag_move(move |event: &DragMoveEvent<D>, _, cx| {
         let at = event.event.position;
-        let over = (event.bounds.contains(&at) && !event.drag(cx).carries(&carried, &key))
-            .then(|| match band {
-                Some((twist, name)) => {
-                    let twist = event.bounds.left() + px(twist);
-                    (at.x > twist - px(TWIST_W) && at.x <= event.bounds.left() + px(name))
-                        .then(|| at.x <= twist)
-                }
-                None => Some(false),
-            })
-            .flatten();
+        let over = (event.bounds.contains(&at)
+            && !event.drag(cx).carries(&carried(&this, cx), &key))
+        .then(|| match band {
+            Some((twist, name)) => {
+                let twist = event.bounds.left() + px(twist);
+                (at.x > twist - px(TWIST_W) && at.x <= event.bounds.left() + px(name))
+                    .then(|| at.x <= twist)
+            }
+            None => Some(false),
+        })
+        .flatten();
         this.update(cx, |demo: &mut FinderDemo, cx| {
             demo.hover_folder(&key, into, over, cx);
         })
@@ -148,40 +154,37 @@ pub(crate) fn drop_lands<D: Grabbed>(
     target: Stateful<Div>,
     key: SharedString,
     into: &'static str,
-    carried: Arc<HashSet<SharedString>>,
     lit: Lit,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
     target
         .drag_over::<D>({
-            let carried = carried.clone();
             let key = key.clone();
-            move |style, grab: &D, _, _| match (grab.carries(&carried, &key), lit) {
-                (true, _) | (false, Lit::Drawn) => style,
-                (false, Lit::Outline(edge)) => style.border_color(edge),
+            let this = this.clone();
+            move |style, grab: &D, _, cx| match lit {
+                Lit::Outline(edge) if !grab.carries(&carried(&this, cx), &key) => {
+                    style.border_color(edge)
+                }
+                _ => style,
             }
         })
-        .on_drop({
-            let this = this.clone();
-            let carried = carried.clone();
-            let key = key.clone();
-            move |grab: &D, window: &mut Window, cx| {
-                if grab.carries(&carried, &key) {
+        .on_drop(move |grab: &D, window: &mut Window, cx| {
+            let carried = carried(&this, cx);
+            if grab.carries(&carried, &key) {
+                return;
+            }
+            let keys = grab.keys(&carried);
+            this.update(cx, |demo: &mut FinderDemo, cx| {
+                if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
                     return;
                 }
-                let keys = grab.keys(&carried);
-                this.update(cx, |demo: &mut FinderDemo, cx| {
-                    if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
-                        return;
-                    }
-                    if !grab.wandered(window, demo.pressed_at) {
-                        return;
-                    }
-                    demo.drop_into(into, &keys, window, cx);
-                    cx.notify();
-                })
-                .ok();
-            }
+                if !grab.wandered(window, demo.pressed_at) {
+                    return;
+                }
+                demo.drop_into(into, &keys, window, cx);
+                cx.notify();
+            })
+            .ok();
         })
 }
 
@@ -190,19 +193,11 @@ pub(crate) fn drop_target<D: Grabbed>(
     key: SharedString,
     into: &'static str,
     band: Option<(f32, f32)>,
-    carried: Arc<HashSet<SharedString>>,
     lit: Lit,
     this: WeakEntity<FinderDemo>,
 ) -> Stateful<Div> {
-    let target = drop_lands::<D>(
-        target,
-        key.clone(),
-        into,
-        carried.clone(),
-        lit,
-        this.clone(),
-    );
-    drop_hover::<D>(target, key, into, band, carried, this)
+    let target = drop_lands::<D>(target, key.clone(), into, lit, this.clone());
+    drop_hover::<D>(target, key, into, band, this)
 }
 
 pub(crate) struct Spring {

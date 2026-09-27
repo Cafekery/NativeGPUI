@@ -10,6 +10,7 @@ use gpui::{
 use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
 use objc2::AnyThread;
+use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{NSAttributedStringNSStringDrawing, NSFont, NSFontAttributeName};
 use objc2_foundation::{NSAttributedString, NSDictionary, NSString};
@@ -69,8 +70,11 @@ const KEPT: usize = 256;
 
 type Art = HashMap<(&'static str, bool, bool), FileType<'static>>;
 
+type Attributes = Retained<NSDictionary<NSString, AnyObject>>;
+
 thread_local! {
     static LABEL_W: RefCell<HashMap<String, f32>> = RefCell::default();
+    static LABEL_ATTRS: RefCell<Option<(f64, Attributes)>> = RefCell::default();
     static ART: RefCell<(u64, Art)> = RefCell::default();
 }
 
@@ -124,9 +128,15 @@ fn label_width(text: &str) -> f32 {
             return *width;
         }
         let size = f64::from(f32::from(tokens::small_system_font_size()));
-        let font = NSFont::systemFontOfSize(size);
-        let font: &AnyObject = font.as_ref();
-        let attrs = NSDictionary::from_slices(&[unsafe { NSFontAttributeName }], &[font]);
+        let attrs = LABEL_ATTRS.with_borrow_mut(|held| match held {
+            Some((at, attrs)) if *at == size => attrs.clone(),
+            _ => {
+                let font = NSFont::systemFontOfSize(size);
+                let font: &AnyObject = font.as_ref();
+                let attrs = NSDictionary::from_slices(&[unsafe { NSFontAttributeName }], &[font]);
+                held.insert((size, attrs)).1.clone()
+            }
+        });
         let string = unsafe {
             NSAttributedString::initWithString_attributes(
                 NSAttributedString::alloc(),
@@ -221,15 +231,23 @@ impl FinderDemo {
                                 ),
                             )
                         })
+                        // A hosted view whose frame changes costs AppKit a window layout pass.
                         .child(
-                            native_label(("ng.finder.crumb.name", index), crumb)
-                                .font_size(tokens::small_system_font_size())
-                                .truncates(false)
-                                .color(if dropping {
-                                    SystemColor::AlternateSelectedControlText
-                                } else {
-                                    SystemColor::SecondaryLabel
-                                }),
+                            div()
+                                .w(px(match last {
+                                    true => width.max(self.list_room.floor()),
+                                    false => width,
+                                }))
+                                .child(
+                                    native_label(("ng.finder.crumb.name", index), crumb)
+                                        .font_size(tokens::small_system_font_size())
+                                        .truncates(false)
+                                        .color(if dropping {
+                                            SystemColor::AlternateSelectedControlText
+                                        } else {
+                                            SystemColor::SecondaryLabel
+                                        }),
+                                ),
                         ),
                 );
             }

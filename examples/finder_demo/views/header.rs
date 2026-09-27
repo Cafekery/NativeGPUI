@@ -1,9 +1,10 @@
 use gpui::{
-    AnyElement, ClickEvent, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
-    MouseDownEvent, SharedString, Window, WindowTextSystem, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, Div, DragMoveEvent, ElementId, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, Render, SharedString, StyleRefinement, WeakEntity, Window, WindowTextSystem,
+    div, prelude::*, px,
 };
 use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{native_label, native_rule, native_symbol};
+use native_gpui::{native_cached, native_label, native_rule, native_symbol};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, date_fit};
@@ -189,190 +190,40 @@ impl FinderDemo {
             }
             self.header_drag = None;
         }
-        let carried = match self.header_drag {
-            Some(HeaderDrag::Reorder {
-                column,
-                left: Some(left),
-                ..
-            }) => Some((column, left)),
-            _ => None,
+        let look = HeaderLook {
+            columns: self.list_columns.clone(),
+            name_w: self.name_w,
+            sort: self.sort,
+            ascending: self.ascending,
+            carried: match self.header_drag {
+                Some(HeaderDrag::Reorder {
+                    column,
+                    left: Some(left),
+                    ..
+                }) => Some((column, left)),
+                _ => None,
+            },
+            wash: Hsla {
+                a: PRESS_ALPHA,
+                ..palette.label
+            },
+            surface: palette.surface,
         };
-        let wash = Hsla {
-            a: PRESS_ALPHA,
-            ..palette.label
-        };
-
-        let mut row = div()
-            .w_full()
-            .h(px(HEADER_H))
-            .flex_none()
-            .flex()
-            .relative()
-            // No fill: the band's material has only the rows behind it left to sample.
-            .on_drag_move(cx.listener(Self::on_header_drag));
-
-        let dragged = carried.map(|(column, _)| column);
-        row = row.child(self.header_cell(None, palette, wash, dragged, cx));
-        for index in 0..self.list_columns.len() {
-            row = row.child(self.header_cell(Some(index), palette, wash, dragged, cx));
-        }
-        row = row.child(div().w(px(PANE_INSET)).flex_none());
-
-        // After every cell, so the hit test gives the grab zone to the divider, not the header.
-        let mut boundary = self.name_w;
-        for index in 0..=self.list_columns.len() {
-            if index > 0 {
-                boundary += self.list_columns[index - 1].width;
+        let (band, fresh) = match &self.header {
+            Some(band) if band.read(cx).look == look => (band.clone(), false),
+            Some(band) => {
+                band.update(cx, |band, _| band.look = look);
+                (band.clone(), true)
             }
-            row = row.child(
-                div()
-                    .id(("ng.finder.divider", index))
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(boundary - DIVIDER_LEAD))
-                    .w(px(DIVIDER_GRAB))
-                    .cursor_ew_resize()
-                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
-                        let (_, _, twice) = click_kind(event);
-                        if twice {
-                            this.fit_list_column(index, cx);
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, _| {
-                            this.header_press = Some(f32::from(event.position.x));
-                        }),
-                    )
-                    .on_drag(HeaderGrab::Divider(index), {
-                        let this = cx.entity().downgrade();
-                        move |grab: &HeaderGrab, _, window, cx| {
-                            let grab = *grab;
-                            let now = f32::from(window.mouse_position().x);
-                            this.update(cx, |this: &mut FinderDemo, cx| {
-                                // gpui starts a drag only once the pointer has moved; measured from
-                                // there, the divider falls behind the pointer by that much.
-                                let origin = this.header_press.take().unwrap_or(now);
-                                this.begin_header_drag(grab, origin, 0.);
-                                cx.notify();
-                            })
-                            .ok();
-                            cx.new(|_| crate::dragdrop::DragGhost)
-                        }
-                    }),
-            );
-        }
-
-        if let Some((column, left)) = carried {
-            let width = self
-                .list_columns
-                .iter()
-                .find(|spec| spec.column == column)
-                .map_or(0., |spec| spec.width);
-            row = row.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .h_full()
-                    .left(px(left))
-                    .w(px(width))
-                    .bg(palette.surface)
-                    .child(overlay(wash))
-                    .child(cell_body(
-                        "ng.finder.header.carried",
-                        "ng.finder.header.carried.sort",
-                        column,
-                        self.sort == column,
-                        self.ascending,
-                    )),
-            );
-        }
-
-        row.child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(1.))
-                .child(native_rule("ng.finder.header.hairline")),
-        )
-        .into_any_element()
-    }
-
-    fn header_cell(
-        &self,
-        index: Option<usize>,
-        palette: &Palette,
-        wash: Hsla,
-        dragged: Option<Column>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let column = match index {
-            Some(index) => self.list_columns[index].column,
-            None => Column::Name,
+            None => {
+                let demo = cx.entity().downgrade();
+                let band = cx.new(|_| HeaderBand { look, demo });
+                self.header = Some(band.clone());
+                (band, false)
+            }
         };
-        let slot = index.map_or(0, |index| index + 1);
-        let mut cell = cell_body(
-            ("ng.finder.header.label", slot),
-            ("ng.finder.header.sort", slot),
-            column,
-            self.sort == column,
-            self.ascending,
-        )
-        .id(("ng.finder.header", slot))
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.sort_by(column, cx);
-            cx.notify();
-        }));
-        cell = match index {
-            Some(index) => cell.w(px(self.list_columns[index].width)),
-            None => cell.w(px(self.name_w)),
-        }
-        .flex_none();
-        if dragged == Some(column) {
-            cell = cell.child(overlay(palette.surface).child(overlay(wash)));
-        }
-        if slot < self.list_columns.len() {
-            cell = cell.child(
-                div()
-                    .absolute()
-                    .right_0()
-                    .top(px(SEP_TOP))
-                    .w(px(1.))
-                    .h(px(SEP_H))
-                    .child(native_rule(("ng.finder.header.sep", slot))),
-            );
-        }
-        let with_menu = |cell: AnyElement| {
-            menus::attach(
-                ("ng.finder.header.menu", slot),
-                menus::header(self),
-                cx.entity().downgrade(),
-                cell,
-            )
-            .into_any_element()
-        };
-        match index {
-            None => with_menu(cell.into_any_element()),
-            Some(_) => cell
-                .on_drag(HeaderGrab::Column(column), {
-                    let this = cx.entity().downgrade();
-                    move |grab: &HeaderGrab, offset, window, cx| {
-                        let grab = *grab;
-                        let origin = f32::from(window.mouse_position().x);
-                        let inside = f32::from(offset.x);
-                        this.update(cx, |this: &mut FinderDemo, cx| {
-                            this.begin_header_drag(grab, origin, inside);
-                            cx.notify();
-                        })
-                        .ok();
-                        cx.new(|_| crate::dragdrop::DragGhost)
-                    }
-                })
-                .map(|cell| with_menu(cell.into_any_element())),
-        }
+        let style = StyleRefinement::default().w_full().h(px(HEADER_H));
+        native_cached(band, style, fresh).into_any_element()
     }
 
     fn resized_column(&self, index: usize) -> (f32, f32) {
@@ -543,6 +394,219 @@ impl FinderDemo {
         }
         prefs::set_list_column_width(self.here(), column, width);
         cx.notify();
+    }
+}
+
+/// Everything the header band paints: an unchanged band replays its last frame.
+#[derive(PartialEq)]
+pub(crate) struct HeaderLook {
+    columns: Vec<ColumnSpec>,
+    name_w: f32,
+    sort: Column,
+    ascending: bool,
+    carried: Option<(Column, f32)>,
+    wash: Hsla,
+    surface: Hsla,
+}
+
+pub(crate) struct HeaderBand {
+    look: HeaderLook,
+    demo: WeakEntity<FinderDemo>,
+}
+
+impl Render for HeaderBand {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        band_row(&self.look, &self.demo)
+    }
+}
+
+fn band_row(look: &HeaderLook, demo: &WeakEntity<FinderDemo>) -> Div {
+    let mut row = div()
+        .w_full()
+        .h(px(HEADER_H))
+        .flex_none()
+        .flex()
+        .relative()
+        // No fill: the band's material has only the rows behind it left to sample.
+        .on_drag_move({
+            let demo = demo.clone();
+            move |event: &DragMoveEvent<HeaderGrab>, window, cx| {
+                demo.update(cx, |this, cx| this.on_header_drag(event, window, cx))
+                    .ok();
+            }
+        });
+
+    let dragged = look.carried.map(|(column, _)| column);
+    row = row.child(header_cell(look, None, dragged, demo));
+    for index in 0..look.columns.len() {
+        row = row.child(header_cell(look, Some(index), dragged, demo));
+    }
+    row = row.child(div().w(px(PANE_INSET)).flex_none());
+
+    // After every cell, so the hit test gives the grab zone to the divider, not the header.
+    let mut boundary = look.name_w;
+    for index in 0..=look.columns.len() {
+        if index > 0 {
+            boundary += look.columns[index - 1].width;
+        }
+        row = row.child(
+            div()
+                .id(("ng.finder.divider", index))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(boundary - DIVIDER_LEAD))
+                .w(px(DIVIDER_GRAB))
+                .cursor_ew_resize()
+                .on_click({
+                    let demo = demo.clone();
+                    move |event: &ClickEvent, _, cx| {
+                        let (_, _, twice) = click_kind(event);
+                        if twice {
+                            demo.update(cx, |this, cx| this.fit_list_column(index, cx))
+                                .ok();
+                        }
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let demo = demo.clone();
+                    move |event: &MouseDownEvent, _, cx| {
+                        demo.update(cx, |this, _| {
+                            this.header_press = Some(f32::from(event.position.x));
+                        })
+                        .ok();
+                    }
+                })
+                .on_drag(HeaderGrab::Divider(index), {
+                    let demo = demo.clone();
+                    move |grab: &HeaderGrab, _, window, cx| {
+                        let grab = *grab;
+                        let now = f32::from(window.mouse_position().x);
+                        demo.update(cx, |this: &mut FinderDemo, cx| {
+                            // gpui starts a drag only once the pointer has moved; measured from
+                            // there, the divider falls behind the pointer by that much.
+                            let origin = this.header_press.take().unwrap_or(now);
+                            this.begin_header_drag(grab, origin, 0.);
+                            cx.notify();
+                        })
+                        .ok();
+                        cx.new(|_| crate::dragdrop::DragGhost)
+                    }
+                }),
+        );
+    }
+
+    if let Some((column, left)) = look.carried {
+        let width = look
+            .columns
+            .iter()
+            .find(|spec| spec.column == column)
+            .map_or(0., |spec| spec.width);
+        row = row.child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .left(px(left))
+                .w(px(width))
+                .bg(look.surface)
+                .child(overlay(look.wash))
+                .child(cell_body(
+                    "ng.finder.header.carried",
+                    "ng.finder.header.carried.sort",
+                    column,
+                    look.sort == column,
+                    look.ascending,
+                )),
+        );
+    }
+
+    row.child(
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(1.))
+            .child(native_rule("ng.finder.header.hairline")),
+    )
+}
+
+fn header_cell(
+    look: &HeaderLook,
+    index: Option<usize>,
+    dragged: Option<Column>,
+    demo: &WeakEntity<FinderDemo>,
+) -> AnyElement {
+    let column = match index {
+        Some(index) => look.columns[index].column,
+        None => Column::Name,
+    };
+    let slot = index.map_or(0, |index| index + 1);
+    let mut cell = cell_body(
+        ("ng.finder.header.label", slot),
+        ("ng.finder.header.sort", slot),
+        column,
+        look.sort == column,
+        look.ascending,
+    )
+    .id(("ng.finder.header", slot))
+    .on_click({
+        let demo = demo.clone();
+        move |_: &ClickEvent, _, cx| {
+            demo.update(cx, |this, cx| {
+                this.sort_by(column, cx);
+                cx.notify();
+            })
+            .ok();
+        }
+    });
+    cell = match index {
+        Some(index) => cell.w(px(look.columns[index].width)),
+        None => cell.w(px(look.name_w)),
+    }
+    .flex_none();
+    if dragged == Some(column) {
+        cell = cell.child(overlay(look.surface).child(overlay(look.wash)));
+    }
+    if slot < look.columns.len() {
+        cell = cell.child(
+            div()
+                .absolute()
+                .right_0()
+                .top(px(SEP_TOP))
+                .w(px(1.))
+                .h(px(SEP_H))
+                .child(native_rule(("ng.finder.header.sep", slot))),
+        );
+    }
+    let with_menu = |cell: AnyElement| {
+        menus::attach(
+            ("ng.finder.header.menu", slot),
+            menus::header(&look.columns),
+            demo.clone(),
+            cell,
+        )
+        .into_any_element()
+    };
+    match index {
+        None => with_menu(cell.into_any_element()),
+        Some(_) => cell
+            .on_drag(HeaderGrab::Column(column), {
+                let demo = demo.clone();
+                move |grab: &HeaderGrab, offset, window, cx| {
+                    let grab = *grab;
+                    let origin = f32::from(window.mouse_position().x);
+                    let inside = f32::from(offset.x);
+                    demo.update(cx, |this: &mut FinderDemo, cx| {
+                        this.begin_header_drag(grab, origin, inside);
+                        cx.notify();
+                    })
+                    .ok();
+                    cx.new(|_| crate::dragdrop::DragGhost)
+                }
+            })
+            .map(|cell| with_menu(cell.into_any_element())),
     }
 }
 
