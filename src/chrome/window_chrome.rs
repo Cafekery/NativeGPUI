@@ -39,6 +39,7 @@ use objc2_foundation::{
 use crate::bridge::appkit::{Container, gpui_view, to_rect};
 use crate::bridge::host::element_key;
 use crate::controls::menu::{MenuEntry, sync_menu};
+use crate::system::wording::worded;
 use crate::tokens;
 
 pub fn native_rect(bounds: Bounds<Pixels>) -> NSRect {
@@ -1366,7 +1367,7 @@ impl ToolbarDelegate {
             .find(|item| item.identifier() == wanted)
             .cloned()?;
 
-        let tip = spec.tip().map(NSString::from_str);
+        let tip = spec.tip().map(worded);
         let enabled = spec.enabled_state();
         let item: Retained<NSToolbarItem> = match spec {
             ToolbarItem::Symbol {
@@ -1376,7 +1377,7 @@ impl ToolbarDelegate {
                 ..
             } => {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
-                item.setLabel(&NSString::from_str(&label));
+                item.setLabel(&worded(&label));
                 item.setBordered(true);
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));
@@ -1435,11 +1436,11 @@ impl ToolbarDelegate {
                         rows.addItem(&row);
                     }
                     let overflow = NSMenuItem::new(mtm);
-                    overflow.setTitle(&NSString::from_str(&label));
+                    overflow.setTitle(&worded(&label));
                     overflow.setSubmenu(Some(&rows));
                     let item =
                         NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
-                    item.setLabel(&NSString::from_str(&label));
+                    item.setLabel(&worded(&label));
                     item.setView(Some(&control));
                     item.setMenuFormRepresentation(Some(&overflow));
                     item
@@ -1465,7 +1466,7 @@ impl ToolbarDelegate {
                     if selected < segments.len() {
                         group.setSelectedIndex(selected as isize);
                     }
-                    group.setLabel(&NSString::from_str(&label));
+                    group.setLabel(&worded(&label));
                     Retained::into_super(group)
                 }
             }
@@ -1479,7 +1480,7 @@ impl ToolbarDelegate {
                     NSSearchToolbarItem::alloc(mtm),
                     ident,
                 );
-                item.setLabel(&NSString::from_str(&label));
+                item.setLabel(&worded(&label));
                 // The item takes over the field's layout on assignment, so configure it first.
                 let field = NSSearchField::new(mtm);
                 if !placeholder.is_empty() {
@@ -1504,7 +1505,7 @@ impl ToolbarDelegate {
             } => {
                 let item =
                     NSMenuToolbarItem::initWithItemIdentifier(NSMenuToolbarItem::alloc(mtm), ident);
-                item.setLabel(&NSString::from_str(&label));
+                item.setLabel(&worded(&label));
                 item.setBordered(true);
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));
@@ -1529,7 +1530,7 @@ impl ToolbarDelegate {
                     NSSharingServicePickerToolbarItem::alloc(mtm),
                     ident,
                 );
-                item.setLabel(&NSString::from_str(&label));
+                item.setLabel(&worded(&label));
                 item.setDelegate(Some(ProtocolObject::from_ref(self)));
                 Retained::into_super(item)
             }
@@ -1546,7 +1547,7 @@ impl ToolbarDelegate {
                 label, size, build, ..
             } => {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
-                item.setLabel(&NSString::from_str(&label));
+                item.setLabel(&worded(&label));
                 let view = build(mtm);
                 let mut pinned: Vec<Retained<NSLayoutConstraint>> = Vec::new();
                 if size.width > px(0.) {

@@ -32,6 +32,7 @@ use crate::bridge::host::{
 use crate::controls::button::ButtonBezel;
 use crate::controls::fitted;
 use crate::system::color::to_nscolor;
+use crate::system::wording::worded;
 
 /// One row of a native menu. A separator occupies an index as it does in `NSMenu`; view rows are
 /// never reported.
@@ -517,7 +518,7 @@ fn sync_level(
         };
 
         if !nsstring_is(&item.title(), title) {
-            item.setTitle(&NSString::from_str(title));
+            item.setTitle(&worded(title));
         }
         if item.isEnabled() != *enabled {
             item.setEnabled(*enabled);
