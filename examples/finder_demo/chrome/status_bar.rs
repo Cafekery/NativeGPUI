@@ -4,7 +4,9 @@ use native_gpui::{LabelAlign, native_label, native_slider};
 
 use crate::app::FinderDemo;
 use crate::chrome::path_bar::{BarPaint, EDGE_ROW, edge_row};
-use crate::data::{available_bytes, byte_string};
+use finder_fs::words;
+
+use crate::data::{self, available_bytes, byte_string};
 use crate::frame::ns_window;
 use crate::prefs;
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
@@ -40,13 +42,27 @@ impl FinderDemo {
             .as_ref()
             .filter(|stats| stats.key == self.stats_key())
             .map(|stats| byte_string(stats.flat_bytes));
-        let text = match (chosen, size) {
-            (0, _) => format!("{count} items, {available} available"),
-            (chosen, None) => format!("{chosen} of {count} selected, {available} available"),
-            (chosen, Some(size)) => {
-                format!("{chosen} of {count} selected, {size}, {available} available")
+        let items = words::fill(
+            &words::plural("SB_COUNT", count, "^0 items"),
+            &[&data::count(count)],
+        );
+        let what = match (chosen, size) {
+            (0, _) => items,
+            (chosen, size) => {
+                let picked = words::fill(
+                    &words::finder("SB_1ofN_V1", "^1 of ^0 selected"),
+                    &[&data::count(count), &data::count(chosen)],
+                );
+                match size {
+                    Some(size) => words::fill(&words::finder("SB1.1", "^0, ^1"), &[&picked, &size]),
+                    None => picked,
+                }
             }
         };
+        let text = words::fill(
+            &words::finder("SB1", "^0, ^1 available"),
+            &[&what, &available],
+        );
         let slider = matches!(self.view, ICON_VIEW | GALLERY_VIEW);
         let paint = BarPaint::now();
 

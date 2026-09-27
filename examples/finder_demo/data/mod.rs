@@ -8,7 +8,7 @@ mod volumes;
 pub(crate) use self::face::Face;
 pub(crate) use self::folders::{Folder, Folders, folder_of};
 pub(crate) use self::format::{
-    Bands, byte_string, date_fit, date_style, date_text, day_string, kind_text, list_date,
+    Bands, byte_string, count, date_fit, date_style, date_text, day_string, kind_text, list_date,
     small_text_width, stamp, today,
 };
 pub(crate) use self::paths::{enclosing_name, intern, intern_path, join, split_key};

@@ -1,7 +1,37 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
-use objc2_foundation::{NSFileManager, NSString};
+use objc2_foundation::{
+    NSData, NSDictionary, NSFileManager, NSPropertyListMutabilityOptions,
+    NSPropertyListSerialization, NSString,
+};
+
+/// The folder names LaunchServices shows in the user's language wherever the system keeps them.
+static TRANSLATED: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let path = "/System/Library/CoreServices/SystemFolderLocalizations/en.lproj/SystemFolderLocalizations.strings";
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashSet::new();
+    };
+    let names = unsafe {
+        NSPropertyListSerialization::propertyListWithData_options_format_error(
+            &NSData::with_bytes(&bytes),
+            NSPropertyListMutabilityOptions::Immutable,
+            std::ptr::null_mut(),
+        )
+    };
+    names
+        .ok()
+        .and_then(|names| names.downcast::<NSDictionary>().ok())
+        .map_or_else(HashSet::new, |names| {
+            names
+                .allKeys()
+                .iter()
+                .filter_map(|name| Some(name.downcast::<NSString>().ok()?.to_string()))
+                .collect()
+        })
+});
 
 /// A name as Finder draws it: `:` as the `/` the user typed, a control character as `?`, and a
 /// direction override closed before the extension, so `\u{202e}gnp.txt` can't pass for a
@@ -48,12 +78,12 @@ pub fn of_path(path: &Path) -> String {
 }
 
 /// `of_path` for an item a listing read, asked of LaunchServices only when the item can lose
-/// part of its name: the answer costs about 40 µs an item.
+/// part of its name or wear a translated one: the answer costs about 40 µs an item.
 pub fn shown(dir: &Path, name: &str, ext_hidden: bool) -> String {
     let hides = name.rsplit_once('.').is_some_and(|(stem, ext)| {
         !stem.is_empty() && (ext_hidden || ext.eq_ignore_ascii_case("app") || ext == "localized")
     });
-    match hides {
+    match hides || TRANSLATED.contains(name) {
         true => of_path(&dir.join(name)),
         false => display(name).into_owned(),
     }

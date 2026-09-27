@@ -52,6 +52,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>	<string>en</string>
+	<key>CFBundleAllowMixedLocalizations</key><true/>
 	<key>CFBundleExecutable</key>		<string>$product</string>
 	<key>CFBundleIdentifier</key>		<string>$bundle_id</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
