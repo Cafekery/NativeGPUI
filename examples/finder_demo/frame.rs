@@ -16,6 +16,7 @@ use crate::app::LIST_CONTEXT;
 use crate::chrome::path_bar::PATH_H;
 use crate::chrome::surface::{band_glass, toolbar_rule};
 use crate::dragdrop::RowDrag;
+use crate::elastic::stretching;
 use crate::menus;
 use crate::menus::{ZoomIn, ZoomOut};
 use crate::palette::Palette;
@@ -83,6 +84,9 @@ impl Render for FinderDemo {
         self.sync_preview_window(window, cx);
         native_gpui::set_trailing_inset(window, f32::from(self.metrics().right));
         self.spring_tick(window, cx);
+        if self.bands.tick() {
+            window.request_animation_frame();
+        }
         if let Some((_, _, started)) = self.list_zoom {
             if started.elapsed().as_secs_f32() >= LIST_ZOOM_SECS {
                 self.list_zoom = None;
@@ -292,6 +296,7 @@ impl FinderDemo {
             );
         let band = self.list_room.max(self.list_content_w());
         let width = metrics.left + px(band);
+        let sideways = self.bands.sideways.shown().x;
         if banded {
             surface = surface.child(
                 axis_locked(
@@ -299,13 +304,19 @@ impl FinderDemo {
                         .id("ng.finder.hscroll")
                         .size_full()
                         .overflow_x_scroll()
-                        .track_scroll(&self.hscroll),
+                        .track_scroll(&self.hscroll)
+                        .on_scroll_wheel(stretching(
+                            |this| (&mut this.bands.sideways, this.hscroll.clone()),
+                            cx,
+                        )),
                 )
                 .child(
                     div()
                         .h_full()
                         .w(width)
                         .min_w(relative(1.))
+                        .relative()
+                        .left(sideways)
                         .pl(metrics.left)
                         .flex()
                         .flex_col()
@@ -359,13 +370,19 @@ impl FinderDemo {
                         .right_0()
                         .h(px(HEADER_H))
                         .overflow_x_scroll()
-                        .track_scroll(&self.hscroll),
+                        .track_scroll(&self.hscroll)
+                        .on_scroll_wheel(stretching(
+                            |this| (&mut this.bands.sideways, this.hscroll.clone()),
+                            cx,
+                        )),
                 )
                 .child(
                     div()
                         .h_full()
                         .w(width)
                         .min_w(relative(1.))
+                        .relative()
+                        .left(sideways)
                         .pl(metrics.left)
                         .child(headers),
                 )

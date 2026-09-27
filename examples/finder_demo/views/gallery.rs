@@ -5,6 +5,7 @@ use native_gpui::{native_callout, native_scroll_bars};
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, poster_art, row_art};
+use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::ui::pick_on_click;
@@ -80,8 +81,9 @@ impl FinderDemo {
 
         let this = cx.entity().downgrade();
         let hit_strip = self.strip.clone();
+        let shift = self.bands.strip.shown().x;
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
-            let x = f32::from(at.x) - f32::from(hit_strip.offset().x) - STRIP_INSET;
+            let x = f32::from(at.x - hit_strip.offset().x - shift) - STRIP_INSET;
             let index = x / (strip.cell + strip.gap);
             if x < 0. || index.fract() * (strip.cell + strip.gap) > strip.cell {
                 return None;
@@ -96,6 +98,10 @@ impl FinderDemo {
             .relative()
             .overflow_x_scroll()
             .track_scroll(&self.strip)
+            .on_scroll_wheel(stretching(
+                |this| (&mut this.bands.strip, this.strip.clone()),
+                cx,
+            ))
             .child(div().w(px(strip.start(lines.len()))).h_full().flex_none())
             .children(seen.map(|index| {
                 let line = lines[index].clone();
@@ -103,7 +109,7 @@ impl FinderDemo {
                 let cell = div()
                     .id(("ng.finder.frame", index))
                     .absolute()
-                    .left(px(strip.start(index)))
+                    .left(px(strip.start(index)) + shift)
                     .top(px(strip.margin))
                     .w(px(strip.cell))
                     .h(px(strip.cell))
