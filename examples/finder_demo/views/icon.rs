@@ -18,7 +18,7 @@ use objc2_app_kit::NSFont;
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
 use crate::data::{Column, Line, Row};
-use crate::dragdrop::{Grabbed, Lit, drop_hover, drop_target, row_carries, row_keys, row_wandered};
+use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
@@ -27,37 +27,59 @@ use crate::tags::{tag_dots, tag_dots_w};
 use crate::ui::{pick_on_click, pick_on_press, rename_field};
 use crate::view::ICON_VIEW;
 
+// Finder's measured icon grid.
 const MARGIN: f32 = 10.;
 const FLOW_INSET: f32 = 4.;
 const FLOW_GAP: f32 = 2.;
+const DEFAULT_ICON: f32 = 64.;
+const DEFAULT_SPACING: f32 = 54.;
+const DEFAULT_TEXT: f32 = 12.;
+const FRAME_PER_ICON: f32 = 9. / 8.;
+const PAD_PER_ICON: f32 = 1. / 16.;
+const LABEL_LINE_PAD: f32 = 3.4;
+const LABEL_SPACING_OFFSET: f32 = 33.;
+const LABEL_SPACING_UNIT: f32 = 27.2;
+const SECOND_LINE_PER_SPACING: f32 = 0.73;
+const SIDE_FRAME_PAD: f32 = 6.;
+const SIDE_TEXT_PAD: f32 = 8.;
 const LABEL_LINES: usize = 2;
 const LABEL_INSET: f32 = 0.5;
 const LABEL_GAP: f32 = 2.;
+const LABEL_PAD: f32 = 4.;
 const LABEL_RADIUS: f32 = 5.;
 const PLATE_RADIUS: f32 = 8.;
-const GHOST_ALPHA: f32 = 0.7;
-const SOURCE_ALPHA: f32 = 0.35;
-/// How long a folder shown as icons waits on the main thread for Finder's record of them.
-const FINDER_WAIT: Duration = Duration::from_millis(30);
-/// Finder's icon size slider moves 2 pt a step up to 128, then through these every 8 steps.
+const CHAR_PER_TEXT: f32 = 0.58;
+const EDITOR_PAD: f32 = 24.;
+const ELIDE_MIN: usize = 12;
+const ELIDE_TAIL: usize = 8;
+const OFF_AXIS_WEIGHT: f32 = 2.;
+
+const SMALLEST_ICON: f32 = 16.;
+const FINE_STEP: f32 = 2.;
+const FINE_STEPS: f32 = (SIZE_STOPS[0] - SMALLEST_ICON) / FINE_STEP;
+const STEPS_PER_STOP: f32 = 8.;
+const SIZE_GRAIN: f32 = 4.;
 const SIZE_STOPS: [f32; 8] = [128., 164., 204., 244., 296., 356., 428., 512.];
 pub(crate) const SIZE_STEPS: f64 = 112.;
 
-/// The icon size at a step of Finder's icon size slider.
+const GHOST_ALPHA: f32 = 0.7;
+const SOURCE_ALPHA: f32 = 0.35;
+const FINDER_WAIT: Duration = Duration::from_millis(30);
+
 pub(crate) fn slider_size(step: f64) -> f32 {
     let step = step.clamp(0., SIZE_STEPS) as f32;
-    let size = match step <= 56. {
-        true => 16. + 2. * step,
+    let size = match step <= FINE_STEPS {
+        true => SMALLEST_ICON + FINE_STEP * step,
         false => {
-            let at = (step - 56.) / 8.;
-            let (low, high) = (at.floor() as usize, (at.ceil() as usize).min(7));
+            let at = (step - FINE_STEPS) / STEPS_PER_STOP;
+            let low = at.floor() as usize;
+            let high = (at.ceil() as usize).min(SIZE_STOPS.len() - 1);
             SIZE_STOPS[low] + (SIZE_STOPS[high] - SIZE_STOPS[low]) * at.fract()
         }
     };
-    (size / 4.).round() * 4.
+    (size / SIZE_GRAIN).round() * SIZE_GRAIN
 }
 
-/// The step of Finder's icon size slider that shows `size`.
 pub(crate) fn size_slider(size: f32) -> f64 {
     (0..=SIZE_STEPS as u32)
         .min_by(|a, b| {
@@ -97,7 +119,6 @@ pub(crate) enum Arrangement {
 }
 
 impl Arrangement {
-    /// From Finder's `arrangeBy`.
     fn of(id: &str) -> Option<Self> {
         match id {
             "none" => Some(Self::Free),
@@ -115,7 +136,6 @@ impl Arrangement {
     }
 }
 
-/// A listing's icon view options as Finder applies them, and the grid they make.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Options {
     pub(crate) size: f32,
@@ -127,30 +147,44 @@ pub(crate) struct Options {
 }
 
 impl Options {
-    /// What `chosen` sets, else what Finder uses for folders that set nothing.
     pub(crate) fn new(chosen: &IconOptions) -> Self {
         let standard = &prefs::finder().icon_options;
-        let icon = chosen.icon_size.or(standard.icon_size).unwrap_or(64.);
-        let spacing = chosen.grid_spacing.or(standard.grid_spacing).unwrap_or(54.);
-        let text = chosen.text_size.or(standard.text_size).unwrap_or(12.);
+        let icon = chosen
+            .icon_size
+            .or(standard.icon_size)
+            .unwrap_or(DEFAULT_ICON);
+        let spacing = chosen
+            .grid_spacing
+            .or(standard.grid_spacing)
+            .unwrap_or(DEFAULT_SPACING);
+        let text = chosen
+            .text_size
+            .or(standard.text_size)
+            .unwrap_or(DEFAULT_TEXT);
         let bottom = chosen
             .label_on_bottom
             .or(standard.label_on_bottom)
             .unwrap_or(true);
         let font = NSFont::systemFontOfSize(text.into());
         let line = (font.ascender().round() - font.descender().round()) as f32;
-        let frame = icon * 9. / 8.;
-        // Finder's label box widens with the grid spacing, in steps of its line rounded down to even.
-        let label = 2. * ((2. * (line / 2.).floor() + 3.4) * (spacing + 33.) / 27.2).round();
+        let frame = icon * FRAME_PER_ICON;
+        let even_line = 2. * (line / 2.).floor();
+        let label = 2.
+            * ((even_line + LABEL_LINE_PAD) * (spacing + LABEL_SPACING_OFFSET)
+                / LABEL_SPACING_UNIT)
+                .round();
         let cell = match bottom {
             true => {
-                let under = line + line.min(0.73 * (spacing - 1.));
+                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.));
                 size(
                     (frame + MARGIN).max(label),
                     2. * ((frame + MARGIN + under) / 2.).floor(),
                 )
             }
-            false => size(frame + label + 2., (frame + 6.).max(2. * line + 8.)),
+            false => size(
+                frame + label + LABEL_GAP,
+                (frame + SIDE_FRAME_PAD).max(2. * line + SIDE_TEXT_PAD),
+            ),
         };
         Self {
             size: icon,
@@ -162,17 +196,19 @@ impl Options {
         }
     }
 
-    /// Finder frames an icon in a square an eighth wider than its image.
     fn frame(self) -> f32 {
-        self.size * 9. / 8.
+        self.size * FRAME_PER_ICON
+    }
+
+    fn pad(self) -> f32 {
+        self.size * PAD_PER_ICON
     }
 
     pub(crate) fn cell(self) -> Size<f32> {
         self.cell
     }
 
-    /// Where an icon's image is centred in its cell.
-    fn icon_at(self) -> Point<f32> {
+    fn image_centre(self) -> Point<f32> {
         match self.bottom {
             true => point(self.cell.width / 2., self.frame() / 2.),
             false => point(self.frame() / 2., self.cell.height / 2.),
@@ -180,7 +216,7 @@ impl Options {
     }
 
     fn slot_centre(self, (column, row): Slot) -> Point<Pixels> {
-        let at = self.icon_at();
+        let at = self.image_centre();
         point(
             px(MARGIN + column as f32 * self.cell.width + at.x),
             px(MARGIN + row as f32 * self.cell.height + at.y),
@@ -188,20 +224,17 @@ impl Options {
     }
 
     fn nearest_slot(self, at: Point<Pixels>) -> Slot {
-        let icon = self.icon_at();
+        let icon = self.image_centre();
         let column = (f32::from(at.x) - MARGIN - icon.x) / self.cell.width;
         let row = (f32::from(at.y) - MARGIN - icon.y) / self.cell.height;
         (column.round().max(0.) as i32, row.round().max(0.) as i32)
     }
 
-    /// The top left of the tile whose image is centred on `centre`.
     fn origin(self, centre: Point<Pixels>) -> Point<Pixels> {
-        let at = self.icon_at();
+        let at = self.image_centre();
         point(centre.x - px(at.x), centre.y - px(at.y))
     }
 
-    /// How many icons Finder lines up in `room` before it starts the next row, or with labels on
-    /// the right, the next column.
     pub(crate) fn lanes(self, room: Size<f32>) -> usize {
         let (room, cell) = match self.bottom {
             true => (room.width, self.cell.width),
@@ -218,9 +251,8 @@ impl Options {
         }
     }
 
-    /// `at` in the grid of `from`, moved to the same place in this one.
     fn moved_from(self, from: Options, at: Point<Pixels>) -> Point<Pixels> {
-        let (was, now) = (from.icon_at(), self.icon_at());
+        let (was, now) = (from.image_centre(), self.image_centre());
         let axis = |at: Pixels, was: f32, now: f32, from: f32, to: f32| {
             px(MARGIN + now + (f32::from(at) - MARGIN - was) / from * to)
         };
@@ -230,10 +262,8 @@ impl Options {
         )
     }
 
-    /// Where Finder puts the `index`th of `count` icons it keeps sorted: in rows spread across
-    /// `room`, or with labels on the right, in columns packed down it.
     fn flowed(self, index: usize, count: usize, room: Size<f32>) -> Point<Pixels> {
-        let (cell, at, gap) = (self.cell, self.icon_at(), self.size / 16.);
+        let (cell, at, gap) = (self.cell, self.image_centre(), self.pad());
         let (x, y) = match self.bottom {
             true => {
                 let across = (((room.width - 2. * FLOW_INSET + FLOW_GAP) / (cell.width + FLOW_GAP))
@@ -267,7 +297,7 @@ impl Options {
     }
 }
 
-fn nearest_free(at: Point<Pixels>, taken: &HashSet<Slot>, options: Options) -> Slot {
+fn claim_nearest(at: Point<Pixels>, taken: &mut HashSet<Slot>, options: Options) -> Point<Pixels> {
     let (column, row) = options.nearest_slot(at);
     let reach = options.cell.width.min(options.cell.height);
     let mut best: Option<(f32, Slot)> = None;
@@ -295,10 +325,11 @@ fn nearest_free(at: Point<Pixels>, taken: &HashSet<Slot>, options: Options) -> S
             }
         }
     }
-    best.map_or((column, row), |(_, slot)| slot)
+    let slot = best.map_or((column, row), |(_, slot)| slot);
+    taken.insert(slot);
+    options.slot_centre(slot)
 }
 
-/// Each line's place in the order a first click on `column` gives.
 fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
     let mut rows: Vec<Arc<Row>> = lines.iter().map(|line| line.row.clone()).collect();
     crate::read::sort_rows(&mut rows, (column, column.first_ascending()), true);
@@ -319,16 +350,15 @@ fn named(key: &SharedString) -> Option<SharedString> {
     Some(SharedString::from(name.to_owned()))
 }
 
-pub(crate) struct Layout {
+struct Layout {
     lines: Weak<Vec<Line>>,
     lanes: usize,
-    /// The room icons kept sorted spread across; `None` for icons that keep their places.
     room: Option<Size<f32>>,
     options: Options,
     moved: u64,
-    pub(crate) tiles: Vec<Tile>,
-    pub(crate) width: f32,
-    pub(crate) height: f32,
+    tiles: Vec<Tile>,
+    width: f32,
+    height: f32,
     by_top: Vec<usize>,
 }
 
@@ -349,28 +379,24 @@ impl Layout {
     }
 
     fn centre(&self, index: usize) -> Point<Pixels> {
-        let (tile, at) = (self.tiles[index].1, self.options.icon_at());
+        let (tile, at) = (self.tiles[index].1, self.options.image_centre());
         point(tile.x + px(at.x), tile.y + px(at.y))
     }
 }
 
-/// Where a folder's icons stand: those dropped in, those put here, then those Finder recorded.
 struct Places {
     folder: &'static str,
-    /// What Finder recorded for the folder, in whose grid it took its places.
     recorded: IconOptions,
     arrangement: Arrangement,
     own: HashMap<SharedString, Point<Pixels>>,
     finder: HashMap<SharedString, Point<Pixels>>,
     incoming: HashMap<SharedString, Point<Pixels>>,
-    /// Where icons nobody has moved yet went: kept for the visit, as Finder records a folder's
-    /// places only once one of them changes.
+    /// Kept for the visit only: Finder records a folder's places once one of them moves.
     placed: HashMap<SharedString, Point<Pixels>>,
 }
 
 impl Places {
-    fn new(folder: &'static str, view: IconView, options: Options) -> Self {
-        let chosen = prefs::icon_options(folder).or(view.options.clone());
+    fn new(folder: &'static str, view: IconView, chosen: &IconOptions, options: Options) -> Self {
         let arrangement = chosen
             .arrange_by
             .as_deref()
@@ -407,7 +433,6 @@ impl Places {
             .copied()
     }
 
-    /// Finder fills a folder's free slots in name order.
     fn place(
         &mut self,
         lines: &[Line],
@@ -436,17 +461,15 @@ impl Places {
                 self.placed.insert(lines[index].row.name.clone(), centre);
             }
         }
-        let arrived = lines
-            .iter()
-            .filter_map(|line| Some((line.row.name.clone(), self.incoming.get(&line.row.name)?)))
-            .map(|(name, at)| (name, *at))
-            .collect::<Vec<_>>();
-        if settled && !arrived.is_empty() {
-            for (name, at) in arrived {
-                self.incoming.remove(&name);
-                self.own.insert(name, at);
+        if settled {
+            let arrived: Vec<_> = lines
+                .iter()
+                .filter_map(|line| self.incoming.remove_entry(&line.row.name))
+                .collect();
+            if !arrived.is_empty() {
+                self.own.extend(arrived);
+                self.keep(lines);
             }
-            self.keep(lines);
         }
         centres.into_iter().flatten().collect()
     }
@@ -473,15 +496,12 @@ impl Places {
 #[derive(Default)]
 pub(crate) struct Grid {
     places: Option<Places>,
-    /// The options of the listing they were read for.
     options: Option<(&'static str, Options)>,
     reading: Option<&'static str>,
     moved: u64,
-    /// Finder leaves icons where it first put them, whatever the pane or the window does next.
+    /// Finder leaves icons where it first put them, whatever the window does next.
     kept: Cell<Option<(usize, Options)>>,
-    /// Whether the icon view has taken the window's own width: once it has shown icons, or from
-    /// the start in a window built on the spot. Finder lays the first icons of the windows it
-    /// prepares ahead out for its default window.
+    /// Finder lays a prepared window's first icons out for its default width.
     pub(crate) sized: bool,
     layout: Option<Rc<Layout>>,
     dragging: Option<SharedString>,
@@ -517,8 +537,9 @@ impl Grid {
     }
 
     fn read(&mut self, folder: &'static str, view: IconView) {
-        let options = Options::new(&prefs::icon_options(folder).or(view.options.clone()));
-        self.places = Some(Places::new(folder, view, options));
+        let chosen = prefs::icon_options(folder).or(view.options.clone());
+        let options = Options::new(&chosen);
+        self.places = Some(Places::new(folder, view, &chosen, options));
         self.options = Some((folder, options));
         self.reading = None;
         self.moved += 1;
@@ -662,9 +683,10 @@ impl Grid {
         let moves: Vec<(usize, Point<Pixels>)> = moving
             .into_iter()
             .map(|index| {
-                let slot = nearest_free(layout.centre(index), &taken, options);
-                taken.insert(slot);
-                (index, options.slot_centre(slot))
+                (
+                    index,
+                    claim_nearest(layout.centre(index), &mut taken, options),
+                )
             })
             .collect();
         self.put(moves);
@@ -696,7 +718,7 @@ impl Grid {
             .collect();
         let options = layout.options;
         let landed = |index: usize| {
-            let (at, icon) = (layout.centre(index) + delta, options.icon_at());
+            let (at, icon) = (layout.centre(index) + delta, options.image_centre());
             point(at.x.max(px(icon.x)), at.y.max(px(icon.y)))
         };
         let moves: Vec<(usize, Point<Pixels>)> = match arrangement {
@@ -712,25 +734,19 @@ impl Grid {
                     .collect();
                 dragged
                     .iter()
-                    .map(|&index| {
-                        let slot = nearest_free(landed(index), &taken, options);
-                        taken.insert(slot);
-                        (index, options.slot_centre(slot))
-                    })
+                    .map(|&index| (index, claim_nearest(landed(index), &mut taken, options)))
                     .collect()
             }
         };
         self.put(moves);
     }
 
-    /// Items dropped in from another window or app land where they were let go, or under Snap to
-    /// Grid in the nearest free slot, whether they are here already or still on their way.
     fn land(&mut self, names: Vec<SharedString>, at: Point<Pixels>) {
         let (Some((layout, lines)), Some(places)) = (self.standing(), self.places.as_mut()) else {
             return;
         };
         let options = layout.options;
-        let icon = options.icon_at();
+        let icon = options.image_centre();
         let at = point(at.x.max(px(icon.x)), at.y.max(px(icon.y)));
         let spots: Vec<Point<Pixels>> = match places.arrangement {
             Arrangement::By(_) => return,
@@ -743,11 +759,7 @@ impl Grid {
                     .collect();
                 names
                     .iter()
-                    .map(|_| {
-                        let slot = nearest_free(at, &taken, options);
-                        taken.insert(slot);
-                        options.slot_centre(slot)
-                    })
+                    .map(|_| claim_nearest(at, &mut taken, options))
                     .collect()
             }
         };
@@ -825,17 +837,9 @@ pub(crate) struct TileDrag {
     key: SharedString,
 }
 
-impl Grabbed for TileDrag {
-    fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool {
-        row_carries(&self.key, selected, key)
-    }
-
-    fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString> {
-        row_keys(&self.key, selected)
-    }
-
-    fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool {
-        row_wandered(window, pressed_at)
+impl KeyDrag for TileDrag {
+    fn key(&self) -> &SharedString {
+        &self.key
     }
 }
 
@@ -857,7 +861,6 @@ impl Render for Ghost {
             true,
             &self.tags,
             None,
-            true,
             None,
             None,
         )
@@ -874,12 +877,11 @@ fn tile(
     selected: bool,
     tags: &[usize],
     editor: Option<AnyElement>,
-    visible: bool,
     anchor: Option<Anchor>,
     drop: Option<Hsla>,
 ) -> Div {
     let (cell, frame, size) = (options.cell, options.frame(), options.size);
-    let pad = size / 16.;
+    let pad = options.pad();
     let lit = selected || drop.is_some();
     let pill = drop.unwrap_or(look.selection);
     let mut icon = div()
@@ -902,11 +904,7 @@ fn tile(
                 .bg(look.backdrop),
         );
     }
-    let icon = icon.child(art_at(
-        row_art(&line.row, size, scale, visible),
-        size,
-        anchor,
-    ));
+    let icon = icon.child(art_at(row_art(&line.row, size, scale, true), size, anchor));
 
     let dots = tag_dots_w(tags.len());
     let room = match options.bottom {
@@ -915,11 +913,12 @@ fn tile(
     } - if dots > 0. { dots + 2. } else { 0. };
     let caption = match editor {
         Some(editor) => {
-            let fit = line.row.display.chars().count() as f32 * options.text * 0.58 + 24.;
+            let fit =
+                line.row.display.chars().count() as f32 * options.text * CHAR_PER_TEXT + EDITOR_PAD;
             div().w(px(fit.min(room))).child(editor)
         }
         None => div()
-            .px(px(4.))
+            .px(px(LABEL_PAD))
             .max_w(px(room))
             .rounded(px(LABEL_RADIUS))
             .text_size(px(options.text))
@@ -931,7 +930,11 @@ fn tile(
             })
             .text_color(if lit { look.selection_text } else { look.label })
             .when(lit, |label| label.bg(pill))
-            .child(elide(&line.row.display, room - 8., options.text)),
+            .child(elide(
+                &line.row.display,
+                room - 2. * LABEL_PAD,
+                options.text,
+            )),
     };
     let label = div()
         .flex()
@@ -963,14 +966,13 @@ fn tile_at(layout: &[Tile], at: Point<Pixels>, cell: Size<f32>) -> Option<usize>
 }
 
 fn elide(name: &SharedString, room: f32, text: f32) -> SharedString {
-    let per_line = (room / (text * 0.58)).floor() as usize;
+    let per_line = (room / (text * CHAR_PER_TEXT)).floor() as usize;
     let budget = per_line * LABEL_LINES;
     let count = name.chars().count();
-    if count <= budget || budget < 12 {
+    if count <= budget || budget < ELIDE_MIN {
         return name.clone();
     }
-    let tail = 8;
-    let head = budget - 1 - tail;
+    let head = budget - 1 - ELIDE_TAIL;
     let at = |nth: usize| {
         name.char_indices()
             .nth(nth)
@@ -979,7 +981,7 @@ fn elide(name: &SharedString, room: f32, text: f32) -> SharedString {
     SharedString::from(format!(
         "{}…{}",
         &name[..at(head)],
-        &name[at(count - tail)..]
+        &name[at(count - ELIDE_TAIL)..]
     ))
 }
 
@@ -1026,7 +1028,7 @@ impl FinderDemo {
                 |this| (&mut this.bands.icons, this.icons.scroll.clone()),
                 cx,
             ))
-            // The only child in flow: the tiles are absolute and contribute no scrollable size.
+            // Tiles are absolute and add no scroll extent; this spacer does.
             .child(
                 div()
                     .w(px(width))
@@ -1060,7 +1062,6 @@ impl FinderDemo {
                     is_selected,
                     &carried,
                     editor,
-                    true,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
                     self.drop_fill(&line.key, look.selection),
                 ))
@@ -1116,31 +1117,29 @@ impl FinderDemo {
                 - drop_scroll.bounds().origin
                 - drop_scroll.offset()
                 - shift;
-            let moved = dropped.clone();
-            let under = tile_at(&dropped.tiles, landed, cell)
-                .and_then(|index| dropped_lines.get(index))
-                .cloned();
+            let under =
+                tile_at(&dropped.tiles, landed, cell).and_then(|index| dropped_lines.get(index));
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
+                    let selected = this.selected.snapshot();
                     let into = under
-                        .filter(|line| !drag.carries(&this.selected.snapshot(), &line.key))
+                        .filter(|line| !drag.carries(&selected, &line.key))
                         .and_then(|line| line.row.opens);
                     if let Some(into) = into {
                         if !drag.wandered(window, this.pressed_at) {
                             return;
                         }
-                        let keys = this.drag_keys(&drag.key);
-                        this.drop_into(into, &keys, window, cx);
+                        this.drop_into(into, &drag.keys(&selected), window, cx);
                         this.icons.dragging = None;
                         cx.notify();
                         return;
                     }
-                    let group: Vec<SharedString> = match this.selected.contains(&drag.key) {
-                        true => moved
+                    let group: Vec<SharedString> = match selected.contains(&drag.key) {
+                        true => dropped
                             .tiles
                             .iter()
                             .map(|(key, _)| key)
-                            .filter(|key| this.selected.contains(*key))
+                            .filter(|key| selected.contains(*key))
                             .cloned()
                             .collect(),
                         false => vec![drag.key.clone()],
@@ -1188,7 +1187,6 @@ impl FinderDemo {
             && self.type_filter.is_none()
     }
 
-    /// Whether Finder's record of the folder's icons has been read.
     fn know_places(&mut self, cx: &mut Context<Self>) -> bool {
         let here = self.here();
         if !self.keeps_places() {
@@ -1237,7 +1235,6 @@ impl FinderDemo {
         false
     }
 
-    /// The icon view options of the listing shown.
     pub(crate) fn icon_options(&self) -> Options {
         match self.icons.options {
             Some((at, options)) if at == self.here() => options,
@@ -1245,8 +1242,6 @@ impl FinderDemo {
         }
     }
 
-    /// Keeps a change to the listing's icon view options here and moves each icon to the same
-    /// place in the grid they now make.
     pub(crate) fn change_icon_options(
         &mut self,
         change: impl FnOnce(&mut IconOptions),
@@ -1285,14 +1280,12 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Lands items dropped on the icons at the pointer, where they arrive.
     pub(crate) fn land_icons(&mut self, keys: &[SharedString], at: Point<Pixels>) {
         let scroll = &self.icons.scroll;
         let at = at - scroll.bounds().origin - scroll.offset() - self.bands.icons.shown();
         self.icons.land(keys.iter().filter_map(named).collect(), at);
     }
 
-    /// `None` for a listing that is not one folder's.
     pub(crate) fn arrangement(&self) -> Option<Arrangement> {
         let here = self.here();
         self.icons
@@ -1302,7 +1295,6 @@ impl FinderDemo {
             .map(|places| places.arrangement)
     }
 
-    /// Finder cleans up only icons that are not kept sorted.
     pub(crate) fn cleans_up(&self) -> bool {
         self.view == ICON_VIEW
             && matches!(
@@ -1338,7 +1330,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// The nearest icon that way, straying off the row or column counting double.
     pub(crate) fn icon_step(&self, key: &str, from: Option<&SharedString>) -> Option<SharedString> {
         let layout = self.icons.layout.as_ref()?;
         let tiles = &layout.tiles;
@@ -1362,7 +1353,7 @@ impl FinderDemo {
                 "up" => (-y, x),
                 _ => (y, x),
             };
-            (ahead > 0.5).then_some(ahead + 2. * aside.abs())
+            (ahead > 0.5).then_some(ahead + OFF_AXIS_WEIGHT * aside.abs())
         };
         let next = tiles
             .iter()

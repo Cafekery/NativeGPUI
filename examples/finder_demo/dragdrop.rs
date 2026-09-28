@@ -18,13 +18,13 @@ use crate::views::list::TWIST_W;
 
 const SPRING_FLOOR: f32 = 0.2;
 const SPRING_NONE: f32 = 0.15;
+const SPRING_DELAY: f32 = 0.5;
 
 const FLASH: Duration = Duration::from_millis(100);
 const FLASHES: u32 = 3;
-
 const FLASH_DIM: f32 = 0.83;
 
-/// Finder lets a press wander about 7 pt before it drops anything; gpui's drag starts at 2.
+/// Finder ignores a drop until the press has travelled this far; gpui starts a drag at 2.
 const DRAG_START: f64 = 7.;
 
 #[derive(Clone)]
@@ -33,63 +33,45 @@ pub(crate) struct RowDrag {
 }
 
 pub(crate) trait Grabbed: 'static {
-    /// Whether `key` is one of the dragged rows or sits inside one, so it cannot be a target.
     fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool;
-    /// The rows the drag carries.
     fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString>;
-    /// Whether the press that started the drag travelled far enough to mean it. A drag from
-    /// another app always has.
     fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool;
 }
 
-pub(crate) fn row_wandered(window: &Window, pressed_at: Point<Pixels>) -> bool {
-    (window.mouse_position() - pressed_at).magnitude() >= DRAG_START
+pub(crate) trait KeyDrag: 'static {
+    fn key(&self) -> &SharedString;
 }
 
-fn under(key: &SharedString, held: &str) -> bool {
-    Path::new(key.as_ref()).starts_with(held)
-}
-
-pub(crate) fn row_carries(
-    grabbed: &SharedString,
-    selected: &HashSet<SharedString>,
-    key: &SharedString,
-) -> bool {
-    match selected.contains(grabbed) {
-        true => selected.iter().any(|held| under(key, held)),
-        false => under(key, grabbed),
+impl KeyDrag for RowDrag {
+    fn key(&self) -> &SharedString {
+        &self.key
     }
 }
 
-pub(crate) fn row_keys(
-    grabbed: &SharedString,
-    selected: &HashSet<SharedString>,
-) -> Vec<SharedString> {
-    match selected.contains(grabbed) {
-        true => selected.iter().cloned().collect(),
-        false => vec![grabbed.clone()],
-    }
-}
-
-impl Grabbed for RowDrag {
+impl<D: KeyDrag> Grabbed for D {
     fn carries(&self, selected: &HashSet<SharedString>, key: &SharedString) -> bool {
-        row_carries(&self.key, selected, key)
+        match selected.contains(self.key()) {
+            true => selected.iter().any(|held| under(key, held)),
+            false => under(key, self.key()),
+        }
     }
 
     fn keys(&self, selected: &HashSet<SharedString>) -> Vec<SharedString> {
-        row_keys(&self.key, selected)
+        match selected.contains(self.key()) {
+            true => selected.iter().cloned().collect(),
+            false => vec![self.key().clone()],
+        }
     }
 
     fn wandered(&self, window: &Window, pressed_at: Point<Pixels>) -> bool {
-        row_wandered(window, pressed_at)
+        (window.mouse_position() - pressed_at).magnitude() >= DRAG_START
     }
 }
 
 impl Grabbed for ExternalPaths {
     fn carries(&self, _: &HashSet<SharedString>, key: &SharedString) -> bool {
-        self.paths()
-            .iter()
-            .any(|held| Path::new(key.as_ref()).starts_with(held))
+        let key = Path::new(key.as_ref());
+        self.paths().iter().any(|held| key.starts_with(held))
     }
 
     fn keys(&self, _: &HashSet<SharedString>) -> Vec<SharedString> {
@@ -102,6 +84,10 @@ impl Grabbed for ExternalPaths {
     fn wandered(&self, _: &Window, _: Point<Pixels>) -> bool {
         true
     }
+}
+
+fn under(key: &str, held: &str) -> bool {
+    Path::new(key).starts_with(held)
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +187,7 @@ pub(crate) fn drop_target<D: Grabbed>(
 }
 
 pub(crate) struct Spring {
-    pub(crate) key: SharedString,
+    key: SharedString,
     into: &'static str,
     twist: bool,
     since: Instant,
@@ -232,15 +218,15 @@ fn springing_delay() -> Option<Duration> {
         }
         let delay: f32 = global_default("com.apple.springing.delay")
             .and_then(|delay| delay.parse().ok())
-            .unwrap_or(0.5);
+            .unwrap_or(SPRING_DELAY);
         let held = match delay < SPRING_NONE {
             true => SPRING_FLOOR + delay + FLASH.as_secs_f32() * FLASHES as f32,
             false => SPRING_FLOOR + delay,
         };
-        // The delay is the user's own default and can hold anything, negative or infinite.
+        // A user default: it can be negative or infinite.
         Duration::try_from_secs_f32(held)
             .ok()
-            .or(Some(Duration::from_secs_f32(SPRING_FLOOR + 0.5)))
+            .or(Some(Duration::from_secs_f32(SPRING_FLOOR + SPRING_DELAY)))
     })
 }
 
@@ -261,25 +247,22 @@ impl Render for DragGhost {
 }
 
 impl FinderDemo {
-    pub(crate) fn hover_folder(
+    fn hover_folder(
         &mut self,
         key: &SharedString,
         into: &'static str,
         over: Option<bool>,
         cx: &mut Context<Self>,
     ) {
-        let hold = self.spring.as_ref().filter(|spring| spring.key == *key);
-        let (held, spent) = (hold.is_some(), hold.is_some_and(|spring| spring.spent));
-        match (over, held, spent) {
+        let held = self.spring.as_mut().filter(|spring| spring.key == *key);
+        match (over, held) {
             // A sprung row keeps its hold through the relayout its own disclosure causes.
-            (_, true, true) => return,
-            (Some(twist), true, _) => {
-                if let Some(spring) = &mut self.spring {
-                    spring.twist = twist;
-                }
+            (_, Some(spring)) if spring.spent => return,
+            (Some(twist), Some(spring)) => {
+                spring.twist = twist;
                 return;
             }
-            (Some(twist), false, _) => {
+            (Some(twist), None) => {
                 self.spring = Some(Spring {
                     key: key.clone(),
                     into,
@@ -289,8 +272,8 @@ impl FinderDemo {
                     spent: false,
                 })
             }
-            (None, true, _) => self.spring = None,
-            (None, false, _) => return,
+            (None, Some(_)) => self.spring = None,
+            (None, None) => return,
         }
         cx.notify();
     }
@@ -379,12 +362,6 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn drag_keys(&self, grabbed: &SharedString) -> Vec<SharedString> {
-        row_keys(grabbed, &self.selected.snapshot())
-    }
-
-    /// Files dragged in from another app land in the folder the pointer is over, or in the one
-    /// the window shows.
     pub(crate) fn files_dropped(
         &mut self,
         dropped: &ExternalPaths,
@@ -413,8 +390,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Finder moves within a volume and copies onto another; Option always copies, Command
-    /// always moves.
     pub(crate) fn drop_into(
         &mut self,
         into: &'static str,
@@ -462,7 +437,6 @@ impl FinderDemo {
     }
 }
 
-/// A side that can't be read counts as another volume, so the originals stay where they are.
 fn same_volume(item: &Path, into: &Path) -> bool {
     match (std::fs::symlink_metadata(item), std::fs::metadata(into)) {
         (Ok(item), Ok(into)) => item.dev() == into.dev(),

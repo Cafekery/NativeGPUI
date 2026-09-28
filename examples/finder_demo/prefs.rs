@@ -27,7 +27,6 @@ fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
 }
 
-/// Finder's own settings for the windows it draws, read once.
 pub(crate) struct Finder {
     pub(crate) posix_title: bool,
     pub(crate) text_size: f32,
@@ -35,17 +34,12 @@ pub(crate) struct Finder {
     pub(crate) relative_dates: bool,
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
-    /// `PreviewPaneWidth` and `PreviewPaneGalleryWidth`.
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
-    /// The list's columns after Name that Finder shows, in its order.
     pub(crate) columns: Vec<Column>,
-    /// The key column view sorts by, then gallery view's.
     pub(crate) arranged: (Column, Column),
-    /// Finder's icon view options for folders that record none of their own.
     pub(crate) icon_options: IconOptions,
 }
 
-/// Column view's `ArrangeBy` codes, in Finder's own table of arrangements.
 fn column_view_key(code: &str) -> Option<Column> {
     Some(match code {
         "dnam" => Column::Name,
@@ -168,9 +162,6 @@ fn finder_domain() -> Option<Retained<NSUserDefaults>> {
     NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))
 }
 
-/// A Finder setting as the demo applies it: the value its Settings window stored under Finder's
-/// own key, else Finder's. `standardUserDefaults` also answers keys Finder keeps in the global
-/// domain, such as `AppleShowAllExtensions`.
 fn setting(key: &str) -> Option<Retained<AnyObject>> {
     let key = NSString::from_str(key);
     defaults()
@@ -225,8 +216,6 @@ pub(crate) enum WindowTarget {
     Folder(PathBuf),
 }
 
-/// Where a new window opens: `NewWindowTarget`, with `NewWindowTargetPath` naming a volume or
-/// another folder.
 pub(crate) fn new_window_target() -> WindowTarget {
     use finder_fs::volumes::{Standard, standard};
     let home = standard(Standard::Home).unwrap_or_else(|| PathBuf::from("/"));
@@ -258,17 +247,21 @@ fn write(key: &str, value: f64) {
     defaults().setDouble_forKey(value, &NSString::from_str(key));
 }
 
+fn sidebar_path() -> Retained<NSString> {
+    NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy())
+}
+
 fn sidebar_file() -> HashMap<String, Vec<String>> {
-    let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
-    let Some(data) = NSData::dataWithContentsOfFile(&path) else {
-        return HashMap::new();
-    };
-    let read =
-        NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty());
-    let Ok(object) = read else {
-        return HashMap::new();
-    };
-    let Ok(map) = object.downcast::<NSDictionary>() else {
+    let Some(map) = NSData::dataWithContentsOfFile(&sidebar_path())
+        .and_then(|data| {
+            NSJSONSerialization::JSONObjectWithData_options_error(
+                &data,
+                NSJSONReadingOptions::empty(),
+            )
+            .ok()
+        })
+        .and_then(|object| object.downcast::<NSDictionary>().ok())
+    else {
         return HashMap::new();
     };
     map.keys()
@@ -285,31 +278,31 @@ fn sidebar_file() -> HashMap<String, Vec<String>> {
 }
 
 fn write_sidebar_file(kept: &HashMap<String, Vec<String>>) {
-    let mut keys = Vec::new();
-    let mut lists: Vec<Retained<AnyObject>> = Vec::new();
-    for (key, values) in kept {
-        keys.push(NSString::from_str(key));
-        let strings: Vec<_> = values
-            .iter()
-            .map(|value| NSString::from_str(value))
-            .collect();
-        let list = NSArray::from_retained_slice(&strings);
-        lists.push(unsafe { Retained::cast_unchecked(list) });
-    }
+    let (keys, lists): (Vec<_>, Vec<_>) = kept
+        .iter()
+        .map(|(key, values)| {
+            let strings: Vec<_> = values
+                .iter()
+                .map(|value| NSString::from_str(value))
+                .collect();
+            (
+                NSString::from_str(key),
+                NSArray::from_retained_slice(&strings),
+            )
+        })
+        .unzip();
     let keys: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
-    let values: Vec<_> = lists.iter().map(|list| &**list).collect();
-    let map = NSDictionary::from_slices(&keys, &values);
+    let lists: Vec<&NSArray<NSString>> = lists.iter().map(|list| &**list).collect();
+    let map = NSDictionary::from_slices(&keys, &lists);
     let written = unsafe {
         NSJSONSerialization::dataWithJSONObject_options_error(
             &map,
             NSJSONWritingOptions::PrettyPrinted,
         )
     };
-    let Ok(data) = written else {
-        return;
-    };
-    let path = NSString::from_str(&crate::store().join(SIDEBAR).to_string_lossy());
-    data.writeToFile_atomically(&path, true);
+    if let Ok(data) = written {
+        data.writeToFile_atomically(&sidebar_path(), true);
+    }
 }
 
 fn read_list(key: &str) -> Vec<String> {
@@ -349,11 +342,8 @@ pub(crate) fn set_removed(group: &str, ids: &[&str]) {
     write_list(&format!("removed.{group}"), ids);
 }
 
-/// A value Finder keeps for itself: until Found'er keeps its own, it carries on from Finder's.
 fn finder_pref(key: &str) -> Option<Retained<AnyObject>> {
-    let suite = NSString::from_str("com.apple.finder");
-    NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))?
-        .objectForKey(&NSString::from_str(key))
+    finder_domain()?.objectForKey(&NSString::from_str(key))
 }
 
 fn finder_string(key: &str) -> Option<String> {
@@ -375,7 +365,6 @@ pub(crate) fn go_history() -> Vec<String> {
         .unwrap_or_else(|| finder_strings("GoToFieldHistory"))
 }
 
-/// The path Go to Folder opens holding.
 pub(crate) fn go_field() -> Option<String> {
     match sidebar_file().remove("go.history") {
         Some(own) => own.into_iter().next(),
@@ -385,13 +374,9 @@ pub(crate) fn go_field() -> Option<String> {
 
 pub(crate) const GO_SHEET: &str = "GoToSheet";
 
-/// The size the Go to Folder sheet was last resized to, as AppKit autosaves it.
 pub(crate) fn go_sheet_size() -> Option<(f32, f32)> {
     let key = format!("NSWindow Frame {GO_SHEET}");
-    let frame = defaults()
-        .stringForKey(&NSString::from_str(&key))
-        .map(|frame| frame.to_string())
-        .or_else(|| finder_string(&key))?;
+    let frame = read_text(&key).or_else(|| finder_string(&key))?;
     let mut sides = frame
         .split_whitespace()
         .skip(2)
@@ -406,17 +391,12 @@ pub(crate) fn set_go_history(paths: &[&str]) {
 const CONNECT_LAST: &str = "ng.finder.connect.last";
 pub(crate) const CONNECT_WINDOW: &str = "ConnectToServer";
 
-/// The address Connect to Server opens holding: the last one connected to.
 pub(crate) fn connect_last() -> Option<String> {
-    defaults()
-        .stringForKey(&NSString::from_str(CONNECT_LAST))
-        .map(|last| last.to_string())
-        .or_else(|| finder_string("FXConnectToLastURL"))
+    read_text(CONNECT_LAST).or_else(|| finder_string("FXConnectToLastURL"))
 }
 
 pub(crate) fn set_connect_last(address: &str) {
-    let key = NSString::from_str(CONNECT_LAST);
-    unsafe { defaults().setObject_forKey(Some(&NSString::from_str(address)), &key) };
+    set_setting_text(CONNECT_LAST, address);
 }
 
 /// Finder's last Connect to Server frame, in AppKit's bottom-left screen points.
@@ -434,7 +414,6 @@ pub(crate) fn finder_connect_frame() -> Option<[f64; 4]> {
     ])
 }
 
-/// The servers of one of Finder's shared lists, as their addresses.
 fn finder_servers(list: &str) -> Vec<String> {
     let file = crate::home().join(format!(
         "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.{list}.sfl4"
@@ -503,8 +482,6 @@ pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
 }
 
-/// The scope a new search starts in: `FXDefaultSearchScope`'s, or under "Use the Previous Search
-/// Scope" the last one picked.
 pub(crate) fn search_scope() -> usize {
     match setting_text("FXDefaultSearchScope").as_deref() {
         Some("SCcf") => THIS_FOLDER,
@@ -523,7 +500,6 @@ pub(crate) fn set_search_scope(scope: usize) {
     write(SCOPE, scope as f64);
 }
 
-/// Finder keeps one preview width for gallery view and one for icon and list views.
 pub(crate) fn pane_width(gallery: bool) -> Option<f32> {
     let (key, finder) = match gallery {
         true => (GALLERY_PANE, finder().pane_widths.1),
@@ -536,7 +512,6 @@ pub(crate) fn set_pane_width(gallery: bool, width: f32) {
     write(if gallery { GALLERY_PANE } else { PANE }, width as f64);
 }
 
-/// The Preview Options keys shown for a kind of item; `None` until the user first chooses.
 pub(crate) fn preview_options(kind: &str) -> Option<Vec<String>> {
     let key = NSString::from_str(&format!("ng.finder.preview.options.{kind}"));
     let list = defaults().stringArrayForKey(&key)?;
@@ -551,7 +526,6 @@ pub(crate) fn set_preview_options(kind: &str, on: &[&str]) {
     unsafe { defaults().setObject_forKey(Some(value), &key) };
 }
 
-/// Finder keeps one Show Preview for icon and list views, one for columns and one for gallery.
 fn preview_key(view: usize) -> &'static str {
     match view {
         COLUMN_VIEW => "ng.finder.preview.column",
@@ -627,7 +601,6 @@ fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
     NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
 }
 
-/// The icon view options chosen for a listing here, in the shape of Finder's `icvp`.
 pub(crate) fn icon_options(folder: &str) -> IconOptions {
     defaults()
         .objectForKey(&icon_key("view", folder))
@@ -635,12 +608,6 @@ pub(crate) fn icon_options(folder: &str) -> IconOptions {
         .map_or_else(IconOptions::default, |options| IconOptions::read(&options))
 }
 
-fn write_text(key: &str, text: &str) {
-    let text = NSString::from_str(text);
-    unsafe { defaults().setObject_forKey(Some(&text), &NSString::from_str(key)) };
-}
-
-/// The list's columns after Name in a folder, in the order they were last left there.
 pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
     let ids = read_text(&format!("ng.finder.cols.{folder}"))?;
     Some(ids.split(',').filter_map(Column::from_id).collect())
@@ -648,16 +615,15 @@ pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
 
 pub(crate) fn set_list_columns(folder: &str, columns: &[Column]) {
     let ids: Vec<&str> = columns.iter().map(|column| column.id()).collect();
-    write_text(&format!("ng.finder.cols.{folder}"), &ids.join(","));
+    set_setting_text(&format!("ng.finder.cols.{folder}"), &ids.join(","));
 }
 
-/// The key a view that keeps its own sort was last given.
 pub(crate) fn arranged(view: usize) -> Option<Column> {
     Column::from_id(&read_text(&format!("ng.finder.arranged.{view}"))?)
 }
 
 pub(crate) fn set_arranged(view: usize, column: Column) {
-    write_text(&format!("ng.finder.arranged.{view}"), column.id());
+    set_setting_text(&format!("ng.finder.arranged.{view}"), column.id());
 }
 
 pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
@@ -688,7 +654,6 @@ pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
     unsafe { defaults().setObject_forKey(Some(value), &icon_key("view", folder)) };
 }
 
-/// Where each icon of a folder was put here: the centre of its image, as Finder records it.
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
     let Some(spots) = defaults().dictionaryForKey(&icon_key("at", folder)) else {
         return HashMap::new();
