@@ -19,7 +19,6 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
-use crate::chrome::scope_bar;
 use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
@@ -219,7 +218,7 @@ impl FinderDemo {
             query: String::new(),
             search_editing: false,
             filtered: String::new(),
-            scope: prefs::search_scope().unwrap_or(scope_bar::THIS_FOLDER),
+            scope: prefs::search_scope(),
             expanded: Keys::default(),
             expanding: HashMap::new(),
             selected: Keys::default(),

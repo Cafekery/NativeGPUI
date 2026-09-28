@@ -74,6 +74,7 @@ fn standard_color(name: &str) -> Option<u8> {
         .or((name == "Grey").then_some(1))
 }
 
+/// The tags Finder's Tags settings list as favourites, for its menus: `FavoriteTagNames`.
 pub fn favorites() -> Vec<Tag> {
     let known = all();
     let color = |name: &str| {
@@ -81,11 +82,10 @@ pub fn favorites() -> Vec<Tag> {
             .iter()
             .find(|tag| tag.name == name)
             .map(|tag| tag.color)
+            .or_else(|| standard_color(name))
             .unwrap_or_default()
     };
-    let favorites: Vec<Tag> = sidebar_tag_names()
-        .filter(|names| !names.is_empty())
-        .or_else(favorite_tag_names)
+    let favorites: Vec<Tag> = favorite_tag_names()
         .unwrap_or_default()
         .into_iter()
         .filter(|name| !name.is_empty())
@@ -100,31 +100,47 @@ pub fn favorites() -> Vec<Tag> {
     }
 }
 
-/// The tags Finder's sidebar lists, in its order: `sharedfilelistd`'s projects list, which
-/// Finder keeps and `FavoriteTagNames` no longer follows.
-#[allow(deprecated)]
+/// The tags Finder's sidebar shows only because they were used lately, not pinned there.
+pub fn recent() -> Vec<String> {
+    sidebar_tags()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, pinned)| !pinned)
+        .map(|(name, _)| name)
+        .collect()
+}
+
 fn sidebar_tag_names() -> Option<Vec<String>> {
+    Some(sidebar_tags()?.into_iter().map(|(name, _)| name).collect())
+}
+
+/// The tags Finder's sidebar lists, in its order, each with whether it is pinned there:
+/// `sharedfilelistd`'s projects list.
+#[allow(deprecated)]
+fn sidebar_tags() -> Option<Vec<(String, bool)>> {
     let name = CFString::from_static_str("com.apple.LSSharedFileList.ProjectsItems");
     let list = unsafe { LSSharedFileList::new(None, &name, None) }?;
     let snapshot = unsafe { list.snapshot(std::ptr::null_mut()) }?;
     let snapshot: CFRetained<CFArray<LSSharedFileListItem>> =
         unsafe { CFRetained::cast_unchecked(snapshot) };
     let hidden = CFString::from_static_str("com.apple.LSSharedFileList.ItemIsHidden");
+    let pinned = CFString::from_static_str("kLSSharedTagFileListItemPinned");
+    let on = |value: &objc2_core_foundation::CFType| match value.downcast_ref::<CFBoolean>() {
+        Some(on) => on.as_bool(),
+        None => value
+            .downcast_ref::<CFNumber>()
+            .and_then(|n| n.as_i64())
+            .is_some_and(|n| n != 0),
+    };
     Some(
         snapshot
             .iter()
-            .filter(|item| {
-                unsafe { item.property(&hidden) }.is_none_or(|value| {
-                    match value.downcast_ref::<CFBoolean>() {
-                        Some(on) => !on.as_bool(),
-                        None => {
-                            value.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()) == Some(0)
-                        }
-                    }
-                })
+            .filter(|item| !unsafe { item.property(&hidden) }.is_some_and(|value| on(&value)))
+            .map(|item| {
+                let pinned = unsafe { item.property(&pinned) }.is_none_or(|value| on(&value));
+                (unsafe { item.display_name() }.to_string(), pinned)
             })
-            .map(|item| unsafe { item.display_name() }.to_string())
-            .filter(|name| !name.is_empty())
+            .filter(|(name, _)| !name.is_empty())
             .collect(),
     )
 }

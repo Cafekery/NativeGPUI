@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::Op;
-use gpui::{SharedString, Window, prelude::*, px};
-use native_gpui::Material;
+use finder_fs::sidebar::{Listed, Special};
+use finder_fs::volumes::Standard;
+use gpui::{App, SharedString, Window, prelude::*, px};
 use native_gpui::sidebar::{
     NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
     sidebar_group, sidebar_item,
 };
+use native_gpui::{CheckState, Material};
 
 use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, server_symbol, volume_roots};
@@ -14,7 +16,7 @@ use crate::ops::After;
 use crate::prefs;
 use crate::tags::finder_color_rgb;
 
-pub(crate) const SIDEBAR_W: f32 = 192.;
+pub(crate) const SIDEBAR_W: f32 = 216.;
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
 
@@ -174,12 +176,310 @@ fn listed_rows(listed: Vec<finder_fs::sidebar::Listed>, location: bool) -> Vec<R
         .collect()
 }
 
-pub(crate) fn groups() -> Vec<Group> {
-    let favourites = listed_rows(finder_fs::sidebar::listed_favorites(), false);
-    let locations = listed_rows(finder_fs::sidebar::listed_locations(), true);
+/// A row of Settings ▸ Sidebar. Whether it shows is the demo's own choice once made, else what
+/// Finder's lists say.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Shown {
+    Recents,
+    Shared,
+    Applications,
+    Desktop,
+    Documents,
+    Downloads,
+    Movies,
+    Music,
+    Pictures,
+    ICloudDrive,
+    CloudStorage,
+    Home,
+    Computer,
+    HardDisks,
+    ExternalDisks,
+    Removable,
+    AirDrop,
+    Bonjour,
+    Servers,
+    Trash,
+    RecentTags,
+}
 
+const FOLDERS: [(Shown, Standard); 7] = [
+    (Shown::Applications, Standard::Applications),
+    (Shown::Desktop, Standard::Desktop),
+    (Shown::Documents, Standard::Documents),
+    (Shown::Downloads, Standard::Downloads),
+    (Shown::Movies, Standard::Movies),
+    (Shown::Music, Standard::Music),
+    (Shown::Pictures, Standard::Pictures),
+];
+
+fn key(shown: Shown) -> String {
+    format!("ng.finder.sidebar.{shown:?}")
+}
+
+/// Finder's own list may name the account's folder rather than the fixture home's.
+fn is_standard(path: &Path, which: Standard) -> bool {
+    let Some(standard) = finder_fs::volumes::standard(which) else {
+        return false;
+    };
+    path == standard
+        || which != Standard::Applications
+            && path.file_name() == standard.file_name()
+            && path.parent().and_then(Path::parent) == Some(Path::new("/Users"))
+}
+
+/// Each row's state as Finder shows it, then as the demo does.
+fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> (bool, bool) {
+    let special = |which| locations.iter().any(|listed| listed.special == Some(which));
+    let [recents, shared] = finder_fs::sidebar::top_rows_shown();
+    let [disks, external, servers] = finder_fs::sidebar::volume_kinds_shown();
+    let folders: Vec<(Shown, bool)> = FOLDERS
+        .iter()
+        .map(|&(shown, which)| {
+            let listed = favourites.iter().any(|listed| {
+                listed
+                    .path
+                    .as_deref()
+                    .is_some_and(|it| is_standard(it, which))
+            });
+            (shown, listed)
+        })
+        .collect();
+    let recent_tags = prefs::setting_on("ShowRecentTags", true);
+    let finder = [
+        (Shown::Recents, recents),
+        (Shown::Shared, shared),
+        (Shown::ICloudDrive, special(Special::ICloudDrive)),
+        (Shown::CloudStorage, special(Special::FileProvider)),
+        (Shown::Home, special(Special::Home)),
+        (Shown::Computer, special(Special::Computer)),
+        (Shown::HardDisks, disks),
+        (Shown::ExternalDisks, external),
+        (Shown::Removable, true),
+        (Shown::AirDrop, special(Special::AirDrop)),
+        (Shown::Bonjour, true),
+        (Shown::Servers, servers),
+        (Shown::Trash, special(Special::Trash)),
+        (Shown::RecentTags, recent_tags),
+    ];
+    let all: Vec<(Shown, bool)> = folders.into_iter().chain(finder).collect();
+    move |shown| {
+        let finder = all.iter().any(|&(it, on)| it == shown && on);
+        (finder, prefs::setting_on(&key(shown), finder))
+    }
+}
+
+/// Settings ▸ Sidebar, section by section: each row's title and checkbox state.
+pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, bool)>)> {
+    let favourites = finder_fs::sidebar::listed_favorites();
+    let locations = finder_fs::sidebar::listed_locations();
+    let on = visibility(&favourites, &locations);
+    let row = |shown: Shown, title: String| (shown, title, on(shown).1);
+    let home = finder_fs::volumes::standard(Standard::Home).unwrap_or_default();
+    let computer = computer_name();
+    let said = |text: &str| finder_fs::words::say(text).into_owned();
+    vec![
+        (
+            "",
+            vec![
+                row(Shown::Recents, said("Recents")),
+                row(Shown::Shared, said("Shared")),
+            ],
+        ),
+        (
+            "Favorites",
+            FOLDERS
+                .iter()
+                .map(|&(shown, which)| {
+                    let path = finder_fs::volumes::standard(which).unwrap_or_default();
+                    row(shown, finder_fs::name::of_path(&path))
+                })
+                .collect(),
+        ),
+        (
+            "Locations",
+            vec![
+                row(Shown::ICloudDrive, said("iCloud Drive")),
+                row(Shown::CloudStorage, said("Cloud Storage")),
+                row(Shown::Home, finder_fs::name::of_path(&home)),
+                row(Shown::Computer, computer),
+                row(Shown::HardDisks, said("Hard disks")),
+                row(Shown::ExternalDisks, said("External disks")),
+                row(Shown::Removable, said("CDs, DVDs, and iOS Devices")),
+                row(Shown::AirDrop, said("AirDrop")),
+                row(Shown::Bonjour, said("Bonjour computers")),
+                row(Shown::Servers, said("Connected servers")),
+                row(Shown::Trash, said("Trash")),
+            ],
+        ),
+        ("Tags", vec![row(Shown::RecentTags, said("Recent Tags"))]),
+    ]
+}
+
+/// The name the Sharing settings give this Mac, as Finder titles its Computer.
+#[allow(deprecated)]
+pub(crate) fn computer_name() -> String {
+    objc2_foundation::NSHost::currentHost()
+        .localizedName()
+        .map_or_else(|| "Computer".into(), |name| name.to_string())
+}
+
+pub(crate) fn set_row_shown(shown: Shown, on: bool) {
+    prefs::set_setting_on(&key(shown), on);
+}
+
+/// A tag row's Settings ▸ Tags checkbox: mixed while it shows only as a recent tag.
+pub(crate) fn tag_shown(id: &str) -> CheckState {
+    let name = id.strip_prefix("tag:").unwrap_or(id);
+    if prefs::removed("g-tags").iter().any(|gone| gone == id) {
+        CheckState::Off
+    } else if finder_fs::tags::recent()
+        .iter()
+        .any(|recent| recent == name)
+    {
+        CheckState::Mixed
+    } else {
+        CheckState::On
+    }
+}
+
+pub(crate) fn show_tag_row(id: &str, on: bool) {
+    let mut removed = prefs::removed("g-tags");
+    removed.retain(|gone| gone != id);
+    if !on {
+        removed.push(id.to_owned());
+    }
+    let keep: Vec<&str> = removed.iter().map(String::as_str).collect();
+    prefs::set_removed("g-tags", &keep);
+}
+
+fn listed(title: String, path: Option<PathBuf>, special: Option<Special>) -> Listed {
+    Listed {
+        title,
+        path,
+        special,
+        network: false,
+        ejectable: false,
+        server: None,
+    }
+}
+
+pub(crate) fn groups() -> Vec<Group> {
+    let mut favourites = finder_fs::sidebar::listed_favorites();
+    let mut locations = finder_fs::sidebar::listed_locations();
+    let on = visibility(&favourites, &locations);
+    let shows = |shown| on(shown).1;
+    for &(shown, which) in &FOLDERS {
+        let here = |listed: &Listed| {
+            listed
+                .path
+                .as_deref()
+                .is_some_and(|it| is_standard(it, which))
+        };
+        match shows(shown) {
+            false => favourites.retain(|listed| !here(listed)),
+            true if !favourites.iter().any(here) => {
+                if let Some(path) = finder_fs::volumes::standard(which) {
+                    favourites.push(listed(finder_fs::name::of_path(&path), Some(path), None));
+                }
+            }
+            true => {}
+        }
+    }
+    let wanted = |listed: &Listed| match listed.special {
+        Some(Special::Home) => shows(Shown::Home),
+        Some(Special::ICloudDrive) => shows(Shown::ICloudDrive),
+        Some(Special::FileProvider) => shows(Shown::CloudStorage),
+        Some(Special::AirDrop) => shows(Shown::AirDrop),
+        Some(Special::Network) => shows(Shown::Bonjour),
+        Some(Special::Trash) => shows(Shown::Trash),
+        Some(Special::Computer) => shows(Shown::Computer),
+        Some(_) => true,
+        None if listed.network => shows(Shown::Servers),
+        None if listed.ejectable => shows(Shown::ExternalDisks),
+        None => shows(Shown::HardDisks),
+    };
+    let (finder_disks, finder_external, finder_servers) = (
+        on(Shown::HardDisks).0,
+        on(Shown::ExternalDisks).0,
+        on(Shown::Servers).0,
+    );
+    let hidden_volumes: Vec<Listed> = finder_fs::volumes::mounted()
+        .into_iter()
+        .filter(|volume| match (volume.network, volume.ejectable) {
+            (true, _) => !finder_servers && shows(Shown::Servers),
+            (_, true) => !finder_external && shows(Shown::ExternalDisks),
+            _ => !finder_disks && shows(Shown::HardDisks),
+        })
+        .map(|volume| Listed {
+            network: volume.network,
+            ejectable: volume.ejectable,
+            server: volume.server.clone(),
+            ..listed(volume.name.clone(), Some(volume.path.clone()), None)
+        })
+        .collect();
+    let before_places = locations
+        .iter()
+        .position(|listed| matches!(listed.special, Some(Special::AirDrop | Special::Network)))
+        .unwrap_or(locations.len());
+    locations.splice(before_places..before_places, hidden_volumes);
+    let missing =
+        |locations: &[Listed], which| !locations.iter().any(|listed| listed.special == Some(which));
+    let home = finder_fs::volumes::standard(Standard::Home);
+    if shows(Shown::ICloudDrive) && missing(&locations, Special::ICloudDrive) {
+        let drive = finder_fs::icloud::drive();
+        locations.insert(
+            0,
+            listed("iCloud Drive".into(), drive, Some(Special::ICloudDrive)),
+        );
+    }
+    if shows(Shown::Home) && missing(&locations, Special::Home) {
+        let at = locations
+            .iter()
+            .position(|listed| {
+                !matches!(
+                    listed.special,
+                    Some(Special::ICloudDrive | Special::FileProvider)
+                )
+            })
+            .unwrap_or(locations.len());
+        let title = home
+            .as_deref()
+            .map(finder_fs::name::of_path)
+            .unwrap_or_default();
+        locations.insert(at, listed(title, home, Some(Special::Home)));
+    }
+    if shows(Shown::AirDrop) && missing(&locations, Special::AirDrop) {
+        let at = locations
+            .iter()
+            .position(|listed| listed.network || listed.special == Some(Special::Network))
+            .unwrap_or(locations.len());
+        locations.insert(at, listed("AirDrop".into(), None, Some(Special::AirDrop)));
+    }
+    if shows(Shown::Trash) && missing(&locations, Special::Trash) {
+        locations.push(listed("Trash".into(), trash_path(), Some(Special::Trash)));
+    }
+    locations.retain(wanted);
+    let mut favourites = listed_rows(favourites, false);
+    if shows(Shown::Recents) {
+        favourites.insert(
+            0,
+            row(
+                crate::search::RECENTS,
+                finder_fs::words::say("Recents").into_owned(),
+                Glyph::Symbol("clock"),
+            ),
+        );
+    }
+    let locations = listed_rows(locations, true);
+
+    let recent = match shows(Shown::RecentTags) {
+        true => Vec::new(),
+        false => finder_fs::tags::recent(),
+    };
     let mut tags: Vec<Row> = crate::tags::all()
         .iter()
+        .filter(|tag| !recent.contains(&tag.name))
         .map(|tag| Row {
             muted: finder_color_rgb(tag.color).is_none(),
             ..row(
@@ -198,7 +498,6 @@ pub(crate) fn groups() -> Vec<Group> {
             Glyph::AllTags,
         )
     });
-
     let mut groups = vec![
         Group {
             id: FAVOURITES,
@@ -217,13 +516,10 @@ pub(crate) fn groups() -> Vec<Group> {
         },
     ];
     for group in &mut groups {
-        // Finder's own lists decide which of their rows show, and the demo never writes them.
-        if !matches!(group.id, FAVOURITES | LOCATIONS) {
-            let removed = prefs::removed(group.id);
-            group
-                .rows
-                .retain(|row| !removed.iter().any(|gone| gone == row.id));
-        }
+        let removed = prefs::removed(group.id);
+        group
+            .rows
+            .retain(|row| !removed.iter().any(|gone| gone == row.id));
         for path in prefs::pinned(group.id).iter().map(PathBuf::from) {
             let id = intern_path(&path);
             let folder = path.is_dir();
@@ -247,32 +543,54 @@ pub(crate) fn pinned(id: &str) -> bool {
         .any(|group| prefs::pinned(group).iter().any(|kept| kept == id))
 }
 
+/// The group's rows in the order the demo keeps, each row it has not placed yet after the row it
+/// follows in Finder's order.
+fn arranged(kept: &[String], group: &Group) -> Vec<&'static str> {
+    let mut rows: Vec<&'static str> = Vec::new();
+    for kept in kept {
+        let found = group.rows.iter().find(|row| row.id == kept);
+        if let Some(row) = found.filter(|row| !rows.contains(&row.id)) {
+            rows.push(row.id);
+        }
+    }
+    for (at, row) in group.rows.iter().enumerate() {
+        if !rows.contains(&row.id) {
+            let after = group.rows[..at]
+                .iter()
+                .rev()
+                .find_map(|before| rows.iter().position(|id| *id == before.id));
+            rows.insert(after.map_or(0, |at| at + 1), row.id);
+        }
+    }
+    rows
+}
+
 pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
     groups
         .iter()
-        .map(|group| {
-            let saved = match group.id {
-                FAVOURITES | LOCATIONS => Vec::new(),
-                id => prefs::sidebar_rows(id),
-            };
-            let mut rows: Vec<&'static str> = saved
-                .iter()
-                .filter_map(|kept| {
-                    group
-                        .rows
-                        .iter()
-                        .find(|row| row.id == kept)
-                        .map(|row| row.id)
-                })
-                .collect();
-            for row in &group.rows {
-                if !rows.contains(&row.id) {
-                    rows.push(row.id);
-                }
-            }
-            rows
-        })
+        .map(|group| arranged(&prefs::sidebar_rows(group.id), group))
         .collect()
+}
+
+/// Finder's sidebar is one list: a change made in one window shows in every window.
+pub(crate) fn reload_sidebars(cx: &mut App) {
+    let windows: Vec<_> = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<FinderDemo>())
+        .collect();
+    cx.spawn(async move |cx| {
+        for window in windows {
+            let groups = cx.background_executor().spawn(async { groups() }).await;
+            window
+                .update(cx, |this, _, cx| {
+                    this.sidebar_took(groups);
+                    cx.notify();
+                })
+                .ok();
+        }
+    })
+    .detach();
 }
 
 impl FinderDemo {
@@ -302,19 +620,8 @@ impl FinderDemo {
     }
 
     pub(crate) fn sidebar_took(&mut self, groups: Vec<Group>) {
+        self.sidebar_rows = stored_rows(&groups);
         self.sidebar_groups = groups;
-        for (rows, group) in self.sidebar_rows.iter_mut().zip(&self.sidebar_groups) {
-            rows.retain(|id| group.rows.iter().any(|row| row.id == *id));
-            for (at, row) in group.rows.iter().enumerate() {
-                if !rows.contains(&row.id) {
-                    let after = group.rows[..at]
-                        .iter()
-                        .rev()
-                        .find_map(|before| rows.iter().position(|id| *id == before.id));
-                    rows.insert(after.map_or(0, |at| at + 1), row.id);
-                }
-            }
-        }
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
         }
@@ -336,7 +643,7 @@ impl FinderDemo {
             cx,
             SidebarOptions {
                 thickness: px(SIDEBAR_W),
-                min_thickness: px(120.),
+                min_thickness: px(158.),
                 max_thickness: px(0.),
                 content_min_thickness: px(crate::preview::LIST_MIN_W),
                 reorderable: true,
@@ -350,6 +657,7 @@ impl FinderDemo {
                     this.go(intern(path), window, cx)
                 }
                 Some(tag) if tag.starts_with("tag:") => this.show_tag(intern(tag), window, cx),
+                Some(crate::search::RECENTS) => this.show_tag(crate::search::RECENTS, window, cx),
                 _ => {}
             }
             if let Some(sidebar) = &this.sidebar {
@@ -359,7 +667,7 @@ impl FinderDemo {
         }));
         sidebar.on_reorder(cx.listener(|this, moved: &SidebarMove, _, cx| {
             this.reorder(moved);
-            cx.notify();
+            reload_sidebars(cx);
         }));
         sidebar.on_drop_paths(cx.listener(|this, dropped: &SidebarDrop, window, cx| {
             match dropped.onto.as_deref() {
@@ -378,7 +686,7 @@ impl FinderDemo {
                         .collect();
                     this.drop_into(intern(onto), &keys, window, cx);
                 }
-                None => this.pin(dropped),
+                None => this.pin(dropped, cx),
             }
             cx.notify();
         }));
@@ -407,7 +715,7 @@ impl FinderDemo {
         self.warm_icons();
     }
 
-    pub(crate) fn remove_from_sidebar(&mut self, id: &str) {
+    pub(crate) fn remove_from_sidebar(&mut self, id: &str, cx: &mut Context<Self>) {
         for group in [FAVOURITES, LOCATIONS] {
             let pinned = prefs::pinned(group);
             let keep: Vec<&str> = pinned
@@ -435,6 +743,7 @@ impl FinderDemo {
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
         }
+        reload_sidebars(cx);
     }
 
     fn reorder(&mut self, moved: &SidebarMove) {
@@ -483,7 +792,7 @@ impl FinderDemo {
         }
     }
 
-    fn pin(&mut self, dropped: &SidebarDrop) {
+    fn pin(&mut self, dropped: &SidebarDrop, cx: &mut Context<Self>) {
         let group = match dropped.group.as_ref() {
             id @ (FAVOURITES | LOCATIONS) => id,
             _ => return,
@@ -500,14 +809,24 @@ impl FinderDemo {
         if folders.is_empty() {
             return;
         }
-        let mut pinned = prefs::pinned(self.sidebar_groups[at].id);
+        let group = self.sidebar_groups[at].id;
+        let mut pinned = prefs::pinned(group);
         for id in &folders {
             if !pinned.iter().any(|kept| kept == id) {
                 pinned.push((*id).to_owned());
             }
         }
         let keep: Vec<&str> = pinned.iter().map(String::as_str).collect();
-        prefs::set_pinned(self.sidebar_groups[at].id, &keep);
+        prefs::set_pinned(group, &keep);
+        let removed = prefs::removed(group);
+        let back: Vec<&str> = removed
+            .iter()
+            .map(String::as_str)
+            .filter(|gone| !folders.iter().any(|id| id == gone))
+            .collect();
+        if back.len() != removed.len() {
+            prefs::set_removed(group, &back);
+        }
         self.refresh_sidebar();
         let rows = &mut self.sidebar_rows[at];
         let mut index = dropped.index.min(rows.len());
@@ -524,14 +843,15 @@ impl FinderDemo {
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
         }
+        reload_sidebars(cx);
     }
 
-    pub(crate) fn add_to_sidebar(&mut self) {
+    pub(crate) fn add_to_sidebar(&mut self, cx: &mut Context<Self>) {
         let paths = self.paths();
-        self.pin_favourite(paths);
+        self.pin_favourite(paths, cx);
     }
 
-    pub(crate) fn pin_favourite(&mut self, paths: Vec<PathBuf>) {
+    pub(crate) fn pin_favourite(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         if paths.is_empty() {
             return;
         }
@@ -540,12 +860,15 @@ impl FinderDemo {
             .iter()
             .position(|group| group.id == FAVOURITES)
             .map_or(0, |at| self.sidebar_rows[at].len());
-        self.pin(&SidebarDrop {
-            paths,
-            group: FAVOURITES.into(),
-            index,
-            onto: None,
-        });
+        self.pin(
+            &SidebarDrop {
+                paths,
+                group: FAVOURITES.into(),
+                index,
+                onto: None,
+            },
+            cx,
+        );
     }
 
     fn store_rows(&self, group: usize) {

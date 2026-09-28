@@ -79,6 +79,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.query.trim().is_empty() && !text.trim().is_empty() {
+            self.scope = prefs::search_scope();
+        }
         self.query = text;
         self.run_search(cx);
     }
