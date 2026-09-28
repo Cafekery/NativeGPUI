@@ -11,6 +11,7 @@ use native_gpui::tokens::{
     self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
 
+use super::options::{self, Source};
 use super::stats::{CALCULATING, span};
 use super::{INSET, RESIZE_EDGE};
 use crate::app::FinderDemo;
@@ -84,6 +85,7 @@ struct Card {
     rows: Vec<(&'static str, SharedString)>,
     show_more: bool,
     tags: Vec<usize>,
+    show_tags: bool,
     many: bool,
     actions: &'static [(&'static str, &'static str)],
 }
@@ -328,6 +330,7 @@ pub(super) struct CardKey {
     look: (bool, bool, u64),
     expanded: bool,
     renaming: Option<SharedString>,
+    options: u64,
 }
 
 fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
@@ -350,70 +353,39 @@ fn info_rows(
         _ => meta.unwrap_or(&none),
     };
     let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}\u{d7}{h}"));
+    let value = |name: &str| {
+        meta.values
+            .iter()
+            .find(|(attribute, _)| attribute == name)
+            .map(|(_, value)| value.clone())
+    };
+    let date = |label, at| stamp(at, content - label_width(label) - ROW_FIT_MARGIN);
     let mut all: Vec<(&'static str, SharedString, bool)> = Vec::new();
     if let Some(volume) = volume_at(&row.path) {
-        all.push(("Capacity", byte_string(volume.capacity).into(), false));
-        all.push(("Available", byte_string(volume.available).into(), false));
+        all.push(("Capacity", byte_string(volume.capacity).into(), true));
+        all.push(("Available", byte_string(volume.available).into(), true));
     }
-    let date = |label, at| stamp(at, content - label_width(label) - ROW_FIT_MARGIN);
-    all.push(("Created", date("Created", row.created_at), false));
-    all.push(("Modified", date("Modified", row.modified_at), false));
-    let mut add = |label, value: Option<SharedString>, under_more| {
-        all.extend(value.map(|value| (label, value, under_more)));
-    };
-    add(
-        "Last opened",
-        meta.last_used.map(|at| date("Last opened", at)),
-        false,
-    );
-    let media = matches!(row.face, Face::Image | Face::Movie | Face::Audio);
-    add(
-        "Content created",
-        meta.content_created.filter(|_| media).map(date_text),
-        true,
-    );
-    add("Dimensions", meta.pixels.map(size), false);
-    add("Duration", meta.duration.map(clock), false);
-    add(
-        "Version",
-        meta.version.clone().map(SharedString::from),
-        row.face != Face::Program,
-    );
-    add(
-        "Pages",
-        meta.pages.map(|pages| pages.to_string().into()),
-        true,
-    );
-    add("Resolution", meta.page.map(size), true);
-    add(
-        "Security",
-        meta.security.clone().map(SharedString::from),
-        true,
-    );
-    add(
-        "Color space",
-        meta.color_space.clone().map(SharedString::from),
-        true,
-    );
-    add(
-        "Color profile",
-        meta.color_profile.clone().map(SharedString::from),
-        true,
-    );
-    add(
-        "Encoding software",
-        (!meta.encoders.is_empty()).then(|| meta.encoders.join(", ").into()),
-        true,
-    );
-    add(
-        "Category",
-        meta.category.clone().map(SharedString::from),
-        true,
-    );
-    let more = all.iter().any(|(_, _, under_more)| *under_more);
+    let kind = options::kind_of(row);
+    for field in kind.groups.iter().flat_map(|group| group.fields) {
+        let shown = match field.source {
+            Source::Created => Some(date(field.label, row.created_at)),
+            Source::Modified => Some(date(field.label, row.modified_at)),
+            Source::LastOpened => meta.last_used.map(|at| date(field.label, at)),
+            Source::ContentCreated => meta.content_created.map(date_text),
+            Source::Dimensions => meta.pixels.map(size),
+            Source::PageSize => meta.page.map(size),
+            Source::Dpi => value("kMDItemResolutionWidthDPI")
+                .zip(value("kMDItemResolutionHeightDPI"))
+                .map(|(w, h)| format!("{w}\u{d7}{h}").into()),
+            Source::Duration => meta.duration.map(clock),
+            Source::Attr(name) => value(name).map(SharedString::from),
+        };
+        all.extend(shown.map(|shown| (field.label, shown, options::shows(kind, field.key()))));
+    }
+    let more = all.iter().any(|(_, _, shown)| !shown);
     let rows = all
         .into_iter()
-        .filter(|(_, _, under_more)| expanded || !under_more)
+        .filter(|(_, _, shown)| expanded || *shown)
         .map(|(label, value, _)| (label, value))
         .collect();
     (rows, more)
@@ -487,8 +459,12 @@ impl FinderDemo {
                 rows,
                 show_more,
                 tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
+                show_tags: options::shows(options::kind_of(row), options::TAGS),
                 many: false,
-                actions: actions(row.face),
+                actions: match options::shows(options::kind_of(row), options::QUICK_ACTIONS) {
+                    true => actions(row.face),
+                    false => &[],
+                },
             }
         };
         let renaming = (self.view == GALLERY_VIEW && !card.many)
@@ -567,6 +543,7 @@ impl FinderDemo {
             look: (self.list_focused, key, tokens::generation()),
             expanded: self.preview_expanded,
             renaming: self.renaming.clone(),
+            options: options::changed(),
         }
     }
 
@@ -629,6 +606,7 @@ impl FinderDemo {
                 ],
                 show_more: false,
                 tags: Vec::new(),
+                show_tags: true,
                 many: true,
                 actions,
             };
@@ -649,6 +627,7 @@ impl FinderDemo {
             ],
             show_more: false,
             tags: stats.tags.clone(),
+            show_tags: true,
             many: true,
             actions,
         }
@@ -889,15 +868,17 @@ impl Shown {
                     ),
             );
         }
-        lower = lower.child(block).child(
-            div()
-                .mt(px(GAP_ROWS_TAGS))
-                .line_height(px(LINE_H))
-                .text_size(body)
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(ink.heading)
-                .child(finder_fs::words::say("Tags").into_owned()),
-        );
+        lower = lower.child(block).when(card.show_tags, |lower| {
+            lower.child(
+                div()
+                    .mt(px(GAP_ROWS_TAGS))
+                    .line_height(px(LINE_H))
+                    .text_size(body)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(ink.heading)
+                    .child(finder_fs::words::say("Tags").into_owned()),
+            )
+        });
 
         let tags = div()
             .flex()
@@ -921,16 +902,18 @@ impl Shown {
                         .child("Add Tag"),
                 ),
         };
-        lower = lower.child(
-            div()
-                .mt(px(GAP_TAGS_ADD))
-                .flex_none()
-                .h(px(TAGS_WELL_H))
-                .w_full()
-                .pt(px(TAGS_TEXT_TOP))
-                .bg(ink.well)
-                .child(tags),
-        );
+        lower = lower.when(card.show_tags, |lower| {
+            lower.child(
+                div()
+                    .mt(px(GAP_TAGS_ADD))
+                    .flex_none()
+                    .h(px(TAGS_WELL_H))
+                    .w_full()
+                    .pt(px(TAGS_TEXT_TOP))
+                    .bg(ink.well)
+                    .child(tags),
+            )
+        });
 
         let actions = div()
             .flex_none()
@@ -979,11 +962,16 @@ impl Shown {
         let content = content_column.child(lower);
         let tall = head + GAP_KIND_HEAD + LINE_H + GAP_HEAD_ROWS + rows as f32 * (ROW_H + ROW_GAP)
             - ROW_GAP
-            + GAP_ROWS_TAGS
-            + LINE_H
-            + GAP_TAGS_ADD
-            + TAGS_WELL_H
+            + if card.show_tags {
+                GAP_ROWS_TAGS + LINE_H + GAP_TAGS_ADD + TAGS_WELL_H
+            } else {
+                0.
+            }
             + BOTTOM_PAD;
+        let band = match card.actions.is_empty() {
+            true => RESIZE_EDGE,
+            false => ACTIONS_H,
+        };
         if self.view == COLUMN_VIEW {
             return div()
                 .size_full()
@@ -1005,18 +993,18 @@ impl Shown {
                     .top_0()
                     .left_0()
                     .right_0()
-                    .bottom(px(ACTIONS_H - RESIZE_EDGE))
+                    .bottom(px(band - RESIZE_EDGE))
                     .overflow_y_scroll()
                     .child(content.pb(px(BOTTOM_PAD))),
             )
             // Finder rules the band off only while the content runs down to it.
-            .when(tall > self.pane_h + RESIZE_EDGE - ACTIONS_H, |pane| {
+            .when(tall > self.pane_h + RESIZE_EDGE - band, |pane| {
                 pane.child(
                     div()
                         .absolute()
                         .left_0()
                         .right_0()
-                        .bottom(px(ACTIONS_H - RESIZE_EDGE - 0.5))
+                        .bottom(px(band - RESIZE_EDGE - 0.5))
                         .h(px(1.))
                         .bg(ink.rule),
                 )
@@ -1027,7 +1015,7 @@ impl Shown {
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(px(ACTIONS_H - RESIZE_EDGE)),
+                    .h(px(band - RESIZE_EDGE)),
             )
             .into_any_element()
     }
