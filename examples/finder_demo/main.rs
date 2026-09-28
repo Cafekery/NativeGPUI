@@ -126,6 +126,7 @@ fn main() {
         crawl(cx);
         thumbs::follow_thumbnails(cx);
         preview::follow_stacks(cx);
+        preview::keep_a_key_window();
         data::follow_volumes(cx);
         cx.activate(true);
     });
