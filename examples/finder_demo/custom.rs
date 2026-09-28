@@ -13,11 +13,15 @@ thread_local! {
     static WANTED: RefCell<HashSet<SharedString>> = RefCell::new(HashSet::new());
 }
 
+fn has_custom_icon(path: &SharedString) -> bool {
+    native_gpui::tokens::has_custom_icon(Path::new(path.as_ref()))
+}
+
 pub(crate) fn custom_icon(path: &SharedString) -> bool {
     if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
         return found;
     }
-    WANTED.with(|wanted| wanted.borrow_mut().insert(path.clone()));
+    WANTED.with_borrow_mut(|wanted| wanted.insert(path.clone()));
     false
 }
 
@@ -26,13 +30,13 @@ pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
     if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
         return found;
     }
-    let found = native_gpui::tokens::has_custom_icon(Path::new(path.as_ref()));
+    let found = has_custom_icon(path);
     SEEN.lock().unwrap().insert(path.clone(), found);
     found
 }
 
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
-    let wanted: Vec<SharedString> = WANTED.with(|wanted| wanted.borrow_mut().drain().collect());
+    let wanted = WANTED.take();
     if wanted.is_empty() {
         return;
     }
@@ -50,7 +54,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
                 wanted
                     .into_iter()
                     .map(|path| {
-                        let custom = native_gpui::tokens::has_custom_icon(Path::new(path.as_ref()));
+                        let custom = has_custom_icon(&path);
                         (path, custom)
                     })
                     .collect::<Vec<_>>()
