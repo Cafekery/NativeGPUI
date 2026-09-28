@@ -369,14 +369,12 @@ impl FinderDemo {
     }
 
     fn remove(&mut self, op: Op, cx: &mut Context<Self>) {
-        let next = self.survivor();
-        self.deselect();
-        self.choose(next);
+        let kept = self.kept_row_below_cursor();
+        self.choose(kept);
         self.run_op(op, After::Nothing, cx);
     }
 
-    /// Finder moves the selection to the row just below the cursor, unless that row goes too.
-    fn survivor(&self) -> Option<SharedString> {
+    fn kept_row_below_cursor(&self) -> Option<SharedString> {
         let lines = self.focused_lines();
         let next = &lines
             .get(self.line_at(&lines, self.cursor.as_ref()?)? + 1)?

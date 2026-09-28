@@ -3,6 +3,7 @@ pub(crate) mod conflicts;
 pub(crate) mod jobs;
 pub(crate) mod undo;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op};
@@ -16,7 +17,6 @@ pub(crate) enum After {
     Nothing,
     Select,
     Rename,
-    /// Select the results in a window showing their folder, opening one if none does.
     Reveal,
 }
 
@@ -263,14 +263,13 @@ fn key_of(path: &Path) -> SharedString {
 }
 
 fn reveal(results: &[PathBuf], cx: &mut Context<FinderDemo>) {
-    let mut folders: Vec<(&'static str, Vec<SharedString>)> = Vec::new();
+    let mut folders: HashMap<&'static str, Vec<SharedString>> = HashMap::new();
     for path in results {
-        let Some(dir) = path.parent().map(intern_path) else {
-            continue;
-        };
-        match folders.iter_mut().find(|(at, _)| *at == dir) {
-            Some((_, keys)) => keys.push(key_of(path)),
-            None => folders.push((dir, vec![key_of(path)])),
+        if let Some(dir) = path.parent() {
+            folders
+                .entry(intern_path(dir))
+                .or_default()
+                .push(key_of(path));
         }
     }
     cx.defer(move |cx| {

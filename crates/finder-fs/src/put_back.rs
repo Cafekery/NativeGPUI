@@ -16,29 +16,24 @@ pub fn origins(items: &[PathBuf]) -> Vec<Option<PathBuf>> {
                 .or_insert_with(|| trash(folder))
                 .as_ref()?;
             let (parent, name) = records.get(item.file_name()?.to_str()?)?;
-            Some(root.join(parent.trim_start_matches('/')).join(name))
+            let parent = parent.trim_start_matches('/');
+            let parent = parent
+                .strip_prefix("System/Volumes/Data/")
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(parent);
+            Some(root.join(parent).join(name))
         })
         .collect()
 }
 
 fn trash(folder: &Path) -> Option<(PathBuf, Records)> {
-    let mut records = put_backs(&std::fs::read(folder.join(".DS_Store")).ok()?)?;
+    let records = put_backs(&std::fs::read(folder.join(".DS_Store")).ok()?)?;
     let mount = mount_point(folder)?;
-    if mount != Path::new("/System/Volumes/Data") {
-        return Some((mount, records));
-    }
-    // The home Trash's volume mounts at /System/Volumes/Data, which Finder presents as `/`; its
-    // records name a folder either way.
-    for (parent, _) in records.values_mut() {
-        let relative = parent.trim_start_matches('/');
-        if let Some(rest) = relative
-            .strip_prefix("System/Volumes/Data/")
-            .filter(|rest| !rest.is_empty())
-        {
-            *parent = rest.to_owned();
-        }
-    }
-    Some((PathBuf::from("/"), records))
+    let root = match mount == Path::new("/System/Volumes/Data") {
+        true => PathBuf::from("/"),
+        false => mount,
+    };
+    Some((root, records))
 }
 
 struct Reader<'a> {
@@ -73,8 +68,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Each trashed item's recorded parent folder (relative to its volume) and original name, by its
-/// name in the trash.
 fn put_backs(bytes: &[u8]) -> Option<Records> {
     let mut header = Reader::new(bytes);
     (header.u32()? == 1 && header.take(4)? == b"Bud1").then_some(())?;
@@ -144,15 +137,17 @@ fn record(node: &mut Reader, found: &mut Found) -> Option<()> {
     let code = node.take(4)?;
     let text = match node.take(4)? {
         b"ustr" => Some(node.utf16()?),
-        b"blob" => {
-            let length = node.u32()? as usize;
+        kind => {
+            let length = match kind {
+                b"bool" => 1,
+                b"long" | b"shor" | b"type" => 4,
+                b"comp" | b"dutc" => 8,
+                b"blob" => node.u32()? as usize,
+                _ => return None,
+            };
             node.take(length)?;
             None
         }
-        b"bool" => node.take(1).map(|_| None)?,
-        b"long" | b"shor" | b"type" => node.take(4).map(|_| None)?,
-        b"comp" | b"dutc" => node.take(8).map(|_| None)?,
-        _ => return None,
     };
     match code {
         b"ptbL" => found.entry(name).or_default().0 = text,

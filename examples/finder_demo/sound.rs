@@ -27,7 +27,7 @@ fn load(file: &str) -> Option<u32> {
     (made == 0).then_some(id)
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy)]
 pub(crate) enum Sound {
     Trash,
     Done,
@@ -35,19 +35,18 @@ pub(crate) enum Sound {
 }
 
 impl Sound {
-    /// What Finder plays when `op` finishes, or when its undo does.
     pub(crate) fn of(op: &Op, undoing: bool) -> Option<Sound> {
-        let sound = match op {
-            Op::Trash(_) => Sound::Trash,
-            Op::Move { .. }
+        match op {
+            Op::Trash(_) if !undoing => Some(Sound::Trash),
+            Op::Trash(_)
+            | Op::Move { .. }
             | Op::Copy { .. }
             | Op::Duplicate(_)
             | Op::Compress(_)
-            | Op::PutBack(_) => Sound::Done,
-            Op::Batch(ops) => return ops.first().and_then(|op| Sound::of(op, undoing)),
-            _ => return None,
-        };
-        Some(if undoing { Sound::Done } else { sound })
+            | Op::PutBack(_) => Some(Sound::Done),
+            Op::Batch(ops) => Sound::of(ops.first()?, undoing),
+            _ => None,
+        }
     }
 
     pub(crate) fn play(self) {
