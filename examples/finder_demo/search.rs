@@ -19,15 +19,12 @@ const ALL_HITS: usize = 10_000;
 const CHUNK: usize = 256;
 pub(crate) const RECENTS: &str = "recents";
 
-/// Whether the window's toolbar search field has the keyboard.
-pub(crate) fn search_field_editing(window: &Window) -> bool {
+fn search_field_editing(window: &Window) -> bool {
     native_gpui::toolbar_item_view(window, SEARCH_ID)
         .and_then(|view| view.downcast::<NSControl>().ok())
         .is_some_and(|field| field.currentEditor().is_some())
 }
 
-/// Finder's search stays on while its field is being typed in, even empty; a field giving up the
-/// keyboard may be a window's search ending.
 pub(crate) fn follow_search_fields(cx: &mut App) {
     let app = cx.to_async();
     let block = StackBlock::new(move |_: NonNull<NSNotification>| {
@@ -62,10 +59,6 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
 }
 
 impl FinderDemo {
-    pub(crate) fn searching(&self) -> bool {
-        !self.filtered.trim().is_empty() && !self.hits.is_empty()
-    }
-
     pub(crate) fn in_search(&self) -> bool {
         !self.query.trim().is_empty()
     }
@@ -75,12 +68,12 @@ impl FinderDemo {
     }
 
     pub(crate) fn results(&self) -> bool {
-        self.tag_listing.is_some() || self.searching()
+        self.tag_listing.is_some() || (!self.filtered.trim().is_empty() && !self.hits.is_empty())
     }
 
     pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
         self.arrive_now(cx);
-        if self.query.trim().is_empty() && !text.trim().is_empty() {
+        if !self.in_search() && !text.trim().is_empty() {
             self.scope = prefs::search_scope();
         }
         self.query = text;
@@ -187,16 +180,14 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         self.arriving = None;
-        self.selected.clear();
-        self.cursor = None;
-        self.anchor = None;
+        self.deselect();
         self.query.clear();
         self.hits.clear();
         self.hits_rev = next_rev();
         self.tag_listing = Some(id);
         self.retitle(window);
         cx.notify();
-        let tag = id.strip_prefix("tag:").unwrap_or_default().to_string();
+        let tag = id.strip_prefix("tag:").unwrap_or_default();
         cx.spawn(async move |this, cx| {
             let found = cx
                 .background_executor()
@@ -204,7 +195,7 @@ impl FinderDemo {
                     let rows = match (id == RECENTS, crate::smart::file_of(id)) {
                         (true, _) => data::recent_rows(&crate::home(), index(), HITS),
                         (_, Some(file)) => crate::smart::rows(file, index(), HITS),
-                        _ => data::tagged_rows(&tag, index(), HITS),
+                        _ => data::tagged_rows(tag, index(), HITS),
                     };
                     let marks: Vec<(SharedString, Vec<usize>)> = rows
                         .iter()

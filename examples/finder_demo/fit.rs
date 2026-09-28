@@ -26,7 +26,6 @@ pub(crate) fn line_width(texts: &WindowTextSystem, text: SharedString, size: Pix
     f32::from(shape(texts, text, &tokens::system_font(FontWeight::NORMAL), size).width)
 }
 
-/// Each character's advance in context, read off lines already shaped.
 struct Advances {
     ascii: Vec<f32>,
     rest: HashMap<u128, f32>,
@@ -54,12 +53,8 @@ impl Advances {
 
     fn learn(&mut self, line: &ShapedLine) {
         let glyphs = || line.runs.iter().flat_map(|run| &run.glyphs);
-        let chars = line.text.char_indices();
-        if glyphs().count() != chars.clone().count()
-            || glyphs()
-                .zip(chars)
-                .any(|(glyph, (at, _))| glyph.index != at)
-        {
+        let starts = line.text.char_indices().map(|(at, _)| at);
+        if glyphs().map(|glyph| glyph.index).ne(starts) {
             return;
         }
         let ends = glyphs().skip(1).map(|glyph| glyph.position.x);
@@ -74,8 +69,6 @@ impl Advances {
     }
 }
 
-/// A key per character of `text`: the character and the next (`'\0'` past the end), `None` outside
-/// the Latin set whose advances follow this model. ASCII pairs index a flat table.
 fn keys(text: &str) -> impl Iterator<Item = Option<u128>> + '_ {
     let mut chars = text.chars().chain(['\0', '\0']);
     let (mut a, mut b, mut c) = (
@@ -116,9 +109,6 @@ fn plain(c: char) -> bool {
 
 static ADVANCES: LazyLock<Mutex<HashMap<(Font, u32), Advances>>> = LazyLock::new(Mutex::default);
 
-/// The largest `total(item, width)` over `items`, `width` being the shaped width of `text(item)`;
-/// only texts whose estimate could still win are shaped. Texts with unknown keys are shaped a batch
-/// to a line, joined by a character outside the plain set so no key it touches is ever asked for.
 pub(crate) fn widest<T>(
     texts: &WindowTextSystem,
     font: &Font,
@@ -180,7 +170,6 @@ pub(crate) fn widest<T>(
     best
 }
 
-/// `measure` on a background thread with a text system of its own, then `apply` to its result.
 pub(crate) fn in_background<V: 'static>(
     cx: &mut Context<V>,
     measure: impl FnOnce(&WindowTextSystem) -> f32 + Send + 'static,
