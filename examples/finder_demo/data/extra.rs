@@ -3,8 +3,6 @@ use std::sync::Arc;
 
 use gpui::SharedString;
 
-/// What a row shows that its listing does not say: the comment is its folder's, each other field
-/// its own file's.
 #[derive(Default, PartialEq)]
 pub(crate) struct Extra {
     pub(crate) opened: Option<f64>,
@@ -13,7 +11,6 @@ pub(crate) struct Extra {
     pub(crate) comment: SharedString,
 }
 
-/// Background work only: every field but `comment` is a read of the item's own file.
 pub(crate) fn extra_of(path: &str, package: bool, comment: Option<String>) -> Arc<Extra> {
     let at = Path::new(path);
     Arc::new(Extra {

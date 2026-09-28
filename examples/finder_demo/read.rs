@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -21,16 +22,11 @@ const BATCH: usize = 64;
 const TICK: Duration = Duration::from_millis(120);
 const STATS_NOW: usize = 256;
 const REREAD: usize = 256;
-/// A smaller folder lists from disk before fseventsd answers whether the index still holds it.
+/// Below this, the disk lists a folder before fseventsd can vouch for the index.
 const BIG: usize = 20_000;
 
-/// Why a folder could not be listed, worked out on the reading thread so the main thread never
-/// waits on a disk that stopped answering.
 enum Trouble {
-    /// Renamed where it stood: a Finder window follows it there.
     Renamed(&'static str),
-    /// Deleted, trashed or moved elsewhere: a Finder window falls back to the nearest folder
-    /// above it that is left.
     Gone(&'static str),
     Refused(io::Error),
 }
@@ -39,14 +35,11 @@ type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
 
 type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
 
-/// A read's first screenful, in the order of the whole listing, and the whole listing to come.
 struct Listed {
     first: Option<(Vec<Arc<Row>>, (bool, Vec<Line>))>,
     rest: Task<Result<Sorted, Trouble>>,
 }
 
-/// What a sort compares before names: whether an item discloses, whether its column says
-/// nothing for it, then the column's date or rank.
 struct Key {
     discloses: bool,
     missing: bool,
@@ -54,8 +47,6 @@ struct Key {
     rank: u64,
 }
 
-/// Each folder as last listed, with its parent, so a rename can be told from a move once the
-/// name is gone.
 static IDENTITIES: LazyLock<Mutex<HashMap<&'static str, (Identity, Option<Identity>)>>> =
     LazyLock::new(Mutex::default);
 
@@ -119,19 +110,16 @@ fn by(keys: &[Key], (sort, ascending): (Column, bool)) -> impl Fn(usize, usize) 
     }
 }
 
-/// Each text's place among the distinct texts in name order.
-fn text_ranks(texts: &[Option<&str>]) -> Vec<u64> {
+fn text_ranks<'a>(texts: impl Iterator<Item = Option<&'a str>> + Clone) -> Vec<u64> {
     let distinct: Vec<&str> = texts
-        .iter()
+        .clone()
         .flatten()
-        .copied()
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
     let ranks = finder_fs::sort::ranks(distinct.iter().copied());
     let rank: HashMap<&str, u32> = distinct.into_iter().zip(ranks).collect();
     texts
-        .iter()
         .map(|text| text.map_or(0, |text| u64::from(rank[text])))
         .collect()
 }
@@ -151,8 +139,6 @@ fn names_descend((sort, ascending): (Column, bool)) -> bool {
     sort == Column::Name && !ascending
 }
 
-/// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once. A sort
-/// by, or with `extras` a list showing, what only an item's own file says reads it first.
 pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool), extras: bool) {
     let sort = sorted_by.0;
     if extras || sort.extra() {
@@ -160,18 +146,17 @@ pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool), ext
     }
     let ranks = match sort {
         Column::Size => rows.iter().map(|row| row.bytes).collect(),
-        Column::Name => vec![0; rows.len()],
-        sort if sort.dated() => vec![0; rows.len()],
-        sort => text_ranks(&rows.iter().map(|row| row.words(sort)).collect::<Vec<_>>()),
+        sort if sort == Column::Name || sort.dated() => vec![0; rows.len()],
+        sort => text_ranks(rows.iter().map(|row| row.words(sort))),
     };
     let keys: Vec<Key> = rows
         .iter()
         .zip(ranks)
         .map(|(row, rank)| {
-            let (at, words) = (row.date(sort), row.words(sort));
+            let at = row.date(sort);
             Key {
                 discloses: row.discloses,
-                missing: sort.extra() && at.is_none() && words.is_none()
+                missing: sort.extra() && at.is_none() && row.words(sort).is_none()
                     || sort == Column::Added && at.is_none(),
                 at: at.unwrap_or(f64::NEG_INFINITY),
                 rank,
@@ -188,10 +173,7 @@ pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool), ext
     rows.extend(order.into_iter().filter_map(|at| held[at].take()));
 }
 
-/// The entries a first screenful shows: the first `count` listed, in the order of the whole
-/// listing. `None` while a package that sizes sort waits to be weighed, and for a sort by what
-/// only an item's own file says. With dates in `coarse` whole seconds, every entry that could be
-/// among them instead, in listing order.
+/// With `coarse` whole-second dates, every entry that could be among the first `count` instead.
 fn first_screen(
     id: &'static str,
     entries: &[&Entry],
@@ -211,7 +193,7 @@ fn first_screen(
                 .iter()
                 .map(|&at| data::kind_at(&data::join(id, &entries[at].name), entries[at]).label)
                 .collect();
-            text_ranks(&kinds.iter().map(|kind| Some(&**kind)).collect::<Vec<_>>())
+            text_ranks(kinds.iter().map(|kind| Some(&**kind)))
         }
         Column::Size => listed
             .iter()
@@ -258,7 +240,6 @@ fn first_screen(
 
 type Batches = Vec<(Arc<Vec<Entry>>, Task<Vec<Arc<Row>>>)>;
 
-/// A folder's entries as the listing reads them, each batch's rows already being built.
 fn read_batches(
     id: &'static str,
     folders: &Arc<HashMap<String, Facts>>,
@@ -312,7 +293,6 @@ async fn finish(
     (all, lines)
 }
 
-/// A first screenful's rows, its items' own icons drawn while the rows are built.
 fn screen_rows<'a>(
     id: &'static str,
     entries: impl Iterator<Item = &'a Entry> + Clone,
@@ -330,9 +310,6 @@ fn screen_rows<'a>(
     rows
 }
 
-/// A first screenful from the index, each item read again from disk and agreeing with it: a name
-/// sort's while the folder's modification time is still the one the index recorded, a date or
-/// size sort's while the index holds every change FSEvents has for the folder.
 fn indexed_screen(
     id: &'static str,
     folders: &HashMap<String, Facts>,
@@ -381,8 +358,6 @@ fn indexed_screen(
     Some(exact.into_iter().map(|at| read[at].clone()).collect())
 }
 
-/// Reads a folder, building its rows as the listing comes in. A sort the index can vouch for shows
-/// its first screenful before the listing; otherwise it is sorted out of the whole listing.
 fn list(
     id: &'static str,
     sorted_by: (Column, bool),
@@ -400,12 +375,15 @@ fn list(
     // A date or size sort's pick from the index waits on fseventsd, so its disk pass starts first.
     let early = (sorted_by.0 != Column::Name).then(|| std::thread::spawn(read.clone()));
     let batches = move || early.map_or_else(read, |early| early.join().unwrap());
+    let shown = |rows: Vec<Arc<Row>>, hidden: bool| {
+        let lines = listing::lines_of(&rows, hidden);
+        (rows, (hidden, lines))
+    };
     let vouched = matches!(sorted_by.0, Column::Name | Column::Modified | Column::Size);
     let known = first.filter(|_| vouched && !icloud).and_then(|hidden| {
         let entries = indexed_screen(id, &folders, sorted_by, hidden, count)?;
         let rows = screen_rows(id, entries.iter(), &folders, extras, screen);
-        let lines = listing::lines_of(&rows, hidden);
-        Some((rows, (hidden, lines)))
+        Some(shown(rows, hidden))
     });
     if known.is_some() {
         let rest = executor.spawn(async move {
@@ -418,31 +396,27 @@ fn list(
         .iter()
         .flat_map(|(entries, _)| entries.iter())
         .collect();
-    let first = first.filter(|_| !icloud).and_then(|hidden| {
-        let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count, false)?;
-        let rows = screen_rows(
-            id,
-            chosen.iter().map(|&at| entries[at]),
-            &folders,
-            extras,
-            screen,
-        );
-        Some((chosen, rows, hidden))
-    });
-    let shared = first
-        .as_ref()
-        .map(|(chosen, rows, _)| (chosen.clone(), rows.clone()));
+    let (shared, first) = first
+        .filter(|_| !icloud)
+        .and_then(|hidden| {
+            let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count, false)?;
+            let rows = screen_rows(
+                id,
+                chosen.iter().map(|&at| entries[at]),
+                &folders,
+                extras,
+                screen,
+            );
+            Some(((chosen, rows.clone()), (rows, hidden)))
+        })
+        .unzip();
     let rest = executor.spawn(async move {
         Ok(finish(id, batches, shared, (sorted_by, plain, extras), screen).await)
     });
-    let first = first.map(|(_, rows, hidden)| {
-        let lines = listing::lines_of(&rows, hidden);
-        (rows, (hidden, lines))
-    });
+    let first = first.map(|(rows, hidden)| shown(rows, hidden));
     Ok(Listed { first, rest })
 }
 
-/// Rung by each window's folder watcher and job queue, and by every tag read.
 pub(crate) static EVENTS: Signal = Signal::new();
 
 pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<FinderDemo>) {
@@ -466,7 +440,6 @@ pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<
             {
                 break;
             }
-            // A burst of tag reads or job progress lands once a tick, not once per item.
             cx.background_executor().timer(TICK).await;
         }
     })
@@ -504,8 +477,7 @@ impl FinderDemo {
         if self.selected.is_empty() {
             self.stats = None;
             self.stats_pending = None;
-            self.stats_stale
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.stats_stale.store(true, Relaxed);
             return;
         }
         let key = self.stats_key();
@@ -513,8 +485,7 @@ impl FinderDemo {
         if known || self.stats_pending == Some(key) {
             return;
         }
-        self.stats_stale
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_stale.store(true, Relaxed);
         self.stats_stale = Arc::default();
         let lines = self.focused_lines();
         if self.selected.len() <= STATS_NOW {
@@ -642,11 +613,8 @@ impl FinderDemo {
         if let Some(rows) = rows {
             landed |= self.folders.deliver(id, rows, true);
         }
-        if done {
-            let owed = self.folders.finish(id);
-            if owed {
-                self.read_folder(id, cx);
-            }
+        if done && self.folders.finish(id) {
+            self.read_folder(id, cx);
         }
         if done && sorted_by != (self.sort, self.ascending) {
             self.sort_folder(id, (self.sort, self.ascending), cx);
@@ -659,13 +627,13 @@ impl FinderDemo {
         if arrived || (done && id == self.here() && self.view == GALLERY_VIEW) {
             self.settle();
         }
-        let landed_row = self.reveal_next.clone().filter(|key| {
-            self.folders
+        let folders = &self.folders;
+        let landed_row = self.reveal_next.take_if(|key| {
+            folders
                 .get(id)
-                .is_some_and(|folder| folder.rows.iter().any(|row| &row.path == key))
+                .is_some_and(|folder| folder.rows.iter().any(|row| row.path == *key))
         });
         if let Some(key) = landed_row {
-            self.reveal_next = None;
             self.reveal(&key);
         }
         if landed || done {
@@ -674,7 +642,7 @@ impl FinderDemo {
     }
 
     fn sort_folder(&mut self, id: &'static str, by: (Column, bool), cx: &mut Context<Self>) {
-        let Some(rows) = self.folders.get(id).map(|folder| folder.rows.to_vec()) else {
+        let Some(mut rows) = self.folders.get(id).map(|folder| folder.rows.to_vec()) else {
             return;
         };
         let was = rows.len();
@@ -684,7 +652,6 @@ impl FinderDemo {
             let sorted = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut rows = rows;
                     sort_rows(&mut rows, by, extras);
                     let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                     (rows, lines)
@@ -704,7 +671,7 @@ impl FinderDemo {
         id: &'static str,
         by: (Column, bool),
         was: usize,
-        sorted: Sorted,
+        (rows, lines): Sorted,
         cx: &mut Context<Self>,
     ) {
         let now = (self.sort, self.ascending);
@@ -717,7 +684,6 @@ impl FinderDemo {
             self.sort_folder(id, now, cx);
             return;
         }
-        let (rows, lines) = sorted;
         if let Some(folder) = self.folders.get_mut(id) {
             folder.rows = rows.into();
         }
@@ -726,7 +692,6 @@ impl FinderDemo {
         }
     }
 
-    /// Sorts every held listing by `by` off the main thread, then shows a view waiting for it.
     pub(crate) fn sort_held(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
         let held = self.folders.held();
         let was: Vec<(&'static str, usize)> =
@@ -760,7 +725,7 @@ impl FinderDemo {
         &mut self,
         by: (Column, bool),
         was: &[(&'static str, usize)],
-        sorted: Resorted,
+        (mut folders, shape, walk): Resorted,
         cx: &mut Context<Self>,
     ) {
         let wanted = self.view_sort(self.pending_view.unwrap_or(self.view));
@@ -769,7 +734,6 @@ impl FinderDemo {
         }
         let turned = by != (self.sort, self.ascending);
         (self.sort, self.ascending) = by;
-        let (mut folders, shape, walk) = sorted;
         let mut moved = false;
         for (id, count) in was {
             let Some(rows) = folders.remove(id) else {

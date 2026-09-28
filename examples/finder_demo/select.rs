@@ -68,19 +68,12 @@ impl FinderDemo {
             self.disclosed(was, edits);
             return;
         }
-        if open {
-            return;
-        }
-        let Some(index) = only else {
+        let Some(index) = only.filter(|_| !open) else {
             return;
         };
         let depth = lines[index].depth;
-        if depth == 0 {
-            return;
-        }
         if let Some(parent) = lines[..index].iter().rev().find(|line| line.depth < depth) {
-            let parent = parent.clone();
-            self.pick(&parent, false, false);
+            self.pick(parent, false, false);
             self.reveal(&parent.key);
         }
     }
@@ -144,7 +137,6 @@ impl FinderDemo {
         self.chosen_in(&self.focused_lines(), usize::MAX)
     }
 
-    /// The first `most` selected lines in listing order.
     pub(crate) fn chosen_in(&self, lines: &Arc<Vec<Line>>, most: usize) -> Vec<Line> {
         if self.selected.len() * 16 >= lines.len() {
             return lines
@@ -191,22 +183,17 @@ impl FinderDemo {
                 self.expanding.insert(id, depth);
                 continue;
             };
-            let loading = folder.loading;
-            let children: Vec<(SharedString, &'static str)> = folder
-                .rows
-                .iter()
-                .filter(|row| row.discloses)
-                .filter_map(|row| row.opens.map(|deeper| (row.path.clone(), deeper)))
-                .filter(|(_, deeper)| !index::off_limits(Path::new(deeper), &home))
-                .collect();
-            if loading {
+            if folder.loading {
                 self.expanding.insert(id, depth);
             } else {
                 self.expanding.remove(id);
             }
-            for (key, deeper) in children {
-                opened.push(key);
-                walk.push((deeper, depth + 1));
+            for row in folder.rows.iter().filter(|row| row.discloses) {
+                let Some(deeper) = row.opens else { continue };
+                if !index::off_limits(Path::new(deeper), &home) {
+                    opened.push(row.path.clone());
+                    walk.push((deeper, depth + 1));
+                }
             }
         }
     }
@@ -236,8 +223,8 @@ impl FinderDemo {
             (None, false) => 0,
             (None, true) => by_name.len() - 1,
         };
-        let line = lines[by_name[next]].clone();
-        self.pick(&line, false, false);
+        let line = &lines[by_name[next]];
+        self.pick(line, false, false);
         self.reveal(&line.key);
     }
 
@@ -247,9 +234,7 @@ impl FinderDemo {
             .typed_at
             .is_some_and(|at| now.duration_since(at) > TYPING)
         {
-            self.typed.clear();
-            self.type_filter = None;
-            self.type_filter_seen_match = false;
+            self.clear_type_filter();
         }
         self.typed.push_str(&typed.to_lowercase());
         self.typed_at = Some(now);
@@ -265,13 +250,12 @@ impl FinderDemo {
                     .get(..typed.len())
                     .is_some_and(|head| head.eq_ignore_ascii_case(typed.as_bytes())),
                 false => finder_fs::sort::starts_with(&line.row.name, typed),
-            })
-            .cloned();
+            });
         match prefix {
             Some(line) => {
                 self.type_filter = None;
                 self.type_filter_seen_match = true;
-                self.pick_in(&lines, &line, false, false);
+                self.pick_in(&lines, line, false, false);
                 self.reveal(&line.key);
             }
             None => {

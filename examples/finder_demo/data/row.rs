@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use finder_fs::entry::{Entry, EntryKind};
@@ -38,7 +40,6 @@ pub(crate) enum Column {
     Comments,
 }
 
-/// Finder's Sort By keys, in its order.
 pub(crate) const SORT_KEYS: [Column; 8] = [
     Column::Name,
     Column::Kind,
@@ -50,7 +51,6 @@ pub(crate) const SORT_KEYS: [Column; 8] = [
     Column::Tags,
 ];
 
-/// Finder's names for its Sort By keys, in `SORT_KEYS` order.
 pub(crate) const SORT_TITLES: [&str; 8] = [
     "Name",
     "Kind",
@@ -63,20 +63,6 @@ pub(crate) const SORT_TITLES: [&str; 8] = [
 ];
 
 impl Column {
-    const ALL: [Column; 10] = [
-        Column::Name,
-        Column::Kind,
-        Column::Opened,
-        Column::Added,
-        Column::Modified,
-        Column::Created,
-        Column::Size,
-        Column::Tags,
-        Column::Version,
-        Column::Comments,
-    ];
-
-    /// Finder's identifier for the column in its view settings.
     pub(crate) fn id(self) -> &'static str {
         match self {
             Column::Name => "name",
@@ -93,10 +79,11 @@ impl Column {
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|column| column.id() == id)
+        (SORT_KEYS.into_iter())
+            .chain([Column::Version, Column::Comments])
+            .find(|column| column.id() == id)
     }
 
-    /// The direction Finder first sorts the column in.
     pub(crate) fn first_ascending(self) -> bool {
         matches!(
             self,
@@ -104,7 +91,6 @@ impl Column {
         )
     }
 
-    /// Whether the column shows a date.
     pub(crate) fn dated(self) -> bool {
         matches!(
             self,
@@ -112,8 +98,6 @@ impl Column {
         )
     }
 
-    /// Whether only the item's own file or its folder's `.DS_Store`, not its listing, says what
-    /// the column shows.
     pub(crate) fn extra(self) -> bool {
         matches!(
             self,
@@ -137,18 +121,16 @@ pub(crate) struct Row {
     pub(crate) face: Face,
     pub(crate) hidden: bool,
     pub(crate) opens: Option<&'static str>,
-    /// Finder gives an alias no triangle, however its target opens.
+    // Finder gives an alias no triangle, however its target opens.
     pub(crate) discloses: bool,
     pub(crate) dataless: bool,
     pub(crate) readable: bool,
     pub(crate) package: bool,
     pub(crate) artwork: Option<FileType<'static>>,
-    /// Read only once a sort or a column needs it.
     pub(crate) extra: Option<Arc<Extra>>,
 }
 
 impl Row {
-    /// The row's date under a column of dates, if it has one.
     pub(crate) fn date(&self, column: Column) -> Option<f64> {
         match column {
             Column::Modified => Some(self.modified_at),
@@ -159,7 +141,6 @@ impl Row {
         }
     }
 
-    /// The words the row sorts by under a column that ranks words.
     pub(crate) fn words(&self, column: Column) -> Option<&str> {
         let extra = self.extra.as_deref();
         match column {
@@ -174,37 +155,34 @@ impl Row {
 
 pub(crate) type Facts = (Option<u64>, Option<usize>);
 
-fn facts(dir: &str, entry: &Entry, index: &Index) -> Facts {
-    if entry.kind != EntryKind::Directory {
-        return (None, None);
-    }
-    let path = Path::new(dir).join(&entry.name);
-    (index.folder_size(&path), index.visible_children(&path))
+fn indexed_row(dir: &'static str, entry: &Entry, index: &Index) -> Row {
+    let facts = match entry.kind {
+        EntryKind::Directory => {
+            let path = Path::new(dir).join(&entry.name);
+            (index.folder_size(&path), index.visible_children(&path))
+        }
+        _ => (None, None),
+    };
+    row_of(dir, entry, facts)
 }
 
-/// Whether an item shows its own file's icon; `iconForFile:` badges a folder the user can't open
-/// with Finder's no-entry sign.
+// `iconForFile:` badges a folder the user can't open with the no-entry sign.
 pub(crate) fn own_icon(entry: &Entry) -> bool {
     entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable
 }
 
-fn artwork_of(
-    entry: &Entry,
-    path: &str,
-    uti: &str,
-    seen: Option<usize>,
-) -> Option<FileType<'static>> {
+fn artwork_of(entry: &Entry, path: &str, uti: &str, seen: Option<usize>) -> FileType<'static> {
     if own_icon(entry) {
-        return Some(FileType::Path(intern(path)));
+        return FileType::Path(intern(path));
     }
     if entry.kind == EntryKind::Directory {
         let full = entry.children.is_some_and(|held| held > 0) && seen.is_none_or(|seen| seen > 0);
-        return Some(folder_kind(intern(path), full));
+        return folder_kind(intern(path), full);
     }
-    Some(match entry.extension() {
+    match entry.extension() {
         Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
         None => FileType::Uti(intern(uti)),
-    })
+    }
 }
 
 pub(crate) fn is_trash(path: &str) -> bool {
@@ -232,7 +210,6 @@ pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'stati
     folder_kind(path, seen.map_or(holds, |seen| seen > 0))
 }
 
-/// Where a symlink leads: a folder it opens, or whether it is an app, which launches instead.
 fn target_of(path: &str) -> (Option<&'static str>, bool) {
     let target = Path::new(path)
         .is_dir()
@@ -248,8 +225,7 @@ fn target_of(path: &str) -> (Option<&'static str>, bool) {
     )
 }
 
-/// Finder weighs every package it lists, whatever "Calculate all sizes" says; the index has not
-/// always weighed them.
+// Finder weighs every package it lists, whatever "Calculate all sizes" says.
 pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
     static WEIGHED: LazyLock<Mutex<HashMap<(SharedString, u64), u64>>> =
         LazyLock::new(Mutex::default);
@@ -276,7 +252,6 @@ pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
     }
 }
 
-/// The kind a row names for the entry at `path`.
 pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
     match entry.kind {
         EntryKind::Directory | EntryKind::Symlink if !entry.package => kind::kind_of(entry),
@@ -285,7 +260,6 @@ pub(crate) fn kind_at(path: &str, entry: &Entry) -> kind::Kind {
     }
 }
 
-/// The bytes a row shows: a folder's are the index's, and `None` shows "--".
 pub(crate) fn bytes_of(entry: &Entry, size: Option<u64>) -> Option<u64> {
     match entry.kind == EntryKind::Directory {
         true => size.filter(|bytes| *bytes > 0 || entry.package),
@@ -332,14 +306,12 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         dataless: entry.dataless,
         readable: entry.readable,
         package: entry.package,
-        artwork: artwork_of(entry, &path, &kind.uti, seen),
+        artwork: Some(artwork_of(entry, &path, &kind.uti, seen)),
         extra: None,
         path: path.into(),
     }
 }
 
-/// Rows for `entries`; with `extras`, each carries what its own file and its folder's
-/// `.DS_Store` say as well.
 pub(crate) fn rows_of<'a>(
     dir: &'static str,
     entries: impl IntoIterator<Item = &'a Entry>,
@@ -363,7 +335,6 @@ pub(crate) fn rows_of<'a>(
         .collect()
 }
 
-/// Reads, for each row not yet read, what only its own file and its folder's `.DS_Store` say.
 pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
     let mut comments: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     for row in rows.iter_mut().filter(|row| row.extra.is_none()) {
@@ -382,8 +353,18 @@ pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
 }
 
 pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
-    let dir = path.parent().map_or("/", intern_path);
-    Arc::new(row_of(dir, entry, facts(dir, entry, index)))
+    Arc::new(indexed_row(
+        path.parent().map_or("/", intern_path),
+        entry,
+        index,
+    ))
+}
+
+fn mdfind(args: &[&OsStr]) -> String {
+    match Command::new("/usr/bin/mdfind").args(args).output() {
+        Ok(found) => String::from_utf8_lossy(&found.stdout).into_owned(),
+        Err(_) => String::new(),
+    }
 }
 
 pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
@@ -391,14 +372,7 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
         true => "kMDItemUserTags == '*'".to_string(),
         false => format!("kMDItemUserTags == '{tag}'"),
     };
-    let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
-        .args(["-onlyin", "/"])
-        .arg(query)
-        .output()
-    else {
-        return Vec::new();
-    };
-    let found = String::from_utf8_lossy(&found.stdout);
+    let found = mdfind(&["-onlyin".as_ref(), "/".as_ref(), query.as_ref()]);
     let mut rows = rows_at(found.lines().take(limit), index);
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     rows
@@ -406,15 +380,13 @@ pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row
 
 pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     const QUERY: &str = r#"(kMDItemLastUsedDate = "*") && ((kMDItemContentTypeTree = public.content) || (kMDItemContentTypeTree = "com.microsoft.*"cdw) || (kMDItemContentTypeTree = public.archive))"#;
-    let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
-        .arg("-onlyin")
-        .arg(home)
-        .args(["-attr", "kMDItemLastUsedDate", QUERY])
-        .output()
-    else {
-        return Vec::new();
-    };
-    let found = String::from_utf8_lossy(&found.stdout);
+    let found = mdfind(&[
+        "-onlyin".as_ref(),
+        home.as_ref(),
+        "-attr".as_ref(),
+        "kMDItemLastUsedDate".as_ref(),
+        QUERY.as_ref(),
+    ]);
     // mdfind prints every date in UTC, so the text sorts as the time does.
     let mut used: Vec<(&str, &str)> = found
         .lines()
@@ -435,19 +407,16 @@ pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -
                 .insert(name.to_string_lossy().into_owned());
         }
     }
-    let mut rows: Vec<Arc<Row>> = Vec::new();
-    for (dir, names) in wanted {
-        let Ok(entries) = finder_fs::list::list_dir(Path::new(dir)) else {
-            continue;
-        };
-        rows.extend(
+    wanted
+        .into_iter()
+        .flat_map(|(dir, names)| {
+            let entries = finder_fs::list::list_dir(Path::new(dir)).unwrap_or_default();
             entries
-                .iter()
-                .filter(|entry| names.contains(&entry.name))
-                .map(|entry| Arc::new(row_of(dir, entry, facts(dir, entry, index)))),
-        );
-    }
-    rows
+                .into_iter()
+                .filter(move |entry| names.contains(&entry.name))
+                .map(move |entry| Arc::new(indexed_row(dir, &entry, index)))
+        })
+        .collect()
 }
 
 fn volume_row(id: &'static str) -> Option<Row> {
@@ -485,7 +454,7 @@ pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
                 .ok()?
                 .into_iter()
                 .find(|entry| entry.name == "Documents")?;
-            let mut row = row_of(dir, &entry, facts(dir, &entry, index));
+            let mut row = indexed_row(dir, &entry, index);
             row.name = folder.name.clone().into();
             row.display = folder.name.into();
             Some(Arc::new(row))
@@ -494,17 +463,13 @@ pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
 }
 
 pub(crate) fn path_line(id: &'static str) -> Option<Line> {
-    if let Some(row) = volume_row(id) {
-        return Some(Line {
-            key: row.path.clone(),
-            row: Arc::new(row),
-            depth: 0,
-        });
-    }
-    let path = Path::new(id);
-    let dir = path.parent().map_or("/", intern_path);
-    let entry = finder_fs::list::entry_at(path).ok()?;
-    let row = Arc::new(row_of(dir, &entry, facts(dir, &entry, crate::index())));
+    let row = match volume_row(id) {
+        Some(row) => Arc::new(row),
+        None => {
+            let path = Path::new(id);
+            hit_row(path, &finder_fs::list::entry_at(path).ok()?, crate::index())
+        }
+    };
     Some(Line {
         key: row.path.clone(),
         row,

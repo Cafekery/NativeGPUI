@@ -19,7 +19,7 @@ use crate::signal::Signal;
 
 #[derive(PartialEq)]
 struct Mounted {
-    mount: String,
+    mount: &'static str,
     name: &'static str,
     available: u64,
     capacity: u64,
@@ -27,23 +27,18 @@ struct Mounted {
     network: bool,
 }
 
-/// Free space on screen is at most this stale while it is being drawn.
 const FRESH: Duration = Duration::from_millis(4800);
 
 static SEEN: RwLock<Vec<Mounted>> = RwLock::new(Vec::new());
 static REFRESHED: Mutex<Option<Instant>> = Mutex::new(None);
-/// Rung by a mount, an unmount or a rename, and by free space read from a stale snapshot.
 static VOLUMES: Signal = Signal::new();
 static MOUNTS: AtomicBool = AtomicBool::new(false);
-/// Servers asked while mounted: a remount asks again.
 static ASKED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-/// Each server's model and Finder's glyph for it, newest first. Kept across launches, since
-/// sharingd answers nothing for minutes after a mount.
+// Kept across launches: sharingd answers nothing for minutes after a mount.
 static KNOWN: Mutex<Option<Vec<(String, String, &'static str)>>> = Mutex::new(None);
 const KEPT: usize = 64;
-/// sharingd can take minutes to learn the model of a server mounted in a burst.
+// sharingd can take minutes to learn the model of a server mounted in a burst.
 const SERVER_WAIT: Duration = Duration::from_secs(300);
-/// Servers are asked only once the first window has drawn.
 static ASKING: AtomicBool = AtomicBool::new(false);
 
 fn seen() -> RwLockReadGuard<'static, Vec<Mounted>> {
@@ -58,7 +53,7 @@ fn fresh() {
     }
 }
 
-/// Blocks for milliseconds: never call it from a frame. Whether anything changed.
+// Blocks for milliseconds: never call it from a frame.
 pub(crate) fn refresh_volumes() -> bool {
     let volumes = volumes::mounted();
     if ASKING.load(Ordering::Relaxed) {
@@ -67,7 +62,7 @@ pub(crate) fn refresh_volumes() -> bool {
     let mounted: Vec<Mounted> = volumes
         .iter()
         .map(|volume| Mounted {
-            mount: volume.path.to_string_lossy().into_owned(),
+            mount: intern(&volume.path.to_string_lossy()),
             name: intern(&volume.name),
             available: volume.available,
             capacity: volume.capacity,
@@ -89,8 +84,6 @@ pub(crate) fn server_symbol(host: &str) -> &'static str {
     found.map_or("display", |&(.., symbol)| symbol)
 }
 
-/// Each mounted host is asked once, on its own thread; an answer that changes a glyph rebuilds
-/// the sidebar.
 fn ask_servers(volumes: &[volumes::Volume]) {
     let mut asked = ASKED.lock().unwrap();
     asked.retain(|host| {
@@ -117,7 +110,6 @@ fn ask_servers(volumes: &[volumes::Volume]) {
     });
 }
 
-/// Whether the host's glyph changed.
 fn remember(host: &str, model: Option<&str>) -> bool {
     let symbol = model.map(|model| intern(&finder_fs::servers::symbol(Some(model))));
     let mut known = KNOWN.lock().unwrap();
@@ -221,36 +213,35 @@ fn boot_name() -> &'static str {
     })
 }
 
-pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
-    let under =
-        |mount: &str| mount == "/" || path == mount || path.starts_with(&format!("{mount}/"));
-    seen()
-        .iter()
-        .filter(|volume| under(&volume.mount))
+fn holding<'a>(seen: &'a [Mounted], path: &str) -> Option<&'a Mounted> {
+    seen.iter()
+        .filter(|volume| {
+            volume.mount == "/"
+                || (path.strip_prefix(volume.mount))
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
         .max_by_key(|volume| volume.mount.len())
-        .map(|volume| (intern(&volume.mount), volume.name))
-        .unwrap_or(("/", boot_name()))
+}
+
+pub(super) fn volume_of(path: &str) -> (&'static str, &'static str) {
+    holding(&seen(), path).map_or(("/", boot_name()), |volume| (volume.mount, volume.name))
 }
 
 pub(crate) fn volume_roots() -> Vec<&'static str> {
-    seen().iter().map(|volume| intern(&volume.mount)).collect()
+    seen().iter().map(|volume| volume.mount).collect()
 }
 
 pub(crate) fn network_roots() -> Vec<&'static str> {
     seen()
         .iter()
         .filter(|volume| volume.network)
-        .map(|volume| intern(&volume.mount))
+        .map(|volume| volume.mount)
         .collect()
 }
 
 pub(crate) fn available_bytes(id: &str) -> u64 {
     fresh();
-    let (mount, _) = volume_of(id);
-    seen()
-        .iter()
-        .find(|volume| volume.mount == mount)
-        .map_or(0, |volume| volume.available)
+    holding(&seen(), id).map_or(0, |volume| volume.available)
 }
 
 pub(crate) struct VolumeInfo {

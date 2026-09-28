@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{LazyLock, RwLock};
 
 use native_gpui::tokens::{FileType, SymbolColor, SystemColor};
 use objc2_app_kit::NSWorkspace;
@@ -58,27 +58,24 @@ impl Face {
 
     pub(crate) fn tint(self) -> SymbolColor {
         let color = match self {
-            F::Folder => SystemColor::SystemBlue,
-            F::Volume => SystemColor::SystemGray,
+            F::Folder | F::Program => SystemColor::SystemBlue,
+            F::Volume | F::Disk => SystemColor::SystemGray,
             F::Pdf => SystemColor::SystemRed,
             F::Text => SystemColor::SecondaryLabel,
-            F::Code => SystemColor::SystemGreen,
-            F::Sheet => SystemColor::SystemGreen,
+            F::Code | F::Sheet => SystemColor::SystemGreen,
             F::Pages => SystemColor::SystemOrange,
             F::Slides => SystemColor::SystemIndigo,
             F::Image => SystemColor::SystemTeal,
             F::Movie => SystemColor::SystemPurple,
             F::Audio => SystemColor::SystemPink,
             F::Archive => SystemColor::SystemBrown,
-            F::Disk => SystemColor::SystemGray,
-            F::Program => SystemColor::SystemBlue,
             F::Web => SystemColor::SystemCyan,
         };
         SymbolColor::Hierarchical(color)
     }
 }
 
-/// Most specific first: the first type conformed to wins.
+// Most specific first: the first type conformed to wins.
 const FACES: &[(&str, Face)] = &[
     ("public.folder", F::Folder),
     ("public.volume", F::Volume),
@@ -100,9 +97,8 @@ const FACES: &[(&str, Face)] = &[
 // A LaunchServices lookup, not AppKit state: safe off the main thread.
 #[allow(deprecated)]
 pub(super) fn face_of(uti: &str) -> Face {
-    static SEEN: OnceLock<RwLock<HashMap<String, Face>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some(face) = seen.read().unwrap().get(uti) {
+    static SEEN: LazyLock<RwLock<HashMap<String, Face>>> = LazyLock::new(Default::default);
+    if let Some(face) = SEEN.read().unwrap().get(uti) {
         return *face;
     }
     let workspace = NSWorkspace::sharedWorkspace();
@@ -111,6 +107,6 @@ pub(super) fn face_of(uti: &str) -> Face {
         .iter()
         .find(|(parent, _)| workspace.type_conformsToType(&mine, &NSString::from_str(parent)))
         .map_or(F::Text, |(_, face)| *face);
-    seen.write().unwrap().insert(uti.to_owned(), face);
+    SEEN.write().unwrap().insert(uti.to_owned(), face);
     face
 }

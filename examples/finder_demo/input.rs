@@ -13,25 +13,16 @@ impl FinderDemo {
     ) {
         let modifiers = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
-        if key == "escape" && self.cancel_drag(window, cx) {
-            return;
-        }
-        if key == "escape" && quick_look_visible() {
-            quick_look_close();
-            return;
-        }
-        if key == "escape" && self.type_filter.is_some() {
-            self.clear_type_filter();
-            cx.notify();
-            return;
-        }
-        if key == "space" && self.spring.is_some() {
-            self.spring_now(cx);
-            return;
-        }
-        if key == "space" && !self.typing() {
-            self.toggle_quick_look(window, cx);
-            return;
+        match key {
+            "escape" if self.cancel_drag(window, cx) => return,
+            "escape" if quick_look_visible() => return quick_look_close(),
+            "escape" if self.type_filter.is_some() => {
+                self.clear_type_filter();
+                return cx.notify();
+            }
+            "space" if self.spring.is_some() => return self.spring_now(cx),
+            "space" if !self.typing() => return self.toggle_quick_look(window, cx),
+            _ => {}
         }
         let lines = self.focused_lines();
         if lines.is_empty()
@@ -58,7 +49,7 @@ impl FinderDemo {
                 let Some(line) = self
                     .icon_step(key, self.cursor.as_ref())
                     .and_then(|next| self.line_at(&lines, &next))
-                    .map(|at| lines[at].clone())
+                    .map(|at| &lines[at])
                 else {
                     return;
                 };
@@ -66,7 +57,7 @@ impl FinderDemo {
                     self.selected.insert(line.key.clone());
                     self.cursor = Some(line.key.clone());
                 } else {
-                    self.pick(&line, false, false);
+                    self.pick(line, false, false);
                 }
                 let visible = gpui::size(
                     self.list_room,
@@ -123,7 +114,7 @@ impl FinderDemo {
                     .keystroke
                     .key_char
                     .as_deref()
-                    .filter(|typed| typed.chars().all(|c| !c.is_control()))
+                    .filter(|typed| !typed.chars().any(char::is_control))
                 else {
                     return;
                 };
