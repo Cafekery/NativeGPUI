@@ -15,7 +15,7 @@ use objc2::encode::Encode;
 use objc2::runtime::{AnyClass, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
 use objc2_app_kit::NSWindow;
-use objc2_foundation::{NSSize, NSString};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
 use crate::data::intern_path;
@@ -33,6 +33,7 @@ const MIN_W: f32 = 434.;
 const MAX_W: f64 = 854.;
 const MAX_H: f64 = 345.;
 const HANG_FROM_TOOLBAR: isize = 3;
+const BELOW_TOOLBAR: f64 = 50.;
 const FIELD_X: f32 = 15.;
 const FIELD_Y: f32 = 7.;
 const FIELD_H: f32 = 22.;
@@ -334,7 +335,7 @@ impl FinderDemo {
         };
         sheet.setContentMaxSize(NSSize::new(MAX_W, MAX_H));
         sheet.setFrameAutosaveName(&NSString::from_str(prefs::GO_SHEET));
-        hang_below_toolbar(&sheet);
+        hang_below_toolbar(&sheet, &host);
         self.go_sheet = Some(opened);
         // AppKit re-enters gpui while it attaches a sheet, so not inside this update.
         cx.spawn(async move |_, _| host.beginSheet_completionHandler(&sheet, None))
@@ -343,19 +344,53 @@ impl FinderDemo {
 }
 
 /// macOS centres a sheet in its window unless the sheet answers AppKit's private `sheetBehavior`
-/// with 3, which hangs it from the toolbar as Finder's Go to Folder hangs.
-fn hang_below_toolbar(sheet: &NSWindow) {
+/// with 3, which hangs it from the toolbar, or from where the window's delegate places it.
+fn hang_below_toolbar(sheet: &NSWindow, host: &NSWindow) {
     type Behave = extern "C" fn(&NSWindow, Sel) -> isize;
     let behave: Behave = sheet_behavior;
     let types = CString::new(format!("{}@:", isize::ENCODING)).expect("no NUL");
     unsafe {
         objc2::ffi::class_addMethod(
-            sheet.class() as *const AnyClass as *mut AnyClass,
+            reported_class(sheet) as *const AnyClass as *mut AnyClass,
             sel!(sheetBehavior),
             std::mem::transmute::<Behave, Imp>(behave),
             types.as_ptr(),
         );
     }
+    type Place = extern "C" fn(&NSWindow, Sel, &NSWindow, &NSWindow, NSRect) -> NSRect;
+    let place: Place = place_sheet;
+    let types =
+        CString::new(format!("{}@:@@{}", NSRect::ENCODING, NSRect::ENCODING)).expect("no NUL");
+    unsafe {
+        objc2::ffi::class_addMethod(
+            reported_class(host) as *const AnyClass as *mut AnyClass,
+            sel!(window:willPositionSheet:usingRect:),
+            std::mem::transmute::<Place, Imp>(place),
+            types.as_ptr(),
+        );
+    }
+}
+
+/// KVO slips a subclass under an observed window, and `respondsToSelector:`, which AppKit asks
+/// before calling a delegate, looks up the class the window reports instead.
+fn reported_class(window: &NSWindow) -> &'static AnyClass {
+    unsafe { msg_send![window, class] }
+}
+
+extern "C" fn place_sheet(
+    _: &NSWindow,
+    _: Sel,
+    _: &NSWindow,
+    sheet: &NSWindow,
+    rect: NSRect,
+) -> NSRect {
+    if sheet.frameAutosaveName().to_string() != prefs::GO_SHEET {
+        return rect;
+    }
+    NSRect::new(
+        NSPoint::new(rect.origin.x, rect.origin.y - BELOW_TOOLBAR),
+        rect.size,
+    )
 }
 
 extern "C" fn sheet_behavior(this: &NSWindow, _: Sel) -> isize {
