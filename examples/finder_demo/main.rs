@@ -198,17 +198,38 @@ fn crawl(cx: &mut App) {
 
 fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {
     let step = px(extra as f32 * 30.);
+    let bounds = WindowBounds::Windowed(Bounds {
+        origin: point(px(160.) + step, px(120.) + step),
+        size: size(px(1200.), px(772.)),
+    });
+    finder_window(start, bounds, extra == 0, true, cx)
+}
+
+/// Hidden until it joins its tab group, at the frame that group already has.
+fn open_finder_tab(
+    start: &'static str,
+    bounds: WindowBounds,
+    cx: &mut App,
+) -> WindowHandle<FinderDemo> {
+    finder_window(start, bounds, false, false, cx)
+}
+
+fn finder_window(
+    start: &'static str,
+    bounds: WindowBounds,
+    remember: bool,
+    show: bool,
+    cx: &mut App,
+) -> WindowHandle<FinderDemo> {
     cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: point(px(160.) + step, px(120.) + step),
-                size: size(px(1200.), px(772.)),
-            })),
+            window_bounds: Some(bounds),
+            show,
             tabbing_identifier: Some("ng.finder".into()),
             ..window_options()
         },
         |window, cx| {
-            if extra == 0 {
+            if remember {
                 remember_frame(window, "ng.finder.window");
             }
             native_gpui::window_tabs(window, menus::NewTab, cx);

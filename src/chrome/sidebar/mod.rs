@@ -35,7 +35,7 @@ use objc2_foundation::{
 use objc2_quartz_core::CAAutoresizingMask;
 
 use crate::Material;
-use crate::bridge::appkit::{Container, gpui_view, rects_equal};
+use crate::bridge::appkit::{Container, draw_now, gpui_view, rects_equal};
 use crate::controls::MenuEntry;
 use crate::materials::RawMaterial;
 use crate::tokens;
@@ -1060,13 +1060,6 @@ impl PaneShared {
                 draw_now(&gpui);
             })
             .detach();
-    }
-}
-
-fn draw_now(gpui: &NSView) {
-    if let Some(layer) = gpui.layer() {
-        layer.setNeedsDisplay();
-        layer.displayIfNeeded();
     }
 }
 

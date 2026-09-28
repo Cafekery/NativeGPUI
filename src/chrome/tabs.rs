@@ -2,14 +2,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
 
-use gpui::{Action, AnyWindowHandle, App, AsyncApp, Window};
+use gpui::{Action, AnyWindowHandle, App, AppContext, AsyncApp, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
 use objc2_foundation::{MainThreadMarker, NSSize};
+use objc2_quartz_core::CATransaction;
 
-use crate::bridge::appkit::gpui_view;
+use crate::bridge::appkit::{draw_now, gpui_view};
 
 thread_local! {
     static NEW_TAB: RefCell<Option<(AsyncApp, Box<dyn Action>)>> = const { RefCell::new(None) };
@@ -53,13 +54,24 @@ pub fn tab_bar_height(window: &Window) -> f32 {
         .map_or(0., |accessory| accessory.frame().size.height as f32)
 }
 
+/// `tab` should open hidden, at `window`'s frame: it joins the group already drawn.
 pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
-    let Ok(host) = window.update(cx, |_, window, _| ns_window_of(window)) else {
-        return;
-    };
-    let tab = ns_window_of(tab);
-    host.addTabbedWindow_ordered(&tab, NSWindowOrderingMode::Above);
-    tab.makeKeyAndOrderFront(None);
+    let tab = tab.window_handle();
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        let host = cx.update_window(window, |_, window, _| ns_window_of(window));
+        let (Ok(host), Ok(view)) = (host, cx.update_window(tab, |_, tab, _| gpui_view(tab))) else {
+            return;
+        };
+        let Some(tab) = view.window() else {
+            return;
+        };
+        CATransaction::begin();
+        host.addTabbedWindow_ordered(&tab, NSWindowOrderingMode::Above);
+        tab.makeKeyAndOrderFront(None);
+        draw_now(&view);
+        CATransaction::commit();
+    })
+    .detach();
 }
 
 // GPUI's window class hides AppKit's tab bar and swallows its actions; put NSWindow's back.

@@ -9,9 +9,9 @@ use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
 use super::context;
 use crate::app::FinderDemo;
 use crate::data::{Column, is_trash};
-use crate::open_finder_window;
 use crate::ops::After;
 use crate::views::header::ColumnSpec;
+use crate::{open_finder_tab, open_finder_window};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Act {
@@ -388,17 +388,18 @@ impl FinderDemo {
 
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
+        let bounds = window.window_bounds();
         let start = match id.starts_with("tag:") {
             true => self.here(),
             false => id,
         };
         cx.defer(move |cx| {
-            let tab = open_finder_window(start, 1, cx);
+            let tab = open_finder_tab(start, bounds, cx);
             tab.update(cx, |demo: &mut FinderDemo, tab, cx| {
-                native_gpui::add_tab(host, tab, cx);
                 if start != id {
                     demo.show_tag(id, tab, cx);
                 }
+                native_gpui::add_tab(host, tab, cx);
             })
             .ok();
         });
