@@ -60,6 +60,14 @@ pub fn gpui_view(window: &Window) -> Retained<NSView> {
         .expect("gpui's AppKit handle always carries the live NSView it renders into")
 }
 
+/// gpui draws and presents this frame now; never call it while gpui holds its `App`.
+pub(crate) fn draw_now(gpui: &NSView) {
+    if let Some(layer) = gpui.layer() {
+        layer.setNeedsDisplay();
+        layer.displayIfNeeded();
+    }
+}
+
 pub fn to_rect(bounds: Bounds<Pixels>) -> NSRect {
     NSRect::new(
         NSPoint::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64()),
