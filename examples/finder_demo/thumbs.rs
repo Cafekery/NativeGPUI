@@ -13,7 +13,7 @@ use crate::signal::Signal;
 
 type Thumb = (SharedString, u32, bool);
 
-type Ask = (PathBuf, Option<SystemTime>, Thumb, f32, f32, bool);
+type Ask = (PathBuf, Option<SystemTime>, Thumb, f32, f32);
 
 type Landed = HashMap<(SharedString, bool), (u32, Arc<RenderImage>)>;
 
@@ -37,7 +37,7 @@ const RETRY_AFTER: Duration = Duration::from_millis(250);
 const RETRIES: u32 = 5;
 const KEPT: usize = 512;
 const KEPT_BYTES: usize = 256 << 20;
-/// The thumbnail service's own limit; past it, requests queue there and the newest goes first.
+/// The thumbnail service's own limit; past it, it queues requests and serves the newest first.
 const LANES: usize = 8;
 
 pub(crate) fn follow_thumbnails(cx: &mut App) {
@@ -54,7 +54,6 @@ pub(crate) fn follow_thumbnails(cx: &mut App) {
     .detach();
 }
 
-/// Main thread only.
 pub(crate) fn collect_thumbnails() {
     // Bottom row first: the service serves its newest request first, so a frame fills top down.
     for ask in HELD.take().into_iter().rev() {
@@ -67,68 +66,61 @@ pub(crate) fn collect_thumbnails() {
             continue;
         };
         keep(&key, &image);
-        THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image));
+        THUMBS.with_borrow_mut(|thumbs| thumbs.insert(key, image));
     }
     sweep_thumbnails();
 }
 
 /// An empty delivery is often a cancelled generation, so ask again, backing off.
 fn retry(key: &Thumb) {
-    let tries = RETRY.with(|retry| {
-        let mut retry = retry.borrow_mut();
+    let tries = RETRY.with_borrow_mut(|retry| {
         let (tries, again) = retry.entry(key.clone()).or_insert((0, Instant::now()));
         *tries = (*tries + 1).min(RETRIES + 1);
         *again = Instant::now() + RETRY_AFTER * (1 << (*tries - 1));
         *tries
     });
     if tries <= RETRIES {
-        ASKED.with(|asked| asked.borrow_mut().remove(key));
+        ASKED.with_borrow_mut(|asked| asked.remove(key));
     }
 }
 
 fn keep(key: &Thumb, image: &Arc<RenderImage>) {
-    LARGEST.with(|largest| {
-        let mut largest = largest.borrow_mut();
-        let slot = largest.entry((key.0.clone(), key.2));
-        slot.and_modify(|held| {
-            if held.0 < key.1 {
-                *held = (key.1, image.clone());
-            }
-        })
-        .or_insert_with(|| (key.1, image.clone()));
+    LARGEST.with_borrow_mut(|largest| {
+        largest
+            .entry((key.0.clone(), key.2))
+            .and_modify(|held| {
+                if held.0 < key.1 {
+                    *held = (key.1, image.clone());
+                }
+            })
+            .or_insert_with(|| (key.1, image.clone()));
     });
 }
 
 fn largest(path: &SharedString, icon: bool) -> Option<Arc<RenderImage>> {
-    LARGEST.with(|largest| {
+    LARGEST.with_borrow(|largest| {
         largest
-            .borrow()
             .get(&(path.clone(), icon))
             .map(|(_, image)| image.clone())
     })
 }
 
 pub(crate) fn frame_drawn() {
-    FRAMES.with(|frames| frames.set(frames.get() + 1));
+    FRAMES.set(FRAMES.get() + 1);
 }
 
 fn sweep_thumbnails() {
     let now = Instant::now();
-    let frames = FRAMES.with(|frames| frames.get());
-    let (swept_at, swept_after) = SWEPT.with(|swept| swept.get());
+    let frames = FRAMES.get();
+    let (swept_at, swept_after) = SWEPT.get();
     if frames == swept_after || swept_at.is_some_and(|at| now.duration_since(at) < SWEEP) {
         return;
     }
-    SWEPT.with(|swept| swept.set((Some(now), frames)));
-    let drawn: HashSet<SharedString> = DRAWN.with(|drawn| drawn.borrow_mut().drain().collect());
-    ASKED.with(|asked| {
-        asked
-            .borrow_mut()
-            .retain(|(path, _, _)| drawn.contains(path))
-    });
+    SWEPT.set((Some(now), frames));
+    let drawn = DRAWN.take();
+    ASKED.with_borrow_mut(|asked| asked.retain(|(path, _, _)| drawn.contains(path)));
     // Off-screen thumbnails come back from the library's own bounded cache when scrolled to.
-    let (count, bytes) = THUMBS.with(|thumbs| {
-        let thumbs = thumbs.borrow();
+    let (count, bytes) = THUMBS.with_borrow(|thumbs| {
         let bytes = thumbs
             .values()
             .map(|image| image.as_bytes(0).map_or(0, <[u8]>::len))
@@ -136,21 +128,9 @@ fn sweep_thumbnails() {
         (thumbs.len(), bytes)
     });
     if count > KEPT || bytes > KEPT_BYTES {
-        THUMBS.with(|thumbs| {
-            thumbs
-                .borrow_mut()
-                .retain(|(path, _, _), _| drawn.contains(path))
-        });
-        LARGEST.with(|largest| {
-            largest
-                .borrow_mut()
-                .retain(|(path, _), _| drawn.contains(path))
-        });
-        RETRY.with(|retry| {
-            retry
-                .borrow_mut()
-                .retain(|(path, _, _), _| drawn.contains(path))
-        });
+        THUMBS.with_borrow_mut(|thumbs| thumbs.retain(|(path, _, _), _| drawn.contains(path)));
+        LARGEST.with_borrow_mut(|largest| largest.retain(|(path, _), _| drawn.contains(path)));
+        RETRY.with_borrow_mut(|retry| retry.retain(|(path, _, _), _| drawn.contains(path)));
     }
     let paths: Vec<PathBuf> = drawn
         .iter()
@@ -171,13 +151,12 @@ fn key_of(row: &Row, size: f32, scale: f32, icon: bool) -> Thumb {
     )
 }
 
-/// Whether this thumbnail is being made for the first time, and so may still arrive.
 pub(crate) fn awaited(row: &Row, size: f32, scale: f32, icon: bool) -> bool {
     let key = key_of(row, size, scale, icon);
     renderable(row)
-        && ASKED.with(|asked| asked.borrow().contains(&key))
-        && !THUMBS.with(|thumbs| thumbs.borrow().contains_key(&key))
-        && !RETRY.with(|retry| retry.borrow().contains_key(&key))
+        && ASKED.with_borrow(|asked| asked.contains(&key))
+        && !THUMBS.with_borrow(|thumbs| thumbs.contains_key(&key))
+        && !RETRY.with_borrow(|retry| retry.contains_key(&key))
 }
 
 pub(crate) fn thumb(
@@ -192,15 +171,15 @@ pub(crate) fn thumb(
     }
     let key = key_of(row, size, scale, icon);
     if visible {
-        DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
+        DRAWN.with_borrow_mut(|drawn| drawn.insert(row.path.clone()));
     }
-    if let Some(image) = THUMBS.with(|thumbs| thumbs.borrow().get(&key).cloned()) {
+    if let Some(image) = THUMBS.with_borrow(|thumbs| thumbs.get(&key).cloned()) {
         return Some(image);
     }
     if !visible {
         return None;
     }
-    if ASKED.with(|asked| asked.borrow().contains(&key)) {
+    if ASKED.with_borrow(|asked| asked.contains(&key)) {
         return largest(&row.path, icon);
     }
     let path = Path::new(row.path.as_ref());
@@ -209,35 +188,34 @@ pub(crate) fn thumb(
         .map(|since| UNIX_EPOCH + since);
     if let Some(image) = thumbnails::cached_thumbnail(path, modified, px(size), scale, icon) {
         keep(&key, &image);
-        THUMBS.with(|thumbs| thumbs.borrow_mut().insert(key, image.clone()));
+        THUMBS.with_borrow_mut(|thumbs| thumbs.insert(key, image.clone()));
         return Some(image);
     }
-    ask(path, modified, key, size, scale, icon);
+    ask(path, modified, key, size, scale);
     largest(&row.path, icon)
 }
 
-fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: f32, icon: bool) {
-    if RETRY.with(|retry| {
+fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: f32) {
+    if RETRY.with_borrow(|retry| {
         retry
-            .borrow()
             .get(&key)
             .is_some_and(|(_, again)| Instant::now() < *again)
     }) {
         return;
     }
-    if !ASKED.with(|asked| asked.borrow_mut().insert(key.clone())) {
+    if !ASKED.with_borrow_mut(|asked| asked.insert(key.clone())) {
         return;
     }
-    let ask = (path.to_path_buf(), modified, key, size, scale, icon);
+    let ask = (path.to_path_buf(), modified, key, size, scale);
     match INFLIGHT.load(Ordering::Relaxed) < LANES {
         true => send(ask),
         false => HELD.with_borrow_mut(|held| held.push(ask)),
     }
 }
 
-fn send((path, modified, key, size, scale, icon): Ask) {
+fn send((path, modified, key, size, scale): Ask) {
     INFLIGHT.fetch_add(1, Ordering::Relaxed);
-    thumbnails::thumbnail(&path, modified, px(size), scale, icon, move |image| {
+    thumbnails::thumbnail(&path, modified, px(size), scale, key.2, move |image| {
         LANDED.lock().unwrap().push((key, image));
         INFLIGHT.fetch_sub(1, Ordering::Relaxed);
         LANDING.ring();
