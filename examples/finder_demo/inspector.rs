@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::path::Path;
 
 use gpui::{
     AnyView, App, Bounds, Context, EntityId, Render, Window, WindowBounds, WindowHandle,
@@ -10,17 +9,15 @@ use objc2::msg_send;
 use objc2_app_kit::NSWindowStyleMask;
 
 use crate::app::FinderDemo;
-use crate::data::{Line, folder_of, intern_path, path_line};
+use crate::data::{Line, path_line};
 use crate::frame::ns_window;
-use crate::info::{Combined, HEIGHT, Info, WIDTH};
+use crate::info::{Combined, HEIGHT, Info, WIDTH, where_of};
 
 thread_local! {
     static OPEN: Cell<Option<WindowHandle<Inspector>>> = const { Cell::new(None) };
-    /// The window and state the inspector last followed; it follows again once they change.
     static FOLLOWED: Cell<Option<(EntityId, u64, u64, &'static str)>> = const { Cell::new(None) };
 }
 
-/// Finder's inspector: an Info window that floats and shows whatever the front window selects.
 pub(crate) struct Inspector {
     shown: AnyView,
 }
@@ -35,14 +32,11 @@ pub(crate) fn is_open() -> bool {
     OPEN.get().is_some()
 }
 
-/// Show Inspector and Hide Inspector.
 pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     match OPEN.take() {
-        Some(open) => {
-            cx.defer(move |cx| {
-                open.update(cx, |_, window, _| window.remove_window()).ok();
-            });
-        }
+        Some(open) => cx.defer(move |cx| {
+            open.update(cx, |_, window, _| window.remove_window()).ok();
+        }),
         None => {
             let lines = subject(demo);
             FOLLOWED.set(Some(followed(demo, cx)));
@@ -51,14 +45,12 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     }
 }
 
-/// The inspector on one item, until the front window's selection changes.
 pub(crate) fn show_item(id: &'static str, demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
-    let lines: Vec<Line> = path_line(id).into_iter().collect();
+    let lines = path_line(id).into_iter().collect();
     FOLLOWED.set(Some(followed(demo, cx)));
     cx.defer(move |cx| show(lines, cx));
 }
 
-/// Asked as each Finder window draws: the key one hands the inspector its selection.
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
     if OPEN.get().is_none() || !window.is_window_active() {
         return;
@@ -81,7 +73,6 @@ fn followed(demo: &FinderDemo, cx: &Context<FinderDemo>) -> (EntityId, u64, u64,
     )
 }
 
-/// With nothing selected, Finder's Info is the folder's own.
 fn subject(demo: &FinderDemo) -> Vec<Line> {
     let chosen = demo.chosen_lines();
     match chosen.is_empty() {
@@ -98,11 +89,7 @@ fn show(lines: Vec<Line>, cx: &mut App) {
         1 => format!("{} Info", first.row.display),
         _ => "Multiple Item Info".to_owned(),
     };
-    let where_ = Path::new(first.key.as_ref())
-        .parent()
-        .map(|parent| folder_of(intern_path(parent)).crumbs.join(" \u{203a} "))
-        .unwrap_or_default()
-        .into();
+    let where_ = where_of(&first.key).unwrap_or_default().into();
     let shown: AnyView = match lines.len() {
         1 => {
             let line = first.clone();
