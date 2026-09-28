@@ -17,11 +17,13 @@ use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole, NSBezierPath, NSBox,
-    NSBoxType, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSTitlePosition, NSView,
+    NSBoxType, NSButton, NSColor, NSColorSystemEffect, NSControlSize, NSControlStateValueOff,
+    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName, NSImage,
+    NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSStringDrawing, NSTitlePosition, NSView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSAttributedStringKey, NSDictionary, NSNumber, NSObject, NSPoint,
+    NSRect, NSSize, NSString,
 };
 
 use crate::bridge::appkit::{Container, fitting_size_keyed};
@@ -173,11 +175,16 @@ pub struct MenuView {
 
 struct SwatchIvars {
     count: usize,
-    pick: Rc<dyn Fn(usize)>,
+    pick: Rc<dyn Fn(Option<usize>)>,
+    enabled: bool,
+    /// The height under the dots that belongs to the button; zero without one.
+    band: f64,
+    pressable: bool,
 }
 
 define_class!(
-    /// Finder's tag row: the dots pick, then the menu closes as if the row itself was chosen.
+    /// Finder's tag row: a dot, or the button under the dots, picks; then the menu closes as if the
+    /// row itself was chosen.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSwatchRow"]
@@ -185,21 +192,51 @@ define_class!(
     struct SwatchRow;
 
     impl SwatchRow {
+        /// A press dragged in from the menu title reaches the view under the pointer as a lone
+        /// mouseUp, so the row takes every click itself and tells the parts apart by position.
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
+            if hit.is_null() {
+                return hit;
+            }
+            let row: &NSView = self;
+            (row as *const NSView).cast_mut()
+        }
+
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
+            if point.y < self.ivars().band {
+                self.press();
+                return;
+            }
             let step = SWATCH_DIAMETER + SWATCH_GAP;
             self.choose(((point.x - SWATCH_INSET).max(0.) / step) as usize);
+        }
+
+        #[unsafe(method(ngPressButton:))]
+        fn press_button(&self, _sender: *mut AnyObject) {
+            self.press();
         }
     }
 );
 
 impl SwatchRow {
     fn choose(&self, index: usize) {
-        if index >= self.ivars().count {
-            return;
+        if self.ivars().enabled && index < self.ivars().count {
+            self.fire(Some(index));
         }
-        (self.ivars().pick)(index);
+    }
+
+    fn press(&self) {
+        if self.ivars().pressable {
+            self.fire(None);
+        }
+    }
+
+    fn fire(&self, hit: Option<usize>) {
+        (self.ivars().pick)(hit);
         let Some(item) = self.enclosingMenuItem() else {
             return;
         };
@@ -267,11 +304,44 @@ impl MenuView {
         colors.hash(&mut hasher);
         labels.hash(&mut hasher);
         let width = swatch_row_width(colors.len());
-        let pick: Rc<dyn Fn(usize)> = Rc::new(pick);
+        let pick: Rc<dyn Fn(Option<usize>)> = Rc::new(move |hit| {
+            if let Some(index) = hit {
+                pick(index);
+            }
+        });
         Self::new(
             hasher.finish(),
             size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
-            move |mtm| swatch_row_picking(mtm, &colors, &labels, pick.clone()),
+            move |mtm| swatch_row_picking(mtm, &colors, &labels, true, None, pick.clone()),
+        )
+    }
+
+    /// Finder's File-menu tag row: the swatches, enabled or not, over a `(symbol, title, enabled)`
+    /// button. `pick` gets the dot that was hit, or `None` for the button.
+    pub fn swatches_with_button(
+        swatches: impl IntoIterator<Item = (Hsla, String)>,
+        enabled: bool,
+        button: (&str, &str, bool),
+        pick: impl Fn(Option<usize>) + 'static,
+    ) -> Self {
+        let (colors, labels): (Vec<Hsla>, Vec<String>) = swatches.into_iter().unzip();
+        let (symbol, title, pressable) = (button.0.to_owned(), button.1.to_owned(), button.2);
+        let mut hasher = DefaultHasher::new();
+        (&colors, &labels, enabled, &symbol, &title, pressable).hash(&mut hasher);
+        let width = swatch_row_width(colors.len())
+            .max(BUTTON_TITLE_X + title_width(&title) + SWATCH_INSET)
+            .ceil();
+        let pick: Rc<dyn Fn(Option<usize>)> = Rc::new(pick);
+        Self::new(
+            hasher.finish(),
+            size(
+                px(width as f32),
+                px((SWATCH_ROW_HEIGHT + BUTTON_ROW_HEIGHT) as f32),
+            ),
+            move |mtm| {
+                let button = Some((symbol.as_str(), title.as_str(), pressable));
+                swatch_row_picking(mtm, &colors, &labels, enabled, button, pick.clone())
+            },
         )
     }
 
@@ -283,8 +353,14 @@ impl MenuView {
         Self::new(
             hasher.finish(),
             size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
-            move |mtm| swatch_row(mtm, &colors),
+            move |mtm| swatch_row(mtm, &colors, true),
         )
+    }
+
+    pub(crate) fn make_view(&self, mtm: MainThreadMarker) -> Retained<NSView> {
+        let built = (self.build)(mtm);
+        built.setFrameSize(self.size);
+        built
     }
 }
 
@@ -315,6 +391,10 @@ const SWATCH_DIAMETER: f64 = 13.;
 const SWATCH_GAP: f64 = 9.;
 const SWATCH_INSET: f64 = 14.;
 const SWATCH_ROW_HEIGHT: f64 = 26.;
+const BUTTON_ROW_HEIGHT: f64 = 23.;
+const BUTTON_SYMBOL: f64 = 18.;
+const BUTTON_SYMBOL_X: f64 = 15.;
+const BUTTON_TITLE_X: f64 = 39.;
 
 fn swatch_row_width(count: usize) -> f64 {
     let dots = match count {
@@ -328,20 +408,34 @@ fn swatch_row_picking(
     mtm: MainThreadMarker,
     colors: &[Hsla],
     labels: &[String],
-    pick: Rc<dyn Fn(usize)>,
+    enabled: bool,
+    button: Option<(&str, &str, bool)>,
+    pick: Rc<dyn Fn(Option<usize>)>,
 ) -> Retained<NSView> {
-    let row = swatch_row(mtm, colors);
+    let band = match button {
+        Some(_) => BUTTON_ROW_HEIGHT,
+        None => 0.,
+    };
+    let row = swatch_row(mtm, colors, enabled);
     let host = SwatchRow::alloc(mtm).set_ivars(SwatchIvars {
         count: colors.len(),
         pick,
+        enabled,
+        band,
+        pressable: button.is_some_and(|(_, _, pressable)| pressable),
     });
-    let host: Retained<SwatchRow> = unsafe { msg_send![super(host), initWithFrame: row.frame()] };
+    let mut frame = row.frame();
+    frame.size.height += band;
+    let host: Retained<SwatchRow> = unsafe { msg_send![super(host), initWithFrame: frame] };
     for view in row.subviews().iter() {
+        let mut dot = view.frame();
+        dot.origin.y += band;
+        view.setFrame(dot);
         host.addSubview(&view);
     }
     // The dots stand in for the row's own children, so VoiceOver reads radio buttons, not boxes.
     let parent: &AnyObject = host.as_ref();
-    let dots: Vec<Retained<AnyObject>> = labels
+    let mut children: Vec<Retained<AnyObject>> = labels
         .iter()
         .enumerate()
         .map(|(index, label)| {
@@ -350,17 +444,78 @@ fn swatch_row_picking(
                 index,
             });
             let dot: Retained<SwatchDot> = unsafe { msg_send![super(dot), init] };
+            let mut frame = dot_frame(index);
+            frame.origin.y += band;
             unsafe {
                 dot.setAccessibilityRole(Some(NSAccessibilityRadioButtonRole));
                 dot.setAccessibilityLabel(Some(&NSString::from_str(label)));
+                dot.setAccessibilityEnabled(enabled);
                 dot.setAccessibilityParent(Some(parent));
-                dot.setAccessibilityFrameInParentSpace(dot_frame(index));
+                dot.setAccessibilityFrameInParentSpace(frame);
                 Retained::cast_unchecked(dot)
             }
         })
         .collect();
-    unsafe { host.setAccessibilityChildren(Some(&NSArray::from_retained_slice(&dots))) };
+    if let Some((symbol, title, pressable)) = button {
+        children.extend(button_parts(mtm, &host, symbol, title, pressable));
+    }
+    unsafe { host.setAccessibilityChildren(Some(&NSArray::from_retained_slice(&children))) };
     Retained::into_super(host)
+}
+
+/// The button under the dots, placed as a menu row's image and title are.
+fn button_parts(
+    mtm: MainThreadMarker,
+    host: &SwatchRow,
+    symbol: &str,
+    title: &str,
+    pressable: bool,
+) -> Vec<Retained<AnyObject>> {
+    let target: &AnyObject = host.as_ref();
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &worded(title),
+            Some(target),
+            Some(sel!(ngPressButton:)),
+            mtm,
+        )
+    };
+    button.setBordered(false);
+    button.setFont(Some(&NSFont::menuFontOfSize(0.)));
+    button.sizeToFit();
+    button.setEnabled(pressable);
+    let height = button.frame().size.height;
+    button.setFrameOrigin(NSPoint::new(
+        BUTTON_TITLE_X,
+        ((BUTTON_ROW_HEIGHT - height) / 2.).round(),
+    ));
+    host.addSubview(&button);
+    let mut parts: Vec<Retained<AnyObject>> = vec![unsafe { Retained::cast_unchecked(button) }];
+    if let Some(image) = symbol_image(symbol) {
+        let icon = NSImageView::imageViewWithImage(&image, mtm);
+        icon.setFrame(NSRect::new(
+            NSPoint::new(
+                BUTTON_SYMBOL_X,
+                ((BUTTON_ROW_HEIGHT - BUTTON_SYMBOL) / 2.).round(),
+            ),
+            NSSize::new(BUTTON_SYMBOL, BUTTON_SYMBOL),
+        ));
+        icon.setEnabled(pressable);
+        if !pressable {
+            icon.setContentTintColor(Some(&NSColor::disabledControlTextColor()));
+        }
+        host.addSubview(&icon);
+        parts.push(unsafe { Retained::cast_unchecked(icon) });
+    }
+    parts
+}
+
+fn title_width(title: &str) -> f64 {
+    let font = NSFont::menuFontOfSize(0.);
+    let font: &AnyObject = &font;
+    let key: &NSAttributedStringKey = unsafe { NSFontAttributeName };
+    let attributes = NSDictionary::from_slices(&[key], &[font]);
+    unsafe { worded(title).sizeWithAttributes(Some(&attributes)) }.width
 }
 
 fn dot_frame(index: usize) -> NSRect {
@@ -372,7 +527,7 @@ fn dot_frame(index: usize) -> NSRect {
     )
 }
 
-fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla]) -> Retained<NSView> {
+fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla], enabled: bool) -> Retained<NSView> {
     let width = swatch_row_width(colors.len());
     let row = NSView::initWithFrame(
         NSView::alloc(mtm),
@@ -384,7 +539,11 @@ fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla]) -> Retained<NSView> {
         dot.setTitlePosition(NSTitlePosition::NoTitle);
         dot.setBorderWidth(0.);
         dot.setCornerRadius(SWATCH_DIAMETER / 2.);
-        dot.setFillColor(&to_nscolor(*color));
+        let fill = match enabled {
+            true => to_nscolor(*color),
+            false => to_nscolor(*color).colorWithSystemEffect(NSColorSystemEffect::Disabled),
+        };
+        dot.setFillColor(&fill);
         row.addSubview(&dot);
     }
     row
@@ -616,9 +775,7 @@ fn sync_view(mtm: MainThreadMarker, item: &NSMenuItem, view: &MenuView) {
     if current == Some(view.key) {
         return;
     }
-    let built = (view.build)(mtm);
-    built.setFrameSize(view.size);
-    item.setView(Some(&built));
+    item.setView(Some(&view.make_view(mtm)));
     let key = NSNumber::new_u64(view.key);
     unsafe { item.setRepresentedObject(Some(key.as_ref())) };
 }
