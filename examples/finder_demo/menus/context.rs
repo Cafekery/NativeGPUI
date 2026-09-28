@@ -210,7 +210,24 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         Act::Swatch,
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
+    menu.separator();
+    let faces: Vec<_> = match selected.contains(&line.key) {
+        true => demo_faces(selected),
+        false => vec![line.row.face],
+    };
+    menu.submenu(
+        "Quick Actions",
+        crate::quick_actions::menu_rows(&crate::quick_actions::offered(&faces)),
+    );
     menu
+}
+
+fn demo_faces(selected: &HashSet<SharedString>) -> Vec<crate::data::Face> {
+    selected
+        .iter()
+        .filter_map(|key| crate::data::path_line(crate::data::intern(key)))
+        .map(|line| line.row.face)
+        .collect()
 }
 
 pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {

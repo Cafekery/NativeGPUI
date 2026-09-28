@@ -59,6 +59,7 @@ pub(crate) enum Act {
     MoveHere,
     PasteExactly,
     Toggle(Column),
+    Quick(crate::quick_actions::QuickAct),
 }
 
 fn original_of(path: &Path) -> Option<PathBuf> {
@@ -160,6 +161,7 @@ impl FinderDemo {
             Act::MoveHere => self.paste(Pasting::Move, cx),
             Act::PasteExactly => self.paste(Pasting::Exactly, cx),
             Act::Toggle(column) => self.toggle_column(column),
+            Act::Quick(act) => self.run_quick(act, cx),
         }
         cx.notify();
     }

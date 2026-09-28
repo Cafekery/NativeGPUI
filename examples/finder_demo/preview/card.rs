@@ -7,6 +7,7 @@ use gpui::{
     SharedString, div, hsla, img, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
+use native_gpui::native_context_menu;
 use native_gpui::tokens::{
     self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
@@ -20,7 +21,9 @@ use crate::thumbs::{awaited, thumb};
 use finder_fs::meta::Meta;
 
 use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, stamp, volume_at};
+use crate::menus::Act;
 use crate::palette::Palette;
+use crate::quick_actions::{QuickAct, menu_rows, offered};
 use crate::tags::{tag_dot, tag_pill};
 use crate::ui::rename_field;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
@@ -85,7 +88,7 @@ struct Card {
     show_more: bool,
     tags: Vec<usize>,
     many: bool,
-    actions: &'static [(&'static str, &'static str)],
+    actions: Vec<QuickAct>,
 }
 
 /// A card as its window's state had it, so a pane can draw it without reading that state: a
@@ -439,20 +442,15 @@ fn clock(seconds: f64) -> SharedString {
     }
 }
 
-fn actions(face: Face) -> &'static [(&'static str, &'static str)] {
-    match face {
-        Face::Movie => &[
-            ("rotate.left", "Rotate Left"),
-            ("timeline.selection", "Trim"),
-            ("ellipsis.circle", "More…"),
-        ],
-        Face::Image => &[
-            ("rotate.left", "Rotate Left"),
-            ("pencil.tip.crop.circle", "Markup"),
-            ("ellipsis.circle", "More…"),
-        ],
-        _ => &[("ellipsis.circle", "More…")],
-    }
+/// Finder shows the first two quick actions as buttons and the rest under More….
+const ACTION_BUTTONS: usize = 2;
+
+fn action_slots(acts: &[QuickAct]) -> Vec<(&'static str, &'static str, Option<QuickAct>)> {
+    acts.iter()
+        .take(ACTION_BUTTONS)
+        .map(|act| (act.symbol(), act.title(), Some(*act)))
+        .chain([("ellipsis.circle", "More\u{2026}", None)])
+        .collect()
 }
 
 impl FinderDemo {
@@ -488,7 +486,7 @@ impl FinderDemo {
                 show_more,
                 tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
                 many: false,
-                actions: actions(row.face),
+                actions: offered(&[row.face]),
             }
         };
         let renaming = (self.view == GALLERY_VIEW && !card.many)
@@ -612,8 +610,7 @@ impl FinderDemo {
             Some(stats) => Hero::Stack(stats.head.clone()),
             None => Hero::Blank,
         };
-        let actions: &'static [(&'static str, &'static str)] =
-            &[("ellipsis.circle", "More\u{2026}")];
+        let actions = offered(&self.chosen_faces());
         let Some(stats) = self
             .stats
             .as_ref()
@@ -630,7 +627,7 @@ impl FinderDemo {
                 show_more: false,
                 tags: Vec::new(),
                 many: true,
-                actions,
+                actions: actions.clone(),
             };
         };
         let files = stats.items - stats.folders;
@@ -937,34 +934,68 @@ impl Shown {
             .pt(px(ACTION_TOP))
             .flex()
             .justify_center()
-            .children(card.actions.iter().map(|(symbol, label)| {
-                div()
-                    .flex_none()
-                    .w(px(ACTION_SLOT_W))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(
-                        // Symbol images differ in height; AppKit's buttons sit them on one baseline.
-                        div().h(px(ICON_H)).flex().items_end().children(
-                            sf_symbol_colored(
-                                symbol,
-                                px(ACTION_ICON_SIZE),
-                                FontWeight::NORMAL,
-                                &SymbolColor::Hierarchical(SystemColor::SecondaryLabel),
+            .children(
+                action_slots(&card.actions)
+                    .into_iter()
+                    .map(|(symbol, label, act)| {
+                        let slot = div()
+                            .id(label)
+                            .flex_none()
+                            .w(px(ACTION_SLOT_W))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                // Symbol images differ in height; AppKit's buttons sit them on one baseline.
+                                div().h(px(ICON_H)).flex().items_end().children(
+                                    sf_symbol_colored(
+                                        symbol,
+                                        px(ACTION_ICON_SIZE),
+                                        FontWeight::NORMAL,
+                                        &SymbolColor::Hierarchical(SystemColor::SecondaryLabel),
+                                    )
+                                    .map(|glyph| glyph.img()),
+                                ),
                             )
-                            .map(|glyph| glyph.img()),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .mt(px(GAP_ICON_LABEL))
-                            .line_height(px(SMALL_H))
-                            .text_size(small)
-                            .text_color(ink.action)
-                            .child(*label),
-                    )
-            }));
+                            .child(
+                                div()
+                                    .mt(px(GAP_ICON_LABEL))
+                                    .line_height(px(SMALL_H))
+                                    .text_size(small)
+                                    .text_color(ink.action)
+                                    .child(label),
+                            );
+                        let finder = finder.downgrade();
+                        match act {
+                            Some(act) => slot
+                                .on_click(move |event, _, cx| {
+                                    let act = match (act, event.modifiers().alt) {
+                                        (QuickAct::RotateLeft, true) => QuickAct::RotateRight,
+                                        _ => act,
+                                    };
+                                    finder.update(cx, |demo, cx| demo.run_quick(act, cx)).ok();
+                                })
+                                .into_any_element(),
+                            None => {
+                                let rows = menu_rows(
+                                    &card.actions[card.actions.len().min(ACTION_BUTTONS)..],
+                                );
+                                let (entries, acts): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+                                native_context_menu(label, slot)
+                                    .entries(entries)
+                                    .opens_on_click()
+                                    .on_select(move |index, _, cx| {
+                                        if let Some(Act::Quick(act)) = acts.get(*index) {
+                                            finder
+                                                .update(cx, |demo, cx| demo.run_quick(*act, cx))
+                                                .ok();
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
+                        }
+                    }),
+            );
         let head = match self.view == GALLERY_VIEW {
             true => GAP_HEADER + HEADER_ICON + GAP_HEADER_HEAD - GAP_KIND_HEAD,
             false => {

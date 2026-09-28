@@ -308,6 +308,7 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
         | Op::NewFolder { .. }
         | Op::NewFile { .. }
         | Op::PutBack(_)
+        | Op::Quick(_)
         | Op::Batch(_) => None,
     }
 }
@@ -335,6 +336,7 @@ fn op_for(op: &Op, items: Vec<PathBuf>) -> Op {
         | Op::NewFolder { .. }
         | Op::NewFile { .. }
         | Op::PutBack(_)
+        | Op::Quick(_)
         | Op::Batch(_) => {
             unreachable!("only called for splittable ops")
         }
@@ -487,6 +489,7 @@ fn label_for(op: &Op) -> String {
         Op::NewFolder { .. } => "New Folder".to_string(),
         Op::NewFile { .. } => "New File".to_string(),
         Op::PutBack(items) => describe("Put Back", &put_back_paths(items)),
+        Op::Quick(quick) => quick.label().to_string(),
         Op::Batch(ops) => ops.first().map(label_for).unwrap_or_default(),
     }
 }
