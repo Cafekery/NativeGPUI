@@ -137,6 +137,10 @@ pub fn last_used(path: &Path) -> Option<f64> {
     Cf::item(path)?.attribute("kMDItemLastUsedDate")?.date()
 }
 
+pub(crate) fn kind(path: &Path) -> Option<String> {
+    Cf::item(path)?.attribute("kMDItemKind")?.string()
+}
+
 pub fn bundle_version(path: &Path) -> Option<String> {
     ["Contents/Info.plist", "Resources/Info.plist", "Info.plist"]
         .into_iter()

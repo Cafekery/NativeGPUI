@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::fmt::Write;
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 use objc2::rc::{Allocated, Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{msg_send, sel};
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2_foundation::{NSArray, NSString, NSURL, ns_string};
 use objc2_uniform_type_identifiers::UTType;
 
 /// Finder falls back to these only when IconServices cannot say.
@@ -26,24 +27,19 @@ const FAMILIES: [(&str, &str); 11] = [
 
 enum Said {
     Model(String),
-    /// sharingd lists the server without one.
+    /// sharingd lists a server without its model until it has fetched one.
     Unknown,
-    /// Bonjour holds no `_device-info` record for it.
     Unrecorded,
 }
 
-/// A computer as Finder's Network view lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Computer {
     pub name: String,
     pub model: Option<String>,
-    /// What it offers, as sharingd names it: `smb`, `afp`, `vnc`…
     pub protocols: Vec<String>,
 }
 
 impl Computer {
-    /// What opening it asks for: its files where it shares them, over SMB before AFP, else its
-    /// screen.
     pub fn url(&self) -> Option<String> {
         let (scheme, service) = [
             ("smb", "_smb._tcp"),
@@ -59,20 +55,20 @@ impl Computer {
     }
 }
 
-/// Every byte outside RFC 3986's unreserved set, the way a Bonjour mount's source spells its name.
 fn escaped(name: &str) -> String {
-    name.bytes()
-        .map(|byte| match byte {
+    let mut escaped = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                char::from(byte).to_string()
+                escaped.push(char::from(byte))
             }
-            _ => format!("%{byte:02X}"),
-        })
-        .collect()
+            _ => write!(escaped, "%{byte:02X}").unwrap(),
+        }
+    }
+    escaped
 }
 
-/// Finder's Network list, which sharingd browses for it: `listed` gets the whole list each time
-/// it changes, until it returns false.
+/// Finder's Network list: `listed` gets the whole list each time it changes, until it returns false.
 pub fn network(mut listed: impl FnMut(Vec<Computer>) -> bool) {
     let (tx, lists) = channel();
     let Some(_browsing) = browse(tx, networked) else {
@@ -85,25 +81,21 @@ pub fn network(mut listed: impl FnMut(Vec<Computer>) -> bool) {
     }
 }
 
-/// Calls `found` with the model of each host a network volume was mounted from, as each answer
-/// lands within `wait`; `None` is a Bonjour server without one, which Finder draws as a Mac.
-///
-/// sharingd holds Finder's model: the one an SMB server gave the kernel, or a Bonjour name's
-/// `_device-info` record, which Bonjour itself returns in milliseconds where sharingd can take a
-/// minute after a mount.
+/// `found` gets each host's model as it lands within `wait`; `None` is a Bonjour host without one.
 pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Option<&str>)) {
     let deadline = Instant::now() + wait;
     let (tx, answers) = channel();
-    let browsing = browse(tx.clone(), browsed);
+    let _browsing = browse(tx.clone(), browsed);
     let mut left: Vec<(String, &String, [bool; 2])> = hosts
         .iter()
         .map(|host| (named(host), host, [false; 2]))
         .collect();
-    for name in left.iter().map(|(name, ..)| name.clone()) {
-        let Some(instance) = instance(&name).map(str::to_owned) else {
+    // Bonjour answers `_device-info` in milliseconds; sharingd can take a minute after a mount.
+    for (name, ..) in &left {
+        let Some(instance) = instance(name).map(str::to_owned) else {
             continue;
         };
-        let tx = tx.clone();
+        let (tx, name) = (tx.clone(), name.clone());
         std::thread::spawn(move || {
             let model = device_model(&instance, Instant::now() + Duration::from_secs(3));
             tx.send((name, model.map_or(Said::Unrecorded, Said::Model)))
@@ -138,13 +130,11 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
             autoreleasepool(|_| found(left.swap_remove(at).1, model.as_deref()));
         }
     }
-    drop(browsing);
 }
 
-/// Finder titles a Bonjour server by its instance name.
 pub(crate) fn title(host: &str) -> String {
     let name = named(host);
-    instance(&name).map_or_else(|| name.clone(), str::to_owned)
+    instance(&name).map(str::to_owned).unwrap_or(name)
 }
 
 /// A mount source percent-encodes a Bonjour name; sharingd's URL host does not.
@@ -224,25 +214,23 @@ unsafe extern "C" fn txt(
     }
 }
 
-/// A model's type; one no type claims is a Mac.
 fn device_type(model: Option<&str>) -> Option<Retained<UTType>> {
-    let tag = NSString::from_str("com.apple.device-model-code");
+    let tag = ns_string!("com.apple.device-model-code");
     model
         .and_then(|model| {
-            UTType::typeWithTag_tagClass_conformingToType(&NSString::from_str(model), &tag, None)
+            UTType::typeWithTag_tagClass_conformingToType(&NSString::from_str(model), tag, None)
         })
         .filter(|kind| !kind.isDynamic())
-        .or_else(|| UTType::typeWithIdentifier(&NSString::from_str("com.apple.mac")))
+        .or_else(|| UTType::typeWithIdentifier(ns_string!("com.apple.mac")))
 }
 
-/// The type whose icon Finder draws for a computer of this model, and the kind it names.
+/// The type identifier and kind name of a computer of this model.
 pub fn model_type(model: Option<&str>) -> Option<(String, String)> {
     let kind = device_type(model)?;
     let named = kind.localizedDescription().map(|named| named.to_string());
     Some((kind.identifier().to_string(), named.unwrap_or_default()))
 }
 
-/// The SF Symbol Finder's sidebar draws for a server of this model.
 pub fn symbol(model: Option<&str>) -> String {
     let Some(kind) = device_type(model) else {
         return "display".into();
@@ -256,7 +244,7 @@ pub fn symbol(model: Option<&str>) -> String {
     })
 }
 
-/// IconServices' symbol for a type is the one Finder draws, or a document where it has none.
+/// IconServices' symbol for a type is the one Finder draws.
 fn type_symbol(kind: &UTType) -> Option<String> {
     unsafe {
         libc::dlopen(
@@ -277,7 +265,7 @@ fn type_symbol(kind: &UTType) -> Option<String> {
         },
         _ => None,
     };
-    Some(name.map_or("doc".into(), |name| name.to_string()))
+    Some(name.map_or_else(|| "doc".into(), |name| name.to_string()))
 }
 
 #[repr(C)]
@@ -331,7 +319,6 @@ impl Sharing {
     }
 }
 
-/// sharingd's network browser, answering on its own queue until dropped.
 struct Browsing<T> {
     browser: *mut c_void,
     queue: *mut c_void,
@@ -384,8 +371,6 @@ unsafe extern "C" fn release<T>(info: *const c_void) {
     unsafe { Arc::decrement_strong_count(info.cast::<(T, Sharing)>()) };
 }
 
-/// A server whose model sharingd has yet to fetch is listed without one, as is a Bonjour server
-/// that has none.
 unsafe extern "C" fn browsed(
     browser: *mut c_void,
     node: *mut c_void,
@@ -501,33 +486,25 @@ mod tests {
 
     #[test]
     fn a_computer_opens_its_files_before_its_screen_and_mounts_under_its_own_name() {
-        let computer = |protocols: &[&str]| Computer {
-            name: "Jace’s MacBook Air".into(),
-            model: None,
-            protocols: protocols.iter().map(|it| it.to_string()).collect(),
+        let url = |protocols: &[&str]| {
+            let protocols = protocols.iter().map(|it| it.to_string()).collect();
+            let name = "Jace’s MacBook Air".into();
+            Computer {
+                name,
+                model: None,
+                protocols,
+            }
+            .url()
         };
-        let url = computer(&["vnc", "afp", "smb"]).url().unwrap();
-        assert_eq!(url, "smb://Jace%E2%80%99s%20MacBook%20Air._smb._tcp.local");
-        let host = url.strip_prefix("smb://").unwrap();
-        assert_eq!(title(host), "Jace’s MacBook Air");
-        assert!(
-            computer(&["vnc", "afp"])
-                .url()
-                .unwrap()
-                .starts_with("afp://")
+        let smb = url(&["vnc", "afp", "smb"]).unwrap();
+        assert_eq!(smb, "smb://Jace%E2%80%99s%20MacBook%20Air._smb._tcp.local");
+        assert_eq!(
+            title(smb.strip_prefix("smb://").unwrap()),
+            "Jace’s MacBook Air"
         );
-        assert!(
-            computer(&["afp"])
-                .url()
-                .unwrap()
-                .ends_with("._afpovertcp._tcp.local")
-        );
-        assert!(
-            computer(&["vnc"])
-                .url()
-                .unwrap()
-                .ends_with("._rfb._tcp.local")
-        );
-        assert_eq!(computer(&[]).url(), None);
+        assert!(url(&["vnc", "afp"]).unwrap().starts_with("afp://"));
+        assert!(url(&["afp"]).unwrap().ends_with("._afpovertcp._tcp.local"));
+        assert!(url(&["vnc"]).unwrap().ends_with("._rfb._tcp.local"));
+        assert_eq!(url(&[]), None);
     }
 }
