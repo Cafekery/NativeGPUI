@@ -138,6 +138,7 @@ impl Render for FinderDemo {
                 .relative()
                 .font_family(family)
                 .text_size(tokens::system_font_size())
+                .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
                 .flex()
                 .flex_col()
                 .pr(metrics.right)
