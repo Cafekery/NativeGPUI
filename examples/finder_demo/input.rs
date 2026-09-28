@@ -52,6 +52,11 @@ impl FinderDemo {
         let last = lines.len() - 1;
         let tree = self.view == LIST_VIEW;
         match key {
+            "up" | "down" if modifiers.alt && !modifiers.platform && tree => {
+                let line = &lines[if key == "up" { 0 } else { last }];
+                self.pick(line, modifiers.shift, false);
+                self.reveal(&line.key);
+            }
             // The menu bar acts on a chord it carries once this handler lets the key pass.
             "up" | "o" if modifiers.platform => {}
             "down" if modifiers.platform => self.open_selected(window, cx),
