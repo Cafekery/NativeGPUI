@@ -15,8 +15,6 @@ use crate::sound::Sound;
 
 const CANCEL_W: f32 = 40.;
 
-/// A new operation goes in the journal, a redo updates the entry it came from, and an undo is
-/// already accounted for.
 #[derive(Clone, Copy)]
 pub(crate) enum Record {
     New,
@@ -70,30 +68,24 @@ fn describe(op: &Op) -> String {
         _ => format!("{verb} {} Items", items.len()),
     };
     match op {
-        Op::Move { items, .. } => verb_items("Moving", items),
+        Op::Move { items, .. } | Op::Trash(items) => verb_items("Moving", items),
         Op::Copy { items, .. } | Op::CopyExactly { items, .. } => verb_items("Copying", items),
         Op::Duplicate(items) => verb_items("Duplicating", items),
         Op::MakeAlias(items) => verb_items("Making Aliases of", items),
         Op::Compress(items) => verb_items("Compressing", items),
-        Op::Trash(items) => verb_items("Moving", items),
         Op::DeleteImmediately(items) => verb_items("Deleting", items),
         Op::Rename { name, .. } => format!("Renaming to \"{name}\""),
-        Op::NewFolder { name, .. } => format!("Creating \"{name}\""),
-        Op::NewFile { name, .. } => format!("Creating \"{name}\""),
-        Op::PutBack(items) => verb_items(
-            "Putting Back",
-            &items
-                .iter()
-                .map(|restore| restore.to.clone())
-                .collect::<Vec<_>>(),
-        ),
+        Op::NewFolder { name, .. } | Op::NewFile { name, .. } => format!("Creating \"{name}\""),
+        Op::PutBack(items) => match items.as_slice() {
+            [only] => verb_items("Putting Back", std::slice::from_ref(&only.to)),
+            _ => format!("Putting Back {} Items", items.len()),
+        },
         Op::Quick(quick) => verb_items(quick.label(), quick.items()),
         Op::Batch(ops) => ops.first().map(describe).unwrap_or_default(),
     }
 }
 
 impl FinderDemo {
-    /// Finder's toolbar has no progress item; ours stands there only while it has something to report.
     pub(crate) fn progress_shown(&self) -> bool {
         !self.jobs.is_empty() || self.jobs_open
     }
@@ -124,7 +116,7 @@ impl FinderDemo {
                     .rounded(px(10.))
                     .overflow_hidden()
                     .block_mouse_except_scroll()
-                    // Native and Above, all of it: the band's material covers everything GPUI paints.
+                    // All native and Above: the band's material covers everything GPUI paints.
                     .child(
                         material("ng.finder.jobs.glass", Material::Popover)
                             .layer(Layer::Above)
@@ -233,18 +225,15 @@ impl FinderDemo {
                     }
                 }
                 Event::Finished(job, result) => {
-                    let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
+                    let Some(row) = self.take_job(job) else {
                         continue;
                     };
-                    let row = self.jobs.remove(pos);
                     match result {
                         Ok(done) => {
                             if let Some(sound) = row.sound.filter(|_| !done.results.is_empty()) {
                                 sound.play();
                             }
-                            self.note(&row, &done);
-                            let touched = crate::ops::touched(&row.op);
-                            self.settled(touched, done.results, row.after, cx);
+                            self.finish(&row, done, cx);
                         }
                         Err(err) => {
                             self.undo_left(&row, row.op.clone());
@@ -258,60 +247,55 @@ impl FinderDemo {
                     error,
                     left,
                 } => {
-                    let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
+                    let Some(row) = self.take_job(job) else {
                         continue;
                     };
-                    let row = self.jobs.remove(pos);
-                    self.note(&row, &done);
                     if let Some(left) = left {
                         self.undo_left(&row, left);
                     }
-                    let touched = crate::ops::touched(&row.op);
-                    self.settled(touched, done.results, row.after, cx);
+                    self.finish(&row, done, cx);
                     self.complain(&error.to_string());
                 }
                 Event::Cancelled { job, done } => {
-                    let Some(pos) = self.jobs.iter().position(|row| row.id == job) else {
-                        continue;
-                    };
-                    let row = self.jobs.remove(pos);
-                    self.note(&row, &done);
-                    let touched = crate::ops::touched(&row.op);
-                    self.settled(touched, done.results, row.after, cx);
-                }
-                Event::Paused => {
-                    for row in &mut self.jobs {
-                        row.paused = true;
+                    if let Some(row) = self.take_job(job) {
+                        self.finish(&row, done, cx);
                     }
                 }
-                Event::Resumed => {
+                Event::Paused | Event::Resumed => {
+                    let paused = matches!(event, Event::Paused);
                     for row in &mut self.jobs {
-                        row.paused = false;
+                        row.paused = paused;
                     }
                 }
             }
         }
         cx.notify();
     }
+
+    fn take_job(&mut self, job: JobId) -> Option<JobRow> {
+        let at = self.jobs.iter().position(|row| row.id == job)?;
+        Some(self.jobs.remove(at))
+    }
+
+    fn finish(&mut self, row: &JobRow, done: Done, cx: &mut Context<Self>) {
+        self.note(row, &done);
+        self.settled(super::touched(&row.op), done.results, row.after, cx);
+    }
 }
 
-/// One operation's row: what it is doing, how far it has got, and a Cancel that `on_cancel` carries
-/// to whichever window owns it.
 pub(crate) fn job_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static) -> AnyElement {
-    let fraction = if job.total_bytes > 0 {
-        job.done_bytes as f64 / job.total_bytes as f64
-    } else {
-        0.
-    };
-    let caption = if job.total_bytes > 0 {
-        format!(
-            "{} of {} \u{2014} {}/s",
-            byte_string(job.done_bytes),
-            byte_string(job.total_bytes),
-            byte_string(job.bytes_per_sec as u64)
+    let (fraction, caption) = if job.total_bytes > 0 {
+        (
+            job.done_bytes as f64 / job.total_bytes as f64,
+            format!(
+                "{} of {} \u{2014} {}/s",
+                byte_string(job.done_bytes),
+                byte_string(job.total_bytes),
+                byte_string(job.bytes_per_sec as u64)
+            ),
         )
     } else {
-        "Preparing\u{2026}".to_string()
+        (0., "Preparing\u{2026}".to_string())
     };
     let id = job.id;
     div()

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op, Restore};
-use gpui::{Bounds, Context, SharedString, Window, point, px, size};
+use gpui::{App, Bounds, Context, SharedString, Window, point, px, size};
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{ShareItem, SharePicker, SurfaceAnchor, present_share_picker};
 use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
@@ -13,6 +13,7 @@ use crate::ops::After;
 use crate::ops::clipboard::Pasting;
 use crate::prefs::{self, WindowTarget};
 use crate::search::RECENTS;
+use crate::sound::Sound;
 use crate::views::icon::Arrangement;
 use crate::{open_finder_tab, open_finder_window};
 
@@ -94,7 +95,6 @@ fn open_terminal(path: &str) {
         .spawn();
 }
 
-/// Where Finder's settings open a new window or tab.
 pub(crate) fn new_window_target() -> &'static str {
     match prefs::new_window_target() {
         WindowTarget::Recents => RECENTS,
@@ -103,7 +103,7 @@ pub(crate) fn new_window_target() -> &'static str {
     }
 }
 
-pub(crate) fn trash_items() -> Vec<PathBuf> {
+fn trash_items() -> Vec<PathBuf> {
     let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
         return Vec::new();
     };
@@ -132,17 +132,14 @@ impl FinderDemo {
             Act::View(view) => self.pick_view(view, window, cx),
             Act::Inspector => crate::inspector::toggle(self, cx),
             Act::InspectorAt(id) => crate::inspector::show_item(id, self, cx),
-            Act::GetInfo => {
+            Act::GetInfo | Act::GetInfoAt(_) | Act::SummaryInfo => {
                 let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, None, false, cx));
-            }
-            Act::GetInfoAt(id) => {
-                let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
-            }
-            Act::SummaryInfo => {
-                let demo = cx.entity();
-                cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
+                let at = match act {
+                    Act::GetInfoAt(id) => Some(id),
+                    _ => None,
+                };
+                let summary = act == Act::SummaryInfo;
+                cx.defer(move |cx| crate::info::open(&demo, at, summary, cx));
             }
             Act::Sort(column) => self.sort_by(column, cx),
             Act::Arrange(arrangement) => self.arrange(arrangement, cx),
@@ -154,7 +151,7 @@ impl FinderDemo {
                     self.open_tab(id, window, cx);
                 }
             }
-            Act::OpenWindow => self.open_in_window(cx),
+            Act::OpenWindow => open_windows(self.chosen_folders(), cx),
             Act::ShowOriginal => self.show_original(window, cx),
             Act::Trash => self.trash_selection(cx),
             Act::DeleteNow => self.delete_selection(cx),
@@ -168,8 +165,9 @@ impl FinderDemo {
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
             Act::AlwaysOpenWith(app) => {
-                crate::openwith::set_default(&self.paths(), Path::new(app));
-                crate::openwith::open_with(&self.paths(), Path::new(app));
+                let paths = self.paths();
+                crate::openwith::set_default(&paths, Path::new(app));
+                crate::openwith::open_with(&paths, Path::new(app));
             }
             Act::Copy => self.copy_selection(),
             Act::Paste(into, how) => self.paste_into(PathBuf::from(into), how, cx),
@@ -308,7 +306,7 @@ impl FinderDemo {
         let Some(original) = self.paths().first().and_then(|path| original_of(path)) else {
             return;
         };
-        self.show_enclosing(crate::data::intern_path(&original), window, cx);
+        self.show_enclosing(intern_path(&original), window, cx);
     }
 
     pub(crate) fn eject_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -326,27 +324,29 @@ impl FinderDemo {
         if items.is_empty() {
             return;
         }
-        if !crate::prefs::setting_on("WarnOnEmptyTrash", true) {
-            crate::sound::Sound::EmptyTrash.play();
-            self.run_op(Op::DeleteImmediately(items), After::Nothing, cx);
-            return;
+        if !prefs::setting_on("WarnOnEmptyTrash", true) {
+            return self.erase(items, cx);
         }
-        let this = cx.entity().downgrade();
         self.confirm(
             "Are you sure you want to permanently erase the items in the Trash?",
             "You can’t undo this action.",
             "Empty Trash",
             false,
             cx,
-            move |cx| {
-                let mut cx = cx.clone();
-                crate::sound::Sound::EmptyTrash.play();
-                this.update(&mut cx, |this: &mut FinderDemo, cx| {
-                    this.run_op(Op::DeleteImmediately(items.clone()), After::Nothing, cx);
-                })
-                .ok();
-            },
+            move |this, cx| this.erase(items.clone(), cx),
         );
+    }
+
+    pub(super) fn empty_trash_now(&mut self, cx: &mut Context<Self>) {
+        let items = trash_items();
+        if !items.is_empty() {
+            self.erase(items, cx);
+        }
+    }
+
+    fn erase(&mut self, items: Vec<PathBuf>, cx: &mut Context<Self>) {
+        Sound::EmptyTrash.play();
+        self.run_op(Op::DeleteImmediately(items), After::Nothing, cx);
     }
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
@@ -354,47 +354,45 @@ impl FinderDemo {
         if items.is_empty() {
             return;
         }
-        if !is_trash(self.here()) {
-            let drive = finder_fs::icloud::drive();
-            let in_cloud =
-                drive.is_some_and(|drive| items.iter().all(|item| item.starts_with(&drive)));
-            if in_cloud && crate::prefs::setting_on("FXEnableRemoveFromICloudDriveWarning", false) {
-                let asked = match items.as_slice() {
-                    [one] => format!(
-                        "Are you sure you want to delete \u{201c}{}\u{201d} from iCloud?",
-                        finder_fs::name::of_path(one)
-                    ),
-                    many => format!(
-                        "Are you sure you want to delete these {} items from iCloud?",
-                        many.len()
-                    ),
-                };
-                let detail = match items.len() {
-                    1 => "This item will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices.".to_owned(),
-                    count => format!("These {count} items will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices."),
-                };
-                let this = cx.entity().downgrade();
-                self.confirm(&asked, &detail, "Delete", false, cx, move |cx| {
-                    let mut cx = cx.clone();
-                    this.update(&mut cx, |this: &mut FinderDemo, cx| {
-                        this.remove(Op::Trash(items.clone()), cx);
-                    })
-                    .ok();
-                });
-                return;
+        if is_trash(self.here()) {
+            let back: Vec<Restore> = finder_fs::put_back::origins(&items)
+                .into_iter()
+                .zip(items)
+                .filter_map(|(to, item)| Some(Restore { item, to: to? }))
+                .collect();
+            if !back.is_empty() {
+                self.deselect();
+                self.run_op(Op::PutBack(back), After::Reveal, cx);
             }
-            self.remove(Op::Trash(items), cx);
             return;
         }
-        let back: Vec<Restore> = finder_fs::put_back::origins(&items)
-            .into_iter()
-            .zip(items)
-            .filter_map(|(to, item)| Some(Restore { item, to: to? }))
-            .collect();
-        if !back.is_empty() {
-            self.deselect();
-            self.run_op(Op::PutBack(back), After::Reveal, cx);
+        let in_cloud = finder_fs::icloud::drive()
+            .is_some_and(|drive| items.iter().all(|item| item.starts_with(&drive)));
+        if !in_cloud || !prefs::setting_on("FXEnableRemoveFromICloudDriveWarning", false) {
+            return self.remove(Op::Trash(items), cx);
         }
+        let (asked, detail) = match items.as_slice() {
+            [one] => (
+                format!(
+                    "Are you sure you want to delete \u{201c}{}\u{201d} from iCloud?",
+                    finder_fs::name::of_path(one)
+                ),
+                "This item will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices.".to_owned(),
+            ),
+            many => (
+                format!(
+                    "Are you sure you want to delete these {} items from iCloud?",
+                    many.len()
+                ),
+                format!(
+                    "These {} items will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices.",
+                    many.len()
+                ),
+            ),
+        };
+        self.confirm(&asked, &detail, "Delete", false, cx, move |this, cx| {
+            this.remove(Op::Trash(items.clone()), cx)
+        });
     }
 
     pub(crate) fn delete_selection(&mut self, cx: &mut Context<Self>) {
@@ -419,13 +417,8 @@ impl FinderDemo {
                 ),
             ),
         };
-        let this = cx.entity().downgrade();
-        self.confirm(&text, &detail, "Delete", true, cx, move |cx| {
-            let mut cx = cx.clone();
-            this.update(&mut cx, |this: &mut FinderDemo, cx| {
-                this.remove(Op::DeleteImmediately(items.clone()), cx);
-            })
-            .ok();
+        self.confirm(&text, &detail, "Delete", true, cx, move |this, cx| {
+            this.remove(Op::DeleteImmediately(items.clone()), cx)
         });
     }
 
@@ -463,7 +456,6 @@ impl FinderDemo {
         });
     }
 
-    /// Finder's New Finder Window opens where its settings say.
     pub(crate) fn open_new_window(&self, cx: &mut Context<Self>) {
         let target = new_window_target();
         let window = open_finder_window(self.listing_start(target), 1, cx);
@@ -474,17 +466,16 @@ impl FinderDemo {
         }
     }
 
-    /// A tag or Recents listing opens over the folder shown; any other id opens itself.
     fn listing_start(&self, id: &'static str) -> &'static str {
         match id.starts_with("tag:") || id == RECENTS {
             true => self.here(),
             false => id,
         }
     }
+}
 
-    fn open_in_window(&self, cx: &mut Context<Self>) {
-        for (extra, id) in self.chosen_folders().into_iter().enumerate() {
-            open_finder_window(id, extra + 1, cx);
-        }
+pub(super) fn open_windows(ids: impl IntoIterator<Item = &'static str>, cx: &mut App) {
+    for (extra, id) in ids.into_iter().enumerate() {
+        open_finder_window(id, extra + 1, cx);
     }
 }
