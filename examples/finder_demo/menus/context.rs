@@ -2,16 +2,18 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::Path;
 
+use finder_fs::kind::is_package_name;
 use finder_fs::volumes;
-use gpui::SharedString;
+use gpui::{Modifiers, SharedString};
 use native_gpui::{MenuEntry, MenuView};
 
+use super::actions::original_of;
 use super::{Act, Menu};
 use crate::app::FinderDemo;
-use crate::data::{Column, Line, intern, is_trash};
+use crate::data::{Column, Line, intern, intern_path, is_trash};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
-use crate::view::ICON_VIEW;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::header::{ColumnSpec, column_title};
 
 thread_local! {
@@ -34,20 +36,27 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
 
 const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];
 
+const VIEWS: [(&str, usize); 4] = [
+    ("as Icons", ICON_VIEW),
+    ("as List", LIST_VIEW),
+    ("as Columns", COLUMN_VIEW),
+    ("as Gallery", GALLERY_VIEW),
+];
+
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("New Folder"), Act::NewFolder);
-    menu.separator();
     if can_paste() {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
-        menu.separator();
     }
+    menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(demo.target()));
     menu.item(
         MenuEntry::item("Show Inspector").option_alternate(),
         Act::Inspector,
     );
     menu.separator();
+    menu.submenu("View", view_rows(demo));
     menu.item(
         MenuEntry::item("Use Groups").checked(demo.grouped),
         Act::Groups,
@@ -58,18 +67,15 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
         menu.submenu("Clean Up By", sort_rows(demo));
     }
     menu.item(MenuEntry::item("Show View Options"), Act::ViewOptions);
-    menu.separator();
-    menu.item(
-        MenuEntry::item("Open in Terminal"),
-        Act::OpenTerminal(demo.target()),
-    );
     menu
 }
 
 pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let chosen = selected.len();
     let many = chosen > 1 && selected.contains(&line.key);
-    let folder = line.row.opens.is_some();
+    let symlink = line.row.uti == "public.symlink";
+    let original = symlink || line.row.uti == "com.apple.alias-file";
+    let folder = folder_behind(line);
     let mut menu = Menu::default();
     if many {
         menu.item(
@@ -77,49 +83,40 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
             Act::NewFolderWith,
         );
     }
-    if folder {
-        menu.item(MenuEntry::item(plural("Open in New Tab", many)), Act::Open);
-        menu.item(
-            MenuEntry::item(plural("Open in New Window", many)).option_alternate(),
-            Act::OpenWindow,
-        );
-    } else {
-        menu.item(MenuEntry::item("Open"), Act::Open);
-        let apps = crate::openwith::apps_for(Path::new(line.key.as_ref()));
-        match apps.is_empty() {
-            true => {
-                menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing);
-                menu.item(
-                    MenuEntry::item("Always Open With")
-                        .disabled()
-                        .option_alternate(),
-                    Act::Nothing,
-                );
-            }
-            false => {
-                let rows = |always: bool| {
-                    apps.iter()
-                        .map(|app| {
-                            let title = match app.default {
-                                true => format!("{} (default)", app.name),
-                                false => app.name.clone(),
-                            };
-                            let at = intern(&app.path.to_string_lossy());
-                            let act = match always {
-                                true => Act::AlwaysOpenWith(at),
-                                false => Act::OpenWith(at),
-                            };
-                            (MenuEntry::item(title), act)
-                        })
-                        .collect()
-                };
-                menu.submenu("Open With", rows(false));
-                menu.alternate_submenu("Always Open With", rows(true));
+    match folder {
+        Some(folder) => {
+            let (tab, window) = match many {
+                true => (Act::OpenTabs, Act::OpenWindow),
+                false => (Act::OpenTab(folder), Act::OpenWindowAt(folder)),
+            };
+            menu.item(MenuEntry::item(plural("Open in New Tab", many)), tab);
+            menu.item(
+                MenuEntry::item(plural("Open in New Window", many)).option_alternate(),
+                window,
+            );
+        }
+        // Finder gives every symlink the folder rows, greyed unless it leads to a folder.
+        None if symlink => {
+            menu.item(MenuEntry::item("Open in New Tab").disabled(), Act::Nothing);
+            menu.item(
+                MenuEntry::item("Open in New Window")
+                    .disabled()
+                    .option_alternate(),
+                Act::Nothing,
+            );
+        }
+        None => {
+            menu.item(MenuEntry::item("Open"), Act::Open);
+            if !original {
+                open_with(&mut menu, line);
             }
         }
     }
-    if let Some(path) = line.row.opens {
-        menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(path));
+    if original {
+        menu.item(MenuEntry::item("Show Original"), Act::ShowOriginal);
+    }
+    if let Some(folder) = folder.filter(|_| can_paste()) {
+        menu.item(MenuEntry::item("Paste Item"), Act::PasteInto(folder));
     }
     menu.separator();
     let trashed = Path::new(line.key.as_ref())
@@ -131,10 +128,6 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Empty Trash"), Act::EmptyTrash);
     } else {
         menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
-        menu.item(
-            MenuEntry::item("Delete Immediately…").option_alternate(),
-            Act::DeleteNow,
-        );
     }
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
@@ -142,23 +135,37 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         MenuEntry::item("Show Inspector").option_alternate(),
         Act::Inspector,
     );
+    if many {
+        menu.item(
+            alternate("Get Summary Info", Modifiers::control()),
+            Act::SummaryInfo,
+        );
+    }
     menu.item(
         MenuEntry::item(if many { "Rename…" } else { "Rename" }),
         Act::Rename,
     );
-    menu.item(
-        MenuEntry::item(subject("Compress", &line.row.display, many, chosen)),
-        Act::Compress,
-    );
+    let compress = subject("Compress", &line.row.display, many, chosen);
+    let plain = match many {
+        true => "Compress".to_string(),
+        false => compress.clone(),
+    };
+    menu.item(MenuEntry::item(plain), Act::Compress);
+    menu.item(MenuEntry::item(compress).option_alternate(), Act::Compress);
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
+    let exactly = Modifiers {
+        alt: true,
+        shift: true,
+        ..Modifiers::default()
+    };
+    menu.item(alternate("Duplicate Exactly", exactly), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
     menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
     menu.item(
         MenuEntry::item(subject("Slideshow", &line.row.display, many, chosen)).option_alternate(),
         Act::Slideshow,
     );
-    menu.item(MenuEntry::item(counted("Cut", many, chosen)), Act::Cut);
-    menu.item(MenuEntry::item(counted("Copy", many, chosen)), Act::Copy);
+    menu.item(MenuEntry::item("Copy"), Act::Copy);
     let pathname = if many {
         format!("Copy {chosen} Items as Pathnames")
     } else {
@@ -168,13 +175,6 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         MenuEntry::item(pathname).option_alternate(),
         Act::CopyPathnames,
     );
-    if can_paste() {
-        menu.item(MenuEntry::item("Paste Item"), Act::Paste);
-        menu.item(
-            MenuEntry::item("Move Item Here").option_alternate(),
-            Act::MoveHere,
-        );
-    }
     menu.separator();
     menu.item(MenuEntry::item("Share…"), Act::Share);
     menu.separator();
@@ -201,6 +201,50 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
     menu
+}
+
+fn open_with(menu: &mut Menu, line: &Line) {
+    let apps = crate::openwith::apps_for(Path::new(line.key.as_ref()));
+    if apps.is_empty() {
+        menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing);
+        menu.item(
+            MenuEntry::item("Always Open With")
+                .disabled()
+                .option_alternate(),
+            Act::Nothing,
+        );
+        return;
+    }
+    let rows = |always: bool| {
+        apps.iter()
+            .map(|app| {
+                let title = match app.default {
+                    true => format!("{} (default)", app.name),
+                    false => app.name.clone(),
+                };
+                let at = intern(&app.path.to_string_lossy());
+                let act = match always {
+                    true => Act::AlwaysOpenWith(at),
+                    false => Act::OpenWith(at),
+                };
+                (MenuEntry::item(title), act)
+            })
+            .collect()
+    };
+    menu.submenu("Open With", rows(false));
+    menu.alternate_submenu("Always Open With", rows(true));
+}
+
+/// The folder a row opens, following a Finder alias to its original.
+fn folder_behind(line: &Line) -> Option<&'static str> {
+    if line.row.opens.is_some() || line.row.uti != "com.apple.alias-file" {
+        return line.row.opens;
+    }
+    let original = original_of(Path::new(line.key.as_ref()))?;
+    let package = original
+        .file_name()
+        .is_some_and(|name| is_package_name(&name.to_string_lossy()));
+    (original.is_dir() && !package).then(|| intern_path(&original))
 }
 
 pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
@@ -308,6 +352,10 @@ fn place_row(id: &SharedString) -> Menu {
     );
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(at));
+    menu.item(
+        MenuEntry::item("Show Inspector").option_alternate(),
+        Act::InspectorAt(at),
+    );
     if path == Path::new("/") {
         menu.item(MenuEntry::item("Manage Storage…").disabled(), Act::Nothing);
     }
@@ -318,7 +366,7 @@ fn place_row(id: &SharedString) -> Menu {
         menu.item(rename, Act::RenameAt(at));
     }
     if held {
-        menu.item(MenuEntry::item("Add to Dock").disabled(), Act::Nothing);
+        menu.item(MenuEntry::item("Add to Dock"), Act::AddToDock(at));
     }
     menu
 }
@@ -350,18 +398,28 @@ fn plural(title: &str, many: bool) -> String {
     }
 }
 
-fn counted(verb: &str, many: bool, chosen: usize) -> String {
-    match many {
-        true => format!("{verb} {chosen} Items"),
-        false => verb.to_string(),
-    }
-}
-
 fn subject(verb: &str, name: &SharedString, many: bool, chosen: usize) -> String {
     match many {
         true => format!("{verb} {chosen} Items"),
         false => format!("{verb} “{name}”"),
     }
+}
+
+/// Stands in for the row above it while exactly `modifiers` are held.
+fn alternate(title: &str, modifiers: Modifiers) -> MenuEntry {
+    MenuEntry::item(title).key("", modifiers).option_alternate()
+}
+
+fn view_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
+    VIEWS
+        .iter()
+        .map(|&(title, view)| {
+            (
+                MenuEntry::item(title).checked(demo.view == view),
+                Act::View(view),
+            )
+        })
+        .collect()
 }
 
 fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
