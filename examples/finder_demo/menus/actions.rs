@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use finder_fs::ops::{Conflict, Op};
-use gpui::{Bounds, Context, Window, point, px, size};
+use finder_fs::ops::{Conflict, Op, Restore};
+use gpui::{Bounds, Context, SharedString, Window, point, px, size};
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{ShareItem, SharePicker, SurfaceAnchor, present_share_picker};
 use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
 
 use super::context;
 use crate::app::FinderDemo;
-use crate::data::Column;
+use crate::data::{Column, is_trash};
 use crate::open_finder_window;
 use crate::ops::After;
 use crate::views::header::ColumnSpec;
@@ -29,6 +29,8 @@ pub(crate) enum Act {
     Open,
     OpenWindow,
     Trash,
+    DeleteNow,
+    EmptyTrash,
     Rename,
     Duplicate,
     MakeAlias,
@@ -117,6 +119,8 @@ impl FinderDemo {
             Act::Open => self.open_selected(window, cx),
             Act::OpenWindow => self.open_in_window(cx),
             Act::Trash => self.trash_selection(cx),
+            Act::DeleteNow => self.delete_selection(cx),
+            Act::EmptyTrash => self.empty_trash(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
             Act::Duplicate => self.with_selection(Op::Duplicate, cx),
             Act::MakeAlias => self.with_selection(Op::MakeAlias, cx),
@@ -303,6 +307,7 @@ impl FinderDemo {
             cx,
             move |cx| {
                 let mut cx = cx.clone();
+                crate::sound::Sound::EmptyTrash.play();
                 this.update(&mut cx, |this: &mut FinderDemo, cx| {
                     this.run_op(Op::DeleteImmediately(items.clone()), After::Nothing, cx);
                 })
@@ -313,8 +318,21 @@ impl FinderDemo {
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
         let items = self.paths();
-        if !items.is_empty() {
+        if items.is_empty() {
+            return;
+        }
+        if !is_trash(self.here()) {
             self.remove(Op::Trash(items), cx);
+            return;
+        }
+        let back: Vec<Restore> = finder_fs::put_back::origins(&items)
+            .into_iter()
+            .zip(items)
+            .filter_map(|(to, item)| Some(Restore { item, to: to? }))
+            .collect();
+        if !back.is_empty() {
+            self.deselect();
+            self.run_op(Op::PutBack(back), After::Reveal, cx);
         }
     }
 
@@ -351,10 +369,23 @@ impl FinderDemo {
     }
 
     fn remove(&mut self, op: Op, cx: &mut Context<Self>) {
-        self.selected.clear();
-        self.cursor = None;
-        self.anchor = None;
+        let next = self.survivor();
+        self.deselect();
+        self.choose(next);
         self.run_op(op, After::Nothing, cx);
+    }
+
+    /// Finder moves the selection to the row just below the cursor, unless that row goes too.
+    fn survivor(&self) -> Option<SharedString> {
+        let lines = self.focused_lines();
+        let next = &lines
+            .get(self.line_at(&lines, self.cursor.as_ref()?)? + 1)?
+            .key;
+        let goes = |gone: &SharedString| {
+            next.strip_prefix(&**gone)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        (!self.selected.iter().any(goes)).then(|| next.clone())
     }
 
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {

@@ -141,12 +141,14 @@ impl FinderDemo {
         };
         refresh_edit_menu(&self.journal);
         let at = self.journal.redo_len() - 1;
+        let sound = crate::sound::Sound::of(&undoable.redo, true);
         // Whatever took an undone item's place since is kept, never replaced.
         self.submit(
             undoable.undo,
             Conflict::KeepBoth,
             After::Select,
             Record::Undo(at),
+            sound,
             cx,
         );
     }
@@ -157,11 +159,13 @@ impl FinderDemo {
         };
         refresh_edit_menu(&self.journal);
         let at = self.journal.undo_len() - 1;
+        let sound = crate::sound::Sound::of(&undoable.redo, false);
         self.submit(
             undoable.redo,
             Conflict::KeepBoth,
             After::Select,
             Record::Redo(at),
+            sound,
             cx,
         );
     }

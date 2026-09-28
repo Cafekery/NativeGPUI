@@ -110,6 +110,21 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   on the user's Mac: Notes.txt first where Finder has Archive.zip), so a folder opened in gallery
   view picks a different first item.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
+- [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row
+  last clicked, ⌘-clicked or reached with ⇧-arrow) when that row stays, and nothing when it goes
+  too or there is none. Measured in list, icon and column views: one row, a ⇧-range either way,
+  ⌘-clicked rows, an expanded folder whose first child is the row below.
+- [x] In the Trash, File ▸ Move to Trash reads Put Back (⌘⌫), and an item's menu offers Put Back,
+  Delete Immediately… and Empty Trash. Put Back returns each item to the folder its Trash
+  `.DS_Store` records, selects nothing in the Trash, and selects the items in a window showing
+  that folder, opening one if none does.
+- [x] Sounds, recorded off the audio output: Move to Trash and its redo play
+  `dock/drag to trash.aif`; copy, move, duplicate, compress, Put Back and the undo of a trash or a
+  duplicate play `system/Volume Mount.aif`; rename, new folder, make alias, their undos, Delete
+  Immediately, mount and eject play nothing.
+- [ ] Empty Trash's sound was not measured, as that empties the user's Trash; the demo plays
+  `finder/empty trash.aif`. Finder's undo of Duplicate deletes the copy; the demo moves it to the
+  Trash.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.

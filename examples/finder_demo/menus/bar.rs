@@ -4,8 +4,8 @@ use std::path::Path;
 use finder_fs::volumes::{self, Standard};
 use gpui::{Action, AnyWindowHandle, App, Context, Div, InteractiveElement, Window, actions};
 use native_gpui::{
-    MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, prepend_menu,
-    set_toolbar_search_active,
+    MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, on_menu_title,
+    prepend_menu, set_toolbar_search_active,
 };
 
 use crate::app::FinderDemo;
@@ -106,8 +106,8 @@ actions!(
 
 thread_local! {
     /// Menu validation cannot read the window, so check marks and enabling follow this mirror.
-    static STATE: Cell<(usize, Column, bool, bool, bool)> =
-        const { Cell::new((LIST_VIEW, Column::Name, false, false, false)) };
+    static STATE: Cell<(usize, Column, bool, bool, bool, bool)> =
+        const { Cell::new((LIST_VIEW, Column::Name, false, false, false, false)) };
     static CHOSEN: Cell<((u64, u64, usize), bool, bool, bool)> =
         const { Cell::new(((u64::MAX, 0, 0), false, false, false)) };
 }
@@ -147,11 +147,12 @@ pub(crate) fn remember(demo: &FinderDemo) {
         demo.grouped,
         !demo.selected.is_empty(),
         chosen_state(demo).0,
+        crate::data::is_trash(demo.here()),
     ));
 }
 
 fn enabled(action: &dyn Action) -> bool {
-    let (_, _, _, chosen, refused) = STATE.get();
+    let (_, _, _, chosen, refused, _) = STATE.get();
     let opens: [&dyn Action; 3] = [&OpenSelection, &OpenInNewTab, &OpenInNewWindow];
     if opens.iter().any(|row| action.partial_eq(*row)) {
         return !refused;
@@ -175,7 +176,7 @@ fn enabled(action: &dyn Action) -> bool {
 }
 
 fn checked(action: &dyn Action) -> Option<bool> {
-    let (view, sort, grouped, _, _) = STATE.get();
+    let (view, sort, grouped, _, _, _) = STATE.get();
     let rows: [(&dyn Action, bool); 9] = [
         (&ViewIcons, view == ICON_VIEW),
         (&ViewList, view == LIST_VIEW),
@@ -190,6 +191,15 @@ fn checked(action: &dyn Action) -> Option<bool> {
     rows.into_iter()
         .find(|(row, _)| action.partial_eq(*row))
         .map(|(_, on)| on)
+}
+
+fn titled(action: &dyn Action) -> Option<&'static str> {
+    let in_trash = STATE.get().5;
+    action.partial_eq(&Trash).then_some(if in_trash {
+        "Put Back"
+    } else {
+        "Move to Trash"
+    })
 }
 
 fn cycle_windows(_: &CycleWindows, cx: &mut App) {
@@ -215,6 +225,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(crate::progress_window::show);
     on_menu_state(checked);
     on_menu_enabled(enabled);
+    on_menu_title(titled);
     prepend_menu(
         MenuSection::File,
         [

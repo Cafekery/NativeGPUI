@@ -28,6 +28,7 @@ mod search;
 mod select;
 mod signal;
 mod smart;
+mod sound;
 mod tag_editor;
 mod tags;
 mod thumbs;

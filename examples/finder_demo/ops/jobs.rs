@@ -11,6 +11,7 @@ use native_gpui::{
 use super::After;
 use crate::app::FinderDemo;
 use crate::data::byte_string;
+use crate::sound::Sound;
 
 const CANCEL_W: f32 = 40.;
 
@@ -28,6 +29,7 @@ pub(crate) struct JobRow {
     pub(crate) op: Op,
     pub(crate) after: After,
     pub(crate) record: Record,
+    pub(crate) sound: Option<Sound>,
     pub(crate) label: String,
     pub(crate) done_bytes: u64,
     pub(crate) total_bytes: u64,
@@ -36,13 +38,20 @@ pub(crate) struct JobRow {
 }
 
 impl JobRow {
-    pub(crate) fn new(id: JobId, op: Op, after: After, record: Record) -> Self {
+    pub(crate) fn new(
+        id: JobId,
+        op: Op,
+        after: After,
+        record: Record,
+        sound: Option<Sound>,
+    ) -> Self {
         let label = describe(&op);
         Self {
             id,
             op,
             after,
             record,
+            sound,
             label,
             done_bytes: 0,
             total_bytes: 0,
@@ -170,7 +179,8 @@ impl FinderDemo {
         after: After,
         cx: &mut Context<Self>,
     ) {
-        self.submit(op, conflict, after, Record::New, cx);
+        let sound = Sound::of(&op, false);
+        self.submit(op, conflict, after, Record::New, sound, cx);
     }
 
     pub(crate) fn submit(
@@ -179,10 +189,11 @@ impl FinderDemo {
         conflict: Conflict,
         after: After,
         record: Record,
+        sound: Option<Sound>,
         cx: &mut Context<Self>,
     ) {
         let id = self.queue.submit(op.clone(), conflict);
-        self.jobs.push(JobRow::new(id, op, after, record));
+        self.jobs.push(JobRow::new(id, op, after, record, sound));
         cx.notify();
     }
 
@@ -230,6 +241,9 @@ impl FinderDemo {
                     let row = self.jobs.remove(pos);
                     match result {
                         Ok(done) => {
+                            if let Some(sound) = row.sound.filter(|_| !done.results.is_empty()) {
+                                sound.play();
+                            }
                             landed |= self.note(&row, &done);
                             let touched = crate::ops::touched(&row.op);
                             self.settled(touched, done.results, row.after, cx);
