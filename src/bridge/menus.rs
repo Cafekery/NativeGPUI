@@ -3,6 +3,7 @@ use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use crate::controls::MenuView;
 use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
@@ -52,9 +53,12 @@ pub struct MenuCommand {
     checked: bool,
     selector: Option<Sel>,
     fill: Option<Rc<Fill>>,
+    view: Option<Rc<ViewFill>>,
 }
 
 type Fill = dyn Fn() -> Vec<MenuCommand>;
+
+type ViewFill = dyn Fn() -> MenuView;
 
 impl MenuCommand {
     pub fn new(title: impl Into<String>, action: impl Action) -> Self {
@@ -71,6 +75,15 @@ impl MenuCommand {
             title: title.into(),
             selector: Some(Sel::register(selector)),
             ..Self::separator()
+        }
+    }
+
+    /// A row showing the view `view` builds each time its menu is about to show; a pick in the view
+    /// sends `action`.
+    pub fn view(view: impl Fn() -> MenuView + 'static, action: impl Action) -> Self {
+        Self {
+            view: Some(Rc::new(view)),
+            ..Self::new(String::new(), action)
         }
     }
 
@@ -121,6 +134,7 @@ impl MenuCommand {
             checked: false,
             selector: None,
             fill: None,
+            view: None,
         }
     }
 
@@ -449,6 +463,9 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             row
         }
     };
+    if let Some(view) = command.view {
+        show_view(mtm, &row, view);
+    }
     if command.alternate {
         row.setAlternate(true);
     }
@@ -457,6 +474,58 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     }
     set_state(&row, command.checked);
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
+}
+
+struct ViewRow {
+    row: Weak<NSMenuItem>,
+    fill: Rc<ViewFill>,
+    shown: MenuView,
+}
+
+thread_local! {
+    static VIEWS: RefCell<Vec<ViewRow>> = const { RefCell::new(Vec::new()) };
+}
+
+fn show_view(mtm: MainThreadMarker, row: &NSMenuItem, fill: Rc<ViewFill>) {
+    let shown = fill();
+    row.setView(Some(&shown.make_view(mtm)));
+    VIEWS.with_borrow_mut(|views| {
+        views.retain(|view| view.row.load().is_some());
+        views.push(ViewRow {
+            row: Weak::new(row),
+            fill,
+            shown,
+        });
+    });
+}
+
+fn is_row(view: &ViewRow, row: &NSMenuItem) -> bool {
+    view.row
+        .load()
+        .is_some_and(|known| std::ptr::eq(&*known, row))
+}
+
+fn refresh_view(row: &NSMenuItem) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let fill = VIEWS.with_borrow(|views| {
+        views
+            .iter()
+            .find(|view| is_row(view, row))
+            .map(|view| view.fill.clone())
+    });
+    let Some(fill) = fill else {
+        return;
+    };
+    let fresh = fill();
+    let changed = VIEWS.with_borrow_mut(|views| {
+        let view = views.iter_mut().find(|view| is_row(view, row))?;
+        (view.shown != fresh).then(|| view.shown = fresh.clone())
+    });
+    if changed.is_some() {
+        row.setView(Some(&fresh.make_view(mtm)));
+    }
 }
 
 thread_local! {
@@ -660,6 +729,7 @@ define_class!(
             let Some(action) = action_of(item) else {
                 return Bool::YES;
             };
+            refresh_view(item);
             if let Some(on) = STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
             {
                 set_state(item, on);
