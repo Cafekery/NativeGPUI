@@ -1,7 +1,9 @@
 use std::ffi::c_void;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
+use block2::RcBlock;
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::{Allocated, Retained, autoreleasepool};
 use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -12,6 +14,7 @@ use objc2_foundation::{
 };
 
 use super::{Done, Op, Progress, keep_both_path, split_name, taken, url};
+use crate::tags::Tag;
 
 /// Finder's Quick Actions that write files.
 #[derive(Clone, Debug)]
@@ -28,6 +31,14 @@ pub enum Quick {
         metadata: bool,
     },
     RemoveBackground(Vec<PathBuf>),
+    /// `item` from `start` to `end` seconds, written over `into`, which may be `item` itself.
+    Trim {
+        item: PathBuf,
+        start: f64,
+        end: f64,
+        into: PathBuf,
+        tags: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +118,7 @@ impl Quick {
             | Quick::CreatePdf(items)
             | Quick::Convert { items, .. }
             | Quick::RemoveBackground(items) => items,
+            Quick::Trim { item, .. } => std::slice::from_ref(item),
         }
     }
 
@@ -117,6 +129,7 @@ impl Quick {
             Quick::CreatePdf(_) => "Create PDF",
             Quick::Convert { .. } => "Convert Image",
             Quick::RemoveBackground(_) => "Remove Background",
+            Quick::Trim { .. } => "Trim",
         }
     }
 }
@@ -132,6 +145,13 @@ pub(super) fn perform(quick: Quick, progress: &mut dyn FnMut(Progress)) -> io::R
             metadata,
         } => convert(items, format, size, metadata, progress),
         Quick::RemoveBackground(items) => remove_background(items, progress),
+        Quick::Trim {
+            item,
+            start,
+            end,
+            into,
+            tags,
+        } => trim(&item, start, end, &into, &tags, progress),
     })
 }
 
@@ -159,6 +179,38 @@ struct Affine {
 
 unsafe impl Encode for Affine {
     const ENCODING: Encoding = Encoding::Struct("CGAffineTransform", &[f64::ENCODING; 6]);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Time {
+    value: i64,
+    scale: i32,
+    flags: u32,
+    epoch: i64,
+}
+
+unsafe impl Encode for Time {
+    const ENCODING: Encoding = Encoding::Struct(
+        "?",
+        &[i64::ENCODING, i32::ENCODING, u32::ENCODING, i64::ENCODING],
+    );
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TimeRange {
+    start: Time,
+    duration: Time,
+}
+
+unsafe impl Encode for TimeRange {
+    const ENCODING: Encoding = Encoding::Struct("?", &[Time::ENCODING, Time::ENCODING]);
+}
+
+#[link(name = "CoreMedia", kind = "framework")]
+unsafe extern "C" {
+    fn CMTimeMakeWithSeconds(seconds: f64, preferred_timescale: i32) -> Time;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -226,6 +278,7 @@ unsafe extern "C" {
     static AVFileTypeQuickTimeMovie: &'static NSString;
     static AVFileTypeMPEG4: &'static NSString;
     static AVFileTypeAppleM4V: &'static NSString;
+    static AVAssetExportPresetPassthrough: &'static NSString;
 }
 
 #[link(name = "Vision", kind = "framework")]
@@ -376,7 +429,7 @@ fn turned(orientation: i64, left: bool) -> i64 {
 
 fn staging(path: &Path) -> PathBuf {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(".{name}.rotating"))
+    path.with_file_name(format!(".{name}.staged"))
 }
 
 /// Swaps `staged` in for `original`, which keeps its tags, labels and other attributes.
@@ -782,6 +835,88 @@ fn cut_out(path: &Path, orientation: i64) -> Option<Owned> {
     (status == 0).then(|| Owned::new(image)).flatten()
 }
 
+const EXPORT_COMPLETED: isize = 3;
+
+/// The kept samples are copied as they are. Finder keeps no undo for a trim.
+fn trim(
+    item: &Path,
+    start: f64,
+    end: f64,
+    into: &Path,
+    tags: &[String],
+    progress: &mut dyn FnMut(Progress),
+) -> io::Result<Done> {
+    progress(Progress {
+        done: 0,
+        total: 1,
+        current: Some(item.to_path_buf()),
+    });
+    let (Some(assets), Some(exports)) = (
+        AnyClass::get(c"AVURLAsset"),
+        AnyClass::get(c"AVAssetExportSession"),
+    ) else {
+        return Err(unreadable(item));
+    };
+    let asset: Option<Retained<AnyObject>> = unsafe {
+        msg_send![assets, URLAssetWithURL: &*url(item), options: std::ptr::null::<AnyObject>()]
+    };
+    let asset = asset.ok_or_else(|| unreadable(item))?;
+    let length: Time = unsafe { msg_send![&asset, duration] };
+    let scale = length.scale.max(600);
+    let session: Option<Retained<AnyObject>> = unsafe {
+        let made: Allocated<AnyObject> = msg_send![exports, alloc];
+        msg_send![made, initWithAsset: &*asset, presetName: AVAssetExportPresetPassthrough]
+    };
+    let session = session.ok_or_else(|| unreadable(item))?;
+    let staged = staging(into);
+    let _ = std::fs::remove_file(&staged);
+    let range = unsafe {
+        TimeRange {
+            start: CMTimeMakeWithSeconds(start, scale),
+            duration: CMTimeMakeWithSeconds(end - start, scale),
+        }
+    };
+    let (finished, wait) = mpsc::channel();
+    let handler = RcBlock::new(move || {
+        let _ = finished.send(());
+    });
+    unsafe {
+        let _: () = msg_send![&session, setOutputURL: &*url(&staged)];
+        let _: () = msg_send![&session, setOutputFileType: movie_type(into)];
+        let _: () = msg_send![&session, setTimeRange: range];
+        let _: () = msg_send![&session, exportAsynchronouslyWithCompletionHandler: &*handler];
+    }
+    let _ = wait.recv();
+    let status: isize = unsafe { msg_send![&session, status] };
+    if status != EXPORT_COMPLETED {
+        let _ = std::fs::remove_file(&staged);
+        let error: Option<Retained<NSError>> = unsafe { msg_send![&session, error] };
+        return Err(error.map_or_else(|| unreadable(item), super::io_error));
+    }
+    if into == item {
+        replace(item, &staged)?;
+    } else {
+        if let Err(err) = std::fs::rename(&staged, into) {
+            let _ = std::fs::remove_file(&staged);
+            return Err(err);
+        }
+        if !tags.is_empty() {
+            let tags: Vec<Tag> = tags
+                .iter()
+                .map(|name| Tag {
+                    name: name.clone(),
+                    color: 0,
+                })
+                .collect();
+            crate::tags::set(into, &tags)?;
+        }
+    }
+    Ok(Done {
+        results: vec![into.to_path_buf()],
+        undo: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::turned;
@@ -803,4 +938,3 @@ mod tests {
         assert_eq!(turned(1, false), 6);
     }
 }
-
