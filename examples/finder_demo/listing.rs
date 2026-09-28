@@ -13,12 +13,9 @@ use crate::data::{Bands, Column, Folders, Line, Row, today};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::Rung;
 
-/// Listings built for other folders are dropped past this many.
 const COLUMNS_HELD: usize = 32;
-/// Key maps kept for the listings last asked about.
 const INDEXES_HELD: usize = 4;
-/// Different keys a listing is scanned for before it is mapped.
-const SCANS: usize = 2;
+const SCANS_BEFORE_MAP: usize = 2;
 
 pub(crate) enum Slot {
     Header(SharedString),
@@ -37,7 +34,7 @@ pub(crate) struct Keys {
 }
 
 #[derive(PartialEq)]
-pub(crate) struct Stamp {
+struct Stamp {
     here: &'static str,
     sort: Column,
     ascending: bool,
@@ -48,10 +45,9 @@ pub(crate) struct Stamp {
     hits: u64,
 }
 
-/// The lines of a walk, where it opened each disclosed folder, and every folder it read.
 pub(crate) struct Walk {
     lines: Vec<Line>,
-    at: Vec<(usize, &'static str)>,
+    opened: Vec<(usize, &'static str)>,
     read: Vec<&'static str>,
 }
 
@@ -80,7 +76,6 @@ type Chain = (Vec<Rung>, Option<Line>);
 
 type ChainKey = (Option<SharedString>, bool, &'static str, u64, u64);
 
-/// Where keys sit in one listing: scanned for at first, mapped once asked for often.
 struct Index {
     lines: Weak<Vec<Line>>,
     scans: usize,
@@ -92,7 +87,7 @@ struct Index {
 struct Built {
     lines: Arc<Vec<Line>>,
     used: Option<usize>,
-    at: Arc<Vec<(usize, &'static str)>>,
+    opened: Arc<Vec<(usize, &'static str)>>,
     read: Arc<Vec<(&'static str, u64)>>,
 }
 
@@ -132,18 +127,17 @@ impl Keys {
     }
 
     pub(crate) fn extend(&mut self, keys: impl IntoIterator<Item = SharedString>) {
-        let set = Arc::make_mut(&mut self.keys);
-        let was = set.len();
-        set.extend(keys);
-        if set.len() != was {
-            self.rev = next_rev();
-        }
+        self.resize(|set| set.extend(keys));
     }
 
     pub(crate) fn retain(&mut self, keep: impl FnMut(&SharedString) -> bool) {
+        self.resize(|set| set.retain(keep));
+    }
+
+    fn resize(&mut self, change: impl FnOnce(&mut HashSet<SharedString>)) {
         let set = Arc::make_mut(&mut self.keys);
         let was = set.len();
-        set.retain(keep);
+        change(set);
         if set.len() != was {
             self.rev = next_rev();
         }
@@ -157,10 +151,7 @@ impl Keys {
 
 impl Default for Keys {
     fn default() -> Self {
-        Self {
-            keys: Arc::default(),
-            rev: next_rev(),
-        }
+        std::iter::empty().collect()
     }
 }
 
@@ -181,18 +172,21 @@ impl FromIterator<SharedString> for Keys {
     }
 }
 
+fn line(row: &Arc<Row>, depth: usize) -> Line {
+    Line {
+        key: row.path.clone(),
+        row: row.clone(),
+        depth,
+    }
+}
+
 pub(crate) fn lines_of(rows: &[Arc<Row>], hidden: bool) -> Vec<Line> {
     rows.iter()
         .filter(|row| hidden || !row.hidden)
-        .map(|row| Line {
-            key: row.path.clone(),
-            row: row.clone(),
-            depth: 0,
-        })
+        .map(|row| line(row, 0))
         .collect()
 }
 
-/// Whether `name` folded holds `folded`, without folding an ASCII name.
 pub(crate) fn folds_to(name: &str, folded: &str) -> bool {
     match name.is_ascii() && folded.is_ascii() {
         true => {
@@ -208,40 +202,25 @@ pub(crate) fn folds_to(name: &str, folded: &str) -> bool {
 
 impl Shape {
     pub(crate) fn build(&self, held: &Held<'_>) -> Walk {
-        let mut out = Vec::new();
-        let mut at = Vec::new();
+        let (mut lines, mut opened, mut read) = (Vec::new(), Vec::new(), Vec::new());
         if !self.tagged {
-            self.collect(held, self.stamp.here, 0, &mut out, &mut at);
+            self.collect(held, self.stamp.here, 0, 0, &mut lines, &mut opened);
+            read.push(self.stamp.here);
+            read.extend(opened.iter().map(|&(_, id)| id));
         }
-        let read = (!self.tagged)
-            .then_some(self.stamp.here)
-            .into_iter()
-            .chain(at.iter().map(|(_, id)| *id))
-            .collect();
-        if !self.results {
-            return Walk {
-                lines: out,
-                at,
-                read,
-            };
+        if self.results {
+            let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
+            let mut merged = lines_of(&self.hits, true);
+            merged.extend(lines.into_iter().filter(|line| {
+                !ranked.contains(line.key.as_ref())
+                    && self.criteria.iter().all(|it| it.holds(&line.row))
+            }));
+            lines = merged;
+            opened.clear();
         }
-        let ranked: HashSet<&str> = self.hits.iter().map(|row| row.path.as_ref()).collect();
-        let mut merged: Vec<Line> = self
-            .hits
-            .iter()
-            .map(|row| Line {
-                key: row.path.clone(),
-                row: row.clone(),
-                depth: 0,
-            })
-            .collect();
-        merged.extend(out.into_iter().filter(|line| {
-            !ranked.contains(line.key.as_ref())
-                && self.criteria.iter().all(|it| it.holds(&line.row))
-        }));
         Walk {
-            lines: merged,
-            at: Vec::new(),
+            lines,
+            opened,
             read,
         }
     }
@@ -254,21 +233,10 @@ impl Shape {
         &self,
         held: &Held<'_>,
         id: &'static str,
-        depth: usize,
-        out: &mut Vec<Line>,
-        at: &mut Vec<(usize, &'static str)>,
-    ) {
-        self.collect_from(held, id, 0, depth, out, at);
-    }
-
-    fn collect_from(
-        &self,
-        held: &Held<'_>,
-        id: &'static str,
         from: usize,
         depth: usize,
         out: &mut Vec<Line>,
-        at: &mut Vec<(usize, &'static str)>,
+        opened: &mut Vec<(usize, &'static str)>,
     ) {
         let Some(all) = held(id) else {
             return;
@@ -282,27 +250,20 @@ impl Shape {
             .filter(|row| self.stamp.hidden || !row.hidden)
             .filter(|row| query.is_empty() || folds_to(&row.name, &query))
             .filter(|row| type_filter.is_empty() || folds_to(&row.name, &type_filter));
-
         for row in rows {
             let open = row
                 .opens
                 .filter(|_| self.tree && self.expanded.contains(&row.path));
-            out.push(Line {
-                key: row.path.clone(),
-                row: row.clone(),
-                depth,
-            });
+            out.push(line(row, depth));
             if let Some(into) = open {
-                at.push((out.len() - 1, into));
-                self.collect(held, into, depth + 1, out, at);
+                opened.push((out.len() - 1, into));
+                self.collect(held, into, 0, depth + 1, out, opened);
             }
         }
     }
 }
 
 impl Listings {
-    /// Drops what a folder change left stale; a disclosed folder that changed is read again in
-    /// place rather than the whole tree.
     fn recheck(&mut self, folders: &Folders, expanded: u64) {
         let stale = |built: &Built| built.read.iter().any(|&(id, rev)| folders.rev(id) != rev);
         if self.flat.as_ref().is_some_and(stale) {
@@ -320,7 +281,7 @@ impl Listings {
             .map(|&(id, _)| id)
             .collect();
         let edits: Vec<Edit> = tree
-            .at
+            .opened
             .iter()
             .filter(|(_, id)| changed.contains(id))
             .filter_map(|&(at, id)| {
@@ -342,6 +303,17 @@ impl Listings {
         }
         self.edits.extend(edits);
     }
+
+    fn store(&mut self, built: Built, tree: bool, flat: bool) {
+        self.edits.clear();
+        self.edited = self.expanded;
+        if tree {
+            self.tree = Some(built.clone());
+        }
+        if flat {
+            self.flat = Some(built);
+        }
+    }
 }
 
 impl FinderDemo {
@@ -353,23 +325,20 @@ impl FinderDemo {
         if !self.grouped {
             return None;
         }
-        // Date bands are named for the day they are drawn on.
         let day = match self.sort.dated() {
             true => today(),
             false => 0.,
         };
-        let cached = self
-            .listings()
+        let mut listings = self.listings();
+        if let Some(banded) = listings
             .slots
             .as_ref()
             .filter(|banded| Arc::ptr_eq(&banded.lines, lines) && banded.day == day)
-            .map(|banded| (banded.slots.clone(), banded.at.clone()));
-        if let Some(found) = cached {
-            return Some(found);
+        {
+            return Some((banded.slots.clone(), banded.at.clone()));
         }
         let (slots, at) = self.build_slots(lines);
-        let (slots, at) = (Arc::new(slots), Arc::new(at));
-        self.listings().slots = Some(Banded {
+        listings.slots = Some(Banded {
             lines: lines.clone(),
             day,
             slots: slots.clone(),
@@ -378,7 +347,7 @@ impl FinderDemo {
         Some((slots, at))
     }
 
-    fn build_slots(&self, lines: &[Line]) -> (Vec<Slot>, Vec<usize>) {
+    fn build_slots(&self, lines: &[Line]) -> (Arc<Vec<Slot>>, Arc<Vec<usize>>) {
         let mut bands = Bands::new(self.sort);
         let mut band: Option<SharedString> = None;
         let mut out = Vec::with_capacity(lines.len() + 4);
@@ -391,7 +360,7 @@ impl FinderDemo {
             at.push(out.len());
             out.push(Slot::Row(index));
         }
-        (out, at)
+        (Arc::new(out), Arc::new(at))
     }
 
     pub(crate) fn slot_of(&self, lines: &Arc<Vec<Line>>, index: usize) -> usize {
@@ -417,8 +386,8 @@ impl FinderDemo {
         if let Some(lines) = fresh {
             return lines;
         }
-        let mut edits: Vec<Edit> = match tree {
-            true => self.listings().edits.drain(..).collect(),
+        let mut edits = match tree {
+            true => std::mem::take(&mut self.listings().edits),
             false => Vec::new(),
         };
         edits.sort_by_key(|(at, _, _)| *at);
@@ -450,7 +419,6 @@ impl FinderDemo {
         .then_some(self.show_hidden)
     }
 
-    /// `plain` once the window arrives in another folder, which drops every filter and search.
     pub(crate) fn plain_on_arrival(&self) -> Option<bool> {
         self.expanded.is_empty().then_some(self.show_hidden)
     }
@@ -459,17 +427,13 @@ impl FinderDemo {
         if id != self.here() || self.plain() != Some(hidden) {
             return;
         }
-        let built = Built {
-            lines: Arc::new(lines),
-            used: self.folders.get(id).map(|folder| folder.rows.len()),
-            at: Arc::default(),
-            read: Arc::new(vec![(id, self.folders.rev(id))]),
+        let walk = Walk {
+            lines,
+            opened: Vec::new(),
+            read: vec![id],
         };
-        let mut listings = self.listings();
-        listings.edits.clear();
-        listings.edited = listings.expanded;
-        listings.tree = Some(built.clone());
-        listings.flat = Some(built);
+        let built = self.walked(walk, self.folders.get(id).map(|folder| folder.rows.len()));
+        self.listings().store(built, true, true);
     }
 
     fn stamp(&self, by: (Column, bool)) -> Stamp {
@@ -522,22 +486,15 @@ impl FinderDemo {
             return;
         }
         let built = self.walked(walk, self.appendable());
-        let mut listings = self.listings();
-        listings.edits.clear();
-        listings.edited = listings.expanded;
-        if shape.tree {
-            listings.tree = Some(built.clone());
-        }
-        if !shape.tree || shape.expanded.is_empty() {
-            listings.flat = Some(built);
-        }
+        let flat = !shape.tree || shape.expanded.is_empty();
+        self.listings().store(built, shape.tree, flat);
     }
 
     fn walked(&self, walk: Walk, used: Option<usize>) -> Built {
         Built {
             lines: Arc::new(walk.lines),
             used,
-            at: Arc::new(walk.at),
+            opened: Arc::new(walk.opened),
             read: Arc::new(
                 walk.read
                     .into_iter()
@@ -547,14 +504,13 @@ impl FinderDemo {
         }
     }
 
-    /// The folders a listing read before, and those it opened since, as they stand now.
     fn reread(
         &self,
         read: &[(&'static str, u64)],
-        at: &[(usize, &'static str)],
+        opened: &[(usize, &'static str)],
     ) -> Arc<Vec<(&'static str, u64)>> {
         let mut ids: Vec<&'static str> = read.iter().map(|(id, _)| *id).collect();
-        ids.extend(at.iter().map(|(_, id)| *id));
+        ids.extend(opened.iter().map(|(_, id)| *id));
         ids.sort_unstable();
         ids.dedup();
         Arc::new(
@@ -566,14 +522,11 @@ impl FinderDemo {
 
     fn take(&self, tree: bool) -> Option<Built> {
         let mut listings = self.listings();
+        let listings = &mut *listings;
         listings.slots = None;
-        let taken = match tree {
-            true => listings.tree.take(),
-            false => listings.flat.take(),
-        };
-        let twin = match tree {
-            true => &mut listings.flat,
-            false => &mut listings.tree,
+        let (taken, twin) = match tree {
+            true => (listings.tree.take(), &mut listings.flat),
+            false => (listings.flat.take(), &mut listings.tree),
         };
         if twin
             .as_ref()
@@ -605,10 +558,10 @@ impl FinderDemo {
         let rows = rows?;
         let used = built.used.filter(|used| rows > *used)?;
         let lines = Arc::make_mut(&mut built.lines);
-        let at = Arc::make_mut(&mut built.at);
+        let opened = Arc::make_mut(&mut built.opened);
         self.shape(tree)
-            .collect_from(&self.held(), id, used, 0, lines, at);
-        built.read = self.reread(&built.read, at);
+            .collect(&self.held(), id, used, 0, lines, opened);
+        built.read = self.reread(&built.read, opened);
         built.used = Some(rows);
         Some(built)
     }
@@ -631,8 +584,8 @@ impl FinderDemo {
         let old = Arc::try_unwrap(old).unwrap_or_else(|shared| (*shared).clone());
         let mut out: Vec<Line> = Vec::with_capacity(old.len() + grown);
         let mut marks: Vec<(usize, &'static str)> =
-            Vec::with_capacity(built.at.len() + edits.len());
-        let mut held = built.at.iter().peekable();
+            Vec::with_capacity(built.opened.len() + edits.len());
+        let mut held = built.opened.iter().peekable();
         let mut src = old.into_iter();
         let mut at = 0;
         for (index, _, into) in edits {
@@ -659,7 +612,7 @@ impl FinderDemo {
             while held.next_if(|(held_at, _)| *held_at < at).is_some() {}
             if let Some(into) = into {
                 marks.push((out.len() - 1, into));
-                shape.collect(&self.held(), into, depth + 1, &mut out, &mut marks);
+                shape.collect(&self.held(), into, 0, depth + 1, &mut out, &mut marks);
             }
         }
         let base = out.len();
@@ -673,7 +626,7 @@ impl FinderDemo {
             lines: Arc::new(out),
             used: built.used,
             read: self.reread(&built.read, &marks),
-            at: Arc::new(marks),
+            opened: Arc::new(marks),
         })
     }
 
@@ -716,36 +669,37 @@ impl FinderDemo {
 
     pub(crate) fn column_listing(&self, folder: &'static str) -> Arc<Vec<Line>> {
         let rows = self.folders.get(folder).map(|listing| listing.rows.len());
-        let fresh = self
-            .listings()
+        let mut listings = self.listings();
+        if let Some(built) = listings
             .columns
             .get(folder)
             .filter(|built| built.used == rows)
-            .map(|built| built.lines.clone());
-        if let Some(lines) = fresh {
-            return lines;
+        {
+            return built.lines.clone();
         }
-        let taken = self.listings().columns.remove(folder);
+        let taken = listings.columns.remove(folder);
         let built = self
             .extended(taken, folder, false, rows)
             .unwrap_or_else(|| {
-                let mut lines = Vec::new();
-                let mut at = Vec::new();
+                let (mut lines, mut opened) = (Vec::new(), Vec::new());
                 self.shape(false)
-                    .collect(&self.held(), folder, 0, &mut lines, &mut at);
-                Built {
-                    lines: Arc::new(lines),
-                    used: rows,
-                    at: Arc::new(at),
-                    read: Arc::new(vec![(folder, self.folders.rev(folder))]),
-                }
+                    .collect(&self.held(), folder, 0, 0, &mut lines, &mut opened);
+                let read = vec![folder];
+                self.walked(
+                    Walk {
+                        lines,
+                        opened,
+                        read,
+                    },
+                    rows,
+                )
             });
-        let mut listings = self.listings();
         if listings.columns.len() >= COLUMNS_HELD {
             listings.columns.clear();
         }
-        listings.columns.insert(folder, built.clone());
-        built.lines
+        let lines = built.lines.clone();
+        listings.columns.insert(folder, built);
+        lines
     }
 
     pub(crate) fn focused_lines(&self) -> Arc<Vec<Line>> {
@@ -760,7 +714,6 @@ impl FinderDemo {
         self.column_listing(chain[focused].folder)
     }
 
-    /// The browser's columns change only with the cursor, the selection's size and the folders.
     pub(crate) fn column_chain(&self) -> Chain {
         let key = (
             self.cursor.clone(),
@@ -803,12 +756,10 @@ impl FinderDemo {
             }
         };
         let index = &mut held[at];
-        if let Some((last, found)) = &index.last {
-            if last == key {
-                return *found;
-            }
+        if let Some((_, found)) = index.last.as_ref().filter(|(last, _)| last == key) {
+            return *found;
         }
-        if index.keys.is_none() && index.scans >= SCANS {
+        if index.keys.is_none() && index.scans >= SCANS_BEFORE_MAP {
             let mut keys = HashMap::with_capacity(lines.len());
             for (at, line) in lines.iter().enumerate() {
                 keys.entry(line.key.clone()).or_insert(at);
@@ -826,13 +777,14 @@ impl FinderDemo {
         found
     }
 
-    /// Tab walks names in Finder's order, which costs a sort of the whole listing, so each
-    /// listing sorts once.
     pub(crate) fn name_order(&self, lines: &Arc<Vec<Line>>) -> Arc<[usize]> {
-        if let Some((held, order)) = &self.listings().names {
-            if held.upgrade().is_some_and(|held| Arc::ptr_eq(&held, lines)) {
-                return order.clone();
-            }
+        if let Some((_, order)) = self
+            .listings()
+            .names
+            .as_ref()
+            .filter(|(held, _)| std::ptr::eq(held.as_ptr(), Arc::as_ptr(lines)))
+        {
+            return order.clone();
         }
         let mut order: Vec<usize> = (0..lines.len()).collect();
         order.sort_by(|&i, &j| finder_fs::sort::name_cmp(&lines[i].row.name, &lines[j].row.name));
