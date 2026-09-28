@@ -1,5 +1,6 @@
 use std::cell::Cell;
 
+use finder_fs::ds_store::IconOptions;
 use gpui::{
     App, Bounds, Context, Div, Entity, FocusHandle, IntoElement, ParentElement, Pixels, Render,
     SharedString, Size, Styled, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind,
@@ -7,8 +8,8 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    CheckState, MenuEntry, NativePopup, native_checkbox, native_popup, native_root, native_slider,
-    window_options,
+    CheckState, MenuEntry, NativePopup, native_checkbox, native_popup, native_radio, native_root,
+    native_slider, window_options,
 };
 use objc2::msg_send;
 use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
@@ -19,7 +20,9 @@ use crate::frame::ns_window;
 use crate::menus::ShowViewOptions;
 use crate::view::{ICON_VIEW, LIST_VIEW};
 use crate::views::header::column_title;
-use crate::views::icon::Arrangement;
+use crate::views::icon::{Arrangement, SIZE_STEPS, size_slider, slider_size};
+
+const TEXT_SIZES: [f32; 7] = [10., 11., 12., 13., 14., 15., 16.];
 
 /// `None` is a separator.
 const ARRANGEMENTS: [Option<Arrangement>; 12] = [
@@ -55,14 +58,13 @@ const SHOW_COLUMNS: [(&str, Option<Column>); 12] = [
 
 const TITLEBAR_H: f32 = 34.;
 const WIDTH: f32 = 268.;
-const HEIGHT: f32 = 170.;
-const LIST_HEIGHT: f32 = 341.;
-
 fn panel_size(view: usize) -> Size<Pixels> {
-    match view {
-        LIST_VIEW => size(px(WIDTH), px(LIST_HEIGHT)),
-        _ => size(px(WIDTH), px(HEIGHT)),
-    }
+    let height = match view {
+        LIST_VIEW => 341.,
+        ICON_VIEW => 182. + TITLEBAR_H,
+        _ => 170.,
+    };
+    size(px(WIDTH), px(height))
 }
 
 pub(crate) const CONTEXT: &str = "ViewOptions";
@@ -85,7 +87,7 @@ impl ViewOptions {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(Self::label(label).w(px(74.)))
+            .child(Self::label(label).w(px(86.)))
             .child(control)
     }
 
@@ -160,7 +162,7 @@ impl Render for ViewOptions {
             .unwrap_or("Finder");
         window.set_window_title(title);
         let sort = SORT_KEYS.iter().position(|column| *column == state.sort);
-        let icon_size = state.icon_size;
+        let options = state.icon_options();
         let icons = state.view == ICON_VIEW;
         let arranged = state.arrangement().filter(|_| icons);
         let columns = (state.view == LIST_VIEW).then(|| {
@@ -199,22 +201,103 @@ impl Render for ViewOptions {
                     },
                 ))
                 .when(icons, |panel| {
-                    panel.child(Self::row(
-                        "Icon size:",
-                        native_slider("ng.finder.options.size", icon_size)
-                            .range(32., 128.)
+                    let change = |change: fn(&mut IconOptions, f64)| {
+                        let demo = demo.clone();
+                        move |value: &f64, _: &mut Window, cx: &mut App| {
+                            let value = *value;
+                            demo.update(cx, |this, cx| {
+                                this.change_icon_options(|options| change(options, value), cx);
+                            });
+                        }
+                    };
+                    let label = |bottom: bool, title: &str| {
+                        let demo = demo.clone();
+                        native_radio(
+                            ("ng.finder.options.label", usize::from(bottom)),
+                            options.bottom == bottom,
+                        )
+                        .title(title)
+                        .on_change(move |_: &bool, _, cx| {
+                            demo.update(cx, |this, cx| {
+                                this.change_icon_options(
+                                    |options| options.label_on_bottom = Some(bottom),
+                                    cx,
+                                );
+                            });
+                        })
+                    };
+                    let size = SharedString::from(format!("{0} × {0}", options.size));
+                    panel
+                        .child(Self::row(
+                            "Icon size:",
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(tokens::small_system_font_size())
+                                        .text_color(system_color(SystemColor::SecondaryLabel))
+                                        .child(size),
+                                )
+                                .child(
+                                    native_slider(
+                                        "ng.finder.options.size",
+                                        size_slider(options.size),
+                                    )
+                                    .range(0., SIZE_STEPS)
+                                    .on_change(change(
+                                        |options, step| {
+                                            options.icon_size = Some(slider_size(step));
+                                        },
+                                    )),
+                                ),
+                        ))
+                        .child(Self::row(
+                            "Grid spacing:",
+                            native_slider("ng.finder.options.spacing", f64::from(options.spacing))
+                                .range(1., 100.)
+                                .on_change(change(|options, spacing| {
+                                    options.grid_spacing = Some(spacing.round() as f32);
+                                })),
+                        ))
+                        .child(Self::row(
+                            "Text size:",
+                            native_popup(
+                                "ng.finder.options.text",
+                                TEXT_SIZES
+                                    .iter()
+                                    .position(|size| *size == options.text)
+                                    .unwrap_or(2),
+                            )
+                            .entries(
+                                TEXT_SIZES
+                                    .iter()
+                                    .map(|size| MenuEntry::item(size.to_string())),
+                            )
                             .on_change({
                                 let demo = demo.clone();
-                                move |value: &f64, _, cx| {
-                                    let size = (value / 8.).round() * 8.;
+                                move |index: &usize, _, cx| {
+                                    let Some(size) = TEXT_SIZES.get(*index).copied() else {
+                                        return;
+                                    };
                                     demo.update(cx, |this, cx| {
-                                        this.icon_size = size;
-                                        crate::prefs::set_icon_size(size as f32);
-                                        cx.notify();
+                                        this.change_icon_options(
+                                            |options| options.text_size = Some(size),
+                                            cx,
+                                        );
                                     });
                                 }
                             }),
-                    ))
+                        ))
+                        .child(Self::row(
+                            "Label position:",
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(label(true, "Bottom"))
+                                .child(label(false, "Right")),
+                        ))
                 })
                 .children(columns),
         )

@@ -66,6 +66,7 @@ const SAVE_EVERY: Duration = Duration::from_secs(3600);
 const KINDS_WARM: usize = 400;
 /// gpui gives shutdown handlers about 200 ms.
 const QUIT_WAIT: Duration = Duration::from_millis(150);
+pub(crate) const WINDOW_W: f32 = 1200.;
 
 fn main() {
     settings::apply_names();
@@ -215,7 +216,7 @@ pub(crate) fn open_finder_window(
     let step = px(extra as f32 * 30.);
     let bounds = WindowBounds::Windowed(Bounds {
         origin: point(px(160.) + step, px(120.) + step),
-        size: size(px(1200.), px(772.)),
+        size: size(px(WINDOW_W), px(772.)),
     });
     finder_window(start, bounds, extra == 0, true, cx)
 }
@@ -262,7 +263,9 @@ fn finder_window(
                 })
                 .detach();
                 preview::close_with_finder(cx);
-                FinderDemo::new(start, cx)
+                let mut demo = FinderDemo::new(start, cx);
+                demo.icons.sized = remember;
+                demo
             })
         },
     )

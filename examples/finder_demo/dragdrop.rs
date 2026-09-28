@@ -13,7 +13,7 @@ use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
 use crate::ops::After;
-use crate::view::COLUMN_VIEW;
+use crate::view::{COLUMN_VIEW, ICON_VIEW};
 use crate::views::list::TWIST_W;
 
 const SPRING_FLOOR: f32 = 0.2;
@@ -406,6 +406,9 @@ impl FinderDemo {
             return;
         }
         let keys = dropped.keys(&self.selected.snapshot());
+        if self.view == ICON_VIEW && into == self.here() {
+            self.land_icons(&keys, window.mouse_position());
+        }
         self.drop_into(into, &keys, window, cx);
         cx.notify();
     }
