@@ -1,5 +1,4 @@
-use crate::format::{Outline, container_accepts, lossless_audio_codec};
-use crate::{Error, Format, Kind, Probe, Result};
+use crate::{Error, Format, Kind, Outline, Probe, Result};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Intent {
@@ -24,10 +23,7 @@ impl Intent {
     }
 
     pub fn default_max_edge(self) -> Option<u32> {
-        match self {
-            Self::Web => Some(1920),
-            _ => None,
-        }
+        (self == Self::Web).then_some(1920)
     }
 
     pub fn jpeg_quality(self) -> u8 {
@@ -48,37 +44,13 @@ impl Intent {
     }
 
     pub fn audio_bitrate_k(self, target: Format) -> u32 {
-        let opus = matches!(target, Format::Opus);
-        match self {
-            Self::Archive => {
-                if opus {
-                    192
-                } else {
-                    320
-                }
-            }
-            Self::VisuallyLossless => {
-                if opus {
-                    160
-                } else {
-                    256
-                }
-            }
-            Self::High => {
-                if opus {
-                    128
-                } else {
-                    192
-                }
-            }
-            Self::Web => {
-                if opus {
-                    96
-                } else {
-                    128
-                }
-            }
-        }
+        let (opus, other) = match self {
+            Self::Archive => (192, 320),
+            Self::VisuallyLossless => (160, 256),
+            Self::High => (128, 192),
+            Self::Web => (96, 128),
+        };
+        if target == Format::Opus { opus } else { other }
     }
 }
 
@@ -105,6 +77,15 @@ pub struct Planned {
     pub notes: String,
 }
 
+impl Planned {
+    fn new(path: PathTaken, notes: impl Into<String>) -> Self {
+        Self {
+            path,
+            notes: notes.into(),
+        }
+    }
+}
+
 pub fn plan(probe: &Probe, target: Format, intent: Intent) -> Result<Planned> {
     if probe.kind != target.kind() {
         return Err(Error::new(format!(
@@ -114,84 +95,82 @@ pub fn plan(probe: &Probe, target: Format, intent: Intent) -> Result<Planned> {
         )));
     }
     match probe.kind {
-        Kind::Image => Ok(plan_image(probe, target, intent)),
+        Kind::Image => Ok(plan_image(probe.format, target, intent)),
         Kind::Audio => Ok(plan_audio(probe, target, intent)),
         Kind::Font => plan_font(probe, target, intent),
     }
 }
 
-fn plan_image(probe: &Probe, target: Format, intent: Intent) -> Planned {
-    if probe.format == target && intent == Intent::Archive {
-        let notes = if target == Format::Jpeg {
-            "JPEG is lossy; archive keeps the original bytes".into()
-        } else {
-            "same format, archive copies".into()
-        };
-        return Planned {
-            path: PathTaken::Copy,
-            notes,
-        };
+fn plan_image(source: Format, target: Format, intent: Intent) -> Planned {
+    if source == target && intent == Intent::Archive {
+        return Planned::new(
+            PathTaken::Copy,
+            if target == Format::Jpeg {
+                "JPEG is lossy; archive keeps the original bytes"
+            } else {
+                "same format, archive copies"
+            },
+        );
     }
-    let mut notes = String::new();
-    if target == Format::Jpeg {
-        notes.push_str("JPEG is lossy");
-    } else if probe.format == Format::Jpeg && target.is_lossless_image() {
-        notes.push_str("lossless encode of already-decoded JPEG pixels");
+    let notes = if target == Format::Jpeg {
+        "JPEG is lossy"
+    } else if source == Format::Jpeg && target.is_lossless_image() {
+        "lossless encode of already-decoded JPEG pixels"
     } else if intent == Intent::Archive && target.is_lossless_image() {
-        notes.push_str("lossless encode");
+        "lossless encode"
     } else if intent == Intent::Archive && target.is_lossy_image() {
-        notes.push_str("archive still encodes lossy formats");
-    }
-    Planned {
-        path: PathTaken::Encode,
-        notes,
-    }
+        "archive still encodes lossy formats"
+    } else {
+        ""
+    };
+    Planned::new(PathTaken::Encode, notes)
 }
 
 fn plan_audio(probe: &Probe, target: Format, intent: Intent) -> Planned {
     let codec = probe.audio_codec.as_deref().unwrap_or("");
-    let same_ext = probe.format.ext() == target.ext();
-    let accepts = !codec.is_empty() && container_accepts(target, codec);
-
-    if accepts && intent != Intent::Web {
-        if same_ext {
-            return Planned {
-                path: PathTaken::Copy,
-                notes: "compatible codec, copied".into(),
-            };
+    let lower = codec.to_ascii_lowercase();
+    if !lower.is_empty() && container_accepts(target, &lower) {
+        let lossless = lower == "flac" || lower == "alac" || lower.starts_with("pcm_");
+        if intent == Intent::Web && !lossless {
+            return Planned::new(PathTaken::Encode, "web re-encodes to a smaller bitrate");
         }
-        return Planned {
-            path: PathTaken::Remux,
-            notes: format!("{codec} stream copied into {}", target.label()),
-        };
-    }
-    if accepts && intent == Intent::Web && !lossless_audio_codec(codec) {
-        return Planned {
-            path: PathTaken::Encode,
-            notes: "web re-encodes to a smaller bitrate".into(),
-        };
-    }
-    if accepts && intent == Intent::Web {
-        if same_ext {
-            return Planned {
-                path: PathTaken::Copy,
-                notes: "already lossless in this container".into(),
-            };
+        if probe.format.ext() != target.ext() {
+            return Planned::new(
+                PathTaken::Remux,
+                format!("{codec} stream copied into {}", target.label()),
+            );
         }
-        return Planned {
-            path: PathTaken::Remux,
-            notes: format!("{codec} stream copied into {}", target.label()),
-        };
+        return Planned::new(
+            PathTaken::Copy,
+            if intent == Intent::Web {
+                "already lossless in this container"
+            } else {
+                "compatible codec, copied"
+            },
+        );
     }
-    Planned {
-        path: PathTaken::Encode,
-        notes: if intent == Intent::Archive
-            && !matches!(target, Format::Wav | Format::Flac | Format::Alac)
-        {
-            "archive of a lossy target still encodes".into()
+    let lossy_archive =
+        intent == Intent::Archive && !matches!(target, Format::Wav | Format::Flac | Format::Alac);
+    Planned::new(
+        PathTaken::Encode,
+        if lossy_archive {
+            "archive of a lossy target still encodes"
         } else {
-            String::new()
+            ""
         },
+    )
+}
+
+fn container_accepts(target: Format, codec: &str) -> bool {
+    match target {
+        Format::Wav => codec.starts_with("pcm_"),
+        Format::Flac => codec == "flac",
+        Format::Mp3 => codec == "mp3",
+        Format::Opus => codec == "opus",
+        Format::Aac | Format::M4a => codec == "aac" || codec == "alac",
+        Format::Alac => codec == "alac",
+        Format::Mp4 => matches!(codec, "aac" | "alac" | "mp3"),
+        _ => false,
     }
 }
 
@@ -202,32 +181,26 @@ fn plan_font(probe: &Probe, target: Format, intent: Intent) -> Result<Planned> {
         ));
     }
     if probe.format == target {
-        let mut notes = "same format, copied".to_string();
-        if intent == Intent::Web && target.is_desktop_font() {
-            notes = "A website should use WOFF2 — this keeps the desktop font".into();
-        }
-        return Ok(Planned {
-            path: PathTaken::Copy,
-            notes,
-        });
+        return Ok(Planned::new(
+            PathTaken::Copy,
+            if intent == Intent::Web && target.is_desktop_font() {
+                "A website should use WOFF2 — this keeps the desktop font"
+            } else {
+                "same format, copied"
+            },
+        ));
     }
     if probe.format.is_desktop_font() && target.is_desktop_font() {
-        return Ok(Planned {
-            path: PathTaken::Copy,
-            notes: "same letters; only the file name changes".into(),
-        });
+        return Ok(Planned::new(
+            PathTaken::Copy,
+            "same letters; only the file name changes",
+        ));
     }
-    let notes = if target == Format::Woff2 {
-        "same letters, packed for the web".into()
-    } else if target == Format::Woff {
-        "same letters, packed for older browsers".into()
-    } else if target.is_desktop_font() {
-        "unpacked so you can install it".into()
-    } else {
-        String::new()
+    let notes = match target {
+        Format::Woff2 => "same letters, packed for the web",
+        Format::Woff => "same letters, packed for older browsers",
+        _ if target.is_desktop_font() => "unpacked so you can install it",
+        _ => "",
     };
-    Ok(Planned {
-        path: PathTaken::Remux,
-        notes,
-    })
+    Ok(Planned::new(PathTaken::Remux, notes))
 }

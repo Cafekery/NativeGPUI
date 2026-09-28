@@ -6,10 +6,6 @@ description = "Local image, audio, and font conversion: probe, plan, then copy, 
 license = "MIT"
 publish = false
 
-[lib]
-name = "convert"
-path = "src/lib.rs"
-
 [dependencies]
 image = { version = "0.25", default-features = false, features = [
     "bmp",

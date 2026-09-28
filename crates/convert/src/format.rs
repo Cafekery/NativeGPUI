@@ -161,53 +161,27 @@ impl Format {
     }
 }
 
-pub const IMAGE_TARGETS: &[Format] = &[
-    Format::Png,
-    Format::Jpeg,
-    Format::Webp,
-    Format::Heic,
-    Format::Avif,
-    Format::Tiff,
-    Format::Gif,
-];
-
-pub const AUDIO_TARGETS: &[Format] = &[
-    Format::Wav,
-    Format::Flac,
-    Format::Alac,
-    Format::Aac,
-    Format::M4a,
-    Format::Mp4,
-    Format::Mp3,
-    Format::Opus,
-];
-
-pub const FONT_TARGETS: &[Format] = &[Format::Woff2, Format::Ttf, Format::Otf, Format::Woff];
-
 pub fn relevant_targets(format: Format) -> &'static [Format] {
     match format.kind() {
-        Kind::Image => IMAGE_TARGETS,
-        Kind::Audio => AUDIO_TARGETS,
-        Kind::Font => FONT_TARGETS,
+        Kind::Image => &[
+            Format::Png,
+            Format::Jpeg,
+            Format::Webp,
+            Format::Heic,
+            Format::Avif,
+            Format::Tiff,
+            Format::Gif,
+        ],
+        Kind::Audio => &[
+            Format::Wav,
+            Format::Flac,
+            Format::Alac,
+            Format::Aac,
+            Format::M4a,
+            Format::Mp4,
+            Format::Mp3,
+            Format::Opus,
+        ],
+        Kind::Font => &[Format::Woff2, Format::Ttf, Format::Otf, Format::Woff],
     }
-}
-
-/// Codec name from ffprobe (`aac`, `alac`, `mp3`, `flac`, `pcm_s16le`, …).
-pub fn container_accepts(target: Format, codec: &str) -> bool {
-    let codec = codec.to_ascii_lowercase();
-    match target {
-        Format::Wav => codec.starts_with("pcm_"),
-        Format::Flac => codec == "flac",
-        Format::Mp3 => codec == "mp3",
-        Format::Opus => codec == "opus",
-        Format::Aac | Format::M4a => codec == "aac" || codec == "alac",
-        Format::Alac => codec == "alac",
-        Format::Mp4 => codec == "aac" || codec == "alac" || codec == "mp3",
-        _ => false,
-    }
-}
-
-pub fn lossless_audio_codec(codec: &str) -> bool {
-    let codec = codec.to_ascii_lowercase();
-    codec == "flac" || codec == "alac" || codec.starts_with("pcm_")
 }
