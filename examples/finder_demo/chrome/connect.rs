@@ -1,9 +1,10 @@
 use std::cell::RefCell;
+use std::ops::Range;
 
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Bounds, ClickEvent, Context, FontWeight, Render, WeakEntity,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
-    uniform_list,
+    AnyElement, AnyWindowHandle, App, AsyncApp, Bounds, ClickEvent, Context, FontWeight, Render,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
+    size, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
@@ -23,7 +24,6 @@ use crate::frame::ns_window;
 use crate::prefs;
 use crate::ui::click_kind;
 
-// Finder's Connect to Server window, measured in points from its top-left corner.
 const DEFAULT_W: f32 = 414.;
 const DEFAULT_H: f32 = 227.;
 const MIN_W: f32 = 355.;
@@ -53,7 +53,6 @@ thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Connect>>> = const { RefCell::new(None) };
 }
 
-/// Finder's Connect to Server: one window for the app, navigating the Finder window that asked.
 pub(crate) struct Connect {
     demo: WeakEntity<FinderDemo>,
     host: AnyWindowHandle,
@@ -152,7 +151,6 @@ fn close(cx: &mut AsyncApp) {
     }
 }
 
-/// Finder's alert for a server it could not reach: a sheet on Connect to Server when it is up.
 fn complain(address: &str, code: i32, cx: &mut AsyncApp) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -183,7 +181,6 @@ fn remember(address: &str) {
 }
 
 impl FinderDemo {
-    /// Mounts with the system's own sign-in, then shows the share in this window.
     pub(crate) fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         if address.is_empty() {
             return;
@@ -224,29 +221,29 @@ impl Connect {
         .ok();
     }
 
-    fn set_favorites(&mut self, favorites: Vec<String>, cx: &mut Context<Self>) {
-        prefs::set_favorite_servers(&favorites.iter().map(String::as_str).collect::<Vec<_>>());
-        self.favorites = favorites;
-        self.picked = self.picked.filter(|&at| at < self.favorites.len());
+    fn store_favorites(&mut self, cx: &mut Context<Self>) {
+        prefs::set_favorite_servers(
+            &self
+                .favorites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
         cx.notify();
     }
 
     fn add(&mut self, cx: &mut Context<Self>) {
-        let address = self.address.trim().to_string();
-        let mut favorites = self.favorites.clone();
-        favorites.push(address);
-        self.picked = Some(favorites.len() - 1);
-        self.set_favorites(favorites, cx);
+        self.favorites.push(self.address.trim().to_string());
+        self.picked = Some(self.favorites.len() - 1);
+        self.store_favorites(cx);
     }
 
     fn remove(&mut self, cx: &mut Context<Self>) {
-        let Some(at) = self.picked else {
+        let Some(at) = self.picked.take() else {
             return;
         };
-        let mut favorites = self.favorites.clone();
-        favorites.remove(at);
-        self.picked = None;
-        self.set_favorites(favorites, cx);
+        self.favorites.remove(at);
+        self.store_favorites(cx);
     }
 
     fn clear_recents(&mut self, ask: bool, window: &Window, cx: &mut Context<Self>) {
@@ -280,10 +277,9 @@ impl Connect {
         alert.beginSheetModalForWindow_completionHandler(&ns, Some(&handler));
     }
 
-    fn row(&self, at: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn row(&self, at: usize, cx: &mut Context<Self>) -> AnyElement {
         let address = self.favorites[at].clone();
         let picked = self.picked == Some(at);
-        let this = cx.entity().downgrade();
         div()
             .id(("ng.finder.connect.row", at))
             .relative()
@@ -323,67 +319,49 @@ impl Connect {
                     .child(
                         native_label(("ng.finder.connect.url", at), &address)
                             .font_size(tokens::system_font_size())
-                            .color(match picked {
-                                true => SystemColor::AlternateSelectedControlText,
-                                false => SystemColor::Label,
+                            .color(if picked {
+                                SystemColor::AlternateSelectedControlText
+                            } else {
+                                SystemColor::Label
                             }),
                     ),
             )
-            .on_click(move |event: &ClickEvent, _, cx| {
-                let (_, _, twice) = click_kind(event);
-                this.update(cx, |connect, cx| {
-                    connect.picked = Some(at);
-                    connect.address = address.clone();
-                    cx.notify();
-                    if twice {
-                        connect.connect(cx);
-                    }
-                })
-                .ok();
-            })
+            .on_click(cx.listener(move |connect, event: &ClickEvent, _, cx| {
+                connect.picked = Some(at);
+                connect.address.clone_from(&address);
+                cx.notify();
+                if click_kind(event).2 {
+                    connect.connect(cx);
+                }
+            }))
             .into_any_element()
     }
 }
 
 impl Render for Connect {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.entity().downgrade();
         let address = self.address.trim().to_string();
         let can_add = !address.is_empty() && !self.favorites.contains(&address);
         let mut field = native_combo_box("ng.finder.connect.address", &self.address)
             .stretch()
             .placeholder("Server Address")
             .items(self.recents.clone())
-            .on_change({
-                let this = this.clone();
-                move |text, _, cx| {
-                    let text = text.to_string();
-                    this.update(cx, |connect, cx| {
-                        connect.address = text;
-                        cx.notify();
-                    })
-                    .ok();
-                }
-            })
-            .on_submit({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |connect, cx| connect.connect(cx)).ok();
-                }
-            })
+            .on_change(cx.listener(|connect, text: &String, _, cx| {
+                connect.address.clone_from(text);
+                cx.notify();
+            }))
+            .on_submit(cx.listener(|connect, _, _, cx| connect.connect(cx)))
             .on_cancel(|_, window, _| window.remove_window());
         if std::mem::take(&mut self.fresh) {
             field = field.editing(0..self.address.chars().count());
         }
-        let rows = uniform_list("ng.finder.connect.rows", self.favorites.len(), {
-            let this = this.clone();
-            move |range, _, cx| {
-                this.update(cx, |connect, cx| {
-                    range.map(|at| connect.row(at, cx)).collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-            }
-        })
+        let rows = uniform_list(
+            "ng.finder.connect.rows",
+            self.favorites.len(),
+            cx.processor(|connect, range: Range<usize>, _, cx| {
+                range.map(|at| connect.row(at, cx)).collect::<Vec<_>>()
+            }),
+        )
         .size_full();
         let bar = |left: f32| div().absolute().bottom(px(BAR_BOTTOM)).left(px(left));
         let square = |id: &'static str, symbol: &'static str, enabled: bool| {
@@ -393,9 +371,12 @@ impl Render for Connect {
                 .square(SQUARE)
                 .enabled(enabled)
         };
-        let clearing = |entry: MenuEntry| match self.recents.is_empty() {
-            true => entry.disabled(),
-            false => entry,
+        let clearing = |entry: MenuEntry| {
+            if self.recents.is_empty() {
+                entry.disabled()
+            } else {
+                entry
+            }
         };
         let action = native_popup("ng.finder.connect.action", 0)
             .pull_down(true)
@@ -405,14 +386,9 @@ impl Render for Connect {
                 clearing(MenuEntry::item("Clear Recent Servers\u{2026}")),
                 clearing(MenuEntry::item("Clear Recent Servers").option_alternate()),
             ])
-            .on_change({
-                let this = this.clone();
-                move |picked: &usize, window, cx| {
-                    let ask = *picked == 1;
-                    this.update(cx, |connect, cx| connect.clear_recents(ask, window, cx))
-                        .ok();
-                }
-            });
+            .on_change(cx.listener(|connect, picked: &usize, window, cx| {
+                connect.clear_recents(*picked == 1, window, cx)
+            }));
         native_root(
             div()
                 .relative()
@@ -444,22 +420,18 @@ impl Render for Connect {
                         .bg(system_color(SystemColor::ControlBackground))
                         .child(rows),
                 )
-                .child(bar(EDGE + 2.).child(
-                    square("ng.finder.connect.add", "plus", can_add).on_click({
-                        let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |connect, cx| connect.add(cx)).ok();
-                        }
-                    }),
-                ))
-                .child(bar(EDGE + 2. + SQUARE).child(
-                    square("ng.finder.connect.remove", "minus", self.picked.is_some()).on_click({
-                        let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |connect, cx| connect.remove(cx)).ok();
-                        }
-                    }),
-                ))
+                .child(
+                    bar(EDGE + 2.).child(
+                        square("ng.finder.connect.add", "plus", can_add)
+                            .on_click(cx.listener(|connect, _, _, cx| connect.add(cx))),
+                    ),
+                )
+                .child(
+                    bar(EDGE + 2. + SQUARE).child(
+                        square("ng.finder.connect.remove", "minus", self.picked.is_some())
+                            .on_click(cx.listener(|connect, _, _, cx| connect.remove(cx))),
+                    ),
+                )
                 .child(bar(EDGE + 2. + 2. * SQUARE).h(px(SQUARE)).child(action))
                 .child(
                     bar(HELP_X).child(
@@ -500,9 +472,7 @@ impl Render for Connect {
                                 .width(px(CONNECT_W))
                                 .default_button(true)
                                 .enabled(!address.is_empty() && !self.connecting)
-                                .on_click(move |_, _, cx| {
-                                    this.update(cx, |connect, cx| connect.connect(cx)).ok();
-                                }),
+                                .on_click(cx.listener(|connect, _, _, cx| connect.connect(cx))),
                         ),
                 ),
         )

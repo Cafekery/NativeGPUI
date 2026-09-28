@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, LazyLock};
 
 use finder_fs::servers::Computer;
-use gpui::{App, Context, Window};
+use gpui::{App, Context, SharedString, Window};
 use native_gpui::tokens::FileType;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWorkspace;
@@ -60,7 +60,6 @@ thread_local! {
         const { RefCell::new((None, Vec::new())) };
 }
 
-/// Rung whenever sharingd sends a list.
 static NETWORK_CHANGED: Signal = Signal::new();
 
 fn server_key(name: &str) -> String {
@@ -76,29 +75,35 @@ pub(crate) fn server(key: &str) -> Option<Computer> {
     })
 }
 
-fn place_row(id: &'static str, artwork: FileType<'static>, kind: &str) -> Row {
-    let title = place(id).map_or(id, |(title, _)| title);
-    Row {
-        name: title.into(),
-        display: title.into(),
-        path: id.into(),
+fn location_row(
+    path: &'static str,
+    name: SharedString,
+    kind: SharedString,
+    uti: &'static str,
+    opens: Option<&'static str>,
+    artwork: FileType<'static>,
+) -> Arc<Row> {
+    Arc::new(Row {
+        display: name.clone(),
+        name,
+        path: path.into(),
         size: "--".into(),
         bytes: 0,
         modified_at: f64::NAN,
         created_at: f64::NAN,
         added_at: None,
-        kind: kind.to_owned().into(),
-        uti: "".into(),
+        kind,
+        uti: uti.into(),
         face: Face::Volume,
         hidden: false,
-        opens: Some(id),
+        opens,
         discloses: false,
         dataless: false,
         readable: true,
         package: false,
         artwork: Some(artwork),
         extra: None,
-    }
+    })
 }
 
 fn computer_rows() -> Vec<Arc<Row>> {
@@ -107,49 +112,39 @@ fn computer_rows() -> Vec<Arc<Row>> {
         .filter_map(data::path_line)
         .map(|line| line.row)
         .collect();
-    rows.push(Arc::new(place_row(
+    let network = place(NETWORK).map_or(NETWORK, |(title, _)| title);
+    rows.push(location_row(
         NETWORK,
+        network.into(),
+        network.into(),
+        "",
+        Some(NETWORK),
         FileType::Named("NSNetwork"),
-        &finder_fs::words::say("Network"),
-    )));
+    ));
     rows
 }
 
 fn network_rows() -> Vec<Arc<Row>> {
-    let listed = NETWORKED.with_borrow(|(_, listed)| listed.clone());
-    listed
-        .iter()
-        .map(|computer| {
-            let key = intern(&server_key(&computer.name));
-            let (uti, kind) = finder_fs::servers::model_type(computer.model.as_deref())
-                .map(|(uti, kind)| (intern(&uti), kind))
-                .unwrap_or(("com.apple.mac", String::new()));
-            Arc::new(Row {
-                name: computer.name.clone().into(),
-                display: computer.name.clone().into(),
-                path: key.into(),
-                size: "--".into(),
-                bytes: 0,
-                modified_at: f64::NAN,
-                created_at: f64::NAN,
-                added_at: None,
-                kind: kind.into(),
-                uti: uti.into(),
-                face: Face::Volume,
-                hidden: false,
-                opens: None,
-                discloses: false,
-                dataless: false,
-                readable: true,
-                package: false,
-                artwork: Some(FileType::Uti(uti)),
-                extra: None,
+    NETWORKED.with_borrow(|(_, listed)| {
+        listed
+            .iter()
+            .map(|computer| {
+                let (uti, kind) = finder_fs::servers::model_type(computer.model.as_deref())
+                    .map(|(uti, kind)| (intern(&uti), kind))
+                    .unwrap_or(("com.apple.mac", String::new()));
+                location_row(
+                    intern(&server_key(&computer.name)),
+                    computer.name.clone().into(),
+                    kind.into(),
+                    uti,
+                    None,
+                    FileType::Uti(uti),
+                )
             })
-        })
-        .collect()
+            .collect()
+    })
 }
 
-/// Items iCloud shares with this user or that this user shares, which Spotlight marks.
 fn shared_rows() -> Vec<Arc<Row>> {
     let Ok(found) = std::process::Command::new("/usr/bin/mdfind")
         .arg("kMDItemIsShared == 1")
@@ -169,7 +164,6 @@ fn rows_of(id: &'static str) -> Vec<Arc<Row>> {
     }
 }
 
-/// sharingd browses for Finder: the app follows its list from the first time it is shown.
 fn follow_network(cx: &mut App) {
     if NETWORKED.with_borrow(|(following, _)| following.is_some()) {
         return;
@@ -245,7 +239,6 @@ impl FinderDemo {
         .detach();
     }
 
-    /// Finder mounts a server's shares as it connects, asking who to connect as when it must.
     pub(crate) fn connect_server(
         &mut self,
         key: &str,
@@ -255,13 +248,10 @@ impl FinderDemo {
         let Some(url) = server(key).and_then(|computer| computer.url()) else {
             return;
         };
-        match url.starts_with("vnc:") {
-            true => {
-                if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
-                    NSWorkspace::sharedWorkspace().openURL(&url);
-                }
-            }
-            false => self.connect(url, window, cx),
+        if !url.starts_with("vnc:") {
+            self.connect(url, window, cx);
+        } else if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
+            NSWorkspace::sharedWorkspace().openURL(&url);
         }
     }
 

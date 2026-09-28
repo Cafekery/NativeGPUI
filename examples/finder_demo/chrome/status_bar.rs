@@ -2,10 +2,10 @@ use gpui::{AnyElement, Context, Window, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{LabelAlign, native_label, native_slider};
 
-use crate::app::FinderDemo;
-use crate::chrome::path_bar::{BarPaint, EDGE_ROW, edge_row};
 use finder_fs::words;
 
+use crate::app::FinderDemo;
+use crate::chrome::path_bar::{BarPaint, EDGE_ROW, edge_row};
 use crate::data::{self, available_bytes, byte_string};
 use crate::frame::ns_window;
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
@@ -13,11 +13,10 @@ use crate::views::icon::{SIZE_STEPS, size_slider, slider_size};
 
 pub(crate) const BAR_H: f32 = 28.;
 
-/// Finder centres the count in the bar less this much at its trailing end.
 const TEXT_TRAIL: f32 = 12.;
+const SIDE_W: f32 = 120.;
 
 impl FinderDemo {
-    /// Finder grows the window by the bar, keeping its top edge, rather than shortening the list.
     pub(crate) fn toggle_status_bar(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.status_bar_shown = !self.status_bar_shown;
         cx.notify();
@@ -37,26 +36,24 @@ impl FinderDemo {
         let count = self.lines(false).len();
         let chosen = self.selected.len();
         let available = byte_string(available_bytes(self.here()));
-        let size = self
-            .stats
-            .as_ref()
-            .filter(|stats| stats.key == self.stats_key())
-            .map(|stats| byte_string(stats.flat_bytes));
-        let items = words::fill(
-            &words::plural("SB_COUNT", count, "^0 items"),
-            &[&data::count(count)],
-        );
-        let what = match (chosen, size) {
-            (0, _) => items,
-            (chosen, size) => {
-                let picked = words::fill(
-                    &words::finder("SB_1ofN_V1", "^1 of ^0 selected"),
-                    &[&data::count(count), &data::count(chosen)],
-                );
-                match size {
-                    Some(size) => words::fill(&words::finder("SB1.1", "^0, ^1"), &[&picked, &size]),
-                    None => picked,
-                }
+        let what = if chosen == 0 {
+            words::fill(
+                &words::plural("SB_COUNT", count, "^0 items"),
+                &[&data::count(count)],
+            )
+        } else {
+            let picked = words::fill(
+                &words::finder("SB_1ofN_V1", "^1 of ^0 selected"),
+                &[&data::count(count), &data::count(chosen)],
+            );
+            let size = self
+                .stats
+                .as_ref()
+                .filter(|stats| stats.key == self.stats_key())
+                .map(|stats| byte_string(stats.flat_bytes));
+            match size {
+                Some(size) => words::fill(&words::finder("SB1.1", "^0, ^1"), &[&picked, &size]),
+                None => picked,
             }
         };
         let text = words::fill(
@@ -76,7 +73,7 @@ impl FinderDemo {
             .px(px(12.))
             .child(edge_row(0., paint.rule[0]))
             .child(edge_row(EDGE_ROW, paint.rule[1]))
-            .child(div().w(px(120.)).flex_none())
+            .child(div().w(px(SIDE_W)).flex_none())
             .child(
                 div().flex_1().mr(px(TEXT_TRAIL)).child(
                     native_label("ng.finder.status.text", &text)
@@ -88,7 +85,7 @@ impl FinderDemo {
             )
             .child(
                 div()
-                    .w(px(120.))
+                    .w(px(SIDE_W))
                     .flex_none()
                     .flex()
                     .justify_end()

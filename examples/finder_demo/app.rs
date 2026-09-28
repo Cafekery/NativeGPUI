@@ -35,17 +35,14 @@ use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
-/// How long a new window waits for its sidebar before drawing without it.
 const SIDEBAR_WAIT: Duration = Duration::from_millis(100);
 
 thread_local! {
-    /// The first window's sidebar, asked for before AppKit comes up.
     pub(crate) static EARLY_SIDEBAR: RefCell<Option<Receiver<Vec<sidebar::Group>>>> =
         const { RefCell::new(None) };
 }
 
-/// Every row asks the file system or a daemon something, and a share that stopped answering
-/// stalls whoever asks for as long as it takes, so no window waits on it.
+/// A share that stopped answering stalls whoever asks the sidebar's rows, so no window waits.
 pub(crate) fn ask_sidebar() -> Receiver<Vec<sidebar::Group>> {
     let (sent, answer) = std::sync::mpsc::channel();
     std::thread::spawn(move || sent.send(sidebar::groups()).ok());
@@ -62,13 +59,12 @@ pub(crate) struct FinderDemo {
     pub(crate) history: Vec<&'static str>,
     pub(crate) at: usize,
     pub(crate) view: usize,
-    /// The order the held rows are in: the sort of the view shown, or of one about to be.
+    /// The held rows' order: the shown view's, or the pending one's.
     pub(crate) sort: Column,
     pub(crate) ascending: bool,
     pub(crate) list_sort: (Column, bool),
     pub(crate) column_sort: Column,
     pub(crate) gallery_sort: Column,
-    /// A view waiting for its rows to be sorted its way before it shows.
     pub(crate) pending_view: Option<usize>,
     pub(crate) list_columns: Vec<ColumnSpec>,
     pub(crate) name_w: f32,
@@ -117,7 +113,7 @@ pub(crate) struct FinderDemo {
     pub(crate) show_hidden: bool,
     pub(crate) grouped: bool,
     pub(crate) spring: Option<Spring>,
-    pub(crate) pressed_at: gpui::Point<gpui::Pixels>,
+    pub(crate) pressed_at: gpui::Point<Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
     pub(crate) go_sheet: Option<WindowHandle<GoPanel>>,
     pub(crate) save_sheet: Option<String>,
@@ -133,7 +129,7 @@ pub(crate) struct FinderDemo {
     pub(crate) strip: ScrollHandle,
     pub(crate) column_scroll: ScrollHandle,
     pub(crate) column_depth: usize,
-    pub(crate) column_reveal: Option<(f32, std::time::Instant)>,
+    pub(crate) column_reveal: Option<(f32, Instant)>,
     /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
     pub(crate) column_widths: HashMap<&'static str, f32>,
@@ -180,12 +176,7 @@ impl FinderDemo {
                     }
                 };
                 this.update(cx, |this, cx| {
-                    this.sidebar_rows = sidebar::stored_rows(&groups);
-                    this.sidebar_groups = groups;
-                    if let Some(bar) = &this.sidebar {
-                        bar.update(&this.sidebar_items());
-                    }
-                    this.sidebar_follow();
+                    this.sidebar_took(groups);
                     cx.notify();
                 })
                 .ok();
@@ -203,6 +194,7 @@ impl FinderDemo {
             read::EVENTS.ring();
         });
         let view = prefs::view().unwrap_or(LIST_VIEW);
+        let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
             criteria: vec![Default::default()],
@@ -215,11 +207,11 @@ impl FinderDemo {
             history: vec![start],
             at: 0,
             view,
-            sort: prefs::finder().sort.0,
-            ascending: prefs::finder().sort.1,
-            list_sort: prefs::finder().sort,
-            column_sort: prefs::arranged(COLUMN_VIEW).unwrap_or(prefs::finder().arranged.0),
-            gallery_sort: prefs::arranged(GALLERY_VIEW).unwrap_or(prefs::finder().arranged.1),
+            sort: finder.sort.0,
+            ascending: finder.sort.1,
+            list_sort: finder.sort,
+            column_sort: prefs::arranged(COLUMN_VIEW).unwrap_or(finder.arranged.0),
+            gallery_sort: prefs::arranged(GALLERY_VIEW).unwrap_or(finder.arranged.1),
             pending_view: None,
             list_columns: Vec::new(),
             name_w: name_min_w(ICON_SMALL),
@@ -272,7 +264,7 @@ impl FinderDemo {
             faces: Rc::default(),
             tag_editor: None,
             ql_shown: None,
-            list_icon: prefs::list_icon().unwrap_or(prefs::finder().icon_size),
+            list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
             list_zoom: None,
             strip_icon: prefs::strip_icon().unwrap_or(48.),
             scroll: UniformListScrollHandle::new(),
@@ -315,15 +307,12 @@ impl FinderDemo {
         };
         (this.sort, this.ascending) = this.view_sort(this.view);
         this.load_columns();
-        // Read before the window's first frame, which has no earlier folder to keep up.
         this.read_folder(start, cx);
         cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
             .detach();
         this
     }
 
-    /// The sort a view shows its rows in: column and gallery view keep a key of their own, in the
-    /// direction Finder first sorts by it.
     pub(crate) fn view_sort(&self, view: usize) -> (Column, bool) {
         match view {
             COLUMN_VIEW => (self.column_sort, self.column_sort.first_ascending()),
@@ -332,12 +321,10 @@ impl FinderDemo {
         }
     }
 
-    /// Whether rows need what only their own files say: the sort or a list column shows it.
     pub(crate) fn wants_extras(&self) -> bool {
         self.extras_with(&self.list_columns)
     }
 
-    /// `wants_extras` in `folder`, once the window arrives there with its columns.
     pub(crate) fn extras_in(&self, folder: &str) -> bool {
         self.extras_with(&columns_for(folder))
     }
@@ -346,21 +333,19 @@ impl FinderDemo {
         self.sort.extra() || columns.iter().any(|spec| spec.column.extra())
     }
 
-    /// A header click or a Sort By row: the list turns round on its own key, the other views
-    /// take the key.
     pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
         if self.view == ICON_VIEW && self.arrangement().is_some() {
             return self.icon_sort(column, cx);
         }
-        let ascending = match self.view {
-            COLUMN_VIEW | GALLERY_VIEW => column.first_ascending(),
-            _ if self.sort == column => !self.ascending,
-            _ => column.first_ascending(),
+        let turn = self.sort == column && !matches!(self.view, COLUMN_VIEW | GALLERY_VIEW);
+        let ascending = if turn {
+            !self.ascending
+        } else {
+            column.first_ascending()
         };
         self.resort((column, ascending), cx);
     }
 
-    /// Sorts the view shown by `by` from now on.
     pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
         match self.view {
             COLUMN_VIEW => self.column_sort = by.0,
