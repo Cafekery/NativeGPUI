@@ -71,7 +71,7 @@ fn describe(op: &Op) -> String {
     };
     match op {
         Op::Move { items, .. } => verb_items("Moving", items),
-        Op::Copy { items, .. } => verb_items("Copying", items),
+        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => verb_items("Copying", items),
         Op::Duplicate(items) => verb_items("Duplicating", items),
         Op::MakeAlias(items) => verb_items("Making Aliases of", items),
         Op::Compress(items) => verb_items("Compressing", items),
@@ -197,19 +197,17 @@ impl FinderDemo {
         cx.notify();
     }
 
-    fn note(&mut self, row: &JobRow, done: &Done) -> bool {
+    fn note(&mut self, row: &JobRow, done: &Done) {
         match row.record {
             Record::New => self.journal.record(done, &row.op),
             Record::Redo(at) => self.journal.redone(at, done),
-            Record::Undo(_) => return false,
+            Record::Undo(_) => {}
         }
-        true
     }
 
     fn undo_left(&mut self, row: &JobRow, left: Op) {
         if let Record::Undo(at) = row.record {
             self.journal.undo_left(at, left);
-            super::undo::refresh_edit_menu(&self.journal);
         }
     }
 
@@ -217,7 +215,6 @@ impl FinderDemo {
         if events.is_empty() {
             return;
         }
-        let mut landed = false;
         for event in events {
             match event {
                 Event::Started(_) => {}
@@ -244,7 +241,7 @@ impl FinderDemo {
                             if let Some(sound) = row.sound.filter(|_| !done.results.is_empty()) {
                                 sound.play();
                             }
-                            landed |= self.note(&row, &done);
+                            self.note(&row, &done);
                             let touched = crate::ops::touched(&row.op);
                             self.settled(touched, done.results, row.after, cx);
                         }
@@ -264,7 +261,7 @@ impl FinderDemo {
                         continue;
                     };
                     let row = self.jobs.remove(pos);
-                    landed |= self.note(&row, &done);
+                    self.note(&row, &done);
                     if let Some(left) = left {
                         self.undo_left(&row, left);
                     }
@@ -277,7 +274,7 @@ impl FinderDemo {
                         continue;
                     };
                     let row = self.jobs.remove(pos);
-                    landed |= self.note(&row, &done);
+                    self.note(&row, &done);
                     let touched = crate::ops::touched(&row.op);
                     self.settled(touched, done.results, row.after, cx);
                 }
@@ -292,9 +289,6 @@ impl FinderDemo {
                     }
                 }
             }
-        }
-        if landed {
-            super::undo::refresh_edit_menu(&self.journal);
         }
         cx.notify();
     }

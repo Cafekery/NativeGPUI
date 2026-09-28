@@ -1,9 +1,14 @@
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 
-use gpui::{Context, SharedString, Window};
+use block2::StackBlock;
+use gpui::{App, Context, SharedString, Window};
+use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
+use objc2_foundation::{NSNotification, NSNotificationCenter};
 
 use crate::app::FinderDemo;
+use crate::chrome::toolbar::SEARCH_ID;
 use crate::chrome::{criteria_bar, scope_bar};
 use crate::data;
 use crate::listing::next_rev;
@@ -13,6 +18,48 @@ const HITS: usize = 200;
 const ALL_HITS: usize = 10_000;
 const CHUNK: usize = 256;
 pub(crate) const RECENTS: &str = "recents";
+
+/// Whether the window's toolbar search field has the keyboard.
+pub(crate) fn search_field_editing(window: &Window) -> bool {
+    native_gpui::toolbar_item_view(window, SEARCH_ID)
+        .and_then(|view| view.downcast::<NSControl>().ok())
+        .is_some_and(|field| field.currentEditor().is_some())
+}
+
+/// Finder's search stays on while its field is being typed in, even empty; a field giving up the
+/// keyboard may be a window's search ending.
+pub(crate) fn follow_search_fields(cx: &mut App) {
+    let app = cx.to_async();
+    let block = StackBlock::new(move |_: NonNull<NSNotification>| {
+        app.spawn(async move |cx| {
+            cx.update(|cx| {
+                for handle in cx.windows() {
+                    let Some(demo) = handle.downcast::<FinderDemo>() else {
+                        continue;
+                    };
+                    demo.update(cx, |demo, window, cx| {
+                        if demo.search_editing && !search_field_editing(window) {
+                            demo.search_editing = false;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+            })
+        })
+        .detach();
+    })
+    .copy();
+    let observer = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSControlTextDidEndEditingNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(observer);
+}
 
 impl FinderDemo {
     pub(crate) fn searching(&self) -> bool {

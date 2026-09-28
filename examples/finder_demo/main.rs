@@ -51,7 +51,7 @@ use native_gpui::{install_menus, remember_frame, window_options};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::data::intern_path;
-use crate::menus::{Back, CopyNames, Forward, SelectAll, ZoomIn, ZoomOut};
+use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
 
 /// Each save rewrites the whole snapshot, hundreds of MB; a launch replays events since the last.
 const SAVE_EVERY: Duration = Duration::from_secs(3600);
@@ -70,15 +70,9 @@ fn main() {
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
-        ops::undo::install_undo_redo(cx);
         menus::install(cx);
         // After `install_menus`, never before: the more specific binding has to be the later one.
         cx.bind_keys([
-            KeyBinding::new("cmd-a", SelectAll, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-c", CopyNames, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-x", menus::Cut, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-v", menus::Paste, Some(LIST_CONTEXT)),
-            KeyBinding::new("cmd-alt-v", menus::MoveHere, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-[", Back, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-]", Forward, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
@@ -127,6 +121,7 @@ fn main() {
         thumbs::follow_thumbnails(cx);
         preview::follow_stacks(cx);
         preview::keep_a_key_window();
+        search::follow_search_fields(cx);
         data::follow_volumes(cx);
         cx.activate(true);
     });
@@ -238,9 +233,9 @@ fn finder_window(
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
                 // The Edit menu is app-wide; it names the undo of whichever window is in front.
-                cx.observe_window_activation(window, |this: &mut FinderDemo, window, cx| {
+                cx.observe_window_activation(window, |_: &mut FinderDemo, window, cx| {
                     if window.is_window_active() {
-                        ops::undo::refresh_edit_menu(&this.journal);
+                        cx.notify();
                         cx.background_executor()
                             .spawn(async { icons::ask_app_management(icons::installed_apps()) })
                             .detach();

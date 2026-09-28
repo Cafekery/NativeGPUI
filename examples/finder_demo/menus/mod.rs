@@ -1,6 +1,7 @@
 mod actions;
 mod bar;
 mod context;
+mod edit;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,8 +11,8 @@ use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 pub(crate) use self::actions::Act;
 pub(crate) use self::bar::{
-    Back, CopyNames, Cut, Forward, MoveHere, NewTab, Paste, SelectAll, ShowClipboard,
-    ShowProgressWindow, ZoomIn, ZoomOut, chosen_state, go_rows, install, remember,
+    Back, CopyNames, Forward, NewTab, SelectAll, ShowClipboard, ShowProgressWindow, ZoomIn,
+    ZoomOut, chosen_state, go_rows, install, remember,
 };
 pub(crate) use self::context::{background, header, item, sidebar};
 use crate::app::FinderDemo;
