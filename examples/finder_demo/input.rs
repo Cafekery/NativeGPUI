@@ -34,9 +34,7 @@ impl FinderDemo {
             return;
         }
         if key == "space" && !self.typing() {
-            if self.cursor_line().is_some() {
-                self.toggle_quick_look(window, cx);
-            }
+            self.toggle_quick_look(window, cx);
             return;
         }
         let lines = self.focused_lines();
