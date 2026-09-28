@@ -587,6 +587,7 @@ fn column_key(column: Column) -> &'static str {
         Column::Size => "ng.finder.col.size",
         Column::Tags => "ng.finder.col.tags",
         Column::Version => "ng.finder.col.version",
+        Column::Comments => "ng.finder.col.comments",
     }
 }
 

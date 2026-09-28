@@ -422,7 +422,7 @@ impl Bands {
                 }
             }
             sort => {
-                let name = match row.words(sort) {
+                let name = match row.words(sort).filter(|words| !words.is_empty()) {
                     Some(words) => words.to_string(),
                     None if sort == Column::Tags => words::finder("GV12", "No Tags"),
                     None => "--".to_string(),

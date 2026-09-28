@@ -29,7 +29,7 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Last Modified By", None),
     ("Shared By", None),
     ("Version", Some(Column::Version)),
-    ("Comments", None),
+    ("Comments", Some(Column::Comments)),
     ("Tags", Some(Column::Tags)),
 ];
 

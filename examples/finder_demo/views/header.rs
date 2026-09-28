@@ -23,6 +23,7 @@ pub(crate) const COL_KIND: f32 = 121.;
 const COL_OPENED: f32 = 200.;
 const COL_TAGS: f32 = 100.;
 const COL_VERSION: f32 = 75.;
+const COL_COMMENTS: f32 = 300.;
 
 pub(crate) const HEADER_H: f32 = 28.;
 
@@ -75,6 +76,7 @@ impl ColumnSpec {
             Column::Kind => COL_KIND,
             Column::Tags => COL_TAGS,
             Column::Version => COL_VERSION,
+            Column::Comments => COL_COMMENTS,
         };
         Self { column, width }
     }
@@ -110,7 +112,7 @@ pub(crate) enum HeaderDrag {
 }
 
 pub(crate) fn column_title(column: Column) -> &'static str {
-    const KEYS: [(Column, &str, &str); 9] = [
+    const KEYS: [(Column, &str, &str); 10] = [
         (Column::Name, "N220", "Name"),
         (Column::Kind, "N224", "Kind"),
         (Column::Opened, "N169.32", "Date Last Opened"),
@@ -120,6 +122,7 @@ pub(crate) fn column_title(column: Column) -> &'static str {
         (Column::Size, "N223", "Size"),
         (Column::Tags, "N225", "Tags"),
         (Column::Version, "N226", "Version"),
+        (Column::Comments, "N227", "Comments"),
     ];
     static TITLES: LazyLock<Vec<String>> = LazyLock::new(|| {
         KEYS.iter()
