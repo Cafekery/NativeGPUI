@@ -10,8 +10,8 @@ use native_gpui::window_options;
 use crate::art::row_art;
 use crate::data::{Line, Row, VolumeInfo, byte_string, day_string, volume_at};
 
-const WIDTH: f32 = 265.;
-const HEIGHT: f32 = 541.;
+pub(crate) const WIDTH: f32 = 265.;
+pub(crate) const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
 const COMBINE_OVER: usize = 3;
 
@@ -36,8 +36,8 @@ fn heading(text: SharedString) -> Div {
 }
 
 pub(crate) struct Info {
-    line: Line,
-    where_: SharedString,
+    pub(crate) line: Line,
+    pub(crate) where_: SharedString,
 }
 
 impl Info {
@@ -223,9 +223,9 @@ pub(crate) fn open(
     }
 }
 
-struct Combined {
-    lines: Vec<Line>,
-    where_: SharedString,
+pub(crate) struct Combined {
+    pub(crate) lines: Vec<Line>,
+    pub(crate) where_: SharedString,
 }
 
 impl Render for Combined {

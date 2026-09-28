@@ -22,7 +22,7 @@ use crate::art::Anchor;
 use crate::chrome::scope_bar;
 use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::sidebar;
-use crate::data::{Column, Folders, Line, Row};
+use crate::data::{Column, Folders, Row};
 use crate::dragdrop::Spring;
 use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
@@ -145,7 +145,6 @@ pub(crate) struct FinderDemo {
     pub(crate) hits_rev: u64,
     pub(crate) search_gen: Arc<AtomicU64>,
     pub(crate) tag_listing: Option<&'static str>,
-    pub(crate) inspecting: Option<Line>,
     pub(crate) reveal_next: Option<SharedString>,
     pub(crate) vanished: Option<&'static str>,
     pub(crate) host: Option<Retained<NSWindow>>,
@@ -291,7 +290,6 @@ impl FinderDemo {
             hits_rev: 0,
             search_gen: Arc::default(),
             tag_listing: None,
-            inspecting: None,
             reveal_next: None,
             vanished: None,
             host: None,

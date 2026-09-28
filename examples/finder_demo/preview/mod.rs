@@ -328,6 +328,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
+        crate::inspector::follow(self, window, cx);
         if let Some(sidebar) = &self.sidebar {
             let gallery = self.view == GALLERY_VIEW;
             if gallery != self.preview_gallery {

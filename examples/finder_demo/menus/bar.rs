@@ -196,6 +196,12 @@ fn checked(action: &dyn Action) -> Option<bool> {
 }
 
 fn titled(action: &dyn Action) -> Option<SharedString> {
+    if action.partial_eq(&ShowInspector) {
+        return Some(match crate::inspector::is_open() {
+            true => "Hide Inspector".into(),
+            false => "Show Inspector".into(),
+        });
+    }
     let in_trash = STATE.get().5;
     action.partial_eq(&Trash).then(|| {
         if in_trash {
