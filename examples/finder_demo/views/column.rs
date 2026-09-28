@@ -8,19 +8,20 @@ use native_gpui::native_scroll_bars;
 use native_gpui::tokens::{self, SystemColor, system_color};
 
 use crate::app::FinderDemo;
-use crate::art::{art_at, row_art, small_glyph};
+use crate::art::{art_at, row_art};
 use crate::data::{Line, split_key};
-use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, drop_target, flashed};
+use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::fit;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{axis_locked, click_kind, menu_ring, rename_field};
+use crate::views::{chevron, folder_drop, run_pill};
 
 const ROW_H: f32 = 24.;
 const COL_W: f32 = 164.;
-const PREVIEW_W: f32 = 240.;
+const PREVIEW_W: f32 = 239.;
 const PREVIEW_INSET: f32 = 10.;
 const ICON_X: f32 = 13.;
 pub(crate) const ICON: f32 = 18.;
@@ -45,10 +46,6 @@ pub(crate) struct Rung {
     pub(crate) selected: Option<SharedString>,
 }
 
-fn divider() -> Hsla {
-    crate::palette::browser_rule()
-}
-
 impl FinderDemo {
     pub(crate) fn walk_chain(&self) -> (Vec<Rung>, Option<Line>) {
         let root = || {
@@ -61,7 +58,7 @@ impl FinderDemo {
             )
         };
         let Some((cursor, holder, row)) = self.cursor.clone().and_then(|cursor| {
-            let (holder, name) = crate::data::split_key(&cursor)?;
+            let (holder, name) = split_key(&cursor)?;
             let folder = self.folders.get(holder)?;
             let row = folder.rows.iter().find(|row| row.name == name)?.clone();
             Some((cursor, holder, row))
@@ -126,14 +123,16 @@ impl FinderDemo {
         let Some(parent) = self.folders.get(here).and_then(|folder| folder.parent) else {
             return;
         };
-        let listing = self.column_listing(parent);
-        if let Some(line) = listing
-            .iter()
-            .find(|line| line.row.opens == Some(here))
-            .cloned()
-        {
-            self.pick_in(&listing, &line, false, false);
-        }
+        self.column_pick(parent, |line| line.row.opens == Some(here));
+    }
+
+    fn column_pick(&mut self, folder: &'static str, hit: impl Fn(&Line) -> bool) -> bool {
+        let listing = self.column_listing(folder);
+        let Some(line) = listing.iter().find(|line| hit(line)).cloned() else {
+            return false;
+        };
+        self.pick_in(&listing, &line, false, false);
+        true
     }
 
     fn browser_column(
@@ -156,9 +155,10 @@ impl FinderDemo {
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y + stretch);
             let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
-            (row >= 0.)
-                .then(|| demo.column_listing(folder).get(row as usize).cloned())
-                .flatten()
+            if row < 0. {
+                return None;
+            }
+            demo.column_listing(folder).get(row as usize).cloned()
         };
         let renaming = self.renaming.clone();
         let resting = self.drop_row().cloned();
@@ -179,7 +179,7 @@ impl FinderDemo {
             )
         };
 
-        // A row is as wide as its column: the list measures its items with no width of its own.
+        // `uniform_list` measures its items with no width of its own.
         let content_w = self.column_width(folder) - GRIP_W;
         // The count and the rows it indexes come from one read: a second read can be shorter.
         let list = uniform_list(
@@ -193,12 +193,10 @@ impl FinderDemo {
                 };
                 range
                     .map(|row| {
-                        let line = rows[row].clone();
+                        let line = &rows[row];
                         let is_selected = picked(row);
-                        // A folder the drag rests on takes the selection's pill, dark part-way
-                        // through the flash it gives before it springs.
                         let dropping = resting.as_ref() == Some(&line.key);
-                        let pill = match springing.as_ref() == Some(&line.key) {
+                        let drop_fill = match springing.as_ref() == Some(&line.key) {
                             true => flashed(highlight),
                             false => highlight,
                         };
@@ -213,7 +211,7 @@ impl FinderDemo {
                             .ml(px(LABEL_X - ICON_X - ICON))
                             .flex_1()
                             .overflow_hidden();
-                        let mut cell = div()
+                        let cell = div()
                             .id(("ng.finder.column.row", row))
                             .font_family(tokens::system_font_family())
                             .w(px(content_w))
@@ -229,23 +227,12 @@ impl FinderDemo {
                                 (false, false) => label,
                             })
                             .when(is_selected || dropping, |cell| {
-                                cell.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(PILL_INSET))
-                                        .right(px(PILL_INSET))
-                                        .top_0()
-                                        .bottom_0()
-                                        .when(!joins_above, |pill| {
-                                            pill.rounded_tl(px(PILL_RADIUS))
-                                                .rounded_tr(px(PILL_RADIUS))
-                                        })
-                                        .when(!joins_below, |pill| {
-                                            pill.rounded_bl(px(PILL_RADIUS))
-                                                .rounded_br(px(PILL_RADIUS))
-                                        })
-                                        .bg(if dropping { pill } else { fill }),
-                                )
+                                cell.child(run_pill(
+                                    if dropping { drop_fill } else { fill },
+                                    PILL_INSET,
+                                    PILL_RADIUS,
+                                    (joins_above, joins_below),
+                                ))
                             })
                             .when(aimed, |cell| {
                                 let over = is_selected && emphasized;
@@ -263,34 +250,28 @@ impl FinderDemo {
                                 (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
                             ))
                             .child(if renaming.as_ref() == Some(&line.key) {
-                                name.child(rename_field(&line, row, this.clone()))
+                                name.child(rename_field(line, row, this.clone()))
                             } else {
                                 name.text_ellipsis_middle()
                                     .whitespace_nowrap()
                                     .child(line.row.display.clone())
-                            });
-                        if line.row.opens.is_some() && line.row.readable {
-                            let color = if dropping || (is_selected && emphasized) {
-                                SystemColor::AlternateSelectedControlText
-                            } else {
-                                SystemColor::SecondaryLabel
-                            };
-                            cell = cell.children(
-                                small_glyph("chevron.right", CHEVRON, FontWeight::SEMIBOLD, color)
-                                    .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
-                            );
-                        }
-                        let cell = cell
+                            })
+                            .when(line.row.opens.is_some() && line.row.readable, |cell| {
+                                let lit = dropping || (is_selected && emphasized);
+                                cell.children(
+                                    chevron("chevron.right", CHEVRON, FontWeight::SEMIBOLD, lit)
+                                        .map(|arrow| div().flex_none().ml(px(4.)).child(arrow)),
+                                )
+                            })
                             .on_click({
                                 let this = this.clone();
                                 move |event: &ClickEvent, window, cx| {
                                     let (extend, toggle, twice) = click_kind(event);
-                                    let line = clicked.clone();
                                     this.update(cx, |this: &mut FinderDemo, cx| {
                                         let listing = this.column_listing(folder);
-                                        this.pick_in(&listing, &line, extend, toggle);
+                                        this.pick_in(&listing, &clicked, extend, toggle);
                                         if twice {
-                                            this.open(&line, window, cx);
+                                            this.open(&clicked, window, cx);
                                         }
                                         this.column_arrived(window, cx);
                                     })
@@ -304,22 +285,9 @@ impl FinderDemo {
                                 move |_, _, _, cx| cx.new(|_| DragGhost),
                             );
                         match line.row.opens {
-                            Some(into) => drop_target::<ExternalPaths>(
-                                drop_target::<RowDrag>(
-                                    cell,
-                                    line.key.clone(),
-                                    into,
-                                    None,
-                                    Lit::Drawn,
-                                    this.clone(),
-                                ),
-                                line.key.clone(),
-                                into,
-                                None,
-                                Lit::Drawn,
-                                this,
-                            )
-                            .into_any_element(),
+                            Some(into) => {
+                                folder_drop(cell, &line.key, into, None, this).into_any_element()
+                            }
                             None => cell.into_any_element(),
                         }
                     })
@@ -339,9 +307,7 @@ impl FinderDemo {
 
         let bars = native_scroll_bars(("ng.finder.column.scroll_bars", index))
             .vertical(&handle.0.borrow().base_handle);
-        // A drop anywhere but on a folder row lands in the folder the column shows, and Finder
-        // outlines the whole column for it; the edge is drawn under the rows, so their own drop
-        // lands first.
+        // Under the rows, so a folder row's own drop lands first.
         let edge = match self.spring.is_some() {
             true => transparent_black(),
             false => Hsla {
@@ -349,24 +315,21 @@ impl FinderDemo {
                 ..system_color(SystemColor::ControlAccent)
             },
         };
-        let area = drop_lands::<ExternalPaths>(
-            drop_lands::<RowDrag>(
-                div()
-                    .id(("ng.finder.column.area", index))
-                    .absolute()
-                    .inset_0()
-                    .border(px(AREA_EDGE))
-                    .border_color(transparent_black()),
-                SharedString::from(folder),
-                folder,
-                Lit::Outline(edge),
-                this_drop.clone(),
-            ),
-            SharedString::from(folder),
+        let area = div()
+            .id(("ng.finder.column.area", index))
+            .absolute()
+            .inset_0()
+            .border(px(AREA_EDGE))
+            .border_color(transparent_black());
+        let key = SharedString::from(folder);
+        let area = drop_lands::<RowDrag>(
+            area,
+            key.clone(),
             folder,
             Lit::Outline(edge),
-            this_drop,
+            this_drop.clone(),
         );
+        let area = drop_lands::<ExternalPaths>(area, key, folder, Lit::Outline(edge), this_drop);
         let column = div()
             .id(("ng.finder.column", index))
             .w(px(self.column_width(folder) - GRIP_W))
@@ -389,7 +352,6 @@ impl FinderDemo {
         rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
     }
 
-    /// A folder sprung in the browser opens as its own column, the way a click on it would.
     pub(crate) fn column_open(
         &mut self,
         key: &SharedString,
@@ -399,12 +361,9 @@ impl FinderDemo {
         let Some((holder, _)) = split_key(key) else {
             return;
         };
-        let listing = self.column_listing(holder);
-        let Some(line) = listing.iter().find(|line| &line.key == key).cloned() else {
-            return;
-        };
-        self.pick_in(&listing, &line, false, false);
-        self.column_arrived(window, cx);
+        if self.column_pick(holder, |line| &line.key == key) {
+            self.column_arrived(window, cx);
+        }
     }
 
     fn on_column_grip(&mut self, x: f32, cx: &mut Context<Self>) {
@@ -454,7 +413,7 @@ impl FinderDemo {
             .flex_none()
             .flex()
             .justify_center()
-            .child(div().w(px(1.)).h_full().bg(divider()));
+            .child(div().w(px(1.)).h_full().bg(crate::palette::browser_rule()));
         let rule = match grab {
             None => rule.w(px(1.)).into_any_element(),
             Some((index, folder)) => rule
@@ -492,20 +451,20 @@ impl FinderDemo {
     fn preview_column(&self, line: &Line, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("ng.finder.column.preview")
-            .min_w(px(PREVIEW_W - 1.))
+            .min_w(px(PREVIEW_W))
             .flex_1()
             .flex()
             .flex_col()
             .items_center()
             .child(
                 div()
-                    .w(px(PREVIEW_W - 1.))
+                    .w(px(PREVIEW_W))
                     .flex()
                     .flex_col()
                     .child(self.info_card(
                         Some(line),
                         palette,
-                        PREVIEW_W - 1. - 2. * PREVIEW_INSET,
+                        PREVIEW_W - 2. * PREVIEW_INSET,
                         &cx.entity(),
                     )),
             )
@@ -549,8 +508,6 @@ impl FinderDemo {
         let picked = self.column_cursor != self.cursor;
         self.column_cursor = self.cursor.clone();
         if depth != self.column_depth {
-            // A column the selection opened slides in, as Finder's does; the browser's first
-            // build, and columns above it landing as their folders are read, show at the end.
             match self.column_depth != 0 && picked {
                 false => {
                     self.column_reveal = None;
@@ -583,8 +540,7 @@ impl FinderDemo {
             .child(canvas(
                 |_, _, _| (),
                 move |_, _, window, _| {
-                    // Window-level, like the pane's grip: the pointer leaves the divider as the
-                    // column grows.
+                    // Window-level: the pointer leaves the divider as the column grows.
                     let moved = this.clone();
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {
@@ -623,7 +579,6 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Claims every plain arrow, so `on_key` never discloses in the browser.
     pub(crate) fn column_key(
         &mut self,
         key: &str,
@@ -637,7 +592,7 @@ impl FinderDemo {
         let (chain, _) = self.column_chain();
         let Some(focused) = chain.iter().rposition(|rung| rung.selected.is_some()) else {
             if matches!(key, "down" | "right") {
-                self.column_take_first(chain[0].folder);
+                self.column_pick(chain[0].folder, |_| true);
             }
             self.column_arrived(window, cx);
             return true;
@@ -661,7 +616,7 @@ impl FinderDemo {
             }
             ("right", Some(at)) => {
                 if let Some(into) = lines[at].row.opens {
-                    self.column_take_first(into);
+                    self.column_pick(into, |_| true);
                 }
             }
             ("left", _) => self.column_up(),
@@ -681,14 +636,9 @@ impl FinderDemo {
         else {
             return;
         };
-        let listing = self.column_listing(parent.folder);
-        if let Some(line) = listing
-            .iter()
-            .find(|line| Some(&line.key) == parent.selected.as_ref())
-            .cloned()
-        {
-            self.pick_in(&listing, &line, false, false);
-        }
+        self.column_pick(parent.folder, |line| {
+            Some(&line.key) == parent.selected.as_ref()
+        });
     }
 
     pub(crate) fn column_arrived(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -703,17 +653,8 @@ impl FinderDemo {
         self.sidebar_follow();
         cx.notify();
     }
-
-    fn column_take_first(&mut self, folder: &'static str) {
-        let listing = self.column_listing(folder);
-        if let Some(line) = listing.first().cloned() {
-            self.pick_in(&listing, &line, false, false);
-        }
-    }
 }
 
-/// The width Finder fits a browser column to: its widest name plus a margin, rounded up, and no
-/// narrower than a new column.
 fn browser_fit_width(texts: &WindowTextSystem, names: &[SharedString], size: Pixels) -> f32 {
     let font = tokens::system_font(FontWeight::NORMAL);
     let widest = fit::widest(
