@@ -121,10 +121,15 @@ impl FinderDemo {
         }
         match self.tag_listing.map(tag_title) {
             Some(title) => title.into(),
-            None if crate::prefs::finder().posix_title => finder_fs::name::display(self.target()),
-            None => match self.folders.get(self.target()) {
-                Some(folder) => folder.title.into(),
-                None => display_name(self.target()).into(),
+            None if crate::prefs::finder().posix_title && self.target().starts_with('/') => {
+                finder_fs::name::display(self.target())
+            }
+            None => match crate::locations::place(self.target()) {
+                Some((title, _)) => title.into(),
+                None => match self.folders.get(self.target()) {
+                    Some(folder) => folder.title.into(),
+                    None => display_name(self.target()).into(),
+                },
             },
         }
     }
