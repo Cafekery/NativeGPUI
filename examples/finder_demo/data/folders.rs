@@ -45,17 +45,18 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
 }
 
 fn crumbs_of(id: &'static str) -> Vec<&'static str> {
-    // Finder roots the Trash's path at "Trash", not at .Trash inside the home folder.
     let trash = standard(Standard::Trash).filter(|trash| Path::new(id).starts_with(trash));
     let (mount, volume) = match trash {
         Some(trash) => (intern_path(&trash), intern(&finder_fs::words::say("Trash"))),
         None => volume_of(id),
     };
-    let rest = id.strip_prefix(mount.trim_end_matches('/')).unwrap_or("");
-    let mut at = mount.trim_end_matches('/').to_string();
+    let mount = mount.trim_end_matches('/');
+    let mut at = mount.to_string();
     let mut crumbs = vec![volume];
+    let rest = id.strip_prefix(mount).unwrap_or("");
     crumbs.extend(rest.split('/').filter(|part| !part.is_empty()).map(|part| {
-        at = format!("{at}/{part}");
+        at.push('/');
+        at.push_str(part);
         intern(&finder_fs::name::of_path(Path::new(&at)))
     }));
     crumbs
@@ -74,8 +75,6 @@ pub(crate) struct Folders {
 }
 
 impl Folders {
-    /// A miss asks for a read at the next pump and draws nothing until it lands; a folder that
-    /// changed while nobody showed it draws as it was and is read again.
     pub(crate) fn get(&self, id: &'static str) -> Option<&Folder> {
         let folder = self.cache.get(id);
         let read = match folder {
@@ -101,17 +100,14 @@ impl Folders {
         Some(folder)
     }
 
-    /// Moves whenever a listing's rows are replaced or a folder leaves the cache.
     pub(crate) fn changed(&self) -> u64 {
         self.changed
     }
 
-    /// Moves whenever a folder joins the cache or shows more rows.
     pub(crate) fn grew(&self) -> u64 {
         self.grew
     }
 
-    /// Moves when this folder's rows are replaced; zero while it is not cached.
     pub(crate) fn rev(&self, id: &'static str) -> u64 {
         self.cache.get(id).map_or(0, |folder| folder.rev)
     }
@@ -124,12 +120,11 @@ impl Folders {
         self.cache.contains_key(id)
     }
 
-    /// The watcher reports every changing folder under home; interning each would keep them all.
+    // Not interned: the watcher reports every changing folder under home.
     pub(crate) fn known(&self, path: &str) -> Option<&'static str> {
         self.cache.get_key_value(path).map(|(id, _)| *id)
     }
 
-    /// Whether a change to this folder is read now rather than when it is next shown.
     pub(crate) fn shown(&self, id: &'static str) -> bool {
         self.pinned.contains(id)
     }
@@ -148,7 +143,6 @@ impl Folders {
         self.wanted.take()
     }
 
-    /// A folder already being read owes a second read: the change may have missed the first.
     pub(crate) fn start(&mut self, id: &'static str) -> bool {
         if let Some(folder) = self.cache.get_mut(id) {
             folder.stale = false;
@@ -160,7 +154,6 @@ impl Folders {
         fresh
     }
 
-    /// Whether a change arrived while the read ran, so the folder must be read again.
     pub(crate) fn finish(&mut self, id: &'static str) -> bool {
         self.reading.remove(id);
         self.changed += 1;
@@ -184,7 +177,6 @@ impl Folders {
         }
     }
 
-    /// Whether the rows show now: a read that replaces a listing holds them back until it ends.
     pub(crate) fn deliver(&mut self, id: &'static str, rows: Vec<Arc<Row>>, replace: bool) -> bool {
         let folder = self.cache.entry(id).or_insert_with(|| {
             self.order.push(id);
@@ -205,28 +197,21 @@ impl Folders {
     }
 
     fn evict(&mut self, keep: &'static str) {
-        // A disclosed subtree pins and reads every listing it opened: none may be dropped.
         let held = CACHED.max(self.pinned.len() + self.reading.len());
         let mut over = self.order.len().saturating_sub(held);
         if over == 0 {
             return;
         }
-        let order = std::mem::take(&mut self.order);
-        self.order = order
-            .into_iter()
-            .filter(|id| {
-                let drop = over > 0
-                    && *id != keep
-                    && !self.pinned.contains(id)
-                    && !self.reading.contains(id);
-                if drop {
-                    over -= 1;
-                    self.changed += 1;
-                    self.cache.remove(id);
-                }
-                !drop
-            })
-            .collect();
+        self.order.retain(|id| {
+            let drop =
+                over > 0 && *id != keep && !self.pinned.contains(id) && !self.reading.contains(id);
+            if drop {
+                over -= 1;
+                self.changed += 1;
+                self.cache.remove(id);
+            }
+            !drop
+        });
     }
 
     pub(crate) fn held(&self) -> Vec<(&'static str, Vec<Arc<Row>>)> {
@@ -236,7 +221,6 @@ impl Folders {
             .collect()
     }
 
-    /// Every cached listing as it stands, without copying a row.
     pub(crate) fn shared(&self) -> HashMap<&'static str, Arc<Vec<Arc<Row>>>> {
         self.cache
             .iter()

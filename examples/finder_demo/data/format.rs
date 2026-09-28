@@ -37,7 +37,6 @@ pub(crate) fn reference_seconds(at: SystemTime) -> f64 {
     }
 }
 
-/// The midnights starting the days 30, 7 and 1 before today, today and the two after it.
 fn midnights() -> [f64; 6] {
     thread_local! {
         static DAYS: Cell<[f64; 6]> = const { Cell::new([0.; 6]) };
@@ -63,21 +62,17 @@ fn midnights() -> [f64; 6] {
     days
 }
 
-/// Today's midnight: the day relative dates are written for.
 pub(crate) fn today() -> f64 {
     midnights()[3]
 }
 
-/// Texts for one day at most: relative dates name another day after midnight.
 struct Seen<K> {
     day: f64,
     texts: HashMap<K, SharedString>,
 }
 
-type Cache<K> = LocalKey<RefCell<Seen<K>>>;
-
 fn remembered<K: Hash + Eq>(
-    seen: &'static Cache<K>,
+    seen: &'static LocalKey<RefCell<Seen<K>>>,
     key: K,
     write: impl FnOnce() -> SharedString,
 ) -> SharedString {
@@ -103,12 +98,14 @@ fn seen<K>() -> RefCell<Seen<K>> {
     })
 }
 
-fn formatted(formatter: &NSDateFormatter, seconds: f64) -> SharedString {
-    SharedString::from(
-        formatter
-            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-            .to_string(),
-    )
+fn minute(seconds: f64) -> i64 {
+    (seconds / 60.).floor() as i64
+}
+
+fn formatted(formatter: &NSDateFormatter, seconds: f64) -> String {
+    formatter
+        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
+        .to_string()
 }
 
 pub(crate) fn date_text(seconds: f64) -> SharedString {
@@ -122,13 +119,11 @@ pub(crate) fn date_text(seconds: f64) -> SharedString {
         };
         static SEEN: RefCell<Seen<i64>> = seen();
     }
-    remembered(&SEEN, (seconds / 60.).floor() as i64, || {
-        FORMATTER.with(|formatter| formatted(formatter, seconds))
+    remembered(&SEEN, minute(seconds), || {
+        FORMATTER.with(|formatter| formatted(formatter, seconds).into())
     })
 }
 
-/// The preview card's date: relative within a day, otherwise the longest of the full, long and
-/// medium styles whose text is at most `room` points wide in the small system font.
 pub(crate) fn stamp(seconds: f64, room: f32) -> SharedString {
     thread_local! {
         static FORMATTERS: [Retained<NSDateFormatter>; 3] = [
@@ -148,11 +143,12 @@ pub(crate) fn stamp(seconds: f64, room: f32) -> SharedString {
     if (days[2]..days[5]).contains(&seconds) {
         return date_text(seconds);
     }
-    let key = ((seconds / 60.).floor() as i64, (room * 2.) as i32);
-    remembered(&SEEN, key, || {
+    remembered(&SEEN, (minute(seconds), (room * 2.) as i32), || {
         FORMATTERS.with(|all| {
-            let mut texts = all.iter().map(|formatter| formatted(formatter, seconds));
-            let mut text = texts.next().unwrap_or_default();
+            let mut texts = all
+                .iter()
+                .map(|formatter| formatted(formatter, seconds).into());
+            let mut text: SharedString = texts.next().unwrap_or_default();
             while small_text_width(&text) > room {
                 let Some(shorter) = texts.next() else { break };
                 text = shorter;
@@ -191,8 +187,6 @@ fn appkit_width(text: &str, size: f32, tabular: bool) -> f32 {
     text.size().width as f32
 }
 
-/// Finder's list styles, fullest first: long, medium and short date with time, then the date
-/// alone, which for today is its time.
 pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
     thread_local! {
         static FORMATTERS: Vec<Retained<NSDateFormatter>> = {
@@ -218,18 +212,17 @@ pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
         static SEEN: RefCell<Seen<(i64, usize)>> = seen();
     }
     let days = midnights();
+    // Finder's date-only style shows today as its time.
     let today = style == 3
         && crate::prefs::finder().relative_dates
         && (days[3]..days[4]).contains(&seconds);
     let style = if today { 4 } else { style };
-    remembered(&SEEN, ((seconds / 60.).floor() as i64, style), || {
-        FORMATTERS.with(|all| formatted(&all[style], seconds))
+    remembered(&SEEN, (minute(seconds), style), || {
+        FORMATTERS.with(|all| formatted(&all[style], seconds).into())
     })
 }
 
-/// Finder's date column takes one style for every row, whatever they hold: the fullest whose
-/// samples, yesterday at 10 PM and six days ago at 10 AM, leave 16 points of the column, the short
-/// styles set in monospaced digits; else the date alone.
+// Finder's rule for every row: the fullest style whose samples leave 16 pt, else the date alone.
 pub(crate) fn date_style(width: f32, size: f32) -> usize {
     let widest = date_samples(size);
     (0..3)
@@ -237,7 +230,6 @@ pub(crate) fn date_style(width: f32, size: f32) -> usize {
         .unwrap_or(3)
 }
 
-/// Finder fits its date column to the long style's samples and 20 points, whatever the rows hold.
 pub(crate) fn date_fit(size: f32) -> f32 {
     (date_samples(size)[0] + 20.).round()
 }
@@ -273,8 +265,6 @@ fn date_samples(size: f32) -> [f32; 3] {
     widest
 }
 
-/// Finder's own names for a kind, fullest first (`KIND_FORMATTER_<kind>_<n>` in its strings),
-/// keyed by any of them in lower case.
 struct KindNames {
     names: Vec<Vec<String>>,
     by_name: HashMap<String, usize>,
@@ -304,8 +294,6 @@ static KIND_NAMES: LazyLock<KindNames> = LazyLock::new(|| {
     KindNames { names, by_name }
 });
 
-/// Finder's kind column: a kind Finder knows by several names shows the fullest of them that
-/// fits `room`, else its shortest; any other kind shows as it is.
 pub(crate) fn kind_text(kind: &SharedString, room: f32, size: f32) -> SharedString {
     type Names = Rc<[(SharedString, f32)]>;
     thread_local! {
@@ -339,7 +327,6 @@ pub(crate) fn kind_text(kind: &SharedString, room: f32, size: f32) -> SharedStri
     }
 }
 
-/// The bands of a grouped listing, named once per band rather than once per row.
 pub(crate) struct Bands {
     sort: Column,
     days: [f64; 6],
@@ -358,13 +345,12 @@ impl Bands {
         }
     }
 
-    /// The band `row` falls in, when it is not `band`.
     pub(crate) fn next(&mut self, row: &Row, band: Option<&SharedString>) -> Option<SharedString> {
         let named = |name: &str| band.is_some_and(|band| band.as_ref() == name);
         let fixed = |name: &'static str| (!named(name)).then(|| SharedString::new_static(name));
+        let fresh = |name: String| (!named(&name)).then(|| SharedString::from(name));
         let finder = |key: &str, english: &str, args: &[&str]| {
-            let name = words::fill(&words::finder(key, english), args);
-            (!named(&name)).then(|| SharedString::from(name))
+            fresh(words::fill(&words::finder(key, english), args))
         };
         match self.sort {
             Column::Name => match row.name.chars().next() {
@@ -376,20 +362,18 @@ impl Bands {
             },
             Column::Kind => {
                 let kind = row.kind.as_ref();
-                let same = band.is_some_and(|band| match kind.ends_with('s') {
+                let plural = kind.ends_with('s');
+                let same = band.is_some_and(|band| match plural {
                     true => band.as_ref() == kind,
                     false => band.strip_suffix('s') == Some(kind),
                 });
-                (!same).then(|| match kind.ends_with('s') {
+                (!same).then(|| match plural {
                     true => row.kind.clone(),
-                    false => SharedString::from(format!("{kind}s")),
+                    false => format!("{kind}s").into(),
                 })
             }
             Column::Size if row.face == Face::Folder => finder("GROUP_DIRECTORIES", "Folders", &[]),
-            Column::Size if row.bytes == 0 => {
-                let zero = band_bytes(0);
-                (!named(&zero)).then(|| zero.into())
-            }
+            Column::Size if row.bytes == 0 => fresh(band_bytes(0)),
             Column::Size if row.bytes < 1_000_000 => {
                 finder("GV10", "Under ^0", &[&band_bytes(1_000_000)])
             }
@@ -421,14 +405,11 @@ impl Bands {
                     }
                 }
             }
-            sort => {
-                let name = match row.words(sort).filter(|words| !words.is_empty()) {
-                    Some(words) => words.to_string(),
-                    None if sort == Column::Tags => words::finder("GV12", "No Tags"),
-                    None => "--".to_string(),
-                };
-                (!named(&name)).then(|| name.into())
-            }
+            sort => fresh(match row.words(sort).filter(|words| !words.is_empty()) {
+                Some(words) => words.to_string(),
+                None if sort == Column::Tags => words::finder("GV12", "No Tags"),
+                None => "--".to_string(),
+            }),
         }
     }
 
@@ -458,7 +439,7 @@ impl Bands {
                 &date,
             )
         };
-        let name = FORMATTER.with(|formatter| formatted(formatter, at));
+        let name: SharedString = FORMATTER.with(|formatter| formatted(formatter, at).into());
         if let Some(start) = start.filter(|_| found) {
             let from = start.timeIntervalSinceReferenceDate();
             self.months.push((from, from + length, name.clone()));
@@ -476,14 +457,10 @@ pub(crate) fn day_string(seconds: f64) -> String {
             formatter
         };
     }
-    FORMATTER.with(|formatter| {
-        formatter
-            .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-            .to_string()
-    })
+    FORMATTER.with(|formatter| formatted(formatter, seconds))
 }
 
-/// A size band's bound as Finder words it: the formatter's default units, so zero reads "Zero KB".
+// Default units: Finder's size bands read zero as "Zero KB".
 fn band_bytes(bytes: u64) -> String {
     NSByteCountFormatter::stringFromByteCount_countStyle(
         bytes as i64,
@@ -492,7 +469,6 @@ fn band_bytes(bytes: u64) -> String {
     .to_string()
 }
 
-/// A count in the user's digits and grouping.
 pub(crate) fn count(n: usize) -> String {
     NSNumberFormatter::localizedStringFromNumber_numberStyle(
         &NSNumber::new_usize(n),
