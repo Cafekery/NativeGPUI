@@ -8,7 +8,7 @@ use native_gpui::{MenuEntry, MenuView};
 
 use super::{Act, Menu};
 use crate::app::FinderDemo;
-use crate::data::{Column, Line, SORT_KEYS, intern, is_trash};
+use crate::data::{Column, Line, SORT_KEYS, SORT_TITLES, intern, is_trash};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
 use crate::view::ICON_VIEW;
@@ -30,17 +30,6 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Version", Some(Column::Version)),
     ("Comments", None),
     ("Tags", Some(Column::Tags)),
-];
-
-const SORT_TITLES: [&str; 8] = [
-    "Name",
-    "Kind",
-    "Date Last Opened",
-    "Date Added",
-    "Date Modified",
-    "Date Created",
-    "Size",
-    "Tags",
 ];
 
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
