@@ -38,6 +38,7 @@ mod sound;
 mod tag_editor;
 mod tags;
 mod thumbs;
+mod trim;
 mod ui;
 mod view;
 mod views;

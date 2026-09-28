@@ -11,6 +11,7 @@ use native_gpui::native_context_menu;
 use native_gpui::tokens::{
     self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
+use objc2_app_kit::{NSEvent, NSEventModifierFlags};
 
 use super::stats::{CALCULATING, span};
 use super::{INSET, RESIZE_EDGE};
@@ -103,6 +104,7 @@ pub(crate) struct Shown {
     expanded: bool,
     renaming: Option<Line>,
     pub(super) list_focused: bool,
+    option: bool,
 }
 
 /// Finder's text over the pane's glass is vibrant, which no `NSColor` names: these are the
@@ -331,6 +333,7 @@ pub(super) struct CardKey {
     look: (bool, bool, u64),
     expanded: bool,
     renaming: Option<SharedString>,
+    option: bool,
 }
 
 fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
@@ -445,12 +448,23 @@ fn clock(seconds: f64) -> SharedString {
 /// Finder shows the first two quick actions as buttons and the rest under More….
 const ACTION_BUTTONS: usize = 2;
 
-fn action_slots(acts: &[QuickAct]) -> Vec<(&'static str, &'static str, Option<QuickAct>)> {
+/// Each button's act, and what it shows: its Option alternate while Option is held.
+fn action_slots(
+    acts: &[QuickAct],
+    option: bool,
+) -> Vec<(Option<QuickAct>, &'static str, &'static str)> {
     acts.iter()
         .take(ACTION_BUTTONS)
-        .map(|act| (act.symbol(), act.title(), Some(*act)))
-        .chain([("ellipsis.circle", "More\u{2026}", None)])
+        .map(|act| {
+            let shown = act.alternate().filter(|_| option).unwrap_or(*act);
+            (Some(*act), shown.symbol(), shown.title())
+        })
+        .chain([(None, "ellipsis.circle", "More\u{2026}")])
         .collect()
+}
+
+fn option_held() -> bool {
+    NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
 }
 
 impl FinderDemo {
@@ -503,6 +517,7 @@ impl FinderDemo {
             expanded: self.preview_expanded,
             renaming,
             list_focused: self.list_focused,
+            option: option_held(),
         })
     }
 
@@ -565,6 +580,7 @@ impl FinderDemo {
             look: (self.list_focused, key, tokens::generation()),
             expanded: self.preview_expanded,
             renaming: self.renaming.clone(),
+            option: option_held(),
         }
     }
 
@@ -935,11 +951,12 @@ impl Shown {
             .flex()
             .justify_center()
             .children(
-                action_slots(&card.actions)
+                action_slots(&card.actions, self.option)
                     .into_iter()
-                    .map(|(symbol, label, act)| {
+                    .enumerate()
+                    .map(|(at, (act, symbol, label))| {
                         let slot = div()
-                            .id(label)
+                            .id(("action", at))
                             .flex_none()
                             .w(px(ACTION_SLOT_W))
                             .flex()
@@ -969,9 +986,9 @@ impl Shown {
                         match act {
                             Some(act) => slot
                                 .on_click(move |event, _, cx| {
-                                    let act = match (act, event.modifiers().alt) {
-                                        (QuickAct::RotateLeft, true) => QuickAct::RotateRight,
-                                        _ => act,
+                                    let act = match event.modifiers().alt {
+                                        true => act.alternate().unwrap_or(act),
+                                        false => act,
                                     };
                                     finder.update(cx, |demo, cx| demo.run_quick(act, cx)).ok();
                                 })
