@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use objc2_foundation::{
-    NSData, NSDictionary, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString,
+    NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions, NSPropertyListSerialization,
+    NSString,
 };
 
 /// What one record of a `.DS_Store` holds.
@@ -62,11 +63,48 @@ pub fn records(bytes: &[u8]) -> Option<Vec<Record<'_>>> {
     Some(found)
 }
 
+/// A folder's icon view options as Finder names them in `icvp`, `None` where none is recorded.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconOptions {
+    /// `arrangeBy`: `none`, `grid`, or the key the icons are kept sorted by.
+    pub arrange_by: Option<String>,
+    pub icon_size: Option<f32>,
+    pub grid_spacing: Option<f32>,
+    pub text_size: Option<f32>,
+    pub label_on_bottom: Option<bool>,
+}
+
+impl IconOptions {
+    /// Reads a dictionary in `icvp`'s shape.
+    pub fn read(options: &NSDictionary) -> Self {
+        let value = |key: &str| options.objectForKey(&NSString::from_str(key));
+        let number = |key: &str| value(key)?.downcast::<NSNumber>().ok();
+        Self {
+            arrange_by: value("arrangeBy")
+                .and_then(|text| Some(text.downcast::<NSString>().ok()?.to_string())),
+            icon_size: number("iconSize").map(|size| size.floatValue()),
+            grid_spacing: number("gridSpacing").map(|spacing| spacing.floatValue()),
+            text_size: number("textSize").map(|size| size.floatValue()),
+            label_on_bottom: number("labelOnBottom").map(|bottom| bottom.boolValue()),
+        }
+    }
+
+    /// Each option this lacks, taken from `fallback`.
+    pub fn or(self, fallback: Self) -> Self {
+        Self {
+            arrange_by: self.arrange_by.or(fallback.arrange_by),
+            icon_size: self.icon_size.or(fallback.icon_size),
+            grid_spacing: self.grid_spacing.or(fallback.grid_spacing),
+            text_size: self.text_size.or(fallback.text_size),
+            label_on_bottom: self.label_on_bottom.or(fallback.label_on_bottom),
+        }
+    }
+}
+
 /// What Finder recorded about a folder shown as icons.
 #[derive(Debug, Default, PartialEq)]
 pub struct IconView {
-    /// Finder's `arrangeBy`: `none`, `grid`, or the key it keeps the icons sorted by.
-    pub arrange_by: Option<String>,
+    pub options: IconOptions,
     /// Where Finder last put each icon: the centre of its image, in points from the top left.
     pub locations: HashMap<String, (f32, f32)>,
 }
@@ -80,10 +118,12 @@ pub fn icon_view(folder: &Path) -> IconView {
         .zip(folder.file_name())
         .and_then(|(parent, name)| {
             let bytes = std::fs::read(parent.join(".DS_Store")).ok()?;
-            arrange_by(&records(&bytes)?, name.to_str()?)
+            icon_options(&records(&bytes)?, name.to_str()?)
         });
     IconView {
-        arrange_by: above.or_else(|| arrange_by(&own, ".")),
+        options: above
+            .or_else(|| icon_options(&own, "."))
+            .unwrap_or_default(),
         locations: icon_locations(&own),
     }
 }
@@ -104,7 +144,7 @@ fn icon_locations(records: &[Record]) -> HashMap<String, (f32, f32)> {
         .collect()
 }
 
-fn arrange_by(records: &[Record], name: &str) -> Option<String> {
+fn icon_options(records: &[Record], name: &str) -> Option<IconOptions> {
     let blob = records.iter().find_map(|record| match record.value {
         Value::Blob(blob) if record.name == name && &record.code == b"icvp" => Some(blob),
         _ => None,
@@ -119,8 +159,7 @@ fn arrange_by(records: &[Record], name: &str) -> Option<String> {
     .ok()?
     .downcast::<NSDictionary>()
     .ok()?;
-    let arrange = options.objectForKey(&NSString::from_str("arrangeBy"))?;
-    Some(arrange.downcast::<NSString>().ok()?.to_string())
+    Some(IconOptions::read(&options))
 }
 
 struct Reader<'a> {
