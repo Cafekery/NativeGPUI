@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use block2::{DynBlock, RcBlock};
+use block2::RcBlock;
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSEvent, NSEventType, NSWindow, NSWindowDelegate};
 use objc2_foundation::{
-    MainThreadMarker, NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
+    MainThreadMarker, NSInteger, NSObject, NSPoint, NSRect, NSRunLoop, NSSize, NSString, NSURL,
 };
 use objc2_quick_look_ui::{
     QLPreviewItem, QLPreviewPanel, QLPreviewPanelDataSource, QLPreviewPanelDelegate,
@@ -269,20 +269,11 @@ enum Job {
     Close,
 }
 
-/// Loading the panel spins a nested run loop that runs GPUI's tasks: only do it at the top level.
+/// Loading the panel spins a nested run loop that runs GPUI's tasks and cannot re-enter the main
+/// dispatch queue, so it opens from a top-level run-loop block or waits out a half-second timeout.
 fn defer(panel: Retained<QLPreviewPanel>, job: Job) {
     let block = RcBlock::new(move || run(&panel, job));
-    unsafe { dispatch_async(&_dispatch_main_q, &block) };
-}
-
-#[repr(C)]
-struct DispatchQueue {
-    _opaque: [u8; 0],
-}
-
-extern "C" {
-    static _dispatch_main_q: DispatchQueue;
-    fn dispatch_async(queue: &DispatchQueue, block: &DynBlock<dyn Fn()>);
+    unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
 }
 
 fn run(panel: &QLPreviewPanel, job: Job) {
