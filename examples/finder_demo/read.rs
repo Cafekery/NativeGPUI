@@ -129,7 +129,7 @@ fn names_descend((sort, ascending): (Column, bool)) -> bool {
 }
 
 /// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once.
-fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
+pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
     let ranks = match sorted_by.0 {
         Column::Kind => kind_ranks(&rows.iter().map(|row| &*row.kind).collect::<Vec<_>>()),
         Column::Size => rows.iter().map(|row| row.bytes).collect(),
@@ -510,6 +510,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn read_folder(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        if crate::locations::is_location(id) {
+            self.read_location(id, cx);
+            return;
+        }
         if !id.starts_with('/') || !self.folders.start(id) {
             return;
         }
@@ -574,7 +578,7 @@ impl FinderDemo {
         }
     }
 
-    fn deliver(
+    pub(crate) fn deliver(
         &mut self,
         id: &'static str,
         rows: Option<Vec<Arc<Row>>>,
@@ -750,8 +754,11 @@ impl FinderDemo {
                 .skip(1)
                 .any(|up| up.to_str().is_some_and(|up| wanted.contains(up)))
         };
-        let outermost: HashSet<&'static str> =
-            wanted.iter().copied().filter(|id| !inside(id)).collect();
+        let outermost: HashSet<&'static str> = wanted
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with('/') && !inside(id))
+            .collect();
         for id in &outermost {
             if self.watching.insert(id) {
                 self.watcher.watch(Path::new(id));
