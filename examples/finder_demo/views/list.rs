@@ -249,7 +249,7 @@ impl FinderDemo {
             dates: DATES.with(Font::clone),
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
-            columns: self.list_columns.clone(),
+            columns: self.shown_columns(),
             bleed: self.list_bleeds(),
             day: today(),
         });
@@ -541,6 +541,7 @@ pub(crate) fn detail_text(row: &Row, column: Column) -> SharedString {
             names.join(", ").into()
         }
         Column::Version => extra.version.clone().unwrap_or_default(),
+        Column::Comments => extra.comment.clone(),
         _ => SharedString::default(),
     }
 }
