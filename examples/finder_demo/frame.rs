@@ -2,7 +2,9 @@ use std::env;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use gpui::{AnyElement, Context, MouseButton, Render, Window, div, prelude::*, px, relative};
+use gpui::{
+    AnyElement, Context, Div, MouseButton, Render, Stateful, Window, div, prelude::*, px, relative,
+};
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
 use native_gpui::{NativeScrollBars, native_root, native_scroll_bars};
@@ -33,12 +35,6 @@ pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
         return None;
     };
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?.window()
-}
-
-struct Column {
-    rows: AnyElement,
-    headers: Option<AnyElement>,
-    path_bar: Option<AnyElement>,
 }
 
 impl Render for FinderDemo {
@@ -81,7 +77,7 @@ impl Render for FinderDemo {
                 std::process::exit(0);
             }
         }
-        self.sync_window_min(window);
+        self.sync_window_min();
         self.sync_stats(cx);
         self.sync_preview_window(window, cx);
         native_gpui::set_trailing_inset(window, f32::from(self.metrics().right));
@@ -103,6 +99,7 @@ impl Render for FinderDemo {
 
         let path_bar = self.path_bar_shown.then(|| self.path_bar(&palette, cx));
         let status_bar = self.status_bar_shown.then(|| self.status_bar(cx));
+        let list_view = self.view == LIST_VIEW;
         let body = match self.view {
             ICON_VIEW => self.icon_body(&palette, window, cx),
             COLUMN_VIEW => self.column_body(&palette, window, cx),
@@ -112,13 +109,11 @@ impl Render for FinderDemo {
         // The rows only: a menu whose element also spans the path bar swallows the crumbs' own.
         let body = menus::backdrop("ng.finder.background", cx.entity().downgrade(), body)
             .into_any_element();
-        let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
-
-        let list_view = self.view == LIST_VIEW;
+        let headers = list_view.then(|| self.header_row(&palette, cx));
         let save_sheet = self
             .save_sheet
-            .clone()
-            .map(|name| self.save_sheet(&name, window, cx));
+            .as_deref()
+            .map(|name| self.save_sheet(name, window, cx));
         let conflict_sheet = self
             .conflict
             .is_some()
@@ -126,74 +121,68 @@ impl Render for FinderDemo {
         let jobs_popover = self.jobs_open.then(|| self.jobs_popover(cx));
         self.pump(window, cx);
         self.sync_quick_look(window);
-        let root = native_root(
-            div()
-                .size_full()
-                .relative()
-                .font_family(family)
-                .text_size(tokens::system_font_size())
-                .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
-                .flex()
-                .flex_col()
-                .pr(metrics.right)
-                .pb(metrics.bottom)
-                .child(
-                    div()
-                        .track_focus(&self.focus)
-                        .key_context(LIST_CONTEXT)
-                        .on_action(cx.listener(Self::select_all))
-                        .on_action(cx.listener(Self::copy_names))
-                        .on_action(cx.listener(Self::back))
-                        .on_action(cx.listener(Self::forward))
-                        .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(true, cx)))
-                        .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(false, cx)))
-                        .map(|element| self.menu_bar_actions(element, cx))
-                        .map(|element| self.wire_undo_redo(element, cx))
-                        .on_key_down(cx.listener(Self::on_key))
-                        .capture_any_mouse_down(cx.listener(
-                            |this, event: &gpui::MouseDownEvent, _, _| {
-                                this.pressed_at = event.position;
-                            },
-                        ))
-                        .on_drag_move(cx.listener(Self::hand_off_drag::<RowDrag>))
-                        .on_drag_move(cx.listener(Self::hand_off_drag::<TileDrag>))
-                        .on_drop(cx.listener(Self::files_dropped))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                // The sidebar is an NSView; bare keys only reach on_key from GPUI's.
-                                native_gpui::focus_gpui(window);
-                                window.focus(&this.focus, cx);
-                            }),
-                        )
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .overflow_hidden()
-                                .when(!list_view, |row| row.pl(metrics.left))
-                                .child(self.list_column(
-                                    Column {
-                                        rows: body,
-                                        headers,
-                                        path_bar,
-                                    },
-                                    &palette,
-                                    metrics,
-                                    cx,
-                                )),
-                        )
-                        .children(
-                            status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
-                        )
-                        .children(save_sheet)
-                        .children(conflict_sheet)
-                        .children(jobs_popover),
-                ),
-        );
+        let root =
+            native_root(
+                div()
+                    .size_full()
+                    .relative()
+                    .font_family(family)
+                    .text_size(tokens::system_font_size())
+                    .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
+                    .flex()
+                    .flex_col()
+                    .pr(metrics.right)
+                    .pb(metrics.bottom)
+                    .child(
+                        div()
+                            .track_focus(&self.focus)
+                            .key_context(LIST_CONTEXT)
+                            .on_action(cx.listener(Self::select_all))
+                            .on_action(cx.listener(Self::copy_names))
+                            .on_action(cx.listener(Self::back))
+                            .on_action(cx.listener(Self::forward))
+                            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom(true, cx)))
+                            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(false, cx)))
+                            .map(|element| self.menu_bar_actions(element, cx))
+                            .map(|element| self.wire_undo_redo(element, cx))
+                            .on_key_down(cx.listener(Self::on_key))
+                            .capture_any_mouse_down(cx.listener(
+                                |this, event: &gpui::MouseDownEvent, _, _| {
+                                    this.pressed_at = event.position;
+                                },
+                            ))
+                            .on_drag_move(cx.listener(Self::hand_off_drag::<RowDrag>))
+                            .on_drag_move(cx.listener(Self::hand_off_drag::<TileDrag>))
+                            .on_drop(cx.listener(Self::files_dropped))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    // The sidebar is an NSView; bare keys only reach on_key from GPUI's.
+                                    native_gpui::focus_gpui(window);
+                                    window.focus(&this.focus, cx);
+                                }),
+                            )
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .overflow_hidden()
+                                    .when(!list_view, |row| row.pl(metrics.left))
+                                    .child(self.list_column(
+                                        body, headers, path_bar, &palette, metrics, cx,
+                                    )),
+                            )
+                            .children(
+                                status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
+                            )
+                            .children(save_sheet)
+                            .children(conflict_sheet)
+                            .children(jobs_popover),
+                    ),
+            );
         trace_frame(self, began);
         root
     }
@@ -215,7 +204,7 @@ fn trace_frame(demo: &FinderDemo, began: Instant) {
 }
 
 impl FinderDemo {
-    fn sync_window_min(&mut self, window: &Window) {
+    fn sync_window_min(&mut self) {
         let width = f32::from(self.metrics().left)
             + LIST_MIN_W
             + if self.preview_shown() {
@@ -226,12 +215,12 @@ impl FinderDemo {
         if (width - self.window_min_w).abs() < 0.5 {
             return;
         }
-        let Some(ns_window) = ns_window(window) else {
+        let Some(host) = &self.host else {
             return;
         };
         self.window_min_w = width;
-        let height = ns_window.contentMinSize().height;
-        ns_window.setContentMinSize(NSSize {
+        let height = host.contentMinSize().height;
+        host.setContentMinSize(NSSize {
             width: f64::from(width),
             height,
         });
@@ -254,16 +243,13 @@ impl FinderDemo {
 
     fn list_column(
         &self,
-        column: Column,
+        rows: AnyElement,
+        headers: Option<AnyElement>,
+        path_bar: Option<AnyElement>,
         palette: &Palette,
         metrics: SidebarMetrics,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Column {
-            rows,
-            headers,
-            path_bar,
-        } = column;
         let scope_h = if self.in_search() {
             self.search_bars_h()
         } else {
@@ -274,7 +260,29 @@ impl FinderDemo {
         let top = above + px(scope_h);
         let bar = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
-        let mut surface = div()
+        let header_h = px(if banded { HEADER_H } else { 0. });
+        let width = metrics.left + px(self.list_room.max(self.list_content_w()));
+        let sideways = self.bands.sideways.shown().x;
+        let scroll_sideways = |scroller: Stateful<Div>, band: Div, cx: &mut Context<Self>| {
+            axis_locked(
+                scroller
+                    .overflow_x_scroll()
+                    .track_scroll(&self.hscroll)
+                    .on_scroll_wheel(stretching(
+                        |this| (&mut this.bands.sideways, this.hscroll.clone()),
+                        cx,
+                    )),
+            )
+            .child(
+                band.h_full()
+                    .w(width)
+                    .min_w(relative(1.))
+                    .relative()
+                    .left(sideways)
+                    .pl(metrics.left),
+            )
+        };
+        let surface = div()
             .absolute()
             .left_0()
             .right_0()
@@ -286,39 +294,17 @@ impl FinderDemo {
             .when(
                 !banded && self.view != ICON_VIEW && toolbar_rule(),
                 |column| column.border_t_1().border_color(palette.separator),
-            );
-        let band = self.list_room.max(self.list_content_w());
-        let width = metrics.left + px(band);
-        let sideways = self.bands.sideways.shown().x;
-        if banded {
-            surface = surface.child(
-                axis_locked(
-                    div()
-                        .id("ng.finder.hscroll")
-                        .size_full()
-                        .overflow_x_scroll()
-                        .track_scroll(&self.hscroll)
-                        .on_scroll_wheel(stretching(
-                            |this| (&mut this.bands.sideways, this.hscroll.clone()),
-                            cx,
-                        )),
+            )
+            .child(if banded {
+                scroll_sideways(
+                    div().id("ng.finder.hscroll").size_full(),
+                    div().flex().flex_col().child(rows),
+                    cx,
                 )
-                .child(
-                    div()
-                        .h_full()
-                        .w(width)
-                        .min_w(relative(1.))
-                        .relative()
-                        .left(sideways)
-                        .pl(metrics.left)
-                        .flex()
-                        .flex_col()
-                        .child(rows),
-                ),
-            );
-        } else {
-            surface = surface.child(rows);
-        }
+                .into_any_element()
+            } else {
+                rows
+            });
         div()
             .flex_1()
             .relative()
@@ -326,8 +312,7 @@ impl FinderDemo {
             .child(surface)
             // A Layer::Above material blurs only what is painted before it: the rows and the header.
             .when(banded || scope_h > 0., |column| {
-                let height = top + if banded { px(HEADER_H) } else { px(0.) };
-                column.child(band_glass(height))
+                column.child(band_glass(top + header_h))
             })
             .children(search_bars.map(|(scope, criteria)| {
                 div()
@@ -352,38 +337,23 @@ impl FinderDemo {
                     .when(banded, |bar_row| bar_row.pl(metrics.left))
                     .child(bar)
             }))
-            // A second scroller on the same handle, so header and rows clamp and scroll alike.
             .children(headers.map(|headers| {
-                axis_locked(
+                scroll_sideways(
                     div()
                         .id("ng.finder.hscroll.header")
                         .absolute()
                         .top(top)
                         .left_0()
                         .right_0()
-                        .h(px(HEADER_H))
-                        .overflow_x_scroll()
-                        .track_scroll(&self.hscroll)
-                        .on_scroll_wheel(stretching(
-                            |this| (&mut this.bands.sideways, this.hscroll.clone()),
-                            cx,
-                        )),
-                )
-                .child(
-                    div()
-                        .h_full()
-                        .w(width)
-                        .min_w(relative(1.))
-                        .relative()
-                        .left(sideways)
-                        .pl(metrics.left)
-                        .child(headers),
+                        .h(px(HEADER_H)),
+                    div().child(headers),
+                    cx,
                 )
             }))
             .children(self.scroll_bars().map(|bars| {
                 div()
                     .absolute()
-                    .top(top + px(if banded { HEADER_H } else { 0. }))
+                    .top(top + header_h)
                     .bottom(px(bar))
                     .left(metrics.left)
                     .right_0()

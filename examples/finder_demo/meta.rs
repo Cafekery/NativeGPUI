@@ -14,21 +14,23 @@ thread_local! {
 }
 
 pub(crate) fn meta(path: &SharedString) -> Option<Arc<Meta>> {
-    if let Some(found) = META.with(|map| map.borrow().get(path).cloned()) {
+    if let Some(found) = META.with_borrow(|map| map.get(path).cloned()) {
         return found;
     }
-    WANTED.with(|wanted| wanted.borrow_mut().insert(path.clone()));
+    WANTED.with_borrow_mut(|wanted| wanted.insert(path.clone()));
     None
 }
 
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
-    let wanted: Vec<SharedString> = WANTED.with(|wanted| wanted.borrow_mut().drain().collect());
+    let wanted: Vec<SharedString> = WANTED.with_borrow_mut(|wanted| wanted.drain().collect());
     if wanted.is_empty() {
         return;
     }
-    for path in &wanted {
-        META.with(|map| map.borrow_mut().insert(path.clone(), None));
-    }
+    META.with_borrow_mut(|map| {
+        for path in &wanted {
+            map.insert(path.clone(), None);
+        }
+    });
     let demo = demo.downgrade();
     cx.spawn(async move |cx| {
         for path in wanted {
@@ -39,7 +41,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
                 .await;
             if demo
                 .update(cx, |_, cx| {
-                    META.with(|map| map.borrow_mut().insert(path, Some(Arc::new(found))));
+                    META.with_borrow_mut(|map| map.insert(path, Some(Arc::new(found))));
                     cx.notify();
                 })
                 .is_err()
