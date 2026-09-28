@@ -892,6 +892,7 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         origin: MenuOrigin::default(),
         on_select: None,
         on_close: None,
+        on_click: false,
     }
 }
 type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -908,9 +909,16 @@ pub struct NativeContextMenu {
     origin: MenuOrigin,
     on_select: Option<SelectHandler>,
     on_close: Option<CloseHandler>,
+    on_click: bool,
 }
 
 impl NativeContextMenu {
+    /// Opens on a plain click too, as a button's menu does.
+    pub fn opens_on_click(mut self) -> Self {
+        self.on_click = true;
+        self
+    }
+
     pub fn items(mut self, items: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.entries = entries_from_titles(items);
         self
@@ -1006,13 +1014,15 @@ impl Element for NativeContextMenu {
             if !self.entries.is_empty() || build.is_some() {
                 let entries = std::mem::take(&mut self.entries);
                 let origin = self.origin;
+                let on_click = self.on_click;
                 let async_cx = window.to_async(cx);
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase != DispatchPhase::Bubble {
                         return;
                     }
                     let contextual = event.button == MouseButton::Right
-                        || (event.button == MouseButton::Left && event.modifiers.control);
+                        || (event.button == MouseButton::Left
+                            && (on_click || event.modifiers.control));
                     if !contextual
                         || SHOWING.get()
                         || !bounds.contains(&event.position)

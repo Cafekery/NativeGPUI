@@ -87,6 +87,7 @@ fn describe(op: &Op) -> String {
                 .map(|restore| restore.to.clone())
                 .collect::<Vec<_>>(),
         ),
+        Op::Quick(quick) => verb_items(quick.label(), quick.items()),
         Op::Batch(ops) => ops.first().map(describe).unwrap_or_default(),
     }
 }
