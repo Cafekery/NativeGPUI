@@ -465,7 +465,7 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &FindHere, window, cx| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
-                this.search_editing = crate::search::search_field_editing(window);
+                this.search_editing = true;
                 cx.notify();
             }))
             .on_action(cx.listener(|_, _: &NewSmartFolder, window, _| {
@@ -474,7 +474,7 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &FindByName, window, cx| {
                 this.criteria = vec![Criterion::name()];
                 set_toolbar_search_active(window, SEARCH_ID, true);
-                this.search_editing = crate::search::search_field_editing(window);
+                this.search_editing = true;
                 this.run_search(cx);
             }))
             .on_action(cx.listener(|this, _: &GetInfo, window, cx| {
