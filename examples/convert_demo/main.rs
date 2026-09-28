@@ -1,5 +1,3 @@
-//! Compact local converter: images and audio, copy / remux / encode, then a size report.
-
 mod app;
 mod drop;
 mod jobs;
