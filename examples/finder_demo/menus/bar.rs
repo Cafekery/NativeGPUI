@@ -2,7 +2,9 @@ use std::cell::Cell;
 use std::path::Path;
 
 use finder_fs::volumes::{self, Standard};
-use gpui::{Action, AnyWindowHandle, App, Context, Div, InteractiveElement, Window, actions};
+use gpui::{
+    Action, AnyWindowHandle, App, Context, Div, InteractiveElement, SharedString, Window, actions,
+};
 use native_gpui::{
     MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, on_menu_title,
     prepend_menu, set_toolbar_search_active,
@@ -193,12 +195,15 @@ fn checked(action: &dyn Action) -> Option<bool> {
         .map(|(_, on)| on)
 }
 
-fn titled(action: &dyn Action) -> Option<&'static str> {
+fn titled(action: &dyn Action) -> Option<SharedString> {
     let in_trash = STATE.get().5;
-    action.partial_eq(&Trash).then_some(if in_trash {
-        "Put Back"
-    } else {
-        "Move to Trash"
+    action.partial_eq(&Trash).then(|| {
+        if in_trash {
+            "Put Back"
+        } else {
+            "Move to Trash"
+        }
+        .into()
     })
 }
 
