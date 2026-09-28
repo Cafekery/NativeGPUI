@@ -23,8 +23,10 @@ pub(crate) enum Act {
     NewFolderWith,
     Groups,
     ViewOptions,
+    View(usize),
     GetInfo,
     GetInfoAt(&'static str),
+    SummaryInfo,
     NewFolder,
     Inspector,
     InspectorAt(&'static str),
@@ -33,7 +35,9 @@ pub(crate) enum Act {
     CleanUp,
     CleanUpBy(Column),
     Open,
+    OpenTabs,
     OpenWindow,
+    ShowOriginal,
     Trash,
     DeleteNow,
     EmptyTrash,
@@ -42,16 +46,16 @@ pub(crate) enum Act {
     MakeAlias,
     QuickLook,
     OpenWith(&'static str),
+    AlwaysOpenWith(&'static str),
     Compress,
     Share,
     Tags,
     Copy,
-    Cut,
-    Paste,
-    NewFile,
+    Paste(&'static str, Pasting),
     OpenTerminal(&'static str),
     OpenTab(&'static str),
     OpenWindowAt(&'static str),
+    AddToDock(&'static str),
     Enclosing(&'static str),
     RemoveFromSidebar(&'static str),
     RenameAt(&'static str),
@@ -59,13 +63,11 @@ pub(crate) enum Act {
     CopyPathname(&'static str),
     CopyPathnames,
     Slideshow,
-    MoveHere,
-    PasteExactly,
     Toggle(Column),
     Quick(crate::quick_actions::QuickAct),
 }
 
-fn original_of(path: &Path) -> Option<PathBuf> {
+pub(super) fn original_of(path: &Path) -> Option<PathBuf> {
     if let Ok(target) = std::fs::read_link(path) {
         let joined = match target.is_absolute() {
             true => target,
@@ -101,6 +103,17 @@ pub(crate) fn new_window_target() -> &'static str {
     }
 }
 
+pub(crate) fn trash_items() -> Vec<PathBuf> {
+    let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
+        return Vec::new();
+    };
+    finder_fs::list::list_dir(&trash)
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| entry.path_in(&trash))
+        .collect()
+}
+
 impl FinderDemo {
     pub(crate) fn run_menu(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         match act {
@@ -116,6 +129,7 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
+            Act::View(view) => self.pick_view(view, window, cx),
             Act::Inspector => crate::inspector::toggle(self, cx),
             Act::InspectorAt(id) => crate::inspector::show_item(id, self, cx),
             Act::GetInfo => {
@@ -126,12 +140,22 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
+            Act::SummaryInfo => {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
+            }
             Act::Sort(column) => self.sort_by(column, cx),
             Act::Arrange(arrangement) => self.arrange(arrangement, cx),
             Act::CleanUp => self.clean_up(false, cx),
             Act::CleanUpBy(column) => self.clean_up_by(column, window, cx),
             Act::Open => self.open_selected(window, cx),
+            Act::OpenTabs => {
+                for id in self.chosen_folders() {
+                    self.open_tab(id, window, cx);
+                }
+            }
             Act::OpenWindow => self.open_in_window(cx),
+            Act::ShowOriginal => self.show_original(window, cx),
             Act::Trash => self.trash_selection(cx),
             Act::DeleteNow => self.delete_selection(cx),
             Act::EmptyTrash => self.empty_trash(cx),
@@ -143,14 +167,21 @@ impl FinderDemo {
             Act::Tags => self.edit_tags(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
-            Act::Copy => self.copy_selection(cx),
-            Act::Cut => self.cut_selection(cx),
-            Act::Paste => self.paste(Pasting::Copy, cx),
-            Act::NewFile => self.new_file(cx),
+            Act::AlwaysOpenWith(app) => {
+                crate::openwith::set_default(&self.paths(), Path::new(app));
+                crate::openwith::open_with(&self.paths(), Path::new(app));
+            }
+            Act::Copy => self.copy_selection(),
+            Act::Paste(into, how) => self.paste_into(PathBuf::from(into), how, cx),
             Act::OpenTerminal(path) => open_terminal(path),
             Act::OpenTab(id) => self.open_tab(id, window, cx),
             Act::OpenWindowAt(id) => {
                 open_finder_window(id, 1, cx);
+            }
+            Act::AddToDock(id) => {
+                if let Err(error) = crate::dock::add(&[PathBuf::from(id)]) {
+                    self.complain(&error);
+                }
             }
             Act::Enclosing(id) => self.show_enclosing(id, window, cx),
             Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id, cx),
@@ -164,8 +195,6 @@ impl FinderDemo {
             }
             Act::CopyPathnames => self.copy_pathnames(cx),
             Act::Slideshow => self.slideshow(window, cx),
-            Act::MoveHere => self.paste(Pasting::Move, cx),
-            Act::PasteExactly => self.paste(Pasting::Exactly, cx),
             Act::Toggle(column) => self.toggle_column(column, cx),
             Act::Quick(act) => self.run_quick(act, cx),
         }
@@ -182,14 +211,6 @@ impl FinderDemo {
             return;
         }
         self.make_folder("New Folder With Items", chosen, cx);
-    }
-
-    pub(crate) fn new_file(&mut self, cx: &mut Context<Self>) {
-        let op = Op::NewFile {
-            into: PathBuf::from(self.target()),
-            name: "untitled.txt".to_owned(),
-        };
-        self.run_op(op, After::Rename, cx);
     }
 
     fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -301,14 +322,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
-        let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
-            return;
-        };
-        let items: Vec<PathBuf> = finder_fs::list::list_dir(&trash)
-            .unwrap_or_default()
-            .iter()
-            .map(|entry| entry.path_in(&trash))
-            .collect();
+        let items = trash_items();
         if items.is_empty() {
             return;
         }

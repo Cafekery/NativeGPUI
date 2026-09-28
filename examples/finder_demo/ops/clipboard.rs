@@ -46,12 +46,11 @@ thread_local! {
 }
 
 impl FinderDemo {
-    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, cx: &mut Context<Self>) {
-        self.copy_selection(cx);
+    pub(crate) fn copy_names(&mut self, _: &CopyNames, _: &mut Window, _: &mut Context<Self>) {
+        self.copy_selection();
     }
 
-    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        self.clear_cut(cx);
+    pub(crate) fn copy_selection(&self) {
         let keys = self.chosen_keys();
         if keys.is_empty() {
             return;
@@ -80,46 +79,23 @@ impl FinderDemo {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
     }
 
-    pub(crate) fn cut_selection(&mut self, cx: &mut Context<Self>) {
-        let keys = self.chosen_keys();
-        if keys.is_empty() {
-            return;
-        }
-        write_pasteboard(&file_urls(&keys).collect::<Vec<_>>());
-        self.cut = keys.into_iter().collect();
-        cx.notify();
-    }
-
-    pub(crate) fn clear_cut(&mut self, cx: &mut Context<Self>) {
-        if self.cut.is_empty() {
-            return;
-        }
-        self.cut.clear();
-        cx.notify();
-    }
-
     pub(crate) fn paste(&mut self, how: Pasting, cx: &mut Context<Self>) {
+        self.paste_into(PathBuf::from(self.target()), how, cx);
+    }
+
+    pub(crate) fn paste_into(&mut self, into: PathBuf, how: Pasting, cx: &mut Context<Self>) {
         let items = read_pasteboard();
         if items.is_empty() {
             return;
         }
-        let into = PathBuf::from(self.target());
         if !into.is_absolute() {
             return;
         }
-        // Files copied since, in any app, may have replaced the cut on the pasteboard.
-        let cut = !self.cut.is_empty()
-            && items.iter().all(|item| {
-                let key = SharedString::from(item.to_string_lossy().into_owned());
-                self.cut.contains(&key)
-            });
         let op = match how {
             Pasting::Exactly => Op::CopyExactly { items, into },
             Pasting::Move => Op::Move { items, into },
-            Pasting::Copy if cut => Op::Move { items, into },
             Pasting::Copy => Op::Copy { items, into },
         };
-        self.cut.clear();
         self.run_op(op, After::Select, cx);
     }
 }

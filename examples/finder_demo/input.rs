@@ -25,18 +25,12 @@ impl FinderDemo {
             cx.notify();
             return;
         }
-        if key == "escape" && !self.cut.is_empty() {
-            self.clear_cut(cx);
-            return;
-        }
         if key == "space" && self.spring.is_some() {
             self.spring_now(cx);
             return;
         }
         if key == "space" && !self.typing() {
-            if self.cursor_line().is_some() {
-                self.toggle_quick_look(window, cx);
-            }
+            self.toggle_quick_look(window, cx);
             return;
         }
         let lines = self.focused_lines();

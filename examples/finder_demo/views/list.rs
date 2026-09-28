@@ -80,7 +80,6 @@ struct Look {
 
 struct Marks {
     selected: Arc<HashSet<SharedString>>,
-    cut: Arc<HashSet<SharedString>>,
     expanded: Arc<HashSet<SharedString>>,
     tags: Tags,
     renaming: Option<SharedString>,
@@ -105,7 +104,6 @@ struct Drawn {
     run: Run,
     look: Rc<Look>,
     selected: bool,
-    cut: bool,
     ring: bool,
     dropping: Option<Hsla>,
     tags: Option<Vec<usize>>,
@@ -121,8 +119,8 @@ impl PartialEq for Drawn {
             && Arc::ptr_eq(&self.line.row, &other.line.row)
             && self.line.depth == other.line.depth
             && self.at == other.at
-            && (self.run, self.selected, self.cut, self.ring, self.open)
-                == (other.run, other.selected, other.cut, other.ring, other.open)
+            && (self.run, self.selected, self.ring, self.open)
+                == (other.run, other.selected, other.ring, other.open)
             && self.anchor.is_some() == other.anchor.is_some()
             && self.dropping == other.dropping
             && self.tags == other.tags
@@ -257,7 +255,6 @@ impl FinderDemo {
         });
         let marks = Marks {
             selected: self.selected.snapshot(),
-            cut: self.cut.snapshot(),
             expanded: self.expanded.snapshot(),
             tags: self.tags.clone(),
             renaming: self.renaming.clone(),
@@ -695,7 +692,6 @@ fn row(
         },
         look: look.clone(),
         selected,
-        cut: marks.cut.contains(&line.key),
         ring,
         dropping,
         tags: marks.tags.get(&line.key).cloned(),
@@ -743,7 +739,6 @@ fn shell(drawn: &Drawn, pixels: Div, window: &Window) -> AnyElement {
         } else {
             look.label
         })
-        .when(drawn.cut, |row| row.opacity(0.5))
         .child(pixels)
         .children(twist)
         .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))

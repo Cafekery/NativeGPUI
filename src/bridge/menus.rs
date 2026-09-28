@@ -1,16 +1,18 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use crate::controls::MenuView;
 use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{Bool, Sel};
+use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSEventTrackingRunLoopMode, NSMenu, NSMenuItem, NSText,
+    NSEventTrackingRunLoopMode, NSMenu, NSMenuDelegate, NSMenuItem, NSText,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSRunLoop,
@@ -85,7 +87,14 @@ pub struct MenuCommand {
     option_only: bool,
     checked: bool,
     text: Option<TextCommand>,
+    selector: Option<Sel>,
+    fill: Option<Rc<Fill>>,
+    view: Option<Rc<ViewFill>>,
 }
+
+type Fill = dyn Fn() -> Vec<MenuCommand>;
+
+type ViewFill = dyn Fn() -> MenuView;
 
 impl MenuCommand {
     pub fn new(title: impl Into<String>, action: impl Action) -> Self {
@@ -94,6 +103,36 @@ impl MenuCommand {
             action: Some(Box::new(action)),
             ..Self::separator()
         }
+    }
+
+    /// A row that sends `selector` up the responder chain, as AppKit's own rows do.
+    pub fn appkit(title: impl Into<String>, selector: &CStr) -> Self {
+        Self {
+            title: title.into(),
+            selector: Some(Sel::register(selector)),
+            ..Self::separator()
+        }
+    }
+
+    /// A row showing the view `view` builds each time its menu is about to show; a pick in the view
+    /// sends `action`.
+    pub fn view(view: impl Fn() -> MenuView + 'static, action: impl Action) -> Self {
+        Self {
+            view: Some(Rc::new(view)),
+            ..Self::new(String::new(), action)
+        }
+    }
+
+    /// Nests `rows` under this row, which its action then only enables.
+    pub fn rows(mut self, rows: impl IntoIterator<Item = MenuCommand>) -> Self {
+        self.rows = rows.into_iter().collect();
+        self
+    }
+
+    /// Nests the rows `fill` builds each time the submenu is about to show.
+    pub fn filled(mut self, fill: impl Fn() -> Vec<MenuCommand> + 'static) -> Self {
+        self.fill = Some(Rc::new(fill));
+        self
     }
 
     pub fn checked(mut self, on: bool) -> Self {
@@ -130,6 +169,9 @@ impl MenuCommand {
             option_only: false,
             checked: false,
             text: None,
+            selector: None,
+            fill: None,
+            view: None,
         }
     }
 
@@ -434,37 +476,54 @@ fn submenu_of(bar: &NSMenu, title: &str) -> Option<Retained<NSMenu>> {
 }
 
 fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCommand) {
+    // AppKit pairs an alternate by key and mask, so a keyless alternate needs its ⌥.
+    let keyless = match command.alternate {
+        true => NSEventModifierFlags::Option,
+        false => NONE,
+    };
+    let (key, mask) = command
+        .chord
+        .as_deref()
+        .and_then(equivalent)
+        .unwrap_or_else(|| (String::new(), keyless));
+    let nested = !command.rows.is_empty() || command.fill.is_some();
     let row = match command.action {
-        None if !command.rows.is_empty() => {
-            let inner = menu(mtm, &command.title);
-            for row in command.rows {
-                add_command(mtm, &inner, inner.numberOfItems(), row);
+        None if nested => nested_row(mtm, &command.title, command.rows, command.fill),
+        None => match command.selector {
+            Some(selector) => {
+                let row = unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &worded(&command.title),
+                        Some(selector),
+                        &NSString::from_str(&key),
+                    )
+                };
+                row.setKeyEquivalentModifierMask(mask);
+                row
             }
-            submenu_row(mtm, &command.title, &inner)
-        }
-        None => NSMenuItem::separatorItem(mtm),
+            None => NSMenuItem::separatorItem(mtm),
+        },
         Some(action) => {
-            // AppKit pairs an alternate by key and mask, so a keyless alternate needs its ⌥.
-            let keyless = match command.alternate {
-                true => NSEventModifierFlags::Option,
-                false => NONE,
-            };
-            let (key, mask) = command
-                .chord
-                .as_deref()
-                .and_then(equivalent)
-                .unwrap_or_else(|| (String::new(), keyless));
-            let row = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &worded(&command.title),
-                    Some(
-                        command
-                            .text
-                            .map_or(sel!(ngMenuCommand:), TextCommand::selector),
-                    ),
-                    &NSString::from_str(&key),
-                )
+            let row = match nested {
+                true => {
+                    let row = nested_row(mtm, &command.title, command.rows, command.fill);
+                    // A submenu's row sends nothing; the action only lets validation enable it.
+                    unsafe { row.setAction(Some(sel!(ngMenuCommand:))) };
+                    row
+                }
+                false => unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &worded(&command.title),
+                        Some(
+                            command
+                                .text
+                                .map_or(sel!(ngMenuCommand:), TextCommand::selector),
+                        ),
+                        &NSString::from_str(&key),
+                    )
+                },
             };
             row.setKeyEquivalentModifierMask(mask);
             // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
@@ -477,6 +536,9 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             row
         }
     };
+    if let Some(view) = command.view {
+        show_view(mtm, &row, view);
+    }
     if command.alternate {
         row.setAlternate(true);
     }
@@ -485,6 +547,103 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     }
     set_state(&row, command.checked);
     into.insertItem_atIndex(&row, at.min(into.numberOfItems()));
+}
+
+struct ViewRow {
+    row: Weak<NSMenuItem>,
+    fill: Rc<ViewFill>,
+    shown: MenuView,
+}
+
+thread_local! {
+    static VIEWS: RefCell<Vec<ViewRow>> = const { RefCell::new(Vec::new()) };
+}
+
+fn show_view(mtm: MainThreadMarker, row: &NSMenuItem, fill: Rc<ViewFill>) {
+    let shown = fill();
+    row.setView(Some(&shown.make_view(mtm)));
+    VIEWS.with_borrow_mut(|views| {
+        views.retain(|view| view.row.load().is_some());
+        views.push(ViewRow {
+            row: Weak::new(row),
+            fill,
+            shown,
+        });
+    });
+}
+
+fn is_row(view: &ViewRow, row: &NSMenuItem) -> bool {
+    view.row
+        .load()
+        .is_some_and(|known| std::ptr::eq(&*known, row))
+}
+
+fn refresh_view(row: &NSMenuItem) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let fill = VIEWS.with_borrow(|views| {
+        views
+            .iter()
+            .find(|view| is_row(view, row))
+            .map(|view| view.fill.clone())
+    });
+    let Some(fill) = fill else {
+        return;
+    };
+    let fresh = fill();
+    let changed = VIEWS.with_borrow_mut(|views| {
+        let view = views.iter_mut().find(|view| is_row(view, row))?;
+        (view.shown != fresh).then(|| view.shown = fresh.clone())
+    });
+    if changed.is_some() {
+        row.setView(Some(&fresh.make_view(mtm)));
+    }
+}
+
+thread_local! {
+    static FILLS: RefCell<Vec<(Weak<NSMenu>, Rc<Fill>)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn nested_row(
+    mtm: MainThreadMarker,
+    title: &str,
+    rows: Vec<MenuCommand>,
+    fill: Option<Rc<Fill>>,
+) -> Retained<NSMenuItem> {
+    let inner = menu(mtm, title);
+    for row in rows {
+        add_command(mtm, &inner, inner.numberOfItems(), row);
+    }
+    if let Some(fill) = fill {
+        if let Some(sink) = SHARED.with_borrow(|shared| shared.clone()) {
+            inner.setDelegate(Some(ProtocolObject::from_ref(&*sink)));
+        }
+        FILLS.with_borrow_mut(|fills| {
+            fills.retain(|(menu, _)| menu.load().is_some());
+            fills.push((Weak::new(&*inner), fill));
+        });
+    }
+    submenu_row(mtm, title, &inner)
+}
+
+fn refill(menu: &NSMenu) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let fill = FILLS.with_borrow(|fills| {
+        fills
+            .iter()
+            .find(|(weak, _)| weak.load().is_some_and(|known| std::ptr::eq(&*known, menu)))
+            .map(|(_, fill)| fill.clone())
+    });
+    let Some(fill) = fill else {
+        return;
+    };
+    menu.removeAllItems();
+    for command in fill() {
+        add_command(mtm, menu, menu.numberOfItems(), command);
+    }
 }
 
 thread_local! {
@@ -688,6 +847,7 @@ define_class!(
                 item.setTitle(&worded(text.title()));
                 return Bool::new(text_allows(item, text));
             }
+            refresh_view(item);
             if let Some(on) = STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
             {
                 set_state(item, on);
@@ -697,6 +857,15 @@ define_class!(
             }
             let enabled = ENABLED.with_borrow(|slot| slot.clone());
             Bool::new(enabled.is_none_or(|enabled| enabled(&*action)))
+        }
+    }
+
+    unsafe impl NSObjectProtocol for CommandSink {}
+
+    unsafe impl NSMenuDelegate for CommandSink {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            refill(menu);
         }
     }
 );
