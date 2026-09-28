@@ -10,6 +10,11 @@ use image::{Frame, RgbaImage};
 use native_gpui::tokens::{
     self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
+use objc2::rc::Retained;
+use objc2_foundation::{
+    NSCalendarUnit, NSDateComponentsFormatter, NSDateComponentsFormatterUnitsStyle,
+    NSDateComponentsFormatterZeroFormattingBehavior, NSNumber, NSNumberFormatter,
+};
 
 use super::options::{self, Source};
 use super::stats::{CALCULATING, span};
@@ -352,7 +357,7 @@ fn info_rows(
         Face::Volume => &none,
         _ => meta.unwrap_or(&none),
     };
-    let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}\u{d7}{h}"));
+    let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}{BY}{h}"));
     let value = |name: &str| {
         meta.values
             .iter()
@@ -376,9 +381,9 @@ fn info_rows(
             Source::PageSize => meta.page.map(size),
             Source::Dpi => value("kMDItemResolutionWidthDPI")
                 .zip(value("kMDItemResolutionHeightDPI"))
-                .map(|(w, h)| format!("{w}\u{d7}{h}").into()),
-            Source::Duration => meta.duration.map(clock),
-            Source::Attr(name) => value(name).map(SharedString::from),
+                .map(|(w, h)| format!("{w}{BY}{h}").into()),
+            Source::Duration => meta.duration.and_then(duration),
+            Source::Attr(name) => value(name).map(|text| attr_text(name, text)),
         };
         all.extend(shown.map(|shown| (field.label, shown, options::shows(kind, field.key()))));
     }
@@ -402,13 +407,57 @@ fn label_width(label: &'static str) -> f32 {
     })
 }
 
-fn clock(seconds: f64) -> SharedString {
-    let seconds = seconds.max(0.).round() as u64;
-    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
-    match hours {
-        0 => format!("{minutes}:{seconds:02}").into(),
-        _ => format!("{hours}:{minutes:02}:{seconds:02}").into(),
+/// Finder sets its × between hair spaces.
+const BY: &str = "\u{200a}\u{d7}\u{200a}";
+
+fn duration(seconds: f64) -> Option<SharedString> {
+    thread_local! {
+        static FORMATTER: Retained<NSDateComponentsFormatter> = {
+            let formatter = NSDateComponentsFormatter::new();
+            formatter.setUnitsStyle(NSDateComponentsFormatterUnitsStyle::Positional);
+            formatter.setZeroFormattingBehavior(NSDateComponentsFormatterZeroFormattingBehavior::Pad);
+            formatter
+        };
     }
+    let seconds = seconds.max(0.).round();
+    let units = match seconds >= 3600. {
+        true => NSCalendarUnit::Hour | NSCalendarUnit::Minute | NSCalendarUnit::Second,
+        false => NSCalendarUnit::Minute | NSCalendarUnit::Second,
+    };
+    FORMATTER.with(|formatter| {
+        formatter.setAllowedUnits(units);
+        formatter
+            .stringFromTimeInterval(seconds)
+            .map(|text| text.to_string().into())
+    })
+}
+
+/// Spotlight's value as Finder words it.
+fn attr_text(name: &str, text: String) -> SharedString {
+    match name {
+        "kMDItemAudioSampleRate" => match text.parse().ok().and_then(kilohertz) {
+            Some(rate) => rate,
+            None => text.into(),
+        },
+        "kMDItemAudioChannelCount" if text == "1" => "Mono".into(),
+        "kMDItemAudioChannelCount" if text == "2" => "Stereo".into(),
+        // Finder lists Spotlight's codecs last first.
+        "kMDItemCodecs" => text.rsplit(", ").collect::<Vec<_>>().join(", ").into(),
+        _ => text.into(),
+    }
+}
+
+fn kilohertz(hertz: f64) -> Option<SharedString> {
+    thread_local! {
+        static FORMATTER: Retained<NSNumberFormatter> = {
+            let formatter = NSNumberFormatter::new();
+            formatter.setMaximumFractionDigits(1);
+            formatter
+        };
+    }
+    FORMATTER
+        .with(|formatter| formatter.stringFromNumber(&NSNumber::new_f64(hertz / 1000.)))
+        .map(|number| format!("{number} kHz").into())
 }
 
 fn actions(face: Face) -> &'static [(&'static str, &'static str)] {
