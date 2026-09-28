@@ -12,6 +12,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSString};
 use super::After;
 use super::jobs::Record;
 use crate::app::FinderDemo;
+use crate::sound::Sound;
 
 actions!(finder_demo, [UndoOp, RedoOp]);
 
@@ -141,7 +142,7 @@ impl FinderDemo {
         };
         refresh_edit_menu(&self.journal);
         let at = self.journal.redo_len() - 1;
-        let sound = crate::sound::Sound::of(&undoable.redo, true);
+        let sound = Sound::of(&undoable.redo, true);
         // Whatever took an undone item's place since is kept, never replaced.
         self.submit(
             undoable.undo,
@@ -159,7 +160,7 @@ impl FinderDemo {
         };
         refresh_edit_menu(&self.journal);
         let at = self.journal.undo_len() - 1;
-        let sound = crate::sound::Sound::of(&undoable.redo, false);
+        let sound = Sound::of(&undoable.redo, false);
         self.submit(
             undoable.redo,
             Conflict::KeepBoth,
