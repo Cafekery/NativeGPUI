@@ -55,6 +55,7 @@ actions!(
         GoLibrary,
         GoNetwork,
         GoRecents,
+        GoShared,
         GoToFolder,
         ConnectToServer,
         GoUtilities,
@@ -381,6 +382,7 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("AirDrop", GoAirDrop).key("cmd-shift-r"),
         MenuCommand::new("Network", GoNetwork).key("cmd-shift-k"),
         MenuCommand::new("iCloud Drive", GoICloud).key("cmd-shift-i"),
+        MenuCommand::new("Shared", GoShared).key("cmd-shift-s"),
         MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
         MenuCommand::new("Utilities", GoUtilities).key("cmd-shift-u"),
         MenuCommand::separator(),
@@ -598,15 +600,20 @@ impl FinderDemo {
                 this.go_place(Standard::Applications, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoComputer, window, cx| {
-                this.go_to(Path::new("/"), window, cx);
+                this.go(crate::locations::COMPUTER, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoNetwork, window, cx| {
-                this.go_to(Path::new("/Network"), window, cx);
+                this.go(crate::locations::NETWORK, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoShared, window, cx| {
+                this.go(crate::locations::SHARED, window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoUtilities, window, cx| {
                 this.go_to(Path::new("/System/Applications/Utilities"), window, cx);
             }))
-            .on_action(cx.listener(|this, _: &GoAirDrop, _, _| this.airdrop_selection()))
+            .on_action(cx.listener(|this, _: &GoAirDrop, window, cx| {
+                this.go(crate::locations::AIRDROP, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &GoICloud, window, cx| {
                 if let Some(drive) = finder_fs::icloud::drive() {
                     this.go_to(&drive, window, cx);

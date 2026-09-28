@@ -352,6 +352,8 @@ impl FinderDemo {
             self.go(id, window, cx);
         } else if crate::smart::is_saved(&line.key) {
             self.go(intern(&line.key), window, cx);
+        } else if crate::locations::server(&line.key).is_some() {
+            self.connect_server(&line.key, window, cx);
         } else {
             self.open_files(vec![PathBuf::from(line.key.as_ref())], cx);
         }

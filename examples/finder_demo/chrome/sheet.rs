@@ -603,7 +603,7 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         self.connect_sheet = Some(ConnectSheet {
             address: address.clone(),
             status: Some("Connecting…".into()),
