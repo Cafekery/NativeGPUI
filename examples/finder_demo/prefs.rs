@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use objc2::AllocAnyThread;
@@ -6,9 +7,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSNumber, NSString, NSUserDefaults,
+    NSNumber, NSString, NSURL, NSUserDefaults,
 };
 
+use crate::chrome::scope_bar::{THIS_FOLDER, THIS_MAC};
 use crate::data::Column;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
@@ -31,7 +33,6 @@ pub(crate) struct Finder {
     pub(crate) icon_size: f32,
     pub(crate) relative_dates: bool,
     pub(crate) toolbar: Vec<String>,
-    pub(crate) folders_first: bool,
     pub(crate) sort: (Column, bool),
 }
 
@@ -40,8 +41,7 @@ fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
 }
 
 static FINDER: LazyLock<Finder> = LazyLock::new(|| {
-    let suite = NSString::from_str("com.apple.finder");
-    let defaults = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite));
+    let defaults = finder_domain();
     let read = |key: &str| defaults.as_ref()?.objectForKey(&NSString::from_str(key));
     let dict = |key: &str| read(key)?.downcast::<NSDictionary>().ok();
     let list = dict("StandardViewSettings")
@@ -97,7 +97,6 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
                 .filter_map(|id| Some(id.downcast_ref::<NSString>()?.to_string()))
                 .collect()
         }),
-        folders_first: flag("_FXSortFoldersFirst"),
         sort: sort.map_or((Column::Name, true), |column| {
             (column, ascending.unwrap_or(true))
         }),
@@ -106,6 +105,89 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
 
 pub(crate) fn finder() -> &'static Finder {
     &FINDER
+}
+
+fn finder_domain() -> Option<Retained<NSUserDefaults>> {
+    let suite = NSString::from_str("com.apple.finder");
+    NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))
+}
+
+/// A Finder setting as the demo applies it: the value its Settings window stored under Finder's
+/// own key, else Finder's. `standardUserDefaults` also answers keys Finder keeps in the global
+/// domain, such as `AppleShowAllExtensions`.
+fn setting(key: &str) -> Option<Retained<AnyObject>> {
+    let key = NSString::from_str(key);
+    defaults()
+        .objectForKey(&key)
+        .or_else(|| finder_domain()?.objectForKey(&key))
+}
+
+pub(crate) fn setting_on(key: &str, default: bool) -> bool {
+    let Some(value) = setting(key) else {
+        return default;
+    };
+    if let Some(number) = value.downcast_ref::<NSNumber>() {
+        return number.boolValue();
+    }
+    value.downcast_ref::<NSString>().map_or(default, |text| {
+        matches!(
+            text.to_string().trim().chars().next(),
+            Some('Y' | 'y' | 'T' | 't' | '1'..='9')
+        )
+    })
+}
+
+pub(crate) fn set_setting_on(key: &str, on: bool) {
+    defaults().setBool_forKey(on, &NSString::from_str(key));
+}
+
+pub(crate) fn setting_text(key: &str) -> Option<String> {
+    Some(setting(key)?.downcast::<NSString>().ok()?.to_string())
+}
+
+pub(crate) fn set_setting_text(key: &str, value: &str) {
+    let value = NSString::from_str(value);
+    unsafe { defaults().setObject_forKey(Some(&value), &NSString::from_str(key)) };
+}
+
+pub(crate) fn opens_folders_in_tabs() -> bool {
+    setting_on("FinderSpawnTab", true)
+}
+
+pub(crate) fn folders_first() -> bool {
+    setting_on("_FXSortFoldersFirst", false)
+}
+
+pub(crate) fn shows_all_extensions() -> bool {
+    setting_on("AppleShowAllExtensions", false)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WindowTarget {
+    Recents,
+    Computer,
+    Folder(PathBuf),
+}
+
+/// Where a new window opens: `NewWindowTarget`, with `NewWindowTargetPath` naming a volume or
+/// another folder.
+pub(crate) fn new_window_target() -> WindowTarget {
+    use finder_fs::volumes::{Standard, standard};
+    let home = standard(Standard::Home).unwrap_or_else(|| PathBuf::from("/"));
+    let stored = || {
+        let url = NSURL::URLWithString(&NSString::from_str(&setting_text("NewWindowTargetPath")?))?;
+        Some(PathBuf::from(url.path()?.to_string()))
+    };
+    WindowTarget::Folder(match setting_text("NewWindowTarget").as_deref() {
+        Some("PfCm") => return WindowTarget::Computer,
+        Some("PfVo") => stored().unwrap_or_else(|| PathBuf::from("/")),
+        Some("PfHm") => home,
+        Some("PfDe") => home.join("Desktop"),
+        Some("PfDo") => home.join("Documents"),
+        Some("PfID") => finder_fs::icloud::drive().unwrap_or(home),
+        Some("PfLo") => stored().unwrap_or(home),
+        _ => return WindowTarget::Recents,
+    })
 }
 
 fn read(key: &str) -> Option<f64> {
@@ -226,8 +308,20 @@ pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
 }
 
-pub(crate) fn search_scope() -> Option<usize> {
-    read(SCOPE).map(|v| v as usize)
+/// The scope a new search starts in: `FXDefaultSearchScope`'s, or under "Use the Previous Search
+/// Scope" the last one picked.
+pub(crate) fn search_scope() -> usize {
+    match setting_text("FXDefaultSearchScope").as_deref() {
+        Some("SCcf") => THIS_FOLDER,
+        Some("SCsp") => read(SCOPE).map_or_else(
+            || match setting_text("FXLastSearchScope").as_deref() {
+                Some("SCcf") => THIS_FOLDER,
+                _ => THIS_MAC,
+            },
+            |scope| scope as usize,
+        ),
+        _ => THIS_MAC,
+    }
 }
 
 pub(crate) fn set_search_scope(scope: usize) {

@@ -60,8 +60,19 @@ pub(crate) fn pick_on_click(
         let line = line.clone();
         this.update(cx, |this: &mut FinderDemo, cx| {
             this.pick(&line, extend, toggle);
-            if twice {
-                this.open(&line, window, cx);
+            match line
+                .row
+                .opens
+                .filter(|_| twice && toggle && line.row.readable)
+            {
+                Some(folder) if crate::prefs::opens_folders_in_tabs() => {
+                    this.open_tab(folder, window, cx)
+                }
+                Some(folder) => {
+                    crate::open_finder_window(folder, 1, cx);
+                }
+                None if twice => this.open(&line, window, cx),
+                None => {}
             }
             cx.notify();
         })

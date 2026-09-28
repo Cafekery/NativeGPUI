@@ -139,7 +139,7 @@ impl FinderDemo {
                 open_finder_window(id, 1, cx);
             }
             Act::Enclosing(id) => self.show_enclosing(id, window, cx),
-            Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id),
+            Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id, cx),
             Act::RenameAt(id) => {
                 self.show_enclosing(id, window, cx);
                 self.renaming = Some(id.into());
@@ -298,6 +298,11 @@ impl FinderDemo {
         if items.is_empty() {
             return;
         }
+        if !crate::prefs::setting_on("WarnOnEmptyTrash", true) {
+            crate::sound::Sound::EmptyTrash.play();
+            self.run_op(Op::DeleteImmediately(items), After::Nothing, cx);
+            return;
+        }
         let this = cx.entity().downgrade();
         self.confirm(
             "Are you sure you want to permanently erase the items in the Trash?",
@@ -322,6 +327,34 @@ impl FinderDemo {
             return;
         }
         if !is_trash(self.here()) {
+            let drive = finder_fs::icloud::drive();
+            let in_cloud =
+                drive.is_some_and(|drive| items.iter().all(|item| item.starts_with(&drive)));
+            if in_cloud && crate::prefs::setting_on("FXEnableRemoveFromICloudDriveWarning", false) {
+                let asked = match items.as_slice() {
+                    [one] => format!(
+                        "Are you sure you want to delete \u{201c}{}\u{201d} from iCloud?",
+                        finder_fs::name::of_path(one)
+                    ),
+                    many => format!(
+                        "Are you sure you want to delete these {} items from iCloud?",
+                        many.len()
+                    ),
+                };
+                let detail = match items.len() {
+                    1 => "This item will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices.".to_owned(),
+                    count => format!("These {count} items will be moved to the Trash on this Mac and deleted from iCloud\u{a0}Drive and your other iCloud devices."),
+                };
+                let this = cx.entity().downgrade();
+                self.confirm(&asked, &detail, "Delete", false, cx, move |cx| {
+                    let mut cx = cx.clone();
+                    this.update(&mut cx, |this: &mut FinderDemo, cx| {
+                        this.remove(Op::Trash(items.clone()), cx);
+                    })
+                    .ok();
+                });
+                return;
+            }
             self.remove(Op::Trash(items), cx);
             return;
         }

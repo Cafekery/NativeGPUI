@@ -206,7 +206,7 @@ impl FinderDemo {
         };
         match save(name, &raw_query(&self.query, &self.criteria), &folders) {
             Ok(file) => {
-                self.pin_favourite(vec![file.clone()]);
+                self.pin_favourite(vec![file.clone()], cx);
                 self.go(intern_path(&file), window, cx);
             }
             Err(error) => self.complain(&error),

@@ -96,7 +96,7 @@ fn trouble(id: &'static str, error: io::Error) -> Trouble {
 }
 
 fn by(keys: &[Key], (sort, ascending): (Column, bool)) -> impl Fn(usize, usize) -> Ordering + '_ {
-    let first = crate::prefs::finder().folders_first || sort == Column::Kind;
+    let first = crate::prefs::folders_first() && sort == Column::Name || sort == Column::Kind;
     move |a, b| {
         let (a, b) = (&keys[a], &keys[b]);
         let column = match sort {

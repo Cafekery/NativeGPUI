@@ -246,6 +246,24 @@ impl FinderDemo {
         if name.is_empty() || name == old {
             return;
         }
+        let extension = |name: &str| {
+            let (stem, extension) = name.rsplit_once('.')?;
+            (!stem.is_empty() && !extension.is_empty()).then(|| extension.to_owned())
+        };
+        let (was, now) = (extension(old), extension(&name));
+        match was {
+            Some(was)
+                if now.as_ref() != Some(&was)
+                    && !Path::new(key.as_ref()).is_dir()
+                    && crate::prefs::setting_on("FXEnableExtensionChangeWarning", true) =>
+            {
+                self.ask_extension(key.clone(), name, was, now, cx)
+            }
+            _ => self.renamed(key, name, cx),
+        }
+    }
+
+    fn renamed(&mut self, key: &SharedString, name: String, cx: &mut Context<Self>) {
         self.tags.remove(key);
         self.run_op(
             Op::Rename {
@@ -255,6 +273,53 @@ impl FinderDemo {
             After::Select,
             cx,
         );
+    }
+
+    /// Finder's question before a rename changes or drops an extension; Keep is the default.
+    fn ask_extension(
+        &self,
+        key: SharedString,
+        name: String,
+        was: String,
+        now: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(mtm), Some(window)) = (objc2::MainThreadMarker::new(), self.host.clone()) else {
+            return;
+        };
+        let (text, change) = match &now {
+            Some(now) => (
+                format!(
+                    "Are you sure you want to change the extension from \u{201c}.{was}\u{201d} to \u{201c}.{now}\u{201d}?"
+                ),
+                format!("Use .{now}"),
+            ),
+            None => (
+                format!("Are you sure you want to remove the extension \u{201c}.{was}\u{201d}?"),
+                "Remove".to_owned(),
+            ),
+        };
+        let alert = objc2_app_kit::NSAlert::new(mtm);
+        alert.setMessageText(&objc2_foundation::NSString::from_str(&text));
+        alert.setInformativeText(&objc2_foundation::NSString::from_str(
+            "If you make this change, your document may open in a different application.",
+        ));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(&format!(
+            "Keep .{was}"
+        )));
+        alert.addButtonWithTitle(&objc2_foundation::NSString::from_str(&change));
+        let this = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        let handler = block2::RcBlock::new(move |response: objc2_app_kit::NSModalResponse| {
+            if response == objc2_app_kit::NSAlertSecondButtonReturn {
+                let mut cx = async_cx.clone();
+                this.update(&mut cx, |this: &mut FinderDemo, cx| {
+                    this.renamed(&key, name.clone(), cx)
+                })
+                .ok();
+            }
+        });
+        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
     }
 }
 
