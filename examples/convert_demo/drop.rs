@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::Window;
 use objc2::rc::Retained;
@@ -8,14 +9,16 @@ use objc2::runtime::{Bool, ProtocolObject};
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSDragOperation, NSDraggingInfo, NSPasteboard, NSPasteboardNameDrag,
-    NSPasteboardTypeFileURL, NSView, NSWindowButton, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowTitleVisibility,
+    NSPasteboardTypeFileURL, NSView, NSWindow, NSWindowButton, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSPoint, NSRect, NSSize, NSURL};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use crate::open::url_path;
+
 static PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-static INSTALLED: Mutex<bool> = Mutex::new(false);
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 pub fn take_dropped() -> Vec<PathBuf> {
     std::mem::take(&mut *PENDING.lock().unwrap())
@@ -26,8 +29,7 @@ pub fn has_dropped() -> bool {
 }
 
 pub fn hide_traffic_lights(window: &Window) {
-    let view = gpui_view(window);
-    let Some(ns_window) = view.window() else {
+    let Some(ns_window) = ns_window(window) else {
         return;
     };
     for button in [
@@ -43,8 +45,7 @@ pub fn hide_traffic_lights(window: &Window) {
 }
 
 pub fn enable_resize(window: &Window) {
-    let view = gpui_view(window);
-    let Some(ns_window) = view.window() else {
+    let Some(ns_window) = ns_window(window) else {
         return;
     };
     let mut style = ns_window.styleMask();
@@ -52,18 +53,14 @@ pub fn enable_resize(window: &Window) {
         style.insert(NSWindowStyleMask::Resizable);
         ns_window.setStyleMask(style);
     }
-    let min = NSSize {
-        width: 420.,
-        height: 520.,
-    };
+    let min = NSSize::new(420., 520.);
     if ns_window.contentMinSize() != min {
         ns_window.setContentMinSize(min);
     }
 }
 
 pub fn install(window: &Window) {
-    let mut installed = INSTALLED.lock().unwrap();
-    if *installed {
+    if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
     let view = gpui_view(window);
@@ -77,7 +74,7 @@ pub fn install(window: &Window) {
     );
     drop.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
     parent.addSubview_positioned_relativeTo(&drop, NSWindowOrderingMode::Above, Some(&view));
-    *installed = true;
+    INSTALLED.store(true, Ordering::Relaxed);
 }
 
 fn gpui_view(window: &Window) -> Retained<NSView> {
@@ -88,6 +85,10 @@ fn gpui_view(window: &Window) -> Retained<NSView> {
     };
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
         .expect("gpui's AppKit handle always carries the live NSView it renders into")
+}
+
+fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    gpui_view(window).window()
 }
 
 fn drag_has_files() -> bool {
@@ -105,7 +106,7 @@ fn paths_from(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
         .filter_map(|item| {
             let text = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
             let url = NSURL::URLWithString(&text)?;
-            Some(PathBuf::from(url.path()?.to_string()))
+            url_path(&url)
         })
         .collect()
 }

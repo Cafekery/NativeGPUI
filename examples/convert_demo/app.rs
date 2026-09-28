@@ -1,23 +1,23 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use convert::{Format, Intent, Kind, Probe, Report, ffmpeg_available, probe, relevant_targets};
 use gpui::{
-    Bounds, Context, FontWeight, Hsla, MouseButton, Render, SharedString, TextAlign, WeakEntity,
-    Window, WindowBounds, div, img, point, prelude::*, px, relative, size, uniform_list,
+    AnyElement, App, Bounds, Context, Div, FontWeight, Hsla, MouseButton, Render, SharedString,
+    TextAlign, WeakEntity, Window, WindowBounds, div, hsla, img, point, prelude::*, px, relative,
+    size, uniform_list,
 };
 use native_gpui::tokens::{FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
-    ButtonBezel, CheckState, ControlSize, glass, native_button, native_checkbox, native_popup,
-    native_progress, native_root, native_segmented, set_corner_radius, set_window_flags,
-    window_flags,
+    ButtonBezel, CheckState, ControlSize, NativeButton, glass, native_button, native_checkbox,
+    native_popup, native_progress, native_root, native_segmented, set_corner_radius,
+    set_window_flags, window_flags,
 };
 
 use crate::{drop, jobs, open, thumbs};
 
-const W: f32 = 500.;
-const H: f32 = 620.;
 const GRID_MIN_COL: f32 = 148.;
 const GRID_GAP: f32 = 24.;
 const GRID_ROW_GAP: f32 = 28.;
@@ -38,13 +38,23 @@ enum Scene {
     Browse,
 }
 
+#[derive(Default)]
 pub struct Item {
     pub path: PathBuf,
     pub probe: Option<Probe>,
     pub dest: Option<PathBuf>,
     pub report: Option<Report>,
-    pub error: Option<String>,
+    pub error: Option<SharedString>,
     pub is_busy: bool,
+}
+
+impl Item {
+    fn revealed(&self) -> &Path {
+        self.dest
+            .as_deref()
+            .filter(|dest| dest.exists())
+            .unwrap_or(&self.path)
+    }
 }
 
 pub struct ConvertDemo {
@@ -57,12 +67,12 @@ pub struct ConvertDemo {
     pub is_busy: bool,
     pub done: usize,
     pub total: usize,
-    pub notice: Option<String>,
-    pub summary: Option<String>,
+    pub notice: Option<SharedString>,
+    pub summary: Option<SharedString>,
     pub output_dir: Option<PathBuf>,
     pub cancel: Arc<AtomicBool>,
     hover: Option<usize>,
-    is_drop_ready: bool,
+    is_window_styled: bool,
 }
 
 impl ConvertDemo {
@@ -70,7 +80,7 @@ impl ConvertDemo {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(16))
+                    .timer(Duration::from_millis(16))
                     .await;
                 if this
                     .update(cx, |_, cx| {
@@ -100,7 +110,7 @@ impl ConvertDemo {
             output_dir: None,
             cancel: Arc::new(AtomicBool::new(false)),
             hover: None,
-            is_drop_ready: false,
+            is_window_styled: false,
         }
     }
 
@@ -108,18 +118,15 @@ impl ConvertDemo {
         if paths.is_empty() {
             return;
         }
-        let mut folders = 0usize;
-        let mut unknown = 0usize;
+        let mut folders = 0;
+        let mut unknown = 0;
         let mut added = Vec::new();
         for path in paths {
             if path.is_dir() {
                 folders += 1;
                 continue;
             }
-            if !path.is_file() {
-                continue;
-            }
-            if self.items.iter().any(|i| i.path == path) {
+            if !path.is_file() || self.items.iter().any(|i| i.path == path) {
                 continue;
             }
             if Format::from_path(&path).is_none() {
@@ -128,11 +135,7 @@ impl ConvertDemo {
             }
             self.items.push(Item {
                 path: path.clone(),
-                probe: None,
-                dest: None,
-                report: None,
-                error: None,
-                is_busy: false,
+                ..Item::default()
             });
             added.push(path);
         }
@@ -151,17 +154,13 @@ impl ConvertDemo {
                 .spawn(async move {
                     added
                         .into_iter()
-                        .map(|path| {
-                            let result = probe(&path);
-                            (path, result)
-                        })
+                        .map(|path| (probe(&path), path))
                         .collect::<Vec<_>>()
                 })
                 .await;
             this.update(cx, |demo, cx| {
-                let mut unknown = 0usize;
-                let mut probe_notes = Vec::new();
-                for (path, result) in results {
+                let mut notes = Vec::new();
+                for (result, path) in results {
                     match result {
                         Ok(probed) => {
                             if let Some(item) = demo.items.iter_mut().find(|i| i.path == path) {
@@ -170,16 +169,13 @@ impl ConvertDemo {
                         }
                         Err(err) => {
                             demo.items.retain(|i| i.path != path);
-                            unknown += 1;
-                            probe_notes.push(err.to_string());
+                            notes.push(err.to_string());
                         }
                     }
                 }
                 demo.sync_target();
-                if unknown > 0 || !probe_notes.is_empty() {
-                    demo.notice = notice_for(0, unknown, &demo.items, &probe_notes);
-                } else if demo.notice.is_none() {
-                    demo.notice = notice_for(0, 0, &demo.items, &[]);
+                if !notes.is_empty() || demo.notice.is_none() {
+                    demo.notice = notice_for(0, notes.len(), &demo.items, &notes);
                 }
                 cx.notify();
             })
@@ -201,8 +197,7 @@ impl ConvertDemo {
         let Some(first) = self.first_format() else {
             return;
         };
-        let targets = relevant_targets(first);
-        if !targets.contains(&self.target) || self.target.kind() != first.kind() {
+        if self.target.kind() != first.kind() {
             self.target = match first.kind() {
                 Kind::Image => Format::Webp,
                 Kind::Audio => Format::M4a,
@@ -219,10 +214,7 @@ impl ConvertDemo {
     }
 
     fn targets(&self) -> &'static [Format] {
-        let Some(first) = self.first_format() else {
-            return convert::relevant_targets(Format::Png);
-        };
-        relevant_targets(first)
+        relevant_targets(self.first_format().unwrap_or(Format::Png))
     }
 
     fn target_index(&self) -> usize {
@@ -240,12 +232,29 @@ impl ConvertDemo {
     }
 
     fn dest_label(&self) -> String {
-        match &self.output_dir {
-            Some(dir) => dir
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| dir.display().to_string()),
-            None => "Next to originals".into(),
+        self.output_dir
+            .as_deref()
+            .map_or_else(|| "Next to originals".into(), folder_name)
+    }
+
+    fn converting(&self) -> String {
+        format!(
+            "Converting {} of {}…",
+            self.done.min(self.total),
+            self.total
+        )
+    }
+
+    fn show(&mut self, scene: Scene, cx: &mut Context<Self>) {
+        self.scene = scene;
+        cx.notify();
+    }
+
+    fn advance(&mut self, cx: &mut Context<Self>) {
+        if self.items.is_empty() {
+            Self::choose_files(cx);
+        } else {
+            self.show(Scene::Browse, cx);
         }
     }
 
@@ -278,11 +287,12 @@ impl ConvertDemo {
         let this = cx.entity().downgrade();
         let mut app = cx.to_async();
         open::pick_folder(move |dir| {
+            let Some(dir) = dir else {
+                return;
+            };
             this.update(&mut app, |demo, cx| {
-                if let Some(dir) = dir {
-                    demo.output_dir = Some(dir);
-                    cx.notify();
-                }
+                demo.output_dir = Some(dir);
+                cx.notify();
             })
             .ok();
         });
@@ -291,41 +301,33 @@ impl ConvertDemo {
     pub fn finish_summary(&mut self) {
         let ok = self.items.iter().filter(|i| i.report.is_some()).count();
         let failed = self.items.iter().filter(|i| i.error.is_some()).count();
+        if ok == 0 && failed == 0 {
+            self.summary = None;
+            return;
+        }
         let saved: i64 = self
             .items
             .iter()
             .filter_map(|i| i.report.as_ref())
             .map(|r| r.bytes_in as i64 - r.bytes_out as i64)
             .sum();
-        if ok == 0 && failed == 0 {
-            self.summary = None;
-            return;
-        }
         let mut parts = Vec::new();
         if ok > 0 {
+            let files = count_noun(ok, "file", "files");
             parts.push(match &self.output_dir {
-                Some(dir) => format!(
-                    "Saved {} in {}",
-                    count_noun(ok, "file", "files"),
-                    dir.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| dir.display().to_string())
-                ),
-                None => format!(
-                    "Saved {} next to the originals",
-                    count_noun(ok, "file", "files")
-                ),
+                Some(dir) => format!("Saved {files} in {}", folder_name(dir)),
+                None => format!("Saved {files} next to the originals"),
             });
         }
         if saved > 0 {
             parts.push(format!("{} smaller", format_bytes(saved as u64)));
         } else if saved < 0 {
-            parts.push(format!("{} larger", format_bytes((-saved) as u64)));
+            parts.push(format!("{} larger", format_bytes(saved.unsigned_abs())));
         }
         if failed > 0 {
-            parts.push(format!("{} didn’t convert", failed));
+            parts.push(format!("{failed} didn’t convert"));
         }
-        self.summary = Some(parts.join(" · "));
+        self.summary = Some(parts.join(" · ").into());
     }
 }
 
@@ -334,30 +336,24 @@ fn notice_for(
     unknown: usize,
     items: &[Item],
     probe_notes: &[String],
-) -> Option<String> {
+) -> Option<SharedString> {
     if folders > 0 {
         return Some("Drop the files inside the folder, not the folder itself".into());
     }
     if let Some(note) = probe_notes.iter().find(|n| n.contains("font collections")) {
-        return Some(note.clone());
+        return Some(note.clone().into());
     }
     if unknown > 0 {
-        return Some(format!(
-            "{} {}n’t a photo, audio, or font file",
-            unknown,
-            if unknown == 1 { "was" } else { "were" }
-        ));
+        let verb = if unknown == 1 { "was" } else { "were" };
+        return Some(format!("{unknown} {verb}n’t a photo, audio, or font file").into());
     }
-    let audio = items
+    let has_audio = items
         .iter()
         .any(|i| i.probe.as_ref().is_some_and(|p| p.kind == Kind::Audio));
-    if audio && !ffmpeg_available() {
-        return Some("Audio needs ffmpeg on this Mac".into());
-    }
-    None
+    (has_audio && !ffmpeg_available()).then(|| "Audio needs ffmpeg on this Mac".into())
 }
 
-fn count_noun(n: usize, one: &str, many: &str) -> String {
+pub fn count_noun(n: usize, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
     } else {
@@ -365,34 +361,40 @@ fn count_noun(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+fn folder_name(dir: &Path) -> String {
+    dir.file_name().map_or_else(
+        || dir.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn caption(text: impl IntoElement, color: Hsla) -> Div {
+    div().text_size(px(11.)).text_color(color).child(text)
+}
+
 impl Render for ConvertDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         drop::install(window);
         drop::hide_traffic_lights(window);
         drop::enable_resize(window);
-        window.set_window_title("Convert");
-        if !self.is_drop_ready {
+        if !self.is_window_styled {
+            window.set_window_title("Convert");
             let mut flags = window_flags(window);
             flags.movable_by_background = true;
             flags.titled = false;
             set_window_flags(window, flags);
             set_corner_radius(window, Some(px(RADIUS)));
-            self.is_drop_ready = true;
+            self.is_window_styled = true;
         }
-        let incoming = drop::take_dropped();
-        if !incoming.is_empty() {
-            self.add_paths(incoming, cx);
-        }
+        self.add_paths(drop::take_dropped(), cx);
         thumbs::collect();
 
-        let label = system_color(SystemColor::Label);
         let secondary = system_color(SystemColor::SecondaryLabel);
-
         native_root(
             div()
                 .relative()
                 .size_full()
-                .text_color(label)
+                .text_color(system_color(SystemColor::Label))
                 .child(
                     div().absolute().size_full().child(
                         glass("convert.bg")
@@ -424,35 +426,26 @@ impl Render for ConvertDemo {
 
 fn well(
     demo: &ConvertDemo,
-    secondary: gpui::Hsla,
-    window: &mut Window,
+    secondary: Hsla,
+    window: &Window,
     cx: &mut Context<ConvertDemo>,
-) -> gpui::AnyElement {
+) -> AnyElement {
     let n = demo.items.len();
-    let scale = window.scale_factor();
-    let is_empty = n == 0;
+    let button = if n == 0 {
+        native_button("well.choose", "Choose files")
+    } else {
+        native_button("well.choose", count_noun(n, "file", "files"))
+            .trailing_symbol("chevron.right")
+    };
 
     div()
         .relative()
         .size_full()
-        .child(pin_chrome(
-            corner("well.close", "xmark", "Close").on_click(cx.listener(|this, _, window, cx| {
-                if this.items.is_empty() {
-                    window.remove_window();
-                } else {
-                    this.clear();
-                    cx.notify();
-                }
-            })),
-            false,
-        ))
+        .child(pin_chrome(close_corner("well.close", cx), false))
         .child(pin_chrome(
             corner("well.next", "chevron.right", "Continue")
-                .enabled(!is_empty)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.scene = Scene::Browse;
-                    cx.notify();
-                })),
+                .enabled(n > 0)
+                .on_click(cx.listener(|this, _, _, cx| this.show(Scene::Browse, cx))),
             true,
         ))
         .child(
@@ -469,58 +462,36 @@ fn well(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .on_mouse_down(MouseButton::Left, {
-                            let is_empty = is_empty;
-                            cx.listener(move |this, _, _, cx| {
-                                if is_empty {
-                                    ConvertDemo::choose_files(cx);
-                                } else {
-                                    this.scene = Scene::Browse;
-                                    cx.notify();
-                                }
-                            })
-                        })
-                        .child(stack_art(demo, scale, secondary)),
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.advance(cx)),
+                        )
+                        .child(stack_art(demo, window.scale_factor(), secondary)),
                 )
                 .when_some(demo.notice.clone(), |d, note| {
                     d.child(
-                        div().mb_2().flex().justify_center().child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(system_color(SystemColor::SystemOrange))
-                                .child(note),
-                        ),
+                        div()
+                            .mb_2()
+                            .flex()
+                            .justify_center()
+                            .child(caption(note, system_color(SystemColor::SystemOrange))),
                     )
                 })
                 .child(
-                    div().mb_2().flex().justify_center().child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(secondary)
-                            .child(well_caption(demo)),
-                    ),
+                    div()
+                        .mb_2()
+                        .flex()
+                        .justify_center()
+                        .child(caption(well_caption(demo), secondary)),
                 )
-                .child({
-                    let button = if is_empty {
-                        native_button("well.choose", "Choose files")
-                    } else {
-                        native_button("well.choose", count_noun(n, "file", "files"))
-                            .trailing_symbol("chevron.right")
-                    };
+                .child(
                     button
                         .bezel_style(ButtonBezel::Glass)
                         .control_size(ControlSize::ExtraLarge)
                         .width(relative(1.))
                         .default_button(true)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if is_empty {
-                                ConvertDemo::choose_files(cx);
-                            } else {
-                                this.scene = Scene::Browse;
-                                cx.notify();
-                            }
-                        }))
-                }),
+                        .on_click(cx.listener(|this, _, _, cx| this.advance(cx))),
+                ),
         )
         .into_any_element()
 }
@@ -529,14 +500,13 @@ fn well_caption(demo: &ConvertDemo) -> SharedString {
     if demo.items.is_empty() {
         return "Photos, audio, or fonts · drop here or click".into();
     }
-    let bytes = demo.total_bytes();
-    if bytes == 0 {
-        return SharedString::default();
+    match demo.total_bytes() {
+        0 => SharedString::default(),
+        bytes => format_bytes(bytes).into(),
     }
-    format_bytes(bytes).into()
 }
 
-fn stack_art(demo: &ConvertDemo, scale: f32, secondary: gpui::Hsla) -> gpui::AnyElement {
+fn stack_art(demo: &ConvertDemo, scale: f32, secondary: Hsla) -> AnyElement {
     if demo.items.is_empty() {
         return div()
             .flex()
@@ -557,31 +527,29 @@ fn stack_art(demo: &ConvertDemo, scale: f32, secondary: gpui::Hsla) -> gpui::Any
             )
             .into_any_element();
     }
-    let shown: Vec<_> = demo.items.iter().take(4).collect();
     div()
         .w(px(220.))
         .h(px(140.))
         .relative()
-        .children(shown.iter().enumerate().rev().map(|(i, item)| {
-            let dx = (i as f32 - 1.0) * 14.0;
-            let dy = (i as f32) * 8.0;
-            div()
-                .absolute()
-                .left(px(40. + dx))
-                .top(px(18. + dy))
-                .child(poster_thumb(&item.path, STACK_W, STACK_H, scale, true))
-        }))
+        .children(
+            demo.items
+                .iter()
+                .take(4)
+                .enumerate()
+                .rev()
+                .map(|(i, item)| {
+                    div()
+                        .absolute()
+                        .left(px(40. + (i as f32 - 1.0) * 14.0))
+                        .top(px(18. + i as f32 * 8.0))
+                        .child(poster_thumb(&item.path, STACK_W, STACK_H, scale, true))
+                }),
+        )
         .into_any_element()
 }
 
-fn poster_thumb(
-    path: &std::path::Path,
-    width: f32,
-    height: f32,
-    scale: f32,
-    is_stack: bool,
-) -> gpui::AnyElement {
-    let mut slot = div()
+fn poster_thumb(path: &Path, width: f32, height: f32, scale: f32, is_stack: bool) -> AnyElement {
+    let slot = div()
         .w(px(width))
         .h(px(height))
         .flex_none()
@@ -591,36 +559,26 @@ fn poster_thumb(
     let image = if is_stack {
         thumbs::well(path, scale)
     } else {
-        thumbs::get(path, scale)
+        thumbs::poster(path, scale)
     };
-    if let Some(image) = image {
+    let slot = if let Some(image) = image {
         let fit = image.size(0);
         let (w, h) = (u32::from(fit.width) as f32, u32::from(fit.height) as f32);
         let zoom = (width / w.max(1.)).min(height / h.max(1.));
-        slot = slot.child(
+        slot.child(
             img(image)
                 .w(px(w * zoom))
                 .h(px(h * zoom))
                 .rounded(px(POSTER_RADIUS))
                 .border(px(0.5))
-                .border_color(Hsla {
-                    h: 0.,
-                    s: 0.,
-                    l: 1.,
-                    a: 0.12,
-                }),
-        );
+                .border_color(hsla(0., 0., 1., 0.12)),
+        )
     } else {
-        let tag = path.to_string_lossy();
-        let side = if is_stack {
-            height * 0.85
-        } else {
-            height * 0.55
-        };
-        if let Some(icon) = file_icon(FileType::Path(&tag), px(side)) {
-            slot = slot.child(icon.img());
-        }
-    }
+        let side = height * if is_stack { 0.85 } else { 0.55 };
+        slot.children(
+            file_icon(FileType::Path(&path.to_string_lossy()), px(side)).map(|icon| icon.img()),
+        )
+    };
     slot.into_any_element()
 }
 
@@ -634,41 +592,24 @@ fn grid_metrics(viewport_w: f32) -> (usize, f32, f32) {
 }
 
 fn browse(
-    demo: &mut ConvertDemo,
-    secondary: gpui::Hsla,
-    window: &mut Window,
+    demo: &ConvertDemo,
+    secondary: Hsla,
+    window: &Window,
     cx: &mut Context<ConvertDemo>,
-) -> gpui::AnyElement {
+) -> AnyElement {
     let scale = window.scale_factor();
-    let is_grid = demo.is_grid;
     let is_busy = demo.is_busy;
-    let fraction = if demo.total == 0 {
-        0.0
-    } else {
-        demo.done as f64 / demo.total as f64
-    };
 
     div()
         .relative()
         .size_full()
         .child(pin_chrome(
-            corner("back", "chevron.left", "Back").on_click(cx.listener(|this, _, _, cx| {
-                this.scene = Scene::Well;
-                cx.notify();
-            })),
+            corner("back", "chevron.left", "Back")
+                .on_click(cx.listener(|this, _, _, cx| this.show(Scene::Well, cx))),
             false,
         ))
         .child(pin_chrome(
-            corner("browse.close", "xmark", "Close")
-                .enabled(!is_busy)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    if this.items.is_empty() {
-                        window.remove_window();
-                    } else {
-                        this.clear();
-                        cx.notify();
-                    }
-                })),
+            close_corner("browse.close", cx).enabled(!is_busy),
             true,
         ))
         .child(
@@ -701,6 +642,11 @@ fn browse(
                 .pb(px(16.))
                 .child(browse_header(demo, secondary))
                 .when(is_busy, |d| {
+                    let fraction = if demo.total == 0 {
+                        0.0
+                    } else {
+                        demo.done as f64 / demo.total as f64
+                    };
                     d.child(
                         div()
                             .flex()
@@ -708,30 +654,16 @@ fn browse(
                             .gap_1()
                             .py_1()
                             .child(native_progress("batch", fraction).width(relative(1.)))
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(secondary)
-                                    .child(format!(
-                                        "Converting {} of {}…",
-                                        demo.done.min(demo.total),
-                                        demo.total
-                                    )),
-                            ),
+                            .child(caption(demo.converting(), secondary)),
                     )
                 })
                 .when_some(demo.notice.clone(), |d, note| {
-                    d.child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(system_color(SystemColor::SystemOrange))
-                            .child(note),
-                    )
+                    d.child(caption(note, system_color(SystemColor::SystemOrange)))
                 })
-                .when_some(demo.summary.clone(), |d, sum| {
-                    d.child(div().text_size(px(11.)).text_color(secondary).child(sum))
+                .when_some(demo.summary.clone(), |d, summary| {
+                    d.child(caption(summary, secondary))
                 })
-                .child(if is_grid {
+                .child(if demo.is_grid {
                     grid_body(
                         demo,
                         scale,
@@ -747,11 +679,7 @@ fn browse(
         .into_any_element()
 }
 
-fn corner(
-    id: &'static str,
-    symbol: &'static str,
-    title: &'static str,
-) -> native_gpui::NativeButton {
+fn corner(id: &'static str, symbol: &'static str, title: &'static str) -> NativeButton {
     native_button(id, title)
         .symbol(symbol)
         .bezel_style(ButtonBezel::Glass)
@@ -759,7 +687,18 @@ fn corner(
         .square(CHROME)
 }
 
-fn pin_chrome(button: native_gpui::NativeButton, is_right: bool) -> gpui::AnyElement {
+fn close_corner(id: &'static str, cx: &mut Context<ConvertDemo>) -> NativeButton {
+    corner(id, "xmark", "Close").on_click(cx.listener(|this, _, window, cx| {
+        if this.items.is_empty() {
+            window.remove_window();
+        } else {
+            this.clear();
+            cx.notify();
+        }
+    }))
+}
+
+fn pin_chrome(button: NativeButton, is_right: bool) -> AnyElement {
     let pin = div().absolute().top(px(CHROME_INSET));
     let pin = if is_right {
         pin.right(px(CHROME_INSET))
@@ -769,14 +708,13 @@ fn pin_chrome(button: native_gpui::NativeButton, is_right: bool) -> gpui::AnyEle
     pin.child(button).into_any_element()
 }
 
-fn browse_header(demo: &ConvertDemo, secondary: gpui::Hsla) -> gpui::AnyElement {
-    let n = demo.items.len();
-    let subtitle = if demo.is_busy {
-        format!("Converting {} of {}", demo.done.min(demo.total), demo.total)
-    } else if let Some(sum) = &demo.summary {
-        sum.clone()
+fn browse_header(demo: &ConvertDemo, secondary: Hsla) -> AnyElement {
+    let subtitle: SharedString = if demo.is_busy {
+        format!("Converting {} of {}", demo.done.min(demo.total), demo.total).into()
+    } else if let Some(summary) = &demo.summary {
+        summary.clone()
     } else {
-        format_bytes(demo.total_bytes())
+        format_bytes(demo.total_bytes()).into()
     };
     div()
         .flex()
@@ -788,42 +726,26 @@ fn browse_header(demo: &ConvertDemo, secondary: gpui::Hsla) -> gpui::AnyElement 
             div()
                 .text_size(px(17.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(count_noun(n, "file", "files")),
+                .child(count_noun(demo.items.len(), "file", "files")),
         )
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(secondary)
-                .child(subtitle),
-        )
+        .child(caption(subtitle, secondary))
         .into_any_element()
 }
 
-fn browse_footer(
-    demo: &ConvertDemo,
-    secondary: gpui::Hsla,
-    cx: &mut Context<ConvertDemo>,
-) -> gpui::AnyElement {
+fn browse_footer(demo: &ConvertDemo, secondary: Hsla, cx: &mut Context<ConvertDemo>) -> AnyElement {
     let targets = demo.targets();
-    let labels: Vec<String> = targets.iter().map(|f| f.label().to_string()).collect();
-    let intent_i = Intent::all()
+    let intent_index = Intent::all()
         .iter()
         .position(|i| *i == demo.intent)
         .unwrap_or(0);
     let n = demo.ready_count();
     let is_busy = demo.is_busy;
-    let button = if is_busy {
-        format!(
-            "Converting {} of {}…",
-            demo.done.min(demo.total),
-            demo.total
-        )
+    let can_start = n > 0 && !is_busy;
+    let title = if is_busy {
+        demo.converting()
     } else {
-        if n == 1 {
-            format!("Save 1 file as {}", demo.target.label())
-        } else {
-            format!("Save {n} files as {}", demo.target.label())
-        }
+        let plural = if n == 1 { "" } else { "s" };
+        format!("Save {n} file{plural} as {}", demo.target.label())
     };
 
     div()
@@ -838,9 +760,7 @@ fn browse_footer(
                 .control_size(ControlSize::Large)
                 .width(relative(1.))
                 .enabled(!is_busy)
-                .on_click(cx.listener(|_, _, _, cx| {
-                    ConvertDemo::choose_folder(cx);
-                })),
+                .on_click(cx.listener(|_, _, _, cx| ConvertDemo::choose_folder(cx))),
         )
         .child(
             div()
@@ -850,25 +770,22 @@ fn browse_footer(
                 .child(
                     div().flex_1().child(
                         native_popup("format", demo.target_index())
-                            .items(labels)
+                            .items(targets.iter().map(|format| format.label()))
                             .bezel_style(ButtonBezel::Glass)
                             .control_size(ControlSize::Large)
                             .width(relative(1.))
                             .enabled(!is_busy)
-                            .on_change(cx.listener({
-                                let targets = targets.to_vec();
-                                move |this, index: &usize, _, cx| {
-                                    if let Some(fmt) = targets.get(*index) {
-                                        this.target = *fmt;
-                                    }
-                                    cx.notify();
+                            .on_change(cx.listener(move |this, index: &usize, _, cx| {
+                                if let Some(format) = targets.get(*index) {
+                                    this.target = *format;
                                 }
+                                cx.notify();
                             })),
                     ),
                 )
                 .child(
                     div().flex_1().child(
-                        native_popup("intent", intent_i)
+                        native_popup("intent", intent_index)
                             .items(Intent::all().iter().map(|intent| intent.label()))
                             .bezel_style(ButtonBezel::Glass)
                             .control_size(ControlSize::Large)
@@ -894,19 +811,14 @@ fn browse_footer(
                     })),
             )
         })
+        .child(caption(format_hint(demo), secondary))
         .child(
-            div()
-                .text_size(px(11.))
-                .text_color(secondary)
-                .child(format_hint(demo)),
-        )
-        .child(
-            native_button("convert", button)
+            native_button("convert", title)
                 .bezel_style(ButtonBezel::Glass)
                 .control_size(ControlSize::ExtraLarge)
                 .width(relative(1.))
-                .default_button(n > 0 && !is_busy)
-                .enabled(n > 0 && !is_busy)
+                .default_button(can_start)
+                .enabled(can_start)
                 .on_click(cx.listener(|this, _, _, cx| {
                     jobs::start(this, cx, None);
                     cx.notify();
@@ -934,40 +846,37 @@ fn format_hint(demo: &ConvertDemo) -> SharedString {
         }
         return advice.into();
     }
-    let dest = match &demo.output_dir {
+    match &demo.output_dir {
         Some(dir) => format!(
-            "Saves in {}",
-            dir.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| dir.display().to_string())
-        ),
-        None => "Saves next to the originals".into(),
-    };
-    format!("{dest} · click a thumbnail to show it").into()
+            "Saves in {} · click a thumbnail to show it",
+            folder_name(dir)
+        )
+        .into(),
+        None => "Saves next to the originals · click a thumbnail to show it".into(),
+    }
 }
 
 fn can_convert(item: &Item, target: Format) -> bool {
-    if item.is_busy || item.report.is_some() {
-        return false;
-    }
-    item.probe
-        .as_ref()
-        .is_some_and(|probe| probe.kind == target.kind())
+    !item.is_busy
+        && item.report.is_none()
+        && item
+            .probe
+            .as_ref()
+            .is_some_and(|probe| probe.kind == target.kind())
 }
 
 fn grid_body(
     demo: &ConvertDemo,
     scale: f32,
     viewport_w: f32,
-    secondary: gpui::Hsla,
+    secondary: Hsla,
     cx: &mut Context<ConvertDemo>,
-) -> gpui::AnyElement {
+) -> AnyElement {
     let this = cx.entity().downgrade();
     let items = item_views(demo, false);
     let hover = demo.hover;
     let (cols, cell, thumb_h) = grid_metrics(viewport_w);
-    let n = items.len().max(1);
-    let rows = n.div_ceil(cols);
+    let rows = items.len().max(1).div_ceil(cols);
     let row_h = thumb_h + GRID_LABEL + GRID_ROW_GAP;
     uniform_list("grid", rows, move |range, _, _| {
         range
@@ -977,13 +886,12 @@ fn grid_body(
                     .flex()
                     .gap(px(GRID_GAP))
                     .pb(px(GRID_ROW_GAP))
-                    .children((0..cols).map(|col| {
-                        let i = row * cols + col;
-                        match items.get(i) {
-                            Some(item) => div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .child(grid_cell(
+                    .children((row * cols..(row + 1) * cols).map(|i| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .children(items.get(i).map(|item| {
+                                grid_cell(
                                     item,
                                     cell,
                                     thumb_h,
@@ -991,10 +899,8 @@ fn grid_body(
                                     secondary,
                                     hover == Some(item.index),
                                     this.clone(),
-                                ))
-                                .into_any_element(),
-                            None => div().flex_1().min_w(px(0.)).into_any_element(),
-                        }
+                                )
+                            }))
                     }))
             })
             .collect()
@@ -1006,27 +912,23 @@ fn grid_body(
 fn list_body(
     demo: &ConvertDemo,
     scale: f32,
-    secondary: gpui::Hsla,
+    secondary: Hsla,
     cx: &mut Context<ConvertDemo>,
-) -> gpui::AnyElement {
+) -> AnyElement {
     let this = cx.entity().downgrade();
     let items = item_views(demo, true);
     let hover = demo.hover;
     uniform_list("list", items.len(), move |range, _, _| {
-        range
-            .map(|i| {
-                items
-                    .get(i)
-                    .map(|item| {
-                        list_row(
-                            item,
-                            scale,
-                            secondary,
-                            hover == Some(item.index),
-                            this.clone(),
-                        )
-                    })
-                    .unwrap_or_else(|| div().into_any_element())
+        items[range]
+            .iter()
+            .map(|item| {
+                list_row(
+                    item,
+                    scale,
+                    secondary,
+                    hover == Some(item.index),
+                    this.clone(),
+                )
             })
             .collect()
     })
@@ -1037,7 +939,7 @@ fn list_body(
 fn watch_hover(
     this: WeakEntity<ConvertDemo>,
     index: usize,
-) -> impl Fn(&bool, &mut Window, &mut gpui::App) + 'static {
+) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
     move |hovered, _, cx| {
         this.update(cx, |demo, cx| {
             if *hovered {
@@ -1056,22 +958,18 @@ fn grid_cell(
     cell: f32,
     thumb_h: f32,
     scale: f32,
-    secondary: gpui::Hsla,
+    secondary: Hsla,
     hovered: bool,
     this: WeakEntity<ConvertDemo>,
-) -> gpui::AnyElement {
-    let reveal = item.reveal.clone();
-    let index = item.index;
+) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .items_center()
         .gap_1()
-        .id(("grid.cell", index))
-        .on_hover(watch_hover(this.clone(), index))
-        .child(thumb_with_save(
-            item, cell, thumb_h, scale, hovered, this, reveal,
-        ))
+        .id(("grid.cell", item.index))
+        .on_hover(watch_hover(this.clone(), item.index))
+        .child(thumb_with_save(item, cell, thumb_h, scale, hovered, this))
         .child(
             div()
                 .w(px(cell))
@@ -1083,32 +981,27 @@ fn grid_cell(
                 .overflow_hidden()
                 .child(item.name.clone()),
         )
-        .child(meta_line(item.from.clone(), secondary, true, Some(cell)))
-        .when(!item.to.is_empty(), |d| {
-            d.child(meta_line(item.to.clone(), item.change, true, Some(cell)))
-        })
+        .children(meta_lines(item, secondary, Some(cell)))
         .into_any_element()
 }
 
 fn list_row(
     item: &ItemView,
     scale: f32,
-    secondary: gpui::Hsla,
+    secondary: Hsla,
     hovered: bool,
     this: WeakEntity<ConvertDemo>,
-) -> gpui::AnyElement {
-    let reveal = item.reveal.clone();
-    let index = item.index;
+) -> AnyElement {
     div()
         .flex()
         .items_center()
         .gap_3()
         .h(px(LIST_ROW))
         .w_full()
-        .id(("list.row", index))
-        .on_hover(watch_hover(this.clone(), index))
+        .id(("list.row", item.index))
+        .on_hover(watch_hover(this.clone(), item.index))
         .child(thumb_with_save(
-            item, LIST_ICON, LIST_ICON, scale, hovered, this, reveal,
+            item, LIST_ICON, LIST_ICON, scale, hovered, this,
         ))
         .child(
             div()
@@ -1124,10 +1017,7 @@ fn list_row(
                         .overflow_hidden()
                         .child(item.name.clone()),
                 )
-                .child(meta_line(item.from.clone(), secondary, false, None))
-                .when(!item.to.is_empty(), |d| {
-                    d.child(meta_line(item.to.clone(), item.change, false, None))
-                }),
+                .children(meta_lines(item, secondary, None)),
         )
         .into_any_element()
 }
@@ -1139,13 +1029,21 @@ fn thumb_with_save(
     scale: f32,
     hovered: bool,
     this: WeakEntity<ConvertDemo>,
-    reveal: PathBuf,
-) -> gpui::AnyElement {
+) -> AnyElement {
+    let index = item.index;
     div()
         .relative()
         .flex_none()
-        .on_mouse_down(MouseButton::Left, move |_, _, _| {
-            open::reveal(&reveal);
+        .on_mouse_down(MouseButton::Left, {
+            let this = this.clone();
+            move |_, _, cx| {
+                this.read_with(cx, |demo, _| {
+                    if let Some(item) = demo.items.get(index) {
+                        open::reveal(item.revealed());
+                    }
+                })
+                .ok();
+            }
         })
         .child(poster_thumb(&item.path, width, height, scale, false))
         .when(hovered && item.can_save, |d| {
@@ -1160,29 +1058,22 @@ fn thumb_with_save(
         .into_any_element()
 }
 
-fn meta_line(
-    text: SharedString,
-    color: gpui::Hsla,
-    center: bool,
-    width: Option<f32>,
-) -> gpui::AnyElement {
-    let mut line = div()
-        .text_size(px(11.))
-        .text_color(color)
-        .text_ellipsis()
-        .whitespace_nowrap()
-        .overflow_hidden()
-        .child(text);
-    if let Some(width) = width {
-        line = line.w(px(width));
-    }
-    if center {
-        line = line.text_align(TextAlign::Center);
-    }
-    line.into_any_element()
+fn meta_lines(item: &ItemView, secondary: Hsla, width: Option<f32>) -> impl Iterator<Item = Div> {
+    let line = move |text: &SharedString, color| {
+        let line = caption(text.clone(), color)
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .overflow_hidden();
+        match width {
+            Some(width) => line.w(px(width)).text_align(TextAlign::Center),
+            None => line,
+        }
+    };
+    let to = (!item.to.is_empty()).then(|| line(&item.to, item.change));
+    std::iter::once(line(&item.from, secondary)).chain(to)
 }
 
-fn item_save(item: &ItemView, this: WeakEntity<ConvertDemo>) -> native_gpui::NativeButton {
+fn item_save(item: &ItemView, this: WeakEntity<ConvertDemo>) -> NativeButton {
     let index = item.index;
     let title = if item.is_retry { "Try again" } else { "Save" };
     native_button(("item.save", index), title)
@@ -1200,11 +1091,10 @@ fn item_save(item: &ItemView, this: WeakEntity<ConvertDemo>) -> native_gpui::Nat
 struct ItemView {
     index: usize,
     path: PathBuf,
-    reveal: PathBuf,
     name: SharedString,
     from: SharedString,
     to: SharedString,
-    change: gpui::Hsla,
+    change: Hsla,
     can_save: bool,
     is_retry: bool,
 }
@@ -1214,25 +1104,18 @@ fn item_views(demo: &ConvertDemo, should_show_plan: bool) -> Vec<ItemView> {
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            let reveal = item
-                .dest
-                .as_ref()
-                .filter(|path| path.exists())
-                .cloned()
-                .unwrap_or_else(|| item.path.clone());
             let (from, to, change) = item_copy(item, demo.target, demo.intent, should_show_plan);
             ItemView {
                 index,
                 path: item.path.clone(),
-                reveal,
                 name: item
                     .path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default()
                     .into(),
-                from: from.into(),
-                to: to.into(),
+                from,
+                to,
                 change,
                 can_save: can_convert(item, demo.target) && !demo.is_busy,
                 is_retry: item.error.is_some() && item.report.is_none(),
@@ -1246,10 +1129,9 @@ fn item_copy(
     target: Format,
     intent: Intent,
     should_show_plan: bool,
-) -> (String, String, gpui::Hsla) {
+) -> (SharedString, SharedString, Hsla) {
     let label = system_color(SystemColor::Label);
     let orange = system_color(SystemColor::SystemOrange);
-    let green = system_color(SystemColor::SystemGreen);
     if item.is_busy {
         return (
             item_before(item.probe.as_ref()),
@@ -1266,93 +1148,80 @@ fn item_copy(
             format_bytes(report.bytes_in),
             format_bytes(report.bytes_out)
         );
-        let mut bits = Vec::new();
-        if report.grew() {
-            bits.push(format!(
-                "{} larger",
-                format_bytes(report.bytes_out.saturating_sub(report.bytes_in))
-            ));
+        let (mut bits, change) = if report.grew() {
+            let delta = format_bytes(report.bytes_out - report.bytes_in);
+            (vec![format!("{delta} larger")], orange)
         } else if report.bytes_out < report.bytes_in {
-            bits.push(format!(
-                "{} smaller",
-                format_bytes(report.bytes_in.saturating_sub(report.bytes_out))
-            ));
-        }
+            let delta = format_bytes(report.bytes_in - report.bytes_out);
+            (
+                vec![format!("{delta} smaller")],
+                system_color(SystemColor::SystemGreen),
+            )
+        } else {
+            (Vec::new(), label)
+        };
         if let (Some(w), Some(h)) = (report.width_out, report.height_out) {
             bits.push(format!("{w}×{h}"));
         }
-        let change = if report.grew() {
-            orange
-        } else if report.bytes_out < report.bytes_in {
-            green
-        } else {
-            label
-        };
-        return (from, bits.join(" · "), change);
+        return (from.into(), bits.join(" · ").into(), change);
     }
     let Some(probe) = &item.probe else {
-        return (String::new(), String::new(), label);
+        return (SharedString::default(), SharedString::default(), label);
     };
+    let before = item_before(Some(probe));
     if probe.kind != target.kind() {
-        return (
-            item_before(Some(probe)),
-            "Left out of this format".into(),
-            orange,
-        );
+        return (before, "Left out of this format".into(), orange);
     }
-    match convert::plan(probe, target, intent) {
-        Err(err) => (item_before(Some(probe)), err.to_string(), orange),
-        Ok(planned) => {
-            if !should_show_plan {
-                return (item_before(Some(probe)), String::new(), label);
-            }
-            let mut bits = vec![format!("→ {}", target.label())];
-            if let (Some(w), Some(h)) = (probe.width, probe.height) {
-                let (out_w, out_h) = scaled_edge(w, h, intent.default_max_edge());
-                if (out_w, out_h) != (w, h) {
-                    bits.push(format!("{out_w}×{out_h}"));
-                }
-            }
-            match planned.path {
-                convert::PathTaken::Copy => bits.push("kept as-is".into()),
-                convert::PathTaken::Remux => bits.push("repacked".into()),
-                convert::PathTaken::Encode => {}
-            }
-            (item_before(Some(probe)), bits.join(" · "), label)
+    let planned = match convert::plan(probe, target, intent) {
+        Ok(planned) => planned,
+        Err(err) => return (before, err.to_string().into(), orange),
+    };
+    if !should_show_plan {
+        return (before, SharedString::default(), label);
+    }
+    let mut bits = vec![format!("→ {}", target.label())];
+    if let (Some(w), Some(h)) = (probe.width, probe.height) {
+        let (out_w, out_h) = scaled_edge(w, h, intent.default_max_edge());
+        if (out_w, out_h) != (w, h) {
+            bits.push(format!("{out_w}×{out_h}"));
         }
     }
+    match planned.path {
+        convert::PathTaken::Copy => bits.push("kept as-is".into()),
+        convert::PathTaken::Remux => bits.push("repacked".into()),
+        convert::PathTaken::Encode => {}
+    }
+    (before, bits.join(" · ").into(), label)
 }
 
-fn item_before(probe: Option<&Probe>) -> String {
+fn item_before(probe: Option<&Probe>) -> SharedString {
     let Some(probe) = probe else {
-        return String::new();
+        return SharedString::default();
     };
     let size = format_bytes(probe.bytes);
     if let (Some(w), Some(h)) = (probe.width, probe.height) {
-        return format!("{size} · {w}×{h}");
+        format!("{size} · {w}×{h}").into()
+    } else if let Some(duration) = probe.duration {
+        format!("{size} · {duration:.1}s").into()
+    } else if probe.kind == Kind::Font {
+        format!("{size} · {}", probe.format.label()).into()
+    } else {
+        size.into()
     }
-    if let Some(duration) = probe.duration {
-        return format!("{size} · {duration:.1}s");
-    }
-    if probe.kind == Kind::Font {
-        return format!("{size} · {}", probe.format.label());
-    }
-    size
 }
 
 fn scaled_edge(width: u32, height: u32, max_edge: Option<u32>) -> (u32, u32) {
-    let Some(max) = max_edge else {
-        return (width, height);
-    };
     let long = width.max(height);
-    if long <= max {
-        return (width, height);
+    match max_edge {
+        Some(max) if long > max => {
+            let scale = max as f64 / long as f64;
+            (
+                ((width as f64 * scale).round() as u32).max(1),
+                ((height as f64 * scale).round() as u32).max(1),
+            )
+        }
+        _ => (width, height),
     }
-    let scale = max as f64 / long as f64;
-    (
-        ((width as f64 * scale).round() as u32).max(1),
-        ((height as f64 * scale).round() as u32).max(1),
-    )
 }
 
 fn format_bytes(n: u64) -> String {
@@ -1371,6 +1240,6 @@ fn format_bytes(n: u64) -> String {
 pub fn window_bounds() -> WindowBounds {
     WindowBounds::Windowed(Bounds {
         origin: point(px(240.), px(160.)),
-        size: size(px(W), px(H)),
+        size: size(px(500.), px(620.)),
     })
 }
