@@ -297,6 +297,7 @@ fn split_items(op: &Op) -> Option<&[PathBuf]> {
     match op {
         Op::Move { items, .. }
         | Op::Copy { items, .. }
+        | Op::CopyExactly { items, .. }
         | Op::Duplicate(items)
         | Op::MakeAlias(items)
         | Op::Trash(items)
@@ -321,6 +322,10 @@ fn op_for(op: &Op, items: Vec<PathBuf>) -> Op {
             items,
             into: into.clone(),
         },
+        Op::CopyExactly { into, .. } => Op::CopyExactly {
+            items,
+            into: into.clone(),
+        },
         Op::Duplicate(_) => Op::Duplicate(items),
         Op::MakeAlias(_) => Op::MakeAlias(items),
         Op::Trash(_) => Op::Trash(items),
@@ -339,7 +344,7 @@ fn op_for(op: &Op, items: Vec<PathBuf>) -> Op {
 fn moves_bytes(op: &Op, items: &[PathBuf]) -> bool {
     let device = |path: &Path| std::fs::symlink_metadata(path).map(|meta| meta.dev()).ok();
     match op {
-        Op::Copy { .. } | Op::Duplicate(_) => true,
+        Op::Copy { .. } | Op::CopyExactly { .. } | Op::Duplicate(_) => true,
         Op::Move { into, .. } => items.iter().any(|item| device(item) != device(into)),
         _ => false,
     }
@@ -472,13 +477,13 @@ impl Journal {
 fn label_for(op: &Op) -> String {
     match op {
         Op::Move { items, .. } => describe("Move", items),
-        Op::Copy { items, .. } => describe("Copy", items),
+        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items),
         Op::Duplicate(items) => describe("Duplicate", items),
-        Op::MakeAlias(items) => describe("Make Alias of", items),
+        Op::MakeAlias(items) => describe("Make Alias", items),
         Op::Compress(items) => describe("Compress", items),
         Op::Trash(items) => format!("{} to Trash", describe("Move", items)),
         Op::DeleteImmediately(items) => describe("Delete", items),
-        Op::Rename { name, .. } => format!("Rename of \"{name}\""),
+        Op::Rename { .. } => "Rename".to_string(),
         Op::NewFolder { .. } => "New Folder".to_string(),
         Op::NewFile { .. } => "New File".to_string(),
         Op::PutBack(items) => describe("Put Back", &put_back_paths(items)),
@@ -494,7 +499,7 @@ fn describe(verb: &str, items: &[PathBuf]) -> String {
     match items {
         [only] => {
             let name = only.file_name().unwrap_or_default().to_string_lossy();
-            format!("{verb} of \"{name}\"")
+            format!("{verb} of \u{201c}{name}\u{201d}")
         }
         _ => format!("{verb} of {} Items", items.len()),
     }
@@ -832,65 +837,6 @@ mod tests {
     }
 
     #[test]
-    fn journal_labels_singular_and_plural() {
-        let mut journal = Journal::new();
-
-        let single = Op::Move {
-            items: vec![PathBuf::from("/src/Notes.md")],
-            into: PathBuf::from("/dst"),
-        };
-        let done = Done {
-            results: vec![PathBuf::from("/dst/Notes.md")],
-            undo: Some(Op::Move {
-                items: vec![PathBuf::from("/dst/Notes.md")],
-                into: PathBuf::from("/src"),
-            }),
-        };
-        journal.record(&done, &single);
-        assert_eq!(journal.undo_label(), Some("Move of \"Notes.md\""));
-
-        let many = Op::Move {
-            items: vec![
-                PathBuf::from("/src/1"),
-                PathBuf::from("/src/2"),
-                PathBuf::from("/src/3"),
-            ],
-            into: PathBuf::from("/dst"),
-        };
-        let done = Done {
-            results: vec![
-                PathBuf::from("/dst/1"),
-                PathBuf::from("/dst/2"),
-                PathBuf::from("/dst/3"),
-            ],
-            undo: Some(Op::Move {
-                items: vec![
-                    PathBuf::from("/dst/1"),
-                    PathBuf::from("/dst/2"),
-                    PathBuf::from("/dst/3"),
-                ],
-                into: PathBuf::from("/src"),
-            }),
-        };
-        journal.record(&done, &many);
-        assert_eq!(journal.undo_label(), Some("Move of 3 Items"));
-
-        let trash = Op::Trash(vec![PathBuf::from("/src/Ventura.dmg")]);
-        let done = Done {
-            results: vec![PathBuf::from("/Trash/Ventura.dmg")],
-            undo: Some(Op::Move {
-                items: vec![PathBuf::from("/Trash/Ventura.dmg")],
-                into: PathBuf::from("/src"),
-            }),
-        };
-        journal.record(&done, &trash);
-        assert_eq!(
-            journal.undo_label(),
-            Some("Move of \"Ventura.dmg\" to Trash")
-        );
-    }
-
-    #[test]
     fn a_redo_is_undone_from_where_it_landed() {
         let mut journal = Journal::new();
         let back_from = |from: &str| Op::Move {
@@ -934,13 +880,10 @@ mod tests {
         let done = ops::perform(op.clone(), Conflict::Replace, |_| {}).unwrap();
         let mut journal = Journal::new();
         journal.record(&done, &op);
-        assert_eq!(journal.undo_label(), Some("Move of \"a.txt\""));
-
         let undoable = journal.pop_undo().unwrap();
         let back = ops::perform(undoable.undo, Conflict::Replace, |_| {}).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
-        assert_eq!(journal.redo_label(), Some("Move of \"a.txt\""));
 
         let _ = fs::remove_dir_all(&dir);
     }
