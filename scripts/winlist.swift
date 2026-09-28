@@ -20,14 +20,8 @@ for info in list {
     let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
     let title = info[kCGWindowName as String] as? String ?? ""
     let layer = info[kCGWindowLayer as String] as? Int ?? -1
-    var x = 0.0, y = 0.0, w = 0.0, h = 0.0
-    if let b = info[kCGWindowBounds as String] as? [String: Any] {
-        x = b["X"] as? Double ?? 0
-        y = b["Y"] as? Double ?? 0
-        w = b["Width"] as? Double ?? 0
-        h = b["Height"] as? Double ?? 0
-    }
-    print("\(number)\t\(pid)\t\(layer)\t\(Int(x)),\(Int(y)),\(Int(w)),\(Int(h))\t\(owner)\t\(title)")
+    let b = (info[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .zero
+    print("\(number)\t\(pid)\t\(layer)\t\(Int(b.minX)),\(Int(b.minY)),\(Int(b.width)),\(Int(b.height))\t\(owner)\t\(title)")
     printed += 1
 }
 if printed == 0 { exit(1) }

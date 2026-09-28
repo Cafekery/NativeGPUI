@@ -37,8 +37,7 @@ arm() {
 arm pos    0 'every public path the crate promises resolves'
 arm posctl 1 'control: the same file plus one name that never existed'
 
-# The negative arm needs one error per probe: its exit code alone cannot tell four rejections
-# from one.
+# One error per probe: the exit code alone cannot tell four rejections from one.
 probes=$(grep -cE '^ *// probe:' scripts/surface/neg.rs)
 output=$(check neg)
 status=$?
