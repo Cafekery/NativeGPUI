@@ -1,9 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::list::Identity;
@@ -43,6 +45,15 @@ type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
 struct Listed {
     first: Option<(Vec<Arc<Row>>, (bool, Vec<Line>))>,
     rest: Task<Result<Sorted, Trouble>>,
+}
+
+/// How long a window opening a folder keeps the last one up while it reads the new one.
+const HOLD: Duration = Duration::from_millis(100);
+
+enum Stage {
+    Listing(Pin<Box<dyn Future<Output = Result<Listed, Trouble>>>>),
+    Rest(Pin<Box<dyn Future<Output = Result<Sorted, Trouble>>>>),
+    Done,
 }
 
 /// What a sort compares before names: whether an item discloses, then its column.
@@ -530,20 +541,28 @@ impl FinderDemo {
         let listed = cx
             .background_executor()
             .spawn(async move { list(id, sorted_by, (first, plain), screen, executor) });
+        let mut stage = Stage::Listing(Box::pin(listed));
+        if fresh && id == self.here() {
+            stage = self.hold(id, stage, sorted_by, cx);
+        }
         cx.spawn(async move |this, cx| {
-            let rest = match listed.await {
-                Ok(Listed { first, rest }) => {
-                    if let Some((rows, lines)) = first {
-                        let alive = this.update(cx, |this, cx| {
-                            this.deliver(id, Some(rows), Some(lines), false, sorted_by, cx)
-                        });
-                        if alive.is_err() {
-                            return;
+            let rest = match stage {
+                Stage::Done => return,
+                Stage::Rest(rest) => rest.await,
+                Stage::Listing(listed) => match listed.await {
+                    Ok(Listed { first, rest }) => {
+                        if let Some((rows, lines)) = first {
+                            let alive = this.update(cx, |this, cx| {
+                                this.deliver(id, Some(rows), Some(lines), false, sorted_by, cx)
+                            });
+                            if alive.is_err() {
+                                return;
+                            }
                         }
+                        rest.await
                     }
-                    rest.await
-                }
-                Err(trouble) => Err(trouble),
+                    Err(trouble) => Err(trouble),
+                },
             };
             this.update(cx, |this, cx| match rest {
                 Ok((rows, lines)) => this.deliver(id, Some(rows), lines, true, sorted_by, cx),
@@ -552,6 +571,41 @@ impl FinderDemo {
             .ok();
         })
         .detach();
+    }
+
+    /// Finder's first frame of a folder it opens already has its rows: the window keeps showing
+    /// the folder it leaves for as long as reading the first screenful takes, up to `HOLD`.
+    fn hold(
+        &mut self,
+        id: &'static str,
+        stage: Stage,
+        sorted_by: (Column, bool),
+        cx: &mut Context<Self>,
+    ) -> Stage {
+        let Stage::Listing(listed) = stage else {
+            return stage;
+        };
+        let until = Instant::now() + HOLD;
+        let left = || until.saturating_duration_since(Instant::now());
+        let foreground = cx.foreground_executor().clone();
+        let listed = match foreground.block_with_timeout(left(), listed) {
+            Ok(Ok(listed)) => listed,
+            Ok(Err(trouble)) => return Stage::Listing(Box::pin(async move { Err(trouble) })),
+            Err(pending) => return Stage::Listing(Box::pin(pending)),
+        };
+        let Listed { first, rest } = listed;
+        if let Some((rows, lines)) = first {
+            self.deliver(id, Some(rows), Some(lines), false, sorted_by, cx);
+            return Stage::Rest(Box::pin(rest));
+        }
+        match foreground.block_with_timeout(left(), rest) {
+            Ok(Ok((rows, lines))) => {
+                self.deliver(id, Some(rows), lines, true, sorted_by, cx);
+                Stage::Done
+            }
+            Ok(Err(trouble)) => Stage::Rest(Box::pin(async move { Err(trouble) })),
+            Err(pending) => Stage::Rest(Box::pin(pending)),
+        }
     }
 
     fn troubled(
