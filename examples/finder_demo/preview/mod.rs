@@ -31,8 +31,10 @@ pub(crate) use self::stats::{Stats, sized_by_index, summarize};
 use crate::app::FinderDemo;
 use crate::frame::ns_window;
 use crate::palette::Palette;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
-pub(crate) const PREVIEW_W: f32 = 250.;
+/// Show Preview brings the pane back this wide, whatever width it had.
+pub(crate) const PREVIEW_W: f32 = 288.;
 
 const MIN_W: f32 = 240.;
 const MAX_W: f32 = 480.;
@@ -316,26 +318,34 @@ fn open_preview_window(
 
 impl FinderDemo {
     pub(crate) fn show_preview(&mut self, shown: bool) {
+        if shown && !self.preview && self.view != COLUMN_VIEW {
+            self.preview_gallery = self.view == GALLERY_VIEW;
+            self.preview_w = PREVIEW_W;
+            crate::prefs::set_pane_width(self.preview_gallery, PREVIEW_W);
+        }
         self.preview = shown;
         crate::prefs::set_preview(self.view, shown);
     }
 
     pub(crate) fn sync_preview_window(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let Some(sidebar) = &self.sidebar {
-            // Whole points: a window resize can hand the pane back half a point short.
-            match sidebar
-                .take_inspector_resize()
-                .map(|width| f32::from(width).round())
-            {
+            let gallery = self.view == GALLERY_VIEW;
+            if gallery != self.preview_gallery {
+                self.preview_gallery = gallery;
+                self.preview_w = crate::prefs::pane_width(gallery).unwrap_or(PREVIEW_W);
+                sidebar.set_inspector_thickness(px(self.preview_w));
+            }
+            // AppKit lays the divider on a whole point, half a point off the width asked for.
+            match sidebar.take_inspector_resize().map(f32::from) {
                 // Finder hides the preview when its divider is dragged shut.
                 Some(width) if width <= 0. => {
                     self.preview = false;
                     crate::prefs::set_preview(self.view, false);
                     cx.notify();
                 }
-                Some(width) if width != self.preview_w => {
-                    self.preview_w = width;
-                    crate::prefs::set_pane_width(width);
+                Some(width) if (width - self.preview_w).abs() > 0.5 => {
+                    self.preview_w = width.round();
+                    crate::prefs::set_pane_width(gallery, self.preview_w);
                     cx.notify();
                 }
                 _ => {}
