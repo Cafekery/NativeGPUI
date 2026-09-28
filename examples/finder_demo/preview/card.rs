@@ -16,7 +16,7 @@ use super::{INSET, RESIZE_EDGE};
 use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
 use crate::signal::Signal;
-use crate::thumbs::thumb;
+use crate::thumbs::{awaited, thumb};
 use finder_fs::meta::Meta;
 
 use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, stamp, volume_at};
@@ -513,6 +513,9 @@ impl FinderDemo {
         let many = self.selected.len() > 1;
         let line = self.cursor_line().filter(|_| !many);
         let row = line.as_ref().map(|line| &line.row);
+        if row.is_some() && self.view != GALLERY_VIEW {
+            self.ask_beside_cursor(self.hero_side(content));
+        }
         let thumbs = match (&self.stats, row) {
             (Some(stats), _) if many => stack_thumbs(
                 &stats.head,
@@ -522,10 +525,7 @@ impl FinderDemo {
             (_, Some(row)) if self.view == GALLERY_VIEW => {
                 vec![thumb(row, HEADER_ICON, self.scale, true, true)]
             }
-            (_, Some(row)) => {
-                let side = content.max(hero_h(self.pane_h, content));
-                vec![thumb(row, side, self.scale, true, false)]
-            }
+            (_, Some(row)) => vec![thumb(row, self.hero_side(content), self.scale, true, false)],
             _ => Vec::new(),
         };
         let folder = |row: &Row| {
@@ -568,6 +568,36 @@ impl FinderDemo {
             expanded: self.preview_expanded,
             renaming: self.renaming.clone(),
         }
+    }
+
+    fn hero_side(&self, content: f32) -> f32 {
+        content.max(hero_h(self.pane_h, content))
+    }
+
+    /// So an arrow key lands on a picture already made. Asked before the cursor's own, which the
+    /// service then makes first: it serves its newest request first.
+    pub(crate) fn ask_beside_cursor(&self, side: f32) {
+        let Some(cursor) = self.cursor.as_ref() else {
+            return;
+        };
+        let lines = self.focused_lines();
+        let Some(at) = self.line_at(&lines, cursor) else {
+            return;
+        };
+        for beside in [at.checked_sub(1), Some(at + 1)].into_iter().flatten() {
+            if let Some(line) = lines.get(beside) {
+                thumb(&line.row, side, self.scale, true, false);
+            }
+        }
+    }
+
+    /// Whether the cursor's hero picture is still being made for the first time.
+    pub(super) fn hero_awaited(&self, content: f32) -> bool {
+        self.selected.len() <= 1
+            && self.view != GALLERY_VIEW
+            && self
+                .cursor_line()
+                .is_some_and(|line| awaited(&line.row, self.hero_side(content), self.scale, false))
     }
 
     fn weighed(&self) -> Option<u64> {

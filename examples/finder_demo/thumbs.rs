@@ -163,6 +163,23 @@ fn renderable(row: &Row) -> bool {
     row.opens.is_none() && row.face != Face::Program
 }
 
+fn key_of(row: &Row, size: f32, scale: f32, icon: bool) -> Thumb {
+    (
+        row.path.clone(),
+        (size * scale).round().max(1.) as u32,
+        icon,
+    )
+}
+
+/// Whether this thumbnail is being made for the first time, and so may still arrive.
+pub(crate) fn awaited(row: &Row, size: f32, scale: f32, icon: bool) -> bool {
+    let key = key_of(row, size, scale, icon);
+    renderable(row)
+        && ASKED.with(|asked| asked.borrow().contains(&key))
+        && !THUMBS.with(|thumbs| thumbs.borrow().contains_key(&key))
+        && !RETRY.with(|retry| retry.borrow().contains_key(&key))
+}
+
 pub(crate) fn thumb(
     row: &Row,
     size: f32,
@@ -173,11 +190,7 @@ pub(crate) fn thumb(
     if !renderable(row) {
         return None;
     }
-    let key = (
-        row.path.clone(),
-        (size * scale).round().max(1.) as u32,
-        icon,
-    );
+    let key = key_of(row, size, scale, icon);
     if visible {
         DRAWN.with(|drawn| drawn.borrow_mut().insert(row.path.clone()));
     }
