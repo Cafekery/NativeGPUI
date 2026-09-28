@@ -55,6 +55,7 @@ pub(crate) enum Act {
     Slideshow,
     MoveHere,
     Toggle(Column),
+    Quick(crate::quick_actions::QuickAct),
 }
 
 fn original_of(path: &Path) -> Option<PathBuf> {
@@ -159,6 +160,7 @@ impl FinderDemo {
             Act::Slideshow => self.slideshow(window, cx),
             Act::MoveHere => self.paste(true, cx),
             Act::Toggle(column) => self.toggle_column(column),
+            Act::Quick(act) => self.run_quick(act, cx),
         }
         cx.notify();
     }
