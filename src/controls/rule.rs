@@ -1,6 +1,5 @@
-use gpui::{App, ElementId, Hsla, Style, Window, relative};
+use gpui::{App, ElementId, Hsla, Size, Style, Window};
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSBox, NSBoxType, NSResponder, NSTitlePosition, NSView};
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect};
@@ -42,10 +41,10 @@ impl NativeRule {
     }
 
     fn layout(&self) -> Style {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = relative(1.).into();
-        style
+        Style {
+            size: Size::full(),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -54,7 +53,7 @@ impl NativeRule {
             Some(tint) => to_nscolor(tint),
             None => self.color.ns_color(),
         };
-        if !rule.fillColor().isEqual(Some(&**color)) {
+        if rule.fillColor() != color {
             rule.setFillColor(&color);
         }
         if rule.cornerRadius() != self.corner_radius {

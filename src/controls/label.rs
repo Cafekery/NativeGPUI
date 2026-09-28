@@ -1,9 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
-use gpui::{App, ElementId, FontWeight, Pixels, SharedString, Style, Window, px, relative};
+use gpui::{App, ElementId, FontWeight, Pixels, SharedString, Style, Window, px, relative, size};
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
 use objc2::{ClassType, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSControl, NSFont, NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField, NSView,
@@ -12,7 +8,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{Layer, Slot, hosted_element};
-use crate::controls::menu::nsstring_is;
+use crate::controls::{hash_of, nsstring_is};
 use crate::system::tokens::{
     SystemColor, ns_font, ns_font_weight, system_font_family, system_font_size,
 };
@@ -110,37 +106,33 @@ impl NativeLabel {
     }
 
     fn layout(&self) -> Style {
-        let mut hasher = DefaultHasher::new();
-        f32::from(self.point_size()).to_bits().hash(&mut hasher);
-        self.weight.0.to_bits().hash(&mut hasher);
-        self.tabular.hash(&mut hasher);
-        let fitting = fitting_size_keyed("NSTextField(label)", hasher.finish(), |mtm| {
+        let key = hash_of((
+            f32::from(self.point_size()).to_bits(),
+            self.weight.0.to_bits(),
+            self.tabular,
+        ));
+        let fitting = fitting_size_keyed("NSTextField(label)", key, |mtm| {
             let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
             probe.setFont(Some(&self.font()));
             probe.fittingSize()
         });
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = px(fitting.height as f32).into();
-        style
+        Style {
+            size: size(relative(1.).into(), px(fitting.height as f32).into()),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
         let field = slot.place(Layer::Above, |mtm, _| Label::new(mtm));
-
-        let want: &str = &self.text;
-        if !nsstring_is(&field.stringValue(), want) {
-            field.setStringValue(&NSString::from_str(want));
+        if !nsstring_is(&field.stringValue(), &self.text) {
+            field.setStringValue(&NSString::from_str(&self.text));
         }
         let font = self.font();
-        if !field.font().is_some_and(|have| have.isEqual(Some(&**font))) {
+        if field.font().as_ref() != Some(&font) {
             field.setFont(Some(&font));
         }
         let color = self.color.ns_color();
-        if !field
-            .textColor()
-            .is_some_and(|have| have.isEqual(Some(&**color)))
-        {
+        if field.textColor().as_ref() != Some(&color) {
             field.setTextColor(Some(&color));
         }
         let align = NSTextAlignment::from(self.align);
@@ -175,7 +167,7 @@ define_class!(
 );
 
 impl Label {
-    fn new(_mtm: MainThreadMarker) -> Retained<Self> {
+    fn new(_: MainThreadMarker) -> Retained<Self> {
         let empty = NSString::from_str("");
         unsafe { msg_send![Self::class(), labelWithString: &*empty] }
     }

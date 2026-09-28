@@ -10,6 +10,7 @@ use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWin
 use objc2_foundation::{MainThreadMarker, NSSize};
 use objc2_quartz_core::CATransaction;
 
+use super::window_chrome::ns_window_of;
 use crate::bridge::appkit::{draw_now, gpui_view};
 
 thread_local! {
@@ -18,12 +19,6 @@ thread_local! {
 }
 
 const INSET_CLASS: &CStr = c"NGTabBarInsetView";
-
-fn ns_window_of(window: &Window) -> Retained<NSWindow> {
-    gpui_view(window)
-        .window()
-        .expect("GPUI's view is in its window")
-}
 
 pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
     let ns_window = ns_window_of(window);
@@ -37,12 +32,11 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
 
 pub fn set_trailing_inset(window: &Window, points: f32) {
     let ns_window = ns_window_of(window);
-    let points = points.max(0.);
     let Some(accessory) = tab_bar_accessory(&ns_window) else {
         return;
     };
     adopt_inset(&accessory);
-    let inset = f64::from(points);
+    let inset = f64::from(points.max(0.));
     let key = Retained::as_ptr(&accessory) as usize;
     if INSET.with_borrow_mut(|insets| insets.insert(key, inset) != Some(inset)) {
         accessory.setNeedsLayout(true);

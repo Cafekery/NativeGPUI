@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{App, ElementId, ScrollHandle, Style, Window, point, px, relative, size};
+use gpui::{App, ElementId, Pixels, Point, ScrollHandle, Size, Style, Window, point, px};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -15,9 +15,7 @@ use crate::bridge::host::{Layer, NativeRead, Slot, Target, hosted_element};
 
 const FLASH_EVERY: Duration = Duration::from_millis(500);
 
-/// AppKit's own scroll bars over GPUI content: a click-through `NSScrollView` the size of the
-/// scrolled area, kept at the handles' offsets, whose scrollers move the handles in turn. Place it
-/// over the area, sized to it.
+/// AppKit's scroll bars over GPUI content, driving the handles; size it to the scrolled area.
 pub fn native_scroll_bars(id: impl Into<ElementId>) -> NativeScrollBars {
     NativeScrollBars {
         id: id.into(),
@@ -44,40 +42,24 @@ impl NativeScrollBars {
     }
 
     fn layout(&self) -> Style {
-        let mut style = Style::default();
-        style.size = size(relative(1.).into(), relative(1.).into());
-        style
+        Style {
+            size: Size::full(),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let key = slot.key;
         let bars = slot.place(Layer::Above, |mtm, target| {
-            ScrollBars::new(mtm, target, key)
+            ScrollBars::new(mtm, target, slot.key)
         });
-        let (across, down) = (
-            self.horizontal
-                .as_ref()
-                .map_or(0., |h| f64::from(h.max_offset().x)),
-            self.vertical
-                .as_ref()
-                .map_or(0., |v| f64::from(v.max_offset().y)),
-        );
-        let offset = NSPoint::new(
-            self.horizontal
-                .as_ref()
-                .map_or(0., |h| -f64::from(h.offset().x))
-                .clamp(0., across),
-            self.vertical
-                .as_ref()
-                .map_or(0., |v| -f64::from(v.offset().y))
-                .clamp(0., down),
-        );
+        let (across, x) = travel(self.horizontal.as_ref(), |p| p.x);
+        let (down, y) = travel(self.vertical.as_ref(), |p| p.y);
         let area = slot.bounds.size;
         let content = NSSize::new(
             f64::from(area.width) + across,
             f64::from(area.height) + down,
         );
-        bars.show(content, across >= 1., down >= 1., offset);
+        bars.show(content, across >= 1., down >= 1., NSPoint::new(x, y));
 
         let (vertical, horizontal) = (self.vertical.clone(), self.horizontal.clone());
         slot.on_event(
@@ -99,6 +81,13 @@ impl NativeScrollBars {
 }
 
 hosted_element!(NativeScrollBars);
+
+fn travel(handle: Option<&ScrollHandle>, along: fn(Point<Pixels>) -> Pixels) -> (f64, f64) {
+    handle.map_or((0., 0.), |handle| {
+        let max = f64::from(along(handle.max_offset()));
+        (max, (-f64::from(along(handle.offset()))).clamp(0., max))
+    })
+}
 
 fn read() -> NativeRead {
     Rc::new(|sender| {
@@ -129,7 +118,7 @@ define_class!(
             self.ivars().key as isize
         }
 
-        /// Only the scrollers take the pointer; the GPUI content beneath takes everything else.
+        /// Only the scrollers take the pointer.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, at: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: at] };
@@ -218,9 +207,7 @@ impl ScrollBars {
             clip.scrollToPoint(offset);
             self.reflectScrolledClipView(&clip);
             self.ivars().syncing.set(false);
-            // GPUI moving the content flashes the scrollers, as a scroll view's own scrolling does.
-            // A flash holds them up for about a second, and each one invalidates the window's
-            // cursor rects, so a scroll flashes every so often rather than every frame.
+            // Each flash invalidates the window's cursor rects, so it is rate-limited.
             let due = self
                 .ivars()
                 .flashed

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -111,8 +112,7 @@ struct ChromeIvars {
     hovered: Cell<u64>,
     corner: Cell<Corner>,
     tracking: RefCell<Option<Retained<NSTrackingArea>>>,
-    /// A cursor this host set itself because its window is not key.
-    forced: Cell<bool>,
+    cursor_forced: Cell<bool>,
     toolbar: RefCell<Option<Retained<NSToolbar>>>,
     toolbar_delegate: RefCell<Option<Retained<ToolbarDelegate>>>,
     toolbar_installed: RefCell<Option<(ToolbarStyle, Vec<String>)>>,
@@ -180,7 +180,7 @@ define_class!(
             match self.claim_at(local) {
                 Some(claim) => {
                     claim.value.ns().set();
-                    self.ivars().forced.set(true);
+                    self.ivars().cursor_forced.set(true);
                 }
                 None => self.release_cursor(),
             }
@@ -237,7 +237,7 @@ impl ChromeHost {
             hovered: Cell::new(0),
             corner: Cell::new(corner),
             tracking: RefCell::new(None),
-            forced: Cell::new(false),
+            cursor_forced: Cell::new(false),
             toolbar: RefCell::new(None),
             toolbar_delegate: RefCell::new(None),
             toolbar_installed: RefCell::new(None),
@@ -252,7 +252,7 @@ impl ChromeHost {
     }
 
     fn release_cursor(&self) {
-        if self.ivars().forced.replace(false) {
+        if self.ivars().cursor_forced.replace(false) {
             NSCursor::arrowCursor().set();
         }
     }
@@ -529,13 +529,13 @@ fn remove_region<T>(regions: &Regions<T>, key: u64) -> bool {
 
 fn chrome(window: &Window) -> Retained<ChromeHost> {
     let view = gpui_view(window);
-    let class = ChromeHost::class();
-    for sub in view.subviews().iter() {
-        if sub.isKindOfClass(class) {
-            return unsafe { Retained::cast_unchecked::<ChromeHost>(sub) };
-        }
+    if let Some(host) = view
+        .subviews()
+        .iter()
+        .find(|sub| sub.isKindOfClass(ChromeHost::class()))
+    {
+        return unsafe { Retained::cast_unchecked::<ChromeHost>(host) };
     }
-
     let mtm = MainThreadMarker::new().expect("chrome install is a main-thread path");
     let ns_window = view
         .window()
@@ -563,7 +563,7 @@ fn chrome(window: &Window) -> Retained<ChromeHost> {
     host
 }
 
-fn ns_window_of(window: &Window) -> Retained<NSWindow> {
+pub(crate) fn ns_window_of(window: &Window) -> Retained<NSWindow> {
     gpui_view(window)
         .window()
         .expect("GPUI's view is in its window")
@@ -583,8 +583,8 @@ pub fn system_corner_radius(window: &Window) -> Pixels {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
     if corner.written.is_none() {
-        if let Some(live) = corner_radius_readback(window) {
-            corner.system = f32::from(live) as f64;
+        if let Some(live) = read_corner_radius(&ns_window_of(window)) {
+            corner.system = live;
             host.ivars().corner.set(corner);
         }
     }
@@ -914,7 +914,6 @@ impl ToolbarItem {
         self
     }
 
-    /// Asks for the shared items each time the picker opens, in place of the ones given.
     pub fn items_on_open(
         mut self,
         build: impl Fn(&mut Window, &mut App) -> Vec<String> + 'static,
@@ -1000,7 +999,7 @@ impl ToolbarItem {
         }
     }
 
-    fn identifier(&self) -> String {
+    fn identifier(&self) -> Cow<'_, str> {
         match self {
             ToolbarItem::Symbol { id, .. }
             | ToolbarItem::Group { id, .. }
@@ -1008,11 +1007,11 @@ impl ToolbarItem {
             | ToolbarItem::Menu { id, .. }
             | ToolbarItem::Share { id, .. }
             | ToolbarItem::Separator { id, .. }
-            | ToolbarItem::View { id, .. } => id.clone(),
+            | ToolbarItem::View { id, .. } => Cow::Borrowed(id),
             ToolbarItem::FlexibleSpace => unsafe {
-                NSToolbarFlexibleSpaceItemIdentifier.to_string()
+                Cow::Owned(NSToolbarFlexibleSpaceItemIdentifier.to_string())
             },
-            ToolbarItem::Space => unsafe { NSToolbarSpaceItemIdentifier.to_string() },
+            ToolbarItem::Space => unsafe { Cow::Owned(NSToolbarSpaceItemIdentifier.to_string()) },
         }
     }
 }
@@ -1045,7 +1044,7 @@ define_class!(
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_items(&self, _: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
             match &*self.ivars().customization.borrow() {
-                Some(customization) => identifier_array(&customization.defaults),
+                Some(customization) => ns_strings(&customization.defaults),
                 None => self.identifiers(),
             }
         }
@@ -1072,13 +1071,12 @@ define_class!(
             let Some(id) = self.menu_owner(menu) else {
                 return;
             };
-            let build = self.ivars().items.borrow().iter().find_map(|spec| match spec {
+            let Some(build) = self.find_item(|spec| match spec {
                 ToolbarItem::Menu {
                     id: found, on_open, ..
                 } if *found == id => on_open.clone(),
                 _ => None,
-            });
-            let Some(build) = build else {
+            }) else {
                 return;
             };
             if let Ok(entries) = self.ivars().cx.clone().update(|window, cx| build(window, cx)) {
@@ -1089,33 +1087,23 @@ define_class!(
 
     unsafe impl NSSharingServicePickerToolbarItemDelegate for ToolbarDelegate {
         #[unsafe(method_id(itemsForSharingServicePickerToolbarItem:))]
-        fn share_items(&self, item: &NSSharingServicePickerToolbarItem) -> Retained<NSArray> {
+        fn share_items(
+            &self,
+            item: &NSSharingServicePickerToolbarItem,
+        ) -> Retained<NSArray<NSString>> {
             let wanted = item.itemIdentifier().to_string();
             let (items, build) = self
-                .ivars()
-                .items
-                .borrow()
-                .iter()
-                .find_map(|spec| match spec {
+                .find_item(|spec| match spec {
                     ToolbarItem::Share {
                         id, items, on_open, ..
                     } if *id == wanted => Some((items.clone(), on_open.clone())),
                     _ => None,
                 })
                 .unwrap_or_default();
-            let texts = match build {
-                Some(build) => self
-                    .ivars()
-                    .cx
-                    .clone()
-                    .update(|window, cx| build(window, cx))
-                    .unwrap_or(items),
-                None => items,
-            };
-            let owned: Vec<Retained<NSString>> =
-                texts.iter().map(|text| NSString::from_str(text)).collect();
-            let refs: Vec<&AnyObject> = owned.iter().map(|text| text.as_ref()).collect();
-            NSArray::from_slice(&refs)
+            let texts = build
+                .and_then(|build| self.ivars().cx.clone().update(|window, cx| build(window, cx)).ok())
+                .unwrap_or(items);
+            ns_strings(&texts)
         }
     }
 
@@ -1128,7 +1116,7 @@ define_class!(
                 self.dispatch_index(&id, index);
                 return;
             }
-            let handler = self.ivars().items.borrow().iter().find_map(|item| match item {
+            let handler = self.find_item(|item| match item {
                 ToolbarItem::Symbol { id, on_click, .. } if *id == wanted => on_click.clone(),
                 _ => None,
             });
@@ -1164,7 +1152,7 @@ define_class!(
             let Some(id) = found else {
                 return;
             };
-            let handler = self.ivars().items.borrow().iter().find_map(|item| match item {
+            let handler = self.find_item(|item| match item {
                 ToolbarItem::Search {
                     id: found,
                     on_change,
@@ -1189,10 +1177,12 @@ define_class!(
     }
 );
 
-fn identifier_array(ids: &[String]) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-    let owned: Vec<Retained<NSString>> = ids.iter().map(|id| NSString::from_str(id)).collect();
-    let refs: Vec<&NSString> = owned.iter().map(|s| &**s).collect();
-    NSArray::from_slice(&refs)
+fn ns_strings<S: AsRef<str>>(texts: impl IntoIterator<Item = S>) -> Retained<NSArray<NSString>> {
+    let texts: Vec<_> = texts
+        .into_iter()
+        .map(|text| NSString::from_str(text.as_ref()))
+        .collect();
+    NSArray::from_retained_slice(&texts)
 }
 
 impl Drop for ToolbarIvars {
@@ -1293,9 +1283,17 @@ impl ToolbarDelegate {
     }
 
     fn identifiers(&self) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-        let items = self.ivars().items.borrow();
-        let ids: Vec<String> = items.iter().map(ToolbarItem::identifier).collect();
-        identifier_array(&ids)
+        ns_strings(
+            self.ivars()
+                .items
+                .borrow()
+                .iter()
+                .map(ToolbarItem::identifier),
+        )
+    }
+
+    fn find_item<R>(&self, found: impl FnMut(&ToolbarItem) -> Option<R>) -> Option<R> {
+        self.ivars().items.borrow().iter().find_map(found)
     }
 
     fn defer(&self, run: impl FnOnce(&mut Window, &mut App) + 'static) {
@@ -1333,24 +1331,19 @@ impl ToolbarDelegate {
     }
 
     fn dispatch_index(&self, id: &str, index: usize) {
-        let handler = self
-            .ivars()
-            .items
-            .borrow()
-            .iter()
-            .find_map(|item| match item {
-                ToolbarItem::Group {
-                    id: found,
-                    on_select,
-                    ..
-                }
-                | ToolbarItem::Menu {
-                    id: found,
-                    on_select,
-                    ..
-                } if found == id => on_select.clone(),
-                _ => None,
-            });
+        let handler = self.find_item(|item| match item {
+            ToolbarItem::Group {
+                id: found,
+                on_select,
+                ..
+            }
+            | ToolbarItem::Menu {
+                id: found,
+                on_select,
+                ..
+            } if found == id => on_select.clone(),
+            _ => None,
+        });
         if let Some(handler) = handler {
             self.defer(move |window, app| handler(index, window, app));
         }
@@ -1359,13 +1352,7 @@ impl ToolbarDelegate {
     fn build_item(&self, ident: &NSString, inserted: bool) -> Option<Retained<NSToolbarItem>> {
         let mtm = MainThreadMarker::new()?;
         let wanted = ident.to_string();
-        let spec = self
-            .ivars()
-            .items
-            .borrow()
-            .iter()
-            .find(|item| item.identifier() == wanted)
-            .cloned()?;
+        let spec = self.find_item(|item| (item.identifier() == wanted).then(|| item.clone()))?;
 
         let tip = spec.tip().map(worded);
         let enabled = spec.enabled_state();
@@ -1405,12 +1392,12 @@ impl ToolbarDelegate {
                         symbol_image(&segment.symbol, spoken).unwrap_or_default()
                     })
                     .collect();
-                let image_refs: Vec<&NSImage> = images.iter().map(|image| &**image).collect();
+                let images = NSArray::from_retained_slice(&images);
                 if selection == ToolbarSelection::Momentary {
                     // The group constructor's control is a point wider than a separated one.
                     let control = unsafe {
                         NSSegmentedControl::segmentedControlWithImages_trackingMode_target_action(
-                            &NSArray::from_slice(&image_refs),
+                            &images,
                             NSSegmentSwitchTracking::Momentary,
                             Some(self.as_ref()),
                             Some(sel!(ngToolbarSegment:)),
@@ -1446,17 +1433,13 @@ impl ToolbarDelegate {
                     item
                 } else {
                     // The images constructor, not `subitems`: only it has a control to select in.
-                    let labels: Vec<Retained<NSString>> = segments
-                        .iter()
-                        .map(|segment| NSString::from_str(&segment.label))
-                        .collect();
-                    let label_refs: Vec<&NSString> = labels.iter().map(|text| &**text).collect();
+                    let labels = ns_strings(segments.iter().map(|segment| &segment.label));
                     let group = unsafe {
                         NSToolbarItemGroup::groupWithItemIdentifier_images_selectionMode_labels_target_action(
                             ident,
-                            &NSArray::from_slice(&image_refs),
+                            &images,
                             selection.into(),
-                            Some(&NSArray::from_slice(&label_refs)),
+                            Some(&labels),
                             Some(self.as_ref()),
                             Some(sel!(ngToolbarAction:)),
                             mtm,
@@ -1549,7 +1532,7 @@ impl ToolbarDelegate {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
                 item.setLabel(&worded(&label));
                 let view = build(mtm);
-                let mut pinned: Vec<Retained<NSLayoutConstraint>> = Vec::new();
+                let mut pinned = Vec::new();
                 if size.width > px(0.) {
                     pinned.push(
                         view.widthAnchor()
@@ -1564,8 +1547,7 @@ impl ToolbarDelegate {
                 }
                 if !pinned.is_empty() {
                     view.setTranslatesAutoresizingMaskIntoConstraints(false);
-                    let refs: Vec<&NSLayoutConstraint> = pinned.iter().map(|pin| &**pin).collect();
-                    NSLayoutConstraint::activateConstraints(&NSArray::from_slice(&refs));
+                    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&pinned));
                 }
                 item.setView(Some(&view));
                 item
@@ -1659,8 +1641,10 @@ impl ToolbarDelegate {
                         search.setPreferredWidthForSearchField(wanted);
                     }
                     let field = search.searchField();
-                    let current = field.placeholderString().map(|text| text.to_string());
-                    if current.as_deref().unwrap_or("") != placeholder {
+                    let current = field
+                        .placeholderString()
+                        .map_or(String::new(), |text| text.to_string());
+                    if current != *placeholder {
                         field.setPlaceholderString(Some(&NSString::from_str(placeholder)));
                     }
                 }
@@ -1709,11 +1693,9 @@ fn symbol_image(symbol: &str, label: &str) -> Option<Retained<NSImage>> {
     )
 }
 
-/// Where a toolbar the user arranges starts; AppKit keeps the user's arrangement and display mode
-/// in the app's defaults from then on.
+/// Where a user-arranged toolbar starts; AppKit keeps the user's arrangement in defaults thereafter.
 #[derive(Clone, Debug)]
 pub struct ToolbarCustomization {
-    /// The palette's default set.
     pub defaults: Vec<String>,
     /// The first arrangement, less anything the palette doesn't offer.
     pub initial: Vec<String>,
@@ -1760,7 +1742,10 @@ fn install_toolbar(
     };
 
     let mtm = MainThreadMarker::new().expect("set_toolbar is a main-thread path");
-    let identifiers: Vec<String> = items.iter().map(ToolbarItem::identifier).collect();
+    let identifiers: Vec<String> = items
+        .iter()
+        .map(|item| item.identifier().into_owned())
+        .collect();
 
     let delegate = {
         let mut slot = host.ivars().toolbar_delegate.borrow_mut();
@@ -1790,7 +1775,7 @@ fn install_toolbar(
                         .initial
                         .iter()
                         .filter(|id| identifiers.contains(id));
-                    seed = Some(offered.cloned().collect::<Vec<String>>());
+                    seed = Some(ns_strings(offered));
                 }
                 *delegate.ivars().customization.borrow_mut() = Some(customization.clone());
                 toolbar.setAutosavesConfiguration(true);
@@ -1810,12 +1795,12 @@ fn install_toolbar(
         });
     if !unchanged {
         if customization.is_none() {
-            toolbar.setItemIdentifiers(&identifier_array(&identifiers));
+            toolbar.setItemIdentifiers(&ns_strings(&identifiers));
         }
         ns_window.setToolbarStyle(style.into());
         ns_window.setToolbar(Some(&toolbar));
         if let Some(seed) = &seed {
-            toolbar.setItemIdentifiers(&identifier_array(seed));
+            toolbar.setItemIdentifiers(seed);
         }
         toolbar.setVisible(true);
         *host.ivars().toolbar_installed.borrow_mut() = Some((style, identifiers));
@@ -2279,8 +2264,7 @@ impl Element for NativeTooltip {
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
         self.child.prepaint(window, cx);
-        let visible = bounds.intersect(&window.content_mask().bounds);
-        (visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible)
+        visible(bounds, window)
     }
 
     fn paint(
@@ -2364,8 +2348,7 @@ impl Element for NativeCallout {
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
         self.child.prepaint(window, cx);
-        let visible = bounds.intersect(&window.content_mask().bounds);
-        (visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible)
+        visible(bounds, window)
     }
 
     fn paint(

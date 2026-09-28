@@ -1,9 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use gpui::{App, ElementId, FontWeight, ImageId, Style, Window, px};
+use gpui::{App, ElementId, FontWeight, ImageId, Style, Window, px, size};
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
 use objc2::{AllocAnyThread, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapFormat, NSControl, NSImage, NSImageScaling, NSImageSymbolConfiguration,
@@ -12,6 +11,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSSize, NSString};
 
 use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::controls::{snap_origin, symbol_image};
 use crate::system::tokens::{Symbol, SystemColor, bitmap, ns_font_weight};
 
 const RASTERS_KEPT: usize = 256;
@@ -40,11 +40,7 @@ pub fn native_symbol(
 ) -> NativeImage {
     NativeImage {
         id: id.into(),
-        source: Source::Symbol {
-            name: name.to_string(),
-            size,
-            weight,
-        },
+        source: Source::Symbol((name.to_string(), size.to_bits(), weight.0.to_bits())),
         tint: SystemColor::Label,
     }
 }
@@ -59,11 +55,7 @@ pub fn native_raster(id: impl Into<ElementId>, raster: Symbol) -> NativeImage {
 
 enum Source {
     Named(String),
-    Symbol {
-        name: String,
-        size: f32,
-        weight: FontWeight,
-    },
+    Symbol(SymbolKey),
     Raster(Symbol),
 }
 
@@ -83,14 +75,15 @@ impl NativeImage {
         match &self.source {
             Source::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
             // A configured symbol is a new NSImage each time, and NSImage equality is identity.
-            Source::Symbol { name, size, weight } => SYMBOLS.with(|kept| {
-                kept.borrow_mut()
-                    .entry((name.clone(), size.to_bits(), weight.0.to_bits()))
-                    .or_insert_with(|| symbol_image(name, *size, *weight))
-                    .clone()
+            Source::Symbol(key) => SYMBOLS.with_borrow_mut(|kept| {
+                if let Some(hit) = kept.get(key) {
+                    return hit.clone();
+                }
+                let image = configured_symbol(key);
+                kept.insert(key.clone(), image.clone());
+                image
             }),
-            Source::Raster(raster) => RASTERS.with(|kept| {
-                let mut kept = kept.borrow_mut();
+            Source::Raster(raster) => RASTERS.with_borrow_mut(|kept| {
                 if let Some(hit) = kept.get(&raster.image.id) {
                     return Some(hit.clone());
                 }
@@ -105,33 +98,25 @@ impl NativeImage {
     }
 
     fn layout(&self) -> Style {
-        let size = self.image().map(|image| image.size()).unwrap_or_default();
-        let mut style = Style::default();
-        style.size.width = px(size.width as f32).into();
-        style.size.height = px(size.height as f32).into();
-        style
+        let fitting = self.image().map(|image| image.size()).unwrap_or_default();
+        Style {
+            size: size(
+                px(fitting.width as f32).into(),
+                px(fitting.height as f32).into(),
+            ),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, mut slot: Slot, window: &mut Window, _: &mut App) {
-        let scale = window.scale_factor();
-        let snap = |v: gpui::Pixels| px((f32::from(v) * scale).round() / scale);
-        slot.bounds.origin.x = snap(slot.bounds.origin.x);
-        slot.bounds.origin.y = snap(slot.bounds.origin.y);
+        snap_origin(&mut slot, window.scale_factor());
         let view = slot.place(Layer::Above, |mtm, _| Glyph::new(mtm));
         let image = self.image();
-        let same = match (view.image(), &image) {
-            (Some(have), Some(want)) => have.isEqual(Some(&**want)),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
+        if view.image() != image {
             view.setImage(image.as_deref());
         }
         let tint = self.tint.ns_color();
-        if !view
-            .contentTintColor()
-            .is_some_and(|have| have.isEqual(Some(&**tint)))
-        {
+        if view.contentTintColor().as_ref() != Some(&tint) {
             view.setContentTintColor(Some(&tint));
         }
     }
@@ -139,17 +124,13 @@ impl NativeImage {
 
 hosted_element!(NativeImage);
 
-fn symbol_image(name: &str, size: f32, weight: FontWeight) -> Option<Retained<NSImage>> {
-    let base = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str(name),
-        None,
-    )?;
+fn configured_symbol((name, size, weight): &SymbolKey) -> Option<Retained<NSImage>> {
     let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
-        f64::from(size),
-        ns_font_weight(weight),
+        f64::from(f32::from_bits(*size)),
+        ns_font_weight(FontWeight(f32::from_bits(*weight))),
         NSImageSymbolScale::Medium,
     );
-    base.imageWithSymbolConfiguration(&configuration)
+    symbol_image(name, None)?.imageWithSymbolConfiguration(&configuration)
 }
 
 fn ns_image(raster: &Symbol) -> Option<Retained<NSImage>> {
