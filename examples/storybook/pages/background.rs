@@ -1,6 +1,6 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Hsla, Rgba, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, Hsla, Rgba, Window, div, prelude::*, px, rgb};
 use native_gpui::sidebar::NativeSidebar;
 use native_gpui::tokens::{
     Appearance, SystemColor, WINDOW_BACKGROUND, system_color, window_background,
@@ -33,6 +33,15 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
     let control = system_color(SystemColor::ControlBackground);
     let grey = d.background.grey;
     let picked = grey_hsla(grey);
+    // The token round-trips through `colorWithSRGBRed:`: compare bytes, not `Hsla`.
+    let on_token = hex(picked) == hex(here);
+    let backdrop = |id: &'static str| {
+        material(id, RawMaterial::UnderWindowBackground)
+            .layer(Layer::Above)
+            .blending(Blending::WithinWindow)
+            .size_full()
+            .into_any_element()
+    };
 
     stack(vec![
         note(
@@ -108,10 +117,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     hex(picked),
                     native_slider("bg-grey", grey)
                         .range(0., 255.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.background.grey = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.background.grey = value))
                         .into_any_element(),
                 ),
                 row(
@@ -125,7 +131,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                                 cx.notify();
                             }))
                             .into_any_element(),
-                        mono(if hex(picked) == hex(here) {
+                        mono(if on_token {
                             "on the token — the seam is closed"
                         } else {
                             "off the token — the seam is open"
@@ -166,23 +172,11 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                      comes out as two different greys, the colour patch as one.",
                 ),
                 grid(vec![
-                    tone_tile(
-                        "material over #1D1D1D",
-                        DARK_TONE,
-                        material("bg-mat-dark", RawMaterial::UnderWindowBackground)
-                            .layer(Layer::Above)
-                            .blending(Blending::WithinWindow)
-                            .size_full()
-                            .into_any_element(),
-                    ),
+                    tone_tile("material over #1D1D1D", DARK_TONE, backdrop("bg-mat-dark")),
                     tone_tile(
                         "material over #3C3C3C",
                         LIGHT_TONE,
-                        material("bg-mat-light", RawMaterial::UnderWindowBackground)
-                            .layer(Layer::Above)
-                            .blending(Blending::WithinWindow)
-                            .size_full()
-                            .into_any_element(),
+                        backdrop("bg-mat-light"),
                     ),
                     tone_tile(
                         "window_background() over #1D1D1D",
@@ -270,15 +264,10 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "hand-picked grey on the dial",
-                // The token round-trips through `colorWithSRGBRed:`: compare bytes, not `Hsla`.
                 format!(
                     "{} — {} the token",
                     hex(picked),
-                    if hex(picked) == hex(here) {
-                        "matches"
-                    } else {
-                        "not"
-                    }
+                    if on_token { "matches" } else { "not" }
                 ),
             ),
         ]),
@@ -289,7 +278,7 @@ fn swatch(label: &str, color: SystemColor) -> AnyElement {
     appearance_swatch(color, 168., |_, _| label.to_string())
 }
 
-fn step_panel(label: &str, color: Hsla) -> AnyElement {
+fn step_panel(label: &'static str, color: Hsla) -> AnyElement {
     div()
         .w(px(168.))
         .h(px(96.))
@@ -303,7 +292,7 @@ fn step_panel(label: &str, color: Hsla) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(system_color(SystemColor::Label))
-                .child(SharedString::from(label.to_string())),
+                .child(label),
         )
         .child(mono(hex(color)))
         .into_any_element()

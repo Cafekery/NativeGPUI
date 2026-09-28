@@ -1,8 +1,9 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Hsla, Window, div, hsla, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, Hsla, SharedString, Window, div, hsla, prelude::*, px, rgb};
 use native_gpui::{
-    glass, glass_container, native_color_well, native_segmented, native_slider, native_switch,
+    Glass, glass, glass_container, native_color_well, native_segmented, native_slider,
+    native_switch,
 };
 
 const STRIPE: f32 = 8.;
@@ -40,15 +41,23 @@ impl Default for State {
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (radius, clear, tint_on, tint) =
-        (d.glass.radius, d.glass.clear, d.glass.tint_on, d.glass.tint);
-    let spacing = d.glass.spacing;
-    let selected = d.glass.panels.min(COUNTS.len() - 1);
+    let State {
+        radius,
+        clear,
+        tint_on,
+        tint,
+        spacing,
+        panels,
+    } = d.glass;
+    let selected = panels.min(COUNTS.len() - 1);
     let count = COUNTS[selected];
 
-    let live = |id: &'static str| -> AnyElement {
-        let panel = glass(id).corner_radius(px(radius as f32)).clear(clear);
-        if tint_on { panel.tint(tint) } else { panel }.into_any_element()
+    let live = |id: &'static str| {
+        glass(id)
+            .corner_radius(px(radius as f32))
+            .clear(clear)
+            .when(tint_on, |panel| panel.tint(tint))
+            .into_any_element()
     };
 
     stack(vec![
@@ -73,40 +82,30 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{radius:.0} px"),
                     native_slider("radius", radius)
                         .range(0., 44.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.glass.radius = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass.radius = value))
                         .into_any_element(),
                 ),
                 knob(
                     "clear",
                     clear.to_string(),
                     native_switch("clear", clear)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.glass.clear = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass.clear = value))
                         .into_any_element(),
                 ),
                 knob(
                     "tint",
                     if tint_on { "on" } else { "none" },
                     native_switch("tint-on", tint_on)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.glass.tint_on = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass.tint_on = value))
                         .into_any_element(),
                 ),
                 knob(
                     "tint colour",
                     format!("α {:.2}", tint.a),
                     native_color_well("tint", tint)
-                        .on_change(cx.listener(|d: &mut Demo, value: &Hsla, _, cx| {
-                            d.glass.tint = *value;
+                        .on_change(set(cx, |d, value| {
+                            d.glass.tint = value;
                             d.glass.tint_on = true;
-                            cx.notify();
                         }))
                         .into_any_element(),
                 ),
@@ -119,16 +118,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     RADII
                         .iter()
                         .map(|&radius| {
-                            tile(
+                            specimen(
                                 format!("{radius:.0} px"),
-                                116.,
-                                stripes(
-                                    116.,
-                                    84.,
-                                    glass(("radius", radius as u32))
-                                        .corner_radius(px(radius))
-                                        .into_any_element(),
-                                ),
+                                (116., 84.),
+                                glass(("radius", radius as u32)).corner_radius(px(radius)),
                             )
                         })
                         .collect(),
@@ -140,29 +133,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "style",
             vec![
                 grid(vec![
-                    tile(
-                        "regular",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("style-regular")
-                                .corner_radius(px(20.))
-                                .into_any_element(),
-                        ),
-                    ),
-                    tile(
-                        "clear(true)",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("style-clear")
-                                .clear(true)
-                                .corner_radius(px(20.))
-                                .into_any_element(),
-                        ),
-                    ),
+                    panel("regular", glass("style-regular")),
+                    panel("clear(true)", glass("style-clear").clear(true)),
                 ]),
                 caption(
                     "clear tints rather than blurs, so most of the backdrop's structure survives \
@@ -174,63 +146,24 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "tint",
             vec![
                 grid(vec![
-                    tile(
-                        "none",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("tint-none").corner_radius(px(20.)).into_any_element(),
-                        ),
-                    ),
-                    tile(
+                    panel("none", glass("tint-none")),
+                    panel(
                         "blue α 0.30",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("tint-blue")
-                                .corner_radius(px(20.))
-                                .tint(hsla(0.58, 0.9, 0.55, 0.3))
-                                .into_any_element(),
-                        ),
+                        glass("tint-blue").tint(hsla(0.58, 0.9, 0.55, 0.3)),
                     ),
-                    tile(
+                    panel(
                         "orange α 0.30",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("tint-orange")
-                                .corner_radius(px(20.))
-                                .tint(hsla(0.06, 0.95, 0.55, 0.3))
-                                .into_any_element(),
-                        ),
+                        glass("tint-orange").tint(hsla(0.06, 0.95, 0.55, 0.3)),
                     ),
-                    tile(
+                    panel(
                         "blue α 1.00",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("tint-full")
-                                .corner_radius(px(20.))
-                                .tint(hsla(0.58, 0.9, 0.55, 1.))
-                                .into_any_element(),
-                        ),
+                        glass("tint-full").tint(hsla(0.58, 0.9, 0.55, 1.)),
                     ),
-                    tile(
+                    panel(
                         "clear + orange",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("tint-clear")
-                                .clear(true)
-                                .corner_radius(px(20.))
-                                .tint(hsla(0.06, 0.95, 0.55, 0.3))
-                                .into_any_element(),
-                        ),
+                        glass("tint-clear")
+                            .clear(true)
+                            .tint(hsla(0.06, 0.95, 0.55, 0.3)),
                     ),
                 ]),
                 caption(
@@ -244,30 +177,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "ordering",
             vec![
                 grid(vec![
-                    tile(
-                        "frosting_gpui",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("order-above")
-                                .frosting_gpui()
-                                .corner_radius(px(20.))
-                                .into_any_element(),
-                        ),
-                    ),
-                    tile(
-                        "frosting_desktop",
-                        150.,
-                        stripes(
-                            150.,
-                            100.,
-                            glass("order-below")
-                                .frosting_desktop()
-                                .corner_radius(px(20.))
-                                .into_any_element(),
-                        ),
-                    ),
+                    panel("frosting_gpui", glass("order-above").frosting_gpui()),
+                    panel("frosting_desktop", glass("order-below").frosting_desktop()),
                 ]),
                 note(
                     "frosting_desktop orders the panel under GPUI's Metal view, so it frosts the \
@@ -287,10 +198,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{spacing:.0} px"),
                     native_slider("spacing", spacing)
                         .range(0., 40.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.glass.spacing = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass.spacing = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -298,10 +206,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     count.to_string(),
                     native_segmented("count", selected)
                         .segments(COUNTS.map(|count| count.to_string()))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.glass.panels = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass.panels = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -347,6 +252,22 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ("spacing(Pixels)", format!("{spacing:.0}")),
         ]),
     ])
+}
+
+fn panel(label: &'static str, panel: Glass) -> AnyElement {
+    specimen(label, (150., 100.), panel.corner_radius(px(20.)))
+}
+
+pub fn specimen(
+    label: impl Into<SharedString>,
+    (width, height): (f32, f32),
+    panel: impl IntoElement,
+) -> AnyElement {
+    tile(
+        label,
+        width,
+        stripes(width, height, panel.into_any_element()),
+    )
 }
 
 pub fn stripes(width: f32, height: f32, child: AnyElement) -> AnyElement {

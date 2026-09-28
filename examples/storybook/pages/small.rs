@@ -13,6 +13,7 @@ pub struct State {
     pub color: Hsla,
     pub date: f64,
     pub clicked: Option<String>,
+    pub path: String,
 }
 
 impl Default for State {
@@ -24,6 +25,9 @@ impl Default for State {
             color: hsla(0.58, 0.85, 0.55, 1.),
             date: now_seconds(),
             clicked: None,
+            path: std::env::current_dir()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "/".into()),
         }
     }
 }
@@ -50,10 +54,15 @@ const DATE_ELEMENTS: [(&str, DateElements); 6] = [
 ];
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (count, fine, wrapped) = (d.small.count, d.small.fine, d.small.wrapped);
-    let (color, date) = (d.small.color, d.small.date);
-    let clicked = d.small.clicked.clone();
-    let path = demo_path();
+    let State {
+        count,
+        fine,
+        wrapped,
+        color,
+        date,
+        ref clicked,
+        ref path,
+    } = d.small;
 
     stack(vec![
         section(
@@ -64,10 +73,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{count:.0}"),
                     native_stepper("count", count)
                         .range(0., 20.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.small.count = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.small.count = value))
                         .into_any_element(),
                 ),
                 stepper_row(
@@ -76,10 +82,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_stepper("fine", fine)
                         .range(0., 4.)
                         .increment(0.25)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.small.fine = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.small.fine = value))
                         .into_any_element(),
                 ),
                 stepper_row(
@@ -88,10 +91,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_stepper("wrapped", wrapped)
                         .range(0., 3.)
                         .wraps(true)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.small.wrapped = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.small.wrapped = value))
                         .into_any_element(),
                 ),
                 stepper_row(
@@ -100,10 +100,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_stepper("no-repeat", count)
                         .range(0., 20.)
                         .autorepeat(false)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.small.count = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.small.count = value))
                         .into_any_element(),
                 ),
                 stepper_row(
@@ -129,10 +126,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                                 86.,
                                 native_color_well(("well", i), color)
                                     .style(*style)
-                                    .on_change(cx.listener(|d: &mut Demo, color: &Hsla, _, cx| {
-                                        d.small.color = *color;
-                                        cx.notify();
-                                    }))
+                                    .on_change(set(cx, |d, color| d.small.color = color))
                                     .into_any_element(),
                             )
                         })
@@ -146,10 +140,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                             86.,
                             native_color_well("well-opaque", color)
                                 .supports_alpha(false)
-                                .on_change(cx.listener(|d: &mut Demo, color: &Hsla, _, cx| {
-                                    d.small.color = *color;
-                                    cx.notify();
-                                }))
+                                .on_change(set(cx, |d, color| d.small.color = color))
                                 .into_any_element(),
                         ),
                         tile(
@@ -189,10 +180,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                                     )
                                     .style(*style)
                                     .elements(*elements)
-                                    .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                                        d.small.date = *value;
-                                        cx.notify();
-                                    }))
+                                    .on_change(set(cx, |d, value| d.small.date = value))
                                     .into_any_element(),
                                 )
                             })
@@ -219,12 +207,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "Standard — the Finder-style breadcrumb",
                     sized(
                         420.,
-                        native_path_control("path-standard", path.clone())
+                        native_path_control("path-standard", path)
                             .style(PathStyle::Standard)
-                            .on_click(cx.listener(|d: &mut Demo, path: &String, _, cx| {
-                                d.small.clicked = Some(path.clone());
-                                cx.notify();
-                            }))
+                            .on_click(set(cx, |d, path| d.small.clicked = Some(path)))
                             .into_any_element(),
                     ),
                 ),
@@ -232,12 +217,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "PopUp — the leaf, with its ancestors in the menu",
                     sized(
                         420.,
-                        native_path_control("path-popup", path.clone())
+                        native_path_control("path-popup", path)
                             .style(PathStyle::PopUp)
-                            .on_click(cx.listener(|d: &mut Demo, path: &String, _, cx| {
-                                d.small.clicked = Some(path.clone());
-                                cx.notify();
-                            }))
+                            .on_click(set(cx, |d, path| d.small.clicked = Some(path)))
                             .into_any_element(),
                     ),
                 ),
@@ -245,12 +227,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "enabled(false)",
                     sized(
                         420.,
-                        native_path_control("path-off", path.clone())
+                        native_path_control("path-off", path)
                             .enabled(false)
                             .into_any_element(),
                     ),
                 ),
-                match &clicked {
+                match clicked {
                     Some(path) => mono(format!("clicked {path}")),
                     None => caption("click a component — a click on no component is not reported"),
                 },
@@ -271,31 +253,27 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ("native_date_picker(id, seconds)", utc_stamp(date)),
             ("style(DatePickerStyle)", "all three, above".into()),
             ("elements(DateElements)", "all six, per style".into()),
-            ("native_path_control(id, path)", path),
+            ("native_path_control(id, path)", path.clone()),
             ("style(PathStyle)", "Standard and PopUp, above".into()),
             (
                 "on_click(Fn(&String, ..))",
-                clicked.unwrap_or_else(|| "nothing clicked yet".into()),
+                clicked
+                    .clone()
+                    .unwrap_or_else(|| "nothing clicked yet".into()),
             ),
         ]),
     ])
 }
 
-fn stepper_row(label: &str, value: String, control: AnyElement) -> AnyElement {
+fn stepper_row(label: &'static str, value: String, control: AnyElement) -> AnyElement {
     div()
         .flex()
         .items_center()
         .gap_3()
-        .child(div().w(px(320.)).child(caption(label.to_string())))
+        .child(div().w(px(320.)).child(caption(label)))
         .child(control)
         .child(div().w(px(60.)).child(mono(value)))
         .into_any_element()
-}
-
-fn demo_path() -> String {
-    std::env::current_dir()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "/".into())
 }
 
 fn now_seconds() -> f64 {
@@ -305,7 +283,7 @@ fn now_seconds() -> f64 {
         .unwrap_or(0.)
 }
 
-/// Epoch seconds to `YYYY-MM-DD hh:mm:ssZ`, by Hinnant's `civil_from_days`.
+// Hinnant's civil_from_days.
 fn utc_stamp(seconds: f64) -> String {
     let total = seconds.floor() as i64;
     let (days, time) = (total.div_euclid(86_400), total.rem_euclid(86_400));

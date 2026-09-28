@@ -70,9 +70,14 @@ fn radio_group(
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (saves, cancels) = (d.buttons.saves, d.buttons.cancels);
-    let (drafts, wrap) = (d.buttons.drafts, d.buttons.wrap);
-    let (size, align) = (d.buttons.size, d.buttons.align);
+    let State {
+        saves,
+        cancels,
+        drafts,
+        wrap,
+        size,
+        align,
+    } = d.buttons;
 
     stack(vec![
         row(
@@ -80,19 +85,13 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             vec![
                 native_button("save", "Save")
                     .default_button(true)
-                    .on_click(cx.listener(|d: &mut Demo, _: &(), _, cx| {
-                        d.buttons.saves += 1;
-                        cx.notify();
-                    }))
+                    .on_click(set(cx, |d, ()| d.buttons.saves += 1))
                     .into_any_element(),
-                mono(format!("{saves}")),
+                mono(saves.to_string()),
                 native_button("cancel", "Cancel")
-                    .on_click(cx.listener(|d: &mut Demo, _: &(), _, cx| {
-                        d.buttons.cancels += 1;
-                        cx.notify();
-                    }))
+                    .on_click(set(cx, |d, ()| d.buttons.cancels += 1))
                     .into_any_element(),
-                mono(format!("{cancels}")),
+                mono(cancels.to_string()),
                 native_button("push-off", "Disabled")
                     .enabled(false)
                     .into_any_element(),
@@ -133,10 +132,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     vec![
                         native_checkbox("wrap", wrap)
                             .title("Wrap lines")
-                            .on_change(cx.listener(|d: &mut Demo, state: &CheckState, _, cx| {
-                                d.buttons.wrap = *state == CheckState::On;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, state| d.buttons.wrap = state == CheckState::On))
                             .into_any_element(),
                         mono(if wrap { "On" } else { "Off" }),
                     ],
@@ -148,10 +144,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                             .title("Include drafts")
                             .allows_mixed(true)
                             .state(drafts)
-                            .on_change(cx.listener(|d: &mut Demo, state: &CheckState, _, cx| {
-                                d.buttons.drafts = *state;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, state| d.buttons.drafts = state))
                             .into_any_element(),
                         mono(format!("{drafts:?}")),
                     ],
