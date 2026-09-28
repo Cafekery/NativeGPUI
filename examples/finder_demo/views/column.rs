@@ -692,6 +692,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn column_arrived(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.arriving = None;
         let target = self.target();
         if target != self.here() {
             self.history.truncate(self.at + 1);

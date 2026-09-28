@@ -1,19 +1,21 @@
 use std::cell::Cell;
 
 use gpui::{
-    App, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
-    size,
+    App, Bounds, Context, Entity, FocusHandle, IntoElement, ParentElement, Render, SharedString,
+    Styled, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point,
+    prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
     MenuEntry, NativePopup, native_popup, native_root, native_slider, window_options,
 };
-use objc2_app_kit::NSWindowTitleVisibility;
+use objc2::msg_send;
+use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, SORT_KEYS, SORT_TITLES};
 use crate::frame::ns_window;
+use crate::menus::ShowViewOptions;
 use crate::view::ICON_VIEW;
 use crate::views::header::column_title;
 use crate::views::icon::Arrangement;
@@ -36,8 +38,11 @@ const ARRANGEMENTS: [Option<Arrangement>; 12] = [
 
 const TITLEBAR_H: f32 = 34.;
 
+pub(crate) const CONTEXT: &str = "ViewOptions";
+
 pub(crate) struct ViewOptions {
     demo: WeakEntity<FinderDemo>,
+    focus: FocusHandle,
 }
 
 impl ViewOptions {
@@ -100,6 +105,9 @@ impl Render for ViewOptions {
 
         native_root(
             div()
+                .key_context(CONTEXT)
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|_, _: &ShowViewOptions, window, _| window.remove_window()))
                 .size_full()
                 .p(px(14.))
                 .pt(px(TITLEBAR_H))
@@ -173,6 +181,7 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
     let demo = demo.downgrade();
     let opened = cx.open_window(
         WindowOptions {
+            kind: WindowKind::Floating,
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(320.), px(220.)),
                 size: size(px(268.), px(150.) + px(TITLEBAR_H - 14.)),
@@ -181,19 +190,25 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
             is_minimizable: false,
             ..window_options()
         },
-        |_, cx| {
+        |window, cx| {
+            if let Some(panel) = ns_window(window) {
+                unsafe {
+                    let _: () = msg_send![&*panel, setFloatingPanel: true];
+                }
+                panel.setStyleMask(
+                    panel.styleMask()
+                        | NSWindowStyleMask::UtilityWindow
+                        | NSWindowStyleMask::NonactivatingPanel,
+                );
+                panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
+            }
             cx.new(|cx| {
                 cx.observe(&watched, |_, _, cx| cx.notify()).detach();
-                ViewOptions { demo }
+                let focus = cx.focus_handle();
+                window.focus(&focus, cx);
+                ViewOptions { demo, focus }
             })
         },
     );
-    if let Ok(opened) = opened {
-        OPEN.set(Some(opened));
-        let _ = opened.update(cx, |_, window, _| {
-            if let Some(ns_window) = ns_window(window) {
-                ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
-            }
-        });
-    }
+    OPEN.set(opened.ok());
 }
