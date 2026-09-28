@@ -9,7 +9,7 @@ use gpui::{
 use image::{Frame, RgbaImage};
 use native_gpui::native_context_menu;
 use native_gpui::tokens::{
-    self, Appearance, FileType, SymbolColor, SystemColor, sf_symbol_colored, system_color,
+    self, Appearance, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags};
@@ -45,13 +45,11 @@ const GAP_KIND_HEAD: f32 = 9.;
 const GAP_HEAD_ROWS: f32 = 7.25;
 const ROW_GAP: f32 = 7.;
 const ROW_TITLE_GAP: f32 = 10.;
-/// Finder drops to a shorter date style once a value would crowd its row's title by this much.
 const ROW_FIT_MARGIN: f32 = 14.;
 const GAP_ROWS_TAGS: f32 = 17.25;
 const GAP_TAGS_ADD: f32 = 5.9;
 const TAGS_WELL_H: f32 = 33.;
 const TAGS_TEXT_TOP: f32 = 1.;
-/// The pane scrolls, with this much room under the tags, once its content reaches the band.
 const BOTTOM_PAD: f32 = 16.;
 const ICON_H: f32 = 16.5;
 const GAP_ICON_LABEL: f32 = 9.5;
@@ -66,7 +64,6 @@ const GAP_HEADER: f32 = 19.;
 const GAP_HEADER_ICON: f32 = 9.;
 const GAP_HEADER_NAME: f32 = 6.8;
 const GAP_HEADER_HEAD: f32 = 19.6;
-/// Finder's quick actions: a band of the content background along the pane's foot.
 pub(super) const ACTIONS_H: f32 = 70.;
 const ACTION_TOP: f32 = 15.5;
 const ACTION_SLOT_W: f32 = 76.;
@@ -99,8 +96,7 @@ struct Card {
     actions: Vec<QuickAct>,
 }
 
-/// A card as its window's state had it, so a pane can draw it without reading that state: a
-/// window draws again whenever anything it read while drawing changes.
+/// A snapshot: a pane reading its window's state would make that window redraw.
 pub(crate) struct Shown {
     card: Card,
     content: f32,
@@ -114,8 +110,7 @@ pub(crate) struct Shown {
     option: bool,
 }
 
-/// Finder's text over the pane's glass is vibrant, which no `NSColor` names: these are the
-/// colours it lands on. The tags well is the actions band's content material, opaque.
+/// Vibrant text over the pane's glass, which no `NSColor` names.
 struct Ink {
     name: Hsla,
     heading: Hsla,
@@ -162,7 +157,6 @@ impl Ink {
         }
     }
 
-    /// Column view's preview has no glass under it, and Finder's text there is plain.
     fn plain() -> Self {
         let label = system_color(SystemColor::Label);
         let secondary = system_color(SystemColor::SecondaryLabel);
@@ -242,67 +236,79 @@ struct Stacked {
     image: Option<Option<Arc<RenderImage>>>,
 }
 
+impl Stacked {
+    fn made_from(&self, from: &[Arc<RenderImage>], side: u32) -> bool {
+        self.side == side
+            && self.from.len() == from.len()
+            && self.from.iter().zip(from).all(|(a, b)| Arc::ptr_eq(a, b))
+    }
+}
+
+struct Stacks {
+    making: bool,
+    oldest_first: Vec<Stacked>,
+}
+
 const STACKS_KEPT: usize = 4;
 
-/// Whether a thread is making stacks, and the stacks, oldest first.
-static STACKS: Mutex<(bool, Vec<Stacked>)> = Mutex::new((false, Vec::new()));
-/// Stacks pushed out of `STACKS`, for the GPU atlas to let go of.
+static STACKS: Mutex<Stacks> = Mutex::new(Stacks {
+    making: false,
+    oldest_first: Vec::new(),
+});
 static RETIRED: Mutex<Vec<Arc<RenderImage>>> = Mutex::new(Vec::new());
 static STACKED: Signal = Signal::new();
 
-fn made_from(stack: &Stacked, from: &[Arc<RenderImage>], side: u32) -> bool {
-    stack.side == side
-        && stack.from.len() == from.len()
-        && stack.from.iter().zip(from).all(|(a, b)| Arc::ptr_eq(a, b))
-}
-
 fn stacked(from: Vec<Arc<RenderImage>>, side: u32) -> Option<Arc<RenderImage>> {
     let mut stacks = STACKS.lock().unwrap();
-    if let Some(stack) = stacks.1.iter().find(|stack| made_from(stack, &from, side)) {
+    if let Some(stack) = stacks
+        .oldest_first
+        .iter()
+        .find(|stack| stack.made_from(&from, side))
+    {
         return stack.image.clone().flatten();
     }
-    stacks.1.push(Stacked {
+    stacks.oldest_first.push(Stacked {
         from,
         side,
         image: None,
     });
-    if stacks.1.len() > STACKS_KEPT {
-        let gone = stacks.1.remove(0);
+    if stacks.oldest_first.len() > STACKS_KEPT {
+        let gone = stacks.oldest_first.remove(0);
         RETIRED.lock().unwrap().extend(gone.image.flatten());
     }
-    if !std::mem::replace(&mut stacks.0, true) {
+    if !std::mem::replace(&mut stacks.making, true) {
         std::thread::spawn(make_stacks);
     }
     None
 }
 
-/// The newest stack asked for first: a pane being resized asks for one per frame.
+/// Newest first: a pane being resized asks for one per frame.
 fn make_stacks() {
     loop {
         let wanted = {
             let mut stacks = STACKS.lock().unwrap();
             let wanted = stacks
-                .1
+                .oldest_first
                 .iter()
                 .rev()
                 .find(|stack| stack.image.is_none())
                 .map(|stack| (stack.from.clone(), stack.side));
-            stacks.0 = wanted.is_some();
+            stacks.making = wanted.is_some();
             wanted
         };
         let Some((from, side)) = wanted else {
             return;
         };
         let image = stack_image(&from, side);
-        let mut stacks = STACKS.lock().unwrap();
-        if let Some(stack) = stacks
-            .1
+        if let Some(stack) = STACKS
+            .lock()
+            .unwrap()
+            .oldest_first
             .iter_mut()
-            .find(|stack| made_from(stack, &from, side))
+            .find(|stack| stack.made_from(&from, side))
         {
             stack.image = Some(image);
         }
-        drop(stacks);
         STACKED.ring();
     }
 }
@@ -324,7 +330,6 @@ pub(crate) fn follow_stacks(cx: &mut App) {
     .detach();
 }
 
-/// Everything a card draws from: a pane draws again only when this changes.
 #[derive(PartialEq)]
 pub(super) struct CardKey {
     view: usize,
@@ -354,6 +359,7 @@ fn kind_line(row: &Row, weighed: Option<u64>) -> SharedString {
 
 fn info_rows(
     row: &Row,
+    kind: &'static options::Kind,
     meta: Option<&Meta>,
     expanded: bool,
     content: f32,
@@ -376,7 +382,6 @@ fn info_rows(
         all.push(("Capacity", byte_string(volume.capacity).into(), true));
         all.push(("Available", byte_string(volume.available).into(), true));
     }
-    let kind = options::kind_of(row);
     for field in kind.groups.iter().flat_map(|group| group.fields) {
         let shown = match field.source {
             Source::Created => Some(date(field.label, row.created_at)),
@@ -413,7 +418,6 @@ fn label_width(label: &'static str) -> f32 {
     })
 }
 
-/// Finder sets its × between hair spaces.
 const BY: &str = "\u{200a}\u{d7}\u{200a}";
 
 fn duration(seconds: f64) -> Option<SharedString> {
@@ -438,7 +442,6 @@ fn duration(seconds: f64) -> Option<SharedString> {
     })
 }
 
-/// Spotlight's value as Finder words it.
 fn attr_text(name: &str, text: String) -> SharedString {
     match name {
         "kMDItemAudioSampleRate" => match text.parse().ok().and_then(kilohertz) {
@@ -466,10 +469,8 @@ fn kilohertz(hertz: f64) -> Option<SharedString> {
         .map(|number| format!("{number} kHz").into())
 }
 
-/// Finder shows the first two quick actions as buttons and the rest under More….
 const ACTION_BUTTONS: usize = 2;
 
-/// Each button's act, and what it shows: its Option alternate while Option is held.
 fn action_slots(
     acts: &[QuickAct],
     option: bool,
@@ -509,7 +510,9 @@ impl FinderDemo {
             let line = line?;
             let row = &line.row;
             let meta = crate::meta::meta(&row.path);
-            let (rows, show_more) = info_rows(row, meta.as_deref(), self.preview_expanded, content);
+            let kind = options::kind_of(row);
+            let (rows, show_more) =
+                info_rows(row, kind, meta.as_deref(), self.preview_expanded, content);
             Card {
                 hero: match self.view == GALLERY_VIEW {
                     true => Hero::Row(row.clone()),
@@ -520,9 +523,9 @@ impl FinderDemo {
                 rows,
                 show_more,
                 tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
-                show_tags: options::shows(options::kind_of(row), options::TAGS),
+                show_tags: options::shows(kind, options::TAGS),
                 many: false,
-                actions: match options::shows(options::kind_of(row), options::QUICK_ACTIONS) {
+                actions: match options::shows(kind, options::QUICK_ACTIONS) {
                     true => offered(&[row.face]),
                     false => Vec::new(),
                 },
@@ -546,7 +549,7 @@ impl FinderDemo {
         })
     }
 
-    /// Asked each frame the pane is open, for the hero's pictures just as drawing it asks.
+    /// Asks for the hero's pictures just as drawing it would.
     pub(super) fn card_key(&self, content: f32, key: bool) -> CardKey {
         let many = self.selected.len() > 1;
         let line = self.cursor_line().filter(|_| !many);
@@ -566,12 +569,6 @@ impl FinderDemo {
             (_, Some(row)) => vec![thumb(row, self.hero_side(content), self.scale, true, false)],
             _ => Vec::new(),
         };
-        let folder = |row: &Row| {
-            matches!(
-                row.artwork,
-                Some(FileType::Folder | FileType::FullFolder | FileType::FullPath(_))
-            )
-        };
         CardKey {
             view: self.view,
             stats: (self.stats_key(), self.stats.as_ref().map(|stats| stats.key)),
@@ -581,7 +578,7 @@ impl FinderDemo {
             meta: row
                 .and_then(|row| crate::meta::meta(&row.path))
                 .map_or(0, |meta| Arc::as_ptr(&meta) as usize),
-            custom: row.is_some_and(|row| folder(row) && crate::custom::custom_icon(&row.path)),
+            custom: row.is_some_and(|row| crate::art::custom_folder(row)),
             line: line
                 .as_ref()
                 .map(|line| (line.key.clone(), Arc::as_ptr(&line.row) as usize)),
@@ -614,8 +611,7 @@ impl FinderDemo {
         content.max(hero_h(self.pane_h, content))
     }
 
-    /// So an arrow key lands on a picture already made. Asked before the cursor's own, which the
-    /// service then makes first: it serves its newest request first.
+    /// Asked before the cursor's own, which the newest-first service then makes first.
     pub(crate) fn ask_beside_cursor(&self, side: f32) {
         let Some(cursor) = self.cursor.as_ref() else {
             return;
@@ -631,7 +627,6 @@ impl FinderDemo {
         }
     }
 
-    /// Whether the cursor's hero picture is still being made for the first time.
     pub(super) fn hero_awaited(&self, content: f32) -> bool {
         self.selected.len() <= 1
             && self.view != GALLERY_VIEW
@@ -640,11 +635,14 @@ impl FinderDemo {
                 .is_some_and(|line| awaited(&line.row, self.hero_side(content), self.scale, false))
     }
 
-    fn weighed(&self) -> Option<u64> {
+    fn fresh_stats(&self) -> Option<&super::Stats> {
         self.stats
             .as_ref()
             .filter(|stats| stats.key == self.stats_key())
-            .map(|stats| stats.bytes)
+    }
+
+    fn weighed(&self) -> Option<u64> {
+        self.fresh_stats().map(|stats| stats.bytes)
     }
 
     fn many_card(&self) -> Card {
@@ -653,11 +651,7 @@ impl FinderDemo {
             None => Hero::Blank,
         };
         let actions = offered(&self.chosen_faces());
-        let Some(stats) = self
-            .stats
-            .as_ref()
-            .filter(|stats| stats.key == self.stats_key())
-        else {
+        let Some(stats) = self.fresh_stats() else {
             return Card {
                 hero,
                 title: format!("{} items", self.selected.len()).into(),
@@ -670,7 +664,7 @@ impl FinderDemo {
                 tags: Vec::new(),
                 show_tags: true,
                 many: true,
-                actions: actions.clone(),
+                actions,
             };
         };
         let files = stats.items - stats.folders;
@@ -715,8 +709,9 @@ fn stack_side(view: usize, pane_h: f32, content: f32) -> f32 {
 }
 
 fn stack_thumbs(lines: &[Line], content: f32, scale: f32) -> Vec<Option<Arc<RenderImage>>> {
-    lines[..lines.len().min(3)]
+    lines
         .iter()
+        .take(3)
         .map(|line| thumb(&line.row, content * STACK_ICON, scale, true, true))
         .collect()
 }
@@ -758,14 +753,9 @@ impl Shown {
         self.content + 2. * INSET
     }
 
-    pub(super) fn element(
-        &self,
-        palette: &Palette,
-        finder: &Entity<FinderDemo>,
-        last: &RefCell<Option<Arc<RenderImage>>>,
-    ) -> AnyElement {
-        let (card, content) = (&self.card, self.content);
-        let hero = match &card.hero {
+    fn hero(&self, last: &RefCell<Option<Arc<RenderImage>>>) -> AnyElement {
+        let content = self.content;
+        match &self.card.hero {
             Hero::Row(row) => row_art(row, HEADER_ICON, self.scale, true),
             Hero::Poster(row) => poster_art(
                 row,
@@ -782,16 +772,16 @@ impl Shown {
                 let side = stack_side(self.view, self.pane_h, content);
                 div().w(px(side)).h(px(side)).into_any_element()
             }
-        };
-        self.card_element(hero, palette, finder)
+        }
     }
 
-    fn card_element(
+    pub(super) fn element(
         &self,
-        hero: AnyElement,
         palette: &Palette,
         finder: &Entity<FinderDemo>,
+        last: &RefCell<Option<Arc<RenderImage>>>,
     ) -> AnyElement {
+        let hero = self.hero(last);
         let (card, content) = (&self.card, self.content);
         let body = tokens::system_font_size();
         let small = tokens::small_system_font_size();
@@ -1079,7 +1069,6 @@ impl Shown {
                 .child(actions.pb(px(COLUMN_BOTTOM)))
                 .into_any_element();
         }
-        // The pane scrolls above the actions band, which stays at its foot.
         div()
             .size_full()
             .relative()
@@ -1094,7 +1083,6 @@ impl Shown {
                     .overflow_y_scroll()
                     .child(content.pb(px(BOTTOM_PAD))),
             )
-            // Finder rules the band off only while the content runs down to it.
             .when(tall > self.pane_h + RESIZE_EDGE - band, |pane| {
                 pane.child(
                     div()

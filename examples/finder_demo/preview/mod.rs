@@ -34,7 +34,6 @@ use crate::frame::ns_window;
 use crate::palette::Palette;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
-/// Show Preview brings the pane back this wide, whatever width it had.
 pub(crate) const PREVIEW_W: f32 = 288.;
 
 const MIN_W: f32 = 240.;
@@ -43,7 +42,6 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 
 pub(crate) const INSET: f32 = 10.;
 const RESIZE_EDGE: f32 = 6.;
-/// Past the time a first picture usually takes; a slower one shows the type icon meanwhile.
 const HOLD: Duration = Duration::from_millis(120);
 /// The split view takes a click within 2pt of its divider for itself.
 const DIVIDER_GRAB: f32 = 3.;
@@ -57,17 +55,22 @@ pub(crate) struct PreviewWindow {
     handed: Rc<Handed>,
 }
 
-/// What a window hands its pane to draw.
 #[derive(Default)]
 struct Handed {
-    /// What the card was drawn from; it is taken and drawn again only when this changes.
     key: RefCell<Option<card::CardKey>>,
     shown: RefCell<Option<card::Shown>>,
-    /// The icon landings seen when the pane last drew a stand-in for an icon.
+    /// `icons::landed()` as of the pane's last stand-in icon.
     waiting: Cell<Option<u64>>,
-    /// Since when the card has been kept up while the next one's picture is made.
     held: Cell<Option<Instant>>,
     stack: RefCell<Option<Arc<RenderImage>>>,
+}
+
+impl PreviewWindow {
+    fn close(self, cx: &mut App) {
+        self.handle
+            .update(cx, |_, window, _| window.remove_window())
+            .ok();
+    }
 }
 
 impl Drop for PreviewWindow {
@@ -76,7 +79,6 @@ impl Drop for PreviewWindow {
     }
 }
 
-/// The pane's gaps to its parent's edges, which resizing the parent keeps.
 #[derive(Clone, Copy)]
 struct Anchor {
     right: f64,
@@ -140,8 +142,7 @@ fn near(a: NSRect, b: NSRect) -> bool {
         && (a.size.height - b.size.height).abs() < 0.5
 }
 
-/// AppKit offers key to the frontmost window when one closes; this pane's panel declines it and
-/// leaves the app with no key window, so the frontmost ordinary window takes it instead.
+/// A closing window offers key to this pane's panel, which declines it and leaves no key window.
 pub(crate) fn keep_a_key_window() {
     let block = StackBlock::new(|_: NonNull<NSNotification>| {
         let later = RcBlock::new(|| {
@@ -175,8 +176,8 @@ pub(crate) fn keep_a_key_window() {
     std::mem::forget(observer);
 }
 
-/// Holds its Finder weakly: a strong handle here keeps a closed window's whole state alive.
-pub(crate) struct PreviewPane {
+struct PreviewPane {
+    /// Weak: a strong handle keeps a closed window's whole state alive.
     finder: WeakEntity<FinderDemo>,
     handed: Rc<Handed>,
 }
@@ -238,9 +239,7 @@ impl Render for PreviewPane {
 pub(crate) fn close_with_finder(cx: &mut Context<FinderDemo>) {
     cx.on_release(|this, cx| {
         if let Some(pane) = this.preview_window.take() {
-            pane.handle
-                .update(cx, |_, window, _| window.remove_window())
-                .ok();
+            pane.close(cx);
         }
     })
     .detach();
@@ -252,7 +251,7 @@ fn open_preview_window(
     frame: NSRect,
     cx: &mut App,
 ) {
-    let pane_finder = finder.clone();
+    let pane_finder = finder.downgrade();
     let handed = Rc::new(Handed::default());
     let opened = parent.and_then(|parent| {
         let handle = cx
@@ -272,7 +271,7 @@ fn open_preview_window(
                 },
                 |_, cx| {
                     cx.new(|_| PreviewPane {
-                        finder: pane_finder.downgrade(),
+                        finder: pane_finder,
                         handed: handed.clone(),
                     })
                 },
@@ -340,7 +339,6 @@ impl FinderDemo {
             }
             // AppKit lays the divider on a whole point, half a point off the width asked for.
             match sidebar.take_inspector_resize().map(f32::from) {
-                // Finder hides the preview when its divider is dragged shut.
                 Some(width) if width <= 0. => {
                     self.preview = false;
                     crate::prefs::set_preview(self.view, false);
@@ -358,11 +356,10 @@ impl FinderDemo {
                 px(MIN_W),
                 px(MAX_W),
             );
-            let band = match self.cursor_line() {
-                _ if self.selected.len() > 1 => true,
-                Some(line) => options::shows(options::kind_of(&line.row), options::QUICK_ACTIONS),
-                None => false,
-            };
+            let band = self.selected.len() > 1
+                || self.cursor_line().is_some_and(|line| {
+                    options::shows(options::kind_of(&line.row), options::QUICK_ACTIONS)
+                });
             sidebar.set_inspector_footer(px(if band { card::ACTIONS_H } else { 0. }));
         }
         let metrics = self.metrics();
@@ -375,14 +372,9 @@ impl FinderDemo {
         self.pane_h = f32::from(viewport.height - top - metrics.bottom) - RESIZE_EDGE;
         self.fit_name_column();
 
-        // The card rides the pane while it slides in or out, and goes once it is shut.
         if metrics.right <= px(DIVIDER_GRAB + RESIZE_EDGE) {
             if let Some(pane) = self.preview_window.take() {
-                cx.defer(move |cx| {
-                    pane.handle
-                        .update(cx, |_, window, _| window.remove_window())
-                        .ok();
-                });
+                cx.defer(move |cx| pane.close(cx));
             }
             return;
         }
