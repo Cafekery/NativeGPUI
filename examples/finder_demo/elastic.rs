@@ -7,17 +7,11 @@ use gpui::{
 
 use crate::app::FinderDemo;
 
-/// A pull x past an edge moves the content `(1 - 1 / (PULL * x / d + 1)) * d`, d the scroller's
-/// extent: PULL of the fingers' travel at first, never as far as d.
 const PULL: f32 = 0.0745;
-/// Let go, a stretch s returns as `(s + BOUNCE * v * t) * e^(-SPRING * t)`, v its speed outward.
 const SPRING: f32 = 12.5;
 const BOUNCE: f32 = 0.31;
-/// Events further apart than this belong to different scrolls.
 const APART: f32 = 0.05;
 
-/// Finder's rubber band on one scroller. The scroller keeps its clamped offset; its content is
-/// drawn `shown()` past the edge.
 #[derive(Default)]
 pub(crate) struct Elastic {
     x: Band,
@@ -26,7 +20,6 @@ pub(crate) struct Elastic {
     last: Option<Instant>,
 }
 
-/// A rubber band for each of the demo's scrollers.
 #[derive(Default)]
 pub(crate) struct Bands {
     pub(crate) rows: Elastic,
@@ -38,7 +31,6 @@ pub(crate) struct Bands {
 }
 
 impl Bands {
-    /// True while a spring still moves.
     pub(crate) fn tick(&mut self) -> bool {
         [
             &mut self.rows,
@@ -53,7 +45,6 @@ impl Bands {
     }
 }
 
-/// A list item drawn `by` below its slot, the slot and the list's hitbox unmoved.
 pub(crate) fn shifted(item: AnyElement, by: Pixels) -> AnyElement {
     // The list lays each item out as a root, and a root's own relative offset is ignored.
     match by == px(0.) {
@@ -65,7 +56,7 @@ pub(crate) fn shifted(item: AnyElement, by: Pixels) -> AnyElement {
     }
 }
 
-/// Feeds a band from its scroller's wheel events, after the scroller's own listener has run.
+/// Must run after the scroller's own wheel listener: `wheel` reads the offset it wrote.
 pub(crate) fn stretching(
     band: impl Fn(&mut FinderDemo) -> (&mut Elastic, ScrollHandle) + 'static,
     cx: &mut Context<FinderDemo>,
@@ -81,13 +72,11 @@ pub(crate) fn stretching(
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct Band {
-    /// The fingers' travel past the edge, and the stretch it pulls.
     pulled: f32,
     stretch: f32,
     spring: Option<Spring>,
-    /// The offset the last event left, and how fast it got there.
     rest: f32,
     speed: f32,
 }
@@ -123,9 +112,7 @@ impl Spring {
 }
 
 impl Elastic {
-    /// For the scroller's own wheel listener to have added the event to its offset first.
-    pub(crate) fn wheel(&mut self, event: &ScrollWheelEvent, handle: &ScrollHandle) {
-        // A mouse wheel stops dead at the edge, as it does in Finder.
+    fn wheel(&mut self, event: &ScrollWheelEvent, handle: &ScrollHandle) {
         if !event.delta.precise() {
             return;
         }
@@ -159,14 +146,12 @@ impl Elastic {
         handle.set_offset(point(x, y));
     }
 
-    /// How far past its edges the content is drawn, rounded to whole points as Finder draws it.
     pub(crate) fn shown(&self) -> Point<Pixels> {
         let now = Instant::now();
         point(px(self.x.shown(now)), px(self.y.shown(now)))
     }
 
-    /// Ends settled springs; true while one still moves.
-    pub(crate) fn tick(&mut self) -> bool {
+    fn tick(&mut self) -> bool {
         let now = Instant::now();
         for band in [&mut self.x, &mut self.y] {
             band.spring = band.spring.filter(|spring| !spring.done(now));
@@ -182,7 +167,6 @@ impl Band {
             .round()
     }
 
-    /// The clamped offset to keep, given the one the event produced.
     fn follow(&mut self, offset: Pixels, max: Pixels, extent: Pixels, turn: Turn) -> f32 {
         let (offset, max, extent) = (f32::from(offset), f32::from(max), f32::from(extent).max(1.));
         let edge = if turn.held {

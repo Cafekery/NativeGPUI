@@ -20,6 +20,11 @@ pub(crate) const LIST_ZOOM_SECS: f32 = 0.2;
 const ICON_STOPS: [f32; 9] = [16., 24., 32., 48., 64., 96., 128., 256., 512.];
 const STRIP_STOPS: [f32; 3] = [32., 48., 64.];
 
+/// Rounded to hundredths as GPUI rounds a scroll range, so drift in Name's fill never counts.
+pub(crate) fn overflows(content: f32, room: f32) -> bool {
+    ((content - room) * 100.).round() > 0.
+}
+
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.set_view(view, cx);
@@ -28,7 +33,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Shows `view` once the rows are in its order: at once when they already are.
     pub(crate) fn set_view(&mut self, view: usize, cx: &mut Context<Self>) {
         let by = self.view_sort(view);
         self.pending_view = (by != (self.sort, self.ascending)).then_some(view);
@@ -94,7 +98,6 @@ impl FinderDemo {
         row_h(self.list_icon_now())
     }
 
-    /// Items a folder's first frame shows in this view.
     pub(crate) fn on_screen(&self) -> usize {
         let (width, height) = (
             f32::from(self.viewport.width),
@@ -157,10 +160,8 @@ impl FinderDemo {
         self.name_w + columns + extra + PANE_INSET
     }
 
-    /// The columns overflow the list, which then scrolls sideways: rounded to hundredths as GPUI
-    /// rounds a scroll range, so drift in Name's fill never counts.
     pub(crate) fn list_bleeds(&self) -> bool {
-        ((self.list_content_w() - self.list_room) * 100.).round() > 0.
+        overflows(self.list_content_w(), self.list_room)
     }
 
     /// The icon area as Finder measures it, from the sidebar to the pane, in a window this wide.
@@ -184,7 +185,6 @@ impl FinderDemo {
         self.icon_options().lanes(room)
     }
 
-    /// Icons kept sorted reflow with the window; others keep the columns first laid out.
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let fits = self.fits(window);
         let sorted = matches!(self.arrangement(), Some(Arrangement::By(_)));
