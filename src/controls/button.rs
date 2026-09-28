@@ -1,81 +1,59 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ptr;
 use std::rc::Rc;
 
 use gpui::{App, ElementId, Length, Style, Window, px, size};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, Sel};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSCellImagePosition, NSControlSize, NSControlStateValue,
-    NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn, NSImage,
-    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle,
+    NSSegmentSwitchTracking, NSSegmentedControl,
 };
-use objc2_foundation::{MainThreadMarker, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSString};
 
-use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
     ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
-use crate::controls::fitted;
+use crate::controls::{
+    bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_enabled, with_width,
+};
 use crate::system::tokens::SystemColor;
 
-fn measured(
-    class: &'static str,
-    inputs: impl Hash,
-    measure: impl FnOnce(MainThreadMarker) -> NSSize,
-) -> Style {
-    let mut hasher = DefaultHasher::new();
-    inputs.hash(&mut hasher);
-    fitted(fitting_size_keyed(class, hasher.finish(), measure))
+type Titled =
+    unsafe fn(&NSString, Option<&AnyObject>, Option<Sel>, MainThreadMarker) -> Retained<NSButton>;
+
+fn titled(mtm: MainThreadMarker, make: Titled, title: &str) -> Retained<NSButton> {
+    unsafe { make(&NSString::from_str(title), None, None, mtm) }
+}
+
+fn place_titled(slot: &Slot, make: Titled, title: &str) -> Retained<NSButton> {
+    slot.place(Layer::Above, |mtm, target| {
+        let button = titled(mtm, make, title);
+        wire(&button, target, slot.key);
+        button
+    })
 }
 
 fn sync_title(button: &NSButton, wanted: &str) {
-    if button.title().to_string() != wanted {
+    if !nsstring_is(&button.title(), wanted) {
         button.setTitle(&NSString::from_str(wanted));
     }
 }
 
-fn symbol_image(name: &str, label: &str) -> Option<Retained<NSImage>> {
-    NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str(name),
-        Some(&NSString::from_str(label)),
-    )
-}
-
 fn sync_symbol(button: &NSButton, symbol: Option<&str>, label: &str, only: bool) {
-    let Some(name) = symbol else {
-        if button.image().is_some() {
-            button.setImage(None);
-        }
-        if button.imagePosition() != NSCellImagePosition::NoImage {
-            button.setImagePosition(NSCellImagePosition::NoImage);
-        }
-        sync_title(button, label);
-        return;
-    };
-    let image = symbol_image(name, label);
-    let same = match (button.image(), &image) {
-        (Some(have), Some(want)) => have.isEqual(Some(&**want)),
-        (None, None) => true,
-        _ => false,
-    };
-    if !same {
+    let image = symbol.and_then(|name| symbol_image(name, Some(label)));
+    if button.image() != image {
         button.setImage(image.as_deref());
     }
-    let position = if only {
-        NSCellImagePosition::ImageOnly
-    } else {
-        NSCellImagePosition::ImageTrailing
+    let position = match symbol {
+        None => NSCellImagePosition::NoImage,
+        Some(_) if only => NSCellImagePosition::ImageOnly,
+        Some(_) => NSCellImagePosition::ImageTrailing,
     };
     if button.imagePosition() != position {
         button.setImagePosition(position);
     }
-    if only {
-        if !button.title().is_empty() {
-            button.setTitle(&NSString::from_str(""));
-        }
-    } else {
-        sync_title(button, label);
-    }
+    sync_title(button, if symbol.is_some() && only { "" } else { label });
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -166,27 +144,17 @@ impl NativeCheckbox {
     }
 
     fn layout(&self) -> Style {
-        let title = self.title.clone();
-        measured("NSButton.checkbox", &title, |mtm| unsafe {
-            NSButton::checkboxWithTitle_target_action(&NSString::from_str(&title), None, None, mtm)
-                .fittingSize()
+        measured("NSButton.checkbox", &self.title, |mtm| {
+            titled(mtm, NSButton::checkboxWithTitle_target_action, &self.title).fittingSize()
         })
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let title = self.title.clone();
-        let button = slot.place(Layer::Above, |mtm, target| {
-            let button = unsafe {
-                NSButton::checkboxWithTitle_target_action(
-                    &NSString::from_str(&title),
-                    None,
-                    None,
-                    mtm,
-                )
-            };
-            wire(&button, target, slot.key);
-            button
-        });
+        let button = place_titled(
+            &slot,
+            NSButton::checkboxWithTitle_target_action,
+            &self.title,
+        );
         // Before the state: a mixed state on a two-state box is refused.
         if button.allowsMixedState() != self.allows_mixed {
             button.setAllowsMixedState(self.allows_mixed);
@@ -196,17 +164,14 @@ impl NativeCheckbox {
             button.setState(wanted);
         }
         sync_title(&button, &self.title);
-        if button.isEnabled() != self.enabled {
-            button.setEnabled(self.enabled);
-        }
+        sync_enabled(&button, self.enabled);
         slot.on_change(ValueKind::Int, self.on_change.take());
     }
 }
 
 hosted_element!(NativeCheckbox);
 
-/// AppKit only groups radios sharing a superview and every hosted view has its own, so hold the
-/// selected index yourself; `on_change` only ever reports `true`.
+/// AppKit groups radios by superview and each hosted view has its own: hold the selection.
 pub fn native_radio(id: impl Into<ElementId>, selected: bool) -> NativeRadio {
     NativeRadio {
         id: id.into(),
@@ -237,56 +202,39 @@ impl NativeRadio {
     }
 
     pub fn on_change(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Bool(on) = value {
-                handler(&on, window, cx);
-            }
-        }));
+        self.on_change = Some(bool_handler(handler));
         self
     }
 
     fn layout(&self) -> Style {
-        let title = self.title.clone();
-        measured("NSButton.radio", &title, |mtm| unsafe {
-            NSButton::radioButtonWithTitle_target_action(
-                &NSString::from_str(&title),
-                None,
-                None,
+        measured("NSButton.radio", &self.title, |mtm| {
+            titled(
                 mtm,
+                NSButton::radioButtonWithTitle_target_action,
+                &self.title,
             )
             .fittingSize()
         })
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let title = self.title.clone();
-        let button = slot.place(Layer::Above, |mtm, target| {
-            let button = unsafe {
-                NSButton::radioButtonWithTitle_target_action(
-                    &NSString::from_str(&title),
-                    None,
-                    None,
-                    mtm,
-                )
-            };
-            wire(&button, target, slot.key);
-            button
-        });
+        let button = place_titled(
+            &slot,
+            NSButton::radioButtonWithTitle_target_action,
+            &self.title,
+        );
         let wanted = CheckState::from(self.selected).to_native();
         if button.state() != wanted {
             button.setState(wanted);
         }
         sync_title(&button, &self.title);
-        if button.isEnabled() != self.enabled {
-            button.setEnabled(self.enabled);
-        }
+        sync_enabled(&button, self.enabled);
         slot.on_change(ValueKind::Bool, self.on_change.take());
     }
 }
 
 hosted_element!(NativeRadio);
 
-/// `Automatic` lets AppKit pick from the button's contents and position.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ButtonBezel {
     #[default]
@@ -331,9 +279,9 @@ fn is_default_button(button: &NSButton) -> bool {
         .window()
         .and_then(|window| window.defaultButtonCell());
     match (button.cell(), default) {
-        (Some(cell), Some(default)) => std::ptr::eq(
+        (Some(cell), Some(default)) => ptr::eq(
             Retained::as_ptr(&cell).cast::<AnyObject>(),
-            Retained::as_ptr(&default).cast::<AnyObject>(),
+            Retained::as_ptr(&default).cast(),
         ),
         _ => false,
     }
@@ -377,7 +325,6 @@ impl NativeButton {
         self
     }
 
-    /// SF Symbol after the title.
     pub fn trailing_symbol(mut self, name: impl Into<String>) -> Self {
         self.symbol = Some(name.into());
         self.symbol_only = false;
@@ -427,52 +374,30 @@ impl NativeButton {
                 ..Default::default()
             };
         }
-        let (title, symbol, symbol_only, bezel, control_size) = (
-            self.title.clone(),
-            self.symbol.clone(),
+        let inputs = (
+            &self.title,
+            &self.symbol,
             self.symbol_only,
             self.bezel,
             self.control_size,
         );
-        let fitted = measured(
-            "NSButton.push",
-            (&title, &symbol, symbol_only, bezel, control_size),
-            |mtm| unsafe {
-                let button = NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str(&title),
-                    None,
-                    None,
-                    mtm,
-                );
-                button.setControlSize(NSControlSize::from(control_size));
-                button.setBezelStyle(bezel.to_native());
-                sync_symbol(&button, symbol.as_deref(), &title, symbol_only);
-                button.fittingSize()
-            },
-        );
-        match self.width {
-            Some(width) => Style {
-                size: size(width, fitted.size.height),
-                ..fitted
-            },
-            None => fitted,
-        }
+        let fitted = measured("NSButton.push", inputs, |mtm| {
+            let button = titled(mtm, NSButton::buttonWithTitle_target_action, &self.title);
+            button.setControlSize(NSControlSize::from(self.control_size));
+            button.setBezelStyle(self.bezel.to_native());
+            sync_symbol(
+                &button,
+                self.symbol.as_deref(),
+                &self.title,
+                self.symbol_only,
+            );
+            button.fittingSize()
+        });
+        with_width(fitted, self.width)
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let title = self.title.clone();
-        let button = slot.place(Layer::Above, |mtm, target| {
-            let button = unsafe {
-                NSButton::buttonWithTitle_target_action(
-                    &NSString::from_str(&title),
-                    None,
-                    None,
-                    mtm,
-                )
-            };
-            wire(&button, target, slot.key);
-            button
-        });
+        let button = place_titled(&slot, NSButton::buttonWithTitle_target_action, &self.title);
         let control_size = NSControlSize::from(self.control_size);
         if button.controlSize() != control_size {
             button.setControlSize(control_size);
@@ -491,9 +416,7 @@ impl NativeButton {
             let wanted = if self.default_button { "\r" } else { "" };
             button.setKeyEquivalent(&NSString::from_str(wanted));
         }
-        if button.isEnabled() != self.enabled {
-            button.setEnabled(self.enabled);
-        }
+        sync_enabled(&button, self.enabled);
         slot.on_change(ValueKind::None, self.on_click.take());
     }
 }
@@ -519,8 +442,6 @@ impl TrackingMode {
     }
 }
 
-/// `NSSegmentStyle`; `Automatic` lets AppKit pick from context, the way [`ButtonBezel::Automatic`]
-/// does for a button.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum SegmentStyle {
     #[default]
@@ -614,8 +535,7 @@ impl NativeSegmented {
         self
     }
 
-    /// Reports the clicked segment, in `Momentary` too: it is read before `selectedSegment`
-    /// reverts to -1.
+    /// Reports the clicked segment, in `Momentary` too.
     pub fn on_change(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Rc::new(move |value, window, cx| {
             if let NativeValue::Int(raw) = value {
@@ -628,28 +548,18 @@ impl NativeSegmented {
     }
 
     fn layout(&self) -> Style {
-        let segments = self.segments.clone();
-        let symbols = self.symbols.clone();
-        let (style, control_size) = (self.style, self.control_size);
-        measured(
-            "NSSegmentedControl",
-            (&segments, &symbols, style, control_size),
-            |mtm| {
-                let control = NSSegmentedControl::new(mtm);
-                fill_segments(&control, &segments, &symbols);
-                control.setSegmentStyle(style.to_native());
-                control.setControlSize(NSControlSize::from(control_size));
-                control.fittingSize()
-            },
-        )
+        let inputs = (&self.segments, &self.symbols, self.style, self.control_size);
+        measured("NSSegmentedControl", inputs, |mtm| {
+            let control = NSSegmentedControl::new(mtm);
+            fill_segments(&control, &self.segments, &self.symbols);
+            control.setSegmentStyle(self.style.to_native());
+            control.setControlSize(NSControlSize::from(self.control_size));
+            control.fittingSize()
+        })
     }
 
     fn paint(&mut self, mut slot: Slot, window: &mut Window, _: &mut App) {
-        // A fractional origin blurs the capsule's stroke and the label under it.
-        let scale = window.scale_factor();
-        let snap = |v: gpui::Pixels| px((f32::from(v) * scale).round() / scale);
-        slot.bounds.origin.x = snap(slot.bounds.origin.x);
-        slot.bounds.origin.y = snap(slot.bounds.origin.y);
+        snap_origin(&mut slot, window.scale_factor());
         let control = slot.place(Layer::Above, |mtm, target| {
             let control = NSSegmentedControl::new(mtm);
             wire(&control, target, slot.key);
@@ -665,20 +575,14 @@ impl NativeSegmented {
             control.setControlSize(control_size);
         }
         let bezel = self.selected_bezel.map(SystemColor::ns_color);
-        let same_bezel = match (control.selectedSegmentBezelColor(), &bezel) {
-            (Some(have), Some(want)) => have.isEqual(Some(&**want)),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same_bezel {
+        if control.selectedSegmentBezelColor() != bezel {
             control.setSelectedSegmentBezelColor(bezel.as_deref());
         }
         let tracking = self.tracking.to_native();
         if control.trackingMode() != tracking {
             control.setTrackingMode(tracking);
         }
-        // Only SelectOne has a selection one index describes; writing it in SelectAny pins a
-        // segment on, and Momentary keeps none.
+        // Writing a selection in SelectAny pins that segment on; Momentary keeps none.
         if self.tracking == TrackingMode::SelectOne {
             let wanted = if self.selected < self.segments.len() {
                 self.selected as isize
@@ -689,9 +593,7 @@ impl NativeSegmented {
                 control.setSelectedSegment(wanted);
             }
         }
-        if control.isEnabled() != self.enabled {
-            control.setEnabled(self.enabled);
-        }
+        sync_enabled(&control, self.enabled);
         slot.on_change(ValueKind::Int, self.on_change.take());
     }
 }
@@ -699,43 +601,25 @@ impl NativeSegmented {
 hosted_element!(NativeSegmented);
 
 fn fill_segments(control: &NSSegmentedControl, segments: &[String], symbols: &[String]) {
-    let count = segments.len().max(symbols.len()) as isize;
-    if control.segmentCount() != count {
-        control.setSegmentCount(count);
+    let count = segments.len().max(symbols.len());
+    if control.segmentCount() != count as isize {
+        control.setSegmentCount(count as isize);
     }
-    for i in 0..count {
-        let label = segments.get(i as usize).map(String::as_str).unwrap_or("");
-        let symbol = symbols
-            .get(i as usize)
-            .map(String::as_str)
-            .filter(|name| !name.is_empty());
-        match symbol {
-            Some(name) => {
-                let image = symbol_image(name, label);
-                let same = match (control.imageForSegment(i), &image) {
-                    (Some(have), Some(want)) => have.isEqual(Some(&**want)),
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !same {
-                    control.setImage_forSegment(image.as_deref(), i);
-                }
-                if control
-                    .labelForSegment(i)
-                    .is_some_and(|held| !held.is_empty())
-                {
-                    control.setLabel_forSegment(&NSString::from_str(""), i);
-                }
-            }
-            None => {
-                if control.imageForSegment(i).is_some() {
-                    control.setImage_forSegment(None, i);
-                }
-                let current = control.labelForSegment(i).map(|held| held.to_string());
-                if current.as_deref() != Some(label) {
-                    control.setLabel_forSegment(&NSString::from_str(label), i);
-                }
-            }
+    for index in 0..count {
+        let segment = index as isize;
+        let label = segments.get(index).map_or("", String::as_str);
+        let symbol = symbols.get(index).filter(|name| !name.is_empty());
+        let image = symbol.and_then(|name| symbol_image(name, Some(label)));
+        if control.imageForSegment(segment) != image {
+            control.setImage_forSegment(image.as_deref(), segment);
+        }
+        let held = control.labelForSegment(segment);
+        let (stale, face) = match symbol {
+            Some(_) => (held.is_some_and(|held| !held.is_empty()), ""),
+            None => (!held.is_some_and(|held| nsstring_is(&held, label)), label),
+        };
+        if stale {
+            control.setLabel_forSegment(&NSString::from_str(face), segment);
         }
     }
 }

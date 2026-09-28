@@ -1,7 +1,6 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::ffi::CStr;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
@@ -26,29 +25,27 @@ use objc2_foundation::{
     NSRect, NSSize, NSString,
 };
 
-use crate::bridge::appkit::{Container, fitting_size_keyed};
-use crate::bridge::host::ControlSize;
+use crate::bridge::appkit::Container;
 use crate::bridge::host::{
-    Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element, wire,
+    ControlSize, Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element,
+    wire,
 };
 use crate::controls::button::ButtonBezel;
-use crate::controls::fitted;
+use crate::controls::{hash_of, measured, nsstring_is, symbol_image, sync_enabled, with_width};
 use crate::system::color::to_nscolor;
 use crate::system::wording::worded;
 
-/// One row of a native menu. A separator occupies an index as it does in `NSMenu`; view rows are
-/// never reported.
+/// A native menu row; a separator takes an index as in `NSMenu`, and view rows never report.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum MenuEntry {
     Item {
         title: String,
-        /// An SF Symbol name.
         symbol: Option<String>,
         /// A filled disc in this sRGB colour, drawn where the symbol would go.
         dot: Option<(u8, u8, u8)>,
         enabled: bool,
         checked: bool,
-        /// Drawn at the trailing edge; a label only, since a transient menu is not listening.
+        /// Drawn at the trailing edge only; a transient menu is not listening.
         key: Option<(String, Modifiers)>,
         /// Stands in for the row above it while ⌥ is held.
         alternate: bool,
@@ -116,8 +113,7 @@ impl MenuEntry {
         self
     }
 
-    /// Shows in place of the row above it while ⌥ is held, as Finder's Always Open With does. Only
-    /// a row without a key equivalent can stand in this way.
+    /// Stands in for the row above while ⌥ is held; only a row without a key equivalent can.
     pub fn option_alternate(mut self) -> Self {
         if let Self::Item { alternate, .. } = &mut self {
             *alternate = true;
@@ -125,8 +121,7 @@ impl MenuEntry {
         self
     }
 
-    /// Nests a real `NSMenu` under this row. Its rows report like any other, by their depth-first
-    /// position in the whole tree.
+    /// A real `NSMenu` under this row; its rows report by depth-first position in the whole tree.
     pub fn submenu(mut self, entries: impl IntoIterator<Item = MenuEntry>) -> Self {
         if let Self::Item { submenu, .. } = &mut self {
             *submenu = entries.into_iter().collect();
@@ -164,8 +159,7 @@ fn item_kind(item: &NSMenuItem) -> Kind {
     }
 }
 
-/// A menu row the caller builds: a plain retained `NSView`, outside GPUI layout and the pool.
-/// `build` runs only when the row is new; `key` is its identity for the in-place diff.
+/// A caller-built `NSView` menu row, outside GPUI layout; `build` runs only for a new `key`.
 #[derive(Clone)]
 pub struct MenuView {
     key: u64,
@@ -177,14 +171,12 @@ struct SwatchIvars {
     count: usize,
     pick: Rc<dyn Fn(Option<usize>)>,
     enabled: bool,
-    /// The height under the dots that belongs to the button; zero without one.
-    band: f64,
+    button_height: f64,
     pressable: bool,
 }
 
 define_class!(
-    /// Finder's tag row: a dot, or the button under the dots, picks; then the menu closes as if the
-    /// row itself was chosen.
+    /// Picking a dot or the button closes the menu as choosing the row would.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSwatchRow"]
@@ -192,8 +184,7 @@ define_class!(
     struct SwatchRow;
 
     impl SwatchRow {
-        /// A press dragged in from the menu title reaches the view under the pointer as a lone
-        /// mouseUp, so the row takes every click itself and tells the parts apart by position.
+        /// A press dragged in from the menu title arrives as a lone mouseUp on the view under it.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
@@ -207,7 +198,7 @@ define_class!(
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
-            if point.y < self.ivars().band {
+            if point.y < self.ivars().button_height {
                 self.press();
                 return;
             }
@@ -255,8 +246,7 @@ struct DotIvars {
 }
 
 define_class!(
-    /// One dot of the tag row as VoiceOver sees it: a radio button named for what picking it does,
-    /// as Finder's are, which a press picks as a click would.
+    /// A dot as VoiceOver sees it: a radio button that a press picks.
     #[unsafe(super(NSAccessibilityElement, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSwatchDot"]
@@ -282,27 +272,20 @@ impl MenuView {
         build: impl Fn(MainThreadMarker) -> Retained<NSView> + 'static,
     ) -> Self {
         let size = NSSize::new(size.width.to_f64(), size.height.to_f64());
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        size.width.to_bits().hash(&mut hasher);
-        size.height.to_bits().hash(&mut hasher);
         Self {
-            key: hasher.finish(),
+            key: hash_of((key, size.width.to_bits(), size.height.to_bits())),
             size,
             build: Rc::new(build),
         }
     }
 
-    /// A strip of round colour swatches at Finder's tag metrics, reporting the dot that was hit.
-    /// Each label is what VoiceOver names its dot, such as Finder's "Add “Red” label".
+    /// Finder's tag swatches, reporting the dot hit; each label is its dot's VoiceOver name.
     pub fn swatches_picking(
         swatches: impl IntoIterator<Item = (Hsla, String)>,
         pick: impl Fn(usize) + 'static,
     ) -> Self {
         let (colors, labels): (Vec<Hsla>, Vec<String>) = swatches.into_iter().unzip();
-        let mut hasher = DefaultHasher::new();
-        colors.hash(&mut hasher);
-        labels.hash(&mut hasher);
+        let key = hash_of((&colors, &labels));
         let width = swatch_row_width(colors.len());
         let pick: Rc<dyn Fn(Option<usize>)> = Rc::new(move |hit| {
             if let Some(index) = hit {
@@ -310,14 +293,13 @@ impl MenuView {
             }
         });
         Self::new(
-            hasher.finish(),
+            key,
             size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
             move |mtm| swatch_row_picking(mtm, &colors, &labels, true, None, pick.clone()),
         )
     }
 
-    /// Finder's File-menu tag row: the swatches, enabled or not, over a `(symbol, title, enabled)`
-    /// button. `pick` gets the dot that was hit, or `None` for the button.
+    /// The swatches over a `(symbol, title, enabled)` button; `pick` gets `None` for the button.
     pub fn swatches_with_button(
         swatches: impl IntoIterator<Item = (Hsla, String)>,
         enabled: bool,
@@ -326,14 +308,13 @@ impl MenuView {
     ) -> Self {
         let (colors, labels): (Vec<Hsla>, Vec<String>) = swatches.into_iter().unzip();
         let (symbol, title, pressable) = (button.0.to_owned(), button.1.to_owned(), button.2);
-        let mut hasher = DefaultHasher::new();
-        (&colors, &labels, enabled, &symbol, &title, pressable).hash(&mut hasher);
+        let key = hash_of((&colors, &labels, enabled, &symbol, &title, pressable));
         let width = swatch_row_width(colors.len())
             .max(BUTTON_TITLE_X + title_width(&title) + SWATCH_INSET)
             .ceil();
         let pick: Rc<dyn Fn(Option<usize>)> = Rc::new(pick);
         Self::new(
-            hasher.finish(),
+            key,
             size(
                 px(width as f32),
                 px((SWATCH_ROW_HEIGHT + BUTTON_ROW_HEIGHT) as f32),
@@ -347,11 +328,10 @@ impl MenuView {
 
     pub fn swatches(colors: impl IntoIterator<Item = Hsla>) -> Self {
         let colors: Vec<Hsla> = colors.into_iter().collect();
-        let mut hasher = DefaultHasher::new();
-        colors.hash(&mut hasher);
+        let key = hash_of(&colors);
         let width = swatch_row_width(colors.len());
         Self::new(
-            hasher.finish(),
+            key,
             size(px(width as f32), px(SWATCH_ROW_HEIGHT as f32)),
             move |mtm| swatch_row(mtm, &colors, true),
         )
@@ -412,24 +392,25 @@ fn swatch_row_picking(
     button: Option<(&str, &str, bool)>,
     pick: Rc<dyn Fn(Option<usize>)>,
 ) -> Retained<NSView> {
-    let band = match button {
-        Some(_) => BUTTON_ROW_HEIGHT,
-        None => 0.,
+    let button_height = if button.is_some() {
+        BUTTON_ROW_HEIGHT
+    } else {
+        0.
     };
     let row = swatch_row(mtm, colors, enabled);
     let host = SwatchRow::alloc(mtm).set_ivars(SwatchIvars {
         count: colors.len(),
         pick,
         enabled,
-        band,
+        button_height,
         pressable: button.is_some_and(|(_, _, pressable)| pressable),
     });
     let mut frame = row.frame();
-    frame.size.height += band;
+    frame.size.height += button_height;
     let host: Retained<SwatchRow> = unsafe { msg_send![super(host), initWithFrame: frame] };
     for view in row.subviews().iter() {
         let mut dot = view.frame();
-        dot.origin.y += band;
+        dot.origin.y += button_height;
         view.setFrame(dot);
         host.addSubview(&view);
     }
@@ -445,7 +426,7 @@ fn swatch_row_picking(
             });
             let dot: Retained<SwatchDot> = unsafe { msg_send![super(dot), init] };
             let mut frame = dot_frame(index);
-            frame.origin.y += band;
+            frame.origin.y += button_height;
             unsafe {
                 dot.setAccessibilityRole(Some(NSAccessibilityRadioButtonRole));
                 dot.setAccessibilityLabel(Some(&NSString::from_str(label)));
@@ -463,7 +444,6 @@ fn swatch_row_picking(
     Retained::into_super(host)
 }
 
-/// The button under the dots, placed as a menu row's image and title are.
 fn button_parts(
     mtm: MainThreadMarker,
     host: &SwatchRow,
@@ -491,7 +471,7 @@ fn button_parts(
     ));
     host.addSubview(&button);
     let mut parts: Vec<Retained<AnyObject>> = vec![unsafe { Retained::cast_unchecked(button) }];
-    if let Some(image) = symbol_image(symbol) {
+    if let Some(image) = symbol_image(symbol, None) {
         let icon = NSImageView::imageViewWithImage(&image, mtm);
         icon.setFrame(NSRect::new(
             NSPoint::new(
@@ -553,21 +533,17 @@ fn entries_from_titles(titles: impl IntoIterator<Item = impl Into<String>>) -> V
     titles.into_iter().map(MenuEntry::item).collect()
 }
 
-fn symbol_image(name: &str) -> Option<Retained<NSImage>> {
-    NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
-}
-
-fn image_key(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<String> {
+fn image_key(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<Cow<'_, str>> {
     match (symbol, dot) {
-        (Some(name), _) => Some(name.to_owned()),
-        (None, Some((r, g, b))) => Some(format!("dot {r} {g} {b}")),
+        (Some(name), _) => Some(Cow::Borrowed(name)),
+        (None, Some((r, g, b))) => Some(Cow::Owned(format!("dot {r} {g} {b}"))),
         (None, None) => None,
     }
 }
 
 fn menu_image(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<Retained<NSImage>> {
     match (symbol, dot) {
-        (Some(name), _) => symbol_image(name),
+        (Some(name), _) => symbol_image(name, None),
         (None, Some(color)) => Some(dot_image(color)),
         (None, None) => None,
     }
@@ -601,14 +577,6 @@ fn dot_image(color: (u8, u8, u8)) -> Retained<NSImage> {
     );
     DOTS.with_borrow_mut(|cache| cache.insert(color, image.clone()));
     image
-}
-
-pub(crate) fn nsstring_is(text: &NSString, want: &str) -> bool {
-    let ptr = text.UTF8String();
-    if ptr.is_null() {
-        return want.is_empty();
-    }
-    unsafe { CStr::from_ptr(ptr) }.to_bytes() == want.as_bytes()
 }
 
 /// Brings `menu` in line with `entries` in place: `removeAllItems` would close an open menu.
@@ -666,12 +634,7 @@ fn sync_level(
             if let MenuEntry::View(view) = entry {
                 sync_view(mtm, &item, view);
                 // A row view fires its item's action itself, so it needs the target a title gets.
-                if let Some((target, selector)) = action {
-                    unsafe {
-                        item.setTarget(Some(target));
-                        item.setAction(Some(selector));
-                    }
-                }
+                set_action(&item, action);
             }
             continue;
         };
@@ -707,7 +670,7 @@ fn sync_level(
             item.setAlternate(*alternate);
         }
 
-        // What the image is, is parked in `representedObject`; an NSImage cannot say which it is.
+        // The image's source is kept in `representedObject`; an NSImage cannot say which it is.
         let current = item
             .representedObject()
             .and_then(|object| object.downcast::<NSString>().ok());
@@ -728,14 +691,18 @@ fn sync_level(
             if item.hasSubmenu() {
                 item.setSubmenu(None);
             }
-            if let Some((target, selector)) = action {
-                unsafe {
-                    item.setTarget(Some(target));
-                    item.setAction(Some(selector));
-                }
-            }
+            set_action(&item, action);
         } else {
             sync_submenu(mtm, &item, submenu, action, next);
+        }
+    }
+}
+
+fn set_action(item: &NSMenuItem, action: Option<(&AnyObject, Sel)>) {
+    if let Some((target, selector)) = action {
+        unsafe {
+            item.setTarget(Some(target));
+            item.setAction(Some(selector));
         }
     }
 }
@@ -884,47 +851,30 @@ impl NativePopup {
     }
 
     fn layout(&self) -> Style {
-        let mut hasher = DefaultHasher::new();
-        self.entries.hash(&mut hasher);
-        self.pull_down.hash(&mut hasher);
-        self.bezel.hash(&mut hasher);
-        self.control_size.hash(&mut hasher);
-        let (entries, pull_down, bezel, control_size) =
-            (&self.entries, self.pull_down, self.bezel, self.control_size);
-        let fitted = fitted(fitting_size_keyed(
-            "NSPopUpButton",
-            hasher.finish(),
-            |mtm| {
-                let probe = NSPopUpButton::initWithFrame_pullsDown(
-                    NSPopUpButton::alloc(mtm),
-                    NSRect::ZERO,
-                    pull_down,
-                );
-                probe.setAutoenablesItems(false);
-                probe.setBezelStyle(bezel.to_native());
-                probe.setControlSize(NSControlSize::from(control_size));
-                if let Some(menu) = probe.menu() {
-                    sync_menu(mtm, &menu, entries, None);
-                }
-                probe.fittingSize()
-            },
-        ));
-        match self.width {
-            Some(width) => Style {
-                size: size(width, fitted.size.height),
-                ..fitted
-            },
-            None => fitted,
-        }
+        let inputs = (&self.entries, self.pull_down, self.bezel, self.control_size);
+        let fitted = measured("NSPopUpButton", inputs, |mtm| {
+            let probe = NSPopUpButton::initWithFrame_pullsDown(
+                NSPopUpButton::alloc(mtm),
+                NSRect::ZERO,
+                self.pull_down,
+            );
+            probe.setAutoenablesItems(false);
+            probe.setBezelStyle(self.bezel.to_native());
+            probe.setControlSize(NSControlSize::from(self.control_size));
+            if let Some(menu) = probe.menu() {
+                sync_menu(mtm, &menu, &self.entries, None);
+            }
+            probe.fittingSize()
+        });
+        with_width(fitted, self.width)
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let pull_down = self.pull_down;
         let popup = slot.place(Layer::Above, |mtm, target| {
             let popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
                 NSRect::ZERO,
-                pull_down,
+                self.pull_down,
             );
             // Left on, validation re-enables every item as the menu opens.
             popup.setAutoenablesItems(false);
@@ -952,8 +902,7 @@ impl NativePopup {
         if selectable && popup.indexOfSelectedItem() != wanted {
             popup.selectItemAtIndex(wanted);
         }
-        // The tick on a pop-up's selected row is that item's `state`, which the diff above just
-        // reset from `checked`.
+        // A pop-up's tick is its selected item's `state`, which the diff just reset from `checked`.
         if selectable && !self.pull_down {
             if let Some(item) = popup.menu().and_then(|menu| menu.itemAtIndex(wanted)) {
                 if item.state() != NSControlStateValueOn {
@@ -965,9 +914,7 @@ impl NativePopup {
         if popup.bezelStyle() != bezel {
             popup.setBezelStyle(bezel);
         }
-        if popup.isEnabled() != self.enabled {
-            popup.setEnabled(self.enabled);
-        }
+        sync_enabled(&popup, self.enabled);
 
         // `integerValue` is the cell state, the same for every row; the selection is this.
         slot.on_event(
@@ -990,12 +937,11 @@ pub enum MenuOrigin {
 }
 
 struct SinkIvars {
-    picked: Rc<Cell<isize>>,
+    picked: Cell<isize>,
 }
 
 define_class!(
-    /// Records which row a transient menu chose. Held in a local for the menu's lifetime, since
-    /// `NSMenuItem::setTarget:` is weak.
+    /// Records the chosen row; the caller keeps it alive, as `setTarget:` is weak.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGMenuSink"]
@@ -1012,8 +958,10 @@ define_class!(
 );
 
 impl MenuSink {
-    fn new(mtm: MainThreadMarker, picked: Rc<Cell<isize>>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SinkIvars { picked });
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SinkIvars {
+            picked: Cell::new(-1),
+        });
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -1022,24 +970,23 @@ thread_local! {
     static SHOWING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Blocks in AppKit's menu tracking loop until the menu closes; the caller must not hold a GPUI
-/// borrow.
+/// Runs AppKit's menu tracking loop until the menu closes; the caller must hold no GPUI borrow.
 fn show_menu(anchor: &Container, location: NSPoint, entries: &[MenuEntry]) -> Option<usize> {
     let mtm = anchor.mtm();
     let menu = NSMenu::new(mtm);
     menu.setAutoenablesItems(false);
-    let picked = Rc::new(Cell::new(-1));
-    let sink = MenuSink::new(mtm, picked.clone());
-    let target: &AnyObject = sink.as_ref();
-    sync_menu(mtm, &menu, entries, Some((target, sel!(ngMenuPick:))));
+    let sink = MenuSink::new(mtm);
+    sync_menu(
+        mtm,
+        &menu,
+        entries,
+        Some((sink.as_ref(), sel!(ngMenuPick:))),
+    );
     menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(anchor));
-    drop(sink);
-    let index = picked.get();
-    (index >= 0).then_some(index as usize)
+    usize::try_from(sink.ivars().picked.get()).ok()
 }
 
-/// A real `NSMenu` on a GPUI-drawn region, shown on right-click or control-click. Only a
-/// `Container` anchor is pooled, to carry the coordinate space.
+/// A real `NSMenu` on a GPUI-drawn region, shown on right-click or control-click.
 pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) -> NativeContextMenu {
     NativeContextMenu {
         id: id.into(),
@@ -1052,7 +999,8 @@ pub fn native_context_menu(id: impl Into<ElementId>, child: impl IntoElement) ->
         on_click: false,
     }
 }
-type SelectHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+type SelectHandler = Rc<dyn Fn(&usize, &mut Window, &mut App)>;
 
 type EntryBuilder = Rc<dyn Fn(Point<Pixels>, &mut Window, &mut App) -> Vec<MenuEntry>>;
 
@@ -1106,9 +1054,7 @@ impl NativeContextMenu {
 
     /// The chosen row's depth-first index into the entries, separators and submenu rows counted.
     pub fn on_select(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
-        self.on_select = Some(Rc::new(move |index, window, cx| {
-            handler(&index, window, cx)
-        }));
+        self.on_select = Some(Rc::new(handler));
         self
     }
 }
@@ -1165,63 +1111,61 @@ impl Element for NativeContextMenu {
         });
         host.on_change(key, ValueKind::None, None);
 
-        if let Some(handler) = self.on_select.take() {
+        let handler = self
+            .on_select
+            .take()
+            .filter(|_| !self.entries.is_empty() || self.build.is_some());
+        if let Some(handler) = handler {
             let build = self.build.take();
             let closed = self.on_close.take();
-            if !self.entries.is_empty() || build.is_some() {
-                let entries = std::mem::take(&mut self.entries);
-                let origin = self.origin;
-                let on_click = self.on_click;
-                let async_cx = window.to_async(cx);
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Bubble {
-                        return;
-                    }
-                    let contextual = event.button == MouseButton::Right
-                        || (event.button == MouseButton::Left
-                            && (on_click || event.modifiers.control));
-                    if !contextual
-                        || SHOWING.get()
-                        || !bounds.contains(&event.position)
-                        || !mask.contains(&event.position)
-                    {
-                        return;
-                    }
-                    let location = match origin {
-                        MenuOrigin::Pointer => NSPoint::new(
-                            (event.position.x - bounds.origin.x).to_f64(),
-                            (event.position.y - bounds.origin.y).to_f64(),
-                        ),
-                        MenuOrigin::ElementTopLeft => NSPoint::new(0., 0.),
-                    };
-                    let entries = match &build {
-                        Some(build) => build(event.position - bounds.origin, window, cx),
-                        None => entries.clone(),
-                    };
-                    if entries.is_empty() {
-                        return;
-                    }
-                    let anchor = anchor.clone();
-                    let handler = handler.clone();
-                    let closed = closed.clone();
-                    SHOWING.set(true);
-                    // Deferred: the tracking loop services GPUI's display link, and entering it
-                    // under GPUI's `App` borrow panics on the next frame.
-                    async_cx
-                        .spawn(async move |cx| {
-                            let picked = show_menu(&anchor, location, &entries);
-                            SHOWING.set(false);
-                            if let Some(closed) = closed {
-                                let _ = cx.update(|window, app| closed(window, app));
-                            }
-                            let Some(index) = picked else {
-                                return;
-                            };
-                            let _ = cx.update(|window, app| handler(index, window, app));
-                        })
-                        .detach();
-                });
-            }
+            let entries = std::mem::take(&mut self.entries);
+            let (origin, on_click) = (self.origin, self.on_click);
+            let async_cx = window.to_async(cx);
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let contextual = event.button == MouseButton::Right
+                    || (event.button == MouseButton::Left && (on_click || event.modifiers.control));
+                if !contextual
+                    || SHOWING.get()
+                    || !bounds.contains(&event.position)
+                    || !mask.contains(&event.position)
+                {
+                    return;
+                }
+                let location = match origin {
+                    MenuOrigin::Pointer => NSPoint::new(
+                        (event.position.x - bounds.origin.x).to_f64(),
+                        (event.position.y - bounds.origin.y).to_f64(),
+                    ),
+                    MenuOrigin::ElementTopLeft => NSPoint::new(0., 0.),
+                };
+                let entries = match &build {
+                    Some(build) => build(event.position - bounds.origin, window, cx),
+                    None => entries.clone(),
+                };
+                if entries.is_empty() {
+                    return;
+                }
+                let anchor = anchor.clone();
+                let handler = handler.clone();
+                let closed = closed.clone();
+                SHOWING.set(true);
+                // Deferred: entering the tracking loop under GPUI's `App` borrow panics next frame.
+                async_cx
+                    .spawn(async move |cx| {
+                        let picked = show_menu(&anchor, location, &entries);
+                        SHOWING.set(false);
+                        if let Some(closed) = closed {
+                            let _ = cx.update(|window, app| closed(window, app));
+                        }
+                        if let Some(index) = picked {
+                            let _ = cx.update(|window, app| handler(&index, window, app));
+                        }
+                    })
+                    .detach();
+            });
         }
 
         self.child.paint(window, cx);
@@ -1240,12 +1184,6 @@ impl IntoElement for NativeContextMenu {
 mod tests {
     use super::*;
     use gpui::hsla;
-
-    fn entry_hash(entry: &MenuEntry) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        entry.hash(&mut hasher);
-        hasher.finish()
-    }
 
     #[test]
     fn swatch_row_is_wide_enough_for_every_dot_and_both_insets() {
@@ -1306,7 +1244,7 @@ mod tests {
         let one = MenuEntry::item("Sort By").submenu([MenuEntry::item("Name")]);
         let other = MenuEntry::item("Sort By").submenu([MenuEntry::item("Kind")]);
         assert_ne!(one, other);
-        assert_ne!(entry_hash(&one), entry_hash(&other));
+        assert_ne!(hash_of(&one), hash_of(&other));
         assert_ne!(one, MenuEntry::item("Sort By"));
     }
 
@@ -1314,7 +1252,7 @@ mod tests {
     fn checked_and_key_reach_the_entry_identity() {
         let plain = MenuEntry::item("Use Groups");
         assert_ne!(plain, plain.clone().checked(true));
-        assert_ne!(entry_hash(&plain), entry_hash(&plain.clone().checked(true)));
+        assert_ne!(hash_of(&plain), hash_of(&plain.clone().checked(true)));
         let chord = plain.clone().key("j", Modifiers::command());
         assert_ne!(plain, chord);
         assert_ne!(chord, plain.clone().key("j", Modifiers::command_shift()));
