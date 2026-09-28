@@ -184,8 +184,16 @@ impl Menu {
     }
 
     fn submenu(&mut self, title: &str, rows: Vec<(MenuEntry, Act)>) {
+        self.nest(MenuEntry::item(title), rows);
+    }
+
+    fn alternate_submenu(&mut self, title: &str, rows: Vec<(MenuEntry, Act)>) {
+        self.nest(MenuEntry::item(title).option_alternate(), rows);
+    }
+
+    fn nest(&mut self, row: MenuEntry, rows: Vec<(MenuEntry, Act)>) {
         let (entries, acts): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
-        self.entries.push(MenuEntry::item(title).submenu(entries));
+        self.entries.push(row.submenu(entries));
         self.acts.push(Act::Nothing);
         self.acts.extend(acts);
     }

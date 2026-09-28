@@ -36,13 +36,13 @@ pub(crate) enum Act {
     MakeAlias,
     QuickLook,
     OpenWith(&'static str),
+    AlwaysOpenWith(&'static str),
     Compress,
     Share,
     Tags,
     Copy,
     Cut,
     Paste,
-    NewFile,
     OpenTerminal(&'static str),
     OpenTab(&'static str),
     OpenWindowAt(&'static str),
@@ -82,6 +82,17 @@ fn open_terminal(path: &str) {
         .args(["-a", &app])
         .arg(path)
         .spawn();
+}
+
+pub(crate) fn trash_items() -> Vec<PathBuf> {
+    let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
+        return Vec::new();
+    };
+    finder_fs::list::list_dir(&trash)
+        .unwrap_or_default()
+        .iter()
+        .map(|entry| entry.path_in(&trash))
+        .collect()
 }
 
 impl FinderDemo {
@@ -129,10 +140,13 @@ impl FinderDemo {
             Act::Tags => self.edit_tags(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
+            Act::AlwaysOpenWith(app) => {
+                crate::openwith::set_default(&self.paths(), Path::new(app));
+                crate::openwith::open_with(&self.paths(), Path::new(app));
+            }
             Act::Copy => self.copy_selection(cx),
             Act::Cut => self.cut_selection(cx),
             Act::Paste => self.paste(false, cx),
-            Act::NewFile => self.new_file(cx),
             Act::OpenTerminal(path) => open_terminal(path),
             Act::OpenTab(id) => self.open_tab(id, window, cx),
             Act::OpenWindowAt(id) => {
@@ -173,14 +187,6 @@ impl FinderDemo {
             return;
         }
         self.make_folder("New Folder With Items", chosen, cx);
-    }
-
-    pub(crate) fn new_file(&mut self, cx: &mut Context<Self>) {
-        let op = Op::NewFile {
-            into: PathBuf::from(self.target()),
-            name: "untitled.txt".to_owned(),
-        };
-        self.run_op(op, After::Rename, cx);
     }
 
     fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -287,14 +293,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
-        let Some(trash) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash) else {
-            return;
-        };
-        let items: Vec<PathBuf> = finder_fs::list::list_dir(&trash)
-            .unwrap_or_default()
-            .iter()
-            .map(|entry| entry.path_in(&trash))
-            .collect();
+        let items = trash_items();
         if items.is_empty() {
             return;
         }

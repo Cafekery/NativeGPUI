@@ -4,6 +4,7 @@ mod chrome;
 mod clipboard_window;
 mod custom;
 mod data;
+mod dock;
 mod dragdrop;
 mod elastic;
 mod fit;

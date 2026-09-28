@@ -60,7 +60,9 @@ impl Render for FinderDemo {
         if self.toolbar_for != Some(self.toolbar_state()) {
             self.install_toolbar(window, cx);
         }
-        menus::remember(self);
+        if window.is_window_active() {
+            menus::remember(self);
+        }
         let title = self.title();
         if self.titled != title {
             window.set_window_title(&title);
