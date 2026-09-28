@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -94,16 +94,11 @@ struct Dispatch {
 impl ValueKind {
     pub fn reader(self) -> NativeRead {
         thread_local! {
-            static CACHE: RefCell<Vec<Option<NativeRead>>> = const { RefCell::new(Vec::new()) };
+            static CACHE: [OnceCell<NativeRead>; 5] = Default::default();
         }
-        let index = self as usize;
         CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() <= index {
-                cache.resize(index + 1, None);
-            }
-            cache[index]
-                .get_or_insert_with(|| -> NativeRead { Rc::new(move |sender| self.read(sender)) })
+            cache[self as usize]
+                .get_or_init(|| Rc::new(move |sender| self.read(sender)))
                 .clone()
         })
     }
@@ -153,13 +148,7 @@ define_class!(
                 return;
             };
             let value = read(unsafe { &*sender });
-            // Deferred: an action can fire while GPUI already holds its `App` borrow.
-            ivars
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| dispatch(value, window, app));
-                })
-                .detach();
+            defer(&ivars.cx, move |window, app| dispatch(value, window, app));
         }
     }
 );
@@ -173,6 +162,14 @@ impl Target {
         let this = Self::alloc(mtm).set_ivars(TargetIvars { dispatch, cx });
         unsafe { msg_send![super(this), init] }
     }
+}
+
+/// Deferred a turn: AppKit can call back while gpui already holds its `App` borrow.
+pub(crate) fn defer(cx: &AsyncWindowContext, run: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.spawn(async move |cx| {
+        let _ = cx.update(run);
+    })
+    .detach();
 }
 
 pub fn wire(control: &NSControl, target: &Target, key: u64) {
@@ -265,6 +262,15 @@ struct HostState {
     created: Vec<u64>,
     kept: HashMap<EntityId, (Vec<u64>, u64)>,
     generation: u64,
+}
+
+impl HostState {
+    fn layer_view(&self, layer: Layer) -> &NSView {
+        match layer {
+            Layer::Above => &self.above,
+            Layer::Below => &self.below,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -371,11 +377,7 @@ impl NativeHost {
 
     pub fn stacking(&self, layer: Layer) -> Vec<u64> {
         let state = self.0.borrow();
-        let container: &NSView = match layer {
-            Layer::Above => &state.above,
-            Layer::Below => &state.below,
-        };
-        let subviews = container.subviews();
+        let subviews = state.layer_view(layer).subviews();
         (0..subviews.count())
             .filter_map(|index| {
                 let subview = Retained::as_ptr(&subviews.objectAtIndex(index));
@@ -457,21 +459,13 @@ impl NativeHost {
             state.slots.remove(&key).unwrap().clip.removeFromSuperview();
         }
         if !state.slots.contains_key(&key) {
-            state.created.push(key);
-        }
-
-        let slot = state.slots.entry(key).or_insert_with(|| {
             let clip = Container::new(state.mtm, clip_frame, true);
             let view = new(state.mtm, &state.target);
             clip.addSubview(view.as_ref());
-            match parent {
-                Some(parent) => parent.addSubview(&clip),
-                None => match layer {
-                    Layer::Above => state.above.addSubview(&clip),
-                    Layer::Below => state.below.addSubview(&clip),
-                },
-            }
-            Pooled {
+            parent
+                .unwrap_or_else(|| state.layer_view(layer))
+                .addSubview(&clip);
+            let pooled = Pooled {
                 clip,
                 view: view.as_ref().retain(),
                 typed: Box::new(view),
@@ -481,8 +475,11 @@ impl NativeHost {
                 view_frame: NSRect::ZERO,
                 hidden: false,
                 generation: 0,
-            }
-        });
+            };
+            state.slots.insert(key, pooled);
+            state.created.push(key);
+        }
+        let slot = state.slots.get_mut(&key).expect("inserted above");
 
         // Diffed against the last write, not read back: `NSSlider` rounds its frame origin.
         if !rects_equal(slot.clip_frame, clip_frame) {
@@ -537,13 +534,11 @@ impl NativeHost {
         read: NativeRead,
         handler: Option<NativeDispatch>,
     ) {
-        let table = &self.0.borrow().dispatch.table;
+        let state = self.0.borrow();
+        let mut table = state.dispatch.table.borrow_mut();
         match handler {
-            None => {
-                table.borrow_mut().remove(&tag);
-            }
             Some(handler) => {
-                table.borrow_mut().insert(
+                table.insert(
                     tag,
                     Entry {
                         owner,
@@ -551,6 +546,9 @@ impl NativeHost {
                         handler,
                     },
                 );
+            }
+            None => {
+                table.remove(&tag);
             }
         }
     }
@@ -621,13 +619,9 @@ fn restack(state: &HostState, created: &[u64]) {
     let new = |key: &u64| created.contains(key);
     let container = |key: &u64| -> &NSView {
         let slot = &state.slots[key];
-        match &slot.parent {
-            Some(parent) => parent,
-            None => match slot.layer {
-                Layer::Above => &state.above,
-                Layer::Below => &state.below,
-            },
-        }
+        slot.parent
+            .as_deref()
+            .unwrap_or_else(|| state.layer_view(slot.layer))
     };
     let order = &state.order;
     let survivors = state

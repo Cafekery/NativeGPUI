@@ -74,9 +74,10 @@ static DARK: AtomicBool = AtomicBool::new(false);
 /// Off the main thread, the appearance the main thread last resolved.
 pub fn current_appearance() -> Appearance {
     let Some(mtm) = MainThreadMarker::new() else {
-        return match DARK.load(Ordering::Relaxed) {
-            true => Appearance::Dark,
-            false => Appearance::Light,
+        return if DARK.load(Ordering::Relaxed) {
+            Appearance::Dark
+        } else {
+            Appearance::Light
         };
     };
     let effective = NSApplication::sharedApplication(mtm).effectiveAppearance();
@@ -403,9 +404,8 @@ fn bump(cx: &AsyncApp) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
     APPEARANCE_MEMO.with(|memo| memo.set((ptr::null(), Appearance::Light)));
     // Deferred: a gpui-sourced appearance change arrives while gpui still holds its `App` borrow.
-    let cx2 = cx.clone();
-    cx.spawn(async move |_| {
-        cx2.update(|app| app.set_global(snapshot()));
+    cx.spawn(async move |cx| {
+        cx.update(|app| app.set_global(snapshot()));
     })
     .detach();
 }
@@ -486,11 +486,7 @@ pub fn text_font_family(cx: &App) -> Option<&'static str> {
         return family;
     }
     let text_system = cx.text_system();
-    let resolve = |family: &str| {
-        let mut font = system_font(FontWeight::NORMAL);
-        font.family = family.to_string().into();
-        text_system.resolve_font(&font)
-    };
+    let resolve = |family: &str| text_system.resolve_font(&font_named(family, FontWeight::NORMAL));
     // gpui resolves an unknown family to a silent fallback, so two nonexistent names pin its id.
     let fallback = resolve("NG-No-Such-Family-9x7");
     let family = (fallback == resolve("NG-Also-Not-Installed-4b2")
@@ -523,6 +519,13 @@ pub fn system_font(weight: FontWeight) -> Font {
         fallbacks: None,
         weight,
         style: FontStyle::Normal,
+    }
+}
+
+fn font_named(family: &str, weight: FontWeight) -> Font {
+    Font {
+        family: family.to_string().into(),
+        ..system_font(weight)
     }
 }
 
@@ -636,9 +639,7 @@ pub fn gpui_advance(
     ch: char,
 ) -> Option<f32> {
     let text_system = cx.text_system();
-    let mut font = system_font(weight);
-    font.family = family.to_string().into();
-    let id = text_system.resolve_font(&font);
+    let id = text_system.resolve_font(&font_named(family, weight));
     Some(f32::from(text_system.advance(id, size, ch).ok()?.width))
 }
 
@@ -671,11 +672,9 @@ impl SymbolColor {
                 Some(NSImageSymbolConfiguration::configurationWithHierarchicalColor(&c.ns_color()))
             }
             SymbolColor::Palette(colors) => {
-                let retained: Vec<Retained<NSColor>> =
-                    colors.iter().map(|c| c.ns_color()).collect();
-                let refs: Vec<&NSColor> = retained.iter().map(|c| &**c).collect();
+                let colors: Vec<_> = colors.iter().map(|c| c.ns_color()).collect();
                 Some(NSImageSymbolConfiguration::configurationWithPaletteColors(
-                    &NSArray::from_slice(&refs),
+                    &NSArray::from_retained_slice(&colors),
                 ))
             }
             SymbolColor::Multicolor => {
@@ -910,23 +909,17 @@ fn rasterize_file_icon(
     appearance: Appearance,
 ) -> Option<Symbol> {
     let workspace = NSWorkspace::sharedWorkspace();
-    let image: Option<Retained<NSImage>> = match kind {
+    let icon_for = |content: Retained<AnyObject>| -> Option<Retained<NSImage>> {
+        unsafe { msg_send![&*workspace, iconForContentType: &*content] }
+    };
+    let image = match kind {
         FileType::Path(path) | FileType::FullPath(path) => {
             let path = NSString::from_str(path);
             unsafe { msg_send![&*workspace, iconForFile: &*path] }
         }
-        FileType::Folder | FileType::FullFolder => {
-            let content = ut_type(false, "public.folder")?;
-            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
-        }
-        FileType::Uti(uti) => {
-            let content = ut_type(false, uti)?;
-            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
-        }
-        FileType::Extension(extension) => {
-            let content = ut_type(true, extension)?;
-            unsafe { msg_send![&*workspace, iconForContentType: &*content] }
-        }
+        FileType::Folder | FileType::FullFolder => icon_for(ut_type(false, "public.folder")?),
+        FileType::Uti(uti) => icon_for(ut_type(false, uti)?),
+        FileType::Extension(extension) => icon_for(ut_type(true, extension)?),
         FileType::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
     };
     let image = image?;
@@ -987,7 +980,7 @@ pub(crate) fn rasterize(
     h: usize,
 ) -> Option<Arc<RenderImage>> {
     let rgba = draw(images, points, w, h)?;
-    let buffer = RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(&rgba))?;
+    let buffer = RgbaImage::from_raw(w as u32, h as u32, to_bgra_straight(rgba))?;
     Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
 }
 
@@ -1052,9 +1045,8 @@ pub(crate) fn draw(
     Some(out)
 }
 
-fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
-    let mut out = rgba.to_vec();
-    for px in out.chunks_exact_mut(4) {
+fn to_bgra_straight(mut pixels: Vec<u8>) -> Vec<u8> {
+    for px in pixels.chunks_exact_mut(4) {
         px.swap(0, 2);
         let a = px[3] as u32;
         if a > 0 && a < 255 {
@@ -1063,7 +1055,7 @@ fn to_bgra_straight(rgba: &[u8]) -> Vec<u8> {
             }
         }
     }
-    out
+    pixels
 }
 
 #[cfg(test)]
@@ -1245,23 +1237,16 @@ mod tests {
             file_icon(FileType::Extension(ext), px(16.)).expect("declared extension");
         }
         let before = cache_stats().file_icon_rasters;
-        let start = std::time::Instant::now();
         for i in 0..20_000usize {
             file_icon(
                 FileType::Extension(EXTENSIONS[i % EXTENSIONS.len()]),
                 px(16.),
             );
         }
-        let elapsed = start.elapsed();
         assert_eq!(
             cache_stats().file_icon_rasters,
             before,
             "warmed-up extensions must never raster again"
-        );
-        eprintln!(
-            "20000 file_icon(Extension, 16pt) lookups after warm-up: {:?} total, {:?} each",
-            elapsed,
-            elapsed / 20_000
         );
     }
 

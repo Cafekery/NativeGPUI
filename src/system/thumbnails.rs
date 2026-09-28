@@ -31,8 +31,7 @@ struct Key {
 }
 
 impl Key {
-    /// The caller brings `modified`: a `stat` here would run on the UI thread and hang it on a
-    /// volume that stopped answering.
+    /// `modified` comes from the caller: a `stat` here could hang the UI thread on a dead volume.
     fn new(
         path: &Path,
         modified: Option<SystemTime>,
@@ -87,12 +86,12 @@ pub(crate) fn cached_image(path: &Path) -> Option<Retained<NSImage>> {
     }
     let stride = rep.bytesPerRow() as usize;
     for y in 0..h {
-        for x in 0..w {
-            let from = &src[(y * w + x) * 4..];
-            let to = unsafe { dst.add(y * stride + x * 4) };
-            for (at, channel) in [from[2], from[1], from[0], from[3]].into_iter().enumerate() {
-                unsafe { *to.add(at) = channel };
-            }
+        let row = unsafe { std::slice::from_raw_parts_mut(dst.add(y * stride), w * 4) };
+        for (to, from) in row
+            .chunks_exact_mut(4)
+            .zip(src[y * w * 4..].chunks_exact(4))
+        {
+            to.copy_from_slice(&[from[2], from[1], from[0], from[3]]);
         }
     }
     let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(w as f64, h as f64));
@@ -111,9 +110,8 @@ fn largest_cached(path: &Path) -> Option<Arc<RenderImage>> {
         .map(|(_, image)| image)
 }
 
-/// `icon` is Finder's icon rendering; a cache hit calls `done` at once, on this thread. Past
-/// eight in flight the newest request goes first, so a scrolled list gets the rows it landed on.
-/// A file Quick Look cannot preview gets `None`: its stand-in icon is not the one Finder shows.
+/// `icon` is Finder's icon rendering. A hit calls `done` at once on this thread; past eight in
+/// flight the newest goes first; a file Quick Look can't preview gets `None`, not a stand-in.
 pub fn thumbnail(
     path: &Path,
     modified: Option<SystemTime>,
@@ -146,22 +144,18 @@ pub fn thumbnail(
 
 pub fn cancel_thumbnails_outside(paths: &[PathBuf]) {
     let keep: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
-    let stranded: Vec<Callback> = {
+    let mut stranded = Vec::new();
+    {
         let mut state = STATE.lock().unwrap();
-        let mut stale = Vec::new();
-        state.queue.retain(|key| {
-            if keep.contains(key.path.as_path()) {
-                true
-            } else {
-                stale.push(key.clone());
-                false
+        let State { queue, waiters, .. } = &mut *state;
+        queue.retain(|key| {
+            let kept = keep.contains(key.path.as_path());
+            if !kept {
+                stranded.extend(waiters.remove(key).into_iter().flatten());
             }
+            kept
         });
-        stale
-            .into_iter()
-            .flat_map(|key| state.waiters.remove(&key).into_iter().flatten())
-            .collect()
-    };
+    }
     for callback in stranded {
         callback(None);
     }
