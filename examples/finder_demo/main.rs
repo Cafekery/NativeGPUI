@@ -12,6 +12,7 @@ mod icons;
 mod info;
 mod input;
 mod listing;
+mod locations;
 mod menus;
 mod meta;
 mod navigate;
