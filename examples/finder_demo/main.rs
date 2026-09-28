@@ -22,6 +22,7 @@ mod palette;
 mod prefs;
 mod preview;
 mod progress_window;
+mod quick_actions;
 mod quicklook;
 mod read;
 mod search;
