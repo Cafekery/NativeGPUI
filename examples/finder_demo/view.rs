@@ -7,7 +7,7 @@ use crate::app::FinderDemo;
 use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
-use crate::views::header::PANE_INSET;
+use crate::views::header::{LAST_EXTRA, PANE_INSET};
 use crate::views::icon::{Arrangement, cell};
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
 
@@ -150,7 +150,12 @@ impl FinderDemo {
     }
 
     pub(crate) fn list_content_w(&self) -> f32 {
-        self.name_w + self.list_columns.iter().map(|spec| spec.width).sum::<f32>() + PANE_INSET
+        let columns: f32 = self.list_columns.iter().map(|spec| spec.width).sum();
+        let extra = match self.list_columns.is_empty() {
+            true => 0.,
+            false => LAST_EXTRA,
+        };
+        self.name_w + columns + extra + PANE_INSET
     }
 
     /// The columns overflow the list, which then scrolls sideways: rounded to hundredths as GPUI
