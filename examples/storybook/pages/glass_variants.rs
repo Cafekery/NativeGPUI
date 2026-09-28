@@ -1,27 +1,17 @@
 use crate::Demo;
+use crate::pages::glass::{specimen, stripes};
 use crate::ui::*;
-use gpui::{AnyElement, Context, Window};
-
-#[cfg(feature = "private-api")]
-use crate::pages::glass::stripes;
-#[cfg(feature = "private-api")]
-use gpui::{div, prelude::*, px};
-#[cfg(feature = "private-api")]
+use gpui::{AnyElement, Context, SharedString, Window, div, prelude::*, px};
 use native_gpui::{
-    GlassInteractionState, GlassSubvariant, GlassVariant, glass, native_popup, native_segmented,
-    native_switch,
+    Glass, GlassInteractionState, GlassSubvariant, GlassVariant, glass, native_popup,
+    native_segmented, native_switch,
 };
 
-#[cfg(feature = "private-api")]
-const TILE_W: f32 = 130.;
-#[cfg(feature = "private-api")]
-const TILE_H: f32 = 90.;
+const TILE: (f32, f32) = (130., 90.);
 
-#[cfg(feature = "private-api")]
 #[derive(Default)]
 pub struct State {
     pub variant: usize,
-    /// Index into the *accepted* subvariants of the current variant, not [`GlassSubvariant::ALL`].
     pub subvariant: usize,
     pub interaction: usize,
     pub subdued: bool,
@@ -29,28 +19,23 @@ pub struct State {
     pub lensing: bool,
 }
 
-#[cfg(not(feature = "private-api"))]
-#[derive(Default)]
-pub struct State;
-
-#[cfg(not(feature = "private-api"))]
-pub fn render(_d: &mut Demo, _window: &mut Window, _cx: &mut Context<Demo>) -> AnyElement {
-    stack(vec![note("Run with --features private-api")])
-}
-
-#[cfg(feature = "private-api")]
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let variant = GlassVariant::ALL[d.glass_variants.variant.min(GlassVariant::ALL.len() - 1)];
+    let State {
+        variant,
+        subvariant,
+        interaction,
+        subdued,
+        scrim,
+        lensing,
+    } = d.glass_variants;
+    let variant_index = variant.min(GlassVariant::ALL.len() - 1);
+    let variant = GlassVariant::ALL[variant_index];
     let accepted = variant.subvariants();
-    let chosen = d.glass_variants.subvariant.min(accepted.len() - 1);
+    let chosen = subvariant.min(accepted.len() - 1);
     let subvariant = accepted[chosen];
     let states = GlassInteractionState::ALL;
-    let interaction = states[d.glass_variants.interaction.min(states.len() - 1)];
-    let (subdued, scrim, lensing) = (
-        d.glass_variants.subdued,
-        d.glass_variants.scrim,
-        d.glass_variants.lensing,
-    );
+    let interaction_index = interaction.min(states.len() - 1);
+    let interaction = states[interaction_index];
 
     stack(vec![
         note(
@@ -62,8 +47,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "live panel",
             vec![
                 stripes(
-                    2. * TILE_W,
-                    2. * TILE_H,
+                    2. * TILE.0,
+                    2. * TILE.1,
                     glass("live")
                         .variant(variant)
                         .subvariant(subvariant)
@@ -77,17 +62,13 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 knob(
                     "variant",
                     format!("raw {}", variant.raw()),
-                    native_popup(
-                        "variant",
-                        d.glass_variants.variant.min(GlassVariant::ALL.len() - 1),
-                    )
-                    .items(GlassVariant::ALL.iter().map(|v| v.title()))
-                    .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                        d.glass_variants.variant = *value;
-                        d.glass_variants.subvariant = 0;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                    native_popup("variant", variant_index)
+                        .items(GlassVariant::ALL.iter().map(|v| v.title()))
+                        .on_change(set(cx, |d, value| {
+                            d.glass_variants.variant = value;
+                            d.glass_variants.subvariant = 0;
+                        }))
+                        .into_any_element(),
                 ),
                 knob(
                     "subvariant",
@@ -95,54 +76,36 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_popup("subvariant", chosen)
                         .items(accepted.iter().map(|s| s.title()))
                         .enabled(accepted.len() > 1)
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.glass_variants.subvariant = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass_variants.subvariant = value))
                         .into_any_element(),
                 ),
                 knob(
                     "interaction_state",
                     interaction.title(),
-                    native_segmented(
-                        "interaction",
-                        d.glass_variants.interaction.min(states.len() - 1),
-                    )
-                    .segments(states.iter().map(|s| s.title()))
-                    .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                        d.glass_variants.interaction = *value;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                    native_segmented("interaction", interaction_index)
+                        .segments(states.iter().map(|s| s.title()))
+                        .on_change(set(cx, |d, value| d.glass_variants.interaction = value))
+                        .into_any_element(),
                 ),
                 knob(
                     "subdued",
                     subdued.to_string(),
                     native_switch("subdued", subdued)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.glass_variants.subdued = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass_variants.subdued = value))
                         .into_any_element(),
                 ),
                 knob(
                     "scrim",
                     scrim.to_string(),
                     native_switch("scrim", scrim)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.glass_variants.scrim = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass_variants.scrim = value))
                         .into_any_element(),
                 ),
                 knob(
                     "content_lensing",
                     lensing.to_string(),
                     native_switch("lensing", lensing)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.glass_variants.lensing = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.glass_variants.lensing = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -156,28 +119,15 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             vec![
                 grid(
                     [
-                        tile(
-                            "no panel — the control",
-                            TILE_W,
-                            stripes(TILE_W, TILE_H, div().into_any_element()),
-                        ),
-                        tile(
-                            "public regular",
-                            TILE_W,
-                            specimen(("public", 0), None, false),
-                        ),
-                        tile(
-                            "public clear(true)",
-                            TILE_W,
-                            specimen(("public", 1), None, true),
-                        ),
+                        specimen("no panel — the control", TILE, div()),
+                        panel("public regular", glass(("public", 0u32))),
+                        panel("public clear(true)", glass(("public", 1u32)).clear(true)),
                     ]
                     .into_iter()
                     .chain(GlassVariant::ALL.iter().map(|&variant| {
-                        tile(
+                        panel(
                             variant_label(variant),
-                            TILE_W,
-                            specimen(("variant", variant.raw() as u32), Some(variant), false),
+                            glass(("variant", variant.raw() as u32)).variant(variant),
                         )
                     }))
                     .collect(),
@@ -202,18 +152,11 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         .iter()
                         .enumerate()
                         .map(|(i, &subvariant)| {
-                            tile(
+                            panel(
                                 subvariant.title(),
-                                TILE_W,
-                                stripes(
-                                    TILE_W,
-                                    TILE_H,
-                                    glass(("subvariant", i as u32))
-                                        .variant(variant)
-                                        .subvariant(subvariant)
-                                        .corner_radius(px(18.))
-                                        .into_any_element(),
-                                ),
+                                glass(("subvariant", i as u32))
+                                    .variant(variant)
+                                    .subvariant(subvariant),
                             )
                         })
                         .collect(),
@@ -235,17 +178,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     states
                         .iter()
                         .map(|&state| {
-                            tile(
+                            panel(
                                 state.title(),
-                                TILE_W,
-                                stripes(
-                                    TILE_W,
-                                    TILE_H,
-                                    glass(("interaction", state.raw() as u32))
-                                        .interaction_state(state)
-                                        .corner_radius(px(18.))
-                                        .into_any_element(),
-                                ),
+                                glass(("interaction", state.raw() as u32)).interaction_state(state),
                             )
                         })
                         .collect(),
@@ -262,41 +197,11 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "the three flags",
             vec![
                 grid(vec![
-                    tile(
-                        "subdued(true)",
-                        TILE_W,
-                        stripes(
-                            TILE_W,
-                            TILE_H,
-                            glass("flag-subdued")
-                                .subdued(true)
-                                .corner_radius(px(18.))
-                                .into_any_element(),
-                        ),
-                    ),
-                    tile(
-                        "scrim(true)",
-                        TILE_W,
-                        stripes(
-                            TILE_W,
-                            TILE_H,
-                            glass("flag-scrim")
-                                .scrim(true)
-                                .corner_radius(px(18.))
-                                .into_any_element(),
-                        ),
-                    ),
-                    tile(
+                    panel("subdued(true)", glass("flag-subdued").subdued(true)),
+                    panel("scrim(true)", glass("flag-scrim").scrim(true)),
+                    panel(
                         "content_lensing(true)",
-                        TILE_W,
-                        stripes(
-                            TILE_W,
-                            TILE_H,
-                            glass("flag-lensing")
-                                .content_lensing(true)
-                                .corner_radius(px(18.))
-                                .into_any_element(),
-                        ),
+                        glass("flag-lensing").content_lensing(true),
                     ),
                 ]),
                 caption(
@@ -333,7 +238,6 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
-#[cfg(feature = "private-api")]
 fn variant_label(variant: GlassVariant) -> String {
     match variant {
         GlassVariant::Keyboard => "Keyboard — draws nothing".into(),
@@ -342,7 +246,6 @@ fn variant_label(variant: GlassVariant) -> String {
     }
 }
 
-#[cfg(feature = "private-api")]
 fn named(subvariants: &[GlassSubvariant]) -> usize {
     subvariants
         .iter()
@@ -350,15 +253,6 @@ fn named(subvariants: &[GlassSubvariant]) -> usize {
         .count()
 }
 
-#[cfg(feature = "private-api")]
-fn specimen(id: (&'static str, u32), variant: Option<GlassVariant>, clear: bool) -> AnyElement {
-    let panel = glass(id).clear(clear).corner_radius(px(18.));
-    stripes(
-        TILE_W,
-        TILE_H,
-        match variant {
-            Some(variant) => panel.variant(variant).into_any_element(),
-            None => panel.into_any_element(),
-        },
-    )
+fn panel(label: impl Into<SharedString>, panel: Glass) -> AnyElement {
+    specimen(label, TILE, panel.corner_radius(px(18.)))
 }

@@ -1,6 +1,8 @@
 use crate::ui::*;
 use crate::{Demo, popout};
-use gpui::{AnyElement, Context, Render, SharedString, Window, WindowHandle, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, Render, SharedString, Window, WindowHandle, div, prelude::*, px,
+};
 use native_gpui::sidebar::{
     NativeSidebar, PaneAlign, SidebarItem, SidebarMove, SidebarOptions, SidebarProbe,
     SidebarRowSize, sidebar_group, sidebar_item,
@@ -84,9 +86,8 @@ impl State {
             reorderable: self.reorderable,
             row_size: ROW_SIZES[self.row_size].1,
             align: ALIGNS[self.align].1,
-            adopt_below_layer: SidebarOptions::default().adopt_below_layer,
-            content_min_thickness: SidebarOptions::default().content_min_thickness,
             backdrop: BACKDROPS[self.backdrop].1,
+            ..SidebarOptions::default()
         }
     }
 }
@@ -211,8 +212,10 @@ impl SidebarWindow {
     }
 
     fn header_height(&self) -> Option<f64> {
-        let sidebar = self.sidebar.as_ref()?;
-        sidebar.row_layout(0).map(|l| l.row.size.height)
+        self.sidebar
+            .as_ref()?
+            .row_layout(0)
+            .map(|l| l.row.size.height)
     }
 }
 
@@ -258,7 +261,7 @@ impl Render for SidebarWindow {
                         div()
                             .text_2xl()
                             .text_color(system_color(SystemColor::Label))
-                            .child(SharedString::from(self.selected.to_string())),
+                            .child(self.selected.clone()),
                     )
                     .children(probe.map(|p| {
                         line(format!(
@@ -349,6 +352,17 @@ fn push(d: &mut Demo, cx: &mut Context<Demo>) {
     }
 }
 
+fn pushing<'a, T: Clone + 'static>(
+    cx: &'a mut Context<Demo>,
+    apply: fn(&mut State, T),
+) -> impl Fn(&T, &mut Window, &mut App) + 'static + use<'a, T> {
+    cx.listener(move |d: &mut Demo, value: &T, _, cx| {
+        apply(&mut d.sidebar_page, value.clone());
+        push(d, cx);
+        cx.notify();
+    })
+}
+
 fn reopen(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
     if let Some(handle) = d.sidebar_page.window.take() {
         handle
@@ -358,39 +372,37 @@ fn reopen(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
     open(window, cx);
 }
 
+#[derive(Default)]
 struct Live {
     probe: Option<SidebarProbe>,
     sample: Option<(f64, f64, f64, f64)>,
     header: Option<f64>,
-    selected: SharedString,
+    selected: Option<SharedString>,
     moved: Option<SidebarMove>,
     ejected: Option<SharedString>,
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (thickness, min, max) = (
-        d.sidebar_page.thickness,
-        d.sidebar_page.min,
-        d.sidebar_page.max,
-    );
-    let (toolbar, collapsed, expand_groups, reorderable) = (
-        d.sidebar_page.toolbar,
-        d.sidebar_page.collapsed,
-        d.sidebar_page.expand_groups,
-        d.sidebar_page.reorderable,
-    );
-    let (row_size, backdrop, align) = (
-        d.sidebar_page.row_size,
-        d.sidebar_page.backdrop,
-        d.sidebar_page.align,
-    );
+    let State {
+        thickness,
+        min,
+        max,
+        toolbar,
+        collapsed,
+        expand_groups,
+        reorderable,
+        row_size,
+        backdrop,
+        align,
+        ..
+    } = d.sidebar_page;
 
     let live = d.sidebar_page.window.and_then(|handle| {
         handle.read(cx).ok().map(|w| Live {
             probe: w.probe(),
             sample: w.sample_row(),
             header: w.header_height(),
-            selected: w.selected.clone(),
+            selected: Some(w.selected.clone()),
             moved: w.moved.clone(),
             ejected: w.ejected.clone(),
         })
@@ -400,12 +412,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     } else {
         "Open a window with a real sidebar"
     };
-    let probe = live.as_ref().and_then(|l| l.probe);
-    let sample = live.as_ref().and_then(|l| l.sample);
-    let header = live.as_ref().and_then(|l| l.header);
-    let selected = live.as_ref().map(|l| l.selected.clone());
-    let moved = live.as_ref().and_then(|l| l.moved.clone());
-    let ejected = live.and_then(|l| l.ejected);
+    let Live {
+        probe,
+        sample,
+        header,
+        selected,
+        moved,
+        ejected,
+    } = live.unwrap_or_default();
 
     stack(vec![
         note(
@@ -430,11 +444,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     ROW_SIZES[row_size].0,
                     native_popup("row_size", row_size)
                         .items(ROW_SIZES.iter().map(|(name, _)| *name))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.sidebar_page.row_size = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.row_size = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -469,11 +479,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{thickness:.0}pt"),
                     native_slider("thickness", thickness)
                         .range(min, max)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.sidebar_page.thickness = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.thickness = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -481,11 +487,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{min:.0}pt"),
                     native_slider("min", min)
                         .range(120., 300.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.sidebar_page.min = *value;
-                            d.sidebar_page.thickness = d.sidebar_page.thickness.max(*value);
-                            push(d, cx);
-                            cx.notify();
+                        .on_change(pushing(cx, |s, value| {
+                            s.min = value;
+                            s.thickness = s.thickness.max(value);
                         }))
                         .into_any_element(),
                 ),
@@ -494,11 +498,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{max:.0}pt"),
                     native_slider("max", max)
                         .range(240., 500.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.sidebar_page.max = *value;
-                            d.sidebar_page.thickness = d.sidebar_page.thickness.min(*value);
-                            push(d, cx);
-                            cx.notify();
+                        .on_change(pushing(cx, |s, value| {
+                            s.max = value;
+                            s.thickness = s.thickness.min(value);
                         }))
                         .into_any_element(),
                 ),
@@ -515,33 +517,21 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "toolbar",
                     toolbar.to_string(),
                     native_switch("toolbar", toolbar)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.sidebar_page.toolbar = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.toolbar = value))
                         .into_any_element(),
                 ),
                 knob(
                     "collapsed",
                     collapsed.to_string(),
                     native_switch("collapsed", collapsed)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.sidebar_page.collapsed = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.collapsed = value))
                         .into_any_element(),
                 ),
                 knob(
                     "expand_groups",
                     expand_groups.to_string(),
                     native_switch("expand_groups", expand_groups)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.sidebar_page.expand_groups = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.expand_groups = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -573,11 +563,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     BACKDROPS[backdrop].0,
                     native_popup("backdrop", backdrop)
                         .items(BACKDROPS.iter().map(|(name, _)| *name))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.sidebar_page.backdrop = *value;
-                            push(d, cx);
-                            cx.notify();
-                        }))
+                        .on_change(pushing(cx, |s, value| s.backdrop = value))
                         .into_any_element(),
                 ),
                 knob(

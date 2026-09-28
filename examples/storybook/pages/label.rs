@@ -1,6 +1,6 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, FontWeight, Window, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color, system_font, system_font_tabular};
 use native_gpui::{
     Blending, LabelAlign, Layer, Material, material, native_label, native_rule, native_switch,
@@ -37,23 +37,21 @@ impl Default for State {
     }
 }
 
-fn gpui_line(text: &str, size: f32, weight: FontWeight) -> AnyElement {
-    div()
-        .h(px(18.))
-        .flex()
-        .items_center()
+fn line() -> Div {
+    div().h(px(18.)).flex().items_center()
+}
+
+fn gpui_line(text: &'static str, size: f32, weight: FontWeight) -> AnyElement {
+    line()
         .text_size(px(size))
         .font(system_font(weight))
         .text_color(system_color(SystemColor::Label))
-        .child(SharedString::from(text.to_owned()))
+        .child(text)
         .into_any_element()
 }
 
 fn hosted_line(id: &'static str, text: &str, size: f32, weight: FontWeight) -> AnyElement {
-    div()
-        .h(px(18.))
-        .flex()
-        .items_center()
+    line()
         .child(
             native_label(id, text)
                 .font_size(px(size))
@@ -64,10 +62,7 @@ fn hosted_line(id: &'static str, text: &str, size: f32, weight: FontWeight) -> A
 }
 
 fn gpui_hairline() -> AnyElement {
-    div()
-        .h(px(18.))
-        .flex()
-        .items_center()
+    line()
         .child(
             div()
                 .h(px(1.))
@@ -78,10 +73,7 @@ fn gpui_hairline() -> AnyElement {
 }
 
 fn hosted_hairline(id: &'static str) -> AnyElement {
-    div()
-        .h(px(18.))
-        .flex()
-        .items_center()
+    line()
         .child(
             div()
                 .h(px(1.))
@@ -89,6 +81,15 @@ fn hosted_hairline(id: &'static str) -> AnyElement {
                 .child(native_rule(id).color(SystemColor::Label)),
         )
         .into_any_element()
+}
+
+fn header_glass(id: &'static str) -> Div {
+    div().absolute().inset_0().child(
+        material(id, Material::Header)
+            .layer(Layer::Above)
+            .blending(Blending::WithinWindow)
+            .size_full(),
+    )
 }
 
 fn hero(hosted: bool) -> AnyElement {
@@ -147,14 +148,7 @@ fn hero(hosted: bool) -> AnyElement {
         .bg(system_color(SystemColor::WindowBackground))
         .child(left)
         // Z-order inside the `Layer::Above` container is GPUI paint order: `right` goes after.
-        .child(
-            div().absolute().inset_0().child(
-                material("hero.glass", Material::Header)
-                    .layer(Layer::Above)
-                    .blending(Blending::WithinWindow)
-                    .size_full(),
-            ),
-        )
+        .child(header_glass("hero.glass"))
         .child(right)
         .into_any_element()
 }
@@ -197,14 +191,7 @@ fn header_band() -> AnyElement {
         .relative()
         .w(px(BAND_W))
         .h(px(28.))
-        .child(
-            div().absolute().inset_0().child(
-                material("hdr.glass", Material::Header)
-                    .layer(Layer::Above)
-                    .blending(Blending::WithinWindow)
-                    .size_full(),
-            ),
-        )
+        .child(header_glass("hdr.glass"))
         .child(cells)
         .into_any_element()
 }
@@ -221,7 +208,7 @@ fn boxed(width: f32, child: AnyElement) -> AnyElement {
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (hosted, tabular) = (d.label.hosted, d.label.tabular);
+    let State { hosted, tabular } = d.label;
 
     stack(vec![
         note(
@@ -234,10 +221,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "control",
             vec![
                 native_switch("hosted", hosted)
-                    .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                        d.label.hosted = *value;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, value| d.label.hosted = value))
                     .into_any_element(),
                 caption(if hosted {
                     "right half is native_label — it must be sharp while the left half blurs"
@@ -294,10 +278,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "tabular control",
             vec![
                 native_switch("tabular", tabular)
-                    .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                        d.label.tabular = *value;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, value| d.label.tabular = value))
                     .into_any_element(),
                 caption(if tabular {
                     "on — both rows end at the same x"

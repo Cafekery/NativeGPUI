@@ -1,5 +1,16 @@
-use gpui::{AnyElement, Hsla, Rgba, SharedString, div, prelude::*, px};
+use crate::Demo;
+use gpui::{AnyElement, App, Context, Hsla, Rgba, SharedString, Window, div, prelude::*, px};
 use native_gpui::tokens::{Appearance, SystemColor, system_color};
+
+pub fn set<'a, T: Clone + 'static>(
+    cx: &'a mut Context<Demo>,
+    apply: fn(&mut Demo, T),
+) -> impl Fn(&T, &mut Window, &mut App) + 'static + use<'a, T> {
+    cx.listener(move |d, value: &T, _, cx| {
+        apply(d, value.clone());
+        cx.notify();
+    })
+}
 
 pub fn stack(children: Vec<AnyElement>) -> AnyElement {
     div()
@@ -46,30 +57,30 @@ pub fn section(title: &str, children: Vec<AnyElement>) -> AnyElement {
             div()
                 .text_sm()
                 .text_color(system_color(SystemColor::Label))
-                .child(SharedString::from(title.to_string())),
+                .child(SharedString::from(title)),
         )
         .children(children)
         .into_any_element()
 }
 
-pub fn caption(text: impl Into<String>) -> AnyElement {
+pub fn caption(text: impl Into<SharedString>) -> AnyElement {
     div()
         .text_xs()
         .text_color(system_color(SystemColor::TertiaryLabel))
-        .child(SharedString::from(text.into()))
+        .child(text.into())
         .into_any_element()
 }
 
-pub fn mono(text: impl Into<String>) -> AnyElement {
+pub fn mono(text: impl Into<SharedString>) -> AnyElement {
     div()
         .font_family("SF Mono")
         .text_xs()
         .text_color(system_color(SystemColor::SecondaryLabel))
-        .child(SharedString::from(text.into()))
+        .child(text.into())
         .into_any_element()
 }
 
-pub fn note(text: impl Into<String>) -> AnyElement {
+pub fn note(text: impl Into<SharedString>) -> AnyElement {
     div()
         .px_3()
         .py_2()
@@ -77,7 +88,7 @@ pub fn note(text: impl Into<String>) -> AnyElement {
         .bg(system_color(SystemColor::QuaternaryLabel))
         .text_xs()
         .text_color(system_color(SystemColor::SecondaryLabel))
-        .child(SharedString::from(text.into()))
+        .child(text.into())
         .into_any_element()
 }
 
@@ -90,7 +101,7 @@ pub fn grid(children: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-pub fn tile(label: impl Into<String>, width: f32, child: AnyElement) -> AnyElement {
+pub fn tile(label: impl Into<SharedString>, width: f32, child: AnyElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -119,20 +130,20 @@ pub fn props(rows: &[(&str, String)]) -> AnyElement {
                         .font_family("SF Mono")
                         .text_sm()
                         .text_color(system_color(SystemColor::Label))
-                        .child(SharedString::from(name.to_string())),
+                        .child(SharedString::from(*name)),
                 )
                 .child(
                     div()
                         .flex_1()
                         .text_sm()
                         .text_color(system_color(SystemColor::SecondaryLabel))
-                        .child(SharedString::from(value.clone())),
+                        .child(SharedString::from(value)),
                 )
         }))
         .into_any_element()
 }
 
-pub fn knob(label: &str, value: impl Into<String>, control: AnyElement) -> AnyElement {
+pub fn knob(label: &str, value: impl Into<SharedString>, control: AnyElement) -> AnyElement {
     div()
         .flex()
         .items_center()
@@ -143,7 +154,7 @@ pub fn knob(label: &str, value: impl Into<String>, control: AnyElement) -> AnyEl
                 .w(px(150.))
                 .text_xs()
                 .text_color(system_color(SystemColor::SecondaryLabel))
-                .child(SharedString::from(label.to_string())),
+                .child(SharedString::from(label)),
         )
         .child(div().w(px(180.)).child(control))
         .child(div().w(px(90.)).child(mono(value)))
@@ -151,21 +162,7 @@ pub fn knob(label: &str, value: impl Into<String>, control: AnyElement) -> AnyEl
 }
 
 pub fn checker(size_px: f32, child: AnyElement) -> AnyElement {
-    let cells: Vec<AnyElement> = (0..64)
-        .map(|i| {
-            let dark = ((i / 8) + (i % 8)) % 2 == 0;
-            div()
-                .w(px(size_px / 8.))
-                .h(px(size_px / 8.))
-                .bg(if dark {
-                    system_color(SystemColor::Label)
-                } else {
-                    system_color(SystemColor::TertiaryLabel)
-                })
-                .into_any_element()
-        })
-        .collect();
-
+    let cell = px(size_px / 8.);
     div()
         .relative()
         .size(px(size_px))
@@ -176,7 +173,15 @@ pub fn checker(size_px: f32, child: AnyElement) -> AnyElement {
                 .flex()
                 .flex_wrap()
                 .w(px(size_px))
-                .children(cells),
+                .children((0..64).map(|i| {
+                    div()
+                        .size(cell)
+                        .bg(system_color(if (i / 8 + i % 8) % 2 == 0 {
+                            SystemColor::Label
+                        } else {
+                            SystemColor::TertiaryLabel
+                        }))
+                })),
         )
         .child(div().absolute().inset_0().child(child))
         .into_any_element()
@@ -189,7 +194,7 @@ pub fn hex(c: Hsla) -> String {
 }
 
 pub fn opt_hex(c: Option<Hsla>) -> String {
-    c.map_or_else(|| "refused".to_string(), hex)
+    c.map_or_else(|| "refused".into(), hex)
 }
 
 pub fn appearance_swatch(
@@ -197,17 +202,9 @@ pub fn appearance_swatch(
     width: f32,
     label: impl FnOnce(Option<Hsla>, Option<Hsla>) -> String,
 ) -> AnyElement {
-    let (light, dark) = (
-        color.try_resolve(Appearance::Light),
-        color.try_resolve(Appearance::Dark),
-    );
-    let half = |value: Option<Hsla>| {
-        let cell = div().flex_1().h_full();
-        match value {
-            Some(value) => cell.bg(value),
-            None => cell,
-        }
-    };
+    let light = color.try_resolve(Appearance::Light);
+    let dark = color.try_resolve(Appearance::Dark);
+    let half = |value: Option<Hsla>| div().flex_1().h_full().when_some(value, |c, v| c.bg(v));
 
     div()
         .flex()

@@ -29,29 +29,26 @@ const SIZES: [(&str, ControlSize); 5] = [
     ("ExtraLarge", ControlSize::ExtraLarge),
 ];
 
-const LEVEL_STYLES: [(&str, LevelStyle); 4] = [
-    ("Rating", LevelStyle::Rating),
-    ("ContinuousCapacity", LevelStyle::ContinuousCapacity),
-    ("DiscreteCapacity", LevelStyle::DiscreteCapacity),
-    ("Relevancy", LevelStyle::Relevancy),
+const LEVEL_STYLES: [LevelStyle; 4] = [
+    LevelStyle::Rating,
+    LevelStyle::ContinuousCapacity,
+    LevelStyle::DiscreteCapacity,
+    LevelStyle::Relevancy,
 ];
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (fraction, rating, load) = (
-        d.indicators.fraction,
-        d.indicators.rating,
-        d.indicators.load,
-    );
+    let State {
+        fraction,
+        rating,
+        load,
+    } = d.indicators;
 
     stack(vec![
         knob(
             "fraction",
             format!("{fraction:.2}"),
             native_slider("fraction", fraction)
-                .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                    d.indicators.fraction = *value;
-                    cx.notify();
-                }))
+                .on_change(set(cx, |d, value| d.indicators.fraction = value))
                 .into_any_element(),
         ),
         demo(
@@ -61,12 +58,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         section(
             "fixed fractions",
             [0., 0.25, 0.5, 0.75, 1.]
-                .iter()
+                .into_iter()
                 .enumerate()
                 .map(|(i, step)| {
                     demo(
                         &format!("{step:.2}"),
-                        sized(260., native_progress(("step", i), *step).into_any_element()),
+                        sized(260., native_progress(("step", i), step).into_any_element()),
                     )
                 })
                 .collect(),
@@ -132,10 +129,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             format!("{load:.0} / 100"),
             native_slider("load", load)
                 .range(0., 100.)
-                .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                    d.indicators.load = *value;
-                    cx.notify();
-                }))
+                .on_change(set(cx, |d, value| d.indicators.load = value))
                 .into_any_element(),
         ),
         section(
@@ -143,19 +137,18 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             LEVEL_STYLES
                 .iter()
                 .enumerate()
-                .map(|(i, (name, style))| {
-                    // A Rating is one star per unit of range; the meters stretch instead.
-                    let max = if *style == LevelStyle::Rating {
+                .map(|(i, &style)| {
+                    let max = if style == LevelStyle::Rating {
                         10.
                     } else {
                         100.
                     };
                     demo(
-                        &format!("{name} · 0 … {max:.0}"),
+                        &format!("{style:?} · 0 … {max:.0}"),
                         sized(
                             260.,
                             native_level(("level", i), load * max / 100.)
-                                .style(*style)
+                                .style(style)
                                 .range(0., max)
                                 .warning_value(max * 0.6)
                                 .critical_value(max * 0.85)
@@ -186,10 +179,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         .style(LevelStyle::Rating)
                         .range(0., 5.)
                         .editable(true)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.indicators.rating = *value;
-                            cx.notify();
-                        })),
+                        .on_change(set(cx, |d, value| d.indicators.rating = value)),
                 )
                 .child(mono(format!("{rating:.0} / 5")))
                 .into_any_element(),

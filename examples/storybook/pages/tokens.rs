@@ -1,10 +1,10 @@
 use crate::Demo;
 use crate::ui::*;
 use gpui::{
-    AnyElement, App, Context, FontWeight, Pixels, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, Context, Div, FontWeight, Pixels, Subscription, Window, div, prelude::*, px,
 };
 use native_gpui::tokens::{
-    Appearance, FileType, SymbolColor, SystemColor, SystemTheme, accent, advance_delta,
+    Appearance, FileType, Symbol, SymbolColor, SystemColor, SystemTheme, accent, advance_delta,
     appkit_advance, appkit_string_width, cache_stats, current_appearance, file_icon, folder_icon,
     generation, label_font_size, refused, set_app_appearance, sf_symbol, sf_symbol_colored,
     small_system_font_size, srgb, system_color, system_font, system_font_family,
@@ -189,10 +189,9 @@ fn appearance_section(pinned: bool, cx: &mut Context<Demo>) -> AnyElement {
 
     let follow = native_button("follow-system", "Follow system")
         .enabled(pinned)
-        .on_click(cx.listener(|d: &mut Demo, _: &(), _, cx| {
+        .on_click(set(cx, |d, _: ()| {
             d.tokens.pinned = false;
             set_app_appearance(None);
-            cx.notify();
         }))
         .into_any_element();
 
@@ -291,13 +290,13 @@ fn font_section(cx: &App) -> AnyElement {
     let weight = FontWeight::NORMAL;
 
     let control_sizes = [
-        ("Mini", ControlSize::Mini),
-        ("Small", ControlSize::Small),
-        ("Regular", ControlSize::Regular),
-        ("Large", ControlSize::Large),
-        ("ExtraLarge", ControlSize::ExtraLarge),
+        ControlSize::Mini,
+        ControlSize::Small,
+        ControlSize::Regular,
+        ControlSize::Large,
+        ControlSize::ExtraLarge,
     ]
-    .map(|(name, size)| format!("{name}={:.0}", f32::from(system_font_size_for(size))))
+    .map(|size| format!("{size:?}={:.0}", f32::from(system_font_size_for(size))))
     .join("  ");
 
     let ramp: Vec<AnyElement> = SIZES
@@ -465,12 +464,7 @@ fn symbol_section() -> AnyElement {
         .iter()
         .map(|(name, color)| {
             let color = color();
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_1p5()
-                .w(px(116.))
+            catalogue_cell()
                 .child(symbol_cell(name, px(22.), weight, &color))
                 .child(mono(*name))
                 .child(caption(symbol_color_name(&color)))
@@ -519,18 +513,28 @@ fn symbol_section() -> AnyElement {
     )
 }
 
+fn catalogue_cell() -> Div {
+    div().flex().flex_col().items_center().gap_1p5().w(px(116.))
+}
+
+fn on_checker(size: f32, icon: Option<Symbol>) -> AnyElement {
+    checker(
+        size,
+        match icon {
+            Some(icon) => div()
+                .flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(icon.img())
+                .into_any_element(),
+            None => caption("None"),
+        },
+    )
+}
+
 fn symbol_cell(name: &str, size: Pixels, weight: FontWeight, color: &SymbolColor) -> AnyElement {
-    let body = match sf_symbol_colored(name, size, weight, color) {
-        Some(symbol) => div()
-            .flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .child(symbol.img())
-            .into_any_element(),
-        None => caption("None").into_any_element(),
-    };
-    checker(44., body)
+    on_checker(44., sf_symbol_colored(name, size, weight, color))
 }
 
 fn symbol_color_name(color: &SymbolColor) -> String {
@@ -547,12 +551,7 @@ fn file_icon_section() -> AnyElement {
     let catalogue: Vec<AnyElement> = FILE_TYPES
         .iter()
         .map(|(label, kind)| {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_1p5()
-                .w(px(116.))
+            catalogue_cell()
                 .child(file_icon_cell(*kind, px(32.)))
                 .child(mono(*label))
                 .into_any_element()
@@ -595,17 +594,7 @@ fn file_icon_section() -> AnyElement {
 }
 
 fn file_icon_cell(kind: FileType<'_>, size: Pixels) -> AnyElement {
-    let body = match file_icon(kind, size) {
-        Some(icon) => div()
-            .flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .child(icon.img())
-            .into_any_element(),
-        None => caption("None").into_any_element(),
-    };
-    checker(72., body)
+    on_checker(72., file_icon(kind, size))
 }
 
 fn cache_section() -> AnyElement {
