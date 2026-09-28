@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 
 use finder_fs::ops::Op;
-use gpui::{Context, SharedString, Window};
+use gpui::{Context, Window};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting};
@@ -20,20 +20,16 @@ pub(crate) enum Pasting {
     Exactly,
 }
 
-/// The files on the general pasteboard, from its types alone.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Held {
     pub(crate) files: usize,
-    /// Copied by Finder or by this app, so Move Items Here may take them from where they are.
     pub(crate) movable: bool,
 }
 
-/// The pasteboard type of the items Finder itself copies.
 const FINDER_NODES: &str = "com.apple.finder.noderef";
 
 thread_local! {
-    /// The pasteboard's change count as this app left it after putting files there.
-    static OURS: Cell<isize> = const { Cell::new(-1) };
+    static OWN_CHANGE: Cell<isize> = const { Cell::new(-1) };
     static HELD: Cell<(isize, Held)> = const {
         Cell::new((
             -1,
@@ -60,12 +56,18 @@ impl FinderDemo {
             .filter_map(|key| split_key(key).map(|(_, name)| name))
             .collect();
         let text = NSString::from_str(&names.join("\n"));
-        let mut items: Vec<Writable> = vec![ProtocolObject::from_retained(text)];
-        items.extend(file_urls(&keys));
-        write_pasteboard(&items);
+        let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
+            std::iter::once(ProtocolObject::from_retained(text))
+                .chain(keys.iter().map(|key| {
+                    ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key)))
+                }))
+                .collect();
+        let board = NSPasteboard::generalPasteboard();
+        board.clearContents();
+        board.writeObjects(&NSArray::from_retained_slice(&items));
+        OWN_CHANGE.set(board.changeCount());
     }
 
-    /// Finder's Copy as Pathname: the chosen items' paths, or the folder's with none chosen.
     pub(crate) fn copy_pathnames(&mut self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self
             .paths()
@@ -84,11 +86,11 @@ impl FinderDemo {
     }
 
     pub(crate) fn paste_into(&mut self, into: PathBuf, how: Pasting, cx: &mut Context<Self>) {
-        let items = read_pasteboard();
-        if items.is_empty() {
+        if !into.is_absolute() {
             return;
         }
-        if !into.is_absolute() {
+        let items = read_pasteboard();
+        if items.is_empty() {
             return;
         }
         let op = match how {
@@ -98,20 +100,6 @@ impl FinderDemo {
         };
         self.run_op(op, After::Select, cx);
     }
-}
-
-type Writable = Retained<ProtocolObject<dyn NSPasteboardWriting>>;
-
-fn file_urls(keys: &[SharedString]) -> impl Iterator<Item = Writable> + '_ {
-    keys.iter()
-        .map(|key| ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(key))))
-}
-
-fn write_pasteboard(items: &[Writable]) {
-    let board = NSPasteboard::generalPasteboard();
-    board.clearContents();
-    board.writeObjects(&NSArray::from_retained_slice(items));
-    OURS.set(board.changeCount());
 }
 
 pub(crate) fn read_pasteboard() -> Vec<PathBuf> {
@@ -153,7 +141,7 @@ pub(crate) fn held() -> Held {
     }
     let held = Held {
         files,
-        movable: files > 0 && (from_finder || OURS.get() == changed),
+        movable: files > 0 && (from_finder || OWN_CHANGE.get() == changed),
     };
     HELD.set((changed, held));
     held

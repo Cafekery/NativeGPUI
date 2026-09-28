@@ -16,6 +16,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSHelpManager, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
 
+use super::actions::open_windows;
 use super::edit::PasteExactly;
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
@@ -142,7 +143,6 @@ actions!(
     ]
 );
 
-/// Opens the chosen files in `app`; `always` makes it their app first.
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = finder_demo, no_json, no_register)]
 struct OpenWithApp {
@@ -178,25 +178,26 @@ struct Mirror {
     options: bool,
 }
 
-/// What the chosen items are, worked out once per selection.
 #[derive(Default)]
-struct Chosen {
+pub(super) struct Chosen {
     seen: (u64, u64, usize, usize),
-    count: usize,
+    pub(super) count: usize,
     folders: usize,
     refused: bool,
     shareable: bool,
     cloud: bool,
     original: bool,
     ejectable: bool,
-    name: SharedString,
+    pub(super) name: SharedString,
     here: SharedString,
+    pub(super) folder: SharedString,
+    pub(super) on_disk: bool,
     files: Vec<PathBuf>,
     keys: Vec<SharedString>,
 }
 
 thread_local! {
-    /// Menu validation cannot read the window, so check marks, titles and enabling follow these.
+    // Menu validation cannot read the window, so check marks, titles and enabling follow these.
     static MIRROR: Cell<Mirror> = const {
         Cell::new(Mirror {
             view: LIST_VIEW,
@@ -215,18 +216,18 @@ thread_local! {
             options: false,
         })
     };
-    /// The front window's chosen items; any window's toolbar may work out its own meanwhile.
+    // The front window's; WORKED caches whichever window's toolbar asked last.
     static CHOSEN: RefCell<Rc<Chosen>> = RefCell::new(Rc::default());
     static WORKED: RefCell<Rc<Chosen>> = RefCell::new(Rc::new(Chosen {
         seen: (u64::MAX, 0, 0, 0),
         ..Chosen::default()
     }));
     static LOCATIONS: RefCell<Option<Vec<(String, &'static str)>>> = const { RefCell::new(None) };
-    /// What the last pick in the File menu's tag row hit: a swatch, or `None` for its Tags… button.
+    // The last pick in the File menu's tag row: a swatch, or None for its Tags… button.
     static TAG_PICK: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
 
-/// Whether the chosen items refuse to open, can be shared, and all sit in iCloud Drive.
+/// (refuse to open, can be shared, all in iCloud Drive) for the chosen items.
 pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool, bool) {
     let chosen = chosen(demo);
     (chosen.refused, chosen.shareable, chosen.cloud)
@@ -286,6 +287,12 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
             .map(|line| line.row.display.clone())
             .unwrap_or_default(),
         here: finder_fs::name::of_path(Path::new(here)).into(),
+        folder: demo
+            .folder()
+            .map(|folder| folder.title)
+            .unwrap_or_default()
+            .into(),
+        on_disk: Path::new(demo.target()).is_absolute(),
         files: lines
             .iter()
             .filter(|line| line.row.opens.is_none())
@@ -327,10 +334,10 @@ fn enabled(action: &dyn Action) -> bool {
     if mirror.location && one_of(action, &[&NewFolder, &Paste, &MoveHere, &PasteExactly]) {
         return false;
     }
-    if let Some(on) = super::edit::enabled(action) {
-        return on;
-    }
     CHOSEN.with_borrow(|chosen| {
+        if let Some(on) = super::edit::enabled(action, chosen) {
+            return on;
+        }
         let picked = chosen.count > 0;
         let files_only = picked && chosen.folders == 0;
         match () {
@@ -428,18 +435,15 @@ fn flip(shown: bool, what: &str) -> String {
 }
 
 fn titled(action: &dyn Action) -> Option<SharedString> {
-    if let Some(title) = super::edit::titled(action) {
-        return Some(title);
-    }
-    if action.partial_eq(&ShowPreviewOptions) {
-        return Some(match crate::preview::options::is_open() {
-            true => "Hide Preview Options".into(),
-            false => "Show Preview Options".into(),
-        });
-    }
     let mirror = MIRROR.get();
-    let title = CHOSEN.with_borrow(|chosen| {
-        Some(match () {
+    CHOSEN.with_borrow(|chosen| {
+        if let Some(title) = super::edit::titled(action, chosen) {
+            return Some(title);
+        }
+        let title = match () {
+            _ if action.partial_eq(&ShowPreviewOptions) => {
+                flip(crate::preview::options::is_open(), "Preview Options")
+            }
             _ if action.partial_eq(&Trash) => match mirror.in_trash {
                 true => "Put Back".into(),
                 false => "Move to Trash".into(),
@@ -489,9 +493,9 @@ fn titled(action: &dyn Action) -> Option<SharedString> {
                 flip(crate::progress_window::shown(), "Progress Window")
             }
             _ => return None,
-        })
-    })?;
-    Some(title.into())
+        };
+        Some(title.into())
+    })
 }
 
 fn cycle_windows(_: &CycleWindows, cx: &mut App) {
@@ -558,7 +562,6 @@ pub(crate) fn install(cx: &mut App) {
 
 const TIPS: &str = "x-apple-tips://open?referrer=HelpMenu";
 
-/// Finder's Mac User Guide: the Mac help book at its welcome anchor.
 fn open_mac_help() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -635,53 +638,36 @@ fn file_rows() -> Vec<MenuCommand> {
     ]
 }
 
-/// Finder's tag swatches over its Tags… button, named and enabled for the chosen items.
 fn tag_row() -> native_gpui::MenuView {
-    let keys = CHOSEN.with_borrow(|chosen| chosen.keys.clone());
-    let carried: Vec<Vec<usize>> = keys.iter().map(|key| crate::tags::row_tags(key)).collect();
-    let picked = !keys.is_empty();
-    let swatches = crate::tags::tags().iter().enumerate().map(|(index, tag)| {
-        let verb = match picked && carried.iter().all(|tags| tags.contains(&index)) {
-            true => "Remove",
-            false => "Add",
-        };
-        (
-            crate::tags::finder_color(tag.color),
-            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
-        )
-    });
+    let chosen = CHOSEN.with_borrow(Rc::clone);
+    let carried: Vec<Vec<usize>> = chosen
+        .keys
+        .iter()
+        .map(|key| crate::tags::row_tags(key))
+        .collect();
+    let picked = !carried.is_empty();
     native_gpui::MenuView::swatches_with_button(
-        swatches,
+        super::context::tag_swatches(&carried),
         picked,
         ("tag", "Tags…", picked),
         |hit| TAG_PICK.set(Some(hit)),
     )
 }
 
-/// LaunchServices' Open With list for the chosen files: the default app, the rest by name, then
-/// App Store… and Other….
 fn open_with_rows(always: bool) -> Vec<MenuCommand> {
-    let files = CHOSEN.with_borrow(|chosen| chosen.files.clone());
-    let (default, rest): (Vec<_>, Vec<_>) = crate::openwith::apps_for_all(&files)
+    let chosen = CHOSEN.with_borrow(Rc::clone);
+    let (default, rest): (Vec<_>, Vec<_>) = crate::openwith::apps_for_all(&chosen.files)
         .into_iter()
         .partition(|app| app.default);
-    let row = |title: String, app: crate::openwith::App| {
-        MenuCommand::new(
-            title,
-            OpenWithApp {
-                app: app.path,
-                always,
-            },
-        )
-    };
+    let row = |title: String, app: PathBuf| MenuCommand::new(title, OpenWithApp { app, always });
     let mut rows: Vec<MenuCommand> = default
         .into_iter()
-        .map(|app| row(format!("{} (default)", app.name), app))
+        .map(|app| row(format!("{} (default)", app.name), app.path))
         .collect();
     if !rows.is_empty() && !rest.is_empty() {
         rows.push(MenuCommand::separator());
     }
-    rows.extend(rest.into_iter().map(|app| row(app.name.clone(), app)));
+    rows.extend(rest.into_iter().map(|app| row(app.name, app.path)));
     if rows.is_empty() {
         rows.push(MenuCommand::new("<None>", NoApps));
     }
@@ -791,7 +777,6 @@ pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
     rows
 }
 
-/// The cloud storage providers Finder lists after Utilities, each with the folder it opens.
 fn locations() -> Vec<(String, &'static str)> {
     LOCATIONS.with_borrow_mut(|known| {
         known
@@ -879,7 +864,7 @@ impl FinderDemo {
             .find(|id| *id != "/" && roots.contains(id))
     }
 
-    /// Finder's ⌃ Eject: this volume only, not the others on its disk.
+    /// This volume only, not the others on its disk.
     fn eject_only(&mut self) {
         let Some(volume) = self.ejectable_volume() else {
             return;
@@ -907,19 +892,6 @@ impl FinderDemo {
                     &refused,
                 )
         };
-    }
-
-    fn empty_trash_now(&mut self, cx: &mut Context<Self>) {
-        let items = crate::menus::actions::trash_items();
-        if items.is_empty() {
-            return;
-        }
-        crate::sound::Sound::EmptyTrash.play();
-        self.run_op(
-            finder_fs::ops::Op::DeleteImmediately(items),
-            crate::ops::After::Nothing,
-            cx,
-        );
     }
 
     pub(crate) fn menu_bar_actions(&mut self, element: Div, cx: &mut Context<Self>) -> Div {
@@ -958,11 +930,7 @@ impl FinderDemo {
                     true => folders
                         .into_iter()
                         .for_each(|id| this.open_tab(id, window, cx)),
-                    false => {
-                        for (extra, id) in folders.into_iter().enumerate() {
-                            crate::open_finder_window(id, extra + 1, cx);
-                        }
-                    }
+                    false => open_windows(folders, cx),
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenAndClose, window, cx| {
@@ -971,9 +939,7 @@ impl FinderDemo {
                     return;
                 }
                 crate::openwith::open_default(&this.chosen_files());
-                for (extra, id) in lines.iter().filter_map(|line| line.row.opens).enumerate() {
-                    crate::open_finder_window(id, extra + 1, cx);
-                }
+                open_windows(lines.iter().filter_map(|line| line.row.opens), cx);
                 window.remove_window();
             }))
             .on_action(cx.listener(|this, action: &OpenWithApp, _, _| {

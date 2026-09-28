@@ -27,7 +27,7 @@ const HEAD: f64 = 74.;
 pub(crate) struct TagEditor {
     popover: NativePopover,
     field: Retained<NSTokenField>,
-    shared: RefCell<Vec<String>>,
+    shared: Vec<String>,
     paths: Vec<PathBuf>,
 }
 
@@ -68,11 +68,9 @@ fn names(field: &NSTokenField) -> Vec<String> {
 }
 
 fn set_names(field: &NSTokenField, names: &[String]) {
-    let owned: Vec<Retained<NSString>> =
+    let names: Vec<Retained<NSString>> =
         names.iter().map(|name| NSString::from_str(name)).collect();
-    let refs: Vec<&NSString> = owned.iter().map(|name| &**name).collect();
-    let array = NSArray::from_slice(&refs);
-    unsafe { field.setObjectValue(Some(array.as_ref())) };
+    unsafe { field.setObjectValue(Some(NSArray::from_retained_slice(&names).as_ref())) };
 }
 
 fn tag_named(name: &str) -> Tag {
@@ -204,18 +202,18 @@ impl FinderDemo {
         self.tag_editor = Some(TagEditor {
             popover,
             field,
-            shared: RefCell::new(shared),
+            shared,
             paths,
         });
     }
 
     /// Writes only the change since the last write, so a tag not every item shares stays put.
     fn commit_tags(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = &self.tag_editor else {
+        let Some(editor) = &mut self.tag_editor else {
             return;
         };
         let now = names(&editor.field);
-        let before = editor.shared.replace(now.clone());
+        let before = std::mem::replace(&mut editor.shared, now.clone());
         let add: Vec<Tag> = now
             .iter()
             .filter(|name| !before.contains(name))

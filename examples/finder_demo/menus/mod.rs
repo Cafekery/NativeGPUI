@@ -134,9 +134,10 @@ fn row_menu(
     let build = move |demo: &mut FinderDemo, at| match hit(demo, at) {
         Some(line) => {
             mark(demo, &line);
+            let menu = item(&demo.selected, &line);
             Menu {
-                aim: Some(line.clone()),
-                ..item(&demo.selected, &line)
+                aim: Some(line),
+                ..menu
             }
         }
         None => Menu::default(),

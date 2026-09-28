@@ -21,7 +21,6 @@ enum Value {
     Dict(Vec<(&'static str, Value)>),
 }
 
-/// A Dock entry and the list the Dock keeps it in.
 #[derive(Debug, PartialEq)]
 struct Tile {
     shelf: &'static str,
@@ -119,8 +118,6 @@ fn address_of(kept: &AnyObject) -> Option<String> {
     )
 }
 
-/// Finder's Add to Dock: an app joins the Dock's apps, anything else the far end; the Dock
-/// reads its lists only as it starts.
 pub(crate) fn add(paths: &[PathBuf]) -> Result<(), String> {
     let defaults =
         NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&NSString::from_str(DOCK)))
@@ -146,6 +143,7 @@ pub(crate) fn add(paths: &[PathBuf]) -> Result<(), String> {
         return Ok(());
     }
     defaults.synchronize();
+    // The Dock reads its lists only as it starts.
     Command::new("/usr/bin/killall")
         .arg("Dock")
         .status()
