@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::CString;
 use std::io;
 use std::os::macos::fs::MetadataExt as _;
@@ -36,8 +37,7 @@ pub enum Op {
         items: Vec<PathBuf>,
         into: PathBuf,
     },
-    /// Finder's Paste Exactly: a copy that also keeps each item's owner and group, as far as this
-    /// process may set them.
+    /// A copy that also keeps each item's owner and group, as far as this process may set them.
     CopyExactly {
         items: Vec<PathBuf>,
         into: PathBuf,
@@ -49,7 +49,7 @@ pub enum Op {
         name: String,
     },
     Duplicate(Vec<PathBuf>),
-    /// Finder's Make Alias: a bookmark file beside each item, not a symlink.
+    /// A bookmark file beside each item, not a symlink.
     MakeAlias(Vec<PathBuf>),
     Compress(Vec<PathBuf>),
     NewFolder {
@@ -73,7 +73,7 @@ pub struct Restore {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Conflict {
-    /// `name 2`, `name 3`, … like Duplicate.
+    /// `name 2`, `name 3`, …
     KeepBoth,
     Replace,
     /// Folders merge, files inside follow `Replace`.
@@ -81,46 +81,32 @@ pub enum Conflict {
     Skip,
 }
 
-#[derive(Clone, Debug)]
-pub struct Progress {
-    pub done: usize,
-    pub total: usize,
-    pub current: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Done {
     /// Where each item ended up, in input order.
     pub results: Vec<PathBuf>,
     pub undo: Option<Op>,
 }
 
-pub fn perform(op: Op, conflict: Conflict, mut progress: impl FnMut(Progress)) -> io::Result<Done> {
-    run(op, conflict, &mut progress)
-}
-
-fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+pub fn perform(op: Op, conflict: Conflict) -> io::Result<Done> {
     match op {
-        Op::Move { items, into } => move_or_copy(items, into, conflict, Carry::Move, progress),
-        Op::Copy { items, into } => move_or_copy(items, into, conflict, Carry::Copy, progress),
-        Op::CopyExactly { items, into } => {
-            move_or_copy(items, into, conflict, Carry::CopyExactly, progress)
-        }
-        Op::Trash(items) => trash(items, progress),
-        Op::DeleteImmediately(items) => delete(items, progress),
+        Op::Move { items, into } => move_or_copy(items, into, conflict, Carry::Move),
+        Op::Copy { items, into } => move_or_copy(items, into, conflict, Carry::Copy),
+        Op::CopyExactly { items, into } => move_or_copy(items, into, conflict, Carry::CopyExactly),
+        Op::Trash(items) => trash(items),
+        Op::DeleteImmediately(items) => delete(items),
         Op::Rename { path, name } => rename(path, name, conflict),
-        Op::Duplicate(items) => duplicate(items, progress),
-        Op::MakeAlias(items) => make_alias(items, progress),
-        Op::Compress(items) => compress(items, progress),
+        Op::Duplicate(items) => duplicate(items),
+        Op::MakeAlias(items) => make_alias(items),
+        Op::Compress(items) => compress(items),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
-        Op::PutBack(items) => put_back(items, progress),
-        Op::Quick(quick) => quick::perform(quick, progress),
-        Op::Batch(ops) => batch(ops, conflict, progress),
+        Op::PutBack(items) => put_back(items),
+        Op::Quick(quick) => quick::perform(quick),
+        Op::Batch(ops) => batch(ops, conflict),
     }
 }
 
-/// What an undo got through before items refused, and the part still left to do.
 #[derive(Debug)]
 pub struct Unfinished {
     pub done: Done,
@@ -137,19 +123,18 @@ impl std::fmt::Display for Unfinished {
 impl std::error::Error for Unfinished {}
 
 impl Unfinished {
-    fn error(done: Done, left: Op, cause: io::Error) -> io::Error {
-        io::Error::new(cause.kind(), Unfinished { done, left, cause })
+    fn check(done: Done, left: Op, cause: Option<io::Error>) -> io::Result<Done> {
+        match cause {
+            None => Ok(done),
+            Some(cause) => Err(io::Error::new(
+                cause.kind(),
+                Unfinished { done, left, cause },
+            )),
+        }
     }
 
     pub fn from_error(error: io::Error) -> Result<Unfinished, io::Error> {
-        if !error
-            .get_ref()
-            .is_some_and(|inner| inner.is::<Unfinished>())
-        {
-            return Err(error);
-        }
-        let inner = error.into_inner().expect("checked above");
-        Ok(*inner.downcast::<Unfinished>().expect("checked above"))
+        error.downcast()
     }
 }
 
@@ -161,6 +146,10 @@ fn path_from(url: &NSURL) -> PathBuf {
     url.path()
         .map(|s| PathBuf::from(s.to_string()))
         .unwrap_or_default()
+}
+
+fn name_of(path: &Path) -> Cow<'_, str> {
+    path.file_name().unwrap_or_default().to_string_lossy()
 }
 
 fn io_error(err: Retained<NSError>) -> io::Error {
@@ -320,8 +309,13 @@ fn cocoa_error(code: i32, path: &Path) -> Option<Retained<NSError>> {
 }
 
 fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
-    let item = src.file_name().unwrap_or_default().to_string_lossy();
-    let message = refusal_message(refusal_of(err)?, &item, dest, is_move, walk_size(src))?;
+    let message = refusal_message(
+        refusal_of(err)?,
+        &name_of(src),
+        dest,
+        is_move,
+        walk_size(src),
+    )?;
     Some(io::Error::other(message))
 }
 
@@ -345,8 +339,7 @@ fn check_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Finder's Locked flag stops an item being trashed or deleted; Finder asks before it clears one,
-/// and `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
+/// Finder asks before it clears a lock; `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
 pub fn locked(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
 }
@@ -384,13 +377,12 @@ fn taken(path: &Path) -> bool {
     identity(path).is_some()
 }
 
-/// On a case-insensitive volume, a rename that only changes a name's case finds the item itself
-/// standing at the destination.
+/// A case-only rename on a case-insensitive volume finds the item itself at the destination.
 fn same_item(one: &Path, other: &Path) -> bool {
     matches!((identity(one), identity(other)), (Some(one), Some(other)) if one == other)
 }
 
-/// Splits `name` the way Finder does: no extension for dot-files or a trailing dot.
+/// No extension for dot-files or a trailing dot.
 fn split_name(name: &str) -> (&str, Option<&str>) {
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
@@ -405,41 +397,49 @@ fn with_ext(stem: &str, ext: Option<&str>) -> String {
     }
 }
 
-fn keep_both_path(path: &Path) -> PathBuf {
-    let dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
+/// The first of `stem`, `stem 2`, `stem 3`, … not taken in `dir`.
+fn first_free(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(with_ext(stem, ext)),
+            n => dir.join(with_ext(&format!("{stem} {n}"), ext)),
+        })
+        .find(|path| !taken(path))
+        .expect("an endless range")
+}
+
+fn dir_of(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new(""))
+}
+
+/// `path` itself, or numbered like Keep Both once its name is taken.
+fn free_path(path: &Path) -> PathBuf {
+    let name = name_of(path);
     let (stem, ext) = split_name(&name);
-    let mut n = 2;
-    loop {
-        let candidate = dir.join(with_ext(&format!("{stem} {n}"), ext));
-        if !taken(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+    first_free(dir_of(path), stem, ext)
 }
 
 fn duplicate_path(path: &Path) -> PathBuf {
-    let dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let name = name_of(path);
     let (stem, ext) = split_name(&name);
-    let first = dir.join(with_ext(&format!("{stem} copy"), ext));
-    if !taken(&first) {
-        return first;
-    }
-    let mut n = 2;
-    loop {
-        let candidate = dir.join(with_ext(&format!("{stem} copy {n}"), ext));
-        if !taken(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+    first_free(dir_of(path), &format!("{stem} copy"), ext)
+}
+
+fn alias_path(path: &Path) -> PathBuf {
+    first_free(dir_of(path), &format!("{} alias", name_of(path)), None)
+}
+
+fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
+    let stem = match items {
+        [] => return None,
+        [only] => name_of(only),
+        _ => Cow::Borrowed("Archive"),
+    };
+    Some(first_free(dir_of(&items[0]), &stem, Some("zip")))
 }
 
 fn c_path(path: &Path) -> io::Result<CString> {
-    CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the path contains a NUL"))
+    Ok(CString::new(path.as_os_str().as_bytes())?)
 }
 
 fn staging_path(dest: &Path) -> PathBuf {
@@ -520,6 +520,7 @@ fn trash_as(fm: &NSFileManager, staged: &Path, dest: &Path) -> io::Result<PathBu
     trashed
 }
 
+#[derive(Default)]
 struct Placed {
     dest: Option<PathBuf>,
     landed: Vec<Restore>,
@@ -584,8 +585,6 @@ fn place_one(
         transfer(fm, src, &dest, is_move)?;
         return Ok(Placed::at(src, dest));
     }
-    // Finder leaves a move onto itself where it is, and makes a copy into the same folder a
-    // Duplicate.
     if same_item(src, &dest) {
         if is_move {
             return Ok(Placed::at(src, dest));
@@ -595,13 +594,9 @@ fn place_one(
         return Ok(Placed::at(src, dest));
     }
     match conflict {
-        Conflict::Skip => Ok(Placed {
-            dest: None,
-            landed: Vec::new(),
-            displaced: Vec::new(),
-        }),
+        Conflict::Skip => Ok(Placed::default()),
         Conflict::KeepBoth => {
-            let dest = keep_both_path(&dest);
+            let dest = free_path(&dest);
             transfer(fm, src, &dest, is_move)?;
             Ok(Placed::at(src, dest))
         }
@@ -628,17 +623,18 @@ fn place_one(
     }
 }
 
-/// Finder refuses before it starts: nothing goes inside itself, however deep the descendant.
 fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()> {
     let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if !real(into).starts_with(real(item)) {
         return Ok(());
     }
-    let name = item.file_name().unwrap_or_default().to_string_lossy();
     let verb = if is_move { "moved" } else { "copied" };
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("The item \u{201c}{name}\u{201d} can't be {verb} into itself."),
+        format!(
+            "The item \u{201c}{}\u{201d} can't be {verb} into itself.",
+            name_of(item)
+        ),
     ))
 }
 
@@ -670,23 +666,20 @@ fn move_or_copy(
     into: PathBuf,
     conflict: Conflict,
     carry: Carry,
-    progress: &mut dyn FnMut(Progress),
 ) -> io::Result<Done> {
     let is_move = carry == Carry::Move;
     let fm = NSFileManager::defaultManager();
-    let total = items.len();
-    let mut results = Vec::with_capacity(total);
-    let mut home = Vec::with_capacity(total);
+    let mut results = Vec::with_capacity(items.len());
+    let mut home = Vec::with_capacity(items.len());
     let mut displaced = Vec::new();
     for item in &items {
         refuse_into_itself(item, &into, is_move)?;
     }
-    for (i, item) in items.iter().enumerate() {
+    for item in &items {
         let name = item
             .file_name()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
-        let dest = into.join(name);
-        let placed = place_one(&fm, item, dest, conflict, is_move)?;
+        let placed = place_one(&fm, item, into.join(name), conflict, is_move)?;
         if carry == Carry::CopyExactly {
             for landed in &placed.landed {
                 keep_owner(&landed.to, &landed.item);
@@ -695,11 +688,6 @@ fn move_or_copy(
         results.extend(placed.dest);
         home.extend(placed.landed);
         displaced.extend(placed.displaced);
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(item.clone()),
-        });
     }
     let undo = undo_of_transfer(is_move, home, displaced);
     Ok(Done { results, undo })
@@ -717,13 +705,11 @@ fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) 
     }
 }
 
-fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+fn put_back(items: Vec<Restore>) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
-    let total = items.len();
-    let mut results = Vec::with_capacity(total);
+    let mut results = Vec::with_capacity(items.len());
     let (mut left, mut cause) = (Vec::new(), None);
-    for (i, restore) in items.into_iter().enumerate() {
-        let current = restore.item.clone();
+    for restore in items {
         match put_one(&fm, &restore) {
             Ok(dest) => results.extend(dest),
             Err(error) => {
@@ -731,20 +717,12 @@ fn put_back(items: Vec<Restore>, progress: &mut dyn FnMut(Progress)) -> io::Resu
                 left.push(restore);
             }
         }
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(current),
-        });
     }
     let done = Done {
         results,
         undo: None,
     };
-    match cause {
-        None => Ok(done),
-        Some(cause) => Err(Unfinished::error(done, Op::PutBack(left), cause)),
-    }
+    Unfinished::check(done, Op::PutBack(left), cause)
 }
 
 fn put_one(fm: &NSFileManager, restore: &Restore) -> io::Result<Option<PathBuf>> {
@@ -761,11 +739,11 @@ fn put_one(fm: &NSFileManager, restore: &Restore) -> io::Result<Option<PathBuf>>
     Ok(placed.dest)
 }
 
-fn batch(ops: Vec<Op>, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+fn batch(ops: Vec<Op>, conflict: Conflict) -> io::Result<Done> {
     let mut results = Vec::new();
     let (mut left, mut cause) = (Vec::new(), None);
     for op in ops {
-        match run(op.clone(), conflict, progress) {
+        match perform(op.clone(), conflict) {
             Ok(done) => results.extend(done.results),
             Err(error) => match Unfinished::from_error(error) {
                 Ok(unfinished) => {
@@ -780,66 +758,44 @@ fn batch(ops: Vec<Op>, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -
             },
         }
     }
-    let done = Done {
-        results,
-        undo: None,
-    };
-    let Some(cause) = cause else {
-        return Ok(done);
-    };
     let left = match left.len() {
         1 => left.pop().expect("one left"),
         _ => Op::Batch(left),
     };
-    Err(Unfinished::error(done, left, cause))
-}
-
-fn trash(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
-    let fm = NSFileManager::defaultManager();
-    let total = items.len();
-    let mut results = Vec::with_capacity(total);
-    let mut home = Vec::with_capacity(total);
-    let (mut left, mut cause) = (Vec::new(), None);
-    for (i, item) in items.into_iter().enumerate() {
-        match trash_one(&fm, &item) {
-            Ok(trashed) => {
-                home.push(Restore {
-                    item: trashed.clone(),
-                    to: item.clone(),
-                });
-                results.push(trashed);
-            }
-            Err(error) => {
-                cause.get_or_insert(error);
-                left.push(item.clone());
-            }
-        }
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(item),
-        });
-    }
     let done = Done {
         results,
-        undo: (!home.is_empty()).then_some(Op::PutBack(home)),
+        undo: None,
     };
-    match cause {
-        None => Ok(done),
-        Some(cause) => Err(Unfinished::error(done, Op::Trash(left), cause)),
-    }
+    Unfinished::check(done, left, cause)
 }
 
-fn delete(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+fn trash(items: Vec<PathBuf>) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
-    let total = items.len();
-    for (i, item) in items.iter().enumerate() {
+    let mut home = Vec::with_capacity(items.len());
+    let (mut left, mut cause) = (Vec::new(), None);
+    for item in items {
+        match trash_one(&fm, &item) {
+            Ok(trashed) => home.push(Restore {
+                item: trashed,
+                to: item,
+            }),
+            Err(error) => {
+                cause.get_or_insert(error);
+                left.push(item);
+            }
+        }
+    }
+    let done = Done {
+        results: home.iter().map(|restore| restore.item.clone()).collect(),
+        undo: (!home.is_empty()).then_some(Op::PutBack(home)),
+    };
+    Unfinished::check(done, Op::Trash(left), cause)
+}
+
+fn delete(items: Vec<PathBuf>) -> io::Result<Done> {
+    let fm = NSFileManager::defaultManager();
+    for item in &items {
         delete_one(&fm, item)?;
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(item.clone()),
-        });
     }
     Ok(Done {
         results: items,
@@ -867,19 +823,11 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
         place_one(&fm, &path, dest, conflict, true)?
     };
     let Some(dest) = placed.dest else {
-        return Ok(Done {
-            results: Vec::new(),
-            undo: None,
-        });
+        return Ok(Done::default());
     };
-    let old_name = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
     let back = Op::Rename {
         path: dest.clone(),
-        name: old_name,
+        name: name_of(&path).into_owned(),
     };
     let undo = match placed.displaced.is_empty() {
         true => back,
@@ -891,70 +839,24 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
     })
 }
 
-fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+fn duplicate(items: Vec<PathBuf>) -> io::Result<Done> {
     let fm = NSFileManager::defaultManager();
-    let total = items.len();
-    let mut results = Vec::with_capacity(total);
-    for (i, item) in items.iter().enumerate() {
-        let dest = duplicate_path(item);
-        transfer(&fm, item, &dest, false)?;
-        results.push(dest);
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(item.clone()),
-        });
-    }
+    let results = items
+        .iter()
+        .map(|item| {
+            let dest = duplicate_path(item);
+            transfer(&fm, item, &dest, false)?;
+            Ok(dest)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     let undo = (!results.is_empty()).then(|| Op::DeleteImmediately(results.clone()));
     Ok(Done { results, undo })
 }
 
-/// Finder keeps the extension inside the name it appends `alias` to.
-fn alias_path(path: &Path) -> PathBuf {
-    let dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let first = dir.join(format!("{name} alias"));
-    if !taken(&first) {
-        return first;
-    }
-    let mut n = 2;
-    loop {
-        let candidate = dir.join(format!("{name} alias {n}"));
-        if !taken(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
-/// Finder names one item's archive after the whole name, extension and all, and a selection's
-/// `Archive.zip`.
-fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
-    let first = items.first()?;
-    let dir = first.parent().unwrap_or_else(|| Path::new(""));
-    let stem = match items.len() {
-        1 => first.file_name()?.to_string_lossy().into_owned(),
-        _ => "Archive".to_string(),
-    };
-    let plain = dir.join(format!("{stem}.zip"));
-    if !taken(&plain) {
-        return Some(plain);
-    }
-    (2..).find_map(|n| {
-        let candidate = dir.join(format!("{stem} {n}.zip"));
-        (!taken(&candidate)).then_some(candidate)
-    })
-}
-
-/// `ditto` is what Archive Utility itself runs, so the archive holds the resource forks and the
-/// extended attributes the way Finder's does. A folder keeps its own name inside the archive and
-/// a file does not, which is what `--keepParent` means for each.
-fn compress(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+/// `ditto` is what Archive Utility runs; it keeps resource forks and extended attributes.
+fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
     let Some(dest) = archive_path(&items) else {
-        return Ok(Done {
-            results: Vec::new(),
-            undo: None,
-        });
+        return Ok(Done::default());
     };
     let mut ditto = std::process::Command::new("/usr/bin/ditto");
     ditto.args(["-c", "-k", "--sequesterRsrc"]);
@@ -964,24 +866,19 @@ fn compress(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Resu
             if items[0].is_dir() {
                 ditto.arg("--keepParent");
             }
-            items[0].clone()
+            &items[0]
         }
         Some(staging) => {
             std::fs::create_dir(staging)?;
             let fm = NSFileManager::defaultManager();
-            for (at, item) in items.iter().enumerate() {
+            for item in &items {
                 let name = item.file_name().unwrap_or_default();
                 transfer(&fm, item, &staging.join(name), false)?;
-                progress(Progress {
-                    done: at,
-                    total: items.len() + 1,
-                    current: Some(item.clone()),
-                });
             }
-            staging.clone()
+            staging
         }
     };
-    let out = ditto.arg(&source).arg(&dest).output();
+    let out = ditto.arg(source).arg(&dest).output();
     if let Some(staging) = &staging {
         let _ = std::fs::remove_dir_all(staging);
     }
@@ -992,42 +889,33 @@ fn compress(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Resu
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    progress(Progress {
-        done: items.len(),
-        total: items.len(),
-        current: Some(dest.clone()),
-    });
     Ok(Done {
         results: vec![dest.clone()],
         undo: Some(Op::Trash(vec![dest])),
     })
 }
 
-fn make_alias(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
-    let total = items.len();
-    let mut results = Vec::with_capacity(total);
-    for (i, item) in items.iter().enumerate() {
-        let dest = alias_path(item);
-        let bookmark = url(item)
-            .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
-                NSURLBookmarkCreationOptions::SuitableForBookmarkFile,
-                None,
-                None,
+fn make_alias(items: Vec<PathBuf>) -> io::Result<Done> {
+    let results = items
+        .iter()
+        .map(|item| {
+            let dest = alias_path(item);
+            let bookmark = url(item)
+                .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+                    NSURLBookmarkCreationOptions::SuitableForBookmarkFile,
+                    None,
+                    None,
+                )
+                .map_err(io_error)?;
+            NSURL::writeBookmarkData_toURL_options_error(
+                &bookmark,
+                &url(&dest),
+                NSURLBookmarkFileCreationOptions::default(),
             )
             .map_err(io_error)?;
-        NSURL::writeBookmarkData_toURL_options_error(
-            &bookmark,
-            &url(&dest),
-            NSURLBookmarkFileCreationOptions::default(),
-        )
-        .map_err(io_error)?;
-        results.push(dest);
-        progress(Progress {
-            done: i + 1,
-            total,
-            current: Some(item.clone()),
-        });
-    }
+            Ok(dest)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
     Ok(Done { results, undo })
 }
@@ -1035,10 +923,7 @@ fn make_alias(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Re
 fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
     check_name(&name)?;
     let fm = NSFileManager::defaultManager();
-    let mut dest = into.join(&name);
-    if taken(&dest) {
-        dest = keep_both_path(&dest);
-    }
+    let dest = free_path(&into.join(&name));
     if is_dir {
         unsafe {
             fm.createDirectoryAtURL_withIntermediateDirectories_attributes_error(
@@ -1084,8 +969,6 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
-    fn no_progress(_: Progress) {}
-
     fn displaced(op: &Op) -> Vec<PathBuf> {
         match op {
             Op::PutBack(items) => items.iter().map(|item| item.item.clone()).collect(),
@@ -1117,7 +1000,6 @@ mod tests {
                 into: dst.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dst.join("a.txt")]);
@@ -1143,14 +1025,13 @@ mod tests {
                 into: dst.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dst.join("a.txt")]);
         assert!(!file.exists(), "move must remove the source");
 
         let undo = done.undo.expect("a move undoes back to its source folder");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
 
@@ -1169,7 +1050,6 @@ mod tests {
                 into: dir.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![file.clone()]);
@@ -1191,7 +1071,6 @@ mod tests {
                 into: dir.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dir.join("a copy.txt")]);
@@ -1215,7 +1094,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![into.join("a 2.txt")]);
@@ -1241,7 +1119,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![into.join("a 3.txt")]);
@@ -1277,7 +1154,6 @@ mod tests {
                 into: dst_parent.clone(),
             },
             Conflict::Merge,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dst.clone()]);
@@ -1314,7 +1190,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::Skip,
-            no_progress,
         )
         .unwrap();
         assert!(done.results.is_empty(), "nothing landed");
@@ -1339,7 +1214,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::Skip,
-            no_progress,
         )
         .unwrap();
         assert!(
@@ -1347,7 +1221,7 @@ mod tests {
             "undoing a skip would trash the source it never touched"
         );
         if let Some(undo) = done.undo {
-            perform(undo, Conflict::Replace, no_progress).unwrap();
+            perform(undo, Conflict::Replace).unwrap();
         }
         assert_eq!(fs::read_to_string(&source).unwrap(), "MY ONLY COPY");
 
@@ -1374,7 +1248,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .expect_err("an unreadable source cannot be copied");
         assert_eq!(
@@ -1407,14 +1280,13 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![into.join("a.txt")]);
         assert_eq!(fs::read_to_string(into.join("a.txt")).unwrap(), "new");
 
         let undo = done.undo.expect("a replace can be undone");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert_eq!(
             fs::read_to_string(into.join("a.txt")).unwrap(),
             "MY ONLY COPY",
@@ -1437,7 +1309,6 @@ mod tests {
                 name: "new.txt".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         let renamed = dir.join("new.txt");
@@ -1445,7 +1316,7 @@ mod tests {
         assert!(renamed.exists() && !file.exists());
 
         let undo = done.undo.unwrap();
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert!(file.exists());
 
@@ -1466,7 +1337,6 @@ mod tests {
                 name: "b.txt".into(),
             },
             Conflict::Skip,
-            no_progress,
         )
         .unwrap();
         assert!(skipped.results.is_empty() && skipped.undo.is_none());
@@ -1479,7 +1349,6 @@ mod tests {
                 name: "b.txt".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![taken.clone()]);
@@ -1487,7 +1356,7 @@ mod tests {
         assert!(!source.exists());
 
         let undo = done.undo.expect("a rename that replaced can be undone");
-        perform(undo, Conflict::Replace, no_progress).unwrap();
+        perform(undo, Conflict::Replace).unwrap();
         assert_eq!(
             fs::read_to_string(&taken).unwrap(),
             "MY ONLY COPY",
@@ -1510,7 +1379,6 @@ mod tests {
                 name: "A.TXT".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dir.join("A.TXT")]);
@@ -1538,7 +1406,7 @@ mod tests {
             } else {
                 Op::Copy { items, into }
             };
-            let err = perform(op, Conflict::KeepBoth, no_progress).expect_err(wording);
+            let err = perform(op, Conflict::KeepBoth).expect_err(wording);
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
             assert!(err.to_string().contains(wording), "{err}");
         }
@@ -1554,7 +1422,6 @@ mod tests {
                 into: folder.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .expect_err("a folder is inside itself");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -1587,7 +1454,6 @@ mod tests {
                     name: name.to_string(),
                 },
                 Conflict::Replace,
-                no_progress,
             )
             .expect_err(&format!("{name:?} is not a name"));
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{name:?}");
@@ -1602,7 +1468,6 @@ mod tests {
                 name: "a:b.txt".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dir.join("a:b.txt")]);
@@ -1628,13 +1493,12 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results.len(), 2);
 
         let undo = done.undo.expect("a move from two folders is undoable");
-        perform(undo, Conflict::Replace, no_progress).unwrap();
+        perform(undo, Conflict::Replace).unwrap();
         assert_eq!(fs::read_to_string(one.join("a.txt")).unwrap(), "a");
         assert_eq!(fs::read_to_string(two.join("b.txt")).unwrap(), "b");
         assert_eq!(fs::read_dir(&into).unwrap().count(), 0);
@@ -1647,20 +1511,10 @@ mod tests {
         let dir = temp_dir("put-back");
         let file = dir.join("collide.txt");
         touch(&file, "first");
-        let first = perform(
-            Op::Trash(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let first = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
 
         touch(&file, "second");
-        let second = perform(
-            Op::Trash(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let second = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
         assert_ne!(
             second.results[0].file_name(),
             file.file_name(),
@@ -1668,7 +1522,7 @@ mod tests {
         );
 
         let undo = second.undo.expect("trash undoes with a put back");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
@@ -1693,12 +1547,11 @@ mod tests {
                 into,
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         touch(&from.join("a.txt"), "arrived since");
 
-        perform(done.undo.unwrap(), Conflict::Replace, no_progress).unwrap();
+        perform(done.undo.unwrap(), Conflict::Replace).unwrap();
         assert_eq!(
             fs::read_to_string(from.join("a.txt")).unwrap(),
             "arrived since",
@@ -1733,7 +1586,6 @@ mod tests {
                 into: into.clone(),
             },
             Conflict::Replace,
-            no_progress,
         );
         let kept = |path: &Path| fs::read_to_string(path).ok();
         let (left, landed) = (kept(&from.join("a.txt")), kept(&locked));
@@ -1764,7 +1616,6 @@ mod tests {
                 into: deep_path(&tree, 300),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(
@@ -1789,7 +1640,6 @@ mod tests {
                 name: "LEAF.txt".into(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(
@@ -1883,7 +1733,6 @@ mod tests {
                 into: dst.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(done.results, vec![dst.join("Deep")]);
@@ -1905,7 +1754,6 @@ mod tests {
                 name: "Moved".into(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         assert_eq!(deep_sh(&dst.join("Moved"), 300, "cat leaf.txt"), "leaf");
@@ -1933,7 +1781,6 @@ mod tests {
                 into: dst.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .expect_err("a directory that cannot be read cannot be copied");
         assert!(
@@ -1964,7 +1811,6 @@ mod tests {
                 into: dst.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .expect_err("a directory that cannot be read cannot be copied");
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
@@ -1993,7 +1839,6 @@ mod tests {
                 into: PathBuf::from("/"),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .expect_err("the system volume is read only");
         assert_eq!(
@@ -2036,15 +1881,10 @@ mod tests {
         lock(&file);
         assert!(locked(&file));
 
-        let done = perform(
-            Op::Trash(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let done = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
         assert!(!taken(&file), "the locked item left its folder");
         let undo = done.undo.expect("a trash undoes with a put back");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
 
         let folder = dir.join("Folder");
@@ -2054,7 +1894,6 @@ mod tests {
         perform(
             Op::DeleteImmediately(vec![folder.clone()]),
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert!(!folder.exists(), "a locked child stopped nothing");
@@ -2072,20 +1911,10 @@ mod tests {
         let file = dir.join("doc.txt");
         touch(&file, "content");
 
-        let done = perform(
-            Op::Duplicate(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let done = perform(Op::Duplicate(vec![file.clone()]), Conflict::Replace).unwrap();
         assert_eq!(done.results, vec![dir.join("doc copy.txt")]);
 
-        let again = perform(
-            Op::Duplicate(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let again = perform(Op::Duplicate(vec![file.clone()]), Conflict::Replace).unwrap();
         assert_eq!(again.results, vec![dir.join("doc copy 2.txt")]);
 
         let _ = fs::remove_dir_all(&dir);
@@ -2098,15 +1927,10 @@ mod tests {
         touch(&file, "content");
         let copy = dir.join("ngx-doc copy.txt");
 
-        let done = perform(
-            Op::Duplicate(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let done = perform(Op::Duplicate(vec![file.clone()]), Conflict::Replace).unwrap();
         assert_eq!(done.results, vec![copy.clone()]);
         let undo = done.undo.expect("a duplicate can be undone");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
 
         assert!(!copy.exists(), "the copy is gone");
         assert_eq!(back.results, vec![copy], "nothing landed in the Trash");
@@ -2144,7 +1968,6 @@ mod tests {
                 into: exact.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
         let taken = perform(
@@ -2153,7 +1976,6 @@ mod tests {
                 into: plain.clone(),
             },
             Conflict::KeepBoth,
-            no_progress,
         )
         .unwrap();
 
@@ -2168,12 +1990,7 @@ mod tests {
         let file = dir.join("doc.txt");
         touch(&file, "content");
 
-        let done = perform(
-            Op::MakeAlias(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let done = perform(Op::MakeAlias(vec![file.clone()]), Conflict::Replace).unwrap();
         assert_eq!(done.results, vec![dir.join("doc.txt alias")]);
         let alias = &done.results[0];
         assert!(fs::symlink_metadata(alias).unwrap().is_file());
@@ -2184,7 +2001,7 @@ mod tests {
         .unwrap();
         assert_eq!(path_from(&resolved), file.canonicalize().unwrap());
 
-        let again = perform(Op::MakeAlias(vec![file]), Conflict::Replace, no_progress).unwrap();
+        let again = perform(Op::MakeAlias(vec![file]), Conflict::Replace).unwrap();
         assert_eq!(again.results, vec![dir.join("doc.txt alias 2")]);
 
         let _ = fs::remove_dir_all(&dir);
@@ -2199,7 +2016,6 @@ mod tests {
                 name: "untitled folder".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(folder.results, vec![dir.join("untitled folder")]);
@@ -2211,7 +2027,6 @@ mod tests {
                 name: "untitled folder".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert_eq!(again.results, vec![dir.join("untitled folder 2")]);
@@ -2222,7 +2037,6 @@ mod tests {
                 name: "untitled.txt".into(),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         assert!(dir.join("untitled.txt").is_file());
@@ -2238,17 +2052,12 @@ mod tests {
         let file = dir.join("throwaway.txt");
         touch(&file, "gone soon");
 
-        let done = perform(
-            Op::Trash(vec![file.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let done = perform(Op::Trash(vec![file.clone()]), Conflict::Replace).unwrap();
         assert!(!file.exists(), "the item left its folder");
         assert!(done.results[0].to_string_lossy().contains(".Trash"));
 
         let undo = done.undo.expect("trash undoes with a move back");
-        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+        let back = perform(undo, Conflict::Replace).unwrap();
         assert!(file.exists(), "put back restores the original path");
         assert_eq!(back.results, vec![file.clone()]);
 
@@ -2261,7 +2070,7 @@ mod tests {
         let dir = temp_dir("compress-file");
         let file = dir.join("sample.txt");
         std::fs::write(&file, b"x").unwrap();
-        let done = perform(Op::Compress(vec![file]), Conflict::KeepBoth, |_| {}).unwrap();
+        let done = perform(Op::Compress(vec![file]), Conflict::KeepBoth).unwrap();
         let zip = dir.join("sample.txt.zip");
         assert_eq!(done.results, vec![zip.clone()]);
         assert!(zip.is_file());
@@ -2282,7 +2091,7 @@ mod tests {
         let folder = dir.join("b");
         std::fs::write(&file, b"x").unwrap();
         std::fs::create_dir(&folder).unwrap();
-        let done = perform(Op::Compress(vec![file, folder]), Conflict::KeepBoth, |_| {}).unwrap();
+        let done = perform(Op::Compress(vec![file, folder]), Conflict::KeepBoth).unwrap();
         assert_eq!(done.results, vec![dir.join("Archive.zip")]);
         let listing = std::process::Command::new("/usr/bin/unzip")
             .args(["-Z1"])
@@ -2319,12 +2128,8 @@ mod tests {
                 true => Op::Move { items, into },
                 false => Op::Copy { items, into },
             };
-            let done = perform(op, Conflict::Merge, no_progress).unwrap();
-            let back = perform(
-                done.undo.expect("a merge undoes"),
-                Conflict::KeepBoth,
-                no_progress,
-            );
+            let done = perform(op, Conflict::Merge).unwrap();
+            let back = perform(done.undo.expect("a merge undoes"), Conflict::KeepBoth);
 
             let read = |path: PathBuf| fs::read_to_string(path).ok();
             assert_eq!(
@@ -2362,11 +2167,7 @@ mod tests {
         touch(&secret, "secret");
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
 
-        let done = perform(
-            Op::Compress(vec![folder.clone()]),
-            Conflict::KeepBoth,
-            no_progress,
-        );
+        let done = perform(Op::Compress(vec![folder.clone()]), Conflict::KeepBoth);
         assert!(done.is_err(), "ditto failed, so the archive is not done");
         assert!(
             !dir.join("Unreadable.zip").exists(),
@@ -2392,7 +2193,6 @@ mod tests {
                 into: dir.join("b"),
             },
             Conflict::Replace,
-            no_progress,
         )
         .unwrap();
         let trashed = displaced(&done.undo.unwrap());
@@ -2422,7 +2222,6 @@ mod tests {
                 into: dir.join("dest"),
             },
             Conflict::Merge,
-            no_progress,
         )
         .unwrap();
         assert!(
@@ -2457,13 +2256,8 @@ mod tests {
             );
         }
 
-        let done = perform(
-            Op::Trash(vec![folder.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
-        perform(done.undo.unwrap(), Conflict::KeepBoth, no_progress).unwrap();
+        let done = perform(Op::Trash(vec![folder.clone()]), Conflict::Replace).unwrap();
+        perform(done.undo.unwrap(), Conflict::KeepBoth).unwrap();
         assert!(locked(&child), "the child's own lock survived the trip");
 
         let _ = std::process::Command::new("/usr/bin/chflags")
@@ -2478,12 +2272,7 @@ mod tests {
         let dir = temp_dir("put-back-partial");
         let kept = dir.join("kept.txt");
         touch(&kept, "kept");
-        let trashed = perform(
-            Op::Trash(vec![kept.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let trashed = perform(Op::Trash(vec![kept.clone()]), Conflict::Replace).unwrap();
         let gone = Restore {
             item: dir.join("gone.txt"),
             to: dir.join("gone.txt"),
@@ -2492,11 +2281,7 @@ mod tests {
             item: trashed.results[0].clone(),
             to: kept.clone(),
         };
-        let back = perform(
-            Op::PutBack(vec![gone, home]),
-            Conflict::KeepBoth,
-            no_progress,
-        );
+        let back = perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth);
         assert!(back.is_err(), "the item that refused is still reported");
         assert_eq!(
             fs::read_to_string(&kept).ok().as_deref(),
@@ -2511,12 +2296,7 @@ mod tests {
         let dir = temp_dir("put-back-left");
         let kept = dir.join("kept.txt");
         touch(&kept, "kept");
-        let trashed = perform(
-            Op::Trash(vec![kept.clone()]),
-            Conflict::Replace,
-            no_progress,
-        )
-        .unwrap();
+        let trashed = perform(Op::Trash(vec![kept.clone()]), Conflict::Replace).unwrap();
         let gone = Restore {
             item: dir.join("gone.txt"),
             to: dir.join("gone.txt"),
@@ -2525,12 +2305,7 @@ mod tests {
             item: trashed.results[0].clone(),
             to: kept.clone(),
         };
-        let error = perform(
-            Op::PutBack(vec![gone, home]),
-            Conflict::KeepBoth,
-            no_progress,
-        )
-        .unwrap_err();
+        let error = perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth).unwrap_err();
         let unfinished = Unfinished::from_error(error).expect("the error says what is left");
         assert_eq!(unfinished.done.results, vec![kept.clone()]);
         let Op::PutBack(left) = unfinished.left else {

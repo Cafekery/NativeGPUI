@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CStr, CString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
@@ -14,16 +14,14 @@ fn check(status: libc::c_int) -> io::Result<()> {
     }
 }
 
-fn name_of(name: &OsStr) -> io::Result<CString> {
-    CString::new(name.as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the name contains a NUL"))
-}
-
 fn split(path: &Path) -> io::Result<(&Path, CString)> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
-    Ok((path.parent().unwrap_or(Path::new("/")), name_of(name)?))
+    Ok((
+        path.parent().unwrap_or(Path::new("/")),
+        CString::new(name.as_bytes())?,
+    ))
 }
 
 fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
@@ -53,7 +51,7 @@ fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     })?;
     for part in path.components() {
         dir = match part {
-            Component::Normal(name) => open_dir_at(&dir, &name_of(name)?)?,
+            Component::Normal(name) => open_dir_at(&dir, &CString::new(name.as_bytes())?)?,
             Component::ParentDir => open_dir_at(&dir, c"..")?,
             Component::RootDir | Component::CurDir | Component::Prefix(_) => dir,
         };
@@ -72,6 +70,10 @@ fn stat_at(dir: &OwnedFd, name: &CStr) -> io::Result<libc::stat> {
         )
     })?;
     Ok(meta)
+}
+
+fn is_dir(meta: &libc::stat) -> bool {
+    meta.st_mode & libc::S_IFMT == libc::S_IFDIR
 }
 
 fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
@@ -136,8 +138,7 @@ fn copy_link(
         return Err(io::Error::last_os_error());
     }
     target.truncate(read as usize);
-    let target = CString::new(target)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the link contains a NUL"))?;
+    let target = CString::new(target)?;
     check(unsafe { libc::symlinkat(target.as_ptr(), ddir.as_raw_fd(), dname.as_ptr()) })
 }
 
@@ -168,46 +169,52 @@ fn copy_file(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::
     copy_state(&from, &into, true)
 }
 
+fn copy_leaf(
+    meta: &libc::stat,
+    sdir: &OwnedFd,
+    sname: &CStr,
+    ddir: &OwnedFd,
+    dname: &CStr,
+) -> io::Result<()> {
+    match meta.st_mode & libc::S_IFMT {
+        libc::S_IFLNK => copy_link(sdir, sname, ddir, dname, meta.st_size),
+        _ => copy_file(sdir, sname, ddir, dname),
+    }
+}
+
 /// Let go on the way down and found again through `..`, or a deep tree runs out of descriptors.
 fn fill_dir(mut from: OwnedFd, mut into: OwnedFd) -> io::Result<(OwnedFd, OwnedFd)> {
     for name in names_in(&from)? {
         let meta = stat_at(&from, &name)?;
-        match meta.st_mode & libc::S_IFMT {
-            libc::S_IFDIR => {
-                make_dir(&into, &name)?;
-                let child = (open_dir_at(&from, &name)?, open_dir_at(&into, &name)?);
-                drop(from);
-                drop(into);
-                let (child_from, child_into) = fill_dir(child.0, child.1)?;
-                from = open_dir_at(&child_from, c"..")?;
-                into = open_dir_at(&child_into, c"..")?;
-                copy_state(&child_from, &child_into, false)?;
-            }
-            libc::S_IFLNK => copy_link(&from, &name, &into, &name, meta.st_size)?,
-            _ => copy_file(&from, &name, &into, &name)?,
+        if !is_dir(&meta) {
+            copy_leaf(&meta, &from, &name, &into, &name)?;
+            continue;
         }
+        make_dir(&into, &name)?;
+        let child = (open_dir_at(&from, &name)?, open_dir_at(&into, &name)?);
+        drop(from);
+        drop(into);
+        let (child_from, child_into) = fill_dir(child.0, child.1)?;
+        from = open_dir_at(&child_from, c"..")?;
+        into = open_dir_at(&child_into, c"..")?;
+        copy_state(&child_from, &child_into, false)?;
     }
     Ok((from, into))
 }
 
 fn copy_at(sdir: &OwnedFd, sname: &CStr, ddir: &OwnedFd, dname: &CStr) -> io::Result<()> {
     let meta = stat_at(sdir, sname)?;
-    match meta.st_mode & libc::S_IFMT {
-        libc::S_IFDIR => {
-            make_dir(ddir, dname)?;
-            let from = open_dir_at(sdir, sname)?;
-            let into = open_dir_at(ddir, dname)?;
-            let (from, into) = fill_dir(from, into)?;
-            copy_state(&from, &into, false)
-        }
-        libc::S_IFLNK => copy_link(sdir, sname, ddir, dname, meta.st_size),
-        _ => copy_file(sdir, sname, ddir, dname),
+    if !is_dir(&meta) {
+        return copy_leaf(&meta, sdir, sname, ddir, dname);
     }
+    make_dir(ddir, dname)?;
+    let (from, into) = fill_dir(open_dir_at(sdir, sname)?, open_dir_at(ddir, dname)?)?;
+    copy_state(&from, &into, false)
 }
 
 fn empty_dir(mut dir: OwnedFd) -> io::Result<OwnedFd> {
     for name in names_in(&dir)? {
-        if stat_at(&dir, &name)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        if !is_dir(&stat_at(&dir, &name)?) {
             unlink_at(&dir, &name, 0)?;
             continue;
         }
@@ -222,7 +229,7 @@ fn empty_dir(mut dir: OwnedFd) -> io::Result<OwnedFd> {
 }
 
 fn remove_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
-    if stat_at(dir, name)?.st_mode & libc::S_IFMT != libc::S_IFDIR {
+    if !is_dir(&stat_at(dir, name)?) {
         return unlink_at(dir, name, 0);
     }
     drop(empty_dir(open_dir_at(dir, name)?)?);
