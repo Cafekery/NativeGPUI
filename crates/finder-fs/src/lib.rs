@@ -1,4 +1,5 @@
 pub mod complete;
+pub mod ds_store;
 pub mod entry;
 pub mod icloud;
 pub mod index;
