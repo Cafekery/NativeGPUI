@@ -1,8 +1,13 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::rc::Rc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
+use finder_fs::ds_store::{self, IconView};
+use finder_fs::sort::name_cmp;
 use gpui::{
     AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
     ScrollHandle, SharedString, TextAlign, Window, div, point, prelude::*, px,
@@ -11,13 +16,15 @@ use native_gpui::tokens::{SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
-use crate::data::Line;
+use crate::data::{Column, Line, Row};
 use crate::dragdrop::{Grabbed, Lit, drop_hover, drop_target, row_carries, row_keys, row_wandered};
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
+use crate::prefs;
 use crate::tags::{tag_dots, tag_dots_w};
 use crate::ui::{pick_on_click, pick_on_press, rename_field};
+use crate::view::ICON_VIEW;
 
 const CELL_PAD: f32 = 48.;
 const ICON_TOP: f32 = 14.;
@@ -32,6 +39,8 @@ const PLATE_PAD: f32 = 4.;
 const PLATE_RADIUS: f32 = 8.;
 const GHOST_ALPHA: f32 = 0.7;
 const SOURCE_ALPHA: f32 = 0.35;
+/// How long a folder shown as icons waits on the main thread for Finder's record of them.
+const FINDER_WAIT: Duration = Duration::from_millis(30);
 
 pub(crate) fn cell(icon: f32) -> f32 {
     icon + CELL_PAD
@@ -57,43 +66,236 @@ impl Look {
 }
 
 type Tile = (SharedString, Point<Pixels>);
+type Slot = (i32, i32);
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Arrangement {
+    Free,
+    Grid,
+    By(Column),
+}
+
+impl Arrangement {
+    /// From Finder's `arrangeBy`.
+    fn of(id: &str) -> Option<Self> {
+        match id {
+            "none" => Some(Self::Free),
+            "grid" => Some(Self::Grid),
+            id => Column::from_id(id).map(Self::By),
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Free => "none",
+            Self::Grid => "grid",
+            Self::By(column) => column.id(),
+        }
+    }
+}
+
+fn slot_at(index: usize, columns: usize) -> Slot {
+    ((index % columns) as i32, (index / columns) as i32)
+}
+
+/// Finder records an icon's place as the centre of its image.
+fn slot_centre((column, row): Slot, size: f32, cell: f32) -> Point<Pixels> {
+    point(
+        px(GRID_X + (column as f32 + 0.5) * cell),
+        px(row as f32 * cell + ICON_TOP + size / 2.),
+    )
+}
+
+fn nearest_slot(at: Point<Pixels>, size: f32, cell: f32) -> Slot {
+    let column = (f32::from(at.x) - GRID_X) / cell - 0.5;
+    let row = (f32::from(at.y) - ICON_TOP - size / 2.) / cell;
+    (column.round().max(0.) as i32, row.round().max(0.) as i32)
+}
+
+fn nearest_free(at: Point<Pixels>, taken: &HashSet<Slot>, size: f32, cell: f32) -> Slot {
+    let (column, row) = nearest_slot(at, size, cell);
+    let mut best: Option<(f32, Slot)> = None;
+    for ring in 0i32.. {
+        let near = (ring as f32 - 0.5).max(0.) * cell;
+        if best.is_some_and(|(far, _)| near * near > far) {
+            break;
+        }
+        for dy in -ring..=ring {
+            for dx in -ring..=ring {
+                let slot = (column + dx, row + dy);
+                if dx.abs().max(dy.abs()) != ring
+                    || slot.0 < 0
+                    || slot.1 < 0
+                    || taken.contains(&slot)
+                {
+                    continue;
+                }
+                let centre = slot_centre(slot, size, cell);
+                let (x, y) = (f32::from(centre.x - at.x), f32::from(centre.y - at.y));
+                let far = x * x + y * y;
+                if best.is_none_or(|(best, _)| far < best) {
+                    best = Some((far, slot));
+                }
+            }
+        }
+    }
+    best.map_or((column, row), |(_, slot)| slot)
+}
+
+fn origin(centre: Point<Pixels>, size: f32, cell: f32) -> Point<Pixels> {
+    point(
+        centre.x - px(cell / 2.),
+        centre.y - px(ICON_TOP + size / 2.),
+    )
+}
+
+/// Finder keeps a sorted view in the order a first click on that column gives.
+fn arranged(lines: &[Line], column: Column, columns: usize, size: f32) -> Vec<Point<Pixels>> {
+    let mut rows: Vec<Arc<Row>> = lines.iter().map(|line| line.row.clone()).collect();
+    crate::read::sort_rows(&mut rows, (column, column.first_ascending()), true);
+    let order: HashMap<*const Row, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(at, row)| (Arc::as_ptr(row), at))
+        .collect();
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let at = order.get(&Arc::as_ptr(&line.row)).copied().unwrap_or(index);
+            slot_centre(slot_at(at, columns), size, cell(size))
+        })
+        .collect()
+}
 
 pub(crate) struct Layout {
     lines: Weak<Vec<Line>>,
     columns: usize,
+    size: f32,
     cell: f32,
     moved: u64,
     pub(crate) tiles: Vec<Tile>,
+    pub(crate) width: f32,
     pub(crate) height: f32,
-    /// The tiles placed by hand, which may stand anywhere.
-    placed: Vec<usize>,
+    by_top: Vec<usize>,
 }
 
 impl Layout {
-    /// The tiles on screen, in order: those on the grid found from the rows in view.
     fn visible(&self, top: f32, room: f32) -> Vec<usize> {
-        let seen = |index: &usize| {
-            let y = f32::from(self.tiles[*index].1.y);
-            y + 2. * self.cell > top && y < top + room + self.cell
-        };
-        let first = ((top / self.cell).floor() - 2.).max(0.) as usize;
-        let last = ((top + room) / self.cell).ceil().max(0.) as usize + 2;
-        let grid = (first * self.columns).min(self.tiles.len())
-            ..((last + 1) * self.columns).min(self.tiles.len());
-        let mut shown: Vec<usize> = grid.clone().filter(seen).collect();
-        shown.extend(
-            self.placed
-                .iter()
-                .filter(|index| !grid.contains(index) && seen(index)),
-        );
+        let y = |index: &usize| f32::from(self.tiles[*index].1.y);
+        let first = self
+            .by_top
+            .partition_point(|index| y(index) + 2. * self.cell <= top);
+        let mut shown: Vec<usize> = self.by_top[first..]
+            .iter()
+            .take_while(|index| y(index) < top + room + self.cell)
+            .copied()
+            .collect();
         shown.sort_unstable();
         shown
+    }
+
+    fn centre(&self, index: usize) -> Point<Pixels> {
+        let at = self.tiles[index].1;
+        point(
+            at.x + px(self.cell / 2.),
+            at.y + px(ICON_TOP + self.size / 2.),
+        )
+    }
+}
+
+/// Where a folder's icons stand: those put here, then those Finder recorded.
+struct Places {
+    folder: &'static str,
+    arrangement: Arrangement,
+    own: HashMap<SharedString, Point<Pixels>>,
+    finder: HashMap<SharedString, Point<Pixels>>,
+}
+
+impl Places {
+    fn new(folder: &'static str, view: IconView) -> Self {
+        let points = |spots: HashMap<String, (f32, f32)>| {
+            spots
+                .into_iter()
+                .map(|(name, (x, y))| (SharedString::from(name), point(px(x), px(y))))
+                .collect()
+        };
+        let arrangement = prefs::icon_arrangement(folder)
+            .and_then(|id| Arrangement::of(&id))
+            .or_else(|| Arrangement::of(view.arrange_by.as_deref()?))
+            .or_else(|| Arrangement::of(prefs::finder().icon_arrange.as_deref()?))
+            .unwrap_or(Arrangement::Free);
+        Self {
+            folder,
+            arrangement,
+            own: points(prefs::icon_spots(folder)),
+            finder: points(view.locations),
+        }
+    }
+
+    fn spot(&self, name: &SharedString) -> Option<Point<Pixels>> {
+        self.own
+            .get(name)
+            .or_else(|| self.finder.get(name))
+            .copied()
+    }
+
+    /// Finder fills a folder's free slots in name order.
+    fn place(
+        &mut self,
+        lines: &[Line],
+        columns: usize,
+        size: f32,
+        settled: bool,
+    ) -> Vec<Point<Pixels>> {
+        let cell = cell(size);
+        let mut centres: Vec<Option<Point<Pixels>>> =
+            lines.iter().map(|line| self.spot(&line.row.name)).collect();
+        let taken: HashSet<Slot> = centres
+            .iter()
+            .flatten()
+            .map(|at| nearest_slot(*at, size, cell))
+            .collect();
+        let mut waiting: Vec<usize> = (0..lines.len())
+            .filter(|&index| centres[index].is_none())
+            .collect();
+        waiting.sort_by(|&a, &b| name_cmp(&lines[a].row.name, &lines[b].row.name));
+        let mut free = (0..)
+            .map(|index| slot_at(index, columns))
+            .filter(|slot| !taken.contains(slot));
+        for &index in &waiting {
+            let centre = slot_centre(free.next().unwrap_or_default(), size, cell);
+            centres[index] = Some(centre);
+            if settled {
+                self.own.insert(lines[index].row.name.clone(), centre);
+            }
+        }
+        if settled && !waiting.is_empty() {
+            self.keep(lines);
+        }
+        centres.into_iter().flatten().collect()
+    }
+
+    fn keep(&mut self, lines: &[Line]) {
+        let listed: HashSet<&SharedString> = lines.iter().map(|line| &line.row.name).collect();
+        self.own.retain(|name, _| listed.contains(name));
+        self.save();
+    }
+
+    fn save(&self) {
+        prefs::set_icon_spots(
+            self.folder,
+            self.own
+                .iter()
+                .map(|(name, at)| (name.as_ref(), (f32::from(at.x), f32::from(at.y)))),
+        );
     }
 }
 
 #[derive(Default)]
 pub(crate) struct Grid {
-    placed: HashMap<SharedString, Point<Pixels>>,
+    places: Option<Places>,
+    reading: Option<&'static str>,
     moved: u64,
     /// Finder leaves icons where it first put them, whatever the pane or the window does next.
     kept: Cell<Option<(usize, f32)>>,
@@ -103,25 +305,6 @@ pub(crate) struct Grid {
 }
 
 impl Grid {
-    fn slot(index: usize, columns: usize, cell: f32) -> Point<Pixels> {
-        let column = index % columns;
-        let row = index / columns;
-        point(px(GRID_X + column as f32 * cell), px(row as f32 * cell))
-    }
-
-    fn at(&self, key: &SharedString, index: usize, columns: usize, cell: f32) -> Point<Pixels> {
-        self.placed
-            .get(key)
-            .copied()
-            .unwrap_or_else(|| Self::slot(index, columns, cell))
-    }
-
-    fn place(&mut self, key: SharedString, at: Point<Pixels>) {
-        self.moved += 1;
-        self.placed
-            .insert(key, point(at.x.max(px(0.)), at.y.max(px(0.))));
-    }
-
     pub(crate) fn hold(&self, fits: usize, cell: f32) -> usize {
         match self.kept.get() {
             Some((columns, at)) if at == cell => columns,
@@ -134,59 +317,217 @@ impl Grid {
 
     pub(crate) fn forget(&mut self) {
         self.moved += 1;
-        self.placed.clear();
+        self.places = None;
+        self.reading = None;
         self.kept.set(None);
         self.dragging = None;
     }
 
-    fn layout(&mut self, lines: &Arc<Vec<Line>>, columns: usize, cell: f32) -> Rc<Layout> {
+    fn read(&mut self, folder: &'static str, view: IconView) {
+        self.places = Some(Places::new(folder, view));
+        self.reading = None;
+        self.moved += 1;
+    }
+
+    fn layout(
+        &mut self,
+        lines: &Arc<Vec<Line>>,
+        columns: usize,
+        size: f32,
+        settled: bool,
+    ) -> Rc<Layout> {
         let held = self.layout.clone().filter(|built| {
             std::ptr::eq(built.lines.as_ptr(), Arc::as_ptr(lines))
                 && built.columns == columns
-                && built.cell == cell
+                && built.size == size
                 && built.moved == self.moved
         });
         if let Some(built) = held {
             return built;
         }
+        let cell = cell(size);
+        let centres = match self.places.as_mut() {
+            Some(places) => match places.arrangement {
+                Arrangement::By(column) => arranged(lines, column, columns, size),
+                Arrangement::Free | Arrangement::Grid => {
+                    places.place(lines, columns, size, settled)
+                }
+            },
+            None => (0..lines.len())
+                .map(|index| slot_centre(slot_at(index, columns), size, cell))
+                .collect(),
+        };
         let tiles: Vec<Tile> = lines
             .iter()
-            .enumerate()
-            .map(|(index, line)| (line.key.clone(), self.at(&line.key, index, columns, cell)))
+            .zip(centres)
+            .map(|(line, centre)| (line.key.clone(), origin(centre, size, cell)))
             .collect();
+        let width = tiles
+            .iter()
+            .map(|(_, at)| f32::from(at.x) + cell)
+            .fold(GRID_X + columns as f32 * cell, f32::max);
         let height = tiles
             .iter()
             .map(|(_, at)| f32::from(at.y) + cell)
             .fold(cell, f32::max);
-        let placed = match self.placed.is_empty() {
-            true => Vec::new(),
-            false => (0..tiles.len())
-                .filter(|&index| self.placed.contains_key(&tiles[index].0))
-                .collect(),
-        };
+        let mut by_top: Vec<usize> = (0..tiles.len()).collect();
+        by_top.sort_by(|&a, &b| f32::from(tiles[a].1.y).total_cmp(&f32::from(tiles[b].1.y)));
         let built = Rc::new(Layout {
             lines: Arc::downgrade(lines),
             columns,
+            size,
             cell,
             moved: self.moved,
             tiles,
+            width,
             height,
-            placed,
+            by_top,
         });
         self.layout = Some(built.clone());
         built
     }
 
-    pub(crate) fn reveal(
-        &self,
-        key: &SharedString,
-        index: usize,
-        columns: usize,
-        icon: f32,
-        visible: gpui::Size<f32>,
-    ) {
-        let cell = cell(icon);
-        let at = self.at(key, index, columns, cell);
+    fn standing(&self) -> Option<(Rc<Layout>, Arc<Vec<Line>>)> {
+        let layout = self.layout.clone()?;
+        let lines = layout.lines.upgrade()?;
+        Some((layout, lines))
+    }
+
+    fn put(&mut self, moves: impl IntoIterator<Item = (usize, Point<Pixels>)>) {
+        let (Some((_, lines)), Some(places)) = (self.standing(), self.places.as_mut()) else {
+            return;
+        };
+        for (index, centre) in moves {
+            if let Some(line) = lines.get(index) {
+                places.own.insert(line.row.name.clone(), centre);
+            }
+        }
+        places.keep(&lines);
+        self.moved += 1;
+    }
+
+    fn arrange(&mut self, arrangement: Arrangement) {
+        let Some(places) = self.places.as_mut() else {
+            return;
+        };
+        let was = std::mem::replace(&mut places.arrangement, arrangement);
+        if was == arrangement {
+            return;
+        }
+        prefs::set_icon_arrangement(places.folder, arrangement.id());
+        self.moved += 1;
+        let Some((layout, _)) = self.standing() else {
+            return;
+        };
+        if let Arrangement::By(_) = was {
+            self.put((0..layout.tiles.len()).map(|index| (index, layout.centre(index))));
+        }
+    }
+
+    fn tidy(&mut self, chosen: impl Fn(&SharedString) -> bool) {
+        let Some((layout, _)) = self.standing() else {
+            return;
+        };
+        let (size, cell) = (layout.size, layout.cell);
+        let (mut moving, staying): (Vec<usize>, Vec<usize>) =
+            (0..layout.tiles.len()).partition(|&index| chosen(&layout.tiles[index].0));
+        let mut taken: HashSet<Slot> = staying
+            .iter()
+            .map(|&index| nearest_slot(layout.centre(index), size, cell))
+            .collect();
+        let off = |index: usize| {
+            let at = layout.centre(index);
+            let on = slot_centre(nearest_slot(at, size, cell), size, cell);
+            f32::from(at.x - on.x).hypot(f32::from(at.y - on.y))
+        };
+        moving.sort_by(|&a, &b| {
+            let (at, to) = (layout.centre(a), layout.centre(b));
+            off(a)
+                .total_cmp(&off(b))
+                .then(f32::from(at.y).total_cmp(&f32::from(to.y)))
+                .then(f32::from(at.x).total_cmp(&f32::from(to.x)))
+        });
+        let moves: Vec<(usize, Point<Pixels>)> = moving
+            .into_iter()
+            .map(|index| {
+                let slot = nearest_free(layout.centre(index), &taken, size, cell);
+                taken.insert(slot);
+                (index, slot_centre(slot, size, cell))
+            })
+            .collect();
+        self.put(moves);
+    }
+
+    fn sort_into(&mut self, column: Column, columns: usize) {
+        let Some((layout, lines)) = self.standing() else {
+            return;
+        };
+        let centres = arranged(&lines, column, columns, layout.size);
+        self.put(centres.into_iter().enumerate());
+    }
+
+    fn shift(&mut self, keys: &[SharedString], delta: Point<Pixels>) {
+        let Some(arrangement) = self.places.as_ref().map(|places| places.arrangement) else {
+            return;
+        };
+        let Some((layout, _)) = self.standing() else {
+            return;
+        };
+        let dragged: Vec<usize> = (0..layout.tiles.len())
+            .filter(|&index| keys.contains(&layout.tiles[index].0))
+            .collect();
+        let (size, cell) = (layout.size, layout.cell);
+        let landed = |index: usize| {
+            let at = layout.centre(index) + delta;
+            point(at.x.max(px(cell / 2.)), at.y.max(px(ICON_TOP + size / 2.)))
+        };
+        let moves: Vec<(usize, Point<Pixels>)> = match arrangement {
+            Arrangement::By(_) => return,
+            Arrangement::Free => dragged
+                .iter()
+                .map(|&index| (index, landed(index)))
+                .collect(),
+            Arrangement::Grid => {
+                let mut taken: HashSet<Slot> = (0..layout.tiles.len())
+                    .filter(|index| !dragged.contains(index))
+                    .map(|index| nearest_slot(layout.centre(index), size, cell))
+                    .collect();
+                dragged
+                    .iter()
+                    .map(|&index| {
+                        let slot = nearest_free(landed(index), &taken, size, cell);
+                        taken.insert(slot);
+                        (index, slot_centre(slot, size, cell))
+                    })
+                    .collect()
+            }
+        };
+        self.put(moves);
+    }
+
+    pub(crate) fn renamed(&mut self, from: &str, to: &str) {
+        let Some(places) = self.places.as_mut() else {
+            return;
+        };
+        if let Some(at) = places.spot(&SharedString::from(from.to_owned())) {
+            places.own.insert(SharedString::from(to.to_owned()), at);
+            places.save();
+        }
+    }
+
+    pub(crate) fn reveal(&self, key: &SharedString, visible: gpui::Size<f32>) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let Some(at) = layout
+            .tiles
+            .iter()
+            .find(|(tile, _)| tile == key)
+            .map(|(_, at)| *at)
+        else {
+            return;
+        };
+        let cell = layout.cell;
         let offset = self.scroll.offset();
         let into_view = |start: f32, extent: f32, seen: f32| {
             if start < seen {
@@ -216,7 +557,6 @@ impl Grid {
 
 pub(crate) struct TileDrag {
     key: SharedString,
-    grab: Rc<Cell<Point<Pixels>>>,
 }
 
 impl Grabbed for TileDrag {
@@ -335,7 +675,7 @@ fn tile_at(
     at: Point<Pixels>,
     cell: f32,
 ) -> Option<usize> {
-    layout.iter().position(|(_, tile)| {
+    layout.iter().rposition(|(_, tile)| {
         at.x >= tile.x && at.x < tile.x + px(cell) && at.y >= tile.y && at.y < tile.y + px(cell)
     })
 }
@@ -372,7 +712,10 @@ impl FinderDemo {
             self.icons.dragging = None;
         }
 
-        let lines = self.lines(false);
+        let lines = match self.know_places(cx) {
+            true => self.lines(false),
+            false => Arc::default(),
+        };
         let columns = self.columns(window);
         let size = self.icon_size as f32;
         let scale = self.scale;
@@ -382,10 +725,13 @@ impl FinderDemo {
         let scroll = self.icons.scroll.clone();
         let dragging = self.icons.dragging.clone();
 
-        let layout = self.icons.layout(&lines, columns, cell);
-        let height = layout.height;
+        let settled = self
+            .folders
+            .get(self.here())
+            .is_some_and(|folder| !folder.loading);
+        let layout = self.icons.layout(&lines, columns, size, settled);
+        let (width, height) = (layout.width, layout.height);
 
-        let width = GRID_X + columns as f32 * cell;
         let shift = self.bands.icons.shown();
         let mut canvas = div()
             .id("ng.finder.icons")
@@ -414,7 +760,6 @@ impl FinderDemo {
             let is_selected = self.selected.contains(&line.key);
             let carried = self.tags.get(&line.key).cloned().unwrap_or_default();
             let held = dragging.as_ref() == Some(&line.key);
-            let grab = Rc::new(Cell::new(point(px(0.), px(0.))));
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
 
@@ -441,13 +786,11 @@ impl FinderDemo {
                 .on_drag(
                     TileDrag {
                         key: line.key.clone(),
-                        grab: grab.clone(),
                     },
                     {
                         let this = this.clone();
                         let line = line.clone();
-                        move |drag: &TileDrag, offset, _window, cx: &mut App| {
-                            drag.grab.set(offset);
+                        move |drag: &TileDrag, _, _window, cx: &mut App| {
                             let key = drag.key.clone();
                             this.update(cx, |this: &mut FinderDemo, _| {
                                 this.icons.dragging = Some(key);
@@ -484,19 +827,13 @@ impl FinderDemo {
         let this_drop = this.clone();
         let dropped_lines = lines.clone();
         canvas = canvas.on_drop(move |drag: &TileDrag, window, cx| {
-            let Some(from) = dropped
-                .tiles
-                .iter()
-                .find(|(key, _)| key == &drag.key)
-                .map(|(_, at)| *at)
-            else {
+            if !dropped.tiles.iter().any(|(key, _)| key == &drag.key) {
                 return;
-            };
+            }
             let landed = window.mouse_position()
                 - drop_scroll.bounds().origin
                 - drop_scroll.offset()
                 - shift;
-            let delta = landed - drag.grab.get() - from;
             let moved = dropped.clone();
             let under = tile_at(&dropped.tiles, landed, cell)
                 .and_then(|index| dropped_lines.get(index))
@@ -516,19 +853,18 @@ impl FinderDemo {
                         cx.notify();
                         return;
                     }
-                    let group: Vec<Tile> = if this.selected.contains(&drag.key) {
-                        moved
+                    let group: Vec<SharedString> = match this.selected.contains(&drag.key) {
+                        true => moved
                             .tiles
                             .iter()
-                            .filter(|(key, _)| this.selected.contains(key))
+                            .map(|(key, _)| key)
+                            .filter(|key| this.selected.contains(*key))
                             .cloned()
-                            .collect()
-                    } else {
-                        vec![(drag.key.clone(), from)]
+                            .collect(),
+                        false => vec![drag.key.clone()],
                     };
-                    for (key, at) in group {
-                        this.icons.place(key, at + delta);
-                    }
+                    this.icons
+                        .shift(&group, window.mouse_position() - this.pressed_at);
                     this.icons.dragging = None;
                     cx.notify();
                 })
@@ -561,5 +897,138 @@ impl FinderDemo {
                 .ok();
             });
         tiles_menu("ng.finder.icons.menu", this_menu, hit, canvas).into_any_element()
+    }
+
+    fn keeps_places(&self) -> bool {
+        self.here().starts_with('/')
+            && !self.results()
+            && self.filtered.trim().is_empty()
+            && self.type_filter.is_none()
+    }
+
+    /// Whether Finder's record of the folder's icons has been read.
+    fn know_places(&mut self, cx: &mut Context<Self>) -> bool {
+        let here = self.here();
+        if !self.keeps_places() {
+            self.icons.places = None;
+            return true;
+        }
+        if self
+            .icons
+            .places
+            .as_ref()
+            .is_some_and(|places| places.folder == here)
+        {
+            return true;
+        }
+        if self.icons.reading == Some(here) {
+            return false;
+        }
+        let (sent, answer) = mpsc::channel();
+        std::thread::spawn(move || sent.send(ds_store::icon_view(Path::new(here))).ok());
+        if let Ok(view) = answer.recv_timeout(FINDER_WAIT) {
+            self.icons.read(here, view);
+            return true;
+        }
+        self.icons.reading = Some(here);
+        cx.spawn(async move |this, cx| {
+            let view = loop {
+                cx.background_executor().timer(FINDER_WAIT).await;
+                match answer.try_recv() {
+                    Ok(view) => break view,
+                    Err(TryRecvError::Empty) => continue,
+                    Err(TryRecvError::Disconnected) => return,
+                }
+            };
+            this.update(cx, |this, cx| {
+                if this.icons.reading == Some(here) {
+                    this.icons.read(here, view);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        false
+    }
+
+    /// `None` for a listing that is not one folder's.
+    pub(crate) fn arrangement(&self) -> Option<Arrangement> {
+        let here = self.here();
+        self.icons
+            .places
+            .as_ref()
+            .filter(|places| places.folder == here)
+            .map(|places| places.arrangement)
+    }
+
+    /// Finder cleans up only icons that are not kept sorted.
+    pub(crate) fn cleans_up(&self) -> bool {
+        self.view == ICON_VIEW
+            && matches!(
+                self.arrangement(),
+                Some(Arrangement::Free | Arrangement::Grid)
+            )
+    }
+
+    pub(crate) fn arrange(&mut self, arrangement: Arrangement, cx: &mut Context<Self>) {
+        self.icons.arrange(arrangement);
+        cx.notify();
+    }
+
+    pub(crate) fn icon_sort(&mut self, column: Column, cx: &mut Context<Self>) {
+        self.arrange(Arrangement::By(column), cx);
+    }
+
+    pub(crate) fn clean_up(&mut self, selection: bool, cx: &mut Context<Self>) {
+        if !self.cleans_up() {
+            return;
+        }
+        let chosen = self.selected.snapshot();
+        self.icons.tidy(|key| !selection || chosen.contains(key));
+        cx.notify();
+    }
+
+    pub(crate) fn clean_up_by(&mut self, column: Column, window: &Window, cx: &mut Context<Self>) {
+        if !self.cleans_up() {
+            return;
+        }
+        let columns = self.fits(window);
+        self.icons.sort_into(column, columns);
+        cx.notify();
+    }
+
+    /// The nearest icon that way, straying off the row or column counting double.
+    pub(crate) fn icon_step(&self, key: &str, from: Option<&SharedString>) -> Option<SharedString> {
+        let layout = self.icons.layout.as_ref()?;
+        let tiles = &layout.tiles;
+        let reading = |a: &&Tile, b: &&Tile| {
+            f32::from(a.1.y)
+                .total_cmp(&f32::from(b.1.y))
+                .then(f32::from(a.1.x).total_cmp(&f32::from(b.1.x)))
+        };
+        let Some(here) = from.and_then(|from| tiles.iter().find(|(tile, _)| tile == from)) else {
+            let pick = match key {
+                "down" | "right" => tiles.iter().min_by(reading),
+                _ => tiles.iter().max_by(reading),
+            };
+            return pick.map(|(tile, _)| tile.clone());
+        };
+        let reach = |(_, at): &&Tile| {
+            let (x, y) = (f32::from(at.x - here.1.x), f32::from(at.y - here.1.y));
+            let (ahead, aside) = match key {
+                "left" => (-x, y),
+                "right" => (x, y),
+                "up" => (-y, x),
+                _ => (y, x),
+            };
+            (ahead > 0.5).then_some(ahead + 2. * aside.abs())
+        };
+        let next = tiles
+            .iter()
+            .filter_map(|tile| Some((reach(&tile)?, tile)))
+            .min_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map_or(here, |(_, tile)| tile);
+        Some(next.0.clone())
     }
 }

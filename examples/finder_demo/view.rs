@@ -8,7 +8,7 @@ use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
 use crate::views::header::PANE_INSET;
-use crate::views::icon::cell;
+use crate::views::icon::{Arrangement, cell};
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
 
 pub(crate) const ICON_VIEW: usize = 0;
@@ -159,19 +159,25 @@ impl FinderDemo {
         ((self.list_content_w() - self.list_room) * 100.).round() > 0.
     }
 
-    pub(crate) fn columns(&self, window: &Window) -> usize {
-        let metrics = self.metrics();
+    pub(crate) fn fits(&self, window: &Window) -> usize {
         let pane = match self.preview_shown() {
             true => self.preview_w,
             false => 0.,
         };
-        let avail = f32::from(window.viewport_size().width) - f32::from(metrics.left) - pane - 24.;
-        let tile = cell(self.icon_size as f32);
-        let fits = ((avail / tile).floor() as usize).max(1);
+        let avail =
+            f32::from(window.viewport_size().width) - f32::from(self.metrics().left) - pane - 24.;
+        ((avail / cell(self.icon_size as f32)).floor() as usize).max(1)
+    }
+
+    /// Icons kept sorted reflow with the window; others keep the columns first laid out.
+    pub(crate) fn columns(&self, window: &Window) -> usize {
+        let fits = self.fits(window);
+        let sorted = matches!(self.arrangement(), Some(Arrangement::By(_)));
         // Finder arranges a folder when its items first show, not while the window is still opening.
-        match metrics == SidebarMetrics::default() || self.lines(false).is_empty() {
+        match sorted || self.metrics() == SidebarMetrics::default() || self.lines(false).is_empty()
+        {
             true => fits,
-            false => self.icons.hold(fits, tile),
+            false => self.icons.hold(fits, cell(self.icon_size as f32)),
         }
     }
 }

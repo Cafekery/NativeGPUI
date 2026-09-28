@@ -27,7 +27,7 @@ use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
-use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
@@ -340,6 +340,9 @@ impl FinderDemo {
     /// A header click or a Sort By row: the list turns round on its own key, the other views
     /// take the key.
     pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
+        if self.view == ICON_VIEW && self.arrangement().is_some() {
+            return self.icon_sort(column, cx);
+        }
         let ascending = match self.view {
             COLUMN_VIEW | GALLERY_VIEW => column.first_ascending(),
             _ if self.sort == column => !self.ascending,
