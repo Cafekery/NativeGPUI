@@ -37,7 +37,7 @@ pub use small::{
 };
 pub use switch::{NativeSwitch, native_switch};
 pub use text_field::{
-    NativeTextField, native_search_field, native_secure_field, native_text_field,
+    NativeTextField, native_combo_box, native_search_field, native_secure_field, native_text_field,
 };
 
 pub(crate) fn axis(reported: f64) -> Length {

@@ -8,11 +8,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType, NSFont, NSSearchField,
-    NSSearchFieldDelegate, NSSecureTextField, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSComboBox, NSComboBoxDelegate, NSControl, NSControlSize, NSControlTextEditingDelegate,
+    NSFocusRingType, NSFont, NSSearchField, NSSearchFieldDelegate, NSSecureTextField, NSTextField,
+    NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
+    MainThreadMarker, NSArray, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
 };
 
 use crate::bridge::appkit::fitting_size_keyed;
@@ -39,11 +40,17 @@ pub fn native_search_field(id: impl Into<ElementId>, text: &str) -> NativeTextFi
     NativeTextField::new(id.into(), Kind::Search, text)
 }
 
+/// A field with a pop-up list of [`NativeTextField::items`]; picking one fires `on_change`.
+pub fn native_combo_box(id: impl Into<ElementId>, text: &str) -> NativeTextField {
+    NativeTextField::new(id.into(), Kind::Combo, text)
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Kind {
     Plain,
     Secure,
     Search,
+    Combo,
 }
 
 impl Kind {
@@ -52,6 +59,7 @@ impl Kind {
             Kind::Plain => "NSTextField",
             Kind::Secure => "NSSecureTextField",
             Kind::Search => "NSSearchField",
+            Kind::Combo => "NSComboBox",
         }
     }
 
@@ -65,6 +73,7 @@ impl Kind {
             Kind::Plain => NSTextField::new(mtm),
             Kind::Secure => Retained::into_super(NSSecureTextField::new(mtm)),
             Kind::Search => Retained::into_super(NSSearchField::new(mtm)),
+            Kind::Combo => Retained::into_super(NSComboBox::new(mtm)),
         };
         field.setControlSize(control_size);
         if let Some(size) = font_size {
@@ -79,6 +88,7 @@ pub struct NativeTextField {
     kind: Kind,
     text: SharedString,
     placeholder: SharedString,
+    items: Vec<SharedString>,
     enabled: bool,
     stretch: bool,
     borderless: bool,
@@ -99,6 +109,7 @@ impl NativeTextField {
             kind,
             text: SharedString::from(text.to_owned()),
             placeholder: SharedString::default(),
+            items: Vec::new(),
             control_size: ControlSize::default(),
             font_size: None,
             enabled: true,
@@ -120,6 +131,12 @@ impl NativeTextField {
 
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// A combo box's list.
+    pub fn items(mut self, items: impl IntoIterator<Item = impl Into<SharedString>>) -> Self {
+        self.items = items.into_iter().map(Into::into).collect();
         self
     }
 
@@ -219,6 +236,16 @@ impl NativeTextField {
                     field
                 })
                 .into_super(),
+            Kind::Combo => {
+                let combo = slot.place(Layer::Above, |mtm, target| {
+                    let combo = NSComboBox::new(mtm);
+                    combo.setCompletes(true);
+                    configure(&combo, target, submit);
+                    combo
+                });
+                sync_items(&combo, &self.items);
+                combo.into_super()
+            }
         };
 
         let control_size = NSControlSize::from(self.control_size);
@@ -338,6 +365,42 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
     unsafe { field.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
 }
 
+fn sync_items(combo: &NSComboBox, items: &[SharedString]) {
+    let have = combo.objectValues();
+    let same = have.len() == items.len()
+        && have.iter().zip(items).all(|(had, item)| {
+            had.downcast_ref::<NSString>()
+                .is_some_and(|had| had.to_string() == **item)
+        });
+    if same {
+        return;
+    }
+    combo.removeAllItems();
+    let strings: Vec<_> = items.iter().map(|item| NSString::from_str(item)).collect();
+    let strings: Retained<NSArray> =
+        unsafe { Retained::cast_unchecked(NSArray::from_retained_slice(&strings)) };
+    unsafe { combo.addItemsWithObjectValues(&strings) };
+}
+
+fn text_changed(notification: &NSNotification) {
+    let Some(object) = notification.object() else {
+        return;
+    };
+    let Some(control) = object.downcast_ref::<NSControl>() else {
+        return;
+    };
+    let (Some(action), Some(target)) = (control.action(), control.target()) else {
+        return;
+    };
+    if let Some(field) = control.downcast_ref::<NSTextField>() {
+        set_pending(field, pending(field) + 1);
+    }
+    let submit = control.tag();
+    control.setTag(submit ^ SUBMIT_CHANNEL as isize);
+    let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
+    control.setTag(submit);
+}
+
 fn send_on(control: &NSControl, channel: u64) -> Bool {
     let (Some(action), Some(target)) = (control.action(), control.target()) else {
         return Bool::NO;
@@ -360,22 +423,7 @@ define_class!(
     unsafe impl NSControlTextEditingDelegate for FieldDelegate {
         #[unsafe(method(controlTextDidChange:))]
         fn control_text_did_change(&self, notification: &NSNotification) {
-            let Some(object) = notification.object() else {
-                return;
-            };
-            let Some(control) = object.downcast_ref::<NSControl>() else {
-                return;
-            };
-            let (Some(action), Some(target)) = (control.action(), control.target()) else {
-                return;
-            };
-            if let Some(field) = control.downcast_ref::<NSTextField>() {
-                set_pending(field, pending(field) + 1);
-            }
-            let submit = control.tag();
-            control.setTag(submit ^ SUBMIT_CHANNEL as isize);
-            let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
-            control.setTag(submit);
+            text_changed(notification);
         }
 
         #[unsafe(method(control:textView:doCommandBySelector:))]
@@ -407,6 +455,27 @@ define_class!(
 
     unsafe impl NSTextFieldDelegate for FieldDelegate {}
     unsafe impl NSSearchFieldDelegate for FieldDelegate {}
+
+    unsafe impl NSComboBoxDelegate for FieldDelegate {
+        /// Fires before the combo box shows the item, so the item is written first.
+        #[unsafe(method(comboBoxSelectionDidChange:))]
+        fn combo_box_selection_did_change(&self, notification: &NSNotification) {
+            let Some(object) = notification.object() else {
+                return;
+            };
+            let Some(combo) = object.downcast_ref::<NSComboBox>() else {
+                return;
+            };
+            let Some(picked) = combo
+                .objectValueOfSelectedItem()
+                .and_then(|picked| picked.downcast::<NSString>().ok())
+            else {
+                return;
+            };
+            combo.setStringValue(&picked);
+            text_changed(notification);
+        }
+    }
 );
 
 fn shared_delegate(mtm: MainThreadMarker) -> Retained<FieldDelegate> {
