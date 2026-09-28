@@ -32,6 +32,59 @@ enum Said {
     Unrecorded,
 }
 
+/// A computer as Finder's Network view lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Computer {
+    pub name: String,
+    pub model: Option<String>,
+    /// What it offers, as sharingd names it: `smb`, `afp`, `vnc`…
+    pub protocols: Vec<String>,
+}
+
+impl Computer {
+    /// What opening it asks for: its files where it shares them, over SMB before AFP, else its
+    /// screen.
+    pub fn url(&self) -> Option<String> {
+        let (scheme, service) = [
+            ("smb", "_smb._tcp"),
+            ("afp", "_afpovertcp._tcp"),
+            ("vnc", "_rfb._tcp"),
+        ]
+        .into_iter()
+        .find(|(scheme, _)| self.protocols.iter().any(|offered| offered == scheme))?;
+        Some(format!(
+            "{scheme}://{}.{service}.local",
+            escaped(&self.name)
+        ))
+    }
+}
+
+/// Every byte outside RFC 3986's unreserved set, the way a Bonjour mount's source spells its name.
+fn escaped(name: &str) -> String {
+    name.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// Finder's Network list, which sharingd browses for it: `listed` gets the whole list each time
+/// it changes, until it returns false.
+pub fn network(mut listed: impl FnMut(Vec<Computer>) -> bool) {
+    let (tx, lists) = channel();
+    let Some(_browsing) = browse(tx, networked) else {
+        return;
+    };
+    while let Ok(list) = lists.recv() {
+        if !autoreleasepool(|_| listed(list)) {
+            break;
+        }
+    }
+}
+
 /// Calls `found` with the model of each host a network volume was mounted from, as each answer
 /// lands within `wait`; `None` is a Bonjour server without one, which Finder draws as a Mac.
 ///
@@ -41,7 +94,7 @@ enum Said {
 pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Option<&str>)) {
     let deadline = Instant::now() + wait;
     let (tx, answers) = channel();
-    let browsing = browse(tx.clone());
+    let browsing = browse(tx.clone(), browsed);
     let mut left: Vec<(String, &String, [bool; 2])> = hosts
         .iter()
         .map(|host| (named(host), host, [false; 2]))
@@ -85,13 +138,7 @@ pub fn models(hosts: &[String], wait: Duration, mut found: impl FnMut(&str, Opti
             autoreleasepool(|_| found(left.swap_remove(at).1, model.as_deref()));
         }
     }
-    if let Some((browser, queue, shared)) = browsing {
-        unsafe {
-            dispatch_sync_f(queue, browser, shared.1.invalidate);
-            CFRelease(browser);
-            dispatch_release(queue);
-        }
-    }
+    drop(browsing);
 }
 
 /// Finder titles a Bonjour server by its instance name.
@@ -177,16 +224,27 @@ unsafe extern "C" fn txt(
     }
 }
 
-/// The SF Symbol Finder's sidebar draws for a server of this model.
-pub fn symbol(model: Option<&str>) -> String {
+/// A model's type; one no type claims is a Mac.
+fn device_type(model: Option<&str>) -> Option<Retained<UTType>> {
     let tag = NSString::from_str("com.apple.device-model-code");
-    let kind = model
+    model
         .and_then(|model| {
             UTType::typeWithTag_tagClass_conformingToType(&NSString::from_str(model), &tag, None)
         })
         .filter(|kind| !kind.isDynamic())
-        .or_else(|| UTType::typeWithIdentifier(&NSString::from_str("com.apple.mac")));
-    let Some(kind) = kind else {
+        .or_else(|| UTType::typeWithIdentifier(&NSString::from_str("com.apple.mac")))
+}
+
+/// The type whose icon Finder draws for a computer of this model, and the kind it names.
+pub fn model_type(model: Option<&str>) -> Option<(String, String)> {
+    let kind = device_type(model)?;
+    let named = kind.localizedDescription().map(|named| named.to_string());
+    Some((kind.identifier().to_string(), named.unwrap_or_default()))
+}
+
+/// The SF Symbol Finder's sidebar draws for a server of this model.
+pub fn symbol(model: Option<&str>) -> String {
+    let Some(kind) = device_type(model) else {
         return "display".into();
     };
     type_symbol(&kind).unwrap_or_else(|| {
@@ -243,6 +301,8 @@ struct Sharing {
     invalidate: unsafe extern "C" fn(*mut c_void),
     url: unsafe extern "C" fn(*const AnyObject) -> *mut NSURL,
     model: unsafe extern "C" fn(*const AnyObject) -> *mut NSString,
+    name: unsafe extern "C" fn(*const AnyObject) -> *mut NSString,
+    protocols: unsafe extern "C" fn(*const AnyObject) -> *mut NSArray<NSString>,
     network: *const *const NSString,
 }
 
@@ -264,21 +324,38 @@ impl Sharing {
             invalidate: find(lib, c"SFBrowserInvalidate")?,
             url: find(lib, c"SFNodeCopyURL")?,
             model: find(lib, c"SFNodeCopyModel")?,
+            name: find(lib, c"SFNodeCopyDisplayName")?,
+            protocols: find(lib, c"SFNodeCopyProtocols")?,
             network: find(lib, c"kSFBrowserKindNetwork")?,
         })
     }
 }
 
-type Shared = (Sender<(String, Said)>, Sharing);
+/// sharingd's network browser, answering on its own queue until dropped.
+struct Browsing<T> {
+    browser: *mut c_void,
+    queue: *mut c_void,
+    shared: Arc<(T, Sharing)>,
+}
 
-fn browse(tx: Sender<(String, Said)>) -> Option<(*mut c_void, *mut c_void, Arc<Shared>)> {
-    let shared = Arc::new((tx, Sharing::load()?));
+impl<T> Drop for Browsing<T> {
+    fn drop(&mut self) {
+        unsafe {
+            dispatch_sync_f(self.queue, self.browser, self.shared.1.invalidate);
+            CFRelease(self.browser);
+            dispatch_release(self.queue);
+        }
+    }
+}
+
+fn browse<T>(state: T, client: Browsed) -> Option<Browsing<T>> {
+    let shared = Arc::new((state, Sharing::load()?));
     let sharing = &shared.1;
     let context = Context {
         version: 0,
         info: Arc::as_ptr(&shared).cast(),
-        retain,
-        release,
+        retain: retain::<T>,
+        release: release::<T>,
         describe: std::ptr::null(),
     };
     unsafe {
@@ -287,20 +364,24 @@ fn browse(tx: Sender<(String, Said)>) -> Option<(*mut c_void, *mut c_void, Arc<S
             return None;
         }
         let queue = dispatch_queue_create(c"finder-fs.servers".as_ptr(), std::ptr::null());
-        (sharing.set_client)(browser, browsed, &context);
+        (sharing.set_client)(browser, client, &context);
         (sharing.set_queue)(browser, queue);
         (sharing.open)(browser, std::ptr::null_mut(), std::ptr::null(), 0);
-        Some((browser, queue, shared))
+        Some(Browsing {
+            browser,
+            queue,
+            shared,
+        })
     }
 }
 
-unsafe extern "C" fn retain(info: *const c_void) -> *const c_void {
-    unsafe { Arc::increment_strong_count(info.cast::<Shared>()) };
+unsafe extern "C" fn retain<T>(info: *const c_void) -> *const c_void {
+    unsafe { Arc::increment_strong_count(info.cast::<(T, Sharing)>()) };
     info
 }
 
-unsafe extern "C" fn release(info: *const c_void) {
-    unsafe { Arc::decrement_strong_count(info.cast::<Shared>()) };
+unsafe extern "C" fn release<T>(info: *const c_void) {
+    unsafe { Arc::decrement_strong_count(info.cast::<(T, Sharing)>()) };
 }
 
 /// A server whose model sharingd has yet to fetch is listed without one, as is a Bonjour server
@@ -313,7 +394,7 @@ unsafe extern "C" fn browsed(
     _: isize,
     info: *mut c_void,
 ) {
-    let (tx, sharing) = unsafe { &*info.cast::<Shared>() };
+    let (tx, sharing) = unsafe { &*info.cast::<(Sender<(String, Said)>, Sharing)>() };
     let children = unsafe { Retained::from_raw((sharing.children)(browser, node)) };
     for child in children.iter().flat_map(|children| children.iter()) {
         let url = unsafe { Retained::from_raw((sharing.url)(&*child)) };
@@ -323,6 +404,37 @@ unsafe extern "C" fn browsed(
             tx.send((host.to_string(), said)).ok();
         }
     }
+}
+
+unsafe extern "C" fn networked(
+    browser: *mut c_void,
+    node: *mut c_void,
+    _: *const c_void,
+    _: isize,
+    _: isize,
+    info: *mut c_void,
+) {
+    let (tx, sharing) = unsafe { &*info.cast::<(Sender<Vec<Computer>>, Sharing)>() };
+    let children = unsafe { Retained::from_raw((sharing.children)(browser, node)) };
+    let list = children
+        .iter()
+        .flat_map(|children| children.iter())
+        .filter_map(|child| {
+            let name = unsafe { Retained::from_raw((sharing.name)(&*child)) }?;
+            let model = unsafe { Retained::from_raw((sharing.model)(&*child)) };
+            let protocols = unsafe { Retained::from_raw((sharing.protocols)(&*child)) };
+            Some(Computer {
+                name: name.to_string(),
+                model: model.map(|model| model.to_string()),
+                protocols: protocols
+                    .iter()
+                    .flat_map(|protocols| protocols.iter())
+                    .map(|protocol| protocol.to_string())
+                    .collect(),
+            })
+        })
+        .collect();
+    tx.send(list).ok();
 }
 
 extern "C" {
@@ -385,5 +497,37 @@ mod tests {
         assert_eq!(instance(&name), Some("NG Jace’s Mini"));
         assert_eq!(instance(&named("ng-mini.local")), None);
         assert_eq!(named("100%"), "100%");
+    }
+
+    #[test]
+    fn a_computer_opens_its_files_before_its_screen_and_mounts_under_its_own_name() {
+        let computer = |protocols: &[&str]| Computer {
+            name: "Jace’s MacBook Air".into(),
+            model: None,
+            protocols: protocols.iter().map(|it| it.to_string()).collect(),
+        };
+        let url = computer(&["vnc", "afp", "smb"]).url().unwrap();
+        assert_eq!(url, "smb://Jace%E2%80%99s%20MacBook%20Air._smb._tcp.local");
+        let host = url.strip_prefix("smb://").unwrap();
+        assert_eq!(title(host), "Jace’s MacBook Air");
+        assert!(
+            computer(&["vnc", "afp"])
+                .url()
+                .unwrap()
+                .starts_with("afp://")
+        );
+        assert!(
+            computer(&["afp"])
+                .url()
+                .unwrap()
+                .ends_with("._afpovertcp._tcp.local")
+        );
+        assert!(
+            computer(&["vnc"])
+                .url()
+                .unwrap()
+                .ends_with("._rfb._tcp.local")
+        );
+        assert_eq!(computer(&[]).url(), None);
     }
 }
