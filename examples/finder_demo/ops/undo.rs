@@ -9,7 +9,7 @@ use crate::sound::Sound;
 actions!(finder_demo, [UndoOp, RedoOp]);
 
 impl FinderDemo {
-    pub(crate) fn perform_undo(&mut self, cx: &mut Context<Self>) {
+    fn perform_undo(&mut self, cx: &mut Context<Self>) {
         let Some(undoable) = self.journal.pop_undo() else {
             return;
         };
@@ -26,7 +26,7 @@ impl FinderDemo {
         );
     }
 
-    pub(crate) fn perform_redo(&mut self, cx: &mut Context<Self>) {
+    fn perform_redo(&mut self, cx: &mut Context<Self>) {
         let Some(undoable) = self.journal.pop_redo() else {
             return;
         };
