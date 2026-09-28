@@ -86,6 +86,7 @@ fn main() {
             // The panel is never gpui's active window, so the menu row's ⌘J would not reach it.
             KeyBinding::new("cmd-j", ShowViewOptions, Some(options::CONTEXT)),
         ]);
+        navigate::arrive_on_keys(cx);
         // Helper windows such as the preview pane do not keep the app alive.
         cx.on_window_closed(|cx, _| {
             if !cx
