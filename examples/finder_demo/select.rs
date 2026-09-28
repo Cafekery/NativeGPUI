@@ -327,7 +327,6 @@ impl FinderDemo {
         extend: bool,
         toggle: bool,
     ) {
-        self.inspecting = None;
         if toggle {
             if !self.selected.remove(&line.key) {
                 self.selected.insert(line.key.clone());

@@ -18,6 +18,7 @@ const VIEW: &str = "ng.finder.view";
 const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
+const GALLERY_PANE: &str = "ng.finder.pane.gallery";
 const ICON: &str = "ng.finder.icon";
 const LIST_ICON: &str = "ng.finder.list.icon";
 const STRIP_ICON: &str = "ng.finder.strip.icon";
@@ -34,6 +35,8 @@ pub(crate) struct Finder {
     pub(crate) relative_dates: bool,
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
+    /// `PreviewPaneWidth` and `PreviewPaneGalleryWidth`.
+    pub(crate) pane_widths: (Option<f32>, Option<f32>),
 }
 
 fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
@@ -87,6 +90,10 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             .and_then(|on| on.downcast::<NSNumber>().ok())
             .is_some_and(|on| on.boolValue())
     };
+    let width = |key: &str| {
+        let found = read(key)?.downcast::<NSNumber>().ok()?;
+        Some(found.doubleValue() as f32)
+    };
     Finder {
         posix_title: flag("_FXShowPosixPathInTitle"),
         text_size: number("textSize").unwrap_or(13.) as f32,
@@ -100,6 +107,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         sort: sort.map_or((Column::Name, true), |column| {
             (column, ascending.unwrap_or(true))
         }),
+        pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
     }
 });
 
@@ -329,12 +337,17 @@ pub(crate) fn set_search_scope(scope: usize) {
     write(SCOPE, scope as f64);
 }
 
-pub(crate) fn pane_width() -> Option<f32> {
-    read(PANE).map(|v| v as f32)
+/// Finder keeps one preview width for gallery view and one for icon and list views.
+pub(crate) fn pane_width(gallery: bool) -> Option<f32> {
+    let (key, finder) = match gallery {
+        true => (GALLERY_PANE, finder().pane_widths.1),
+        false => (PANE, finder().pane_widths.0),
+    };
+    read(key).map(|v| v as f32).or(finder)
 }
 
-pub(crate) fn set_pane_width(width: f32) {
-    write(PANE, width as f64);
+pub(crate) fn set_pane_width(gallery: bool, width: f32) {
+    write(if gallery { GALLERY_PANE } else { PANE }, width as f64);
 }
 
 /// Finder keeps one Show Preview for icon and list views, one for columns and one for gallery.

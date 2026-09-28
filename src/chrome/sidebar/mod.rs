@@ -638,9 +638,9 @@ impl NativeSidebar {
     }
 
     /// A trailing inspector: AppKit's own split item, so macOS draws its glass and its divider,
-    /// which drags it between `min` and `max` or shut. `Some` shows it, starting at that
-    /// thickness the first time; `None` collapses it. Changes after the first call animate once
-    /// the window is on screen.
+    /// which drags it between `min` and `max` or shut. `Some` shows it at that thickness
+    /// whenever it opens; `None` collapses it. Changes after the first call animate once the
+    /// window is on screen.
     pub fn set_inspector(&self, thickness: Option<Pixels>, min: Pixels, max: Pixels) {
         let mtm = MainThreadMarker::new().expect("set_inspector is a main-thread path");
         let mut slot = self.0.views.inspector.borrow_mut();
@@ -693,6 +693,11 @@ impl NativeSidebar {
         };
         let collapse = thickness.is_none();
         let settled = inspector.item.isCollapsed() == collapse;
+        if let (false, Some(thickness)) = (settled || created, thickness) {
+            // A collapsed item opens at its view's width, the width it had when it collapsed.
+            let view = inspector.controller.view();
+            view.setFrameSize(NSSize::new(thickness.to_f64(), view.frame().size.height));
+        }
         match (settled, animate) {
             (true, _) => {}
             (false, true) => {
@@ -717,9 +722,28 @@ impl NativeSidebar {
         self.0.pane_shared.align(&self.0.views.pane);
     }
 
+    /// Sets a shown inspector's thickness, as dragging its divider there would.
+    pub fn set_inspector_thickness(&self, thickness: Pixels) {
+        let slot = self.0.views.inspector.borrow();
+        let Some(inspector) = slot
+            .as_ref()
+            .filter(|inspector| !inspector.item.isCollapsed())
+        else {
+            return;
+        };
+        let split = self.0.views.split.splitView();
+        let divider = self.0.views.split.splitViewItems().count() as isize - 2;
+        let position = split.bounds().size.width - split.dividerThickness() - thickness.to_f64();
+        inspector.sliding.set(true);
+        split.setPosition_ofDividerAtIndex(position, divider);
+        self.0.views.split.view().layoutSubtreeIfNeeded();
+        inspector.sliding.set(false);
+        self.0.pane_shared.align(&self.0.views.pane);
+    }
+
     /// The inspector's thickness after AppKit resized it since the previous call, by its
-    /// divider or otherwise; zero once its divider has dragged it shut. Its own slides report
-    /// nothing.
+    /// divider or otherwise; zero once its divider has dragged it shut. Its own slides and
+    /// `set_inspector_thickness` report nothing.
     pub fn take_inspector_resize(&self) -> Option<Pixels> {
         let slot = self.0.views.inspector.borrow();
         slot.as_ref()?.resized.take().map(|width| px(width as f32))

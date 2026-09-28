@@ -207,6 +207,12 @@ fn titled(action: &dyn Action) -> Option<SharedString> {
     if let Some(title) = super::edit::titled(action) {
         return Some(title);
     }
+    if action.partial_eq(&ShowInspector) {
+        return Some(match crate::inspector::is_open() {
+            true => "Hide Inspector".into(),
+            false => "Show Inspector".into(),
+        });
+    }
     let in_trash = STATE.get().5;
     action.partial_eq(&Trash).then(|| {
         if in_trash {

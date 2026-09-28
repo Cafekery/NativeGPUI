@@ -11,6 +11,7 @@ mod frame;
 mod icons;
 mod info;
 mod input;
+mod inspector;
 mod listing;
 mod locations;
 mod menus;

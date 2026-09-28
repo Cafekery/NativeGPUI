@@ -21,13 +21,13 @@ use objc2_app_kit::NSWindow;
 use crate::art::Anchor;
 use crate::chrome::sheet::{ConnectSheet, GoSheet};
 use crate::chrome::sidebar;
-use crate::data::{Column, Folders, Line, Row};
+use crate::data::{Column, Folders, Row};
 use crate::dragdrop::Spring;
 use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
-use crate::view::LIST_VIEW;
+use crate::view::{GALLERY_VIEW, LIST_VIEW};
 use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, default_columns, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
@@ -97,6 +97,8 @@ pub(crate) struct FinderDemo {
     pub(crate) tags: crate::tags::Tags,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
+    /// Whether `preview_w` is gallery view's width.
+    pub(crate) preview_gallery: bool,
     pub(crate) preview_window: Option<PreviewWindow>,
     pub(crate) preview_opening: bool,
     pub(crate) preview_expanded: bool,
@@ -143,7 +145,6 @@ pub(crate) struct FinderDemo {
     pub(crate) hits_rev: u64,
     pub(crate) search_gen: Arc<AtomicU64>,
     pub(crate) tag_listing: Option<&'static str>,
-    pub(crate) inspecting: Option<Line>,
     pub(crate) reveal_next: Option<SharedString>,
     pub(crate) vanished: Option<&'static str>,
     pub(crate) host: Option<Retained<NSWindow>>,
@@ -239,7 +240,8 @@ impl FinderDemo {
             type_filter_seen_match: false,
             tags: Default::default(),
             preview: prefs::preview(view),
-            preview_w: prefs::pane_width().unwrap_or(PREVIEW_W),
+            preview_w: prefs::pane_width(view == GALLERY_VIEW).unwrap_or(PREVIEW_W),
+            preview_gallery: view == GALLERY_VIEW,
             preview_window: None,
             preview_opening: false,
             preview_expanded: false,
@@ -289,7 +291,6 @@ impl FinderDemo {
             hits_rev: 0,
             search_gen: Arc::default(),
             tag_listing: None,
-            inspecting: None,
             reveal_next: None,
             vanished: None,
             host: None,
