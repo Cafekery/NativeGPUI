@@ -336,7 +336,7 @@ impl FinderDemo {
         self.inspecting = None;
         self.icons.forget();
         self.clear_type_filter();
-        self.load_column_widths();
+        self.load_columns();
         self.read_folder(self.here(), cx);
         self.settle();
         self.retitle(window);

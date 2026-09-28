@@ -105,10 +105,20 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.
-- [ ] Column view sorts every column by name (`ColumnViewOptions.ArrangeBy` dnam) and gallery view
-  by name (`GalleryViewSettings.arrangeBy`); the demo uses the list's sort in both (Date Modified ⌄
-  on the user's Mac: Notes.txt first where Finder has Archive.zip), so a folder opened in gallery
-  view picks a different first item.
+- [x] Column view sorts by `ColumnViewOptions.ArrangeBy` (dnam: name) and gallery view by
+  `GalleryViewSettings.arrangeBy`, each in the direction Finder first sorts that key, not by the
+  list's sort; the demo sorts the rows before it shows the view, and keeps each view's own key.
+- [x] Sort By: Name ⌃⌥⌘1, Kind ⌃⌥⌘2, Date Last Opened ⌃⌥⌘3, Date Added ⌃⌥⌘4, Date Modified ⌃⌥⌘5,
+  Date Created, Size ⌃⌥⌘6, Tags ⌃⌥⌘7; Clean Up By: Name, Kind, Date Modified, Date Created, Size,
+  Tags (⌥⌘). Read off Finder 27 with lists of a 7-item fixture: Date Last Opened is Spotlight's
+  last-used date, which it makes up from the modification date where it has not indexed the item;
+  Tags sort by the first tag's name; an item a column says nothing for (no tag, no version) lists
+  last whichever way the column sorts; the Tags column shows the names ("Work, Blue"), Version a
+  bundle's short version, both blank for nothing.
+- [ ] Comments: Finder shows the comment kept in the folder's .DS_Store (`cmmt`) and not the
+  `kMDItemFinderComment` attribute; the demo reads no .DS_Store record for it, so the column stays
+  off. Shared By and Last Modified By: Finder shows neither column outside iCloud Drive, even when
+  its settings ask for them; the demo offers neither.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.

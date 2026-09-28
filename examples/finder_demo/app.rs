@@ -28,8 +28,8 @@ use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
-use crate::view::LIST_VIEW;
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, default_columns, name_min_w};
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
@@ -63,8 +63,14 @@ pub(crate) struct FinderDemo {
     pub(crate) history: Vec<&'static str>,
     pub(crate) at: usize,
     pub(crate) view: usize,
+    /// The order the held rows are in: the sort of the view shown, or of one about to be.
     pub(crate) sort: Column,
     pub(crate) ascending: bool,
+    pub(crate) list_sort: (Column, bool),
+    pub(crate) column_sort: Column,
+    pub(crate) gallery_sort: Column,
+    /// A view waiting for its rows to be sorted its way before it shows.
+    pub(crate) pending_view: Option<usize>,
     pub(crate) list_columns: Vec<ColumnSpec>,
     pub(crate) name_w: f32,
     pub(crate) header_drag: Option<HeaderDrag>,
@@ -210,7 +216,11 @@ impl FinderDemo {
             view,
             sort: prefs::finder().sort.0,
             ascending: prefs::finder().sort.1,
-            list_columns: default_columns(),
+            list_sort: prefs::finder().sort,
+            column_sort: prefs::arranged(COLUMN_VIEW).unwrap_or(prefs::finder().arranged.0),
+            gallery_sort: prefs::arranged(GALLERY_VIEW).unwrap_or(prefs::finder().arranged.1),
+            pending_view: None,
+            list_columns: Vec::new(),
             name_w: name_min_w(ICON_SMALL),
             header_drag: None,
             header: None,
@@ -302,10 +312,50 @@ impl FinderDemo {
             jobs: Vec::new(),
             jobs_open: false,
         };
-        this.load_column_widths();
+        (this.sort, this.ascending) = this.view_sort(this.view);
+        this.load_columns();
         cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
             .detach();
         this
+    }
+
+    /// The sort a view shows its rows in: column and gallery view keep a key of their own, in the
+    /// direction Finder first sorts by it.
+    pub(crate) fn view_sort(&self, view: usize) -> (Column, bool) {
+        match view {
+            COLUMN_VIEW => (self.column_sort, self.column_sort.first_ascending()),
+            GALLERY_VIEW => (self.gallery_sort, self.gallery_sort.first_ascending()),
+            _ => self.list_sort,
+        }
+    }
+
+    /// Whether rows need what only their own files say: the sort or a list column shows it.
+    pub(crate) fn wants_extras(&self) -> bool {
+        self.sort.extra() || self.list_columns.iter().any(|spec| spec.column.extra())
+    }
+
+    /// A header click or a Sort By row: the list turns round on its own key, the other views
+    /// take the key.
+    pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
+        let ascending = match self.view {
+            COLUMN_VIEW | GALLERY_VIEW => column.first_ascending(),
+            _ if self.sort == column => !self.ascending,
+            _ => column.first_ascending(),
+        };
+        self.resort((column, ascending), cx);
+    }
+
+    /// Sorts the view shown by `by` from now on.
+    pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
+        match self.view {
+            COLUMN_VIEW => self.column_sort = by.0,
+            GALLERY_VIEW => self.gallery_sort = by.0,
+            _ => self.list_sort = by,
+        }
+        if matches!(self.view, COLUMN_VIEW | GALLERY_VIEW) {
+            prefs::set_arranged(self.view, by.0);
+        }
+        self.sort_held(self.view_sort(self.view), cx);
     }
 
     pub(crate) fn warm_icons(&self) {

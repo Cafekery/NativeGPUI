@@ -10,7 +10,6 @@ use super::context;
 use crate::app::FinderDemo;
 use crate::data::{Column, is_trash};
 use crate::ops::After;
-use crate::views::header::ColumnSpec;
 use crate::{open_finder_tab, open_finder_window};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -158,7 +157,7 @@ impl FinderDemo {
             }
             Act::Slideshow => self.slideshow(window, cx),
             Act::MoveHere => self.paste(true, cx),
-            Act::Toggle(column) => self.toggle_column(column),
+            Act::Toggle(column) => self.toggle_column(column, cx),
         }
         cx.notify();
     }
@@ -409,23 +408,5 @@ impl FinderDemo {
         for (extra, id) in self.chosen_folders().into_iter().enumerate() {
             open_finder_window(id, extra + 1, cx);
         }
-    }
-
-    pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
-        let ascending = match self.sort == column {
-            true => !self.ascending,
-            false => matches!(column, Column::Name | Column::Kind),
-        };
-        self.resort((column, ascending), cx);
-    }
-
-    fn toggle_column(&mut self, column: Column) {
-        match self.list_columns.iter().position(|s| s.column == column) {
-            Some(index) => {
-                self.list_columns.remove(index);
-            }
-            None => self.list_columns.push(ColumnSpec::of(column)),
-        }
-        self.refit_name_column();
     }
 }
