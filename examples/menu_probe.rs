@@ -1,10 +1,11 @@
 use std::env;
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use block2::RcBlock;
 use gpui::{
-    App, Bounds, Context, Hsla, Modifiers, Render, Window, WindowBounds, div, point, prelude::*,
-    px, rgb, size,
+    App, Bounds, Context, Modifiers, Render, Window, WindowBounds, div, point, prelude::*, px, rgb,
+    size,
 };
 use native_gpui::{
     MenuEntry, MenuOrigin, MenuView, native_context_menu, native_popup, native_root, window_options,
@@ -15,6 +16,7 @@ use objc2::{MainThreadOnly, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff, NSControlStateValueOn,
     NSEvent, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSView,
+    NSWindow,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSPoint, NSProcessInfo, NSRect, NSRunLoop, NSRunLoopCommonModes,
@@ -35,7 +37,6 @@ const TAGS: &[u32] = &[
 ];
 
 fn more_entries() -> Vec<MenuEntry> {
-    let colors: Vec<Hsla> = TAGS.iter().map(|hex| Hsla::from(rgb(*hex))).collect();
     vec![
         MenuEntry::item("Sort By")
             .symbol("arrow.up.arrow.down")
@@ -55,7 +56,7 @@ fn more_entries() -> Vec<MenuEntry> {
             .symbol("rectangle.3.group")
             .checked(true),
         MenuEntry::separator(),
-        MenuEntry::view(MenuView::swatches(colors)),
+        MenuEntry::view(MenuView::swatches(TAGS.iter().map(|&hex| rgb(hex).into()))),
         MenuEntry::separator(),
         MenuEntry::item("Customize Folder…").symbol("folder.badge.gearshape"),
         MenuEntry::item("Import from iPhone")
@@ -103,6 +104,25 @@ fn sized_view(mtm: MainThreadMarker, width: f64, height: f64) -> Retained<NSView
 fn check(label: &str, held: bool) -> bool {
     println!("  {}  {label}", if held { "ok  " } else { "FAIL" });
     held
+}
+
+fn states(menu: &NSMenu) -> Vec<isize> {
+    menu.itemArray().iter().map(|item| item.state()).collect()
+}
+
+fn new_popup(
+    mtm: MainThreadMarker,
+    pulls_down: bool,
+    titles: [&str; 3],
+) -> (Retained<NSPopUpButton>, Retained<NSMenu>) {
+    let popup =
+        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, pulls_down);
+    popup.setAutoenablesItems(false);
+    let menu = popup.menu().expect("a fresh NSPopUpButton owns a menu");
+    for title in titles {
+        menu.addItem(&plain(mtm, title));
+    }
+    (popup, menu)
 }
 
 fn metrics(mtm: MainThreadMarker) -> bool {
@@ -251,44 +271,32 @@ fn metrics(mtm: MainThreadMarker) -> bool {
     );
 
     println!("\n== a pop-up's tick is the selected item's state");
-    let popup =
-        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-    popup.setAutoenablesItems(false);
-    let popup_menu = popup.menu().expect("a fresh NSPopUpButton owns a menu");
-    for title in ["Automatic", "Graphite", "Vivid Blue"] {
-        popup_menu.addItem(&plain(mtm, title));
-    }
-    let states = || -> Vec<isize> {
-        (0..popup_menu.numberOfItems())
-            .map(|i| popup_menu.itemAtIndex(i).expect("in range").state())
-            .collect()
-    };
+    let (popup, popup_menu) = new_popup(mtm, false, ["Automatic", "Graphite", "Vivid Blue"]);
     popup.selectItemAtIndex(2);
-    println!("  selected 2 -> states {:?}", states());
+    println!("  selected 2 -> states {:?}", states(&popup_menu));
     ok &= check(
         "selecting a row sets that item's state, which is the drawn tick",
-        states() == vec![0, 0, 1],
+        states(&popup_menu) == [0, 0, 1],
     );
 
-    for i in 0..popup_menu.numberOfItems() {
-        let item = popup_menu.itemAtIndex(i).expect("in range");
+    for item in popup_menu.itemArray().iter() {
         if item.state() != NSControlStateValueOff {
             item.setState(NSControlStateValueOff);
         }
     }
     println!(
         "  after an Off pass -> states {:?}, indexOfSelectedItem {}",
-        states(),
+        states(&popup_menu),
         popup.indexOfSelectedItem()
     );
     ok &= check(
         "the cell keeps its index, so an index-guarded restore never fires",
-        states() == vec![0, 0, 0] && popup.indexOfSelectedItem() == 2,
+        states(&popup_menu) == [0, 0, 0] && popup.indexOfSelectedItem() == 2,
     );
     popup.selectItemAtIndex(2);
     ok &= check(
         "re-selecting the index the cell already holds does NOT bring the tick back",
-        states() == vec![0, 0, 0],
+        states(&popup_menu) == [0, 0, 0],
     );
     popup_menu
         .itemAtIndex(2)
@@ -296,27 +304,19 @@ fn metrics(mtm: MainThreadMarker) -> bool {
         .setState(NSControlStateValueOn);
     ok &= check(
         "only writing the state back restores it",
-        states() == vec![0, 0, 1],
+        states(&popup_menu) == [0, 0, 1],
     );
 
-    let pull =
-        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, true);
-    pull.setAutoenablesItems(false);
-    let pull_menu = pull.menu().expect("a fresh NSPopUpButton owns a menu");
-    for title in ["Document", "New Sketch", "Duplicate"] {
-        pull_menu.addItem(&plain(mtm, title));
-    }
+    let (pull, pull_menu) = new_popup(mtm, true, ["Document", "New Sketch", "Duplicate"]);
     pull.selectItemAtIndex(1);
-    let pull_states: Vec<isize> = (0..pull_menu.numberOfItems())
-        .map(|i| pull_menu.itemAtIndex(i).expect("in range").state())
-        .collect();
+    let pull_states = states(&pull_menu);
     println!(
         "  pull-down, selected 1 -> states {pull_states:?}, indexOfSelectedItem {}",
         pull.indexOfSelectedItem()
     );
     ok &= check(
         "a pull-down draws no tick: AppKit sets no state for one",
-        pull_states == vec![0, 0, 0] && pull.indexOfSelectedItem() == 1,
+        pull_states == [0, 0, 0] && pull.indexOfSelectedItem() == 1,
     );
 
     println!("\n== NSMenuItem properties");
@@ -378,6 +378,8 @@ impl Render for Probe {
     }
 }
 
+const PAINTS: usize = 40;
+
 struct PopupProbe {
     frames: usize,
 }
@@ -385,7 +387,7 @@ struct PopupProbe {
 impl Render for PopupProbe {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frames += 1;
-        if self.frames < 40 {
+        if self.frames < PAINTS {
             cx.notify();
         }
         native_root(
@@ -398,52 +400,49 @@ impl Render for PopupProbe {
     }
 }
 
-fn find_popup(view: &NSView) -> Option<Retained<NSPopUpButton>> {
-    for subview in view.subviews().iter() {
-        match subview.downcast::<NSPopUpButton>() {
-            Ok(popup) => return Some(popup),
-            Err(subview) => {
-                if let Some(found) = find_popup(&subview) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
+fn first_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
+    NSApplication::sharedApplication(mtm)
+        .windows()
+        .firstObject()
 }
 
-fn report_popup_tick(mtm: MainThreadMarker, frames: usize) -> ! {
-    let placed = NSApplication::sharedApplication(mtm)
-        .windows()
+fn find_popup(view: &NSView) -> Option<Retained<NSPopUpButton>> {
+    view.subviews()
         .iter()
-        .next()
+        .find_map(|subview| match subview.downcast::<NSPopUpButton>() {
+            Ok(popup) => Some(popup),
+            Err(subview) => find_popup(&subview),
+        })
+}
+
+fn finish(ok: bool) -> ! {
+    println!("\nVERDICT: {}", if ok { "PASS" } else { "FAIL" });
+    std::process::exit(if ok { 0 } else { 1 });
+}
+
+fn report_popup_tick(mtm: MainThreadMarker) -> ! {
+    let placed = first_window(mtm)
         .and_then(|window| window.contentView())
         .and_then(|content| find_popup(&content));
     let Some(popup) = placed else {
         println!("no NSPopUpButton was placed\nVERDICT: FAIL");
         std::process::exit(1);
     };
-    let menu = popup.menu().expect("a placed NSPopUpButton owns a menu");
-    let states: Vec<isize> = (0..menu.numberOfItems())
-        .map(|i| menu.itemAtIndex(i).expect("in range").state())
-        .collect();
+    let states = states(&popup.menu().expect("a placed NSPopUpButton owns a menu"));
     println!(
-        "after {frames} paints: indexOfSelectedItem {}  states {states:?}  title {:?}",
+        "after {PAINTS} paints: indexOfSelectedItem {}  states {states:?}  title {:?}",
         popup.indexOfSelectedItem(),
         popup.titleOfSelectedItem()
     );
-    let ok = check(
+    finish(check(
         "the pop-up still ticks its selected row after the diff has run over it",
-        states == vec![0, 0, 1] && popup.indexOfSelectedItem() == 2,
-    );
-    println!("\nVERDICT: {}", if ok { "PASS" } else { "FAIL" });
-    std::process::exit(if ok { 0 } else { 1 });
+        states == [0, 0, 1] && popup.indexOfSelectedItem() == 2,
+    ))
 }
 
 /// Control-left, not right: gpui reads `buttonNumber`, which is 0 on any synthesised event.
 fn click_own_window(mtm: MainThreadMarker, at: NSPoint) {
-    let app = NSApplication::sharedApplication(mtm);
-    let Some(window) = app.windows().iter().next() else {
+    let Some(window) = first_window(mtm) else {
         println!("no window to click");
         return;
     };
@@ -466,15 +465,14 @@ fn click_own_window(mtm: MainThreadMarker, at: NSPoint) {
                 window.windowNumber(),
                 event.buttonNumber()
             );
-            app.postEvent_atStart(&event, true);
+            NSApplication::sharedApplication(mtm).postEvent_atStart(&event, true);
         }
         None => println!("could not synthesise the event"),
     }
 }
 
-fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_code: u16) {
-    let app = NSApplication::sharedApplication(mtm);
-    let text = NSString::from_str(&character.to_string());
+fn post_key(mtm: MainThreadMarker, window_number: isize, key: &str, key_code: u16) {
+    let text = NSString::from_str(key);
     let event =
         NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
             NSEventType::KeyDown,
@@ -489,21 +487,21 @@ fn post_key(mtm: MainThreadMarker, window_number: isize, character: char, key_co
             key_code,
         );
     if let Some(event) = event {
-        app.postEvent_atStart(&event, false);
+        NSApplication::sharedApplication(mtm).postEvent_atStart(&event, false);
     }
 }
 
 /// Common modes: menu tracking runs the loop in `NSEventTrackingRunLoopMode`.
-fn schedule_submenu_reveal(window_number: isize, after: f64) {
+fn schedule_submenu_reveal(window_number: isize) {
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
         println!("revealing the submenu: down, then right");
-        post_key(mtm, window_number, '\u{F701}', 125);
-        post_key(mtm, window_number, '\u{F703}', 124);
+        post_key(mtm, window_number, "\u{F701}", 125);
+        post_key(mtm, window_number, "\u{F703}", 124);
     });
-    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(after, false, &block) };
+    let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(2.5, false, &block) };
     unsafe {
         NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
@@ -511,15 +509,11 @@ fn schedule_submenu_reveal(window_number: isize, after: f64) {
 
 fn main() {
     let mtm = MainThreadMarker::new().expect("main thread");
-    if env::var("NG_ARM").as_deref().unwrap_or("metrics") == "metrics" {
-        let app = NSApplication::sharedApplication(mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-        let ok = metrics(mtm);
-        println!("\nVERDICT: {}", if ok { "PASS" } else { "FAIL" });
-        if !ok {
-            std::process::exit(1);
-        }
-        return;
+    let arm = env::var("NG_ARM").unwrap_or_else(|_| "metrics".into());
+    if arm == "metrics" {
+        NSApplication::sharedApplication(mtm)
+            .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        finish(metrics(mtm));
     }
 
     let hold: u64 = env::var("NG_HOLD")
@@ -527,7 +521,7 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(20);
 
-    if env::var("NG_ARM").as_deref() == Ok("popup") {
+    if arm == "popup" {
         gpui_platform::application().run(move |cx: &mut App| {
             cx.open_window(
                 gpui::WindowOptions {
@@ -543,17 +537,14 @@ fn main() {
 
             cx.spawn(async move |cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(1500))
+                    .timer(Duration::from_millis(1500))
                     .await;
-                cx.update(|_| {
-                    let mtm = MainThreadMarker::new().expect("main thread");
-                    report_popup_tick(mtm, 40);
-                });
+                cx.update(|_| report_popup_tick(mtm));
             })
             .detach();
 
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(hold));
+                std::thread::sleep(Duration::from_secs(hold));
                 println!("timed out before the tick could be read\nVERDICT: FAIL");
                 std::process::exit(1);
             });
@@ -576,24 +567,19 @@ fn main() {
 
         // Menu tracking blocks the main thread, so the deadline cannot be a main-queue timer.
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(hold + 2));
+            std::thread::sleep(Duration::from_secs(hold + 2));
             println!("hold expired");
             std::process::exit(0);
         });
 
         cx.spawn(async move |cx| {
             cx.background_executor()
-                .timer(std::time::Duration::from_millis(1200))
+                .timer(Duration::from_millis(1200))
                 .await;
             cx.update(|_| {
-                let mtm = MainThreadMarker::new().expect("main thread");
-                let number = NSApplication::sharedApplication(mtm)
-                    .windows()
-                    .iter()
-                    .next()
-                    .map_or(0, |window| window.windowNumber());
+                let number = first_window(mtm).map_or(0, |window| window.windowNumber());
                 if env::var("NG_SUBMENU").is_ok() {
-                    schedule_submenu_reveal(number, 2.5);
+                    schedule_submenu_reveal(number);
                 }
                 // Window coordinates: y-up from the bottom-left of a 520x420 content rect.
                 click_own_window(mtm, NSPoint::new(150., 260.));
