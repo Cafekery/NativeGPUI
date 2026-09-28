@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Div, FontWeight, Hsla, ObjectFit, RenderImage, SharedString, div, img, prelude::*,
+    AnyElement, Div, FontWeight, ObjectFit, RenderImage, SharedString, div, hsla, img, prelude::*,
     px,
 };
 use native_gpui::native_anchor;
@@ -47,7 +47,6 @@ impl Art {
     }
 }
 
-/// A list row previews pictures and movies only; every other view previews documents too.
 pub(crate) fn list_art(row: &Row, size: f32, scale: f32) -> Art {
     let picture = matches!(row.face, Face::Image | Face::Movie)
         .then(|| thumb(row, size, scale, true, true))
@@ -76,7 +75,7 @@ pub(crate) fn poster_art(
     }
 }
 
-/// Finder badges an alias's icon, never its preview: a poster draws what the alias points at.
+/// Only an alias's icon wears the badge: its poster draws what it points at.
 fn poster_kind(row: &Row) -> Option<FileType<'static>> {
     match (row.uti == "public.symlink")
         .then(|| std::fs::canonicalize(row.path.as_ref()).ok())
@@ -149,12 +148,7 @@ fn poster(
             .h(h)
             .rounded(px(6.5))
             .border(px(0.5))
-            .border_color(Hsla {
-                h: 0.,
-                s: 0.,
-                l: 1.,
-                a: 0.1,
-            })
+            .border_color(hsla(0., 0., 1., 0.1))
             .into_any_element(),
         // The rim sits outside the picture and darkens the glass behind it.
         Poster::Card => div()
@@ -162,15 +156,15 @@ fn poster(
             .h(h)
             .rounded(px(4.5))
             .border(px(0.5))
-            .border_color(Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: match current_appearance() {
+            .border_color(hsla(
+                0.,
+                0.,
+                0.,
+                match current_appearance() {
                     Appearance::Dark => 0.1,
                     Appearance::Light => 0.02,
                 },
-            })
+            ))
             .child(img(image).size_full().rounded(px(4.)))
             .into_any_element(),
     };
@@ -201,36 +195,35 @@ fn kind_of(row: &Row) -> Option<FileType<'static>> {
     folder_kind(row, crate::custom::custom_icon)
 }
 
-/// Off the main thread, knowing a folder's own icon before its row is drawn.
 pub(crate) fn kind_now(row: &Row) -> Option<FileType<'static>> {
     folder_kind(row, crate::custom::custom_icon_now)
 }
 
-fn folder_kind(row: &Row, custom: fn(&SharedString) -> bool) -> Option<FileType<'static>> {
-    match row.artwork {
+fn has_folder_art(row: &Row) -> bool {
+    matches!(
+        row.artwork,
         Some(FileType::Folder | FileType::FullFolder | FileType::FullPath(_))
-            if custom(&row.path) =>
-        {
-            Some(FileType::Path(crate::data::intern(&row.path)))
-        }
-        kind => kind,
+    )
+}
+
+pub(crate) fn custom_folder(row: &Row) -> bool {
+    has_folder_art(row) && crate::custom::custom_icon(&row.path)
+}
+
+fn folder_kind(row: &Row, custom: fn(&SharedString) -> bool) -> Option<FileType<'static>> {
+    match has_folder_art(row) && custom(&row.path) {
+        true => Some(FileType::Path(crate::data::intern(&row.path))),
+        false => row.artwork,
     }
 }
 
-/// `public.volume` has no artwork of its own, so a volume draws `/`'s.
 pub(crate) fn glyph(face: Face, size: f32) -> AnyElement {
-    let symbol = sf_symbol_colored(face.symbol(), px(size), FontWeight::NORMAL, &face.tint());
-    let mut slot = div()
-        .w(px(size + 4.))
-        .h(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_none();
-    if let Some(symbol) = symbol {
-        slot = slot.child(symbol.img());
-    }
-    slot.into_any_element()
+    slot(size + 4., size)
+        .children(
+            sf_symbol_colored(face.symbol(), px(size), FontWeight::NORMAL, &face.tint())
+                .map(|symbol| symbol.img()),
+        )
+        .into_any_element()
 }
 
 pub(crate) fn small_glyph(

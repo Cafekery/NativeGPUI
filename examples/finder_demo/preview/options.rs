@@ -12,7 +12,6 @@ use crate::app::FinderDemo;
 use crate::data::{Face, Row};
 use crate::frame::ns_window;
 
-/// Where a preview row's value comes from.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Source {
     Created,
@@ -33,7 +32,7 @@ pub(crate) struct Field {
 }
 
 impl Field {
-    /// What the choice is saved under: two rows may share a label.
+    /// Two rows may share a label.
     pub(crate) fn key(&self) -> &'static str {
         match self.source {
             Source::Attr(name) => name,
@@ -47,7 +46,15 @@ pub(crate) struct Group {
     pub(crate) fields: &'static [Field],
 }
 
-/// Finder's Preview Options for one kind of item.
+impl Group {
+    fn keys(&self) -> Vec<&'static str> {
+        match self.fields {
+            [] => vec![self.title],
+            fields => fields.iter().map(Field::key).collect(),
+        }
+    }
+}
+
 pub(crate) struct Kind {
     pub(crate) name: &'static str,
     pub(crate) groups: &'static [Group],
@@ -216,7 +223,6 @@ const MOVIE: Kind = Kind {
     ],
 };
 
-/// Spotlight's display and preview attributes for audio, grouped as Finder groups a movie's.
 const AUDIO: Kind = Kind {
     name: "Audio",
     groups: &[
@@ -233,16 +239,8 @@ const AUDIO: Kind = Kind {
                 attr("Genre", "kMDItemGenre"),
                 attr("Copyright", "kMDItemCopyright"),
                 attr("Audio channels", "kMDItemAudioChannelCount"),
-                Field {
-                    label: "Sample rate",
-                    source: Source::Attr("kMDItemAudioSampleRate"),
-                    on: true,
-                },
-                Field {
-                    label: "Bits per sample",
-                    source: Source::Attr("kMDItemBitsPerSample"),
-                    on: true,
-                },
+                on("Sample rate", Source::Attr("kMDItemAudioSampleRate")),
+                on("Bits per sample", Source::Attr("kMDItemBitsPerSample")),
                 attr("Codecs", "kMDItemCodecs"),
                 attr("Encoding software", "kMDItemEncodingApplications"),
                 attr("Album", "kMDItemAlbum"),
@@ -265,7 +263,6 @@ const FOLDER: Kind = Kind {
     ],
 };
 
-/// Not read off Finder: the rows the card showed an app before these options.
 const APPLICATION: Kind = Kind {
     name: "Application",
     groups: &[
@@ -306,12 +303,10 @@ thread_local! {
     static FOLLOWED: Cell<Option<(EntityId, u64, &'static str)>> = const { Cell::new(None) };
 }
 
-/// Counts every choice made, so a card drawn from the old ones is drawn again.
 pub(crate) fn changed() -> u64 {
     CHANGED.get()
 }
 
-/// Whether `key` shows for `kind`: the user's choice, else Finder's.
 pub(crate) fn shows(kind: &Kind, key: &str) -> bool {
     match crate::prefs::preview_options(kind.name) {
         Some(chosen) => chosen.iter().any(|on| on == key),
@@ -330,10 +325,7 @@ pub(crate) fn shows(kind: &Kind, key: &str) -> bool {
 fn choose(kind: &'static Kind, keys: &[&str], shown: bool, cx: &mut App) {
     let on: Vec<&str> = [TAGS, QUICK_ACTIONS]
         .into_iter()
-        .chain(kind.groups.iter().flat_map(|group| match group.fields {
-            [] => vec![group.title],
-            fields => fields.iter().map(Field::key).collect(),
-        }))
+        .chain(kind.groups.iter().flat_map(Group::keys))
         .filter(|key| match keys.contains(key) {
             true => shown,
             false => shows(kind, key),
@@ -347,7 +339,7 @@ fn choose(kind: &'static Kind, keys: &[&str], shown: bool, cx: &mut App) {
     }
 }
 
-pub(crate) struct PreviewOptions {
+struct PreviewOptions {
     kind: &'static Kind,
 }
 
@@ -379,15 +371,11 @@ impl Render for PreviewOptions {
             vec![TAGS],
         ));
         for group in kind.groups {
-            let keys: Vec<&'static str> = match group.fields {
-                [] => vec![group.title],
-                fields => fields.iter().map(Field::key).collect(),
-            };
             groups = groups
                 .child(checkbox(
                     format!("ng.finder.preview.options.{}", group.title).into(),
                     group.title,
-                    keys,
+                    group.keys(),
                 ))
                 .children(group.fields.iter().enumerate().map(|(at, field)| {
                     div().pl(px(20.)).child(checkbox(
@@ -433,7 +421,6 @@ pub(crate) fn is_open() -> bool {
     OPEN.get().is_some()
 }
 
-/// Show Preview Options and Hide Preview Options.
 pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     match OPEN.take() {
         Some(open) => cx.defer(move |cx| {
@@ -447,7 +434,6 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     }
 }
 
-/// The panel is for the kind the key Finder window's cursor is on.
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
     if OPEN.get().is_none() || !window.is_window_active() {
         return;
@@ -470,7 +456,6 @@ fn subject(demo: &FinderDemo) -> &'static Kind {
         .map_or(&FOLDER, |line| kind_of(&line.row))
 }
 
-/// Finder's rows sit 24 pt apart.
 fn height(kind: &Kind) -> f32 {
     let rows = 1 + kind
         .groups
@@ -486,9 +471,7 @@ fn show(kind: &'static Kind, cx: &mut App) {
     if let Some(open) = OPEN.get() {
         let shown = open.update(cx, |panel, window, cx| {
             window.set_window_title(&title);
-            let mut frame = window.bounds();
-            frame.size.height = px(tall);
-            window.resize(frame.size);
+            window.resize(size(window.bounds().size.width, px(tall)));
             panel.kind = kind;
             cx.notify();
         });

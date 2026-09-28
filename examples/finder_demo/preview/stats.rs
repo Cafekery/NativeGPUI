@@ -77,7 +77,6 @@ pub(crate) fn sized_by_index(row: &Row) -> Option<&'static str> {
     row.opens.filter(|_| row.discloses)
 }
 
-/// `None` once `stale` stops the walk: Finder weighs a folder the index has not weighed yet.
 fn total_bytes(row: &Row, weighed: &mut Weighed, stale: &AtomicBool) -> Option<u64> {
     let Some(id) = sized_by_index(row) else {
         return Some(row.bytes);
