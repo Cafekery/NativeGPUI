@@ -41,6 +41,7 @@ impl Sound {
             Op::Trash(_)
             | Op::Move { .. }
             | Op::Copy { .. }
+            | Op::CopyExactly { .. }
             | Op::Duplicate(_)
             | Op::Compress(_)
             | Op::PutBack(_) => Some(Sound::Done),

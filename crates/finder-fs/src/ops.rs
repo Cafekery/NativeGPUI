@@ -33,6 +33,12 @@ pub enum Op {
         items: Vec<PathBuf>,
         into: PathBuf,
     },
+    /// Finder's Paste Exactly: a copy that also keeps each item's owner and group, as far as this
+    /// process may set them.
+    CopyExactly {
+        items: Vec<PathBuf>,
+        into: PathBuf,
+    },
     Trash(Vec<PathBuf>),
     DeleteImmediately(Vec<PathBuf>),
     Rename {
@@ -91,8 +97,11 @@ pub fn perform(op: Op, conflict: Conflict, mut progress: impl FnMut(Progress)) -
 
 fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
     match op {
-        Op::Move { items, into } => move_or_copy(items, into, conflict, true, progress),
-        Op::Copy { items, into } => move_or_copy(items, into, conflict, false, progress),
+        Op::Move { items, into } => move_or_copy(items, into, conflict, Carry::Move, progress),
+        Op::Copy { items, into } => move_or_copy(items, into, conflict, Carry::Copy, progress),
+        Op::CopyExactly { items, into } => {
+            move_or_copy(items, into, conflict, Carry::CopyExactly, progress)
+        }
         Op::Trash(items) => trash(items, progress),
         Op::DeleteImmediately(items) => delete(items, progress),
         Op::Rename { path, name } => rename(path, name, conflict),
@@ -628,13 +637,37 @@ fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()>
     ))
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Carry {
+    Move,
+    Copy,
+    CopyExactly,
+}
+
+/// Only root may give an item away; any user may pass on a group they belong to.
+fn keep_owner(src: &Path, dest: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(src) else {
+        return;
+    };
+    if std::os::unix::fs::lchown(dest, Some(meta.uid()), Some(meta.gid())).is_err() {
+        let _ = std::os::unix::fs::lchown(dest, None, Some(meta.gid()));
+    }
+    if !meta.is_dir() {
+        return;
+    }
+    for entry in std::fs::read_dir(src).into_iter().flatten().flatten() {
+        keep_owner(&entry.path(), &dest.join(entry.file_name()));
+    }
+}
+
 fn move_or_copy(
     items: Vec<PathBuf>,
     into: PathBuf,
     conflict: Conflict,
-    is_move: bool,
+    carry: Carry,
     progress: &mut dyn FnMut(Progress),
 ) -> io::Result<Done> {
+    let is_move = carry == Carry::Move;
     let fm = NSFileManager::defaultManager();
     let total = items.len();
     let mut results = Vec::with_capacity(total);
@@ -649,6 +682,11 @@ fn move_or_copy(
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
         let dest = into.join(name);
         let placed = place_one(&fm, item, dest, conflict, is_move)?;
+        if carry == Carry::CopyExactly {
+            for landed in &placed.landed {
+                keep_owner(&landed.to, &landed.item);
+            }
+        }
         results.extend(placed.dest);
         home.extend(placed.landed);
         displaced.extend(placed.displaced);
@@ -862,7 +900,7 @@ fn duplicate(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Res
             current: Some(item.clone()),
         });
     }
-    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    let undo = (!results.is_empty()).then(|| Op::DeleteImmediately(results.clone()));
     Ok(Done { results, undo })
 }
 
@@ -2045,6 +2083,77 @@ mod tests {
         .unwrap();
         assert_eq!(again.results, vec![dir.join("doc copy 2.txt")]);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_duplicate_deletes_the_copy_without_a_trip_to_the_trash() {
+        let dir = temp_dir("duplicate-undo");
+        let file = dir.join("ngx-doc.txt");
+        touch(&file, "content");
+        let copy = dir.join("ngx-doc copy.txt");
+
+        let done = perform(
+            Op::Duplicate(vec![file.clone()]),
+            Conflict::Replace,
+            no_progress,
+        )
+        .unwrap();
+        assert_eq!(done.results, vec![copy.clone()]);
+        let undo = done.undo.expect("a duplicate can be undone");
+        let back = perform(undo, Conflict::Replace, no_progress).unwrap();
+
+        assert!(!copy.exists(), "the copy is gone");
+        assert_eq!(back.results, vec![copy], "nothing landed in the Trash");
+        assert!(back.undo.is_none(), "there is no Trash record to put back");
+        assert!(file.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn member_groups() -> Vec<u32> {
+        let mut groups = vec![0; 64];
+        let count = unsafe { libc::getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        groups.truncate(count.max(0) as usize);
+        groups
+    }
+
+    #[test]
+    fn a_paste_exactly_keeps_the_group_a_plain_copy_takes_from_its_folder() {
+        let dir = temp_dir("exactly");
+        let (from, exact, plain) = (dir.join("from"), dir.join("exact"), dir.join("plain"));
+        for folder in [&from, &exact, &plain] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        let file = from.join("doc.txt");
+        touch(&file, "content");
+        let fresh = fs::metadata(&plain).unwrap().gid();
+        let other = member_groups()
+            .into_iter()
+            .find(|gid| *gid != fresh)
+            .expect("the test user belongs to a second group");
+        std::os::unix::fs::lchown(&file, None, Some(other)).unwrap();
+
+        let kept = perform(
+            Op::CopyExactly {
+                items: vec![file.clone()],
+                into: exact.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+        let taken = perform(
+            Op::Copy {
+                items: vec![file.clone()],
+                into: plain.clone(),
+            },
+            Conflict::KeepBoth,
+            no_progress,
+        )
+        .unwrap();
+
+        assert_eq!(fs::metadata(&kept.results[0]).unwrap().gid(), other);
+        assert_eq!(fs::metadata(&taken.results[0]).unwrap().gid(), fresh);
         let _ = fs::remove_dir_all(&dir);
     }
 

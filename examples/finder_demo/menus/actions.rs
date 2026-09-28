@@ -8,8 +8,11 @@ use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
 
 use super::context;
 use crate::app::FinderDemo;
-use crate::data::{Column, is_trash};
+use crate::data::{Column, intern_path, is_trash};
 use crate::ops::After;
+use crate::ops::clipboard::Pasting;
+use crate::prefs::{self, WindowTarget};
+use crate::search::RECENTS;
 use crate::views::header::ColumnSpec;
 use crate::{open_finder_tab, open_finder_window};
 
@@ -54,6 +57,7 @@ pub(crate) enum Act {
     CopyPathnames,
     Slideshow,
     MoveHere,
+    PasteExactly,
     Toggle(Column),
 }
 
@@ -82,6 +86,15 @@ fn open_terminal(path: &str) {
         .args(["-a", &app])
         .arg(path)
         .spawn();
+}
+
+/// Where Finder's settings open a new window or tab.
+pub(crate) fn new_window_target() -> &'static str {
+    match prefs::new_window_target() {
+        WindowTarget::Recents => RECENTS,
+        WindowTarget::Computer => "/",
+        WindowTarget::Folder(path) => intern_path(&path),
+    }
 }
 
 impl FinderDemo {
@@ -122,16 +135,16 @@ impl FinderDemo {
             Act::DeleteNow => self.delete_selection(cx),
             Act::EmptyTrash => self.empty_trash(cx),
             Act::Rename => self.renaming = self.cursor.clone(),
-            Act::Duplicate => self.with_selection(Op::Duplicate, cx),
-            Act::MakeAlias => self.with_selection(Op::MakeAlias, cx),
-            Act::Compress => self.with_selection(Op::Compress, cx),
+            Act::Duplicate => self.with_selection(Op::Duplicate, After::Select, cx),
+            Act::MakeAlias => self.with_selection(Op::MakeAlias, After::Rename, cx),
+            Act::Compress => self.with_selection(Op::Compress, After::Select, cx),
             Act::Share => self.share_selection(window, cx),
             Act::Tags => self.edit_tags(window, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
             Act::Copy => self.copy_selection(cx),
             Act::Cut => self.cut_selection(cx),
-            Act::Paste => self.paste(false, cx),
+            Act::Paste => self.paste(Pasting::Copy, cx),
             Act::NewFile => self.new_file(cx),
             Act::OpenTerminal(path) => open_terminal(path),
             Act::OpenTab(id) => self.open_tab(id, window, cx),
@@ -148,16 +161,10 @@ impl FinderDemo {
             Act::CopyPathname(id) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(id.to_string()))
             }
-            Act::CopyPathnames => {
-                let lines: Vec<String> = self
-                    .paths()
-                    .iter()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .collect();
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(lines.join("\n")))
-            }
+            Act::CopyPathnames => self.copy_pathnames(cx),
             Act::Slideshow => self.slideshow(window, cx),
-            Act::MoveHere => self.paste(true, cx),
+            Act::MoveHere => self.paste(Pasting::Move, cx),
+            Act::PasteExactly => self.paste(Pasting::Exactly, cx),
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();
@@ -184,8 +191,12 @@ impl FinderDemo {
     }
 
     fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let into = PathBuf::from(self.target());
+        if !into.is_absolute() {
+            return;
+        }
         let op = Op::NewFolder {
-            into: PathBuf::from(self.target()),
+            into,
             name: stem.to_owned(),
         };
         if with.is_empty() {
@@ -201,6 +212,7 @@ impl FinderDemo {
                 return;
             };
             this.update(cx, |this: &mut FinderDemo, cx| {
+                this.settled(Vec::new(), vec![folder.clone()], After::Rename, cx);
                 this.run_op(
                     Op::Move {
                         items: with,
@@ -222,10 +234,10 @@ impl FinderDemo {
             .collect()
     }
 
-    fn with_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, cx: &mut Context<Self>) {
+    fn with_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, after: After, cx: &mut Context<Self>) {
         let items = self.paths();
         if !items.is_empty() {
-            self.run_op(op(items), After::Select, cx);
+            self.run_op(op(items), after, cx);
         }
     }
 
@@ -389,10 +401,7 @@ impl FinderDemo {
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
         let bounds = window.window_bounds();
-        let start = match id.starts_with("tag:") {
-            true => self.here(),
-            false => id,
-        };
+        let start = self.listing_start(id);
         cx.defer(move |cx| {
             let tab = open_finder_tab(start, bounds, cx);
             tab.update(cx, |demo: &mut FinderDemo, tab, cx| {
@@ -403,6 +412,25 @@ impl FinderDemo {
             })
             .ok();
         });
+    }
+
+    /// Finder's New Finder Window opens where its settings say.
+    pub(crate) fn open_new_window(&self, cx: &mut Context<Self>) {
+        let target = new_window_target();
+        let window = open_finder_window(self.listing_start(target), 1, cx);
+        if target == RECENTS {
+            window
+                .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))
+                .ok();
+        }
+    }
+
+    /// A tag or Recents listing opens over the folder shown; any other id opens itself.
+    fn listing_start(&self, id: &'static str) -> &'static str {
+        match id.starts_with("tag:") || id == RECENTS {
+            true => self.here(),
+            false => id,
+        }
     }
 
     fn open_in_window(&self, cx: &mut Context<Self>) {

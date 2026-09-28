@@ -28,7 +28,7 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
             .collect::<Vec<_>>()
     };
     match op {
-        Op::Move { items, into } | Op::Copy { items, into } => {
+        Op::Move { items, into } | Op::Copy { items, into } | Op::CopyExactly { items, into } => {
             let mut dirs = parents(items);
             dirs.push(into.clone());
             dirs

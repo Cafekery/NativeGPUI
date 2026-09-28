@@ -1,12 +1,15 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::LazyLock;
+
+use finder_fs::volumes::{self, Standard};
 
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSNumber, NSString, NSUserDefaults,
+    NSNumber, NSString, NSURL, NSUserDefaults,
 };
 
 use crate::data::Column;
@@ -106,6 +109,43 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
 
 pub(crate) fn finder() -> &'static Finder {
     &FINDER
+}
+
+/// Where Finder opens a new window or tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WindowTarget {
+    Recents,
+    Computer,
+    Folder(PathBuf),
+}
+
+/// Finder's New Finder Window setting: this app's own first, then Finder's.
+pub(crate) fn new_window_target() -> WindowTarget {
+    let suite = NSString::from_str("com.apple.finder");
+    let finder = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite));
+    let text = |key: &str| {
+        let key = NSString::from_str(key);
+        defaults()
+            .stringForKey(&key)
+            .or_else(|| finder.as_ref()?.stringForKey(&key))
+            .map(|text| text.to_string())
+    };
+    let path = || {
+        let url = NSURL::URLWithString(&NSString::from_str(&text("NewWindowTargetPath")?))?;
+        Some(PathBuf::from(url.path()?.to_string()))
+    };
+    let home = volumes::standard(Standard::Home).unwrap_or_else(|| PathBuf::from("/"));
+    let folder = match text("NewWindowTarget").as_deref() {
+        None | Some("PfAF") => return WindowTarget::Recents,
+        Some("PfCm") => return WindowTarget::Computer,
+        Some("PfVo") => path().unwrap_or_else(|| PathBuf::from("/")),
+        Some("PfHm") => home.clone(),
+        Some("PfDe") => home.join("Desktop"),
+        Some("PfDo") => home.join("Documents"),
+        Some("PfID") => finder_fs::icloud::drive().unwrap_or_else(|| home.clone()),
+        Some(_) => path().unwrap_or_else(|| home.clone()),
+    };
+    WindowTarget::Folder(if folder.is_dir() { folder } else { home })
 }
 
 fn read(key: &str) -> Option<f64> {

@@ -13,7 +13,6 @@ use crate::data::{Line, Row, VolumeInfo, byte_string, day_string, volume_at};
 const WIDTH: f32 = 265.;
 const HEIGHT: f32 = 541.;
 const LABEL_W: f32 = 74.;
-const COMBINE_OVER: usize = 3;
 
 fn body() -> Div {
     div()
@@ -181,9 +180,15 @@ pub(crate) fn open(
 ) {
     let (lines, path) = {
         let state = demo.read(cx);
+        let chosen = match at {
+            Some(_) => Vec::new(),
+            None => state.chosen_lines(),
+        };
+        // With nothing chosen, Finder shows the folder the window is in.
+        let at = at.or_else(|| chosen.is_empty().then(|| state.here()));
         let lines = match at {
             Some(id) => crate::data::path_line(id).into_iter().collect(),
-            None => state.chosen_lines(),
+            None => chosen,
         };
         let holder = at
             .and_then(|id| Path::new(id).parent())
@@ -201,7 +206,7 @@ pub(crate) fn open(
             ),
         )
     };
-    if summary || lines.len() > COMBINE_OVER {
+    if summary && lines.len() > 1 {
         open_combined(lines, path, cx);
         return;
     }
@@ -241,7 +246,7 @@ impl Render for Combined {
         kinds.dedup();
         let kind_text: SharedString = kinds.join(", ").into();
         body()
-            .child(heading(items(count).into()))
+            .child(heading(format!("{count} items").into()))
             .child(Info::section("General", true))
             .child(
                 div()
@@ -288,7 +293,6 @@ impl Render for Combined {
 }
 
 fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
-    let count = lines.len();
     let _ = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -298,16 +302,8 @@ fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
             ..window_options()
         },
         move |window, cx| {
-            window.set_window_title(&format!("{} Info", items(count)));
+            window.set_window_title("Multiple Item Info");
             cx.new(|_| Combined { lines, where_ })
         },
     );
-}
-
-fn items(count: usize) -> String {
-    if count == 1 {
-        "1 Item".into()
-    } else {
-        format!("{count} Items")
-    }
 }
