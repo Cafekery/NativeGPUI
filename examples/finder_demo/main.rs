@@ -26,6 +26,7 @@ mod quicklook;
 mod read;
 mod search;
 mod select;
+mod settings;
 mod signal;
 mod smart;
 mod sound;
@@ -61,6 +62,7 @@ const KINDS_WARM: usize = 400;
 const QUIT_WAIT: Duration = Duration::from_millis(150);
 
 fn main() {
+    settings::apply_names();
     app::EARLY_SIDEBAR.set(Some(app::ask_sidebar()));
     std::thread::spawn(|| finder_fs::words::say(""));
     native_gpui::set_wording(|text| match finder_fs::words::say(text) {
