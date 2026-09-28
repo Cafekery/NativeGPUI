@@ -20,6 +20,9 @@ use objc2_foundation::{
 use crate::volumes;
 
 mod deep;
+mod quick;
+
+pub use quick::{ImageFormat, ImageSize, Quick};
 
 const NAME_MAX: usize = 255;
 
@@ -52,6 +55,7 @@ pub enum Op {
         name: String,
     },
     PutBack(Vec<Restore>),
+    Quick(Quick),
     Batch(Vec<Op>),
 }
 
@@ -102,6 +106,7 @@ fn run(op: Op, conflict: Conflict, progress: &mut dyn FnMut(Progress)) -> io::Re
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
         Op::PutBack(items) => put_back(items, progress),
+        Op::Quick(quick) => quick::perform(quick, progress),
         Op::Batch(ops) => batch(ops, conflict, progress),
     }
 }
