@@ -48,7 +48,7 @@ pub(crate) fn summarize<'a>(
         let row = &line.row;
         stats.items += 1;
         stats.folders += usize::from(row.face == Face::Folder);
-        stats.bytes += total_bytes(row, &mut weighed);
+        stats.bytes += total_bytes(row, &mut weighed, stale)?;
         stats.flat_bytes += row.bytes;
         stats.created = (
             stats.created.0.min(row.created_at),
@@ -77,9 +77,10 @@ pub(crate) fn sized_by_index(row: &Row) -> Option<&'static str> {
     row.opens.filter(|_| row.discloses)
 }
 
-fn total_bytes(row: &Row, weighed: &mut Weighed) -> u64 {
+/// `None` once `stale` stops the walk: Finder weighs a folder the index has not weighed yet.
+fn total_bytes(row: &Row, weighed: &mut Weighed, stale: &AtomicBool) -> Option<u64> {
     let Some(id) = sized_by_index(row) else {
-        return row.bytes;
+        return Some(row.bytes);
     };
     let path = Path::new(id);
     let size = match (
@@ -93,7 +94,32 @@ fn total_bytes(row: &Row, weighed: &mut Weighed) -> u64 {
             .and_then(|(size, _)| *size),
         _ => crate::index().folder_size(path),
     };
-    size.unwrap_or(row.bytes)
+    match size {
+        Some(size) => Some(size),
+        None if row.face == Face::Volume => Some(row.bytes),
+        None => walk(path, stale),
+    }
+}
+
+fn walk(folder: &Path, stale: &AtomicBool) -> Option<u64> {
+    let mut bytes = 0;
+    let mut pending = vec![folder.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        if stale.load(Ordering::Relaxed) {
+            return None;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => pending.push(entry.path()),
+                Ok(meta) => bytes += meta.len(),
+                Err(_) => {}
+            }
+        }
+    }
+    Some(bytes)
 }
 
 pub(super) fn span((lo, hi): (f64, f64)) -> SharedString {
