@@ -41,6 +41,19 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     menu.separator();
     if can_paste() {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
+        menu.item(
+            MenuEntry::item("Paste Item Exactly")
+                .key(
+                    "",
+                    gpui::Modifiers {
+                        alt: true,
+                        shift: true,
+                        ..Default::default()
+                    },
+                )
+                .option_alternate(),
+            Act::PasteExactly,
+        );
         menu.separator();
     }
     menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(demo.target()));
@@ -157,6 +170,19 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(
             MenuEntry::item("Move Item Here").option_alternate(),
             Act::MoveHere,
+        );
+        menu.item(
+            MenuEntry::item("Paste Item Exactly")
+                .key(
+                    "",
+                    gpui::Modifiers {
+                        alt: true,
+                        shift: true,
+                        ..Default::default()
+                    },
+                )
+                .option_alternate(),
+            Act::PasteExactly,
         );
     }
     menu.separator();

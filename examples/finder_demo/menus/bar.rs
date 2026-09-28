@@ -7,15 +7,17 @@ use gpui::{
 };
 use native_gpui::{
     MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, on_menu_title,
-    prepend_menu, set_toolbar_search_active,
+    prepend_menu, replace_edit_rows, set_toolbar_search_active,
 };
 
+use super::edit::PasteExactly;
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
 use crate::chrome::sheet::ConnectSheet;
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
+use crate::ops::clipboard::Pasting;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 
 actions!(
@@ -143,6 +145,7 @@ pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool, bool) {
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
+    super::edit::remember(demo);
     STATE.set((
         demo.view,
         demo.sort,
@@ -154,6 +157,9 @@ pub(crate) fn remember(demo: &FinderDemo) {
 }
 
 fn enabled(action: &dyn Action) -> bool {
+    if let Some(on) = super::edit::enabled(action) {
+        return on;
+    }
     let (_, _, _, chosen, refused, _) = STATE.get();
     let opens: [&dyn Action; 3] = [&OpenSelection, &OpenInNewTab, &OpenInNewWindow];
     if opens.iter().any(|row| action.partial_eq(*row)) {
@@ -196,6 +202,9 @@ fn checked(action: &dyn Action) -> Option<bool> {
 }
 
 fn titled(action: &dyn Action) -> Option<SharedString> {
+    if let Some(title) = super::edit::titled(action) {
+        return Some(title);
+    }
     let in_trash = STATE.get().5;
     action.partial_eq(&Trash).then(|| {
         if in_trash {
@@ -287,20 +296,7 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Show Progress Window", ShowProgressWindow),
         ],
     );
-    extend_menu(
-        MenuSection::Edit,
-        [
-            MenuCommand::separator(),
-            MenuCommand::new("Move Item Here", MoveHere).key("cmd-alt-v"),
-            MenuCommand::new("Copy as Pathname", CopyPath).key("cmd-alt-c"),
-            MenuCommand::new("Deselect All", DeselectAll).key("cmd-alt-a"),
-            MenuCommand::separator(),
-            MenuCommand::new("Show Clipboard", ShowClipboard),
-            MenuCommand::separator(),
-            MenuCommand::new("Search", FindHere).key("cmd-f"),
-            MenuCommand::new("Search by Name…", FindByName).key("cmd-ctrl-shift-f"),
-        ],
-    );
+    replace_edit_rows(super::edit::rows());
     prepend_menu(
         MenuSection::View,
         [
@@ -412,10 +408,10 @@ impl FinderDemo {
     pub(crate) fn menu_bar_actions(&mut self, element: Div, cx: &mut Context<Self>) -> Div {
         element
             .on_action(cx.listener(|this, _: &NewWindow, _, cx| {
-                crate::open_finder_window(this.here(), 1, cx);
+                this.open_new_window(cx);
             }))
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
-                this.open_tab(this.here(), window, cx);
+                this.open_tab(super::actions::new_window_target(), window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
                 this.run_menu(Act::NewFolder, window, cx);
@@ -428,14 +424,14 @@ impl FinderDemo {
                 this.new_file(cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &Cut, _, cx| {
-                this.cut_selection(cx);
-            }))
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
-                this.paste(false, cx);
+                this.paste(Pasting::Copy, cx);
             }))
             .on_action(cx.listener(|this, _: &MoveHere, _, cx| {
-                this.paste(true, cx);
+                this.paste(Pasting::Move, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PasteExactly, _, cx| {
+                this.paste(Pasting::Exactly, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
                 this.run_menu(Act::Open, window, cx);
@@ -467,8 +463,10 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &EmptyTrash, _, cx| {
                 this.empty_trash(cx);
             }))
-            .on_action(cx.listener(|_, _: &FindHere, window, _| {
+            .on_action(cx.listener(|this, _: &FindHere, window, cx| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
+                this.search_editing = crate::search::search_field_editing(window);
+                cx.notify();
             }))
             .on_action(cx.listener(|_, _: &NewSmartFolder, window, _| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
@@ -476,6 +474,7 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &FindByName, window, cx| {
                 this.criteria = vec![Criterion::name()];
                 set_toolbar_search_active(window, SEARCH_ID, true);
+                this.search_editing = crate::search::search_field_editing(window);
                 this.run_search(cx);
             }))
             .on_action(cx.listener(|this, _: &GetInfo, window, cx| {
@@ -505,8 +504,7 @@ impl FinderDemo {
                 this.run_menu(Act::Trash, window, cx);
             }))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
-                let path = this.crumb_path();
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
+                this.copy_pathnames(cx);
             }))
             .on_action(cx.listener(|this, _: &DeselectAll, _, cx| {
                 this.selected.clear();
@@ -604,7 +602,7 @@ impl FinderDemo {
                 this.go_to(Path::new("/Network"), window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoUtilities, window, cx| {
-                this.go_to(Path::new("/System/Applications/Utilities"), window, cx);
+                this.go_to(Path::new("/Applications/Utilities"), window, cx);
             }))
             .on_action(cx.listener(|this, _: &GoAirDrop, _, _| this.airdrop_selection()))
             .on_action(cx.listener(|this, _: &GoICloud, window, cx| {

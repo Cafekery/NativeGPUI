@@ -36,9 +36,21 @@ impl Choice {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Kind {
     Move,
     Copy,
+    CopyExactly,
+}
+
+impl Kind {
+    fn op(self, items: Vec<PathBuf>, into: PathBuf) -> Op {
+        match self {
+            Kind::Move => Op::Move { items, into },
+            Kind::Copy => Op::Copy { items, into },
+            Kind::CopyExactly => Op::CopyExactly { items, into },
+        }
+    }
 }
 
 pub(crate) struct Sheet {
@@ -58,11 +70,7 @@ impl Sheet {
     }
 
     fn build_op(&self, items: Vec<PathBuf>) -> Op {
-        let into = self.into.clone();
-        match &self.kind {
-            Kind::Move => Op::Move { items, into },
-            Kind::Copy => Op::Copy { items, into },
-        }
+        self.kind.op(items, self.into.clone())
     }
 
     pub(crate) fn name(&self) -> String {
@@ -126,6 +134,7 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     let (items, into, kind) = match op {
         Op::Move { items, into } => (items, into, Kind::Move),
         Op::Copy { items, into } => (items, into, Kind::Copy),
+        Op::CopyExactly { items, into } => (items, into, Kind::CopyExactly),
         Op::Rename { path, name } => return rename_split(path, name),
         other => return Split::Clean(other),
     };
@@ -140,22 +149,9 @@ pub(crate) fn split(op: Op, after: After) -> Split {
         }
     }
     if conflicted.is_empty() {
-        let op = match kind {
-            Kind::Copy => Op::Copy { items: clean, into },
-            _ => Op::Move { items: clean, into },
-        };
-        return Split::Clean(op);
+        return Split::Clean(kind.op(clean, into));
     }
-    let clean_op = (!clean.is_empty()).then(|| match kind {
-        Kind::Copy => Op::Copy {
-            items: clean,
-            into: into.clone(),
-        },
-        _ => Op::Move {
-            items: clean,
-            into: into.clone(),
-        },
-    });
+    let clean_op = (!clean.is_empty()).then(|| kind.op(clean, into.clone()));
     let total = conflicted.len();
     let current = conflicted.pop_front().unwrap();
     let dest = Sheet::dest_of(&into, &current);
