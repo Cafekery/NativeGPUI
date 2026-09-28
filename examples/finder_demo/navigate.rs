@@ -12,10 +12,8 @@ use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{home, open_finder_window};
 
-/// How long a window opening a folder keeps the last one up while it reads the new one.
 const HOLD: Duration = Duration::from_millis(100);
 
-/// Where a window is going while it still shows the folder it leaves.
 pub(crate) struct Arriving {
     history: Vec<&'static str>,
     at: usize,
@@ -23,7 +21,12 @@ pub(crate) struct Arriving {
     chosen: Option<Vec<SharedString>>,
 }
 
-/// A key pressed while a window heads for a folder is meant for that folder.
+impl Arriving {
+    fn id(&self) -> &'static str {
+        self.history[self.at]
+    }
+}
+
 pub(crate) fn arrive_on_keys(cx: &mut App) {
     cx.intercept_keystrokes(|_, window, cx| {
         if let Some(Some(demo)) = window.root::<FinderDemo>() {
@@ -59,8 +62,7 @@ fn display_name(path: &'static str) -> String {
     })
 }
 
-/// A typed name is NFC and any case, but the index keys the bytes on disk, which `realpath`
-/// gives; a symlink stays as typed.
+/// The index keys the bytes on disk, which `realpath` gives, not the typed form; a symlink stays.
 pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
     let path = typed_path(text);
     if !finder_fs::list::is_dir(&path) {
@@ -137,18 +139,19 @@ impl FinderDemo {
         if self.in_search() || self.search_editing {
             return format!("Searching \u{201c}{}\u{201d}", self.scope_name()).into();
         }
-        match self.tag_listing.map(tag_title) {
-            Some(title) => title.into(),
-            None if crate::prefs::finder().posix_title && self.target().starts_with('/') => {
-                finder_fs::name::display(self.target())
-            }
-            None => match crate::locations::place(self.target()) {
-                Some((title, _)) => title.into(),
-                None => match self.folders.get(self.target()) {
-                    Some(folder) => folder.title.into(),
-                    None => display_name(self.target()).into(),
-                },
-            },
+        if let Some(tag) = self.tag_listing {
+            return tag_title(tag).into();
+        }
+        let target = self.target();
+        if crate::prefs::finder().posix_title && target.starts_with('/') {
+            return finder_fs::name::display(target);
+        }
+        if let Some((title, _)) = crate::locations::place(target) {
+            return title.into();
+        }
+        match self.folders.get(target) {
+            Some(folder) => folder.title.into(),
+            None => display_name(target).into(),
         }
     }
 
@@ -157,12 +160,13 @@ impl FinderDemo {
     }
 
     pub(crate) fn crumb_ids(&self) -> Vec<&'static str> {
+        let target = self.target();
         let deep = self
             .folders
-            .get(self.target())
+            .get(target)
             .map_or(1, |folder| folder.crumbs.len());
         let mut chain = Vec::with_capacity(deep);
-        let mut at = Some(Path::new(self.target()));
+        let mut at = Some(Path::new(target));
         while let Some(path) = at.filter(|_| chain.len() < deep) {
             chain.push(intern_path(path));
             at = path.parent();
@@ -183,7 +187,6 @@ impl FinderDemo {
         self.visit(id, true, window, cx);
     }
 
-    /// `hold` keeps the window on the folder it shows while it reads one it has no rows for.
     fn visit(&mut self, id: &'static str, hold: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(listing) = crate::smart::listing(id) {
             self.show_tag(listing, window, cx);
@@ -199,27 +202,25 @@ impl FinderDemo {
         let mut history = self.history[..=self.at].to_vec();
         history.push(id);
         let at = history.len() - 1;
-        self.travel(history, at, true, hold, window, cx);
+        let arriving = Arriving {
+            history,
+            at,
+            recent: true,
+            chosen: None,
+        };
+        self.travel(arriving, hold, window, cx);
     }
 
     fn travel(
         &mut self,
-        history: Vec<&'static str>,
-        at: usize,
-        recent: bool,
+        arriving: Arriving,
         hold: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = history[at];
-        self.arriving = None;
+        let id = arriving.id();
         if hold && self.holds_for(id) {
-            self.arriving = Some(Arriving {
-                history,
-                at,
-                recent,
-                chosen: None,
-            });
+            self.arriving = Some(arriving);
             self.read_folder(id, cx);
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(HOLD).await;
@@ -233,16 +234,20 @@ impl FinderDemo {
             .detach();
             return;
         }
-        self.history = history;
-        self.at = at;
-        if recent {
-            self.remember_recent(id);
-        }
+        self.land(arriving);
         self.arrive(window, cx);
     }
 
-    /// Finder never shows an empty list for a folder that has items: a window keeps showing the
-    /// folder it leaves while it reads one it has no rows for.
+    fn land(&mut self, arriving: Arriving) -> Option<Vec<SharedString>> {
+        let id = arriving.id();
+        self.history = arriving.history;
+        self.at = arriving.at;
+        if arriving.recent {
+            self.remember_recent(id);
+        }
+        arriving.chosen
+    }
+
     fn holds_for(&self, id: &'static str) -> bool {
         id.starts_with('/')
             && (!self.folders.has(id)
@@ -252,31 +257,15 @@ impl FinderDemo {
                     .is_some_and(|folder| folder.loading && folder.rows.is_empty()))
     }
 
-    /// The folder the window is on its way to, while it still shows the one it leaves.
     pub(crate) fn headed_for(&self) -> Option<&'static str> {
-        self.arriving
-            .as_ref()
-            .map(|arriving| arriving.history[arriving.at])
+        self.arriving.as_ref().map(Arriving::id)
     }
 
-    /// Shows `id` if the window was on its way there: its first rows are read, or `HOLD` passed.
     pub(crate) fn arrived(&mut self, id: &'static str, cx: &mut Context<Self>) -> bool {
-        let Some(Arriving {
-            history,
-            at,
-            recent,
-            chosen,
-        }) = self
-            .arriving
-            .take_if(|arriving| arriving.history[arriving.at] == id)
-        else {
+        let Some(arriving) = self.arriving.take_if(|arriving| arriving.id() == id) else {
             return false;
         };
-        self.history = history;
-        self.at = at;
-        if recent {
-            self.remember_recent(id);
-        }
+        let chosen = self.land(arriving);
         self.enter(cx);
         if let Some(keys) = chosen {
             self.choose(keys);
@@ -285,10 +274,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn arrive_now(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.headed_for() else {
-            return;
-        };
-        if self.arrived(id, cx) {
+        if self.headed_for().is_some_and(|id| self.arrived(id, cx)) {
             self.settle();
         }
     }
@@ -394,8 +380,6 @@ impl FinderDemo {
         }
     }
 
-    /// Finder won't open a folder it can't list: it says why and stays where it was, with the
-    /// folder still selected.
     pub(crate) fn folder_refused(
         &mut self,
         id: &'static str,
@@ -427,7 +411,6 @@ impl FinderDemo {
         self.refuse(refusal(id, error), cx);
     }
 
-    /// A folder that went away, or would not open, hands the window back to one that is there.
     pub(crate) fn settle_vanished(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.vanished.take() else {
             return;
@@ -452,10 +435,16 @@ impl FinderDemo {
         if next >= self.history.len() {
             return;
         }
-        self.travel(self.history.clone(), next, false, true, window, cx);
+        let arriving = Arriving {
+            history: self.history.clone(),
+            at: next,
+            recent: false,
+            chosen: None,
+        };
+        self.travel(arriving, true, window, cx);
     }
 
-    pub(crate) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.arriving = None;
         self.enter(cx);
         self.read_folder(self.here(), cx);
@@ -463,11 +452,8 @@ impl FinderDemo {
         self.retitle(window);
     }
 
-    /// What a window lets go of as it lands in a folder.
     fn enter(&mut self, cx: &mut Context<Self>) {
-        self.selected.clear();
-        self.cursor = None;
-        self.anchor = None;
+        self.deselect();
         self.query.clear();
         self.filtered.clear();
         self.hits.clear();
@@ -494,7 +480,7 @@ impl FinderDemo {
         }
     }
 
-    /// Off the main thread, which a file on a share that stopped answering would stall.
+    // Off the main thread: a file on a share that stopped answering would stall it.
     fn open_files(&self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         if files.is_empty() {
             return;
@@ -556,12 +542,8 @@ impl FinderDemo {
             return;
         }
         let listing = self.lines(self.view == LIST_VIEW);
-        let left = listing
-            .iter()
-            .find(|line| line.row.opens == Some(from))
-            .cloned();
-        if let Some(line) = left {
-            self.pick(&line, false, false);
+        if let Some(line) = listing.iter().find(|line| line.row.opens == Some(from)) {
+            self.pick(line, false, false);
             self.reveal(&line.key);
         }
     }
