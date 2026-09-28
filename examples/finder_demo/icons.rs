@@ -15,16 +15,13 @@ use crate::view::LIST_VIEW;
 
 type Key = (FileType<'static>, u32);
 
-/// Four lanes draw about twice as many warm icons a second as one; more add little.
 const LANES: usize = 4;
 
 const BATCH: usize = 16;
 const SLICE: Duration = Duration::from_millis(4);
 const KEPT_BYTES: usize = 48 << 20;
-/// Frames a key stays asked for: rows scrolled past longer ago lose their priority.
 const FRESH: u64 = 8;
 
-/// Finder's first frame of a folder already has its icons.
 pub(crate) const FIRST_ROWS: usize = 64;
 const PREPARE: Duration = Duration::from_millis(60);
 
@@ -52,16 +49,16 @@ struct State {
     frame: u64,
     generation: u64,
     held: HashMap<Key, Held>,
-    // Owed to `KEPT` once its lock is free: the main thread never waits for a listing's thread.
+    // Owed to `KEPT` once its lock is free: the main thread never waits on a listing's thread.
     kept_cleared: bool,
     kept_changed: Vec<Key>,
     sizes: HashMap<FileType<'static>, Vec<u32>>,
     per_file_bytes: usize,
-    /// Keys a frame painted a stand-in for: that frame, then the order it asked in.
+    /// Stand-ins painted: (frame, ask order).
     asked: HashMap<Key, (u64, usize)>,
     asks: usize,
     waited: u64,
-    /// Keys a lane is drawing, and whether for a row on screen.
+    /// Keys a lane is drawing: whether for a row on screen.
     busy: HashMap<Key, bool>,
     lanes: usize,
     ahead: Ahead,
@@ -106,14 +103,12 @@ fn draw(key: Key) -> Option<Symbol> {
     draw_file_icon(key.0, px(f32::from_bits(key.1)))
 }
 
-/// Landings that brought an icon some frame asked for.
 static LANDED: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn landed() -> u64 {
     LANDED.load(Ordering::Relaxed)
 }
 
-/// Lookups so far that found no icon drawn at their size.
 pub(crate) fn asks() -> usize {
     STATE.with_borrow(|state| state.asks)
 }
@@ -133,9 +128,7 @@ pub(crate) fn draw_stand_ins(size: f32) {
     });
 }
 
-/// A process's first check of write access to an app bundle that App Management guards waits on
-/// TCC, and every check made meanwhile sends a request of its own; the answer then holds for
-/// minutes. Drawing an app's icon or reading its display name makes that check.
+/// Drawing an app's icon checks App Management; every check before TCC answers the first asks again.
 pub(crate) fn ask_app_management(apps: impl IntoIterator<Item = PathBuf>) {
     static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
     let mut asked = ASKED.lock().unwrap();
@@ -157,7 +150,6 @@ pub(crate) fn installed_apps() -> impl Iterator<Item = PathBuf> {
         .map(|entry| apps.join(entry.name))
 }
 
-/// On the thread that read a listing, before it is shown; that thread draws as one of the lanes.
 pub(crate) fn prepare(rows: &[Arc<Row>], shown: usize, size: f32) {
     let kinds = rows
         .iter()
@@ -166,8 +158,7 @@ pub(crate) fn prepare(rows: &[Arc<Row>], shown: usize, size: f32) {
     begin(kinds, size).finish();
 }
 
-/// A listing's icons, drawing on lanes until its thread finishes them as one more lane. The lanes
-/// are threads of their own: the listing's row tasks can hold every thread the executor has.
+/// Lanes are threads of their own: the listing's row tasks can hold every executor thread.
 pub(crate) struct Drawing {
     keys: Arc<Vec<Key>>,
     next: Arc<AtomicUsize>,
@@ -206,7 +197,6 @@ pub(crate) fn begin(kinds: impl IntoIterator<Item = FileType<'static>>, size: f3
 }
 
 impl Drawing {
-    /// Draws as one more lane, then waits for the icons the others took.
     pub(crate) fn finish(self) {
         lane(&self.keys, &self.next, &self.drawn, self.until);
         for _ in 0..self.next.load(Ordering::Relaxed).min(self.keys.len()) {
@@ -229,7 +219,7 @@ fn lane(keys: &[Key], next: &AtomicUsize, drawn: &mpsc::Sender<()>, until: Insta
     }
 }
 
-/// Once per frame, before its rows ask; the lanes start after it, on what it asked for.
+/// Once per frame, before its rows ask.
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let prepared = PREPARED
         .try_lock()
@@ -253,7 +243,6 @@ pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     start_wanted(demo, cx);
 }
 
-/// Lanes for what a frame asked for, without starting a frame of its own.
 pub(crate) fn start_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
     let demo = demo.downgrade();
     cx.defer(move |cx| start(demo, cx));
@@ -384,7 +373,6 @@ impl State {
         Some(job)
     }
 
-    /// Rows on screen first, the newest frame's in paint order; then the listing, outward from them.
     fn pick(&mut self, free: usize) -> Option<Job> {
         let mut shown: Vec<(Key, (u64, usize))> = self
             .asked
@@ -421,8 +409,7 @@ impl State {
         job
     }
 
-    /// IconServices renders cold icons one at a time, so drawing ahead waits for a frame with no
-    /// stand-in, holds one lane, and a row coming on screen waits behind one icon at most.
+    /// IconServices draws cold icons serially: ahead holds one lane, so a shown row waits one icon at most.
     fn ahead_job(&mut self) -> Option<Job> {
         if self.waited == self.frame
             || self.per_file_bytes >= KEPT_BYTES

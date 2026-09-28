@@ -17,7 +17,6 @@ fn key_forwarder(window: &Window, cx: &mut Context<FinderDemo>) -> impl Fn(Quick
     let handle = window.window_handle();
     let app = cx.to_async();
     move |key| {
-        let entity = entity.clone();
         let mut app = app.clone();
         let _ = app.update_window(handle, |_, window, cx| {
             if let Some(entity) = entity.upgrade() {
@@ -54,7 +53,6 @@ impl FinderDemo {
         quick_look_full_screen(window, items, current, key_forwarder(window, cx));
     }
 
-    /// The cursor's item and its icon, or the folder itself while nothing is selected.
     fn quick_look_subject(&self) -> Option<(SharedString, Option<Bounds<Pixels>>)> {
         match self.selected.is_empty() {
             true => Some((self.here().into(), None)),

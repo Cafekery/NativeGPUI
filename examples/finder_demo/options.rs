@@ -2,9 +2,9 @@ use std::cell::Cell;
 
 use finder_fs::ds_store::IconOptions;
 use gpui::{
-    App, Bounds, Context, Div, Entity, FocusHandle, IntoElement, ParentElement, Pixels, Render,
-    SharedString, Size, Styled, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions, div, point, prelude::*, px, size,
+    App, Bounds, Context, Div, Entity, FocusHandle, Pixels, Render, SharedString, Size, WeakEntity,
+    Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px,
+    size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
@@ -24,7 +24,6 @@ use crate::views::icon::{Arrangement, SIZE_STEPS, size_slider, slider_size};
 
 const TEXT_SIZES: [f32; 7] = [10., 11., 12., 13., 14., 15., 16.];
 
-/// `None` is a separator.
 const ARRANGEMENTS: [Option<Arrangement>; 12] = [
     Some(Arrangement::Free),
     None,
@@ -40,7 +39,7 @@ const ARRANGEMENTS: [Option<Arrangement>; 12] = [
     Some(Arrangement::By(Column::Tags)),
 ];
 
-/// Finder's Show Columns, in its order; `None` rows are iCloud Drive's alone.
+/// `None` rows are iCloud Drive's alone.
 const SHOW_COLUMNS: [(&str, Option<Column>); 12] = [
     ("iCloud Status", None),
     ("Last Modified By", None),
@@ -75,14 +74,14 @@ pub(crate) struct ViewOptions {
 }
 
 impl ViewOptions {
-    fn label(text: &str) -> Div {
+    fn label(text: &'static str) -> Div {
         div()
             .text_size(tokens::small_system_font_size())
             .text_color(system_color(SystemColor::Label))
-            .child(SharedString::from(text.to_string()))
+            .child(text)
     }
 
-    fn row(label: &str, control: impl IntoElement) -> impl IntoElement {
+    fn row(label: &'static str, control: impl IntoElement) -> impl IntoElement {
         div()
             .flex()
             .items_center()
@@ -123,9 +122,7 @@ impl ViewOptions {
             .child(Self::label("Show Columns:"))
             .children(boxes)
     }
-}
 
-impl ViewOptions {
     fn arrange_popup(demo: &Entity<FinderDemo>, arranged: Arrangement) -> NativePopup {
         let entries = ARRANGEMENTS.iter().map(|arrangement| match arrangement {
             None => MenuEntry::separator(),
@@ -309,7 +306,6 @@ thread_local! {
     static OPEN: Cell<Option<WindowHandle<ViewOptions>>> = const { Cell::new(None) };
 }
 
-/// Whether the View Options window is up.
 pub(crate) fn shown(cx: &App) -> bool {
     OPEN.get().is_some_and(|open| {
         cx.windows()
@@ -318,7 +314,6 @@ pub(crate) fn shown(cx: &App) -> bool {
     })
 }
 
-/// Finder's ⌘J toggles its one View Options window.
 pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
     if shown(cx) {
         if let Some(open) = OPEN.take() {
