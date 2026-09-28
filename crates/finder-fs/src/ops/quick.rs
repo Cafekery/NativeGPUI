@@ -699,7 +699,17 @@ fn convert(
                         pairs.push((unsafe { kCGImagePropertyOrientation }, upright));
                         dict(&pairs)
                     }
-                    _ => dict(&[(unsafe { kCGImagePropertyOrientation }, upright)]),
+                    _ => {
+                        let tiff =
+                            dict(&[(unsafe { kCGImagePropertyTIFFOrientation }, upright.clone())]);
+                        dict(&[
+                            (unsafe { kCGImagePropertyOrientation }, upright),
+                            (
+                                unsafe { kCGImagePropertyTIFFDictionary },
+                                Retained::into_super(Retained::into_super(tiff)),
+                            ),
+                        ])
+                    }
                 };
                 write_image(&dest, format, image.0, cf(&*properties))?;
             }
@@ -793,3 +803,4 @@ mod tests {
         assert_eq!(turned(1, false), 6);
     }
 }
+
