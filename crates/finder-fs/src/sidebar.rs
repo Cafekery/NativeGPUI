@@ -359,6 +359,57 @@ fn stored_path(bookmark: &NSData) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_string()))
 }
 
+/// Finder's Hard disks, External disks and Connected servers sidebar settings.
+pub fn volume_kinds_shown() -> [bool; 3] {
+    let properties = read(VOLUMES).and_then(|(_, properties)| properties);
+    [
+        "ShowHardDrives",
+        "ShowEjectableVolumes",
+        "ShowNetworkVolumes",
+    ]
+    .map(|key| {
+        properties
+            .as_ref()
+            .and_then(|dict| number(dict, &format!("{VOLUMES}.{key}")))
+            .is_none_or(|number| number.boolValue())
+    })
+}
+
+/// Whether Finder's sidebar shows Recents and Shared, the rows above Favorites.
+#[allow(deprecated)]
+pub fn top_rows_shown() -> [bool; 2] {
+    let name = CFString::from_static_str("com.apple.LSSharedFileList.TopSidebarSection");
+    let hidden = CFString::from_static_str("com.apple.LSSharedFileList.ItemIsHidden");
+    let quiet = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
+    let paths: Vec<String> = unsafe { LSSharedFileList::new(None, &name, None) }
+        .and_then(|list| unsafe { list.snapshot(std::ptr::null_mut()) })
+        .map(|snapshot| {
+            let snapshot: CFRetained<CFArray<LSSharedFileListItem>> =
+                unsafe { CFRetained::cast_unchecked(snapshot) };
+            snapshot
+                .iter()
+                .filter(|item| {
+                    unsafe { item.property(&hidden) }.is_none_or(|value| {
+                        match value.downcast_ref::<CFBoolean>() {
+                            Some(on) => !on.as_bool(),
+                            None => {
+                                value.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()) == Some(0)
+                            }
+                        }
+                    })
+                })
+                .filter_map(|item| {
+                    let url = unsafe { item.resolved_url(quiet, std::ptr::null_mut()) }?;
+                    let path = url.file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle)?;
+                    Some(path.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ["myDocuments.cannedSearch", "SharedDocuments.cannedSearch"]
+        .map(|leaf| paths.iter().any(|path| path.ends_with(leaf)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
