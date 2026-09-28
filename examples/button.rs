@@ -53,21 +53,18 @@ impl Render for Buttons {
                 .child(
                     row()
                         .child(label("NSButton — radio group, grouped in Rust"))
-                        .child(
-                            native_radio("radio-0", self.radio == 0)
-                                .title("Sort by name")
-                                .on_change(cx.listener(|this, _: &bool, _, cx| {
-                                    this.radio = 0;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            native_radio("radio-1", self.radio == 1)
-                                .title("Sort by date")
-                                .on_change(cx.listener(|this, _: &bool, _, cx| {
-                                    this.radio = 1;
-                                    cx.notify();
-                                })),
+                        .children(
+                            [("radio-0", "Sort by name"), ("radio-1", "Sort by date")]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, (id, title))| {
+                                    native_radio(id, self.radio == index)
+                                        .title(title)
+                                        .on_change(cx.listener(move |this, _: &bool, _, cx| {
+                                            this.radio = index;
+                                            cx.notify();
+                                        }))
+                                }),
                         )
                         .child(readout(format!("selected {}", self.radio))),
                 )

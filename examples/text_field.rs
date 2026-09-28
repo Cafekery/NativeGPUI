@@ -1,12 +1,12 @@
 use gpui::{
-    App, Bounds, Context, Render, SharedString, Window, WindowBounds, div, point, prelude::*, px,
-    rgb, size,
+    App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     install_menus, native_root, native_search_field, native_secure_field, native_text_field,
     window_options,
 };
 
+#[derive(Default)]
 struct Demo {
     plain: String,
     secure: String,
@@ -39,7 +39,7 @@ impl Render for Demo {
                     native_text_field("plain", &self.plain)
                         .placeholder("your name")
                         .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.plain = text.clone();
+                            this.plain.clone_from(text);
                             cx.notify();
                         }))
                         .on_submit(cx.listener(|this, text: &String, _, cx| {
@@ -52,7 +52,7 @@ impl Render for Demo {
                     native_secure_field("secure", &self.secure)
                         .placeholder("password")
                         .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.secure = text.clone();
+                            this.secure.clone_from(text);
                             cx.notify();
                         }))
                         .on_submit(cx.listener(|this, text: &String, _, cx| {
@@ -65,7 +65,7 @@ impl Render for Demo {
                     native_search_field("search", &self.search)
                         .placeholder("search")
                         .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.search = text.clone();
+                            this.search.clone_from(text);
                             cx.notify();
                         }))
                         .on_submit(cx.listener(|this, text: &String, _, cx| {
@@ -73,14 +73,14 @@ impl Render for Demo {
                             cx.notify();
                         })),
                 ))
-                .child(div().text_size(px(11.)).child(SharedString::from(format!(
+                .child(div().text_size(px(11.)).child(format!(
                     "plain={:?} secure={:?} search={:?}",
                     self.plain, self.secure, self.search
-                ))))
+                )))
                 .child(
                     div()
                         .text_size(px(11.))
-                        .child(SharedString::from(format!("submitted[{}]", self.submitted))),
+                        .child(format!("submitted[{}]", self.submitted)),
                 ),
         )
     }
@@ -97,14 +97,7 @@ fn main() {
                 })),
                 ..window_options()
             },
-            |_, cx| {
-                cx.new(|_| Demo {
-                    plain: String::new(),
-                    secure: String::new(),
-                    search: String::new(),
-                    submitted: String::new(),
-                })
-            },
+            |_, cx| cx.new(|_| Demo::default()),
         )
         .unwrap();
         cx.activate(true);

@@ -5,8 +5,8 @@ use native_gpui::{
     MenuEntry, MenuOrigin, native_context_menu, native_popup, native_root, window_options,
 };
 
-fn accent_entries() -> Vec<MenuEntry> {
-    vec![
+fn accent_entries() -> [MenuEntry; 5] {
+    [
         MenuEntry::item("Automatic").symbol("paintpalette"),
         MenuEntry::item("Graphite").symbol("circle.fill"),
         MenuEntry::item("Vivid Blue").symbol("drop.fill"),
@@ -27,8 +27,8 @@ fn accent_color(index: usize) -> Hsla {
 }
 
 // AppKit lifts entry 0 onto a pull-down's button face and hides it from the list.
-fn document_entries() -> Vec<MenuEntry> {
-    vec![
+fn document_entries() -> [MenuEntry; 5] {
+    [
         MenuEntry::item("Document"),
         MenuEntry::item("New Sketch").symbol("doc.badge.plus"),
         MenuEntry::item("Duplicate").symbol("plus.square.on.square"),
@@ -37,8 +37,8 @@ fn document_entries() -> Vec<MenuEntry> {
     ]
 }
 
-fn region_entries() -> Vec<MenuEntry> {
-    vec![
+fn region_entries() -> [MenuEntry; 5] {
+    [
         MenuEntry::item("Tag Red").symbol("circle.fill"),
         MenuEntry::item("Tag Green").symbol("circle.fill"),
         MenuEntry::item("Tag Purple").symbol("circle.fill"),
@@ -56,8 +56,8 @@ fn tag_color(index: Option<usize>) -> Hsla {
     }
 }
 
-fn title(entries: &[MenuEntry], index: usize) -> String {
-    match entries.get(index) {
+fn title(entries: &[MenuEntry], index: Option<usize>) -> String {
+    match index.and_then(|index| entries.get(index)) {
         Some(MenuEntry::Item { title, .. }) => title.clone(),
         _ => "—".into(),
     }
@@ -84,10 +84,10 @@ struct Menus {
 
 impl Render for Menus {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let document_title = self.document.map_or_else(
-            || "—".to_string(),
-            |index| title(&document_entries(), index),
-        );
+        let accent = accent_entries();
+        let accent_title = title(&accent, Some(self.accent));
+        let document = document_entries();
+        let document_title = title(&document, self.document);
 
         native_root(
             div()
@@ -105,7 +105,7 @@ impl Render for Menus {
                         .gap_3()
                         .child(
                             native_popup("accent", self.accent)
-                                .entries(accent_entries())
+                                .entries(accent)
                                 .on_change(cx.listener(|this, index: &usize, _, cx| {
                                     this.accent = *index;
                                     cx.notify();
@@ -117,7 +117,7 @@ impl Render for Menus {
                                 .rounded_md()
                                 .bg(accent_color(self.accent)),
                         )
-                        .child(title(&accent_entries(), self.accent)),
+                        .child(accent_title),
                 )
                 .child(
                     div()
@@ -127,7 +127,7 @@ impl Render for Menus {
                         .child(
                             native_popup("document", self.document.unwrap_or(0))
                                 .pull_down(true)
-                                .entries(document_entries())
+                                .entries(document)
                                 .on_change(cx.listener(|this, index: &usize, _, cx| {
                                     this.document = Some(*index);
                                     cx.notify();

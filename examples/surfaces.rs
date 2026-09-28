@@ -9,11 +9,23 @@ use native_gpui::surfaces::{
 };
 use native_gpui::{native_root, window_options};
 use objc2::MainThreadOnly;
+use objc2::rc::Retained;
 use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSControlStateValueOn, NSSwitch, NSTextField,
     NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+
+fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+    NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+}
+
+fn push_button(mtm: MainThreadMarker, title: &str, frame: NSRect) -> Retained<NSButton> {
+    let button = NSButton::initWithFrame(NSButton::alloc(mtm), frame);
+    button.setTitle(&NSString::from_str(title));
+    button.setBezelStyle(NSBezelStyle::Push);
+    button
+}
 
 struct Surfaces {
     anchor: SurfaceAnchor,
@@ -34,24 +46,17 @@ impl Surfaces {
             edge,
             ..Default::default()
         };
-        let anchor = self.anchor.clone();
         let entity = cx.weak_entity();
-        let popover = present_popover(window, cx, &anchor, spec, move |mtm, actions| {
-            let view = NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::ZERO, NSSize::new(240., 110.)),
-            );
+        let popover = present_popover(window, cx, &self.anchor, spec, move |mtm, actions| {
+            let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., 240., 110.));
             let label = NSTextField::labelWithString(
                 &NSString::from_str("System popover, GPUI anchor"),
                 mtm,
             );
-            label.setFrame(NSRect::new(NSPoint::new(16., 76.), NSSize::new(212., 20.)));
+            label.setFrame(rect(16., 76., 212., 20.));
             view.addSubview(&label);
 
-            let toggle = NSSwitch::initWithFrame(
-                NSSwitch::alloc(mtm),
-                NSRect::new(NSPoint::new(16., 42.), NSSize::new(52., 26.)),
-            );
+            let toggle = NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(16., 42., 52., 26.));
             let read = toggle.clone();
             let says = entity.clone();
             actions.on_action(&toggle, move |_, app| {
@@ -63,12 +68,7 @@ impl Surfaces {
             });
             view.addSubview(&toggle);
 
-            let button = NSButton::initWithFrame(
-                NSButton::alloc(mtm),
-                NSRect::new(NSPoint::new(96., 42.), NSSize::new(128., 26.)),
-            );
-            button.setTitle(&NSString::from_str("Close"));
-            button.setBezelStyle(NSBezelStyle::Push);
+            let button = push_button(mtm, "Close", rect(96., 42., 128., 26.));
             actions.on_action(&button, move |_, app| {
                 let _ = entity.update(app, |this: &mut Surfaces, cx| {
                     this.close_popover();
@@ -102,7 +102,7 @@ impl Surfaces {
                 let sheet = unsafe {
                     NSWindow::initWithContentRect_styleMask_backing_defer(
                         NSWindow::alloc(mtm),
-                        NSRect::new(NSPoint::ZERO, NSSize::new(380., 160.)),
+                        rect(0., 0., 380., 160.),
                         NSWindowStyleMask::Titled,
                         NSBackingStoreType::Buffered,
                         false,
@@ -115,19 +115,14 @@ impl Surfaces {
                     &NSString::from_str("Real NSWindow sheet on the GPUI window"),
                     mtm,
                 );
-                label.setFrame(NSRect::new(NSPoint::new(24., 106.), NSSize::new(332., 20.)));
+                label.setFrame(rect(24., 106., 332., 20.));
                 content.addSubview(&label);
 
                 for (title, response, x) in [
                     ("Cancel", SheetResponse::CANCEL, 132.),
                     ("Done", SheetResponse::OK, 252.),
                 ] {
-                    let button = NSButton::initWithFrame(
-                        NSButton::alloc(mtm),
-                        NSRect::new(NSPoint::new(x, 24.), NSSize::new(104., 28.)),
-                    );
-                    button.setTitle(&NSString::from_str(title));
-                    button.setBezelStyle(NSBezelStyle::Push);
+                    let button = push_button(mtm, title, rect(x, 24., 104., 28.));
                     let entity = entity.clone();
                     actions.on_action(&button, move |_, app| {
                         let _ = entity.update(app, |this: &mut Surfaces, _| {
@@ -156,12 +151,11 @@ impl Surfaces {
         if services == 0 {
             println!("no share services for these items; the picker would open empty");
         }
-        let anchor = self.anchor.clone();
         let entity = cx.weak_entity();
         present_share_picker(
             window,
             cx,
-            &anchor,
+            &self.anchor,
             SharePicker::default(),
             items,
             move |event, _, app| match event {
