@@ -1,20 +1,21 @@
 use std::cell::Cell;
 
 use gpui::{
-    App, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
-    size,
+    App, Bounds, Context, Div, Entity, IntoElement, ParentElement, Pixels, Render, SharedString,
+    Size, Styled, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
+    prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    MenuEntry, NativePopup, native_popup, native_root, native_slider, window_options,
+    CheckState, MenuEntry, NativePopup, native_checkbox, native_popup, native_root, native_slider,
+    window_options,
 };
 use objc2_app_kit::NSWindowTitleVisibility;
 
 use crate::app::FinderDemo;
 use crate::data::{Column, SORT_KEYS, SORT_TITLES};
 use crate::frame::ns_window;
-use crate::view::ICON_VIEW;
+use crate::view::{ICON_VIEW, LIST_VIEW};
 use crate::views::header::column_title;
 use crate::views::icon::Arrangement;
 
@@ -34,26 +35,86 @@ const ARRANGEMENTS: [Option<Arrangement>; 12] = [
     Some(Arrangement::By(Column::Tags)),
 ];
 
+/// Finder's Show Columns, in its order; `None` rows are iCloud Drive's alone.
+const SHOW_COLUMNS: [(&str, Option<Column>); 12] = [
+    ("iCloud Status", None),
+    ("Last Modified By", None),
+    ("Shared By", None),
+    ("Date Modified", Some(Column::Modified)),
+    ("Date Created", Some(Column::Created)),
+    ("Date Last Opened", Some(Column::Opened)),
+    ("Date Added", Some(Column::Added)),
+    ("Size", Some(Column::Size)),
+    ("Kind", Some(Column::Kind)),
+    ("Version", Some(Column::Version)),
+    ("Comments", Some(Column::Comments)),
+    ("Tags", Some(Column::Tags)),
+];
+
 const TITLEBAR_H: f32 = 34.;
+const WIDTH: f32 = 268.;
+const HEIGHT: f32 = 170.;
+const LIST_HEIGHT: f32 = 341.;
+
+fn panel_size(view: usize) -> Size<Pixels> {
+    match view {
+        LIST_VIEW => size(px(WIDTH), px(LIST_HEIGHT)),
+        _ => size(px(WIDTH), px(HEIGHT)),
+    }
+}
 
 pub(crate) struct ViewOptions {
     demo: WeakEntity<FinderDemo>,
 }
 
 impl ViewOptions {
+    fn label(text: &str) -> Div {
+        div()
+            .text_size(tokens::small_system_font_size())
+            .text_color(system_color(SystemColor::Label))
+            .child(SharedString::from(text.to_string()))
+    }
+
     fn row(label: &str, control: impl IntoElement) -> impl IntoElement {
         div()
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(
-                div()
-                    .w(px(74.))
-                    .text_size(tokens::small_system_font_size())
-                    .text_color(system_color(SystemColor::Label))
-                    .child(SharedString::from(label.to_string())),
-            )
+            .child(Self::label(label).w(px(74.)))
             .child(control)
+    }
+
+    fn show_columns(demo: &Entity<FinderDemo>, shown: &[Column]) -> impl IntoElement {
+        let boxes = SHOW_COLUMNS
+            .iter()
+            .enumerate()
+            .map(|(at, &(title, column))| {
+                let demo = demo.clone();
+                native_checkbox(
+                    ("ng.finder.options.column", at),
+                    column.is_some_and(|column| shown.contains(&column)),
+                )
+                .title(title)
+                .enabled(column.is_some())
+                .on_change(move |state: &CheckState, _, cx| {
+                    let Some(column) = column else {
+                        return;
+                    };
+                    demo.update(cx, |this, cx| {
+                        let shown = this.list_columns.iter().any(|spec| spec.column == column);
+                        if shown != (*state == CheckState::On) {
+                            this.toggle_column(column, cx);
+                            cx.notify();
+                        }
+                    });
+                })
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(Self::label("Show Columns:"))
+            .children(boxes)
     }
 }
 
@@ -97,6 +158,10 @@ impl Render for ViewOptions {
         let icon_size = state.icon_size;
         let icons = state.view == ICON_VIEW;
         let arranged = state.arrangement().filter(|_| icons);
+        let columns = (state.view == LIST_VIEW).then(|| {
+            let shown: Vec<Column> = state.list_columns.iter().map(|spec| spec.column).collect();
+            Self::show_columns(&demo, &shown)
+        });
 
         native_root(
             div()
@@ -142,7 +207,8 @@ impl Render for ViewOptions {
                                 }
                             }),
                     ))
-                }),
+                })
+                .children(columns),
         )
         .into_any_element()
     }
@@ -170,20 +236,28 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
         return;
     }
     let watched = demo.clone();
+    let view = demo.read(cx).view;
     let demo = demo.downgrade();
     let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(320.), px(220.)),
-                size: size(px(268.), px(150.) + px(TITLEBAR_H - 14.)),
+                size: panel_size(view),
             })),
             is_resizable: false,
             is_minimizable: false,
             ..window_options()
         },
-        |_, cx| {
+        |window, cx| {
             cx.new(|cx| {
-                cx.observe(&watched, |_, _, cx| cx.notify()).detach();
+                cx.observe_in(&watched, window, |_, demo, window, cx| {
+                    let size = panel_size(demo.read(cx).view);
+                    if window.viewport_size() != size {
+                        window.resize(size);
+                    }
+                    cx.notify();
+                })
+                .detach();
                 ViewOptions { demo }
             })
         },
