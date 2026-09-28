@@ -113,14 +113,6 @@ impl Render for FinderDemo {
         let headers = (self.view == LIST_VIEW).then(|| self.header_row(&palette, cx));
 
         let list_view = self.view == LIST_VIEW;
-        let sheet = self
-            .go_sheet
-            .clone()
-            .map(|open| self.go_sheet(&open, window, cx));
-        let connect_sheet = self
-            .connect_sheet
-            .clone()
-            .map(|open| self.connect_sheet(&open, window, cx));
         let save_sheet = self
             .save_sheet
             .clone()
@@ -194,8 +186,6 @@ impl Render for FinderDemo {
                         .children(
                             status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
                         )
-                        .children(sheet)
-                        .children(connect_sheet)
                         .children(save_sheet)
                         .children(conflict_sheet)
                         .children(jobs_popover),
