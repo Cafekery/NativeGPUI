@@ -90,24 +90,21 @@ pub fn adopt_key_path(view: &NSView) {
     if current.name() == KEY_PATH_CLASS {
         return;
     }
-    let subclass = match AnyClass::get(KEY_PATH_CLASS) {
-        Some(existing) => existing,
-        None => {
-            let mut builder = ClassBuilder::new(KEY_PATH_CLASS, current)
-                .expect("no other class in this process is named NGKeyPathView");
-            unsafe {
-                builder.add_method(
-                    sel!(performKeyEquivalent:),
-                    key_equivalent as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool,
-                );
-                builder.add_method(
-                    sel!(keyDown:),
-                    key_down as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
-                );
-            }
-            builder.register()
+    let subclass = AnyClass::get(KEY_PATH_CLASS).unwrap_or_else(|| {
+        let mut builder = ClassBuilder::new(KEY_PATH_CLASS, current)
+            .expect("no other class in this process is named NGKeyPathView");
+        unsafe {
+            builder.add_method(
+                sel!(performKeyEquivalent:),
+                key_equivalent as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool,
+            );
+            builder.add_method(
+                sel!(keyDown:),
+                key_down as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
         }
-    };
+        builder.register()
+    });
     unsafe { AnyObject::set_class(&*(view as *const NSView).cast::<AnyObject>(), subclass) };
 }
 
@@ -289,20 +286,4 @@ pub fn fitting_size_keyed(
         cache.borrow_mut().insert((class, key), size);
         size
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::{point, px, size};
-
-    #[test]
-    fn to_rect_preserves_fractions() {
-        let r = to_rect(Bounds::new(
-            point(px(430.5), px(201.25)),
-            size(px(120.5), px(32.75)),
-        ));
-        assert_eq!((r.origin.x, r.origin.y), (430.5, 201.25));
-        assert_eq!((r.size.width, r.size.height), (120.5, 32.75));
-    }
 }

@@ -5,15 +5,12 @@ use objc2_foundation::NSString;
 
 static WORDING: OnceLock<fn(&str) -> Option<String>> = OnceLock::new();
 
-/// Rewords the titles the crate hands AppKit (menu rows, toolbar labels and tooltips) before
-/// they show, so an app can put them in the user's language. Set once, before the first menu.
+/// Rewords every title the crate hands AppKit before it shows. Set once, before the first menu.
 pub fn set_wording(reword: fn(&str) -> Option<String>) {
     WORDING.set(reword).ok();
 }
 
 pub(crate) fn worded(text: &str) -> Retained<NSString> {
-    match WORDING.get().and_then(|reword| reword(text)) {
-        Some(said) => NSString::from_str(&said),
-        None => NSString::from_str(text),
-    }
+    let reworded = WORDING.get().and_then(|reword| reword(text));
+    NSString::from_str(reworded.as_deref().unwrap_or(text))
 }

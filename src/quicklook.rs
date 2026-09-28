@@ -309,23 +309,21 @@ enum Job {
     Close,
 }
 
-/// Loading the panel spins a nested run loop that runs GPUI's tasks and cannot re-enter the main
-/// dispatch queue, so it opens from a top-level run-loop block or waits out a half-second timeout.
+/// Loading the panel spins a nested run loop that can't re-enter the main queue: never dispatch it.
 fn defer(panel: Retained<QLPreviewPanel>, job: Job) {
     let block = RcBlock::new(move || run(&panel, job));
     unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
 }
 
 fn run(panel: &QLPreviewPanel, job: Job) {
-    let queued = STATE.with_borrow_mut(|state| {
-        if state.busy {
+    let busy = STATE.with_borrow_mut(|state| {
+        let busy = std::mem::replace(&mut state.busy, true);
+        if busy {
             state.pending = Some(job);
-            return true;
         }
-        state.busy = true;
-        false
+        busy
     });
-    if queued {
+    if busy {
         return;
     }
     let mut next = Some(job);

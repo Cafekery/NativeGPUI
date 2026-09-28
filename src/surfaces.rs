@@ -23,7 +23,7 @@ use objc2_foundation::{
 };
 
 use crate::bridge::appkit::{Container, gpui_view};
-use crate::bridge::host::{Layer, NativeHost, Target};
+use crate::bridge::host::{Layer, NativeHost, Target, defer};
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
 #[derive(Clone, Default)]
@@ -210,12 +210,7 @@ define_class!(
             else {
                 return;
             };
-            ivars
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| handler(window, app));
-                })
-                .detach();
+            defer(&ivars.cx, move |window, app| handler(window, app));
         }
     }
 );
@@ -313,12 +308,7 @@ define_class!(
         fn popover_did_close(&self, _: &NSNotification) {
             let ivars = self.ivars();
             let on_close = ivars.on_close.clone();
-            ivars
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|window, app| on_close(window, app));
-                })
-                .detach();
+            defer(&ivars.cx, move |window, app| on_close(window, app));
         }
     }
 );
@@ -446,11 +436,9 @@ pub fn present_sheet(
     let on_end = Rc::new(on_end);
     let completion = RcBlock::new(move |response: NSModalResponse| {
         let on_end = on_end.clone();
-        async_cx
-            .spawn(async move |cx| {
-                let _ = cx.update(|window, app| on_end(SheetResponse(response), window, app));
-            })
-            .detach();
+        defer(&async_cx, move |window, app| {
+            on_end(SheetResponse(response), window, app)
+        });
     });
     parent.beginSheet_completionHandler(&sheet, Some(&completion));
 
@@ -484,17 +472,17 @@ pub enum ShareItem {
 }
 
 fn share_array(items: &[ShareItem]) -> Retained<NSArray> {
-    let objects: Vec<Retained<NSObject>> = items
+    let objects: Vec<Retained<AnyObject>> = items
         .iter()
         .filter_map(|item| match item {
-            ShareItem::Url(url) => {
-                NSURL::URLWithString(&NSString::from_str(url)).map(Retained::into_super)
-            }
-            ShareItem::Text(text) => Some(Retained::into_super(NSString::from_str(text))),
+            ShareItem::Url(url) => NSURL::URLWithString(&NSString::from_str(url))
+                .map(|url| Retained::into_super(Retained::into_super(url))),
+            ShareItem::Text(text) => Some(Retained::into_super(Retained::into_super(
+                NSString::from_str(text),
+            ))),
         })
         .collect();
-    let refs: Vec<&AnyObject> = objects.iter().map(|object| object.as_ref()).collect();
-    NSArray::from_slice(&refs)
+    NSArray::from_retained_slice(&objects)
 }
 
 #[allow(deprecated)]
@@ -604,12 +592,7 @@ impl PickerDelegate {
     fn emit(&self, event: SharePickerEvent) {
         let ivars = self.ivars();
         let on_event = ivars.on_event.clone();
-        ivars
-            .cx
-            .spawn(async move |cx| {
-                let _ = cx.update(|window, app| on_event(event, window, app));
-            })
-            .detach();
+        defer(&ivars.cx, move |window, app| on_event(event, window, app));
     }
 }
 
@@ -625,12 +608,11 @@ pub fn present_share_picker(
         return;
     };
     let host = chrome_host(window);
-    let async_cx = window.to_async(cx);
-    let delegate_cx = async_cx.clone();
 
     // Deferred a turn: the picker's nested tracking loop must not run under gpui's `App` borrow.
-    async_cx
-        .spawn(async move |_| {
+    window
+        .to_async(cx)
+        .spawn(async move |cx| {
             let mtm =
                 MainThreadMarker::new().expect("gpui's foreground executor is the main thread");
             let array = share_array(&items);
@@ -641,7 +623,7 @@ pub fn present_share_picker(
                 let this = PickerDelegate::alloc(mtm).set_ivars(PickerIvars {
                     on_event: Rc::new(on_event),
                     announced: Cell::new(false),
-                    cx: delegate_cx,
+                    cx: cx.clone(),
                 });
                 unsafe { msg_send![super(this), init] }
             };
