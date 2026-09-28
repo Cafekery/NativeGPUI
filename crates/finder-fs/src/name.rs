@@ -2,11 +2,18 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use objc2_foundation::{
-    NSData, NSDictionary, NSFileManager, NSPropertyListMutabilityOptions,
-    NSPropertyListSerialization, NSString,
+    NSData, NSDictionary, NSFileManager, NSNumber, NSPropertyListMutabilityOptions,
+    NSPropertyListSerialization, NSString, NSURL, NSURLHasHiddenExtensionKey,
 };
+
+const SYSTEM: u8 = 0;
+const HIDE: u8 = 1;
+const SHOW: u8 = 2;
+
+static EXTENSIONS: AtomicU8 = AtomicU8::new(SYSTEM);
 
 /// The folder names LaunchServices shows in the user's language wherever the system keeps them.
 static TRANSLATED: LazyLock<HashSet<String>> = LazyLock::new(|| {
@@ -64,10 +71,18 @@ pub fn display(name: &str) -> Cow<'_, str> {
     )
 }
 
-/// The name Finder shows for a path: LaunchServices' display name, which leaves off an
-/// extension the item hides or an application's, keeps it under "Show all filename extensions",
-/// and drops `.localized`.
-pub fn of_path(path: &Path) -> String {
+/// Overrides "Show all filename extensions" for every name shown here; `None` follows the
+/// system-wide setting, the only one LaunchServices reads.
+pub fn show_all_extensions(show: Option<bool>) {
+    let mode = match show {
+        None => SYSTEM,
+        Some(false) => HIDE,
+        Some(true) => SHOW,
+    };
+    EXTENSIONS.store(mode, Ordering::Relaxed);
+}
+
+fn launch_services(path: &Path) -> String {
     let path = NSString::from_str(&path.to_string_lossy());
     display(
         &NSFileManager::defaultManager()
@@ -77,15 +92,51 @@ pub fn of_path(path: &Path) -> String {
     .into_owned()
 }
 
+/// LaunchServices' own answer, which counts an application's extension as hidden.
+fn hides_extension(path: &Path) -> bool {
+    let path = NSString::from_str(&path.to_string_lossy());
+    let url = NSURL::fileURLWithPath_isDirectory(&path, false);
+    let mut hidden = None;
+    let _ = unsafe { url.getResourceValue_forKey_error(&mut hidden, NSURLHasHiddenExtensionKey) };
+    hidden
+        .and_then(|hidden| hidden.downcast::<NSNumber>().ok())
+        .is_some_and(|hidden| hidden.boolValue())
+}
+
+/// The name Finder shows for a path: LaunchServices' display name, which leaves off an
+/// extension the item hides or an application's, keeps it under "Show all filename extensions",
+/// and drops `.localized`.
+pub fn of_path(path: &Path) -> String {
+    match (
+        EXTENSIONS.load(Ordering::Relaxed),
+        path.parent(),
+        path.file_name(),
+    ) {
+        (SYSTEM, ..) | (_, None, _) | (_, _, None) => launch_services(path),
+        (mode, Some(dir), Some(name)) => {
+            named(mode, dir, &name.to_string_lossy(), hides_extension(path))
+        }
+    }
+}
+
 /// `of_path` for an item a listing read, asked of LaunchServices only when the item can lose
 /// part of its name or wear a translated one: the answer costs about 40 µs an item.
 pub fn shown(dir: &Path, name: &str, ext_hidden: bool) -> String {
-    let hides = name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty() && (ext_hidden || ext.eq_ignore_ascii_case("app") || ext == "localized")
-    });
-    match hides || TRANSLATED.contains(name) {
-        true => of_path(&dir.join(name)),
-        false => display(name).into_owned(),
+    named(EXTENSIONS.load(Ordering::Relaxed), dir, name, ext_hidden)
+}
+
+fn named(mode: u8, dir: &Path, name: &str, ext_hidden: bool) -> String {
+    let split = name.rsplit_once('.').filter(|(stem, _)| !stem.is_empty());
+    let app = split.is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("app"));
+    if split.is_some_and(|(_, ext)| ext == "localized") || TRANSLATED.contains(name) {
+        return launch_services(&dir.join(name));
+    }
+    match (mode, split) {
+        (SYSTEM, Some(_)) if ext_hidden || app => launch_services(&dir.join(name)),
+        (HIDE, Some((stem, _))) if ext_hidden || app && hides_extension(&dir.join(name)) => {
+            display(stem).into_owned()
+        }
+        _ => display(name).into_owned(),
     }
 }
 
@@ -151,6 +202,21 @@ mod tests {
                 "{name}"
             );
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_override_hides_or_shows_extensions_whatever_the_system_does() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-ext-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Doc.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink("/System/Applications/Calculator.app", dir.join("Calc.app"))
+            .unwrap();
+        assert_eq!(named(HIDE, &dir, "Doc.txt", true), "Doc");
+        assert_eq!(named(HIDE, &dir, "Doc.txt", false), "Doc.txt");
+        assert_eq!(named(SHOW, &dir, "Doc.txt", true), "Doc.txt");
+        assert_eq!(named(SHOW, &dir, "Calc.app", false), "Calc.app");
+        assert_eq!(named(HIDE, &dir, "Calc.app", false), "Calc");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
