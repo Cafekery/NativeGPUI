@@ -11,7 +11,10 @@ use native_gpui::{
     native_root, native_rule, native_spinner, native_symbol, window_options,
 };
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSWindowTitleVisibility};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSWindowButton, NSWindowCollectionBehavior,
+    NSWindowTitleVisibility,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
@@ -23,6 +26,8 @@ use crate::ui::click_kind;
 // Finder's Connect to Server window, measured in points from its top-left corner.
 const DEFAULT_W: f32 = 414.;
 const DEFAULT_H: f32 = 227.;
+const MIN_W: f32 = 355.;
+const MIN_H: f32 = 234.;
 const EDGE: f32 = 19.;
 const FIELD_Y: f32 = 51.;
 const LABEL_Y: f32 = 87.;
@@ -79,7 +84,7 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
             })),
             show: false,
             is_minimizable: true,
-            window_min_size: Some(size(px(DEFAULT_W), px(DEFAULT_H))),
+            window_min_size: Some(size(px(MIN_W), px(MIN_H))),
             ..window_options()
         },
         |window, cx| {
@@ -116,6 +121,12 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
         }
         ns.setFrameAutosaveName(&name);
         ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
+        ns.setCollectionBehavior(
+            ns.collectionBehavior() | NSWindowCollectionBehavior::FullScreenNone,
+        );
+        if let Some(zoom) = ns.standardWindowButton(NSWindowButton::ZoomButton) {
+            zoom.setEnabled(false);
+        }
         ns.makeKeyAndOrderFront(None);
     })
     .detach();
@@ -474,24 +485,8 @@ impl Render for Connect {
                         .child(
                             native_button("ng.finder.connect.browse", "Browse")
                                 .width(px(BROWSE_W))
-                                .on_click({
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |connect, cx| {
-                                            let Ok(network) =
-                                                cx.build_action("finder_demo::GoNetwork", None)
-                                            else {
-                                                return;
-                                            };
-                                            connect
-                                                .host
-                                                .update(cx, |_, window, cx| {
-                                                    window.dispatch_action(network, cx)
-                                                })
-                                                .ok();
-                                        })
-                                        .ok();
-                                    }
+                                .on_click(|_, _, cx| {
+                                    crate::open_finder_window(crate::locations::NETWORK, 1, cx);
                                 }),
                         ),
                 )

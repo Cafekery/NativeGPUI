@@ -199,7 +199,11 @@ fn crawl(cx: &mut App) {
         .detach();
 }
 
-fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {
+pub(crate) fn open_finder_window(
+    start: &'static str,
+    extra: usize,
+    cx: &mut App,
+) -> WindowHandle<FinderDemo> {
     let step = px(extra as f32 * 30.);
     let bounds = WindowBounds::Windowed(Bounds {
         origin: point(px(160.) + step, px(120.) + step),
