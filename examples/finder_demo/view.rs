@@ -39,6 +39,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn show_view(&mut self, view: usize) {
+        if view != self.view {
+            self.column_depth = 0;
+        }
         self.view = view;
         self.preview = prefs::preview(view);
         prefs::set_view(view);
