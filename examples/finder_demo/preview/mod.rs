@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use block2::{RcBlock, StackBlock};
 use gpui::{
@@ -39,6 +40,8 @@ pub(crate) const LIST_MIN_W: f32 = 316.;
 
 pub(crate) const INSET: f32 = 10.;
 const RESIZE_EDGE: f32 = 6.;
+/// Past the time a first picture usually takes; a slower one shows the type icon meanwhile.
+const HOLD: Duration = Duration::from_millis(120);
 /// The split view takes a click within 2pt of its divider for itself.
 const DIVIDER_GRAB: f32 = 3.;
 
@@ -59,6 +62,8 @@ struct Handed {
     shown: RefCell<Option<card::Shown>>,
     /// The icon landings seen when the pane last drew a stand-in for an icon.
     waiting: Cell<Option<u64>>,
+    /// Since when the card has been kept up while the next one's picture is made.
+    held: Cell<Option<Instant>>,
     stack: RefCell<Option<Arc<RenderImage>>>,
 }
 
@@ -405,6 +410,22 @@ impl FinderDemo {
             .get()
             .is_some_and(|at| crate::icons::landed() != at);
         if *handed.key.borrow() != card || landed {
+            // A type icon would flash up before the picture; the card that is up waits for it.
+            if handed.shown.borrow().is_some() && self.hero_awaited(content) {
+                let since = handed.held.get().unwrap_or_else(|| {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(HOLD).await;
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    })
+                    .detach();
+                    Instant::now()
+                });
+                handed.held.set(Some(since));
+                if since.elapsed() < HOLD {
+                    return;
+                }
+            }
+            handed.held.set(None);
             *handed.shown.borrow_mut() = self.shown(self.cursor_line().as_ref(), content);
             *handed.key.borrow_mut() = card;
             handed.waiting.set(None);

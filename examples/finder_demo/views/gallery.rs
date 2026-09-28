@@ -64,6 +64,9 @@ impl FinderDemo {
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
         let scale = self.scale;
+        if chosen.len() <= 1 {
+            self.ask_beside_cursor(size);
+        }
         let hero = match chosen.as_slice() {
             many if many.len() > 1 => Some(self.stack_hero(many, size)),
             _ => chosen
