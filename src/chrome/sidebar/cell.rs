@@ -206,15 +206,18 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
 }
 
 pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
-    build_core_types_template(resource, points.to_f64())
+    let image = build_core_types_template(resource, points.to_f64())?;
+    image.setSize(NSSize::new(points.to_f64(), points.to_f64()));
+    Some(image)
 }
 
+/// The drawing nearest `points`, at its own size: Finder draws its 18pt art in a 17pt row.
 fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage>> {
     let bundle = NSBundle::bundleWithPath(&NSString::from_str(CORE_TYPES_BUNDLE))?;
     let source = bundle.imageForResource(&NSString::from_str(name))?;
     let reps = source.representations();
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
-    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(points, points));
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(chosen, chosen));
     // The finest rep of one point size only: the bundle's 1x drawing at 18pt is sheared.
     if let Some(finest) = reps
         .iter()
@@ -464,17 +467,19 @@ mod tests {
     }
 
     #[test]
-    fn the_core_types_bundle_yields_a_sized_template() {
+    fn the_core_types_bundle_yields_a_template_at_its_drawings_size() {
         let image = build_core_types_template("SidebarAirDrop", 17.)
             .expect("CoreTypes.bundle is world-readable and ships SidebarAirDrop");
         assert!(image.isTemplate());
-        assert_eq!(image.size(), NSSize::new(17., 17.));
+        assert_eq!(image.size(), NSSize::new(18., 18.));
         let reps: Vec<(f64, isize)> = image
             .representations()
             .iter()
             .map(|rep| (rep.size().width, rep.pixelsWide()))
             .collect();
         assert_eq!(reps, vec![(18., 36)], "one point size, at its finest");
+        let sized = super::system_template("SidebarAirDrop", gpui::px(17.)).expect("the same art");
+        assert_eq!(sized.size(), NSSize::new(17., 17.));
         assert!(build_core_types_template("SidebarNoSuchThing", 17.).is_none());
     }
 }
