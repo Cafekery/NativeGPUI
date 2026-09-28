@@ -13,8 +13,7 @@ fi
 cd "$(dirname "$0")/.." || exit 1
 
 title=$(python3 -c "import sys; print(sys.argv[1].replace('_',' ').title().replace(' ',''))" "$name")
-# The name the app wears. The example's own name stays the code's: the bundle id, and the icon
-# document and asset the icon keys name, are built from it and outlive any renaming.
+# The bundle id and icon stay keyed to the example name, so grants and defaults outlive a rename.
 product=$title
 [ "$name" = finder_demo ] && product="Found'er"
 app="dist/$product.app"
@@ -31,7 +30,6 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$product"
 
-# Compiled the way Xcode would: the layered icon lands in Assets.car, the flattened .icns beside it.
 icon="assets/$title.icon"
 icon_keys=
 if [ -d "$icon" ]; then
@@ -78,8 +76,7 @@ $icon_keys
 </plist>
 PLIST
 
-# TCC keys a grant to the designated requirement: ad-hoc signing makes that the cdhash, which every
-# rebuild changes, while a real identity makes it identifier-plus-certificate, which survives.
+# TCC keys a grant to the designated requirement; an ad-hoc signature's cdhash changes every build.
 identity=${NG_CODESIGN_IDENTITY:-}
 self_signed="NativeGPUI Dev"
 keychain="$HOME/Library/Keychains/nativegpui-dev.keychain-db"
@@ -90,8 +87,7 @@ find_identity() {
     sed -n 's/^ *[0-9]*) [0-9A-F]* "\(.*\)"$/\1/p' | grep -m1 "$1"
 }
 
-# codesign resolves a name only through the user's keychain search list, and only an unlocked
-# keychain whose key allows codesign signs without a dialog.
+# codesign finds a name only via the user's keychain search list, and signs silently only unlocked.
 own_identity() {
   local dir status
   [ -f "$keychain" ] || security create-keychain -p "$keychain_password" "$keychain" || return 1
@@ -144,7 +140,6 @@ if [ -n "$identity" ]; then
   "${sign[@]}" "$app" 2>/dev/null ||
     { echo "warning: codesign as '$identity' failed" >&2; identity=; }
 fi
-# Last resort: an ad-hoc bundle launches, but its privacy grants die with the next build.
 if [ -z "$identity" ]; then
   codesign --force --sign - --identifier "$bundle_id" --timestamp=none "$app" 2>/dev/null ||
     echo "warning: codesign failed" >&2
