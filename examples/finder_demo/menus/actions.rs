@@ -20,14 +20,18 @@ pub(crate) enum Act {
     NewFolderWith,
     Groups,
     ViewOptions,
+    View(usize),
     GetInfo,
     GetInfoAt(&'static str),
+    SummaryInfo,
     NewFolder,
     Inspector,
     InspectorAt(&'static str),
     Sort(Column),
     Open,
+    OpenTabs,
     OpenWindow,
+    ShowOriginal,
     Trash,
     DeleteNow,
     EmptyTrash,
@@ -41,11 +45,12 @@ pub(crate) enum Act {
     Share,
     Tags,
     Copy,
-    Cut,
     Paste,
+    PasteInto(&'static str),
     OpenTerminal(&'static str),
     OpenTab(&'static str),
     OpenWindowAt(&'static str),
+    AddToDock(&'static str),
     Enclosing(&'static str),
     RemoveFromSidebar(&'static str),
     RenameAt(&'static str),
@@ -53,11 +58,10 @@ pub(crate) enum Act {
     CopyPathname(&'static str),
     CopyPathnames,
     Slideshow,
-    MoveHere,
     Toggle(Column),
 }
 
-fn original_of(path: &Path) -> Option<PathBuf> {
+pub(super) fn original_of(path: &Path) -> Option<PathBuf> {
     if let Ok(target) = std::fs::read_link(path) {
         let joined = match target.is_absolute() {
             true => target,
@@ -110,6 +114,7 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
+            Act::View(view) => self.pick_view(view, window, cx),
             Act::Inspector => {
                 self.show_preview(true);
                 self.inspecting = None;
@@ -126,9 +131,19 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
+            Act::SummaryInfo => {
+                let demo = cx.entity();
+                cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
+            }
             Act::Sort(column) => self.sort_by(column, cx),
             Act::Open => self.open_selected(window, cx),
+            Act::OpenTabs => {
+                for id in self.chosen_folders() {
+                    self.open_tab(id, window, cx);
+                }
+            }
             Act::OpenWindow => self.open_in_window(cx),
+            Act::ShowOriginal => self.show_original(window, cx),
             Act::Trash => self.trash_selection(cx),
             Act::DeleteNow => self.delete_selection(cx),
             Act::EmptyTrash => self.empty_trash(cx),
@@ -145,12 +160,17 @@ impl FinderDemo {
                 crate::openwith::open_with(&self.paths(), Path::new(app));
             }
             Act::Copy => self.copy_selection(cx),
-            Act::Cut => self.cut_selection(cx),
             Act::Paste => self.paste(false, cx),
+            Act::PasteInto(folder) => self.paste_into(PathBuf::from(folder), false, cx),
             Act::OpenTerminal(path) => open_terminal(path),
             Act::OpenTab(id) => self.open_tab(id, window, cx),
             Act::OpenWindowAt(id) => {
                 open_finder_window(id, 1, cx);
+            }
+            Act::AddToDock(id) => {
+                if let Err(error) = crate::dock::add(&[PathBuf::from(id)]) {
+                    self.complain(&error);
+                }
             }
             Act::Enclosing(id) => self.show_enclosing(id, window, cx),
             Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id),
@@ -171,7 +191,6 @@ impl FinderDemo {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(lines.join("\n")))
             }
             Act::Slideshow => self.slideshow(window, cx),
-            Act::MoveHere => self.paste(true, cx),
             Act::Toggle(column) => self.toggle_column(column),
         }
         cx.notify();

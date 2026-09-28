@@ -53,11 +53,14 @@ impl FinderDemo {
     }
 
     pub(crate) fn paste(&mut self, force_move: bool, cx: &mut Context<Self>) {
+        self.paste_into(PathBuf::from(self.target()), force_move, cx);
+    }
+
+    pub(crate) fn paste_into(&mut self, into: PathBuf, force_move: bool, cx: &mut Context<Self>) {
         let items = read_pasteboard();
         if items.is_empty() {
             return;
         }
-        let into = PathBuf::from(self.target());
         // Files copied since, in any app, may have replaced the cut on the pasteboard.
         let cut = !self.cut.is_empty()
             && items.iter().all(|item| {
