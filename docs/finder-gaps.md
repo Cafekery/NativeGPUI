@@ -124,10 +124,23 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   Tags sort by the first tag's name; an item a column says nothing for (no tag, no version) lists
   last whichever way the column sorts; the Tags column shows the names ("Work, Blue"), Version a
   bundle's short version, both blank for nothing.
-- [ ] Comments: Finder shows the comment kept in the folder's .DS_Store (`cmmt`) and not the
-  `kMDItemFinderComment` attribute; the demo reads no .DS_Store record for it, so the column stays
-  off. Shared By and Last Modified By: Finder shows neither column outside iCloud Drive, even when
-  its settings ask for them; the demo offers neither.
+- [x] Comments: Finder shows the comment its folder's .DS_Store keeps (`cmmt`, which Finder's
+  `set comment` writes along with the `kMDItemFinderComment` attribute), never the attribute alone:
+  an item with only the attribute shows blank. The column is 300 pt, its text set in as Kind's,
+  and it sorts by the comment with blanks first ascending and last descending, ties by name (read
+  off Finder 27 over AX: Apple, Elder, Fig, "alpha note", "beta note", "cmmt only"). The demo
+  reads `cmmt` with the other extras, off the main thread, and offers the column in the header
+  menu and View Options, which lists Finder's Show Columns in its order.
+- [ ] Shared By, Last Modified By and View Options' iCloud Status: Finder offers them only in
+  iCloud Drive and shows neither column elsewhere, even when its settings ask for them; the demo
+  lists them disabled everywhere.
+- [x] Column widths, read over AX in a Finder window at eight widths (14 pt text, 16 pt icons):
+  Name takes what the other columns leave while the list fills the window, down to its least
+  (198); below that the list overflows and every width holds until the window outgrows the
+  columns again. The last column draws 6 pt wider than Finder keeps it (Kind 121 last, 115
+  otherwise; Comments 306 of 300; Date Added 187 of 181), and a list that overflows as it opens
+  shows Name at 206 at least (Finder's kept Name plus 6 when that is wider: 250 opened at 256).
+  The demo matches at equal list widths; it keeps its own widths, not Finder's.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
