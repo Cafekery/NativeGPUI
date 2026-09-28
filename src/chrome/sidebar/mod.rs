@@ -374,6 +374,7 @@ struct Views {
     _content_vc: Retained<NSViewController>,
     content_item: Retained<NSSplitViewItem>,
     inspector: RefCell<Option<Inspector>>,
+    inspector_asked: Cell<bool>,
     backdrop: Option<Retained<NSVisualEffectView>>,
 }
 
@@ -638,13 +639,15 @@ impl NativeSidebar {
 
     /// A trailing inspector: AppKit's own split item, so macOS draws its glass and its divider,
     /// which drags it between `min` and `max` or shut. `Some` shows it, starting at that
-    /// thickness the first time; `None` collapses it. Both animate once the window is on screen.
+    /// thickness the first time; `None` collapses it. Changes after the first call animate once
+    /// the window is on screen.
     pub fn set_inspector(&self, thickness: Option<Pixels>, min: Pixels, max: Pixels) {
         let mtm = MainThreadMarker::new().expect("set_inspector is a main-thread path");
         let mut slot = self.0.views.inspector.borrow_mut();
-        let on_screen = self
-            .window_frame_window()
-            .is_some_and(|window| window.isVisible());
+        let animate = self.0.views.inspector_asked.replace(true)
+            && self
+                .window_frame_window()
+                .is_some_and(|window| window.isVisible());
         let created = slot.is_none();
         let inspector = match (thickness, slot.as_ref()) {
             (None, None) => return,
@@ -669,7 +672,7 @@ impl NativeSidebar {
                 controller.setView(&view);
                 let item = NSSplitViewItem::inspectorWithViewController(&controller);
                 item.setCanCollapse(true);
-                item.setCollapsed(on_screen);
+                item.setCollapsed(animate);
                 item.setHoldingPriority(self.0.views.content_item.holdingPriority() + 1.);
                 item.setMinimumThickness(min.to_f64());
                 item.setMaximumThickness(max.to_f64());
@@ -690,7 +693,7 @@ impl NativeSidebar {
         };
         let collapse = thickness.is_none();
         let settled = inspector.item.isCollapsed() == collapse;
-        match (settled, on_screen) {
+        match (settled, animate) {
             (true, _) => {}
             (false, true) => {
                 inspector.sliding.set(true);
@@ -1521,6 +1524,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             _content_vc: content_vc,
             content_item,
             inspector: RefCell::new(None),
+            inspector_asked: Cell::new(false),
             backdrop,
         },
         shared,

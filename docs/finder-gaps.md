@@ -110,6 +110,8 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   on the user's Mac: Notes.txt first where Finder has Archive.zip), so a folder opened in gallery
   view picks a different first item.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
+- [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
+  slides it, over about 230 ms each way.
 - [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row
   last clicked, ⌘-clicked or reached with ⇧-arrow) when that row stays, and nothing when it goes
   too or there is none. Measured in list, icon and column views: one row, a ⇧-range either way,
