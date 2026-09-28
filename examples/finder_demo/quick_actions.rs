@@ -6,12 +6,14 @@ use gpui::Context;
 use native_gpui::MenuEntry;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSButton, NSControlStateValueOn, NSPopUpButton,
-    NSTextAlignment, NSTextField, NSView, NSWorkspace,
+    NSApplication, NSBackingStoreType, NSButton, NSControlStateValueOn, NSModalResponseCancel,
+    NSModalResponseOK, NSPopUpButton, NSTextAlignment, NSTextField, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWorkspace,
 };
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 
 use crate::app::FinderDemo;
 use crate::data::Face;
@@ -125,11 +127,14 @@ impl FinderDemo {
                 left: act == QuickAct::RotateLeft,
             },
             QuickAct::CreatePdf => Quick::CreatePdf(items),
-            QuickAct::RemoveBackground => {
-                return self.run_op(Op::Quick(Quick::RemoveBackground(items)), After::Rename, cx);
-            }
+            QuickAct::RemoveBackground => Quick::RemoveBackground(items),
         };
-        self.run_op(Op::Quick(quick), After::Select, cx);
+        // Finder puts a file it makes straight into renaming.
+        let after = match quick {
+            Quick::Rotate { .. } => After::Select,
+            _ => After::Rename,
+        };
+        self.run_op(Op::Quick(quick), after, cx);
     }
 
     /// Finder's Convert Image window: format, size and metadata, asked once for the selection.
@@ -148,7 +153,7 @@ impl FinderDemo {
                 size,
                 metadata,
             });
-            this.update(cx, |this, cx| this.run_op(op, After::Select, cx))
+            this.update(cx, |this, cx| this.run_op(op, After::Rename, cx))
                 .ok();
         })
         .detach();
@@ -170,19 +175,30 @@ fn popup(mtm: MainThreadMarker, titles: &[&str], frame: NSRect) -> Retained<NSPo
     button
 }
 
-struct RetitleIvars {
+struct DialogIvars {
     formats: RefCell<Option<Retained<NSPopUpButton>>>,
     convert: RefCell<Option<Retained<NSButton>>>,
 }
 
 define_class!(
-    /// Names the convert button after the format chosen, as Finder's does.
+    /// Finder's Convert Image window's controller: names the convert button after the format and
+    /// ends the modal session.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = RetitleIvars]
-    struct Retitle;
+    #[ivars = DialogIvars]
+    struct Dialog;
 
-    impl Retitle {
+    unsafe impl NSObjectProtocol for Dialog {}
+
+    unsafe impl NSWindowDelegate for Dialog {
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _sender: *mut AnyObject) -> bool {
+            NSApplication::sharedApplication(self.mtm()).stopModalWithCode(NSModalResponseCancel);
+            true
+        }
+    }
+
+    impl Dialog {
         #[unsafe(method(ngRetitle:))]
         fn ng_retitle(&self, _sender: *mut AnyObject) {
             let (Some(formats), Some(convert)) =
@@ -194,6 +210,16 @@ define_class!(
             let format = ImageFormat::ALL[at.min(ImageFormat::ALL.len() - 1)];
             convert.setTitle(&NSString::from_str(&convert_title(format)));
         }
+
+        #[unsafe(method(ngConvert:))]
+        fn ng_convert(&self, _sender: *mut AnyObject) {
+            NSApplication::sharedApplication(self.mtm()).stopModalWithCode(NSModalResponseOK);
+        }
+
+        #[unsafe(method(ngCancel:))]
+        fn ng_cancel(&self, _sender: *mut AnyObject) {
+            NSApplication::sharedApplication(self.mtm()).stopModalWithCode(NSModalResponseCancel);
+        }
     }
 );
 
@@ -201,21 +227,48 @@ fn convert_title(format: ImageFormat) -> String {
     format!("Convert to {}", format.title())
 }
 
+fn push_button(
+    mtm: MainThreadMarker,
+    title: &str,
+    key: &str,
+    target: &Dialog,
+    action: objc2::runtime::Sel,
+    frame: NSRect,
+) -> Retained<NSButton> {
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(title),
+            Some(target),
+            Some(action),
+            mtm,
+        )
+    };
+    button.setKeyEquivalent(&NSString::from_str(key));
+    button.setFrame(frame);
+    button
+}
+
+/// Frames are Finder's, measured over Accessibility, in a 426 × 191 content view.
 fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool)> {
-    let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str("Convert Image"));
-    let convert = alert.addButtonWithTitle(&NSString::from_str(&convert_title(ImageFormat::Jpeg)));
-    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
-    let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., 380., 90.));
-    view.addSubview(&label(mtm, "Format:", rect(0., 64., 72., 18.)));
-    view.addSubview(&label(mtm, "Image Size:", rect(0., 32., 72., 18.)));
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            rect(0., 0., 426., 191.),
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    unsafe { window.setReleasedWhenClosed(false) };
+    window.setTitle(&NSString::from_str("Convert Image"));
+    let view = window.contentView()?;
     let formats: Vec<&str> = ImageFormat::ALL
         .iter()
         .map(|format| format.title())
         .collect();
     let sizes: Vec<&str> = ImageSize::ALL.iter().map(|size| size.title()).collect();
-    let format_popup = popup(mtm, &formats, rect(76., 60., 302., 26.));
-    let size_popup = popup(mtm, &sizes, rect(76., 28., 302., 26.));
+    let format_popup = popup(mtm, &formats, rect(100., 141., 302., 26.));
+    let size_popup = popup(mtm, &sizes, rect(100., 109., 302., 26.));
     let keep = unsafe {
         NSButton::checkboxWithTitle_target_action(
             &NSString::from_str("Preserve Metadata"),
@@ -225,29 +278,52 @@ fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool
         )
     };
     keep.setState(NSControlStateValueOn);
-    keep.setFrame(rect(76., 2., 200., 18.));
+    keep.setFrame(rect(100., 85., 138., 18.));
+    let dialog = Dialog::alloc(mtm).set_ivars(DialogIvars {
+        formats: RefCell::new(Some(format_popup.clone())),
+        convert: RefCell::new(None),
+    });
+    let dialog: Retained<Dialog> = unsafe { msg_send![super(dialog), init] };
+    let cancel = push_button(
+        mtm,
+        "Cancel",
+        "\u{1b}",
+        &dialog,
+        sel!(ngCancel:),
+        rect(202., 24., 68., 26.),
+    );
+    let convert = push_button(
+        mtm,
+        &convert_title(ImageFormat::Jpeg),
+        "\r",
+        &dialog,
+        sel!(ngConvert:),
+        rect(276., 24., 126., 26.),
+    );
+    *dialog.ivars().convert.borrow_mut() = Some(convert.clone());
+    unsafe {
+        format_popup.setTarget(Some(&dialog));
+        format_popup.setAction(Some(sel!(ngRetitle:)));
+    }
+    view.addSubview(&label(mtm, "Format:", rect(47., 149., 49., 18.)));
+    view.addSubview(&label(mtm, "Image Size:", rect(24., 117., 72., 18.)));
     view.addSubview(&format_popup);
     view.addSubview(&size_popup);
     view.addSubview(&keep);
-    let retitle = Retitle::alloc(mtm).set_ivars(RetitleIvars {
-        formats: RefCell::new(Some(format_popup.clone())),
-        convert: RefCell::new(Some(convert)),
-    });
-    let retitle: Retained<Retitle> = unsafe { msg_send![super(retitle), init] };
-    unsafe {
-        format_popup.setTarget(Some(&retitle));
-        format_popup.setAction(Some(sel!(ngRetitle:)));
-    }
-    alert.setAccessoryView(Some(&view));
-    let answer = alert.runModal();
-    drop(retitle);
-    if answer != NSAlertFirstButtonReturn {
+    view.addSubview(&cancel);
+    view.addSubview(&convert);
+    window.setDelegate(Some(ProtocolObject::from_ref(&*dialog)));
+    window.center();
+    let answer = NSApplication::sharedApplication(mtm).runModalForWindow(&window);
+    window.orderOut(None);
+    window.setDelegate(None);
+    if answer != NSModalResponseOK {
         return None;
     }
     let pick = |popup: &NSPopUpButton| popup.indexOfSelectedItem().max(0) as usize;
     Some((
-        ImageFormat::ALL[pick(&format_popup).min(2)],
-        ImageSize::ALL[pick(&size_popup).min(3)],
+        ImageFormat::ALL[pick(&format_popup).min(ImageFormat::ALL.len() - 1)],
+        ImageSize::ALL[pick(&size_popup).min(ImageSize::ALL.len() - 1)],
         keep.state() == NSControlStateValueOn,
     ))
 }
