@@ -513,6 +513,11 @@ pub fn on_menu_enabled(check: impl Fn(&dyn Action) -> bool + 'static) {
     ENABLED.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
 }
 
+/// Rows it names take that title each time they are validated.
+pub fn on_menu_title(title: impl Fn(&dyn Action) -> Option<&'static str> + 'static) {
+    TITLE.with_borrow_mut(|slot| *slot = Some(Rc::new(title)));
+}
+
 fn action_of(item: &NSMenuItem) -> Option<Box<dyn Action>> {
     let index = item
         .representedObject()
@@ -565,6 +570,9 @@ define_class!(
             {
                 set_state(item, on);
             }
+            if let Some(title) = TITLE.with_borrow(|slot| slot.clone()).and_then(|t| t(&*action)) {
+                item.setTitle(&worded(title));
+            }
             let enabled = ENABLED.with_borrow(|slot| slot.clone());
             Bool::new(enabled.is_none_or(|enabled| enabled(&*action)))
         }
@@ -575,6 +583,8 @@ thread_local! {
     static SHARED: RefCell<Option<Retained<CommandSink>>> = const { RefCell::new(None) };
     static STATE: RefCell<Option<Rc<MenuState>>> = const { RefCell::new(None) };
     static ENABLED: RefCell<Option<Rc<dyn Fn(&dyn Action) -> bool>>> = const { RefCell::new(None) };
+    static TITLE: RefCell<Option<Rc<dyn Fn(&dyn Action) -> Option<&'static str>>>> =
+        const { RefCell::new(None) };
     static COMMANDS: RefCell<Vec<Box<dyn Action>>> = const { RefCell::new(Vec::new()) };
 }
 
