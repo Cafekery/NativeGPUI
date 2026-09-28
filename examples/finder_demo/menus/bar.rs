@@ -98,6 +98,7 @@ actions!(
         Up,
         UpInNewWindow,
         SelectStartupDisk,
+        ShowSettings,
         CycleWindows,
         ShowProgressWindow,
         ViewColumns,
@@ -238,6 +239,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(cycle_windows);
     cx.on_action(crate::clipboard_window::show);
     cx.on_action(crate::progress_window::show);
+    cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     on_menu_state(checked);
     on_menu_enabled(enabled);
     on_menu_title(titled);
@@ -289,6 +291,13 @@ pub(crate) fn install(cx: &mut App) {
     extend_menu(
         MenuSection::App,
         [MenuCommand::new("Empty Trash…", EmptyTrash).key("cmd-shift-backspace")],
+    );
+    extend_menu(
+        MenuSection::App,
+        [
+            MenuCommand::new("Settings…", ShowSettings).key("cmd-,"),
+            MenuCommand::separator(),
+        ],
     );
     extend_menu(
         MenuSection::Window,
@@ -456,7 +465,7 @@ impl FinderDemo {
                 this.show_original(window, cx);
             }))
             .on_action(cx.listener(|this, _: &AddToSidebar, _, cx| {
-                this.add_to_sidebar();
+                this.add_to_sidebar(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &EjectSelection, window, cx| {
