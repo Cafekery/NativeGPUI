@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use gpui::{Context, Window};
+use gpui::{Context, Size, Window, size};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
 use crate::app::FinderDemo;
@@ -8,7 +8,7 @@ use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
 use crate::views::header::PANE_INSET;
-use crate::views::icon::{Arrangement, cell};
+use crate::views::icon::Arrangement;
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
 
 pub(crate) const ICON_VIEW: usize = 0;
@@ -83,7 +83,7 @@ impl FinderDemo {
 
     pub(crate) fn art_size(&self) -> f32 {
         match self.view {
-            ICON_VIEW => self.icon_size as f32,
+            ICON_VIEW => self.icon_options().size,
             GALLERY_VIEW => self.strip_icon,
             COLUMN_VIEW => COLUMN_ICON,
             _ => self.list_icon_now(),
@@ -102,8 +102,8 @@ impl FinderDemo {
         );
         let fits = match self.view {
             ICON_VIEW => {
-                let tile = cell(self.icon_size as f32);
-                (width / tile).floor().max(1.) * (height / tile).ceil()
+                let tile = self.icon_options().cell();
+                (width / tile.width).floor().max(1.) * (height / tile.height).ceil()
             }
             GALLERY_VIEW => width / self.strip_icon,
             _ => height / self.row_h(),
@@ -133,9 +133,8 @@ impl FinderDemo {
                 }
             }
             ICON_VIEW => {
-                if let Some(size) = step(&ICON_STOPS, self.icon_size as f32, larger) {
-                    self.icon_size = size as f64;
-                    prefs::set_icon_size(size);
+                if let Some(size) = step(&ICON_STOPS, self.icon_options().size, larger) {
+                    self.change_icon_options(|options| options.icon_size = Some(size), cx);
                 }
             }
             GALLERY_VIEW => {
@@ -159,14 +158,25 @@ impl FinderDemo {
         ((self.list_content_w() - self.list_room) * 100.).round() > 0.
     }
 
-    pub(crate) fn fits(&self, window: &Window) -> usize {
+    /// The icon area as Finder measures it, from the sidebar to the pane, in a window this wide.
+    pub(crate) fn icon_room(&self, width: f32) -> Size<f32> {
         let pane = match self.preview_shown() {
             true => self.preview_w,
             false => 0.,
         };
-        let avail =
-            f32::from(window.viewport_size().width) - f32::from(self.metrics().left) - pane - 24.;
-        ((avail / cell(self.icon_size as f32)).floor() as usize).max(1)
+        let height = f32::from(self.icons.scroll.bounds().size.height);
+        size(
+            width - f32::from(self.metrics().left) - pane - 4.,
+            match height > 0. {
+                true => height,
+                false => f32::from(self.viewport.height),
+            },
+        )
+    }
+
+    pub(crate) fn fits(&self, window: &Window) -> usize {
+        let room = self.icon_room(f32::from(window.viewport_size().width));
+        self.icon_options().lanes(room)
     }
 
     /// Icons kept sorted reflow with the window; others keep the columns first laid out.
@@ -177,7 +187,12 @@ impl FinderDemo {
         match sorted || self.metrics() == SidebarMetrics::default() || self.lines(false).is_empty()
         {
             true => fits,
-            false => self.icons.hold(fits, cell(self.icon_size as f32)),
+            false => {
+                let options = self.icon_options();
+                let now = f32::from(window.viewport_size().width);
+                let first = self.icon_room(self.icons.first_width(now));
+                self.icons.hold(options.lanes(first), options)
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 use std::cell::Cell;
 
+use finder_fs::ds_store::IconOptions;
 use gpui::{
     App, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
     WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
@@ -7,7 +8,7 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    MenuEntry, NativePopup, native_popup, native_root, native_slider, window_options,
+    MenuEntry, NativePopup, native_popup, native_radio, native_root, native_slider, window_options,
 };
 use objc2_app_kit::NSWindowTitleVisibility;
 
@@ -16,7 +17,9 @@ use crate::data::{Column, SORT_KEYS, SORT_TITLES};
 use crate::frame::ns_window;
 use crate::view::ICON_VIEW;
 use crate::views::header::column_title;
-use crate::views::icon::Arrangement;
+use crate::views::icon::{Arrangement, SIZE_STEPS, size_slider, slider_size};
+
+const TEXT_SIZES: [f32; 7] = [10., 11., 12., 13., 14., 15., 16.];
 
 /// `None` is a separator.
 const ARRANGEMENTS: [Option<Arrangement>; 12] = [
@@ -48,7 +51,7 @@ impl ViewOptions {
             .gap(px(8.))
             .child(
                 div()
-                    .w(px(74.))
+                    .w(px(86.))
                     .text_size(tokens::small_system_font_size())
                     .text_color(system_color(SystemColor::Label))
                     .child(SharedString::from(label.to_string())),
@@ -94,7 +97,7 @@ impl Render for ViewOptions {
             .unwrap_or("Finder");
         window.set_window_title(title);
         let sort = SORT_KEYS.iter().position(|column| *column == state.sort);
-        let icon_size = state.icon_size;
+        let options = state.icon_options();
         let icons = state.view == ICON_VIEW;
         let arranged = state.arrangement().filter(|_| icons);
 
@@ -126,22 +129,103 @@ impl Render for ViewOptions {
                     },
                 ))
                 .when(icons, |panel| {
-                    panel.child(Self::row(
-                        "Icon size:",
-                        native_slider("ng.finder.options.size", icon_size)
-                            .range(32., 128.)
+                    let change = |change: fn(&mut IconOptions, f64)| {
+                        let demo = demo.clone();
+                        move |value: &f64, _: &mut Window, cx: &mut App| {
+                            let value = *value;
+                            demo.update(cx, |this, cx| {
+                                this.change_icon_options(|options| change(options, value), cx);
+                            });
+                        }
+                    };
+                    let label = |bottom: bool, title: &str| {
+                        let demo = demo.clone();
+                        native_radio(
+                            ("ng.finder.options.label", usize::from(bottom)),
+                            options.bottom == bottom,
+                        )
+                        .title(title)
+                        .on_change(move |_: &bool, _, cx| {
+                            demo.update(cx, |this, cx| {
+                                this.change_icon_options(
+                                    |options| options.label_on_bottom = Some(bottom),
+                                    cx,
+                                );
+                            });
+                        })
+                    };
+                    let size = SharedString::from(format!("{0} × {0}", options.size));
+                    panel
+                        .child(Self::row(
+                            "Icon size:",
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(tokens::small_system_font_size())
+                                        .text_color(system_color(SystemColor::SecondaryLabel))
+                                        .child(size),
+                                )
+                                .child(
+                                    native_slider(
+                                        "ng.finder.options.size",
+                                        size_slider(options.size),
+                                    )
+                                    .range(0., SIZE_STEPS)
+                                    .on_change(change(
+                                        |options, step| {
+                                            options.icon_size = Some(slider_size(step));
+                                        },
+                                    )),
+                                ),
+                        ))
+                        .child(Self::row(
+                            "Grid spacing:",
+                            native_slider("ng.finder.options.spacing", f64::from(options.spacing))
+                                .range(1., 100.)
+                                .on_change(change(|options, spacing| {
+                                    options.grid_spacing = Some(spacing.round() as f32);
+                                })),
+                        ))
+                        .child(Self::row(
+                            "Text size:",
+                            native_popup(
+                                "ng.finder.options.text",
+                                TEXT_SIZES
+                                    .iter()
+                                    .position(|size| *size == options.text)
+                                    .unwrap_or(2),
+                            )
+                            .entries(
+                                TEXT_SIZES
+                                    .iter()
+                                    .map(|size| MenuEntry::item(size.to_string())),
+                            )
                             .on_change({
                                 let demo = demo.clone();
-                                move |value: &f64, _, cx| {
-                                    let size = (value / 8.).round() * 8.;
+                                move |index: &usize, _, cx| {
+                                    let Some(size) = TEXT_SIZES.get(*index).copied() else {
+                                        return;
+                                    };
                                     demo.update(cx, |this, cx| {
-                                        this.icon_size = size;
-                                        crate::prefs::set_icon_size(size as f32);
-                                        cx.notify();
+                                        this.change_icon_options(
+                                            |options| options.text_size = Some(size),
+                                            cx,
+                                        );
                                     });
                                 }
                             }),
-                    ))
+                        ))
+                        .child(Self::row(
+                            "Label position:",
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(label(true, "Bottom"))
+                                .child(label(false, "Right")),
+                        ))
                 }),
         )
         .into_any_element()
@@ -175,7 +259,7 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(320.), px(220.)),
-                size: size(px(268.), px(150.) + px(TITLEBAR_H - 14.)),
+                size: size(px(268.), px(182.) + px(TITLEBAR_H)),
             })),
             is_resizable: false,
             is_minimizable: false,

@@ -8,8 +8,8 @@ use finder_fs::words;
 
 use crate::data::{self, available_bytes, byte_string};
 use crate::frame::ns_window;
-use crate::prefs;
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
+use crate::views::icon::{SIZE_STEPS, size_slider, slider_size};
 
 pub(crate) const BAR_H: f32 = 28.;
 
@@ -95,13 +95,22 @@ impl FinderDemo {
                     .when(slider, |row| {
                         row.child(
                             div().w(px(96.)).child(
-                                native_slider("ng.finder.zoom", self.icon_size)
-                                    .range(32., 128.)
-                                    .on_change(cx.listener(|this, value: &f64, _, cx| {
-                                        this.icon_size = (value / 8.).round() * 8.;
-                                        prefs::set_icon_size(this.icon_size as f32);
-                                        cx.notify();
-                                    })),
+                                native_slider(
+                                    "ng.finder.zoom",
+                                    size_slider(self.icon_options().size),
+                                )
+                                .range(0., SIZE_STEPS)
+                                .on_change(cx.listener(
+                                    |this, value: &f64, _, cx| {
+                                        let size = slider_size(*value);
+                                        if size != this.icon_options().size {
+                                            this.change_icon_options(
+                                                |options| options.icon_size = Some(size),
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )),
                             ),
                         )
                     }),
