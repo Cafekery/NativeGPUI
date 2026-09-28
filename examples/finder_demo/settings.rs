@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, ElementId, IntoElement, ParentElement, Render,
@@ -9,6 +9,7 @@ use native_gpui::{
     CheckState, MenuEntry, ToolbarItem, ToolbarSegment, ToolbarStyle, native_checkbox,
     native_popup, native_root, set_toolbar, window_options,
 };
+use objc2_foundation::{NSString, NSURL};
 
 use crate::app::FinderDemo;
 use crate::chrome::sidebar;
@@ -97,11 +98,10 @@ fn places() -> (Vec<Place>, usize) {
         code: None,
         path: None,
     };
-    let computer = sidebar::computer_name();
-    let name = |path: &std::path::Path| finder_fs::name::of_path(path);
+    let name = |path: &Path| finder_fs::name::of_path(path);
     let mut rows = vec![
-        place(computer, "PfCm"),
-        place(name(std::path::Path::new("/")), "PfVo"),
+        place(crate::locations::computer_name().into(), "PfCm"),
+        place(name(Path::new("/")), "PfVo"),
         separator(),
         place(name(&home), "PfHm"),
         place("Desktop".into(), "PfDe"),
@@ -127,11 +127,11 @@ fn places() -> (Vec<Place>, usize) {
     (rows, chosen.unwrap_or(6))
 }
 
-fn heading(text: &str) -> impl IntoElement {
+fn heading(text: &'static str) -> impl IntoElement {
     div()
         .text_size(tokens::system_font_size())
         .text_color(system_color(SystemColor::Label))
-        .child(SharedString::from(text.to_string()))
+        .child(text)
 }
 
 fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
@@ -146,11 +146,10 @@ fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
     })
 }
 
-/// Makes a changed setting show in every Finder window at once, as Finder's do.
 fn applied(key: &str, cx: &mut App) {
     match key {
         "AppleShowAllExtensions" => {
-            finder_fs::name::show_all_extensions(Some(prefs::shows_all_extensions()));
+            apply_names();
             each_window(cx, |this, cx| this.reread_names(cx));
         }
         "_FXSortFoldersFirst" => {
@@ -169,7 +168,6 @@ fn each_window(cx: &mut App, mut run: impl FnMut(&mut FinderDemo, &mut Context<F
     }
 }
 
-/// The names a listing already read are rebuilt once "Show all filename extensions" flips.
 pub(crate) fn apply_names() {
     finder_fs::name::show_all_extensions(Some(prefs::shows_all_extensions()));
 }
@@ -178,9 +176,10 @@ impl FinderDemo {
     fn reread_names(&mut self, cx: &mut Context<Self>) {
         let held: Vec<&'static str> = self.folders.held().into_iter().map(|(id, _)| id).collect();
         for id in held {
-            match self.folders.shown(id) {
-                true => self.read_folder(id, cx),
-                false => self.folders.stale(id),
+            if self.folders.shown(id) {
+                self.read_folder(id, cx);
+            } else {
+                self.folders.stale(id);
             }
         }
     }
@@ -230,7 +229,7 @@ impl Settings {
                     native_popup("ng.finder.settings.target", chosen)
                         .entries(entries)
                         .width(px(284.))
-                        .on_change(move |index: &usize, window, cx| picked(index, window, cx)),
+                        .on_change(picked),
                 ),
             )
             .child(div().h(px(14.)))
@@ -392,17 +391,14 @@ fn tag_dot(color: u8) -> impl IntoElement {
     }
 }
 
-fn store_target_path(path: &std::path::Path) {
-    let url = objc2_foundation::NSURL::fileURLWithPath_isDirectory(
-        &objc2_foundation::NSString::from_str(&path.to_string_lossy()),
-        true,
-    );
+fn store_target_path(path: &Path) {
+    let url =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), true);
     if let Some(text) = url.absoluteString() {
         prefs::set_setting_text("NewWindowTargetPath", &text.to_string());
     }
 }
 
-/// Other… asks for the folder in AppKit's own chooser, as Finder does.
 fn choose_folder(window: &mut Window, cx: &mut Context<Settings>) {
     let answer = cx.prompt_for_paths(gpui::PathPromptOptions {
         files: false,
@@ -450,7 +446,6 @@ fn show_pane(this: &mut Settings, pane: usize, window: &mut Window, cx: &mut Con
     cx.notify();
 }
 
-/// Finder ▸ Settings…: the one window, brought forward when already open.
 pub(crate) fn open(cx: &mut App) {
     cx.defer(show);
 }

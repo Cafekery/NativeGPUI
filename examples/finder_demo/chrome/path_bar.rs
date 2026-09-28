@@ -4,8 +4,8 @@ use std::iter;
 use std::path::Path;
 
 use gpui::{
-    AnyElement, ClickEvent, Context, DragMoveEvent, ElementId, ExternalPaths, FontWeight, Hsla,
-    SharedString, Window, div, hsla, prelude::*, px,
+    AnyElement, ClickEvent, Context, Div, DragMoveEvent, ElementId, ExternalPaths, FontWeight,
+    Hsla, SharedString, Stateful, Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
@@ -91,34 +91,19 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
     })
 }
 
-impl FinderDemo {
-    fn lit_crumb(&mut self, index: usize, over: bool, cx: &mut Context<Self>) {
-        let lit = match (over, self.crumb_drop == Some(index)) {
-            (true, _) => Some(index),
-            (false, true) => None,
-            (false, false) => return,
-        };
-        if self.crumb_drop != lit {
-            self.crumb_drop = lit;
-            cx.notify();
-        }
-    }
-
-    fn crumb_dropped<D: Grabbed>(
-        &mut self,
-        into: &'static str,
-        grab: &D,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.crumb_drop = None;
-        if !grab.wandered(window, self.pressed_at) {
-            return;
-        }
-        let keys = grab.keys(&self.selected.snapshot());
-        self.drop_into(into, &keys, window, cx);
-        cx.notify();
-    }
+fn takes_drop<D: Grabbed + 'static>(
+    crumb: Stateful<Div>,
+    index: usize,
+    into: &'static str,
+    cx: &mut Context<FinderDemo>,
+) -> Stateful<Div> {
+    crumb
+        .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<D>, _, cx| {
+            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
+        }))
+        .on_drop(cx.listener(move |this, grab: &D, window: &mut Window, cx| {
+            this.crumb_dropped(into, grab, window, cx);
+        }))
 }
 
 /// The frame an `NSTextField` label needs to show `text` whole, kerned as AppKit sets it.
@@ -234,9 +219,10 @@ impl FinderDemo {
                         // A hosted view whose frame changes costs AppKit a window layout pass.
                         .child(
                             div()
-                                .w(px(match last {
-                                    true => width.max(self.list_room.floor()),
-                                    false => width,
+                                .w(px(if last {
+                                    width.max(self.list_room.floor())
+                                } else {
+                                    width
                                 }))
                                 .child(
                                     native_label(("ng.finder.crumb.name", index), crumb)
@@ -265,35 +251,17 @@ impl FinderDemo {
                 );
             }
             let segment = segment.when_some(target, |crumb_row, id| {
-                crumb_row
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                let crumb_row =
+                    crumb_row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if is_alt_click(event) {
                             crate::open_finder_window(id, 1, cx);
                             window.remove_window();
                         } else {
                             this.go(id, window, cx);
                         }
-                    }))
-                    .on_drag_move(cx.listener(
-                        move |this, event: &DragMoveEvent<RowDrag>, _, cx| {
-                            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
-                        },
-                    ))
-                    .on_drag_move(cx.listener(
-                        move |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
-                            this.lit_crumb(index, event.bounds.contains(&event.event.position), cx);
-                        },
-                    ))
-                    .on_drop(
-                        cx.listener(move |this, grab: &RowDrag, window: &mut Window, cx| {
-                            this.crumb_dropped(id, grab, window, cx);
-                        }),
-                    )
-                    .on_drop(cx.listener(
-                        move |this, grab: &ExternalPaths, window: &mut Window, cx| {
-                            this.crumb_dropped(id, grab, window, cx);
-                        },
-                    ))
+                    }));
+                let crumb_row = takes_drop::<RowDrag>(crumb_row, index, id, cx);
+                takes_drop::<ExternalPaths>(crumb_row, index, id, cx)
             });
             trail = trail.child(match target {
                 Some(id) => menus::crumb_menu(
@@ -321,7 +289,36 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    /// Finder's trail ends at a lone selection; in column view a folder's already does, as the target.
+    fn lit_crumb(&mut self, index: usize, over: bool, cx: &mut Context<Self>) {
+        let lit = if over {
+            Some(index)
+        } else if self.crumb_drop == Some(index) {
+            None
+        } else {
+            return;
+        };
+        if self.crumb_drop != lit {
+            self.crumb_drop = lit;
+            cx.notify();
+        }
+    }
+
+    fn crumb_dropped<D: Grabbed>(
+        &mut self,
+        into: &'static str,
+        grab: &D,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.crumb_drop = None;
+        if !grab.wandered(window, self.pressed_at) {
+            return;
+        }
+        let keys = grab.keys(&self.selected.snapshot());
+        self.drop_into(into, &keys, window, cx);
+        cx.notify();
+    }
+
     fn lone_pick(&self) -> Option<Line> {
         if self.selected.len() != 1 {
             return None;
@@ -333,8 +330,7 @@ impl FinderDemo {
         line.filter(|line| self.selected.contains(&line.key))
     }
 
-    /// Label widths, `None` where only the icon fits. Finder keeps the first and last crumbs whole and
-    /// narrows the widest of the rest to one shared width until the trail fits.
+    /// `None` where only the icon fits; the widest middle crumbs share one cap until the trail fits.
     fn crumb_widths(&self, crumbs: &[SharedString]) -> Vec<Option<f32>> {
         let labels: Vec<f32> = crumbs.iter().map(|crumb| label_width(crumb)).collect();
         let Some(last) = labels.len().checked_sub(1).filter(|last| *last > 1) else {
@@ -384,8 +380,7 @@ pub(crate) fn edge_row(top: f32, color: Hsla) -> impl IntoElement {
         .bg(color)
 }
 
-/// Finder's bottom bars carry no separator view: each top edge is two device rows no `NSColor`
-/// names, and the fills under them are none of the window's own colours either.
+/// Finder's bottom bars have no separator view; their edges and fills are colours no `NSColor` names.
 pub(crate) struct BarPaint {
     pub(crate) lift: Hsla,
     pub(crate) rim: [Hsla; 2],

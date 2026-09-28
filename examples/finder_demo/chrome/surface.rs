@@ -1,21 +1,21 @@
+use std::sync::LazyLock;
+
 use gpui::{AnyElement, Hsla, Pixels, div, hsla, prelude::*};
 use native_gpui::{Blending, Layer, Material, material, native_rule};
 use objc2_foundation::NSProcessInfo;
 
-/// macOS 27's Finder lifts its bars off the material by a tint no `NSColor` names; 26's do not.
-pub(crate) fn bar_tint() -> Option<Hsla> {
-    (NSProcessInfo::processInfo()
-        .operatingSystemVersion()
-        .majorVersion
-        >= 27)
-        .then(|| hsla(0., 0., 1., 0.038))
-}
-
-pub(crate) fn toolbar_rule() -> bool {
+static MACOS_27: LazyLock<bool> = LazyLock::new(|| {
     NSProcessInfo::processInfo()
         .operatingSystemVersion()
         .majorVersion
-        < 27
+        >= 27
+});
+
+/// macOS 27's Finder lifts its bars off the material by a tint no `NSColor` names; 26's do not.
+const BAR_TINT: Hsla = hsla(0., 0., 1., 0.038);
+
+pub(crate) fn toolbar_rule() -> bool {
+    !*MACOS_27
 }
 
 pub(crate) fn band_glass(height: Pixels) -> AnyElement {
@@ -34,15 +34,12 @@ pub(crate) fn band_glass(height: Pixels) -> AnyElement {
                 .size_full(),
         )
         // A within-window material all but swallows a tint painted under it.
-        .when_some(bar_tint(), |band, tint| {
+        .when(*MACOS_27, |band| {
             band.child(
                 div()
                     .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .child(native_rule("ng.finder.band.tint").tint(tint)),
+                    .inset_0()
+                    .child(native_rule("ng.finder.band.tint").tint(BAR_TINT)),
             )
         })
         .into_any_element()
