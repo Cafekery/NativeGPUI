@@ -20,8 +20,6 @@ use crate::data::Face;
 use crate::menus::Act;
 use crate::ops::After;
 
-/// Finder's Quick Actions. Markup is Quick Look's own editing mode, which only a private delegate
-/// method opens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum QuickAct {
     RotateLeft,
@@ -64,13 +62,11 @@ impl QuickAct {
         }
     }
 
-    /// What Option turns this into.
     pub(crate) fn alternate(self) -> Option<QuickAct> {
         (self == QuickAct::RotateLeft).then_some(QuickAct::RotateRight)
     }
 }
 
-/// What Finder offers for a selection of these kinds, in its order.
 pub(crate) fn offered(faces: &[Face]) -> Vec<QuickAct> {
     if faces.is_empty() {
         return Vec::new();
@@ -99,7 +95,6 @@ pub(crate) fn offered(faces: &[Face]) -> Vec<QuickAct> {
     acts
 }
 
-/// The rows of a Quick Actions menu: `acts`, then Customize… under a rule.
 pub(crate) fn menu_rows(acts: &[QuickAct]) -> Vec<(MenuEntry, Act)> {
     let mut rows = Vec::new();
     for act in acts {
@@ -132,7 +127,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn run_quick(&mut self, act: QuickAct, cx: &mut Context<Self>) {
-        let items = self.paths();
+        let mut items = self.paths();
         let quick = match act {
             QuickAct::Customize => {
                 if let Some(url) = NSURL::URLWithString(&NSString::from_str(EXTENSIONS)) {
@@ -142,9 +137,9 @@ impl FinderDemo {
             }
             _ if items.is_empty() => return,
             QuickAct::ConvertImage => return self.ask_convert(items, cx),
-            QuickAct::Trim => return crate::trim::trim(items[0].clone(), cx),
+            QuickAct::Trim => return crate::trim::trim(items.swap_remove(0), cx),
             #[cfg(feature = "private-api")]
-            QuickAct::Markup => return self.markup(items[0].clone(), cx),
+            QuickAct::Markup => return self.markup(items.swap_remove(0), cx),
             QuickAct::RotateLeft | QuickAct::RotateRight => Quick::Rotate {
                 items,
                 left: act == QuickAct::RotateLeft,
@@ -175,7 +170,6 @@ impl FinderDemo {
         });
     }
 
-    /// Finder's Convert Image window: format, size and metadata, asked once for the selection.
     fn ask_convert(&self, items: Vec<PathBuf>, cx: &mut Context<Self>) {
         // From a task, outside GPUI's borrow of the app, which the modal loop would re-enter.
         cx.spawn(async move |this, cx| {
@@ -214,13 +208,11 @@ fn popup(mtm: MainThreadMarker, titles: &[&str], frame: NSRect) -> Retained<NSPo
 }
 
 struct DialogIvars {
-    formats: RefCell<Option<Retained<NSPopUpButton>>>,
+    formats: Retained<NSPopUpButton>,
     convert: RefCell<Option<Retained<NSButton>>>,
 }
 
 define_class!(
-    /// Finder's Convert Image window's controller: names the convert button after the format and
-    /// ends the modal session.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = DialogIvars]
@@ -239,14 +231,10 @@ define_class!(
     impl Dialog {
         #[unsafe(method(ngRetitle:))]
         fn ng_retitle(&self, _sender: *mut AnyObject) {
-            let (Some(formats), Some(convert)) =
-                (&*self.ivars().formats.borrow(), &*self.ivars().convert.borrow())
-            else {
-                return;
-            };
-            let at = formats.indexOfSelectedItem().max(0) as usize;
-            let format = ImageFormat::ALL[at.min(ImageFormat::ALL.len() - 1)];
-            convert.setTitle(&NSString::from_str(&convert_title(format)));
+            if let Some(convert) = &*self.ivars().convert.borrow() {
+                let format = picked(&self.ivars().formats, &ImageFormat::ALL);
+                convert.setTitle(&NSString::from_str(&convert_title(format)));
+            }
         }
 
         #[unsafe(method(ngConvert:))]
@@ -263,6 +251,10 @@ define_class!(
 
 fn convert_title(format: ImageFormat) -> String {
     format!("Convert to {}", format.title())
+}
+
+fn picked<T: Copy>(popup: &NSPopUpButton, all: &[T]) -> T {
+    all[(popup.indexOfSelectedItem().max(0) as usize).min(all.len() - 1)]
 }
 
 fn push_button(
@@ -286,7 +278,6 @@ fn push_button(
     button
 }
 
-/// Frames are Finder's, measured over Accessibility, in a 426 × 191 content view.
 fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool)> {
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -318,7 +309,7 @@ fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool
     keep.setState(NSControlStateValueOn);
     keep.setFrame(rect(100., 85., 138., 18.));
     let dialog = Dialog::alloc(mtm).set_ivars(DialogIvars {
-        formats: RefCell::new(Some(format_popup.clone())),
+        formats: format_popup.clone(),
         convert: RefCell::new(None),
     });
     let dialog: Retained<Dialog> = unsafe { msg_send![super(dialog), init] };
@@ -358,10 +349,9 @@ fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool
     if answer != NSModalResponseOK {
         return None;
     }
-    let pick = |popup: &NSPopUpButton| popup.indexOfSelectedItem().max(0) as usize;
     Some((
-        ImageFormat::ALL[pick(&format_popup).min(ImageFormat::ALL.len() - 1)],
-        ImageSize::ALL[pick(&size_popup).min(ImageSize::ALL.len() - 1)],
+        picked(&format_popup, &ImageFormat::ALL),
+        picked(&size_popup, &ImageSize::ALL),
         keep.state() == NSControlStateValueOn,
     ))
 }

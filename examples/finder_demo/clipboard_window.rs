@@ -53,24 +53,22 @@ struct Clipboard;
 impl Render for Clipboard {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let files = read_pasteboard();
-        let text = NSPasteboard::generalPasteboard()
-            .stringForType(unsafe { NSPasteboardTypeString })
-            .map(|text| text.to_string());
-        let (kind, shown) = match (files.is_empty(), text) {
-            (false, _) => {
-                let names: Vec<String> = files
-                    .iter()
-                    .map(|path| {
-                        path.file_name()
-                            .unwrap_or(path.as_os_str())
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                    .collect();
-                ("file names", names.join("\n"))
-            }
-            (true, Some(text)) => ("text", text),
-            (true, None) => ("none", String::new()),
+        let (kind, shown) = if !files.is_empty() {
+            let names: Vec<_> = files
+                .iter()
+                .map(|path| {
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                })
+                .collect();
+            ("file names", names.join("\n"))
+        } else if let Some(text) =
+            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString })
+        {
+            ("text", text.to_string())
+        } else {
+            ("none", String::new())
         };
         div()
             .size_full()

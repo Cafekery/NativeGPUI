@@ -35,8 +35,7 @@ struct Kept {
     folder: &'static str,
 }
 
-/// After its own Quit and Keep Windows, AppKit's launch restore orders a reopened tab's host
-/// window back in beside its group.
+/// AppKit's own launch restore would order a reopened tab's host window back in beside its group.
 pub(crate) fn skip_appkit_restore() {
     let key = NSString::from_str("ApplePersistenceIgnoreState");
     let yes = NSNumber::new_bool(true);
@@ -46,8 +45,7 @@ pub(crate) fn skip_appkit_restore() {
     };
 }
 
-/// Saves the windows on a quit that keeps them: `NSQuitAlwaysKeepsWindows`, inverted by Quit's ⌥
-/// alternate, which AppKit adds itself and which sends `terminate:` too.
+/// Quit's ⌥ alternate, added by AppKit, inverts `NSQuitAlwaysKeepsWindows` and sends `terminate:`.
 pub(crate) fn follow_quit(cx: &mut App) {
     let center = NSNotificationCenter::defaultCenter();
     let sending = StackBlock::new(|note: NonNull<NSNotification>| {
@@ -88,21 +86,21 @@ pub(crate) fn follow_quit(cx: &mut App) {
     .detach();
 }
 
-/// Reopens the windows a Quit and Keep Windows left, front one in front; false when none were.
 pub(crate) fn reopen(cx: &mut App) -> bool {
-    let lines = defaults()
+    let kept: Vec<Kept> = defaults()
         .stringArrayForKey(&NSString::from_str(KEPT))
         .map(|lines| {
             lines
                 .iter()
-                .map(|line| line.to_string())
-                .collect::<Vec<_>>()
+                .filter_map(|line| parse(&line.to_string()))
+                .collect()
         })
         .unwrap_or_default();
     clear();
     let mut groups: Vec<Vec<Kept>> = Vec::new();
-    let kept = lines.iter().filter_map(|line| parse(line));
-    for kept in kept.filter(|kept| !kept.folder.starts_with('/') || Path::new(kept.folder).exists())
+    for kept in kept
+        .into_iter()
+        .filter(|kept| !kept.folder.starts_with('/') || Path::new(kept.folder).exists())
     {
         match groups.last_mut() {
             Some(group) if group[0].group == kept.group => group.push(kept),

@@ -18,7 +18,7 @@ const ICON: f32 = 64.;
 const ITEM_ICON: f32 = 32.;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-pub(crate) enum Choice {
+enum Choice {
     KeepBoth,
     Replace,
     Merge,
@@ -69,36 +69,19 @@ impl Sheet {
         into.join(item.file_name().unwrap_or_default())
     }
 
-    fn build_op(&self, items: Vec<PathBuf>) -> Op {
-        self.kind.op(items, self.into.clone())
-    }
-
-    pub(crate) fn name(&self) -> String {
-        self.current
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    pub(crate) fn both_folders(&self) -> bool {
+    fn both_folders(&self) -> bool {
         let real_dir =
             |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
         real_dir(&self.current) && real_dir(&self.dest)
     }
-
-    pub(crate) fn shows_apply_to_all(&self) -> bool {
-        self.total > 1
-    }
 }
 
-/// Whether a name is in use: `Path::exists` follows a link and reads a broken one as free.
+/// `Path::exists` follows a link and reads a broken one as free.
 fn taken(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-/// A rename that only changes a name's case finds the item itself at the destination on a
-/// case-insensitive volume.
+/// A case-only rename finds the item itself at the destination on a case-insensitive volume.
 fn same_item(one: &Path, other: &Path) -> bool {
     let id = |path: &Path| {
         std::fs::symlink_metadata(path)
@@ -110,20 +93,11 @@ fn same_item(one: &Path, other: &Path) -> bool {
 
 pub(crate) enum Split {
     Clean(Op),
-    Conflicted {
-        clean: Option<Op>,
-        sheet: Sheet,
-    },
+    Conflicted { clean: Option<Op>, sheet: Sheet },
     Refused(String),
-    /// A trash or delete that holds locked items, which Finder asks about one by one.
-    Locked {
-        op: Op,
-        locked: Vec<PathBuf>,
-    },
+    Locked { op: Op, locked: Vec<PathBuf> },
 }
 
-/// Every stat an op needs before it is queued, so it can run where a stalled disk can't stall
-/// the window.
 pub(crate) fn split(op: Op, after: After) -> Split {
     if let Op::Trash(items) | Op::DeleteImmediately(items) = &op {
         let held: Vec<PathBuf> = items.iter().filter(|item| locked(item)).cloned().collect();
@@ -171,7 +145,6 @@ pub(crate) fn split(op: Op, after: After) -> Split {
     }
 }
 
-/// Finder refuses a name another item holds rather than offering to replace it.
 fn rename_split(path: PathBuf, name: String) -> Split {
     let dest = path.with_file_name(&name);
     if !taken(&dest) || same_item(&dest, &path) {
@@ -197,7 +170,7 @@ fn modified_seconds(path: &Path) -> f64 {
         .unwrap_or(0.)
 }
 
-pub(super) fn item_icon(path: &Path, size: f32) -> AnyElement {
+fn item_icon(path: &Path, size: f32) -> AnyElement {
     let text = path.to_string_lossy().into_owned();
     tokens::file_icon(FileType::Path(&text), px(size))
         .map(|symbol| symbol.img().into_any_element())
@@ -241,27 +214,23 @@ fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
 }
 
 impl FinderDemo {
-    /// Finder's "An item named…" sheet: Merge is offered only between folders.
     pub(crate) fn conflict_sheet(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(sheet) = &self.conflict else {
             return div().into_any_element();
         };
-        let name = sheet.name();
-        let question = if sheet.both_folders() {
-            format!(
-                "An item named \u{201c}{name}\u{201d} already exists in this location. Do you want to merge it with the folder you're moving?"
-            )
-        } else {
-            format!(
-                "An item named \u{201c}{name}\u{201d} already exists in this location. Do you want to replace it with the one you're moving?"
-            )
-        };
         let both_folders = sheet.both_folders();
-        let shows_all = sheet.shows_apply_to_all();
-        let apply_to_all = sheet.apply_to_all;
-        let current = sheet.current.clone();
-        let dest = sheet.dest.clone();
-
+        let question = format!(
+            "An item named \u{201c}{}\u{201d} already exists in this location. Do you want to {}?",
+            sheet
+                .current
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            match both_folders {
+                true => "merge it with the folder you're moving",
+                false => "replace it with the one you're moving",
+            }
+        );
         div()
             .absolute()
             .inset_0()
@@ -293,7 +262,7 @@ impl FinderDemo {
                                     .flex()
                                     .gap(px(14.))
                                     .items_start()
-                                    .child(item_icon(&current, ICON))
+                                    .child(item_icon(&sheet.current, ICON))
                                     .child(
                                         div()
                                             .flex_1()
@@ -306,22 +275,22 @@ impl FinderDemo {
                                     .flex()
                                     .gap(px(16.))
                                     .pl(px(ICON + 14.))
-                                    .child(compare_row(&current, "Moved item", palette))
-                                    .child(compare_row(&dest, "Existing item", palette)),
+                                    .child(compare_row(&sheet.current, "Moved item", palette))
+                                    .child(compare_row(&sheet.dest, "Existing item", palette)),
                             )
-                            .when(shows_all, |sheet| {
-                                sheet.child(
+                            .when(sheet.total > 1, |body| {
+                                body.child(
                                     div().pl(px(ICON + 14.)).child(
-                                        native_checkbox("ng.finder.conflict.all", apply_to_all)
-                                            .title("Apply to All")
-                                            .on_change(cx.listener(
-                                                |this, state: &CheckState, _, cx| {
-                                                    this.set_apply_to_all(
-                                                        *state == CheckState::On,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
+                                        native_checkbox(
+                                            "ng.finder.conflict.all",
+                                            sheet.apply_to_all,
+                                        )
+                                        .title("Apply to All")
+                                        .on_change(
+                                            cx.listener(|this, state: &CheckState, _, cx| {
+                                                this.set_apply_to_all(*state == CheckState::On, cx);
+                                            }),
+                                        ),
                                     ),
                                 )
                             })
@@ -364,15 +333,14 @@ impl FinderDemo {
             .into_any_element()
     }
 
-    pub(crate) fn set_apply_to_all(&mut self, value: bool, cx: &mut Context<Self>) {
+    fn set_apply_to_all(&mut self, value: bool, cx: &mut Context<Self>) {
         if let Some(sheet) = &mut self.conflict {
             sheet.apply_to_all = value;
         }
         cx.notify();
     }
 
-    /// Runs the sheet's choice: `Stop` drops every conflict still pending in this operation.
-    pub(crate) fn resolve_conflict(&mut self, choice: Choice, cx: &mut Context<Self>) {
+    fn resolve_conflict(&mut self, choice: Choice, cx: &mut Context<Self>) {
         let Some(mut sheet) = self.conflict.take() else {
             return;
         };
@@ -380,19 +348,16 @@ impl FinderDemo {
             cx.notify();
             return;
         };
+        let mut items = vec![sheet.current.clone()];
         if sheet.apply_to_all {
-            let mut items = vec![sheet.current.clone()];
             items.extend(sheet.remaining.drain(..));
-            let op = sheet.build_op(items);
-            self.submit_op(op, conflict, sheet.after, cx);
-        } else {
-            let op = sheet.build_op(vec![sheet.current.clone()]);
-            self.submit_op(op, conflict, sheet.after, cx);
-            if let Some(next) = sheet.remaining.pop_front() {
-                sheet.dest = Sheet::dest_of(&sheet.into, &next);
-                sheet.current = next;
-                self.conflict = Some(sheet);
-            }
+        }
+        let op = sheet.kind.op(items, sheet.into.clone());
+        self.submit_op(op, conflict, sheet.after, cx);
+        if let Some(next) = sheet.remaining.pop_front() {
+            sheet.dest = Sheet::dest_of(&sheet.into, &next);
+            sheet.current = next;
+            self.conflict = Some(sheet);
         }
         cx.notify();
     }

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use finder_fs::kind::is_package_name;
 use finder_fs::volumes;
-use gpui::{Modifiers, SharedString};
+use gpui::{Hsla, Modifiers, SharedString};
 use native_gpui::{MenuEntry, MenuView};
 
 use super::actions::original_of;
@@ -35,7 +35,6 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Tags", Some(Column::Tags)),
 ];
 
-/// Finder's Clean Up By offers no Date Last Opened or Date Added.
 const CLEAN_UP_BY: [Column; 6] = [
     Column::Name,
     Column::Kind,
@@ -56,14 +55,7 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("New Folder"), Act::NewFolder);
     if can_paste() {
-        menu.item(
-            MenuEntry::item("Paste Item"),
-            Act::Paste(demo.target(), Pasting::Copy),
-        );
-        menu.item(
-            exactly("Paste Item Exactly"),
-            Act::Paste(demo.target(), Pasting::Exactly),
-        );
+        paste_rows(&mut menu, demo.target());
     }
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(demo.target()));
@@ -131,14 +123,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Show Original"), Act::ShowOriginal);
     }
     if let Some(folder) = folder.filter(|_| can_paste()) {
-        menu.item(
-            MenuEntry::item("Paste Item"),
-            Act::Paste(folder, Pasting::Copy),
-        );
-        menu.item(
-            exactly("Paste Item Exactly"),
-            Act::Paste(folder, Pasting::Exactly),
-        );
+        paste_rows(&mut menu, folder);
     }
     menu.separator();
     let trashed = Path::new(line.key.as_ref())
@@ -195,25 +180,15 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.separator();
     menu.item(MenuEntry::item("Share…"), Act::Share);
     menu.separator();
-    let chosen_tags: Vec<Vec<usize>> = match selected.contains(&line.key) {
+    let carried: Vec<Vec<usize>> = match selected.contains(&line.key) {
         true => selected
             .iter()
             .map(|key| crate::tags::row_tags(key))
             .collect(),
         false => vec![crate::tags::row_tags(&line.key)],
     };
-    let swatches = tags().iter().enumerate().map(|(index, tag)| {
-        let verb = match chosen_tags.iter().all(|carried| carried.contains(&index)) {
-            true => "Remove",
-            false => "Add",
-        };
-        (
-            finder_color(tag.color),
-            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
-        )
-    });
     menu.view(
-        MenuView::swatches_picking(swatches, |index| SWATCH.with(|cell| cell.set(Some(index)))),
+        MenuView::swatches_picking(tag_swatches(&carried), |index| SWATCH.set(Some(index))),
         Act::Swatch,
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
@@ -227,6 +202,28 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         crate::quick_actions::menu_rows(&crate::quick_actions::offered(&faces)),
     );
     menu
+}
+
+pub(super) fn tag_swatches(carried: &[Vec<usize>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
+    tags().iter().enumerate().map(|(index, tag)| {
+        let removes = !carried.is_empty() && carried.iter().all(|tags| tags.contains(&index));
+        let verb = if removes { "Remove" } else { "Add" };
+        (
+            finder_color(tag.color),
+            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
+        )
+    })
+}
+
+fn paste_rows(menu: &mut Menu, into: &'static str) {
+    menu.item(
+        MenuEntry::item("Paste Item"),
+        Act::Paste(into, Pasting::Copy),
+    );
+    menu.item(
+        exactly("Paste Item Exactly"),
+        Act::Paste(into, Pasting::Exactly),
+    );
 }
 
 fn demo_faces(selected: &HashSet<SharedString>) -> Vec<crate::data::Face> {
@@ -269,7 +266,6 @@ fn open_with(menu: &mut Menu, line: &Line) {
     menu.alternate_submenu("Always Open With", rows(true));
 }
 
-/// The folder a row opens, following a Finder alias to its original.
 fn folder_behind(line: &Line) -> Option<&'static str> {
     if line.row.opens.is_some() || line.row.uti != "com.apple.alias-file" {
         return line.row.opens;
@@ -463,7 +459,6 @@ fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
         )
     }));
     menu.submenu("Sort By", sorts);
-    // Finder leaves both out while the icons are kept sorted.
     if !demo.cleans_up() {
         return;
     }
