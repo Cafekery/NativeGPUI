@@ -42,13 +42,10 @@ enum Want {
 
 fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) {
     let widths: Vec<f32> = ('0'..='9')
-        .map(|d| {
-            let text: String = std::iter::repeat_n(d, REPEATS).collect();
-            shaped_width(window, font, size, &text)
-        })
+        .map(|d| shaped_width(window, font, size, &d.to_string().repeat(REPEATS)))
         .collect();
-    let spread = widths.iter().cloned().fold(f32::MIN, f32::max)
-        - widths.iter().cloned().fold(f32::MAX, f32::min);
+    let spread = widths.iter().copied().fold(f32::MIN, f32::max)
+        - widths.iter().copied().fold(f32::MAX, f32::min);
     RAN.fetch_add(1, Ordering::Relaxed);
     let tabular = spread < EQUAL;
     let ok = match want {
@@ -82,29 +79,32 @@ impl Render for Probe {
                 "FONT", "'1'x10", "'4'x10", "SPREAD", "FIGURES"
             );
 
-            let mut menlo = system_font(FontWeight::NORMAL);
-            menlo.family = "Menlo".into();
+            let plain = system_font(FontWeight::NORMAL);
             row(
                 window,
                 "Menlo, no features [instrument positive]",
-                &menlo,
+                &Font {
+                    family: "Menlo".into(),
+                    ..plain.clone()
+                },
                 size,
                 Want::Tabular,
             );
             row(
                 window,
                 "system_font(NORMAL) [instrument negative]",
-                &system_font(FontWeight::NORMAL),
+                &plain,
                 size,
                 Want::Proportional,
             );
 
-            let mut nonsense = system_font(FontWeight::NORMAL);
-            nonsense.features = FontFeatures(std::sync::Arc::new(vec![("zzzz".to_string(), 1)]));
             row(
                 window,
                 "system face + zzzz=1 [tag is not arbitrary]",
-                &nonsense,
+                &Font {
+                    features: FontFeatures(std::sync::Arc::new(vec![("zzzz".to_string(), 1)])),
+                    ..plain.clone()
+                },
                 size,
                 Want::Proportional,
             );
@@ -132,26 +132,22 @@ impl Render for Probe {
                 if matches { "ok" } else { "WRONG" }
             );
 
-            for (label, font) in [
-                ("system_font", system_font(FontWeight::NORMAL)),
-                ("system_font_tabular", tabular.clone()),
-            ] {
-                let a = shaped_width(window, &font, size, "11:11\u{202F}AM");
-                let b = shaped_width(window, &font, size, "10:00\u{202F}AM");
+            let jitter = |font: &Font| {
+                let a = shaped_width(window, font, size, "11:11\u{202F}AM");
+                let b = shaped_width(window, font, size, "10:00\u{202F}AM");
+                (a, b, (a - b).abs())
+            };
+            for (label, font) in [("system_font", &plain), ("system_font_tabular", &tabular)] {
+                let (a, b, shift) = jitter(font);
                 println!(
-                    "{label:<22} \"11:11 AM\" {a:>6.2}   \"10:00 AM\" {b:>6.2}   jitter {:>5.2}pt",
-                    (a - b).abs()
+                    "{label:<22} \"11:11 AM\" {a:>6.2}   \"10:00 AM\" {b:>6.2}   jitter {shift:>5.2}pt"
                 );
             }
-            let a = shaped_width(window, &tabular, size, "11:11\u{202F}AM");
-            let b = shaped_width(window, &tabular, size, "10:00\u{202F}AM");
+            let (_, _, shift) = jitter(&tabular);
             RAN.fetch_add(1, Ordering::Relaxed);
-            if (a - b).abs() >= EQUAL {
+            if shift >= EQUAL {
                 FAILED.fetch_add(1, Ordering::Relaxed);
-                println!(
-                    "WRONG: a tabular column still shifts by {:.2}pt",
-                    (a - b).abs()
-                );
+                println!("WRONG: a tabular column still shifts by {shift:.2}pt");
             }
         }
         div().size_full()
