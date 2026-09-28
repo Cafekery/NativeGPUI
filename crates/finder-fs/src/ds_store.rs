@@ -6,17 +6,11 @@ use objc2_foundation::{
     NSString,
 };
 
-/// What one record of a `.DS_Store` holds.
 #[derive(Debug, PartialEq)]
 pub enum Value<'a> {
-    Long(u32),
-    Short(u32),
-    Bool(bool),
-    Type([u8; 4]),
-    Comp(u64),
-    Dutc(u64),
     Blob(&'a [u8]),
     Text(String),
+    Other,
 }
 
 /// One fact Finder keeps about the item `name` (`.` for the folder itself).
@@ -27,7 +21,6 @@ pub struct Record<'a> {
     pub value: Value<'a>,
 }
 
-/// Every record of a `.DS_Store`, or `None` if any part of it cannot be read.
 pub fn records(bytes: &[u8]) -> Option<Vec<Record<'_>>> {
     let mut header = Reader::new(bytes);
     (header.u32()? == 1 && header.take(4)? == b"Bud1").then_some(())?;
@@ -63,10 +56,8 @@ pub fn records(bytes: &[u8]) -> Option<Vec<Record<'_>>> {
     Some(found)
 }
 
-/// A folder's icon view options as Finder names them in `icvp`, `None` where none is recorded.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IconOptions {
-    /// `arrangeBy`: `none`, `grid`, or the key the icons are kept sorted by.
     pub arrange_by: Option<String>,
     pub icon_size: Option<f32>,
     pub grid_spacing: Option<f32>,
@@ -75,7 +66,6 @@ pub struct IconOptions {
 }
 
 impl IconOptions {
-    /// Reads a dictionary in `icvp`'s shape.
     pub fn read(options: &NSDictionary) -> Self {
         let value = |key: &str| options.objectForKey(&NSString::from_str(key));
         let number = |key: &str| value(key)?.downcast::<NSNumber>().ok();
@@ -89,7 +79,6 @@ impl IconOptions {
         }
     }
 
-    /// Each option this lacks, taken from `fallback`.
     pub fn or(self, fallback: Self) -> Self {
         Self {
             arrange_by: self.arrange_by.or(fallback.arrange_by),
@@ -101,11 +90,10 @@ impl IconOptions {
     }
 }
 
-/// What Finder recorded about a folder shown as icons.
 #[derive(Debug, Default, PartialEq)]
 pub struct IconView {
     pub options: IconOptions,
-    /// Where Finder last put each icon: the centre of its image, in points from the top left.
+    /// The centre of each icon's image, in points from the folder's top left.
     pub locations: HashMap<String, (f32, f32)>,
 }
 
@@ -128,7 +116,6 @@ pub fn icon_view(folder: &Path) -> IconView {
     }
 }
 
-/// The comment Finder keeps for each item of `folder`, by name.
 pub fn comments(folder: &Path) -> HashMap<String, String> {
     let bytes = std::fs::read(folder.join(".DS_Store")).unwrap_or_default();
     records(&bytes)
@@ -196,10 +183,6 @@ impl<'a> Reader<'a> {
         Some(u32::from_be_bytes(self.take(4)?.try_into().ok()?))
     }
 
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
-    }
-
     fn code(&mut self) -> Option<[u8; 4]> {
         self.take(4)?.try_into().ok()
     }
@@ -207,11 +190,14 @@ impl<'a> Reader<'a> {
     fn utf16(&mut self) -> Option<String> {
         let units = self.u32()? as usize;
         let raw = self.take(units.checked_mul(2)?)?;
-        let units: Vec<u16> = raw
+        let units = raw
             .chunks_exact(2)
-            .map(|unit| u16::from_be_bytes([unit[0], unit[1]]))
-            .collect();
-        Some(String::from_utf16_lossy(&units))
+            .map(|unit| u16::from_be_bytes([unit[0], unit[1]]));
+        Some(
+            char::decode_utf16(units)
+                .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .collect(),
+        )
     }
 }
 
@@ -241,17 +227,14 @@ fn record<'a>(node: &mut Reader<'a>) -> Option<Record<'a>> {
     let name = node.utf16()?;
     let code = node.code()?;
     let value = match &node.code()? {
-        b"long" => Value::Long(node.u32()?),
-        b"shor" => Value::Short(node.u32()?),
-        b"bool" => Value::Bool(node.take(1)?[0] != 0),
-        b"type" => Value::Type(node.code()?),
-        b"comp" => Value::Comp(node.u64()?),
-        b"dutc" => Value::Dutc(node.u64()?),
         b"blob" => {
             let length = node.u32()? as usize;
             Value::Blob(node.take(length)?)
         }
         b"ustr" => Value::Text(node.utf16()?),
+        b"bool" => node.take(1).map(|_| Value::Other)?,
+        b"long" | b"shor" | b"type" => node.take(4).map(|_| Value::Other)?,
+        b"comp" | b"dutc" => node.take(8).map(|_| Value::Other)?,
         _ => return None,
     };
     Some(Record { name, code, value })
