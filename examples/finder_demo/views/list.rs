@@ -544,6 +544,7 @@ pub(crate) fn detail_text(row: &Row, column: Column) -> SharedString {
             names.join(", ").into()
         }
         Column::Version => extra.version.clone().unwrap_or_default(),
+        Column::Comments => extra.comment.clone(),
         _ => SharedString::default(),
     }
 }
