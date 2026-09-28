@@ -8,11 +8,11 @@ use native_gpui::{MenuEntry, MenuView};
 
 use super::{Act, Menu};
 use crate::app::FinderDemo;
-use crate::data::{Column, Line, intern, is_trash};
+use crate::data::{Column, Line, SORT_KEYS, intern, is_trash};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
 use crate::view::ICON_VIEW;
-use crate::views::header::{ColumnSpec, column_title};
+use crate::views::header::ColumnSpec;
 
 thread_local! {
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
@@ -20,19 +20,28 @@ thread_local! {
 
 const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Date Modified", Some(Column::Modified)),
-    ("Date Created", None),
-    ("Date Last Opened", None),
-    ("Date Added", None),
+    ("Date Created", Some(Column::Created)),
+    ("Date Last Opened", Some(Column::Opened)),
+    ("Date Added", Some(Column::Added)),
     ("Size", Some(Column::Size)),
     ("Kind", Some(Column::Kind)),
     ("Last Modified By", None),
     ("Shared By", None),
-    ("Version", None),
+    ("Version", Some(Column::Version)),
     ("Comments", None),
-    ("Tags", None),
+    ("Tags", Some(Column::Tags)),
 ];
 
-const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Column::Size];
+const SORT_TITLES: [&str; 8] = [
+    "Name",
+    "Kind",
+    "Date Last Opened",
+    "Date Added",
+    "Date Modified",
+    "Date Created",
+    "Size",
+    "Tags",
+];
 
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
@@ -349,12 +358,13 @@ fn subject(verb: &str, name: &SharedString, many: bool, chosen: usize) -> String
 }
 
 fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
-    SORTABLE
-        .iter()
-        .map(|column| {
+    SORT_KEYS
+        .into_iter()
+        .zip(SORT_TITLES)
+        .map(|(column, title)| {
             (
-                MenuEntry::item(column_title(*column)).checked(demo.sort == *column),
-                Act::Sort(*column),
+                MenuEntry::item(title).checked(demo.sort == column),
+                Act::Sort(column),
             )
         })
         .collect()

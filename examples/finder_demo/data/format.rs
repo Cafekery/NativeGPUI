@@ -30,7 +30,7 @@ const UNIX_TO_REFERENCE: f64 = 978_307_200.;
 const SEEN_MAX: usize = 4096;
 const BYTES_HELD: usize = 16_384;
 
-pub(super) fn reference_seconds(at: SystemTime) -> f64 {
+pub(crate) fn reference_seconds(at: SystemTime) -> f64 {
     match at.duration_since(UNIX_EPOCH) {
         Ok(since) => since.as_secs_f64() - UNIX_TO_REFERENCE,
         Err(before) => -before.duration().as_secs_f64() - UNIX_TO_REFERENCE,
@@ -350,9 +350,9 @@ impl Bands {
     pub(crate) fn new(sort: Column) -> Self {
         Self {
             sort,
-            days: match sort {
-                Column::Modified => midnights(),
-                _ => [0.; 6],
+            days: match sort.dated() {
+                true => midnights(),
+                false => [0.; 6],
             },
             months: Vec::new(),
         }
@@ -399,8 +399,11 @@ impl Bands {
                 bytes if bytes < 1_000_000_000 => "100 MB to 1 GB",
                 _ => "Over 1 GB",
             }),
-            Column::Modified => {
-                let (at, days) = (row.modified_at, self.days);
+            sort if sort.dated() => {
+                let Some(at) = row.date(sort) else {
+                    return finder("GROUP_FUTURE", "No Date", &[]);
+                };
+                let days = self.days;
                 match () {
                     _ if (days[3]..days[4]).contains(&at) => finder("GROUP_TODAY", "Today", &[]),
                     _ if (days[2]..days[3]).contains(&at) => {
@@ -417,6 +420,14 @@ impl Bands {
                         (band != Some(&month)).then_some(month)
                     }
                 }
+            }
+            sort => {
+                let name = match row.words(sort) {
+                    Some(words) => words.to_string(),
+                    None if sort == Column::Tags => words::finder("GV12", "No Tags"),
+                    None => "--".to_string(),
+                };
+                (!named(&name)).then(|| name.into())
             }
         }
     }

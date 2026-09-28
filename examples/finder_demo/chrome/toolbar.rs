@@ -29,10 +29,10 @@ pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
     (Some(Column::Name), "Name"),
     (Some(Column::Kind), "Kind"),
     (None, "Application"),
-    (None, "Date Last Opened"),
-    (None, "Date Added"),
+    (Some(Column::Opened), "Date Last Opened"),
+    (Some(Column::Added), "Date Added"),
     (Some(Column::Modified), "Date Modified"),
-    (None, "Date Created"),
+    (Some(Column::Created), "Date Created"),
     (Some(Column::Size), "Size"),
     (None, "Tags"),
 ];
@@ -360,7 +360,7 @@ impl FinderDemo {
             .group_width(ToolbarGroupWidth::Automatic)
             .on_select(move |index, _, cx| {
                 view.update(cx, |this: &mut Self, cx| {
-                    this.set_view(index);
+                    this.set_view(index, cx);
                     cx.notify();
                 })
                 .ok();

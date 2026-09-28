@@ -354,9 +354,9 @@ impl FinderDemo {
             return None;
         }
         // Date bands are named for the day they are drawn on.
-        let day = match self.sort {
-            Column::Modified => today(),
-            _ => 0.,
+        let day = match self.sort.dated() {
+            true => today(),
+            false => 0.,
         };
         let cached = self
             .listings()
