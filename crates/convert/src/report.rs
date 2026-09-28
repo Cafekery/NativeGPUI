@@ -1,11 +1,9 @@
-use crate::plan::PathTaken;
+use crate::{PathTaken, Probe};
 
 #[derive(Clone, Debug)]
 pub struct Report {
     pub bytes_in: u64,
     pub bytes_out: u64,
-    pub width_in: Option<u32>,
-    pub height_in: Option<u32>,
     pub width_out: Option<u32>,
     pub height_out: Option<u32>,
     pub duration_in: Option<f64>,
@@ -15,12 +13,17 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn saved_pct(&self) -> f32 {
-        if self.bytes_in == 0 {
-            return 0.0;
+    pub(crate) fn new(probe: &Probe, path: PathTaken, bytes_out: u64, notes: String) -> Self {
+        Self {
+            bytes_in: probe.bytes,
+            bytes_out,
+            width_out: probe.width,
+            height_out: probe.height,
+            duration_in: probe.duration,
+            duration_out: probe.duration,
+            path,
+            notes,
         }
-        let delta = self.bytes_in as f64 - self.bytes_out as f64;
-        (delta / self.bytes_in as f64 * 100.0) as f32
     }
 
     pub fn grew(&self) -> bool {
