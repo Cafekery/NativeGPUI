@@ -605,7 +605,6 @@ impl FinderDemo {
             .as_ref()
             .filter(|stats| stats.key == self.stats_key())
             .map(|stats| stats.bytes)
-            .filter(|bytes| *bytes > 0)
     }
 
     fn many_card(&self) -> Card {

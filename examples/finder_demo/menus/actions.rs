@@ -112,14 +112,8 @@ impl FinderDemo {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));
             }
-            Act::Inspector => {
-                self.show_preview(true);
-                self.inspecting = None;
-            }
-            Act::InspectorAt(id) => {
-                self.show_preview(true);
-                self.inspecting = crate::data::path_line(id);
-            }
+            Act::Inspector => crate::inspector::toggle(self, cx),
+            Act::InspectorAt(id) => crate::inspector::show_item(id, self, cx),
             Act::GetInfo => {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, None, false, cx));

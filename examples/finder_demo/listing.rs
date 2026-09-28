@@ -837,9 +837,6 @@ impl FinderDemo {
     }
 
     pub(crate) fn cursor_line(&self) -> Option<Line> {
-        if self.inspecting.is_some() {
-            return self.inspecting.clone();
-        }
         let key = self.cursor.as_ref()?;
         let lines = self.lines(self.view == LIST_VIEW);
         self.line_at(&lines, key).map(|at| lines[at].clone())

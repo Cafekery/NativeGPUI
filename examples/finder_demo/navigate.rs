@@ -334,7 +334,6 @@ impl FinderDemo {
         self.filtered.clear();
         self.hits.clear();
         self.tag_listing = None;
-        self.inspecting = None;
         self.icons.forget();
         self.clear_type_filter();
         self.load_column_widths();
