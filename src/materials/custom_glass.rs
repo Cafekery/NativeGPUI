@@ -426,140 +426,60 @@ fn build_filter(recipe: &GlassRecipe) -> Option<Retained<AnyObject>> {
     let filter: Option<Retained<AnyObject>> =
         unsafe { msg_send![class, filterWithType: ns_string!("glassBackground")] };
     let filter = filter?;
-    let num = |key: &NSString, value: f32| set_number(&*filter, key, value);
-    let flag = |key: &NSString, value: bool| set_bool(&*filter, key, value);
-    let fill = |key: &NSString, value: Option<Hsla>| set_fill(&*filter, key, value);
-
-    set_object(
-        &*filter,
-        ns_string!("inputSourceSublayerName"),
-        Some(field_name()),
-    );
-
-    num(ns_string!("inputBlurRadius"), recipe.blur_radius);
-    num(ns_string!("inputBlurOpacity0"), recipe.blur_opacity0);
-    num(ns_string!("inputBlurOpacity1"), recipe.blur_opacity1);
-    num(ns_string!("inputBlurOpacity2"), recipe.blur_opacity2);
-    num(ns_string!("inputBlurDistance2"), recipe.blur_distance2);
-    num(ns_string!("inputBlurDistance3"), recipe.blur_distance3);
-
-    num(
-        ns_string!("inputInnerRefractionAmount"),
-        recipe.inner_refraction_amount,
-    );
-    num(
-        ns_string!("inputInnerRefractionHeight"),
-        recipe.inner_refraction_height,
-    );
-    num(
-        ns_string!("inputOuterRefractionAmount"),
-        recipe.outer_refraction_amount,
-    );
-    num(
-        ns_string!("inputOuterRefractionHeight"),
-        recipe.outer_refraction_height,
-    );
-    num(
-        ns_string!("inputRefractionOpacity"),
-        recipe.refraction_opacity,
-    );
-    num(
-        ns_string!("inputRefractionDistance0"),
-        recipe.refraction_distance0,
-    );
-    num(
-        ns_string!("inputRefractionDistance1"),
-        recipe.refraction_distance1,
-    );
-
-    num(ns_string!("inputFaceOpacity"), recipe.face_opacity);
-    num(ns_string!("inputFaceColorMatrixWhite"), recipe.face_white);
-    num(ns_string!("inputFaceColorMatrixBlack"), recipe.face_black);
-    num(
-        ns_string!("inputFaceColorMatrixSaturation"),
-        recipe.face_saturation,
-    );
-    fill(
-        ns_string!("inputFaceColorMatrixFillColor"),
-        recipe.face_fill,
-    );
-
-    num(ns_string!("inputBleedOpacity"), recipe.bleed_opacity);
-    num(ns_string!("inputBleedAmount"), recipe.bleed_amount);
-    num(ns_string!("inputBleedHeight"), recipe.bleed_height);
-    num(ns_string!("inputBleedBlurRadius"), recipe.bleed_blur_radius);
-    num(ns_string!("inputBleedDistance0"), recipe.bleed_distance0);
-    num(ns_string!("inputBleedDistance1"), recipe.bleed_distance1);
-    flag(
-        ns_string!("inputBleedDarkenBlend"),
-        recipe.bleed_darken_blend,
-    );
-    num(ns_string!("inputBleedColorMatrixWhite"), recipe.bleed_white);
-    num(ns_string!("inputBleedColorMatrixBlack"), recipe.bleed_black);
-    num(
-        ns_string!("inputBleedColorMatrixSaturation"),
-        recipe.bleed_saturation,
-    );
-    fill(
-        ns_string!("inputBleedColorMatrixFillColor"),
-        recipe.bleed_fill,
-    );
-
-    num(ns_string!("inputShadowRadius"), recipe.shadow_radius);
-    num(ns_string!("inputShadowAmount"), recipe.shadow_amount);
-    num(ns_string!("inputShadowHeight"), recipe.shadow_height);
-    num(
-        ns_string!("inputShadowBlurRadius"),
-        recipe.shadow_blur_radius,
-    );
-    set_size(
-        &*filter,
-        ns_string!("inputShadowOffset"),
-        recipe.shadow_offset,
-    );
-    num(ns_string!("inputShadowOpacity"), recipe.shadow_opacity);
-    num(
-        ns_string!("inputSDRShadowOpacity"),
-        recipe.shadow_opacity_sdr,
-    );
-    num(
-        ns_string!("inputShadowVibrancyContribution"),
-        recipe.shadow_vibrancy,
-    );
-    num(
-        ns_string!("inputShadowColorMatrixWhite"),
-        recipe.shadow_white,
-    );
-    num(
-        ns_string!("inputShadowColorMatrixBlack"),
-        recipe.shadow_black,
-    );
-    num(
-        ns_string!("inputShadowColorMatrixSaturation"),
-        recipe.shadow_saturation,
-    );
-    fill(
-        ns_string!("inputShadowColorMatrixFillColor"),
-        recipe.shadow_fill,
-    );
-
-    flag(
-        ns_string!("inputSDRHoldingToneEnabled"),
-        recipe.holding_tone,
-    );
-    num(
-        ns_string!("inputSDRHoldingToneWhite"),
-        recipe.holding_tone_white,
-    );
-    num(ns_string!("inputMaxHeadroom"), recipe.max_headroom);
-    num(
-        ns_string!("inputSDRGradientDistance0"),
-        recipe.gradient_distance0,
-    );
-    num(
-        ns_string!("inputSDRGradientDistance1"),
-        recipe.gradient_distance1,
-    );
+    macro_rules! set {
+        ($($setter:ident $key:literal = $value:expr;)*) => {
+            $($setter(&*filter, ns_string!($key), $value);)*
+        };
+    }
+    set! {
+        set_object "inputSourceSublayerName" = Some(field_name());
+        set_number "inputBlurRadius" = recipe.blur_radius;
+        set_number "inputBlurOpacity0" = recipe.blur_opacity0;
+        set_number "inputBlurOpacity1" = recipe.blur_opacity1;
+        set_number "inputBlurOpacity2" = recipe.blur_opacity2;
+        set_number "inputBlurDistance2" = recipe.blur_distance2;
+        set_number "inputBlurDistance3" = recipe.blur_distance3;
+        set_number "inputInnerRefractionAmount" = recipe.inner_refraction_amount;
+        set_number "inputInnerRefractionHeight" = recipe.inner_refraction_height;
+        set_number "inputOuterRefractionAmount" = recipe.outer_refraction_amount;
+        set_number "inputOuterRefractionHeight" = recipe.outer_refraction_height;
+        set_number "inputRefractionOpacity" = recipe.refraction_opacity;
+        set_number "inputRefractionDistance0" = recipe.refraction_distance0;
+        set_number "inputRefractionDistance1" = recipe.refraction_distance1;
+        set_number "inputFaceOpacity" = recipe.face_opacity;
+        set_number "inputFaceColorMatrixWhite" = recipe.face_white;
+        set_number "inputFaceColorMatrixBlack" = recipe.face_black;
+        set_number "inputFaceColorMatrixSaturation" = recipe.face_saturation;
+        set_fill "inputFaceColorMatrixFillColor" = recipe.face_fill;
+        set_number "inputBleedOpacity" = recipe.bleed_opacity;
+        set_number "inputBleedAmount" = recipe.bleed_amount;
+        set_number "inputBleedHeight" = recipe.bleed_height;
+        set_number "inputBleedBlurRadius" = recipe.bleed_blur_radius;
+        set_number "inputBleedDistance0" = recipe.bleed_distance0;
+        set_number "inputBleedDistance1" = recipe.bleed_distance1;
+        set_bool "inputBleedDarkenBlend" = recipe.bleed_darken_blend;
+        set_number "inputBleedColorMatrixWhite" = recipe.bleed_white;
+        set_number "inputBleedColorMatrixBlack" = recipe.bleed_black;
+        set_number "inputBleedColorMatrixSaturation" = recipe.bleed_saturation;
+        set_fill "inputBleedColorMatrixFillColor" = recipe.bleed_fill;
+        set_number "inputShadowRadius" = recipe.shadow_radius;
+        set_number "inputShadowAmount" = recipe.shadow_amount;
+        set_number "inputShadowHeight" = recipe.shadow_height;
+        set_number "inputShadowBlurRadius" = recipe.shadow_blur_radius;
+        set_size "inputShadowOffset" = recipe.shadow_offset;
+        set_number "inputShadowOpacity" = recipe.shadow_opacity;
+        set_number "inputSDRShadowOpacity" = recipe.shadow_opacity_sdr;
+        set_number "inputShadowVibrancyContribution" = recipe.shadow_vibrancy;
+        set_number "inputShadowColorMatrixWhite" = recipe.shadow_white;
+        set_number "inputShadowColorMatrixBlack" = recipe.shadow_black;
+        set_number "inputShadowColorMatrixSaturation" = recipe.shadow_saturation;
+        set_fill "inputShadowColorMatrixFillColor" = recipe.shadow_fill;
+        set_bool "inputSDRHoldingToneEnabled" = recipe.holding_tone;
+        set_number "inputSDRHoldingToneWhite" = recipe.holding_tone_white;
+        set_number "inputMaxHeadroom" = recipe.max_headroom;
+        set_number "inputSDRGradientDistance0" = recipe.gradient_distance0;
+        set_number "inputSDRGradientDistance1" = recipe.gradient_distance1;
+    }
 
     Some(filter)
 }
