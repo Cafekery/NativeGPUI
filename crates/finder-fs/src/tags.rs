@@ -136,7 +136,7 @@ fn favorite_tag_names() -> Option<Vec<String>> {
     Some(names.iter().map(|s| s.to_string()).collect())
 }
 
-fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
+pub(crate) fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
     let data = NSData::with_bytes(bytes);
     unsafe {
         NSPropertyListSerialization::propertyListWithData_options_format_error(
@@ -262,6 +262,32 @@ fn xattr_colors(path: &Path) -> HashMap<String, u8> {
             let entry = entry.to_string();
             let (name, color) = entry.split_once('\n')?;
             Some((name.to_string(), color.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The tags the item itself stores, in its order, from one read of its attribute.
+pub fn stored(path: &Path) -> Vec<Tag> {
+    let Some(entries) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags")
+        .and_then(|bytes| plist(&bytes)?.downcast::<NSArray>().ok())
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| entry.downcast::<NSString>().ok())
+        .map(|entry| {
+            let entry = entry.to_string();
+            match entry.split_once('\n') {
+                Some((name, color)) => Tag {
+                    name: name.to_string(),
+                    color: color.parse().unwrap_or(0),
+                },
+                None => Tag {
+                    name: entry,
+                    color: 0,
+                },
+            }
         })
         .collect()
 }
