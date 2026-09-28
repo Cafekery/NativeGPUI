@@ -107,7 +107,7 @@ impl FinderDemo {
             ))
             .child(div().w(px(strip.start(lines.len()))).h_full().flex_none())
             .children(seen.map(|index| {
-                let line = lines[index].clone();
+                let line = &lines[index];
                 let is_selected = self.selected.contains(&line.key);
                 let cell = div()
                     .id(("ng.finder.frame", index))
@@ -122,7 +122,7 @@ impl FinderDemo {
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
                     .child(row_art(&line.row, strip.icon, scale, true))
-                    .on_click(pick_on_click(&line, this.clone()));
+                    .on_click(pick_on_click(line, this.clone()));
                 native_callout(
                     ("ng.finder.strip.tip", index),
                     line.row.display.clone(),
