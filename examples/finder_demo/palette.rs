@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 
 use block2::StackBlock;
 use gpui::{Hsla, hsla};
@@ -49,7 +49,7 @@ pub(crate) fn browser_rule() -> Hsla {
     }
 }
 
-pub(crate) fn alternating_row() -> Option<Hsla> {
+fn alternating_row() -> Option<Hsla> {
     thread_local! {
         static KEPT: Cell<Option<(u64, Appearance, Option<Hsla>)>> = const { Cell::new(None) };
     }
@@ -60,16 +60,16 @@ pub(crate) fn alternating_row() -> Option<Hsla> {
     {
         return color;
     }
-    let slot: RefCell<Option<Hsla>> = RefCell::new(None);
+    let slot = Cell::new(None);
     let block = StackBlock::new(|| {
         let colors = NSColor::alternatingContentBackgroundColors();
-        *slot.borrow_mut() = colors.iter().nth(1).and_then(|color| tokens::srgb(&color));
+        slot.set(colors.iter().nth(1).and_then(|color| tokens::srgb(&color)));
     });
     // An ambient read is right in only one appearance, so read inside an explicit one.
     appearance
         .ns_appearance()
         .performAsCurrentDrawingAppearance(&block);
-    let color = slot.into_inner();
+    let color = slot.get();
     KEPT.set(Some((generation, appearance, color)));
     color
 }
