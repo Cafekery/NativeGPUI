@@ -30,9 +30,9 @@ pub enum MenuSection {
 }
 
 impl MenuSection {
-    fn title(self, app: &str) -> String {
+    fn title(self) -> String {
         match self {
-            Self::App => app.to_owned(),
+            Self::App => app_name(),
             Self::File => "File".into(),
             Self::Edit => "Edit".into(),
             Self::View => "View".into(),
@@ -114,8 +114,7 @@ impl MenuCommand {
         }
     }
 
-    /// A row showing the view `view` builds each time its menu is about to show; a pick in the view
-    /// sends `action`.
+    /// A row showing the view `view` builds each time its menu opens; a pick sends `action`.
     pub fn view(view: impl Fn() -> MenuView + 'static, action: impl Action) -> Self {
         Self {
             view: Some(Rc::new(view)),
@@ -216,6 +215,25 @@ fn menu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
     NSMenu::initWithTitle(NSMenu::alloc(mtm), &worded(title))
 }
 
+fn menu_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Sel,
+    key: &str,
+    mask: NSEventModifierFlags,
+) -> Retained<NSMenuItem> {
+    let row = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &worded(title),
+            Some(action),
+            &NSString::from_str(key),
+        )
+    };
+    row.setKeyEquivalentModifierMask(mask);
+    row
+}
+
 fn submenu_row(mtm: MainThreadMarker, title: &str, submenu: &NSMenu) -> Retained<NSMenuItem> {
     let row = NSMenuItem::new(mtm);
     row.setTitle(&worded(title));
@@ -236,16 +254,13 @@ trait Rows {
 
 impl Rows for NSMenu {
     fn add_row(&self, title: &str, action: Sel, key: &str, mask: NSEventModifierFlags) {
-        let row = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(MainThreadMarker::from(self)),
-                &worded(title),
-                Some(action),
-                &NSString::from_str(key),
-            )
-        };
-        row.setKeyEquivalentModifierMask(mask);
-        self.addItem(&row);
+        self.addItem(&menu_item(
+            MainThreadMarker::from(self),
+            title,
+            action,
+            key,
+            mask,
+        ));
     }
 
     fn add_separator(&self) {
@@ -384,8 +399,8 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
     for command in commands {
         add_command(mtm, &submenu, submenu.numberOfItems(), command);
     }
-    let before = index_of(&bar, &MenuSection::Window.title(&app_name()))
-        .unwrap_or_else(|| bar.numberOfItems());
+    let before =
+        index_of(&bar, &MenuSection::Window.title()).unwrap_or_else(|| bar.numberOfItems());
     bar.insertItem_atIndex(&submenu_row(mtm, title, &submenu), before);
 }
 
@@ -415,7 +430,7 @@ pub fn replace_edit_rows(commands: impl IntoIterator<Item = MenuCommand>) {
     let Some((mtm, bar)) = bar() else {
         return;
     };
-    let Some(menu) = submenu_of(&bar, &MenuSection::Edit.title(&app_name())) else {
+    let Some(menu) = submenu_of(&bar, &MenuSection::Edit.title()) else {
         return;
     };
     let stock = STOCK_EDIT.take();
@@ -438,7 +453,7 @@ fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuComman
     let Some((mtm, bar)) = bar() else {
         return;
     };
-    let Some(menu) = submenu_of(&bar, &section.title(&app_name())) else {
+    let Some(menu) = submenu_of(&bar, &section.title()) else {
         return;
     };
     let start = match (first, section) {
@@ -477,9 +492,10 @@ fn submenu_of(bar: &NSMenu, title: &str) -> Option<Retained<NSMenu>> {
 
 fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCommand) {
     // AppKit pairs an alternate by key and mask, so a keyless alternate needs its ⌥.
-    let keyless = match command.alternate {
-        true => NSEventModifierFlags::Option,
-        false => NONE,
+    let keyless = if command.alternate {
+        NSEventModifierFlags::Option
+    } else {
+        NONE
     };
     let (key, mask) = command
         .chord
@@ -487,45 +503,23 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
         .and_then(equivalent)
         .unwrap_or_else(|| (String::new(), keyless));
     let nested = !command.rows.is_empty() || command.fill.is_some();
-    let row = match command.action {
-        None if nested => nested_row(mtm, &command.title, command.rows, command.fill),
-        None => match command.selector {
-            Some(selector) => {
-                let row = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &worded(&command.title),
-                        Some(selector),
-                        &NSString::from_str(&key),
-                    )
-                };
+    let row = match (command.action, command.selector) {
+        (None, _) if nested => nested_row(mtm, &command.title, command.rows, command.fill),
+        (None, Some(selector)) => menu_item(mtm, &command.title, selector, &key, mask),
+        (None, None) => NSMenuItem::separatorItem(mtm),
+        (Some(action), _) => {
+            let row = if nested {
+                let row = nested_row(mtm, &command.title, command.rows, command.fill);
+                // A submenu's row sends nothing; the action only lets validation enable it.
+                unsafe { row.setAction(Some(sel!(ngMenuCommand:))) };
                 row.setKeyEquivalentModifierMask(mask);
                 row
-            }
-            None => NSMenuItem::separatorItem(mtm),
-        },
-        Some(action) => {
-            let row = match nested {
-                true => {
-                    let row = nested_row(mtm, &command.title, command.rows, command.fill);
-                    // A submenu's row sends nothing; the action only lets validation enable it.
-                    unsafe { row.setAction(Some(sel!(ngMenuCommand:))) };
-                    row
-                }
-                false => unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &worded(&command.title),
-                        Some(
-                            command
-                                .text
-                                .map_or(sel!(ngMenuCommand:), TextCommand::selector),
-                        ),
-                        &NSString::from_str(&key),
-                    )
-                },
+            } else {
+                let selector = command
+                    .text
+                    .map_or(sel!(ngMenuCommand:), TextCommand::selector);
+                menu_item(mtm, &command.title, selector, &key, mask)
             };
-            row.setKeyEquivalentModifierMask(mask);
             // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
             let index = NSNumber::new_isize(CommandSink::register(action, command.text));
             unsafe { row.setRepresentedObject(Some(index.as_ref())) };
@@ -731,9 +725,10 @@ fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
 }
 
 fn set_state(row: &NSMenuItem, on: bool) {
-    row.setState(match on {
-        true => NSControlStateValueOn,
-        false => NSControlStateValueOff,
+    row.setState(if on {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
     });
 }
 
@@ -766,7 +761,6 @@ fn command_of(item: &NSMenuItem) -> Option<(Box<dyn Action>, Option<TextCommand>
     })
 }
 
-/// Whether whoever would take `text` from the field being typed in allows it now.
 fn text_allows(item: &NSMenuItem, text: TextCommand) -> bool {
     let app = NSApplication::sharedApplication(MainThreadMarker::from(item));
     let Some(target) = (unsafe { app.targetForAction_to_from(text.selector(), None, Some(item)) })
@@ -895,7 +889,6 @@ impl CommandSink {
         })
     }
 
-    /// Text being typed in takes a text row's command; otherwise the row's action runs.
     fn perform(&self, sender: *mut NSMenuItem) {
         let Some(item) = (unsafe { sender.as_ref() }) else {
             return;

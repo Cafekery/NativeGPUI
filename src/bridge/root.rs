@@ -25,9 +25,10 @@ pub fn native_cached(
     NativeCached {
         owner: view.entity_id(),
         fresh,
-        child: match fresh {
-            true => view.into_any_element(),
-            false => view.cached(style).into_any_element(),
+        child: if fresh {
+            view.into_any_element()
+        } else {
+            view.cached(style).into_any_element()
         },
     }
 }
