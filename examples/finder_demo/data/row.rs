@@ -49,6 +49,18 @@ pub(crate) const SORT_KEYS: [Column; 8] = [
     Column::Tags,
 ];
 
+/// Finder's names for its Sort By keys, in `SORT_KEYS` order.
+pub(crate) const SORT_TITLES: [&str; 8] = [
+    "Name",
+    "Kind",
+    "Date Last Opened",
+    "Date Added",
+    "Date Modified",
+    "Date Created",
+    "Size",
+    "Tags",
+];
+
 impl Column {
     const ALL: [Column; 9] = [
         Column::Name,
