@@ -15,11 +15,14 @@ use crate::menus;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::click_kind;
-use crate::views::list::{ICON_SMALL, name_prefix, row_font};
+use crate::views::list::{ICON_SMALL, detail_text, name_prefix, row_font};
 
-pub(crate) const COL_MODIFIED: f32 = 181.;
+pub(crate) const COL_DATE: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
 pub(crate) const COL_KIND: f32 = 121.;
+const COL_OPENED: f32 = 200.;
+const COL_TAGS: f32 = 100.;
+const COL_VERSION: f32 = 75.;
 
 pub(crate) const HEADER_H: f32 = 28.;
 
@@ -66,20 +69,24 @@ impl ColumnSpec {
     pub(crate) fn of(column: Column) -> Self {
         let width = match column {
             Column::Name => name_min_w(ICON_SMALL),
-            Column::Modified => COL_MODIFIED,
+            Column::Modified | Column::Created | Column::Added => COL_DATE,
+            Column::Opened => COL_OPENED,
             Column::Size => COL_SIZE,
             Column::Kind => COL_KIND,
+            Column::Tags => COL_TAGS,
+            Column::Version => COL_VERSION,
         };
         Self { column, width }
     }
 }
 
-pub(crate) fn default_columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec::of(Column::Modified),
-        ColumnSpec::of(Column::Size),
-        ColumnSpec::of(Column::Kind),
-    ]
+/// The columns a folder lists after Name: as it was last left, else as Finder shows its lists.
+pub(crate) fn columns_for(folder: &str) -> Vec<ColumnSpec> {
+    prefs::list_columns(folder)
+        .unwrap_or_else(|| prefs::finder().columns.clone())
+        .into_iter()
+        .map(ColumnSpec::of)
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -103,22 +110,24 @@ pub(crate) enum HeaderDrag {
 }
 
 pub(crate) fn column_title(column: Column) -> &'static str {
-    static TITLES: LazyLock<[String; 4]> = LazyLock::new(|| {
-        [
-            ("N220", "Name"),
-            ("N221", "Date Modified"),
-            ("N223", "Size"),
-            ("N224", "Kind"),
-        ]
-        .map(|(key, english)| finder_fs::words::finder(key, english))
+    const KEYS: [(Column, &str, &str); 9] = [
+        (Column::Name, "N220", "Name"),
+        (Column::Kind, "N224", "Kind"),
+        (Column::Opened, "N169.32", "Date Last Opened"),
+        (Column::Added, "N230", "Date Added"),
+        (Column::Modified, "N221", "Date Modified"),
+        (Column::Created, "N222", "Date Created"),
+        (Column::Size, "N223", "Size"),
+        (Column::Tags, "N225", "Tags"),
+        (Column::Version, "N226", "Version"),
+    ];
+    static TITLES: LazyLock<Vec<String>> = LazyLock::new(|| {
+        KEYS.iter()
+            .map(|(_, key, english)| finder_fs::words::finder(key, english))
+            .collect()
     });
-    let at = match column {
-        Column::Name => 0,
-        Column::Modified => 1,
-        Column::Size => 2,
-        Column::Kind => 3,
-    };
-    &TITLES[at]
+    let at = KEYS.iter().position(|(held, _, _)| *held == column);
+    &TITLES[at.unwrap_or(0)]
 }
 
 fn overlay(fill: Hsla) -> Div {
@@ -206,8 +215,9 @@ impl FinderDemo {
 
     pub(crate) fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         if self.header_drag.is_some() && !cx.has_active_drag() {
-            if matches!(self.header_drag, Some(HeaderDrag::Resize { .. })) {
-                self.persist_column_widths();
+            match self.header_drag {
+                Some(HeaderDrag::Resize { .. }) => self.persist_column_widths(),
+                _ => self.persist_columns(),
             }
             self.header_drag = None;
         }
@@ -297,17 +307,13 @@ impl FinderDemo {
                 let left = (x - f32::from(event.bounds.origin.x) - grab)
                     .clamp(start, (start + total - width).max(start));
 
-                let mut others = [0.; 3];
-                let mut count = 0;
-                for (index, spec) in self.list_columns.iter().enumerate() {
-                    if index != from {
-                        others[count] = spec.width;
-                        count += 1;
-                    }
-                }
+                let others: Vec<f32> = (self.list_columns.iter().enumerate())
+                    .filter(|(index, _)| *index != from)
+                    .map(|(_, spec)| spec.width)
+                    .collect();
                 let mut head = start;
                 let mut best = (f32::MAX, from);
-                for (slot, width) in others[..count].iter().chain([&0.]).enumerate() {
+                for (slot, width) in others.iter().chain([&0.]).enumerate() {
                     let error = (head - left).abs();
                     if error < best.0 {
                         best = (error, slot);
@@ -359,8 +365,15 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn load_column_widths(&mut self) {
+    fn persist_columns(&self) {
+        let columns: Vec<Column> = self.list_columns.iter().map(|spec| spec.column).collect();
+        prefs::set_list_columns(self.here(), &columns);
+    }
+
+    /// The folder's own columns and widths, as they were last left there.
+    pub(crate) fn load_columns(&mut self) {
         let here = self.here();
+        self.list_columns = columns_for(here);
         self.name_w = prefs::list_column_width(here, Column::Name)
             .unwrap_or_else(|| name_min_w(self.list_icon));
         for spec in &mut self.list_columns {
@@ -370,13 +383,32 @@ impl FinderDemo {
         self.refit_name_column();
     }
 
+    pub(crate) fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
+        let read = self.wants_extras();
+        match self
+            .list_columns
+            .iter()
+            .position(|spec| spec.column == column)
+        {
+            Some(index) => {
+                self.list_columns.remove(index);
+            }
+            None => self.list_columns.push(ColumnSpec::of(column)),
+        }
+        self.persist_columns();
+        self.refit_name_column();
+        if !read && self.wants_extras() {
+            self.resort((self.sort, self.ascending), cx);
+        }
+    }
+
     fn fit_list_column(&mut self, index: usize, cx: &mut Context<Self>) {
         let column = match index {
             0 => Column::Name,
             index => self.list_columns[index - 1].column,
         };
         let (size, icon) = (row_font(), self.list_icon);
-        if column == Column::Modified {
+        if column.dated() {
             return self.fitted(index, column, date_fit(size), cx);
         }
         let rows = self.fit_rows(column);
@@ -404,7 +436,8 @@ impl FinderDemo {
             .map(|line| match column {
                 Column::Name => (name_prefix(line, icon), line.row.display.clone()),
                 Column::Size => (0., line.row.size.clone()),
-                _ => (0., line.row.kind.clone()),
+                Column::Kind => (0., line.row.kind.clone()),
+                column => (0., detail_text(&line.row, column)),
             })
             .collect()
     }

@@ -9,6 +9,7 @@ use finder_fs::volumes::{Standard, standard};
 use gpui::SharedString;
 use native_gpui::tokens::FileType;
 
+use super::extra::{Extra, extra_of};
 use super::face::{Face, face_of};
 use super::format::{byte_string, reference_seconds};
 use super::paths::{intern, intern_path, join};
@@ -23,12 +24,83 @@ pub(crate) struct Line {
     pub(crate) depth: usize,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Column {
     Name,
-    Modified,
-    Size,
     Kind,
+    Opened,
+    Added,
+    Modified,
+    Created,
+    Size,
+    Tags,
+    Version,
+}
+
+/// Finder's Sort By keys, in its order.
+pub(crate) const SORT_KEYS: [Column; 8] = [
+    Column::Name,
+    Column::Kind,
+    Column::Opened,
+    Column::Added,
+    Column::Modified,
+    Column::Created,
+    Column::Size,
+    Column::Tags,
+];
+
+impl Column {
+    const ALL: [Column; 9] = [
+        Column::Name,
+        Column::Kind,
+        Column::Opened,
+        Column::Added,
+        Column::Modified,
+        Column::Created,
+        Column::Size,
+        Column::Tags,
+        Column::Version,
+    ];
+
+    /// Finder's identifier for the column in its view settings.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Column::Name => "name",
+            Column::Kind => "kind",
+            Column::Opened => "dateLastOpened",
+            Column::Added => "dateAdded",
+            Column::Modified => "dateModified",
+            Column::Created => "dateCreated",
+            Column::Size => "size",
+            Column::Tags => "label",
+            Column::Version => "version",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|column| column.id() == id)
+    }
+
+    /// The direction Finder first sorts the column in.
+    pub(crate) fn first_ascending(self) -> bool {
+        matches!(
+            self,
+            Column::Name | Column::Kind | Column::Tags | Column::Version
+        )
+    }
+
+    /// Whether the column shows a date.
+    pub(crate) fn dated(self) -> bool {
+        matches!(
+            self,
+            Column::Opened | Column::Added | Column::Modified | Column::Created
+        )
+    }
+
+    /// Whether only the item's own file, not its listing, says what the column shows.
+    pub(crate) fn extra(self) -> bool {
+        matches!(self, Column::Opened | Column::Tags | Column::Version)
+    }
 }
 
 #[derive(Clone)]
@@ -40,6 +112,7 @@ pub(crate) struct Row {
     pub(crate) bytes: u64,
     pub(crate) modified_at: f64,
     pub(crate) created_at: f64,
+    pub(crate) added_at: Option<f64>,
     pub(crate) kind: SharedString,
     pub(crate) uti: SharedString,
     pub(crate) face: Face,
@@ -51,6 +124,32 @@ pub(crate) struct Row {
     pub(crate) readable: bool,
     pub(crate) package: bool,
     pub(crate) artwork: Option<FileType<'static>>,
+    /// Read only once a sort or a column needs it.
+    pub(crate) extra: Option<Arc<Extra>>,
+}
+
+impl Row {
+    /// The row's date under a column of dates, if it has one.
+    pub(crate) fn date(&self, column: Column) -> Option<f64> {
+        match column {
+            Column::Modified => Some(self.modified_at),
+            Column::Created => Some(self.created_at),
+            Column::Added => self.added_at,
+            Column::Opened => self.extra.as_ref()?.opened,
+            _ => None,
+        }
+    }
+
+    /// The words the row sorts by under a column that ranks words.
+    pub(crate) fn words(&self, column: Column) -> Option<&str> {
+        let extra = self.extra.as_deref();
+        match column {
+            Column::Kind => Some(&self.kind),
+            Column::Tags => extra?.tags.first().map(|(name, _)| &**name),
+            Column::Version => extra?.version.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) type Facts = (Option<u64>, Option<usize>);
@@ -200,6 +299,7 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         bytes: bytes.unwrap_or(0),
         modified_at: modified_at(entry),
         created_at: reference_seconds(entry.created),
+        added_at: entry.added.map(reference_seconds),
         kind: (&kind.label).into(),
         uti: (&kind.uti).into(),
         face: match app {
@@ -213,19 +313,38 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         readable: entry.readable,
         package: entry.package,
         artwork: artwork_of(entry, &path, &kind.uti, seen),
+        extra: None,
         path: path.into(),
     }
 }
 
+/// Rows for `entries`; with `extras`, each carries what its own file says as well.
 pub(crate) fn rows_of<'a>(
     dir: &'static str,
     entries: impl IntoIterator<Item = &'a Entry>,
     folders: &HashMap<String, Facts>,
+    extras: bool,
 ) -> Vec<Arc<Row>> {
     entries
         .into_iter()
-        .map(|entry| Arc::new(row_of(dir, entry, facts_of(entry, folders))))
+        .map(|entry| {
+            let mut row = row_of(dir, entry, facts_of(entry, folders));
+            if extras {
+                row.extra = Some(extra_of(&row.path, row.package));
+            }
+            Arc::new(row)
+        })
         .collect()
+}
+
+/// Reads, for each row not yet read, what only its own file says.
+pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
+    for row in rows.iter_mut().filter(|row| row.extra.is_none()) {
+        *row = Arc::new(Row {
+            extra: Some(extra_of(&row.path, row.package)),
+            ..(**row).clone()
+        });
+    }
 }
 
 pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
@@ -308,6 +427,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
         bytes: volume.capacity,
         modified_at: meta.modified().ok().map_or(0., reference_seconds),
         created_at: meta.created().ok().map_or(0., reference_seconds),
+        added_at: None,
         kind: "Volume".into(),
         uti: "public.volume".into(),
         face: Face::Volume,
@@ -318,6 +438,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
         readable: true,
         package: false,
         artwork: Some(FileType::Path(id)),
+        extra: None,
     })
 }
 

@@ -86,6 +86,7 @@ fn place_row(id: &'static str, artwork: FileType<'static>, kind: &str) -> Row {
         bytes: 0,
         modified_at: f64::NAN,
         created_at: f64::NAN,
+        added_at: None,
         kind: kind.to_owned().into(),
         uti: "".into(),
         face: Face::Volume,
@@ -96,6 +97,7 @@ fn place_row(id: &'static str, artwork: FileType<'static>, kind: &str) -> Row {
         readable: true,
         package: false,
         artwork: Some(artwork),
+        extra: None,
     }
 }
 
@@ -130,6 +132,7 @@ fn network_rows() -> Vec<Arc<Row>> {
                 bytes: 0,
                 modified_at: f64::NAN,
                 created_at: f64::NAN,
+                added_at: None,
                 kind: kind.into(),
                 uti: uti.into(),
                 face: Face::Volume,
@@ -140,6 +143,7 @@ fn network_rows() -> Vec<Arc<Row>> {
                 readable: true,
                 package: false,
                 artwork: Some(FileType::Uti(uti)),
+                extra: None,
             })
         })
         .collect()
@@ -220,7 +224,7 @@ impl FinderDemo {
         if id == NETWORK {
             follow_network(cx);
             let mut rows = network_rows();
-            crate::read::sort_rows(&mut rows, sorted_by);
+            crate::read::sort_rows(&mut rows, sorted_by, false);
             self.deliver(id, Some(rows), None, true, sorted_by, cx);
             return;
         }
@@ -229,7 +233,7 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let mut rows = rows_of(id);
-                    crate::read::sort_rows(&mut rows, sorted_by);
+                    crate::read::sort_rows(&mut rows, sorted_by, false);
                     rows
                 })
                 .await;

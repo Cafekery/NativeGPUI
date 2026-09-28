@@ -25,6 +25,12 @@ actions!(
     [
         Back,
         CleanUp,
+        CleanUpByName,
+        CleanUpByKind,
+        CleanUpByModified,
+        CleanUpByCreated,
+        CleanUpBySize,
+        CleanUpByTags,
         UseGroups,
         ShowViewOptions,
         Cut,
@@ -84,10 +90,14 @@ actions!(
         RenameSelection,
         SelectAll,
         ShowInspector,
+        SortByAdded,
+        SortByCreated,
         SortByKind,
         SortByModified,
         SortByName,
+        SortByOpened,
         SortBySize,
+        SortByTags,
         ToggleHidden,
         TogglePathBar,
         TogglePreview,
@@ -187,15 +197,19 @@ fn enabled(action: &dyn Action) -> bool {
 
 fn checked(action: &dyn Action) -> Option<bool> {
     let (view, sort, grouped, _, _, _) = STATE.get();
-    let rows: [(&dyn Action, bool); 9] = [
+    let rows: [(&dyn Action, bool); 13] = [
         (&ViewIcons, view == ICON_VIEW),
         (&ViewList, view == LIST_VIEW),
         (&ViewColumns, view == COLUMN_VIEW),
         (&ViewGallery, view == GALLERY_VIEW),
         (&SortByName, sort == Column::Name),
         (&SortByKind, sort == Column::Kind),
+        (&SortByOpened, sort == Column::Opened),
+        (&SortByAdded, sort == Column::Added),
         (&SortByModified, sort == Column::Modified),
+        (&SortByCreated, sort == Column::Created),
         (&SortBySize, sort == Column::Size),
+        (&SortByTags, sort == Column::Tags),
         (&UseGroups, grouped),
     ];
     rows.into_iter()
@@ -326,8 +340,12 @@ pub(crate) fn install(cx: &mut App) {
                 [
                     MenuCommand::new("Name", SortByName).key("cmd-ctrl-alt-1"),
                     MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-alt-2"),
+                    MenuCommand::new("Date Last Opened", SortByOpened).key("cmd-ctrl-alt-3"),
+                    MenuCommand::new("Date Added", SortByAdded).key("cmd-ctrl-alt-4"),
                     MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-alt-5"),
+                    MenuCommand::new("Date Created", SortByCreated),
                     MenuCommand::new("Size", SortBySize).key("cmd-ctrl-alt-6"),
+                    MenuCommand::new("Tags", SortByTags).key("cmd-ctrl-alt-7"),
                 ],
             ),
             MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
@@ -336,10 +354,12 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::submenu(
                 "Clean Up By",
                 [
-                    MenuCommand::new("Name", SortByName).key("cmd-alt-1"),
-                    MenuCommand::new("Kind", SortByKind).key("cmd-alt-2"),
-                    MenuCommand::new("Date Modified", SortByModified).key("cmd-alt-5"),
-                    MenuCommand::new("Size", SortBySize).key("cmd-alt-6"),
+                    MenuCommand::new("Name", CleanUpByName).key("cmd-alt-1"),
+                    MenuCommand::new("Kind", CleanUpByKind).key("cmd-alt-2"),
+                    MenuCommand::new("Date Modified", CleanUpByModified).key("cmd-alt-5"),
+                    MenuCommand::new("Date Created", CleanUpByCreated),
+                    MenuCommand::new("Size", CleanUpBySize).key("cmd-alt-6"),
+                    MenuCommand::new("Tags", CleanUpByTags).key("cmd-alt-7"),
                 ],
             ),
             MenuCommand::separator(),
@@ -545,11 +565,23 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &SortByKind, window, cx| {
                 this.run_menu(Act::Sort(Column::Kind), window, cx);
             }))
+            .on_action(cx.listener(|this, _: &SortByOpened, window, cx| {
+                this.run_menu(Act::Sort(Column::Opened), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SortByAdded, window, cx| {
+                this.run_menu(Act::Sort(Column::Added), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &SortByModified, window, cx| {
                 this.run_menu(Act::Sort(Column::Modified), window, cx);
             }))
+            .on_action(cx.listener(|this, _: &SortByCreated, window, cx| {
+                this.run_menu(Act::Sort(Column::Created), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &SortBySize, window, cx| {
                 this.run_menu(Act::Sort(Column::Size), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SortByTags, window, cx| {
+                this.run_menu(Act::Sort(Column::Tags), window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowViewOptions, window, cx| {
                 this.run_menu(Act::ViewOptions, window, cx);
