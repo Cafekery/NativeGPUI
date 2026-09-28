@@ -10,18 +10,11 @@ use native_gpui::{MenuEntry, native_popup, native_root, native_slider, window_op
 use objc2_app_kit::NSWindowTitleVisibility;
 
 use crate::app::FinderDemo;
-use crate::data::Column;
+use crate::data::{SORT_KEYS, SORT_TITLES};
 use crate::frame::ns_window;
 use crate::view::ICON_VIEW;
 
 const TITLEBAR_H: f32 = 34.;
-
-const SORTS: [(Column, &str); 4] = [
-    (Column::Name, "Name"),
-    (Column::Kind, "Kind"),
-    (Column::Modified, "Date Modified"),
-    (Column::Size, "Size"),
-];
 
 pub(crate) struct ViewOptions {
     demo: WeakEntity<FinderDemo>,
@@ -55,7 +48,7 @@ impl Render for ViewOptions {
             .map(|folder| folder.title)
             .unwrap_or("Finder");
         window.set_window_title(title);
-        let sort = SORTS.iter().position(|(column, _)| *column == state.sort);
+        let sort = SORT_KEYS.iter().position(|column| *column == state.sort);
         let icon_size = state.icon_size;
         let icons = state.view == ICON_VIEW;
 
@@ -71,11 +64,11 @@ impl Render for ViewOptions {
                 .child(Self::row(
                     "Sort by:",
                     native_popup("ng.finder.options.sort", sort.unwrap_or(0))
-                        .entries(SORTS.iter().map(|(_, label)| MenuEntry::item(*label)))
+                        .entries(SORT_TITLES.iter().map(|label| MenuEntry::item(*label)))
                         .on_change({
                             let demo = demo.clone();
                             move |index: &usize, _, cx| {
-                                let column = SORTS[*index].0;
+                                let column = SORT_KEYS[*index];
                                 demo.update(cx, |this, cx| {
                                     this.sort_by(column, cx);
                                     cx.notify();

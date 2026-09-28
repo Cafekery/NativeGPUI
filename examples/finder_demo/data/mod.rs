@@ -14,9 +14,9 @@ pub(crate) use self::format::{
 };
 pub(crate) use self::paths::{enclosing_name, intern, intern_path, join, split_key};
 pub(crate) use self::row::{
-    Column, Facts, Line, Row, SORT_KEYS, bytes_of, facts_of, folder_artwork, hit_row, icloud_rows,
-    is_trash, kind_at, modified_at, own_icon, path_line, read_extras, recent_rows, rows_at,
-    rows_of, tagged_rows, weigh_packages,
+    Column, Facts, Line, Row, SORT_KEYS, SORT_TITLES, bytes_of, facts_of, folder_artwork, hit_row,
+    icloud_rows, is_trash, kind_at, modified_at, own_icon, path_line, read_extras, recent_rows,
+    rows_at, rows_of, tagged_rows, weigh_packages,
 };
 pub(crate) use self::volumes::{
     VolumeInfo, available_bytes, follow_volumes, network_roots, refresh_volumes, server_symbol,

@@ -546,11 +546,18 @@ impl FinderDemo {
         }
 
         let depth = columns.len();
+        let picked = self.column_cursor != self.cursor;
+        self.column_cursor = self.cursor.clone();
         if depth != self.column_depth {
-            // The first build lands at its end; a column opened later slides in, as Finder's does.
-            match self.column_depth {
-                0 => self.column_scroll.scroll_to_item(depth - 1),
-                _ => {
+            // A column the selection opened slides in, as Finder's does; the browser's first
+            // build, and columns above it landing as their folders are read, show at the end.
+            match self.column_depth != 0 && picked {
+                false => {
+                    self.column_reveal = None;
+                    // The browser's first child is the grip canvas, so the last column is `depth`.
+                    self.column_scroll.scroll_to_item(depth);
+                }
+                true => {
                     let from = f32::from(self.column_scroll.offset().x);
                     self.column_reveal = Some((from, std::time::Instant::now()));
                 }
