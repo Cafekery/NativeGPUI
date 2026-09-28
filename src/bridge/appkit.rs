@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::ptr;
 
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, Sel};
-use objc2::{ClassType, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, NSObjectProtocol, Sel};
+use objc2::{ClassType, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2_app_kit::{NSAccessibilityUnignoredChildren, NSAutoresizingMaskOptions, NSView};
+use objc2_foundation::{MainThreadMarker, NSArray, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 define_class!(
@@ -160,6 +160,104 @@ extern "C" fn key_down(view: *mut AnyObject, _: Sel, event: *mut AnyObject) {
     let call: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) =
         unsafe { std::mem::transmute(imp) };
     call(view, selector, event);
+}
+
+const HOSTED_PREFIX: &str = "NGHosted";
+
+/// gpui's accessibility adapter answers the content view's children with gpui's tree alone.
+pub fn adopt_hosted_accessibility(content: &NSView) {
+    let current = content.class();
+    let base = current.name().to_string_lossy();
+    if base.starts_with(HOSTED_PREFIX) {
+        return;
+    }
+    let name = CString::new(format!("{HOSTED_PREFIX}{base}")).expect("class names hold no NUL");
+    let subclass = AnyClass::get(&name).unwrap_or_else(|| {
+        let mut builder = ClassBuilder::new(&name, current)
+            .expect("only adopt_hosted_accessibility registers NGHosted classes");
+        unsafe {
+            builder.add_method(
+                sel!(accessibilityChildren),
+                hosted_children as extern "C" fn(*mut AnyObject, Sel) -> *mut NSArray,
+            );
+            builder.add_method(
+                sel!(accessibilityHitTest:),
+                hosted_hit_test as extern "C" fn(*mut AnyObject, Sel, NSPoint) -> *mut AnyObject,
+            );
+        }
+        builder.register()
+    });
+    unsafe { AnyObject::set_class(&*(content as *const NSView).cast::<AnyObject>(), subclass) };
+}
+
+fn inherited_imp(view: *mut AnyObject, selector: Sel) -> Imp {
+    let mut class = unsafe { &*view }.class();
+    while !class
+        .name()
+        .to_bytes()
+        .starts_with(HOSTED_PREFIX.as_bytes())
+    {
+        class = class
+            .superclass()
+            .expect("an adopted view's class always descends from its NGHosted class");
+    }
+    class
+        .superclass()
+        .and_then(|base| base.instance_method(selector))
+        .expect("NSView answers every accessibility selector")
+        .implementation()
+}
+
+extern "C" fn hosted_children(view: *mut AnyObject, selector: Sel) -> *mut NSArray {
+    let inherited: extern "C" fn(*mut AnyObject, Sel) -> *mut NSArray =
+        unsafe { std::mem::transmute(inherited_imp(view, selector)) };
+    let mut children = unsafe { inherited(view, selector).as_ref() }
+        .map(NSArray::to_vec)
+        .unwrap_or_default();
+    let subviews: Retained<NSArray> = unsafe { msg_send![view, subviews] };
+    for child in unsafe { NSAccessibilityUnignoredChildren(&subviews) }.iter() {
+        if !children
+            .iter()
+            .any(|known| Retained::as_ptr(known) == Retained::as_ptr(&child))
+        {
+            children.push(child);
+        }
+    }
+    Retained::autorelease_return(NSArray::from_retained_slice(&children))
+}
+
+extern "C" fn hosted_hit_test(
+    view: *mut AnyObject,
+    selector: Sel,
+    point: NSPoint,
+) -> *mut AnyObject {
+    let content = unsafe { &*view.cast::<NSView>() };
+    let hit = content
+        .window()
+        .zip(unsafe { content.superview() })
+        .and_then(|(window, frame)| {
+            content.hitTest(frame.convertPoint_fromView(window.convertPointFromScreen(point), None))
+        });
+    if let Some(hit) = hit.filter(|hit| is_hosted(hit, content)) {
+        return unsafe { msg_send![&*hit, accessibilityHitTest: point] };
+    }
+    let inherited: extern "C" fn(*mut AnyObject, Sel, NSPoint) -> *mut AnyObject =
+        unsafe { std::mem::transmute(inherited_imp(view, selector)) };
+    inherited(view, selector, point)
+}
+
+fn is_hosted(view: &NSView, content: &NSView) -> bool {
+    let mut at = Some(view.retain());
+    while let Some(view) = at {
+        if ptr::eq(&*view, content) {
+            return false;
+        }
+        if view.isKindOfClass(Container::class()) {
+            return true;
+        }
+        at = unsafe { view.superview() };
+    }
+    false
 }
 
 pub fn rects_equal(a: NSRect, b: NSRect) -> bool {
