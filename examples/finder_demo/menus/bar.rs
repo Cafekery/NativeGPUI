@@ -111,6 +111,7 @@ actions!(
         ShowInspector,
         SortByAdded,
         SortByCreated,
+        ShowPreviewOptions,
         SortByKind,
         SortByModified,
         SortByName,
@@ -430,6 +431,12 @@ fn titled(action: &dyn Action) -> Option<SharedString> {
     if let Some(title) = super::edit::titled(action) {
         return Some(title);
     }
+    if action.partial_eq(&ShowPreviewOptions) {
+        return Some(match crate::preview::options::is_open() {
+            true => "Hide Preview Options".into(),
+            false => "Show Preview Options".into(),
+        });
+    }
     let mirror = MIRROR.get();
     let title = CHOSEN.with_borrow(|chosen| {
         Some(match () {
@@ -733,6 +740,7 @@ fn view_rows() -> Vec<MenuCommand> {
         MenuCommand::appkit("Customize Toolbar…", c"runToolbarCustomizationPalette:"),
         MenuCommand::separator(),
         MenuCommand::new("Show View Options", ShowViewOptions).key("cmd-j"),
+        MenuCommand::new("Show Preview Options", ShowPreviewOptions),
         MenuCommand::separator(),
         MenuCommand::appkit("Enter Full Screen", c"toggleFullScreen:").key("cmd-ctrl-f"),
     ]
@@ -1039,6 +1047,9 @@ impl FinderDemo {
             .on_action(cx.listener(|_, _: &GetSummaryInfo, _, cx| {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
+            }))
+            .on_action(cx.listener(|this, _: &ShowPreviewOptions, _, cx| {
+                crate::preview::options::toggle(this, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
                 this.run_menu(Act::Inspector, window, cx);

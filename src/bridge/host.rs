@@ -16,7 +16,9 @@ use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{NSControl, NSControlSize, NSView, NSWindowOrderingMode};
 use objc2_foundation::{MainThreadMarker, NSObject, NSRect, NSString};
 
-use crate::bridge::appkit::{Container, adopt_key_path, gpui_view, rects_equal, to_rect};
+use crate::bridge::appkit::{
+    Container, adopt_hosted_accessibility, adopt_key_path, gpui_view, rects_equal, to_rect,
+};
 
 pub fn element_key(id: Option<&GlobalElementId>) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -335,6 +337,12 @@ impl NativeHost {
         // AppKit's own loop walks into hosted views' private subviews; `commit` writes it instead.
         if let Some(ns_window) = parent.window() {
             ns_window.setAutorecalculatesKeyViewLoop(false);
+            if ns_window
+                .contentView()
+                .is_some_and(|view| ptr::eq(&*view, &*content))
+            {
+                adopt_hosted_accessibility(&content);
+            }
         }
 
         Self(Rc::new(RefCell::new(HostState {
