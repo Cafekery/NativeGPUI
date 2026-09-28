@@ -38,22 +38,24 @@ unsafe fn borrow_cf_str(s: &str) -> CFRetained<CFString> {
     .expect("str is valid UTF-8")
 }
 
-pub fn name_cmp(a: &str, b: &str) -> Ordering {
-    let a = unsafe { borrow_cf_str(a) };
-    let b = unsafe { borrow_cf_str(b) };
+fn cf_cmp(a: &CFString, b: &CFString, locale: Option<&CFLocale>) -> Ordering {
     let range = CFRange::new(0, a.length());
-    unsafe { a.compare_with_options_and_locale(Some(&b), range, OPTIONS, current_locale()) }.into()
+    unsafe { a.compare_with_options_and_locale(Some(b), range, OPTIONS, locale) }.into()
+}
+
+pub fn name_cmp(a: &str, b: &str) -> Ordering {
+    let (a, b) = unsafe { (borrow_cf_str(a), borrow_cf_str(b)) };
+    cf_cmp(&a, &b, current_locale())
 }
 
 pub fn starts_with(name: &str, prefix: &str) -> bool {
     if prefix.is_empty() {
         return true;
     }
-    let name_cf = unsafe { borrow_cf_str(name) };
-    let prefix_cf = unsafe { borrow_cf_str(prefix) };
-    let range = CFRange::new(0, name_cf.length());
+    let (name, prefix) = unsafe { (borrow_cf_str(name), borrow_cf_str(prefix)) };
+    let range = CFRange::new(0, name.length());
     let mut found = CFRange::new(0, 0);
-    unsafe { name_cf.find_with_options(Some(&prefix_cf), range, PREFIX_OPTIONS, &mut found) }
+    unsafe { name.find_with_options(Some(&prefix), range, PREFIX_OPTIONS, &mut found) }
 }
 
 pub fn fold(s: &str) -> String {
@@ -73,11 +75,7 @@ pub fn fold(s: &str) -> String {
 pub fn ranks<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u32> {
     let names: Vec<CFRetained<CFString>> = names.map(|s| unsafe { borrow_cf_str(s) }).collect();
     let locale = current_locale();
-    let cmp = |a: usize, b: usize| -> Ordering {
-        let range = CFRange::new(0, names[a].length());
-        unsafe { names[a].compare_with_options_and_locale(Some(&names[b]), range, OPTIONS, locale) }
-            .into()
-    };
+    let cmp = |a: usize, b: usize| cf_cmp(&names[a], &names[b], locale);
     let mut order: Vec<usize> = (0..names.len()).collect();
     order.sort_unstable_by(|&a, &b| cmp(a, b));
     let mut ranks = vec![0; names.len()];
@@ -87,8 +85,7 @@ pub fn ranks<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u32> {
     ranks
 }
 
-/// Positions of `n` items in listing order: `by`, then names (reversed when `descending`), then
-/// as given. Names are ranked only among items that tie on `by`.
+/// Positions of `n` items ordered by `by`, then name (reversed when `descending`), then index.
 pub fn order<'a>(
     n: usize,
     by: impl Fn(usize, usize) -> Ordering,
@@ -116,7 +113,7 @@ pub fn order<'a>(
     order
 }
 
-/// The first `k` positions of `order`, comparing names only against the `k` kept so far.
+/// The first `k` positions of `order`.
 pub fn first<'a>(
     n: usize,
     k: usize,
@@ -181,8 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn case_insensitive_but_stable_ordering() {
-        assert_eq!(name_cmp("File A", "file a"), name_cmp("File A", "file a"));
+    fn case_insensitive_ordering() {
         assert_eq!(name_cmp("a", "B"), Ordering::Less);
         assert_eq!(name_cmp("B", "c"), Ordering::Less);
     }
