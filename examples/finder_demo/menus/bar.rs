@@ -40,6 +40,7 @@ actions!(
         DeselectAll,
         ShowClipboard,
         Compress,
+        CompressNamed,
         Duplicate,
         DuplicateExactly,
         EjectSelection,
@@ -84,6 +85,7 @@ actions!(
         QuickLook,
         Slideshow,
         Print,
+        EditTags,
         Share,
         OpenInNewTab,
         OpenAndClose,
@@ -168,6 +170,7 @@ struct Chosen {
     name: SharedString,
     here: SharedString,
     files: Vec<PathBuf>,
+    keys: Vec<SharedString>,
 }
 
 thread_local! {
@@ -193,6 +196,8 @@ thread_local! {
         ..Chosen::default()
     }));
     static LOCATIONS: RefCell<Option<Vec<(String, &'static str)>>> = const { RefCell::new(None) };
+    /// What the last pick in the File menu's tag row hit: a swatch, or `None` for its Tags… button.
+    static TAG_PICK: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
 
 /// Whether the chosen items refuse to open, can be shared, and all sit in iCloud Drive.
@@ -260,6 +265,7 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
             .filter(|line| line.row.opens.is_none())
             .map(|line| PathBuf::from(line.key.as_ref()))
             .collect(),
+        keys: lines.iter().map(|line| line.key.clone()).collect(),
     });
     WORKED.set(worked.clone());
     worked
@@ -315,6 +321,7 @@ fn enabled(action: &dyn Action) -> bool {
                             &NewFolderWithSelection,
                             &RenameSelection,
                             &Compress,
+                            &CompressNamed,
                             &Duplicate,
                             &DuplicateExactly,
                             &MakeAlias,
@@ -391,6 +398,17 @@ fn titled(action: &dyn Action) -> Option<SharedString> {
                 true => "Open and Close Window".into(),
                 false => "Open in New Window and Close".into(),
             },
+            _ if action.partial_eq(&CompressNamed) => match chosen.count {
+                0 => "Compress".into(),
+                1 => format!("Compress \u{201c}{}\u{201d}", chosen.name),
+                many => format!("Compress {many} Items"),
+            },
+            _ if action.partial_eq(&QuickLook) && native_gpui::quick_look_visible() => {
+                "Close Quick Look".into()
+            }
+            _ if action.partial_eq(&Slideshow) && native_gpui::quick_look_visible() => {
+                "Slideshow".into()
+            }
             _ if action.partial_eq(&QuickLook) => match chosen.count {
                 0 => format!("Quick Look \u{201c}{}\u{201d}", chosen.here),
                 1 => "Quick Look".into(),
@@ -522,6 +540,7 @@ fn file_rows() -> Vec<MenuCommand> {
             .option_alternate(),
         MenuCommand::new("Rename", RenameSelection),
         MenuCommand::new("Compress", Compress),
+        MenuCommand::new("Compress", CompressNamed).option_alternate(),
         MenuCommand::new("Duplicate", Duplicate).key("cmd-d"),
         MenuCommand::new("Duplicate Exactly", DuplicateExactly)
             .key("cmd-alt-shift-d")
@@ -552,8 +571,33 @@ fn file_rows() -> Vec<MenuCommand> {
             .key("cmd-alt-e")
             .option_alternate(),
         MenuCommand::separator(),
+        MenuCommand::view(tag_row, EditTags),
+        MenuCommand::separator(),
         MenuCommand::new("Print", Print).key("cmd-p"),
     ]
+}
+
+/// Finder's tag swatches over its Tags… button, named and enabled for the chosen items.
+fn tag_row() -> native_gpui::MenuView {
+    let keys = CHOSEN.with_borrow(|chosen| chosen.keys.clone());
+    let carried: Vec<Vec<usize>> = keys.iter().map(|key| crate::tags::row_tags(key)).collect();
+    let picked = !keys.is_empty();
+    let swatches = crate::tags::tags().iter().enumerate().map(|(index, tag)| {
+        let verb = match picked && carried.iter().all(|tags| tags.contains(&index)) {
+            true => "Remove",
+            false => "Add",
+        };
+        (
+            crate::tags::finder_color(tag.color),
+            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
+        )
+    });
+    native_gpui::MenuView::swatches_with_button(
+        swatches,
+        picked,
+        ("tag", "Tags…", picked),
+        |hit| TAG_PICK.set(Some(hit)),
+    )
 }
 
 /// LaunchServices' Open With list for the chosen files: the default app, the rest by name, then
@@ -880,6 +924,9 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &Compress, window, cx| {
                 this.run_menu(Act::Compress, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &CompressNamed, window, cx| {
+                this.run_menu(Act::Compress, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ShowOriginal, window, cx| {
                 this.show_original(window, cx);
             }))
@@ -1099,5 +1146,12 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &Share, window, cx| {
                 this.share_selection(window, cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &EditTags, window, cx| match TAG_PICK.take() {
+                    Some(Some(tag)) => this.tag_selection(tag, cx),
+                    Some(None) => this.run_menu(Act::Tags, window, cx),
+                    None => {}
+                }),
+            )
     }
 }
