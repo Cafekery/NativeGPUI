@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 
+use objc2::runtime::AnyObject;
 use objc2_foundation::{NSArray, NSDate, NSNumber, NSString};
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -11,12 +12,14 @@ extern "C" {
     fn CFNumberGetTypeID() -> usize;
     fn CFDateGetTypeID() -> usize;
     fn CFArrayGetTypeID() -> usize;
+    fn CFBooleanGetTypeID() -> usize;
 }
 
 #[link(name = "CoreServices", kind = "framework")]
 extern "C" {
     fn MDItemCreate(allocator: *const c_void, path: *const c_void) -> *mut c_void;
     fn MDItemCopyAttribute(item: *mut c_void, name: *const c_void) -> *mut c_void;
+    fn MDItemCopyAttributeNames(item: *mut c_void) -> *mut c_void;
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -33,6 +36,8 @@ pub struct Meta {
     pub encoders: Vec<String>,
     pub category: Option<String>,
     pub duration: Option<f64>,
+    /// Every other attribute the item has, by Spotlight name, as text.
+    pub values: Vec<(String, String)>,
 }
 
 struct Item(*mut c_void);
@@ -101,6 +106,29 @@ impl Attribute {
             .then(|| unsafe { &*self.0.cast::<NSDate>() }.timeIntervalSinceReferenceDate())
     }
 
+    /// A number, a yes or no, or a list of words.
+    fn text(&self) -> Option<String> {
+        if self.is(unsafe { CFBooleanGetTypeID() }) {
+            let on = unsafe { &*self.0.cast::<NSNumber>() }.boolValue();
+            return Some(if on { "Yes" } else { "No" }.to_owned());
+        }
+        if let Some(number) = self.number() {
+            return Some(match number.fract() == 0. {
+                true => format!("{number:.0}"),
+                false => format!("{number:.2}").trim_end_matches('0').to_owned(),
+            });
+        }
+        if !self.is(unsafe { CFArrayGetTypeID() }) {
+            return None;
+        }
+        let array = unsafe { &*self.0.cast::<NSArray<AnyObject>>() };
+        let words: Vec<String> = array
+            .iter()
+            .filter_map(|word| Some(word.downcast::<NSString>().ok()?.to_string()))
+            .collect();
+        (!words.is_empty()).then(|| words.join(", "))
+    }
+
     fn strings(&self) -> Vec<String> {
         if !self.is(unsafe { CFArrayGetTypeID() }) {
             return Vec::new();
@@ -145,5 +173,23 @@ pub fn meta(path: &Path) -> Meta {
         encoders: item.strings("kMDItemEncodingApplications"),
         category: item.string("kMDItemAppStoreCategory"),
         duration: item.number("kMDItemDurationSeconds"),
+        values: values(&item),
     }
+}
+
+fn values(item: &Item) -> Vec<(String, String)> {
+    let names = unsafe { MDItemCopyAttributeNames(item.0) };
+    if names.is_null() {
+        return Vec::new();
+    }
+    let names = Attribute(names);
+    names
+        .strings()
+        .into_iter()
+        .filter_map(|name| {
+            let value = item.attribute(&name)?;
+            let text = value.string().or_else(|| value.text())?;
+            Some((name, text))
+        })
+        .collect()
 }
