@@ -1,5 +1,5 @@
 use gpui::{
-    App, ClickEvent, Div, Hsla, IntoElement, MouseDownEvent, Pixels, SharedString, Styled,
+    App, ClickEvent, Context, Div, Hsla, IntoElement, MouseDownEvent, Pixels, SharedString, Styled,
     WeakEntity, Window, div, prelude::*, px,
 };
 
@@ -57,7 +57,6 @@ pub(crate) fn pick_on_click(
     let line = line.clone();
     move |event, window, cx| {
         let (extend, toggle, twice) = click_kind(event);
-        let line = line.clone();
         this.update(cx, |this: &mut FinderDemo, cx| {
             this.pick(&line, extend, toggle);
             match line
@@ -89,7 +88,6 @@ pub(crate) fn pick_on_press(
         if event.modifiers.shift || event.modifiers.platform {
             return;
         }
-        let line = line.clone();
         this.update(cx, |this: &mut FinderDemo, cx| {
             if !this.selected.contains(&line.key) {
                 this.pick(&line, false, false);
@@ -114,26 +112,25 @@ pub(crate) fn rename_field(
         .stretch()
         .editing(0..stem)
         .on_submit(move |text, window, cx| {
-            let text = text.clone();
-            this.update(cx, |this: &mut FinderDemo, cx| {
-                this.rename(&key, &text, cx);
-                this.renaming = None;
-                focus_gpui(window);
-                key_to_parent(window);
-                cx.notify();
-            })
-            .ok();
+            end_rename(&this, window, cx, |this, cx| this.rename(&key, text, cx))
         })
-        .on_cancel(move |_, window, cx| {
-            leave
-                .update(cx, |this: &mut FinderDemo, cx| {
-                    this.renaming = None;
-                    focus_gpui(window);
-                    key_to_parent(window);
-                    cx.notify();
-                })
-                .ok();
-        })
+        .on_cancel(move |_, window, cx| end_rename(&leave, window, cx, |_, _| {}))
+}
+
+fn end_rename(
+    this: &WeakEntity<FinderDemo>,
+    window: &mut Window,
+    cx: &mut App,
+    then: impl FnOnce(&mut FinderDemo, &mut Context<FinderDemo>),
+) {
+    this.update(cx, |this, cx| {
+        then(this, cx);
+        this.renaming = None;
+        focus_gpui(window);
+        key_to_parent(window);
+        cx.notify();
+    })
+    .ok();
 }
 
 pub(crate) fn key_to_parent(window: &Window) {

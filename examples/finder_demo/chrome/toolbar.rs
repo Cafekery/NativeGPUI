@@ -1,6 +1,10 @@
-use crate::menus::{Act, Menu};
+use std::cell::RefCell;
+use std::path::Path;
+use std::rc::Rc;
+use std::sync::LazyLock;
+
 use block2::RcBlock;
-use gpui::{Context, Window, px};
+use gpui::{App, Context, WeakEntity, Window, px};
 use native_gpui::sidebar::system_template;
 use native_gpui::{
     MenuEntry, ToolbarCustomization, ToolbarGroupWidth, ToolbarItem, ToolbarSegment,
@@ -12,15 +16,11 @@ use objc2_app_kit::{
     NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSToolbarItem, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
-use std::cell::RefCell;
-use std::ffi::c_void;
-use std::path::Path;
-use std::ptr;
-use std::rc::Rc;
-use std::sync::LazyLock;
 
 use crate::app::FinderDemo;
 use crate::data::{Column, intern_path};
+use crate::locations::computer_name;
+use crate::menus::{Act, Menu};
 
 pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, Column, bool);
 
@@ -63,7 +63,7 @@ const DEFAULTS: [&str; 10] = [
 ];
 
 type Run = fn(&mut FinderDemo, &mut Window, &mut Context<FinderDemo>);
-/// A plain button: identifier, SF Symbol, label, tooltip and what it does.
+/// Identifier, SF Symbol, label, tooltip and action.
 type Tool = (&'static str, &'static str, &'static str, &'static str, Run);
 
 const EJECT: Tool = (
@@ -136,16 +136,6 @@ static CUSTOMIZATION: LazyLock<ToolbarCustomization> = LazyLock::new(|| {
         initial,
         finish: finish_item,
     }
-});
-
-#[link(name = "SystemConfiguration", kind = "framework")]
-extern "C" {
-    fn SCDynamicStoreCopyComputerName(store: *const c_void, encoding: *mut u32) -> *mut NSString;
-}
-
-static COMPUTER: LazyLock<String> = LazyLock::new(|| {
-    let name = unsafe { SCDynamicStoreCopyComputerName(ptr::null(), ptr::null_mut()) };
-    unsafe { Retained::from_raw(name) }.map_or_else(String::new, |name| name.to_string())
 });
 
 const VIEWS: [(&str, &str, &str); 4] = [
@@ -273,6 +263,39 @@ pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
     entries
 }
 
+fn click(
+    this: &WeakEntity<FinderDemo>,
+    run: impl Fn(&mut FinderDemo, &mut Window, &mut Context<FinderDemo>) + 'static,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    let this = this.clone();
+    move |window, cx| {
+        this.update(cx, |this, cx| run(this, window, cx)).ok();
+    }
+}
+
+fn select(
+    this: &WeakEntity<FinderDemo>,
+    run: impl Fn(&mut FinderDemo, usize, &mut Window, &mut Context<FinderDemo>) + 'static,
+) -> impl Fn(usize, &mut Window, &mut App) + 'static {
+    let this = this.clone();
+    move |index, window, cx| {
+        this.update(cx, |this, cx| run(this, index, window, cx))
+            .ok();
+    }
+}
+
+fn read<T: Default>(
+    this: &WeakEntity<FinderDemo>,
+    build: impl Fn(&FinderDemo) -> T + 'static,
+) -> impl Fn(&mut Window, &mut App) -> T + 'static {
+    let this = this.clone();
+    move |_, cx| {
+        this.upgrade()
+            .map(|this| build(this.read(cx)))
+            .unwrap_or_default()
+    }
+}
+
 impl FinderDemo {
     pub(crate) fn install_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar.is_none() {
@@ -281,34 +304,19 @@ impl FinderDemo {
         let state = self.toolbar_state();
         let (_, _, picked, shareable, cloud, progress, ..) = state;
         let this = cx.entity().downgrade();
-        let nav = this.clone();
-        let path = this.clone();
-        let going = this.clone();
-        let view = this.clone();
-        let airdrop = this.clone();
-        let tag = this.clone();
-        let query = this.clone();
-        let jobs = this.clone();
-        let group = this.clone();
-        let sharing = this.clone();
-        let opening = this.clone();
-        let action = this.clone();
         let tool = |(id, symbol, label, tip, run): Tool, enabled: bool| {
-            let this = this.clone();
             ToolbarItem::symbol(id, symbol, label)
                 .tool_tip(tip)
                 .enabled(enabled)
-                .on_click(move |window, cx| {
-                    this.update(cx, |this: &mut Self, cx| {
-                        run(this, window, cx);
-                        cx.notify();
-                    })
-                    .ok();
-                })
+                .on_click(click(&this, move |this, window, cx| {
+                    run(this, window, cx);
+                    cx.notify();
+                }))
         };
         let rows = self.action_rows();
         let acts = Rc::new(RefCell::new(rows.acts));
         let built = acts.clone();
+        let actions = read(&this, Self::action_rows);
         let mut items = vec![
             ToolbarItem::group(
                 NAV_ID,
@@ -322,32 +330,20 @@ impl FinderDemo {
             )
             .tool_tip("See folders you viewed previously")
             .selection(ToolbarSelection::Momentary)
-            .on_select(move |index, window, cx| {
-                nav.update(cx, |this: &mut Self, cx| this.step(index == 1, window, cx))
-                    .ok();
-            }),
+            .on_select(select(&this, |this, index, window, cx| {
+                this.step(index == 1, window, cx)
+            })),
             ToolbarItem::menu(PATH_ID, "list.bullet.indent", "Path", self.path_rows())
                 .tool_tip("See the location of the current folder")
-                .entries_on_open(move |_, cx| {
-                    path.upgrade()
-                        .map_or_else(Vec::new, |this| this.read(cx).path_rows())
-                })
-                .on_select(move |index, window, cx| {
-                    going
-                        .update(cx, |this: &mut Self, cx| {
-                            if let Some(id) = this.path_targets().get(index).copied() {
-                                this.go(id, window, cx);
-                            }
-                        })
-                        .ok();
-                }),
+                .entries_on_open(read(&this, Self::path_rows))
+                .on_select(select(&this, |this, index, window, cx| {
+                    if let Some(id) = this.path_targets().get(index).copied() {
+                        this.go(id, window, cx);
+                    }
+                })),
             ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
                 .tool_tip("Change the item grouping (hold down Option to change the sort)")
-                .on_select(move |index, _, cx| {
-                    group
-                        .update(cx, |this: &mut Self, cx| this.group_by(index, cx))
-                        .ok();
-                }),
+                .on_select(select(&this, |this, index, _, cx| this.group_by(index, cx))),
             ToolbarItem::group(
                 VIEW_ID,
                 "View",
@@ -359,29 +355,21 @@ impl FinderDemo {
             .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
             // Automatic, not Expanded: the capsule has to collapse when the search field opens.
             .group_width(ToolbarGroupWidth::Automatic)
-            .on_select(move |index, _, cx| {
-                view.update(cx, |this: &mut Self, cx| {
-                    this.set_view(index, cx);
-                    cx.notify();
-                })
-                .ok();
-            }),
+            .on_select(select(&this, |this, index, _, cx| {
+                this.set_view(index, cx);
+                cx.notify();
+            })),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")
-                .entries_on_open(move |_, cx| {
-                    let menu = opening
-                        .upgrade()
-                        .map(|this| this.read(cx).action_rows())
-                        .unwrap_or_default();
+                .entries_on_open(move |window, cx| {
+                    let menu = actions(window, cx);
                     *built.borrow_mut() = menu.acts;
                     menu.entries
                 })
-                .on_select(move |index, window, cx| {
+                .on_select(select(&this, move |this, index, window, cx| {
                     let act = acts.borrow().get(index).copied().unwrap_or(Act::Nothing);
-                    action
-                        .update(cx, |this: &mut Self, cx| this.run_menu(act, window, cx))
-                        .ok();
-                }),
+                    this.run_menu(act, window, cx);
+                })),
             tool(EJECT, picked),
             ToolbarItem::space(),
             ToolbarItem::flexible_space(),
@@ -392,50 +380,37 @@ impl FinderDemo {
             ToolbarItem::search(SEARCH_ID, "Search")
                 .placeholder("Search")
                 .width(px(SEARCH_W))
-                .on_change(move |text, _, cx| {
-                    let text = text.to_string();
-                    query
-                        .update(cx, |this: &mut Self, cx| this.search(text, cx))
-                        .ok();
+                .on_change({
+                    let this = this.clone();
+                    move |text, _, cx| {
+                        this.update(cx, |this: &mut Self, cx| this.search(text.to_string(), cx))
+                            .ok();
+                    }
                 }),
             tool(QUICK_LOOK, picked),
             ToolbarItem::share(SHARE_ID, "Share", Vec::<String>::new())
-                .items_on_open(move |_, cx| {
-                    sharing
-                        .upgrade()
-                        .map_or_else(Vec::new, |this| this.read(cx).share_items())
-                })
+                .items_on_open(read(&this, Self::share_items))
                 .tool_tip("Share the selected items")
                 .enabled(shareable),
             ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
                 .tool_tip("Edit Tags")
                 .enabled(picked)
-                .on_click(move |window, cx| {
-                    tag.update(cx, |this: &mut Self, cx| this.edit_tags(window, cx))
-                        .ok();
-                }),
+                .on_click(click(&this, |this, window, cx| this.edit_tags(window, cx))),
             tool(PREVIEW, true),
             ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
                 .tool_tip("Share the selected items using AirDrop")
                 .enabled(shareable)
-                .on_click(move |_, cx| {
-                    airdrop
-                        .update(cx, |this: &mut Self, _| this.airdrop_selection())
-                        .ok();
-                }),
+                .on_click(click(&this, |this, _, _| this.airdrop_selection())),
             tool(ICLOUD, cloud),
         ];
         if progress {
             items.push(
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
                     .tool_tip("See the progress of file operations")
-                    .on_click(move |_, cx| {
-                        jobs.update(cx, |this: &mut Self, cx| {
-                            this.jobs_open = !this.jobs_open;
-                            cx.notify();
-                        })
-                        .ok();
-                    }),
+                    .on_click(click(&this, |this, _, cx| {
+                        this.jobs_open = !this.jobs_open;
+                        cx.notify();
+                    })),
             );
         }
         set_customizable_toolbar(window, cx, ToolbarStyle::Unified, &items, &CUSTOMIZATION);
@@ -447,7 +422,6 @@ impl FinderDemo {
         self.toolbar_for = Some(state);
     }
 
-    /// What the toolbar shows: rebuild it when any of this moves.
     pub(crate) fn toolbar_state(&self) -> ToolbarState {
         let picked = !self.selected.is_empty();
         let (_, shareable, cloud) = picked
@@ -466,7 +440,6 @@ impl FinderDemo {
         )
     }
 
-    /// Finder's Path button: this folder, checked, each folder holding it, then the Mac.
     fn path_rows(&self) -> Vec<MenuEntry> {
         let crumbs = self
             .folder()
@@ -475,7 +448,7 @@ impl FinderDemo {
             .iter()
             .rev()
             .copied()
-            .chain([COMPUTER.as_str()])
+            .chain([computer_name()])
             .enumerate()
             .map(|(at, name)| MenuEntry::item(name).checked(at == 0))
             .collect()

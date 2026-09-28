@@ -60,7 +60,7 @@ use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::data::intern_path;
 use crate::menus::{Back, Forward, ShowViewOptions, ZoomIn, ZoomOut};
 
-/// Each save rewrites the whole snapshot, hundreds of MB; a launch replays events since the last.
+/// Each save rewrites the whole snapshot; a launch replays the events since the last one.
 const SAVE_EVERY: Duration = Duration::from_secs(3600);
 
 const KINDS_WARM: usize = 400;
@@ -92,7 +92,6 @@ fn main() {
             KeyBinding::new("cmd-j", ShowViewOptions, Some(options::CONTEXT)),
         ]);
         navigate::arrive_on_keys(cx);
-        // Helper windows such as the preview pane do not keep the app alive.
         cx.on_window_closed(|cx, _| {
             if !cx
                 .windows()
@@ -161,13 +160,10 @@ pub(crate) fn index() -> &'static Arc<Index> {
 fn crawl(cx: &mut App) {
     if env::var_os("NG_NO_CRAWL").is_none() {
         static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
-        // Off the main thread: the first `index()` loads the snapshot, and each local volume is
-        // asked for its attributes.
         cx.background_executor()
             .spawn(async move {
                 let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
-                // A network share is sealed below a root already; as a root it would be walked over
-                // the wire.
+                // A network share is sealed below a root already; as a root it is walked remotely.
                 roots.extend(
                     volumes::mounted()
                         .into_iter()
@@ -176,8 +172,7 @@ fn crawl(cx: &mut App) {
                         .filter(|path| path != Path::new("/")),
                 );
                 FOLLOWING.get_or_init(|| index().follow(roots.clone()));
-                // TCC-gated folders join the crawl only once a visit has listed them, so no prompt is
-                // raised.
+                // TCC-gated folders join once a visit has listed them, so no prompt is raised.
                 index().sync(roots, |progress| {
                     let index = index();
                     if !progress.done {
@@ -252,7 +247,7 @@ fn finder_window(
             cx.new(|cx| {
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
-                // The Edit menu is app-wide; it names the undo of whichever window is in front.
+                // The app-wide Edit menu names the undo of whichever window is in front.
                 cx.observe_window_activation(window, |_: &mut FinderDemo, window, cx| {
                     if window.is_window_active() {
                         cx.notify();
