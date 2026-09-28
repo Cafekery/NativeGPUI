@@ -107,7 +107,7 @@ impl Render for Demo {
         let left = f32::from(metrics.left);
         let top = f32::from(metrics.top);
 
-        let (title, accent, detail) = match self.selected.as_deref().and_then(|id| find(id)) {
+        let (title, accent, detail) = match self.selected.as_deref().and_then(find) {
             Some((group, &(_, title, _, badge, accent))) if badge > 0 => {
                 (title, accent, format!("{group} · {badge} unread"))
             }
