@@ -4,56 +4,42 @@ use std::sync::LazyLock;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_foundation::{
-    NSBundle, NSData, NSDictionary, NSPropertyListMutabilityOptions, NSPropertyListSerialization,
-    NSString,
-};
+use objc2_foundation::{NSBundle, NSDictionary, NSString, ns_string};
 
-/// Finder's bundle takes the user's language only in an app whose Info.plist allows mixed
-/// localizations; otherwise every framework answers in the app's development language.
-static FINDER: LazyLock<Option<Retained<NSBundle>>> = LazyLock::new(|| {
-    NSBundle::bundleWithPath(&NSString::from_str(
-        "/System/Library/CoreServices/Finder.app",
-    ))
-});
+/// Finder's bundle answers in the user's language only if the app's Info.plist allows mixed localizations.
+static FINDER: LazyLock<Option<Retained<NSBundle>>> = LazyLock::new(|| bundle(FINDER_PATH));
+
+const FINDER_PATH: &str = "/System/Library/CoreServices/Finder.app";
+const APPKIT_PATH: &str = "/System/Library/Frameworks/AppKit.framework";
+
+fn bundle(path: &str) -> Option<Retained<NSBundle>> {
+    NSBundle::bundleWithPath(&NSString::from_str(path))
+}
 
 fn lookup(key: &str) -> Option<String> {
     let key = NSString::from_str(key);
     let found = FINDER.as_ref()?.localizedStringForKey_value_table(
         &key,
         None,
-        Some(&NSString::from_str("LocalizableMerged")),
+        Some(ns_string!("LocalizableMerged")),
     );
     (*found != *key).then(|| found.to_string())
 }
 
-/// Finder's own text for `key`, else `english`.
 pub fn finder(key: &str, english: &str) -> String {
     lookup(key).unwrap_or_else(|| english.to_owned())
 }
 
-/// The tables whose US English is reworded: Finder's own, then AppKit's menus and toolbar.
+/// (bundle, table, file) in lookup priority order.
 const SOURCES: [(&str, &str, &str); 4] = [
     (
-        "/System/Library/CoreServices/Finder.app",
+        FINDER_PATH,
         "LocalizableMerged",
         "en.lproj/LocalizableMerged.strings",
     ),
-    (
-        "/System/Library/Frameworks/AppKit.framework",
-        "MenuCommands",
-        "MenuCommands.loctable",
-    ),
-    (
-        "/System/Library/Frameworks/AppKit.framework",
-        "Toolbar",
-        "Toolbar.loctable",
-    ),
-    (
-        "/System/Library/Frameworks/AppKit.framework",
-        "Common",
-        "Common.loctable",
-    ),
+    (APPKIT_PATH, "MenuCommands", "MenuCommands.loctable"),
+    (APPKIT_PATH, "Toolbar", "Toolbar.loctable"),
+    (APPKIT_PATH, "Common", "Common.loctable"),
 ];
 
 struct Rewording {
@@ -61,31 +47,20 @@ struct Rewording {
     keys: HashMap<String, (usize, String)>,
 }
 
-fn plist(path: &str) -> Option<Retained<NSDictionary>> {
-    let bytes = std::fs::read(path).ok()?;
-    let found = unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &NSData::with_bytes(&bytes),
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    }
-    .ok()?;
-    found.downcast::<NSDictionary>().ok()
-}
-
-fn english(bundle: &str, file: &str) -> Vec<(String, String)> {
-    let resources = NSBundle::bundleWithPath(&NSString::from_str(bundle))
-        .and_then(|bundle| bundle.resourcePath())
-        .map(|path| path.to_string());
-    let Some(table) = resources.and_then(|resources| plist(&format!("{resources}/{file}"))) else {
-        return Vec::new();
-    };
+/// (US English text, key) pairs of one table.
+fn english(bundle: &NSBundle, file: &str) -> Vec<(String, String)> {
+    let table = bundle
+        .resourcePath()
+        .and_then(|resources| std::fs::read(format!("{resources}/{file}")).ok())
+        .and_then(|bytes| crate::plist(&bytes)?.downcast::<NSDictionary>().ok());
     let table = match file.ends_with(".loctable") {
-        true => table
-            .objectForKey(&NSString::from_str("en"))
-            .and_then(|en| en.downcast::<NSDictionary>().ok()),
-        false => Some(table),
+        true => table.and_then(|table| {
+            table
+                .objectForKey(ns_string!("en"))?
+                .downcast::<NSDictionary>()
+                .ok()
+        }),
+        false => table,
     };
     let Some(table) = table else {
         return Vec::new();
@@ -94,35 +69,26 @@ fn english(bundle: &str, file: &str) -> Vec<(String, String)> {
     table
         .allKeys()
         .iter()
-        .filter_map(|key| {
-            let value = text(table.objectForKey(&key)?)?;
-            Some((value, text(key)?))
-        })
+        .filter_map(|key| Some((text(table.objectForKey(&key)?)?, text(key)?)))
         .collect()
 }
 
-/// Built only when the user reads something other than US English.
 static REWORDING: LazyLock<Option<Rewording>> = LazyLock::new(|| {
-    let finder = FINDER.as_ref()?;
-    let first = finder.preferredLocalizations().firstObject()?.to_string();
-    if first == "en" {
+    let first = FINDER.as_ref()?.preferredLocalizations().firstObject()?;
+    if first.to_string() == "en" {
         return None;
     }
+    let bundles: Vec<_> = SOURCES.iter().map(|(path, _, _)| bundle(path)).collect();
     let mut keys = HashMap::new();
-    for (at, (bundle, _, file)) in SOURCES.iter().enumerate() {
-        for (value, key) in english(bundle, file) {
+    for (at, (bundle, (_, _, file))) in bundles.iter().zip(&SOURCES).enumerate() {
+        for (value, key) in bundle.iter().flat_map(|bundle| english(bundle, file)) {
             keys.entry(value).or_insert((at, key));
         }
     }
-    let bundles = SOURCES
-        .iter()
-        .map(|(bundle, _, _)| NSBundle::bundleWithPath(&NSString::from_str(bundle)))
-        .collect();
     Some(Rewording { bundles, keys })
 });
 
-/// `english` as Finder or AppKit word it for the user: "Trash" is "Bin" in British English, and
-/// in German "Papierkorb". Text neither of them has stays as it is.
+/// `english` as Finder or AppKit word it in the user's language; unknown text stays as it is.
 pub fn say(english: &str) -> Cow<'_, str> {
     let found = REWORDING.as_ref().and_then(|rewording| {
         let (at, key) = rewording.keys.get(english)?;
@@ -135,8 +101,7 @@ pub fn say(english: &str) -> Cow<'_, str> {
     found.map_or(Cow::Borrowed(english), Cow::Owned)
 }
 
-/// Finder's text for `count` under its plural family `key`: rows `key_R1`… hold `=N` or an
-/// empty catch-all, and the first that takes `count` names `key_V1`… .
+/// Rows `key_R1`… hold `=N` or an empty catch-all; the first that takes `count` names `key_V1`….
 pub fn plural(key: &str, count: usize, english: &str) -> String {
     (1..)
         .map_while(|at| Some((at, lookup(&format!("{key}_R{at}"))?)))
@@ -148,7 +113,7 @@ pub fn plural(key: &str, count: usize, english: &str) -> String {
         .unwrap_or_else(|| english.to_owned())
 }
 
-/// `text` with Finder's slots, `^0` or `^=0` and on, filled from `args`.
+/// Fills Finder's `^0` / `^=0` slots from `args`.
 pub fn fill(text: &str, args: &[&str]) -> String {
     let mut filled =
         String::with_capacity(text.len() + args.iter().map(|arg| arg.len()).sum::<usize>());
@@ -192,7 +157,7 @@ mod tests {
     fn the_tables_hold_the_words_the_app_shows() {
         let words: Vec<(String, String)> = SOURCES
             .iter()
-            .flat_map(|(bundle, _, file)| english(bundle, file))
+            .flat_map(|(path, _, file)| english(&bundle(path).unwrap(), file))
             .collect();
         for shown in [
             "Move to Trash",

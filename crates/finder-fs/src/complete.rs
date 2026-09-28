@@ -56,11 +56,10 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
         return Vec::new();
     };
     let needle = prefix.to_lowercase();
-    let mut prefix_hits: Vec<&Entry> = Vec::new();
-    let mut fuzzy_hits: Vec<&Entry> = Vec::new();
-    let mut file_hit = None;
-    // As Finder's Go to Folder does, hidden items only show once a name starting with a dot is typed.
     let hidden = needle.starts_with('.');
+    let mut prefix_hits: Vec<(String, &Entry)> = Vec::new();
+    let mut fuzzy_hits: Vec<(String, &Entry)> = Vec::new();
+    let mut file_hit = None;
     for entry in entries
         .iter()
         .filter(|entry| hidden || !entry.name.starts_with('.'))
@@ -68,24 +67,29 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
         let name = entry.name.to_lowercase();
         if entry.is_dir() {
             if prefix.is_empty() || name.starts_with(&needle) {
-                prefix_hits.push(entry);
+                prefix_hits.push((name, entry));
             } else if subsequence(&needle, &name) {
-                fuzzy_hits.push(entry);
+                fuzzy_hits.push((name, entry));
             }
         } else if !prefix.is_empty() && file_hit.is_none() && name == needle {
             file_hit = Some(entry);
         }
     }
-    prefix_hits.sort_by_key(|e| {
-        let name = e.name.to_lowercase();
-        let rank = if prefix.is_empty() { 0 } else { e.name.len() };
-        (name != needle, rank, name)
-    });
-    fuzzy_hits.sort_by_key(|e| (e.name.len(), e.name.to_lowercase()));
+    let rank = |(name, entry): &(String, &Entry)| {
+        let len = if prefix.is_empty() {
+            0
+        } else {
+            entry.name.len()
+        };
+        (*name != needle, len)
+    };
+    prefix_hits.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.0.cmp(&b.0)));
+    fuzzy_hits.sort_by(|a, b| (a.1.name.len(), &a.0).cmp(&(b.1.name.len(), &b.0)));
     prefix_hits
         .into_iter()
+        .map(|(_, entry)| entry)
         .chain(file_hit)
-        .chain(fuzzy_hits)
+        .chain(fuzzy_hits.into_iter().map(|(_, entry)| entry))
         .take(limit)
         .map(|entry| to_completion(dir.join(&entry.name), entry.is_dir()))
         .collect()
@@ -109,25 +113,19 @@ fn subsequence(needle: &str, haystack: &str) -> bool {
 }
 
 fn to_completion(path: PathBuf, is_dir: bool) -> Completion {
-    let mut display = home_dir()
-        .and_then(|home| {
-            if path == home {
-                Some("~".to_string())
-            } else {
-                path.strip_prefix(&home)
-                    .ok()
-                    .map(|rest| format!("~/{}", rest.display()))
-            }
-        })
-        .unwrap_or_else(|| path.display().to_string());
+    let home = crate::home();
+    let mut display = match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
     if is_dir && !display.ends_with('/') {
         display.push('/');
     }
     Completion { path, display }
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn expand_tilde(typed: &str) -> String {
@@ -136,7 +134,7 @@ fn expand_tilde(typed: &str) -> String {
     };
     let (user, tail) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let home = if user.is_empty() {
-        home_dir()
+        crate::home()
     } else {
         user_home(user)
     };
@@ -248,7 +246,7 @@ mod tests {
     #[test]
     fn tilde_expands_to_home_and_user() {
         warm();
-        let home = home_dir().unwrap();
+        let home = crate::home().unwrap();
         let out = complete("~/", None, 100);
         assert!(!out.is_empty());
         let user = home.file_name().unwrap().to_str().unwrap();

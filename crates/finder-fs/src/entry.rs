@@ -20,7 +20,7 @@ pub struct Entry {
     pub hidden: bool,
     pub package: bool,
     pub ext_hidden: bool,
-    /// A Finder alias file (FinderInfo's alias flag).
+    /// FinderInfo's alias flag.
     pub alias: bool,
     pub dataless: bool,
     pub readable: bool,
@@ -41,11 +41,4 @@ impl Entry {
     pub fn path_in(&self, dir: &Path) -> PathBuf {
         dir.join(&self.name)
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Listing {
-    pub dir: PathBuf,
-    pub entries: Vec<Entry>,
-    pub read_at: SystemTime,
 }
