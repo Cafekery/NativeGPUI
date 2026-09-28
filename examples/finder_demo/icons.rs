@@ -52,6 +52,9 @@ struct State {
     frame: u64,
     generation: u64,
     held: HashMap<Key, Held>,
+    // Owed to `KEPT` once its lock is free: the main thread never waits for a listing's thread.
+    kept_cleared: bool,
+    kept_changed: Vec<Key>,
     sizes: HashMap<FileType<'static>, Vec<u32>>,
     per_file_bytes: usize,
     /// Keys a frame painted a stand-in for: that frame, then the order it asked in.
@@ -174,16 +177,17 @@ pub(crate) struct Drawing {
 }
 
 pub(crate) fn begin(kinds: impl IntoIterator<Item = FileType<'static>>, size: f32) -> Drawing {
+    // Resolving a kind can read its file and wait on TCC's prompt: never under the locks below.
     let mut keys: Vec<Key> = Vec::new();
+    for key in kinds.into_iter().map(|kind| (kind, size.to_bits())) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
     {
         let kept = KEPT.lock().unwrap();
         let prepared = PREPARED.lock().unwrap();
-        for key in kinds.into_iter().map(|kind| (kind, size.to_bits())) {
-            let drawn = kept.contains(&key) || prepared.iter().any(|(held, _)| *held == key);
-            if !drawn && !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
+        keys.retain(|key| !kept.contains(key) && prepared.iter().all(|(held, _)| held != key));
     }
     let until = Instant::now() + PREPARE;
     let (keys, next) = (Arc::new(keys), Arc::new(AtomicUsize::new(0)));
@@ -227,7 +231,10 @@ fn lane(keys: &[Key], next: &AtomicUsize, drawn: &mpsc::Sender<()>, until: Insta
 
 /// Once per frame, before its rows ask; the lanes start after it, on what it asked for.
 pub(crate) fn draw_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
-    let prepared = std::mem::take(&mut *PREPARED.lock().unwrap());
+    let prepared = PREPARED
+        .try_lock()
+        .map(|mut prepared| std::mem::take(&mut *prepared))
+        .unwrap_or_default();
     let dropped = STATE.with_borrow_mut(|state| {
         state.frame += 1;
         let stale = state.frame.saturating_sub(FRESH);
@@ -357,12 +364,15 @@ impl State {
         self.generation = now;
         self.per_file_bytes = 0;
         self.sizes.clear();
-        KEPT.lock().unwrap().clear();
+        self.kept_cleared = true;
         self.ahead.restart();
-        self.held
+        let dropped = self
+            .held
             .drain()
             .filter_map(|(_, held)| Some(held.icon?.image))
-            .collect()
+            .collect();
+        self.sync_kept();
+        dropped
     }
 
     fn lane(&mut self) -> Option<Job> {
@@ -466,8 +476,22 @@ impl State {
         (shown, dropped)
     }
 
+    fn sync_kept(&mut self) {
+        let Ok(mut kept) = KEPT.try_lock() else {
+            return;
+        };
+        if std::mem::take(&mut self.kept_cleared) {
+            kept.clear();
+        }
+        for key in self.kept_changed.drain(..) {
+            match self.held.contains_key(&key) {
+                true => kept.insert(key),
+                false => kept.remove(&key),
+            };
+        }
+    }
+
     fn keep(&mut self, key: Key, icon: Option<Symbol>) {
-        KEPT.lock().unwrap().insert(key);
         if per_file(key.0) {
             self.per_file_bytes += bytes_of(&icon);
         }
@@ -480,6 +504,8 @@ impl State {
             Some(_) => {}
             None => self.sizes.entry(key.0).or_default().push(key.1),
         }
+        self.kept_changed.push(key);
+        self.sync_kept();
     }
 
     fn evict(&mut self) -> Vec<Arc<RenderImage>> {
@@ -499,7 +525,7 @@ impl State {
             let Some(held) = self.held.remove(&key) else {
                 continue;
             };
-            KEPT.lock().unwrap().remove(&key);
+            self.kept_changed.push(key);
             self.per_file_bytes -= bytes_of(&held.icon);
             if let Some(sizes) = self.sizes.get_mut(&key.0) {
                 sizes.retain(|size| *size != key.1);
@@ -510,6 +536,7 @@ impl State {
             dropped.extend(held.icon.map(|icon| icon.image));
         }
         self.ahead.restart();
+        self.sync_kept();
         dropped
     }
 }
