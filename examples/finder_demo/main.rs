@@ -12,6 +12,7 @@ mod frame;
 mod icons;
 mod info;
 mod input;
+mod keep;
 mod listing;
 mod menus;
 mod meta;
@@ -68,6 +69,7 @@ fn main() {
         std::borrow::Cow::Owned(said) => Some(said),
         std::borrow::Cow::Borrowed(_) => None,
     });
+    keep::skip_appkit_restore();
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
@@ -123,7 +125,10 @@ fn main() {
             cx.update(|cx| cx.refresh_windows());
         })
         .detach();
-        open_finder_window(intern_path(&home()), 0, cx);
+        if !keep::reopen(cx) {
+            open_finder_window(intern_path(&home()), 0, cx);
+        }
+        keep::follow_quit(cx);
         crawl(cx);
         thumbs::follow_thumbnails(cx);
         preview::follow_stacks(cx);
