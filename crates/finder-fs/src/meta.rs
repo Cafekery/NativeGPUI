@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 
-use objc2_foundation::{NSArray, NSDate, NSNumber, NSString};
+use objc2_foundation::{NSArray, NSDate, NSDictionary, NSNumber, NSString};
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -113,6 +113,33 @@ impl Attribute {
 fn pair(item: &Item, width: &str, height: &str) -> Option<(u64, u64)> {
     let (width, height) = (item.number(width)?, item.number(height)?);
     (width > 0. && height > 0.).then_some((width as u64, height as u64))
+}
+
+/// The item's `kMDItemLastUsedDate`, in seconds since the reference date: the date Finder's
+/// Date Last Opened shows, which Spotlight makes up from the modification date where it has
+/// not indexed the item.
+pub fn last_used(path: &Path) -> Option<f64> {
+    let text = NSString::from_str(path.to_str()?);
+    let item = unsafe { MDItemCreate(std::ptr::null(), (&*text as *const NSString).cast()) };
+    (!item.is_null()).then_some(())?;
+    Item(item).date("kMDItemLastUsedDate")
+}
+
+/// A bundle's version as its Info.plist states it.
+pub fn bundle_version(path: &Path) -> Option<String> {
+    ["Contents/Info.plist", "Resources/Info.plist", "Info.plist"]
+        .into_iter()
+        .find_map(|inner| {
+            let info = crate::tags::plist(&std::fs::read(path.join(inner)).ok()?)?
+                .downcast::<NSDictionary>()
+                .ok()?;
+            let version = info
+                .objectForKey(&NSString::from_str("CFBundleShortVersionString"))?
+                .downcast::<NSString>()
+                .ok()?
+                .to_string();
+            (!version.is_empty()).then_some(version)
+        })
 }
 
 pub fn meta(path: &Path) -> Meta {

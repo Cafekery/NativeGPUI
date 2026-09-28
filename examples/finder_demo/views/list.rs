@@ -13,7 +13,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{Column, Line, date_style, enclosing_name, kind_text, list_date, today};
+use crate::data::{Column, Line, Row, date_style, enclosing_name, kind_text, list_date, today};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_target, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
@@ -72,7 +72,6 @@ struct Look {
     selection_join: Hsla,
     focused: bool,
     dates: Font,
-    date_style: usize,
     searching: bool,
     columns: Vec<ColumnSpec>,
     bleed: bool,
@@ -250,11 +249,6 @@ impl FinderDemo {
             },
             focused: palette.focused,
             dates: DATES.with(Font::clone),
-            date_style: self
-                .list_columns
-                .iter()
-                .find(|spec| spec.column == Column::Modified)
-                .map_or(3, |spec| date_style(spec.width, row_font())),
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
             columns: self.list_columns.clone(),
@@ -539,6 +533,21 @@ fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
     name
 }
 
+/// What a column of words shows for a row: nothing where it names nothing.
+pub(crate) fn detail_text(row: &Row, column: Column) -> SharedString {
+    let Some(extra) = row.extra.as_deref() else {
+        return SharedString::default();
+    };
+    match column {
+        Column::Tags => {
+            let names: Vec<&str> = extra.tags.iter().map(|(name, _)| &**name).collect();
+            names.join(", ").into()
+        }
+        Column::Version => extra.version.clone().unwrap_or_default(),
+        _ => SharedString::default(),
+    }
+}
+
 fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div {
     let cell = div().w(px(spec.width)).flex_none().text_color(detail);
     match spec.column {
@@ -548,12 +557,18 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             .justify_end()
             .font(look.dates.clone())
             .child(line.row.size.clone()),
-        Column::Modified => cell
-            .pl(px(CELL_PAD))
-            .when(look.date_style >= 2, |cell| cell.font(look.dates.clone()))
-            .whitespace_nowrap()
-            .overflow_hidden()
-            .child(list_date(line.row.modified_at, look.date_style)),
+        column if column.dated() => {
+            let style = date_style(spec.width, row_font());
+            cell.pl(px(CELL_PAD))
+                .when(style >= 2, |cell| cell.font(look.dates.clone()))
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .child(
+                    line.row
+                        .date(column)
+                        .map_or(SharedString::new_static("--"), |at| list_date(at, style)),
+                )
+        }
         Column::Kind => cell
             .pl(px(CELL_PAD))
             .whitespace_nowrap()
@@ -568,6 +583,12 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             }),
         // `list_columns` never holds Name; this only keeps the match exhaustive.
         Column::Name => cell,
+        column => cell
+            .pl(px(CELL_PAD))
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(detail_text(&line.row, column)),
     }
 }
 

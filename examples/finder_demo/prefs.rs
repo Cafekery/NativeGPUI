@@ -37,6 +37,25 @@ pub(crate) struct Finder {
     pub(crate) sort: (Column, bool),
     /// `PreviewPaneWidth` and `PreviewPaneGalleryWidth`.
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
+    /// The list's columns after Name that Finder shows, in its order.
+    pub(crate) columns: Vec<Column>,
+    /// The key column view sorts by, then gallery view's.
+    pub(crate) arranged: (Column, Column),
+}
+
+/// Column view's `ArrangeBy` codes, in Finder's own table of arrangements.
+fn column_view_key(code: &str) -> Option<Column> {
+    Some(match code {
+        "dnam" => Column::Name,
+        "kipl" => Column::Kind,
+        "ludt" => Column::Opened,
+        "pAdd" => Column::Added,
+        "modd" => Column::Modified,
+        "ascd" => Column::Created,
+        "logs" => Column::Size,
+        "ftat" => Column::Tags,
+        _ => return None,
+    })
 }
 
 fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
@@ -62,29 +81,42 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         Some(value(of, key)?.downcast::<NSString>().ok()?.to_string())
     };
     let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
-    let ascending = list
+    let listed: Vec<Retained<NSDictionary>> = list
         .as_deref()
-        .zip(sort_id.as_deref())
-        .and_then(|(list, id)| {
-            let columns = value(list, "columns")?.downcast::<NSArray>().ok()?;
-            columns.iter().find_map(|column| {
-                let column = column.downcast::<NSDictionary>().ok()?;
-                (text(&column, "identifier")? == id).then_some(())?;
-                Some(
-                    value(&column, "ascending")?
-                        .downcast::<NSNumber>()
-                        .ok()?
-                        .boolValue(),
-                )
-            })
+        .and_then(|list| value(list, "columns")?.downcast::<NSArray>().ok())
+        .map_or_else(Vec::new, |columns| {
+            columns
+                .iter()
+                .filter_map(|column| column.downcast::<NSDictionary>().ok())
+                .collect()
         });
-    let sort = match sort_id.as_deref() {
-        Some("name") => Some(Column::Name),
-        Some("dateModified") => Some(Column::Modified),
-        Some("size") => Some(Column::Size),
-        Some("kind") => Some(Column::Kind),
-        _ => None,
+    let flagged = |column: &NSDictionary, key: &str| {
+        value(column, key)
+            .and_then(|on| on.downcast::<NSNumber>().ok())
+            .map(|on| on.boolValue())
     };
+    let ascending = sort_id.as_deref().and_then(|id| {
+        listed.iter().find_map(|column| {
+            (text(column, "identifier")? == id).then_some(())?;
+            flagged(column, "ascending")
+        })
+    });
+    let sort = sort_id.as_deref().and_then(Column::from_id);
+    let columns: Vec<Column> = listed
+        .iter()
+        .filter(|column| flagged(column, "visible") == Some(true))
+        .filter_map(|column| Column::from_id(&text(column, "identifier")?))
+        .filter(|column| *column != Column::Name)
+        .collect();
+    let arranged = |settings: &str, view: &str, key: &str| -> Option<String> {
+        let all = dict(settings)?;
+        let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
+        text(&view, key)
+    };
+    let column_view = arranged("StandardViewOptions", "ColumnViewOptions", "ArrangeBy")
+        .and_then(|code| column_view_key(&code));
+    let gallery_view = arranged("StandardViewSettings", "GalleryViewSettings", "arrangeBy")
+        .and_then(|id| Column::from_id(&id));
     let flag = |key: &str| {
         read(key)
             .and_then(|on| on.downcast::<NSNumber>().ok())
@@ -108,6 +140,14 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             (column, ascending.unwrap_or(true))
         }),
         pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
+        columns: match listed.is_empty() {
+            true => vec![Column::Modified, Column::Size, Column::Kind],
+            false => columns,
+        },
+        arranged: (
+            column_view.unwrap_or(Column::Name),
+            gallery_view.unwrap_or(Column::Name),
+        ),
     }
 });
 
@@ -394,9 +434,14 @@ pub(crate) fn set_strip_icon(size: f32) {
 fn column_key(column: Column) -> &'static str {
     match column {
         Column::Name => "ng.finder.col.name",
-        Column::Modified => "ng.finder.col.modified",
-        Column::Size => "ng.finder.col.size",
         Column::Kind => "ng.finder.col.kind",
+        Column::Opened => "ng.finder.col.opened",
+        Column::Added => "ng.finder.col.added",
+        Column::Modified => "ng.finder.col.modified",
+        Column::Created => "ng.finder.col.created",
+        Column::Size => "ng.finder.col.size",
+        Column::Tags => "ng.finder.col.tags",
+        Column::Version => "ng.finder.col.version",
     }
 }
 
@@ -414,4 +459,37 @@ pub(crate) fn column_view_width(folder: &str) -> Option<f32> {
 
 pub(crate) fn set_column_view_width(folder: &str, width: f32) {
     write(&format!("ng.finder.col.browser.{folder}"), width as f64);
+}
+
+fn read_text(key: &str) -> Option<String> {
+    Some(
+        defaults()
+            .stringForKey(&NSString::from_str(key))?
+            .to_string(),
+    )
+}
+
+fn write_text(key: &str, text: &str) {
+    let text = NSString::from_str(text);
+    unsafe { defaults().setObject_forKey(Some(&text), &NSString::from_str(key)) };
+}
+
+/// The list's columns after Name in a folder, in the order they were last left there.
+pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
+    let ids = read_text(&format!("ng.finder.cols.{folder}"))?;
+    Some(ids.split(',').filter_map(Column::from_id).collect())
+}
+
+pub(crate) fn set_list_columns(folder: &str, columns: &[Column]) {
+    let ids: Vec<&str> = columns.iter().map(|column| column.id()).collect();
+    write_text(&format!("ng.finder.cols.{folder}"), &ids.join(","));
+}
+
+/// The key a view that keeps its own sort was last given.
+pub(crate) fn arranged(view: usize) -> Option<Column> {
+    Column::from_id(&read_text(&format!("ng.finder.arranged.{view}"))?)
+}
+
+pub(crate) fn set_arranged(view: usize, column: Column) {
+    write_text(&format!("ng.finder.arranged.{view}"), column.id());
 }
