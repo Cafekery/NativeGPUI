@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use block2::StackBlock;
+use block2::{RcBlock, StackBlock};
 use gpui::{
     App, Bounds, Context, DispatchPhase, Entity, EntityId, MouseDownEvent, Render, RenderImage,
     WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, point,
@@ -14,13 +14,16 @@ use gpui::{
 };
 use native_gpui::tokens;
 use native_gpui::{chrome_host, native_root, native_screen_rect, tab_bar_height, window_options};
-use objc2::msg_send;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::{ClassType, msg_send};
 use objc2_app_kit::{
-    NSColor, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode, NSWindowStyleMask,
+    NSApplication, NSColor, NSPanel, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowWillCloseNotification,
 };
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize};
+use objc2_foundation::{
+    MainThreadMarker, NSNotification, NSNotificationCenter, NSPoint, NSRect, NSRunLoop, NSSize,
+};
 
 pub(crate) use self::card::follow_stacks;
 pub(crate) use self::stats::{Stats, sized_by_index, summarize};
@@ -127,6 +130,41 @@ fn near(a: NSRect, b: NSRect) -> bool {
         && (a.origin.y - b.origin.y).abs() < 0.5
         && (a.size.width - b.size.width).abs() < 0.5
         && (a.size.height - b.size.height).abs() < 0.5
+}
+
+/// AppKit offers key to the frontmost window when one closes; this pane's panel declines it and
+/// leaves the app with no key window, so the frontmost ordinary window takes it instead.
+pub(crate) fn keep_a_key_window() {
+    let block = StackBlock::new(|_: NonNull<NSNotification>| {
+        let later = RcBlock::new(|| {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let app = NSApplication::sharedApplication(mtm);
+            if app.keyWindow().is_some() || !app.isActive() {
+                return;
+            }
+            let windows = app.orderedWindows();
+            if let Some(window) = windows.iter().find(|window| {
+                window.isVisible()
+                    && !window.isKindOfClass(NSPanel::class())
+                    && window.canBecomeKeyWindow()
+            }) {
+                window.makeKeyWindow();
+            }
+        });
+        unsafe { NSRunLoop::mainRunLoop().performBlock(&later) };
+    })
+    .copy();
+    let observer = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowWillCloseNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(observer);
 }
 
 /// Holds its Finder weakly: a strong handle here keeps a closed window's whole state alive.
