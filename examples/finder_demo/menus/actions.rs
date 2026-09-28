@@ -229,7 +229,7 @@ impl FinderDemo {
         cx.spawn(async move |this, cx| {
             let made = cx
                 .background_executor()
-                .spawn(async move { finder_fs::ops::perform(op, Conflict::KeepBoth, |_| {}) })
+                .spawn(async move { finder_fs::ops::perform(op, Conflict::KeepBoth) })
                 .await;
             let Some(folder) = made.ok().and_then(|done| done.results.first().cloned()) else {
                 return;

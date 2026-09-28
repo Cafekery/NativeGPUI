@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::io::RawFd;
@@ -38,10 +38,12 @@ impl Drop for FdGuard {
     }
 }
 
+fn c_string(name: &OsStr) -> io::Result<CString> {
+    Ok(CString::new(name.as_bytes())?)
+}
+
 fn open_dir(dir: &Path) -> io::Result<FdGuard> {
-    let path = CString::new(dir.as_os_str().as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let fd = unsafe { libc::open(path.as_ptr(), OPEN_FLAGS) };
+    let fd = unsafe { libc::open(c_string(dir.as_os_str())?.as_ptr(), OPEN_FLAGS) };
     if fd >= 0 {
         return Ok(FdGuard(fd));
     }
@@ -51,8 +53,7 @@ fn open_dir(dir: &Path) -> io::Result<FdGuard> {
     }
     let mut at: Option<FdGuard> = None;
     for part in dir.components() {
-        let name = CString::new(part.as_os_str().as_bytes())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let name = c_string(part.as_os_str())?;
         let parent = at.as_ref().map_or(libc::AT_FDCWD, |open| open.0);
         let fd = unsafe { libc::openat(parent, name.as_ptr(), OPEN_FLAGS) };
         if fd < 0 {
@@ -67,12 +68,9 @@ pub fn is_dir(path: &Path) -> bool {
     open_dir(path).is_ok()
 }
 
-/// The path the kernel knows a folder by: symlinks resolved, case as stored, and a firmlink's
-/// `/System/Volumes/Data` form folded the way FSEvents reports it, which `realpath` does not.
-/// Needs no permission on the folder itself.
+/// Case as stored and firmlinks folded the way FSEvents reports them, unlike `realpath`.
 pub fn real_path(path: &Path) -> Option<PathBuf> {
-    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_EVTONLY) };
+    let fd = unsafe { libc::open(c_string(path.as_os_str()).ok()?.as_ptr(), libc::O_EVTONLY) };
     if fd < 0 {
         return None;
     }
@@ -82,7 +80,7 @@ pub fn real_path(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let len = buf.iter().position(|&b| b == 0)?;
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+    Some(PathBuf::from(OsStr::from_bytes(&buf[..len])))
 }
 
 /// Which item a path names, whatever it is called later.
@@ -93,7 +91,7 @@ pub struct Identity {
 }
 
 pub fn identity(path: &Path) -> Option<Identity> {
-    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let c_path = c_string(path.as_os_str()).ok()?;
     let mut volume: libc::statfs = unsafe { std::mem::zeroed() };
     let mut item: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::statfs(c_path.as_ptr(), &mut volume) } != 0
@@ -116,14 +114,13 @@ unsafe extern "C" {
     ) -> libc::ssize_t;
 }
 
-/// Where the item is now, if it still exists.
 pub fn path_of(identity: Identity) -> Option<PathBuf> {
     let mut fsid = unsafe { std::mem::transmute::<[i32; 2], libc::fsid_t>(identity.volume) };
     let mut buf = [0u8; libc::PATH_MAX as usize];
     let len = unsafe { fsgetpath(buf.as_mut_ptr().cast(), buf.len(), &mut fsid, identity.file) };
     let len = usize::try_from(len).ok()?;
     let bytes = buf[..len].split(|&b| b == 0).next()?;
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+    Some(PathBuf::from(OsStr::from_bytes(bytes)))
 }
 
 pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
@@ -132,8 +129,7 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(out)
 }
 
-/// One item's entry without listing its whole folder. The listing stays the fallback: past
-/// `PATH_MAX`, and for an evicted iCloud file whose name on disk is its stand-in's.
+/// Falls back to listing the folder past `PATH_MAX` and for an evicted iCloud file's stand-in.
 pub fn entry_at(path: &Path) -> io::Result<Entry> {
     entry_with(
         path,
@@ -146,6 +142,18 @@ pub fn listed_entry_at(path: &Path) -> io::Result<Entry> {
     entry_with(path, COMMON_ATTRS & !ATTR_CMN_ERROR)
 }
 
+fn attr_list(common: libc::attrgroup_t) -> libc::attrlist {
+    libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: common,
+        volattr: 0,
+        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
+        fileattr: libc::ATTR_FILE_DATALENGTH,
+        forkattr: 0,
+    }
+}
+
 fn entry_with(path: &Path, common: libc::attrgroup_t) -> io::Result<Entry> {
     let dir = path.parent().unwrap_or(Path::new("/"));
     let listed = || {
@@ -155,19 +163,11 @@ fn entry_with(path: &Path, common: libc::attrgroup_t) -> io::Result<Entry> {
             .find(|entry| wanted.as_deref() == Some(entry.name.as_str()))
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
     };
-    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+    let Ok(c_path) = c_string(path.as_os_str()) else {
         return listed();
     };
-    let mut list = libc::attrlist {
-        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-        reserved: 0,
-        commonattr: common,
-        volattr: 0,
-        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
-        fileattr: libc::ATTR_FILE_DATALENGTH,
-        forkattr: 0,
-    };
-    let mut buf = vec![0u8; 4096];
+    let mut list = attr_list(common);
+    let mut buf = [0u8; 4096];
     let got = unsafe {
         libc::getattrlist(
             c_path.as_ptr(),
@@ -195,23 +195,13 @@ pub fn list_dir_batched(
     #[cfg(test)]
     READS.lock().unwrap().push(dir.to_path_buf());
     let open = open_dir(dir)?;
-    let fd = open.0;
-
-    let mut list = libc::attrlist {
-        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-        reserved: 0,
-        commonattr: COMMON_ATTRS,
-        volattr: 0,
-        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
-        fileattr: libc::ATTR_FILE_DATALENGTH,
-        forkattr: 0,
-    };
+    let mut list = attr_list(COMMON_ATTRS);
     let mut buf = vec![0u8; 256 * 1024];
     let mut pending = Vec::new();
     loop {
         let n = unsafe {
             libc::getattrlistbulk(
-                fd,
+                open.0,
                 &mut list as *mut _ as *mut libc::c_void,
                 buf.as_mut_ptr() as *mut libc::c_void,
                 buf.len(),
@@ -242,15 +232,15 @@ pub fn list_dir_batched(
     Ok(())
 }
 
-fn take<'a>(record: &'a [u8], p: &mut usize, n: usize) -> &'a [u8] {
-    let s = &record[*p..*p + n];
-    *p += n;
-    s
+fn read<const N: usize>(record: &[u8], p: &mut usize) -> [u8; N] {
+    let bytes = record[*p..*p + N].try_into().unwrap();
+    *p += N;
+    bytes
 }
 
-fn read_timespec(b: &[u8]) -> SystemTime {
-    let sec = i64::from_ne_bytes(b[0..8].try_into().unwrap());
-    let nsec = i64::from_ne_bytes(b[8..16].try_into().unwrap()) as u32;
+fn read_timespec(record: &[u8], p: &mut usize) -> SystemTime {
+    let sec = i64::from_ne_bytes(read(record, p));
+    let nsec = i64::from_ne_bytes(read(record, p)) as u32;
     let dur = Duration::new(sec.unsigned_abs(), nsec);
     if sec >= 0 {
         SystemTime::UNIX_EPOCH + dur
@@ -262,55 +252,53 @@ fn read_timespec(b: &[u8]) -> SystemTime {
 /// Attributes are packed in ascending bit order, so each offset is found by walking `returned`.
 fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let mut p = 4usize;
-    let returned_common = u32::from_ne_bytes(record[p..p + 4].try_into().unwrap());
-    let returned_dir = u32::from_ne_bytes(record[p + 8..p + 12].try_into().unwrap());
-    let returned_file = u32::from_ne_bytes(record[p + 12..p + 16].try_into().unwrap());
-    p += 20;
+    let returned_common = u32::from_ne_bytes(read(record, &mut p));
+    p += 4;
+    let returned_dir = u32::from_ne_bytes(read(record, &mut p));
+    let returned_file = u32::from_ne_bytes(read(record, &mut p));
+    p += 4;
 
     let mut name = None;
     let mut objtype = VREG;
     let mut created = SystemTime::UNIX_EPOCH;
     let mut modified = SystemTime::UNIX_EPOCH;
-    let mut fndrinfo: Option<[u8; 32]> = None;
+    let mut finder_flags = 0u16;
     let mut flags = 0u32;
     let mut file_id = 0u64;
     let mut readable = true;
     let mut added = None;
 
     // `ATTR_CMN_ERROR` alone is packed straight after `returned`, not in bit order.
-    if returned_common & ATTR_CMN_ERROR != 0 {
-        let code = i32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
-        if code != 0 {
-            return None;
-        }
+    if returned_common & ATTR_CMN_ERROR != 0 && i32::from_ne_bytes(read(record, &mut p)) != 0 {
+        return None;
     }
     if returned_common & libc::ATTR_CMN_NAME != 0 {
-        let ref_pos = p;
-        let bytes = take(record, &mut p, 8);
-        let attr_dataoffset = i32::from_ne_bytes(bytes[0..4].try_into().unwrap());
-        let attr_length = u32::from_ne_bytes(bytes[4..8].try_into().unwrap()) as usize;
-        let start = (ref_pos as i64 + attr_dataoffset as i64) as usize;
-        let raw = &record[start..start + attr_length];
+        let at = p;
+        let offset = i32::from_ne_bytes(read(record, &mut p));
+        let length = u32::from_ne_bytes(read(record, &mut p)) as usize;
+        let start = (at as i64 + offset as i64) as usize;
+        let raw = &record[start..start + length];
         let raw = raw.split(|&b| b == 0).next().unwrap_or(raw);
         name = Some(String::from_utf8_lossy(raw).into_owned());
     }
     if returned_common & libc::ATTR_CMN_OBJTYPE != 0 {
-        objtype = u32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
+        objtype = u32::from_ne_bytes(read(record, &mut p));
     }
     if returned_common & libc::ATTR_CMN_CRTIME != 0 {
-        created = read_timespec(take(record, &mut p, 16));
+        created = read_timespec(record, &mut p);
     }
     if returned_common & libc::ATTR_CMN_MODTIME != 0 {
-        modified = read_timespec(take(record, &mut p, 16));
+        modified = read_timespec(record, &mut p);
     }
     if returned_common & libc::ATTR_CMN_FNDRINFO != 0 {
-        fndrinfo = Some(take(record, &mut p, 32).try_into().unwrap());
+        let info: [u8; 32] = read(record, &mut p);
+        finder_flags = u16::from_be_bytes([info[8], info[9]]);
     }
     if returned_common & libc::ATTR_CMN_FLAGS != 0 {
-        flags = u32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
+        flags = u32::from_ne_bytes(read(record, &mut p));
     }
     if returned_common & libc::ATTR_CMN_USERACCESS != 0 {
-        let access = i32::from_ne_bytes(take(record, &mut p, 4).try_into().unwrap());
+        let access = i32::from_ne_bytes(read(record, &mut p));
         let wanted = match objtype {
             VDIR => libc::R_OK | libc::X_OK,
             _ => libc::R_OK,
@@ -318,26 +306,19 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         readable = access & wanted == wanted;
     }
     if returned_common & libc::ATTR_CMN_FILEID != 0 {
-        file_id = u64::from_ne_bytes(take(record, &mut p, 8).try_into().unwrap());
+        file_id = u64::from_ne_bytes(read(record, &mut p));
     }
     if returned_common & libc::ATTR_CMN_ADDEDTIME != 0 {
-        added = Some(read_timespec(take(record, &mut p, 16)));
+        added = Some(read_timespec(record, &mut p));
     }
-
-    let mut children = None;
-    if returned_dir & libc::ATTR_DIR_ENTRYCOUNT != 0 {
-        children = Some(u32::from_ne_bytes(
-            take(record, &mut p, 4).try_into().unwrap(),
-        ));
-    }
-
-    let mut size = 0u64;
-    if returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
-        size = u64::from_ne_bytes(take(record, &mut p, 8).try_into().unwrap());
-    }
+    let children = (returned_dir & libc::ATTR_DIR_ENTRYCOUNT != 0)
+        .then(|| u32::from_ne_bytes(read(record, &mut p)));
+    let mut size = match returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
+        true => u64::from_ne_bytes(read(record, &mut p)),
+        false => 0,
+    };
 
     let name = name?;
-
     let kind = match objtype {
         VREG => EntryKind::File,
         VDIR => EntryKind::Directory,
@@ -357,7 +338,6 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         None => name,
     };
     let hidden = name.starts_with('.') || flags & libc::UF_HIDDEN != 0;
-    let finder_flags = fndrinfo.map_or(0, |fi| u16::from_be_bytes([fi[8], fi[9]]));
     let package = kind == EntryKind::Directory
         && (finder_flags & HAS_BUNDLE != 0 || crate::kind::is_package_name(&name));
 
