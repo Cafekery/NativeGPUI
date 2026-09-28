@@ -9,11 +9,11 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSModalResponseOK, NSOpenPanel,
     NSOpenSavePanelDelegate, NSPopUpButton, NSTextField, NSView, NSWorkspace,
-    NSWorkspaceLaunchOptions,
+    NSWorkspaceLaunchOptions, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
-    NSBundle, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
-    NSURLBookmarkResolutionOptions,
+    NSArray, NSBundle, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    NSURL, NSURLBookmarkResolutionOptions,
 };
 
 use crate::app::FinderDemo;
@@ -42,8 +42,6 @@ fn version_of(bundle: &Path) -> Option<String> {
     Some(version.downcast::<NSString>().ok()?.to_string())
 }
 
-/// The apps LaunchServices offers for every one of `files`, named as its Open With menu names
-/// them: the first file's default first, the rest by name, a version telling namesakes apart.
 pub(crate) fn apps_for_all(files: &[PathBuf]) -> Vec<App> {
     let workspace = NSWorkspace::sharedWorkspace();
     let mut common: Option<Vec<PathBuf>> = None;
@@ -118,17 +116,14 @@ pub(crate) fn print(files: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Each file in the app it is set to open in; LaunchServices asks the user when there is none,
-/// as it does for Finder.
 pub(crate) fn open_default(files: &[PathBuf]) {
     let workspace = NSWorkspace::sharedWorkspace();
-    let configuration = objc2_app_kit::NSWorkspaceOpenConfiguration::configuration();
+    let configuration = NSWorkspaceOpenConfiguration::configuration();
     for url in files.iter().filter_map(|file| url(file)) {
         workspace.openURL_configuration_completionHandler(&url, &configuration, None);
     }
 }
 
-/// The folder a Finder alias points at, which Finder opens in its own window.
 pub(crate) fn alias_folder(file: &Path) -> Option<PathBuf> {
     let alias = url(file)?;
     let target = NSURL::URLByResolvingAliasFileAtURL_options_error(
@@ -148,17 +143,14 @@ pub(crate) fn open_with(files: &[PathBuf], app: &Path) {
     if urls.is_empty() {
         return;
     }
-    let refs: Vec<&NSURL> = urls.iter().map(|url| url.as_ref()).collect();
-    let workspace = NSWorkspace::sharedWorkspace();
-    workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
-        &objc2_foundation::NSArray::from_slice(&refs),
+    NSWorkspace::sharedWorkspace().openURLs_withApplicationAtURL_configuration_completionHandler(
+        &NSArray::from_retained_slice(&urls),
         &app,
-        &objc2_app_kit::NSWorkspaceOpenConfiguration::configuration(),
+        &NSWorkspaceOpenConfiguration::configuration(),
         None,
     );
 }
 
-/// Always Open With: `app` becomes each file's own app, as Get Info's Open With makes it.
 pub(crate) fn set_default(files: &[PathBuf], app: &Path) {
     let Some(app) = url(app) else {
         return;
@@ -169,7 +161,6 @@ pub(crate) fn set_default(files: &[PathBuf], app: &Path) {
     }
 }
 
-/// LaunchServices' App Store… hands the first file to the App Store, which finds apps for it.
 pub(crate) fn app_store(files: &[PathBuf]) {
     let store = NSWorkspace::sharedWorkspace()
         .URLForApplicationWithBundleIdentifier(&NSString::from_str("com.apple.appstore"))
@@ -271,8 +262,6 @@ fn accessory(
     (view, keep)
 }
 
-/// Finder's Other…: any app, those LaunchServices recommends enabled until All Applications is
-/// picked; Always Open With also makes the choice the files' own app.
 pub(crate) fn choose_app(files: Vec<PathBuf>, always: bool, cx: &mut Context<FinderDemo>) {
     if files.is_empty() {
         return;

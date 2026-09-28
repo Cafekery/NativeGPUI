@@ -24,7 +24,6 @@ pub(crate) fn shown() -> bool {
     OPEN.with_borrow(|open| open.is_some())
 }
 
-/// Finder's Show Progress Window hides the window again while it is up.
 pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
     if let Some(open) = OPEN.with_borrow(|open| *open) {
         open.update(cx, |_, window, _| window.remove_window()).ok();
@@ -79,19 +78,15 @@ impl Render for Progress {
         let rows: Vec<AnyElement> = demos
             .iter()
             .flat_map(|demo| {
-                demo.read(cx)
-                    .jobs
-                    .iter()
-                    .map(|job| {
-                        let (demo, id) = (demo.clone(), job.id);
-                        job_row(job, move |cx| {
-                            demo.update(cx, |this, cx| {
-                                this.queue.cancel(id);
-                                cx.notify();
-                            })
+                demo.read(cx).jobs.iter().map(|job| {
+                    let (demo, id) = (demo.clone(), job.id);
+                    job_row(job, move |cx| {
+                        demo.update(cx, |this, cx| {
+                            this.queue.cancel(id);
+                            cx.notify();
                         })
                     })
-                    .collect::<Vec<_>>()
+                })
             })
             .collect();
         // The rows host native progress bars, which only a native root removes again.
