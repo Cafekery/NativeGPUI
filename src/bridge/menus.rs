@@ -40,6 +40,41 @@ impl MenuSection {
     }
 }
 
+/// A stock Edit command of the text being typed in.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TextCommand {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl TextCommand {
+    fn selector(self) -> Sel {
+        match self {
+            Self::Undo => sel!(undo:),
+            Self::Redo => sel!(redo:),
+            Self::Cut => sel!(cut:),
+            Self::Copy => sel!(copy:),
+            Self::Paste => sel!(paste:),
+            Self::SelectAll => sel!(selectAll:),
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::SelectAll => "Select All",
+        }
+    }
+}
+
 /// The chord is the item's key equivalent, not a GPUI keymap binding.
 pub struct MenuCommand {
     title: String,
@@ -49,6 +84,7 @@ pub struct MenuCommand {
     alternate: bool,
     option_only: bool,
     checked: bool,
+    text: Option<TextCommand>,
 }
 
 impl MenuCommand {
@@ -93,11 +129,18 @@ impl MenuCommand {
             alternate: false,
             option_only: false,
             checked: false,
+            text: None,
         }
     }
 
     pub fn key(mut self, chord: impl Into<String>) -> Self {
         self.chord = Some(chord.into());
+        self
+    }
+
+    /// While text is being typed in, the row is `text`'s: its stock title, the text's to allow and to do.
+    pub fn edits_text(mut self, text: TextCommand) -> Self {
+        self.text = Some(text);
         self
     }
 }
@@ -243,6 +286,7 @@ pub fn install_menus(cx: &mut App) {
     );
     edit.add_row("Delete", sel!(delete:), "", NONE);
     edit.add_row("Select All", sel!(selectAll:), "a", CMD);
+    STOCK_EDIT.set(edit.itemArray().to_vec());
 
     // AppKit flips these titles itself; naming the current state would freeze them.
     let view = section(mtm, &bar, "View");
@@ -324,6 +368,30 @@ pub fn extend_menu(section: MenuSection, commands: impl IntoIterator<Item = Menu
     rows_into(section, commands, false);
 }
 
+/// Puts `commands` where `install_menus` put the stock Undo through Select All rows.
+pub fn replace_edit_rows(commands: impl IntoIterator<Item = MenuCommand>) {
+    let Some((mtm, bar)) = bar() else {
+        return;
+    };
+    let Some(menu) = submenu_of(&bar, &MenuSection::Edit.title(&app_name())) else {
+        return;
+    };
+    let stock = STOCK_EDIT.take();
+    let Some(at) = stock
+        .first()
+        .map(|first| menu.indexOfItem(first))
+        .filter(|at| *at >= 0)
+    else {
+        return;
+    };
+    for row in &stock {
+        menu.removeItem(row);
+    }
+    for (offset, command) in commands.into_iter().enumerate() {
+        add_command(mtm, &menu, at + offset as isize, command);
+    }
+}
+
 fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>, first: bool) {
     let Some((mtm, bar)) = bar() else {
         return;
@@ -376,22 +444,31 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
         }
         None => NSMenuItem::separatorItem(mtm),
         Some(action) => {
+            // AppKit pairs an alternate by key and mask, so a keyless alternate needs its ⌥.
+            let keyless = match command.alternate {
+                true => NSEventModifierFlags::Option,
+                false => NONE,
+            };
             let (key, mask) = command
                 .chord
                 .as_deref()
                 .and_then(equivalent)
-                .unwrap_or_else(|| (String::new(), NONE));
+                .unwrap_or_else(|| (String::new(), keyless));
             let row = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
                     &worded(&command.title),
-                    Some(sel!(ngMenuCommand:)),
+                    Some(
+                        command
+                            .text
+                            .map_or(sel!(ngMenuCommand:), TextCommand::selector),
+                    ),
                     &NSString::from_str(&key),
                 )
             };
             row.setKeyEquivalentModifierMask(mask);
             // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
-            let index = NSNumber::new_isize(CommandSink::register(action));
+            let index = NSNumber::new_isize(CommandSink::register(action, command.text));
             unsafe { row.setRepresentedObject(Some(index.as_ref())) };
             let Some(sink) = SHARED.with_borrow(|shared| shared.clone()) else {
                 return;
@@ -518,7 +595,7 @@ pub fn on_menu_title(title: impl Fn(&dyn Action) -> Option<SharedString> + 'stat
     TITLE.with_borrow_mut(|slot| *slot = Some(Rc::new(title)));
 }
 
-fn action_of(item: &NSMenuItem) -> Option<Box<dyn Action>> {
+fn command_of(item: &NSMenuItem) -> Option<(Box<dyn Action>, Option<TextCommand>)> {
     let index = item
         .representedObject()
         .and_then(|object| object.downcast::<NSNumber>().ok())
@@ -526,8 +603,26 @@ fn action_of(item: &NSMenuItem) -> Option<Box<dyn Action>> {
     COMMANDS.with_borrow(|commands| {
         commands
             .get(index as usize)
-            .map(|action| action.boxed_clone())
+            .map(|(action, text)| (action.boxed_clone(), *text))
     })
+}
+
+/// Whether whoever would take `text` from the field being typed in allows it now.
+fn text_allows(item: &NSMenuItem, text: TextCommand) -> bool {
+    let app = NSApplication::sharedApplication(MainThreadMarker::from(item));
+    let Some(target) = (unsafe { app.targetForAction_to_from(text.selector(), None, Some(item)) })
+    else {
+        return false;
+    };
+    let answers =
+        |check: Sel| -> bool { unsafe { msg_send![&*target, respondsToSelector: check] } };
+    if answers(sel!(validateMenuItem:)) {
+        return unsafe { msg_send![&*target, validateMenuItem: item] };
+    }
+    if answers(sel!(validateUserInterfaceItem:)) {
+        return unsafe { msg_send![&*target, validateUserInterfaceItem: item] };
+    }
+    true
 }
 
 struct SinkIvars {
@@ -544,15 +639,37 @@ define_class!(
     impl CommandSink {
         #[unsafe(method(ngMenuCommand:))]
         fn ng_menu_command(&self, sender: *mut NSMenuItem) {
-            let Some(action) = unsafe { sender.as_ref() }.and_then(action_of) else {
-                return;
-            };
-            self.ivars()
-                .cx
-                .spawn(async move |cx: &mut AsyncApp| {
-                    cx.update(|cx| cx.dispatch_action(&*action));
-                })
-                .detach();
+            self.perform(sender);
+        }
+
+        #[unsafe(method(undo:))]
+        fn text_undo(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
+        }
+
+        #[unsafe(method(redo:))]
+        fn text_redo(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
+        }
+
+        #[unsafe(method(cut:))]
+        fn text_cut(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
+        }
+
+        #[unsafe(method(copy:))]
+        fn text_copy(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
+        }
+
+        #[unsafe(method(paste:))]
+        fn text_paste(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn text_select_all(&self, sender: *mut NSMenuItem) {
+            self.perform(sender);
         }
 
         #[unsafe(method(validateMenuItem:))]
@@ -560,12 +677,17 @@ define_class!(
             let Some(item) = (unsafe { sender.as_ref() }) else {
                 return Bool::YES;
             };
-            if editing_text() && edits_text(item) {
+            let editing = editing_text();
+            if editing && edits_text(item) {
                 return Bool::NO;
             }
-            let Some(action) = action_of(item) else {
+            let Some((action, text)) = command_of(item) else {
                 return Bool::YES;
             };
+            if let Some(text) = text.filter(|_| editing) {
+                item.setTitle(&worded(text.title()));
+                return Bool::new(text_allows(item, text));
+            }
             if let Some(on) = STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
             {
                 set_state(item, on);
@@ -585,7 +707,9 @@ thread_local! {
     static ENABLED: RefCell<Option<Rc<dyn Fn(&dyn Action) -> bool>>> = const { RefCell::new(None) };
     static TITLE: RefCell<Option<Rc<dyn Fn(&dyn Action) -> Option<SharedString>>>> =
         const { RefCell::new(None) };
-    static COMMANDS: RefCell<Vec<Box<dyn Action>>> = const { RefCell::new(Vec::new()) };
+    static COMMANDS: RefCell<Vec<(Box<dyn Action>, Option<TextCommand>)>> =
+        const { RefCell::new(Vec::new()) };
+    static STOCK_EDIT: RefCell<Vec<Retained<NSMenuItem>>> = const { RefCell::new(Vec::new()) };
 }
 
 impl CommandSink {
@@ -595,11 +719,32 @@ impl CommandSink {
         SHARED.with_borrow_mut(|shared| *shared = Some(this));
     }
 
-    fn register(action: Box<dyn Action>) -> isize {
+    fn register(action: Box<dyn Action>, text: Option<TextCommand>) -> isize {
         COMMANDS.with_borrow_mut(|commands| {
-            commands.push(action);
+            commands.push((action, text));
             commands.len() as isize - 1
         })
+    }
+
+    /// Text being typed in takes a text row's command; otherwise the row's action runs.
+    fn perform(&self, sender: *mut NSMenuItem) {
+        let Some(item) = (unsafe { sender.as_ref() }) else {
+            return;
+        };
+        let Some((action, text)) = command_of(item) else {
+            return;
+        };
+        if let Some(text) = text.filter(|_| editing_text()) {
+            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+            unsafe { app.sendAction_to_from(text.selector(), None, Some(item)) };
+            return;
+        }
+        self.ivars()
+            .cx
+            .spawn(async move |cx: &mut AsyncApp| {
+                cx.update(|cx| cx.dispatch_action(&*action));
+            })
+            .detach();
     }
 }
 
