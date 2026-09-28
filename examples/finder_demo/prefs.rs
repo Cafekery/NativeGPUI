@@ -255,6 +255,21 @@ pub(crate) fn set_pane_width(gallery: bool, width: f32) {
     write(if gallery { GALLERY_PANE } else { PANE }, width as f64);
 }
 
+/// The Preview Options keys shown for a kind of item; `None` until the user first chooses.
+pub(crate) fn preview_options(kind: &str) -> Option<Vec<String>> {
+    let key = NSString::from_str(&format!("ng.finder.preview.options.{kind}"));
+    let list = defaults().stringArrayForKey(&key)?;
+    Some(list.iter().map(|on| on.to_string()).collect())
+}
+
+pub(crate) fn set_preview_options(kind: &str, on: &[&str]) {
+    let key = NSString::from_str(&format!("ng.finder.preview.options.{kind}"));
+    let strings: Vec<_> = on.iter().map(|on| NSString::from_str(on)).collect();
+    let list = NSArray::from_retained_slice(&strings);
+    let value: &AnyObject = &list;
+    unsafe { defaults().setObject_forKey(Some(value), &key) };
+}
+
 /// Finder keeps one Show Preview for icon and list views, one for columns and one for gallery.
 fn preview_key(view: usize) -> &'static str {
     match view {

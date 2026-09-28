@@ -81,6 +81,7 @@ actions!(
         RenameSelection,
         SelectAll,
         ShowInspector,
+        ShowPreviewOptions,
         SortByKind,
         SortByModified,
         SortByName,
@@ -196,6 +197,12 @@ fn checked(action: &dyn Action) -> Option<bool> {
 }
 
 fn titled(action: &dyn Action) -> Option<SharedString> {
+    if action.partial_eq(&ShowPreviewOptions) {
+        return Some(match crate::preview::options::is_open() {
+            true => "Hide Preview Options".into(),
+            false => "Show Preview Options".into(),
+        });
+    }
     if action.partial_eq(&ShowInspector) {
         return Some(match crate::inspector::is_open() {
             true => "Hide Inspector".into(),
@@ -326,6 +333,7 @@ pub(crate) fn install(cx: &mut App) {
             ),
             MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
             MenuCommand::new("Show View Options", ShowViewOptions).key("cmd-j"),
+            MenuCommand::new("Show Preview Options", ShowPreviewOptions),
             MenuCommand::new("Clean Up", CleanUp),
             MenuCommand::submenu(
                 "Clean Up By",
@@ -490,6 +498,9 @@ impl FinderDemo {
             .on_action(cx.listener(|_, _: &GetSummaryInfo, _, cx| {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
+            }))
+            .on_action(cx.listener(|this, _: &ShowPreviewOptions, _, cx| {
+                crate::preview::options::toggle(this, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
                 this.run_menu(Act::Inspector, window, cx);
