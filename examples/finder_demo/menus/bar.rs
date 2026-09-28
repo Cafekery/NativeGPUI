@@ -13,7 +13,6 @@ use native_gpui::{
 use super::edit::PasteExactly;
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
-use crate::chrome::sheet::ConnectSheet;
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
@@ -683,12 +682,12 @@ impl FinderDemo {
                 this.recents.clear();
                 native_gpui::set_menu("Go", go_rows(&this.recents));
             }))
-            .on_action(cx.listener(|this, _: &GoToFolder, _, cx| {
-                this.open_go(cx);
+            .on_action(cx.listener(|this, _: &GoToFolder, window, cx| {
+                this.open_go(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ConnectToServer, _, cx| {
-                this.connect_sheet = Some(ConnectSheet::default());
-                cx.notify();
+            .on_action(cx.listener(|_, _: &ConnectToServer, window, cx| {
+                let demo = cx.entity().downgrade();
+                crate::chrome::connect::show(demo, window.window_handle(), cx);
             }))
             .on_action(cx.listener(|this, _: &QuickLook, window, cx| {
                 this.toggle_quick_look(window, cx);

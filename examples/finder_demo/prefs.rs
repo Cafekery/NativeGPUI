@@ -7,7 +7,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSNumber, NSString, NSURL, NSUserDefaults,
+    NSKeyedUnarchiver, NSNumber, NSString, NSURL, NSUserDefaults,
 };
 
 use crate::chrome::scope_bar::{THIS_FOLDER, THIS_MAC};
@@ -341,12 +341,150 @@ pub(crate) fn set_removed(group: &str, ids: &[&str]) {
     write_list(&format!("removed.{group}"), ids);
 }
 
+/// A value Finder keeps for itself: until Found'er keeps its own, it carries on from Finder's.
+fn finder_pref(key: &str) -> Option<Retained<AnyObject>> {
+    let suite = NSString::from_str("com.apple.finder");
+    NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))?
+        .objectForKey(&NSString::from_str(key))
+}
+
+fn finder_string(key: &str) -> Option<String> {
+    Some(finder_pref(key)?.downcast::<NSString>().ok()?.to_string())
+}
+
+fn finder_strings(key: &str) -> Vec<String> {
+    let Some(list) = finder_pref(key).and_then(|list| list.downcast::<NSArray>().ok()) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|value| Some(value.downcast_ref::<NSString>()?.to_string()))
+        .collect()
+}
+
 pub(crate) fn go_history() -> Vec<String> {
-    read_list("go.history")
+    sidebar_file()
+        .remove("go.history")
+        .unwrap_or_else(|| finder_strings("GoToFieldHistory"))
+}
+
+/// The path Go to Folder opens holding.
+pub(crate) fn go_field() -> Option<String> {
+    match sidebar_file().remove("go.history") {
+        Some(own) => own.into_iter().next(),
+        None => finder_string("GoToField"),
+    }
+}
+
+pub(crate) const GO_SHEET: &str = "GoToSheet";
+
+/// The size the Go to Folder sheet was last resized to, as AppKit autosaves it.
+pub(crate) fn go_sheet_size() -> Option<(f32, f32)> {
+    let key = format!("NSWindow Frame {GO_SHEET}");
+    let frame = defaults()
+        .stringForKey(&NSString::from_str(&key))
+        .map(|frame| frame.to_string())
+        .or_else(|| finder_string(&key))?;
+    let mut sides = frame
+        .split_whitespace()
+        .skip(2)
+        .map(|side| side.parse::<f32>().ok());
+    Some((sides.next()??, sides.next()??))
 }
 
 pub(crate) fn set_go_history(paths: &[&str]) {
     write_list("go.history", paths);
+}
+
+const CONNECT_LAST: &str = "ng.finder.connect.last";
+pub(crate) const CONNECT_WINDOW: &str = "ConnectToServer";
+
+/// The address Connect to Server opens holding: the last one connected to.
+pub(crate) fn connect_last() -> Option<String> {
+    defaults()
+        .stringForKey(&NSString::from_str(CONNECT_LAST))
+        .map(|last| last.to_string())
+        .or_else(|| finder_string("FXConnectToLastURL"))
+}
+
+pub(crate) fn set_connect_last(address: &str) {
+    let key = NSString::from_str(CONNECT_LAST);
+    unsafe { defaults().setObject_forKey(Some(&NSString::from_str(address)), &key) };
+}
+
+/// Finder's last Connect to Server frame, in AppKit's bottom-left screen points.
+pub(crate) fn finder_connect_frame() -> Option<[f64; 4]> {
+    let bounds = finder_string("FXConnectToBounds")?;
+    let mut sides = bounds
+        .split(|ch: char| !(ch.is_ascii_digit() || ch == '.' || ch == '-'))
+        .filter(|side| !side.is_empty())
+        .map(|side| side.parse::<f64>().ok());
+    Some([
+        sides.next()??,
+        sides.next()??,
+        sides.next()??,
+        sides.next()??,
+    ])
+}
+
+/// The servers of one of Finder's shared lists, as their addresses.
+fn finder_servers(list: &str) -> Vec<String> {
+    let file = crate::home().join(format!(
+        "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.{list}.sfl4"
+    ));
+    let Some(data) = NSData::dataWithContentsOfFile(&NSString::from_str(&file.to_string_lossy()))
+    else {
+        return Vec::new();
+    };
+    let Ok(archive) = (unsafe {
+        NSKeyedUnarchiver::initForReadingFromData_error(NSKeyedUnarchiver::alloc(), &data)
+    }) else {
+        return Vec::new();
+    };
+    // Plain dictionaries, arrays, strings and data: nothing a secure decode would refuse to trust.
+    let root = unsafe {
+        archive.setRequiresSecureCoding(false);
+        let root = archive.decodeObjectForKey(&NSString::from_str("root"));
+        archive.finishDecoding();
+        root
+    };
+    let items = root
+        .and_then(|root| root.downcast::<NSDictionary>().ok())
+        .and_then(|root| value(&root, "items")?.downcast::<NSArray>().ok());
+    let Some(items) = items else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let item = item.downcast::<NSDictionary>().ok()?;
+            Some(
+                value(&item, "Name")?
+                    .downcast::<NSString>()
+                    .ok()?
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn favorite_servers() -> Vec<String> {
+    sidebar_file()
+        .remove("servers.favorite")
+        .unwrap_or_else(|| finder_servers("FavoriteServers"))
+}
+
+pub(crate) fn set_favorite_servers(servers: &[&str]) {
+    write_list("servers.favorite", servers);
+}
+
+pub(crate) fn recent_servers() -> Vec<String> {
+    sidebar_file()
+        .remove("servers.recent")
+        .unwrap_or_else(|| finder_servers("RecentServers"))
+}
+
+pub(crate) fn set_recent_servers(servers: &[&str]) {
+    write_list("servers.recent", servers);
 }
 
 pub(crate) fn view() -> Option<usize> {
