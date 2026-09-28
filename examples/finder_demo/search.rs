@@ -79,6 +79,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
+        self.arrive_now(cx);
         if self.query.trim().is_empty() && !text.trim().is_empty() {
             self.scope = prefs::search_scope();
         }
@@ -185,6 +186,7 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.arriving = None;
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;

@@ -450,6 +450,11 @@ impl FinderDemo {
         .then_some(self.show_hidden)
     }
 
+    /// `plain` once the window arrives in another folder, which drops every filter and search.
+    pub(crate) fn plain_on_arrival(&self) -> Option<bool> {
+        self.expanded.is_empty().then_some(self.show_hidden)
+    }
+
     pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
         if id != self.here() || self.plain() != Some(hidden) {
             return;
