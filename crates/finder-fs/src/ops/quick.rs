@@ -13,10 +13,9 @@ use objc2_foundation::{
     NSNumber, NSSize, NSString,
 };
 
-use super::{Done, Op, Progress, keep_both_path, split_name, taken, url};
+use super::{Done, Op, free_path, io_error, name_of, split_name, url};
 use crate::tags::Tag;
 
-/// Finder's Quick Actions that write files.
 #[derive(Clone, Debug)]
 pub enum Quick {
     Rotate {
@@ -134,24 +133,24 @@ impl Quick {
     }
 }
 
-pub(super) fn perform(quick: Quick, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
+pub(super) fn perform(quick: Quick) -> io::Result<Done> {
     autoreleasepool(|_| match quick {
-        Quick::Rotate { items, left } => rotate(items, left, progress),
+        Quick::Rotate { items, left } => rotate(items, left),
         Quick::CreatePdf(items) => create_pdf(items),
         Quick::Convert {
             items,
             format,
             size,
             metadata,
-        } => convert(items, format, size, metadata, progress),
-        Quick::RemoveBackground(items) => remove_background(items, progress),
+        } => convert(items, format, size, metadata),
+        Quick::RemoveBackground(items) => remove_background(items),
         Quick::Trim {
             item,
             start,
             end,
             into,
             tags,
-        } => trim(&item, start, end, &into, &tags, progress),
+        } => trim(&item, start, end, &into, &tags),
     })
 }
 
@@ -293,7 +292,6 @@ unsafe extern "C" {
 
 const CROP_BOX: i32 = 1;
 
-/// A Core Foundation object from a Create or Copy call, released on drop.
 struct Owned(Ref);
 
 impl Owned {
@@ -322,23 +320,22 @@ fn dict(pairs: &[(Ref, Retained<AnyObject>)]) -> Retained<NSDictionary<NSString,
     NSDictionary::from_slices(&keys, &values)
 }
 
+fn object(number: Retained<NSNumber>) -> Retained<AnyObject> {
+    Retained::into_super(Retained::into_super(Retained::into_super(number)))
+}
+
 fn number(value: f64) -> Retained<AnyObject> {
-    Retained::into_super(Retained::into_super(Retained::into_super(
-        NSNumber::new_f64(value),
-    )))
+    object(NSNumber::new_f64(value))
 }
 
 fn yes() -> Retained<AnyObject> {
-    Retained::into_super(Retained::into_super(Retained::into_super(
-        NSNumber::new_bool(true),
-    )))
+    object(NSNumber::new_bool(true))
 }
 
 fn unreadable(path: &Path) -> io::Error {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("The file “{name}” couldn’t be opened."),
+        format!("The file “{}” couldn’t be opened.", name_of(path)),
     )
 }
 
@@ -396,7 +393,6 @@ impl Picture {
         }
     }
 
-    /// The pixels turned upright, the longer side at most `longest`.
     fn render(&self, longest: usize) -> Option<Owned> {
         let options = dict(&[
             (
@@ -428,11 +424,10 @@ fn turned(orientation: i64, left: bool) -> i64 {
 }
 
 fn staging(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!(".{name}.staged"))
+    path.with_file_name(format!(".{}.staged", name_of(path)))
 }
 
-/// Swaps `staged` in for `original`, which keeps its tags, labels and other attributes.
+/// Unlike a rename, keeps `original`'s tags, labels and other attributes.
 fn replace(original: &Path, staged: &Path) -> io::Result<()> {
     NSFileManager::defaultManager()
         .replaceItemAtURL_withItemAtURL_backupItemName_options_resultingItemURL_error(
@@ -444,18 +439,12 @@ fn replace(original: &Path, staged: &Path) -> io::Result<()> {
         )
         .map_err(|err| {
             let _ = std::fs::remove_file(staged);
-            super::io_error(err)
+            io_error(err)
         })
 }
 
-fn rotate(items: Vec<PathBuf>, left: bool, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
-    let total = items.len();
-    for (done, item) in items.iter().enumerate() {
-        progress(Progress {
-            done,
-            total,
-            current: Some(item.clone()),
-        });
+fn rotate(items: Vec<PathBuf>, left: bool) -> io::Result<Done> {
+    for item in &items {
         match Picture::open(item) {
             Ok(picture) => rotate_image(item, picture, left)?,
             Err(_) => rotate_movie(item, left)?,
@@ -467,7 +456,6 @@ fn rotate(items: Vec<PathBuf>, left: bool, progress: &mut dyn FnMut(Progress)) -
     })
 }
 
-/// Only the orientation tag changes: the pixels and every other tag stay as they were.
 fn rotate_image(path: &Path, picture: Picture, left: bool) -> io::Result<()> {
     let staged = staging(path);
     let kind = unsafe { CGImageSourceGetType(picture.source.0) };
@@ -504,7 +492,6 @@ fn movie_type(path: &Path) -> &'static NSString {
     }
 }
 
-/// A new movie header with each video track's display matrix turned; the media is untouched.
 fn rotate_movie(path: &Path, left: bool) -> io::Result<()> {
     let class = AnyClass::get(c"AVMutableMovie").ok_or_else(|| unreadable(path))?;
     let file = url(path);
@@ -558,25 +545,19 @@ fn rotate_movie(path: &Path, left: bool) -> io::Result<()> {
     match wrote.as_bool() {
         true => Ok(()),
         false => Err(unsafe { error.as_ref() }
-            .map(|err| super::io_error(err.retain()))
+            .map(|err| io_error(err.retain()))
             .unwrap_or_else(|| unreadable(path))),
     }
 }
 
 fn beside(first: &Path, name: String) -> PathBuf {
-    let path = first.with_file_name(name);
-    match taken(&path) {
-        true => keep_both_path(&path),
-        false => path,
-    }
+    free_path(&first.with_file_name(name))
 }
 
 fn stem(path: &Path) -> String {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    split_name(&name).0.to_string()
+    split_name(&name_of(path)).0.to_string()
 }
 
-/// One page per image at its upright pixel size, then every page of each PDF, in selection order.
 fn create_pdf(items: Vec<PathBuf>) -> io::Result<Done> {
     let first = items
         .first()
@@ -666,23 +647,15 @@ fn convert(
     format: ImageFormat,
     size: ImageSize,
     metadata: bool,
-    progress: &mut dyn FnMut(Progress),
 ) -> io::Result<Done> {
-    let total = items.len();
-    let mut results = Vec::new();
-    for (done, item) in items.iter().enumerate() {
-        progress(Progress {
-            done,
-            total,
-            current: Some(item.clone()),
-        });
+    let mut results = Vec::with_capacity(items.len());
+    for item in &items {
         let picture = Picture::open(item)?;
         let name = match size {
             ImageSize::Actual => format!("{}.{}", stem(item), format.ext()),
             _ => format!("{} {}.{}", stem(item), size.title(), format.ext()),
         };
         let dest = beside(item, name);
-        let lossy = format != ImageFormat::Png;
         match (size.longest(), metadata) {
             (None, true) => {
                 let kind = NSString::from_str(format.uti());
@@ -695,12 +668,12 @@ fn convert(
                     )
                 })
                 .ok_or_else(|| unreadable(&dest))?;
-                let quality = match lossy {
-                    true => dict(&[(
+                let quality = match format {
+                    ImageFormat::Png => dict(&[]),
+                    _ => dict(&[(
                         unsafe { kCGImageDestinationLossyCompressionQuality },
                         number(0.8),
                     )]),
-                    false => dict(&[]),
                 };
                 unsafe {
                     CGImageDestinationAddImageFromSource(out.0, picture.source.0, 0, cf(&*quality))
@@ -714,56 +687,8 @@ fn convert(
                 let (w, h) = picture.upright();
                 let side = longest.map_or(w.max(h), |longest| longest.min(w.max(h)));
                 let image = picture.render(side).ok_or_else(|| unreadable(item))?;
-                let upright = number(1.);
-                let properties = match (&picture.properties, metadata) {
-                    (Some(source), true) => {
-                        let mut pairs: Vec<(Ref, Retained<AnyObject>)> = Vec::new();
-                        let (names, values) = source.to_vecs();
-                        for (name, value) in names.into_iter().zip(values) {
-                            if *name == *key(unsafe { kCGImagePropertyOrientation })
-                                || *name == *key(unsafe { kCGImagePropertyTIFFDictionary })
-                            {
-                                continue;
-                            }
-                            pairs.push((cf(&*name), value));
-                        }
-                        let tiff = source
-                            .objectForKey(key(unsafe { kCGImagePropertyTIFFDictionary }))
-                            .and_then(|tiff| tiff.downcast::<NSDictionary>().ok())
-                            .map(|tiff| unsafe {
-                                Retained::cast_unchecked::<NSDictionary<NSString, AnyObject>>(tiff)
-                            });
-                        let (tiff_names, tiff_values) =
-                            tiff.map(|tiff| tiff.to_vecs()).unwrap_or_default();
-                        let mut tiff_pairs: Vec<(Ref, Retained<AnyObject>)> = tiff_names
-                            .into_iter()
-                            .zip(tiff_values)
-                            .filter(|(name, _)| {
-                                **name != *key(unsafe { kCGImagePropertyTIFFOrientation })
-                            })
-                            .map(|(name, value)| (cf(&*name), value))
-                            .collect();
-                        tiff_pairs
-                            .push((unsafe { kCGImagePropertyTIFFOrientation }, upright.clone()));
-                        pairs.push((
-                            unsafe { kCGImagePropertyTIFFDictionary },
-                            Retained::into_super(Retained::into_super(dict(&tiff_pairs))),
-                        ));
-                        pairs.push((unsafe { kCGImagePropertyOrientation }, upright));
-                        dict(&pairs)
-                    }
-                    _ => {
-                        let tiff =
-                            dict(&[(unsafe { kCGImagePropertyTIFFOrientation }, upright.clone())]);
-                        dict(&[
-                            (unsafe { kCGImagePropertyOrientation }, upright),
-                            (
-                                unsafe { kCGImagePropertyTIFFDictionary },
-                                Retained::into_super(Retained::into_super(tiff)),
-                            ),
-                        ])
-                    }
-                };
+                let source = picture.properties.as_deref().filter(|_| metadata);
+                let properties = upright_properties(source);
                 write_image(&dest, format, image.0, cf(&*properties))?;
             }
         }
@@ -775,15 +700,44 @@ fn convert(
     })
 }
 
-fn remove_background(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) -> io::Result<Done> {
-    let total = items.len();
-    let mut results = Vec::new();
-    for (done, item) in items.iter().enumerate() {
-        progress(Progress {
-            done,
-            total,
-            current: Some(item.clone()),
-        });
+fn upright_properties(
+    source: Option<&NSDictionary<NSString, AnyObject>>,
+) -> Retained<NSDictionary<NSString, AnyObject>> {
+    let (orientation, tiff, tiff_orientation) = unsafe {
+        (
+            kCGImagePropertyOrientation,
+            kCGImagePropertyTIFFDictionary,
+            kCGImagePropertyTIFFOrientation,
+        )
+    };
+    let without = |dict: Option<&NSDictionary<NSString, AnyObject>>, skipped: &[Ref]| {
+        let (names, values) = dict.map(|dict| dict.to_vecs()).unwrap_or_default();
+        names
+            .into_iter()
+            .zip(values)
+            .filter(|(name, _)| !skipped.iter().any(|skip| **name == *key(*skip)))
+            .map(|(name, value)| (cf(&*name), value))
+            .collect::<Vec<(Ref, Retained<AnyObject>)>>()
+    };
+    let source_tiff = source
+        .and_then(|source| source.objectForKey(key(tiff)))
+        .and_then(|tiff| tiff.downcast::<NSDictionary>().ok())
+        .map(|tiff| unsafe { Retained::cast_unchecked::<NSDictionary<NSString, AnyObject>>(tiff) });
+    let upright = number(1.);
+    let mut tiff_pairs = without(source_tiff.as_deref(), &[tiff_orientation]);
+    tiff_pairs.push((tiff_orientation, upright.clone()));
+    let mut pairs = without(source, &[orientation, tiff]);
+    pairs.push((
+        tiff,
+        Retained::into_super(Retained::into_super(dict(&tiff_pairs))),
+    ));
+    pairs.push((orientation, upright));
+    dict(&pairs)
+}
+
+fn remove_background(items: Vec<PathBuf>) -> io::Result<Done> {
+    let mut results = Vec::with_capacity(items.len());
+    for item in &items {
         let picture = Picture::open(item)?;
         let image = cut_out(item, picture.orientation).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "Failed to remove background")
@@ -798,8 +752,8 @@ fn remove_background(items: Vec<PathBuf>, progress: &mut dyn FnMut(Progress)) ->
     })
 }
 
-/// Vision's foreground instances over a clear background, upright.
 fn cut_out(path: &Path, orientation: i64) -> Option<Owned> {
+    // Touching a Vision symbol links the framework, so its classes register.
     let _ = unsafe { VNErrorDomain };
     let handler_class = AnyClass::get(c"VNImageRequestHandler")?;
     let request_class = AnyClass::get(c"VNGenerateForegroundInstanceMaskRequest")?;
@@ -837,20 +791,8 @@ fn cut_out(path: &Path, orientation: i64) -> Option<Owned> {
 
 const EXPORT_COMPLETED: isize = 3;
 
-/// The kept samples are copied as they are. Finder keeps no undo for a trim.
-fn trim(
-    item: &Path,
-    start: f64,
-    end: f64,
-    into: &Path,
-    tags: &[String],
-    progress: &mut dyn FnMut(Progress),
-) -> io::Result<Done> {
-    progress(Progress {
-        done: 0,
-        total: 1,
-        current: Some(item.to_path_buf()),
-    });
+/// Finder keeps no undo for a trim.
+fn trim(item: &Path, start: f64, end: f64, into: &Path, tags: &[String]) -> io::Result<Done> {
     let (Some(assets), Some(exports)) = (
         AnyClass::get(c"AVURLAsset"),
         AnyClass::get(c"AVAssetExportSession"),
@@ -891,7 +833,7 @@ fn trim(
     if status != EXPORT_COMPLETED {
         let _ = std::fs::remove_file(&staged);
         let error: Option<Retained<NSError>> = unsafe { msg_send![&session, error] };
-        return Err(error.map_or_else(|| unreadable(item), super::io_error));
+        return Err(error.map_or_else(|| unreadable(item), io_error));
     }
     if into == item {
         replace(item, &staged)?;
