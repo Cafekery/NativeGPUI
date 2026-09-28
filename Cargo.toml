@@ -20,7 +20,7 @@ default = []
 private-api = []
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bcf6582ce3500df93a8a39366640173e6786cea6" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "d3ccd5719486b39b6c18cf37a06233ef9833d6d8" }
 image = "0.25"
 raw-window-handle = "0.6"
 
@@ -50,7 +50,7 @@ objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, f
 [dev-dependencies]
 convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bcf6582ce3500df93a8a39366640173e6786cea6", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d3ccd5719486b39b6c18cf37a06233ef9833d6d8", features = ["font-kit"] }
 
 [[example]]
 name = "custom_glass"
@@ -69,4 +69,4 @@ lto = false
 incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "dd149929d84068226fc5190f1560f725f10a532f" }
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "072665247f1cb981591b089bd51f995924f5416f" }
