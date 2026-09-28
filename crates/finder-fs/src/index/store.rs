@@ -80,6 +80,10 @@ impl Node {
     pub fn deleted(&self) -> bool {
         self.flags & DELETED != 0
     }
+
+    pub fn listed(&self) -> bool {
+        self.is_dir() && self.flags & PACKAGE == 0 && self.state & LISTED != 0
+    }
 }
 
 fn kind_bits(kind: EntryKind) -> u8 {
@@ -129,36 +133,26 @@ fn hash(bytes: &[u8]) -> u32 {
     (h ^ (h >> 32)) as u32
 }
 
-pub fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
+fn folded(bytes: &[u8]) -> Cow<'_, [u8]> {
     match bytes.is_ascii() {
         true => Cow::Borrowed(bytes),
         false => Cow::Owned(crate::sort::fold(&String::from_utf8_lossy(bytes)).into_bytes()),
     }
 }
 
-/// Set on a non-ASCII name; a query never sets it, being folded before its own mask is taken.
-pub const NEEDS_FOLD: u64 = 1 << 28;
+const NEEDS_FOLD: u64 = 1 << 28;
 
-/// Search hides what Spotlight skips: dot-names, not the `UF_HIDDEN` `~/Library` it indexes.
+/// Hidden to search as to Spotlight: dot-names, not the `UF_HIDDEN` `~/Library` it indexes.
 pub const DOTTED: u64 = 1 << 29;
 
-pub fn grams(bytes: &[u8]) -> u32 {
-    let folded = folded(bytes);
-    let mut m = 0;
-    for pair in folded.windows(2) {
-        let (a, b) = (pair[0] | 0x20, pair[1] | 0x20);
-        m |= 1 << ((a as u32).wrapping_mul(31).wrapping_add(b as u32) & 31);
-    }
-    m
-}
-
 pub fn mask_of(bytes: &[u8]) -> u64 {
-    letters(bytes) as u64 | (grams(bytes) as u64) << 32
+    let folded = folded(bytes);
+    letters(&folded) as u64 | (grams(&folded) as u64) << 32
 }
 
-pub fn letters(bytes: &[u8]) -> u32 {
+fn letters(folded: &[u8]) -> u32 {
     let mut m = 0;
-    for &b in folded(bytes).iter() {
+    for &b in folded {
         m |= match b | 0x20 {
             c @ b'a'..=b'z' => 1 << (c - b'a'),
             b'0'..=b'9' if b.is_ascii_digit() => 1 << 26,
@@ -168,15 +162,28 @@ pub fn letters(bytes: &[u8]) -> u32 {
     m
 }
 
-fn fold_bit(bytes: &[u8]) -> u64 {
-    let fold = match bytes.is_ascii() {
-        true => 0,
-        false => NEEDS_FOLD,
-    };
-    match bytes.first() {
-        Some(b'.') => fold | DOTTED,
-        _ => fold,
+fn grams(folded: &[u8]) -> u32 {
+    let mut m = 0;
+    for pair in folded.windows(2) {
+        let (a, b) = (pair[0] | 0x20, pair[1] | 0x20);
+        m |= 1 << ((a as u32).wrapping_mul(31).wrapping_add(b as u32) & 31);
     }
+    m
+}
+
+fn name_mask(bytes: &[u8]) -> u64 {
+    let mut mask = mask_of(bytes);
+    if !bytes.is_ascii() {
+        mask |= NEEDS_FOLD;
+    }
+    if bytes.first() == Some(&b'.') {
+        mask |= DOTTED;
+    }
+    mask
+}
+
+fn table_len(count: usize) -> usize {
+    ((count + 1) * 2).next_power_of_two().max(64)
 }
 
 fn put(table: &mut [u32], hash: u32, id: u32) {
@@ -211,6 +218,14 @@ impl Names {
         &self.blob[start..self.ends[id] as usize]
     }
 
+    pub fn folded(&self, id: u32) -> Cow<'_, [u8]> {
+        let bytes = self.bytes(id);
+        match self.mask[id as usize] & NEEDS_FOLD == 0 {
+            true => Cow::Borrowed(bytes),
+            false => folded(bytes),
+        }
+    }
+
     pub fn masks(&self) -> &[u64] {
         &self.mask
     }
@@ -236,7 +251,7 @@ impl Names {
         reserve(&mut self.mask, 1);
         self.blob.extend_from_slice(bytes);
         self.ends.push(self.blob.len() as u32);
-        self.mask.push(mask_of(bytes) | fold_bit(bytes));
+        self.mask.push(name_mask(bytes));
         self.tables[shard][slot] = id;
         self.counts[shard] += 1;
         id
@@ -253,10 +268,7 @@ impl Names {
     }
 
     fn grow(&mut self, shard: usize) {
-        let size = ((self.counts[shard] as usize + 1) * 2)
-            .next_power_of_two()
-            .max(64);
-        let mut table = vec![NONE; size];
+        let mut table = vec![NONE; table_len(self.counts[shard] as usize)];
         for id in std::mem::take(&mut self.tables[shard]) {
             if id != NONE {
                 put(&mut table, hash(self.bytes(id)), id);
@@ -266,13 +278,10 @@ impl Names {
     }
 
     pub fn reindex(&mut self) {
-        self.mask = (0..self.ends.len() as u32)
-            .map(|id| {
-                let bytes = self.bytes(id);
-                mask_of(bytes) | fold_bit(bytes)
-            })
+        self.mask = (0..self.len() as u32)
+            .map(|id| name_mask(self.bytes(id)))
             .collect();
-        let hashes: Vec<u32> = (0..self.ends.len() as u32)
+        let hashes: Vec<u32> = (0..self.len() as u32)
             .map(|id| hash(self.bytes(id)))
             .collect();
         self.counts = vec![0; SHARDS];
@@ -282,7 +291,7 @@ impl Names {
         self.tables = self
             .counts
             .iter()
-            .map(|&count| vec![NONE; ((count as usize + 1) * 2).next_power_of_two().max(64)])
+            .map(|&count| vec![NONE; table_len(count as usize)])
             .collect();
         for (id, &hash) in hashes.iter().enumerate() {
             put(&mut self.tables[hash as usize % SHARDS], hash, id as u32);
@@ -378,35 +387,25 @@ impl Tree {
     }
 
     pub fn listed(&self, path: &Path) -> bool {
-        self.find(path).is_some_and(|id| {
-            let node = self.nodes[id as usize];
-            node.is_dir()
-                && !node.deleted()
-                && node.flags & PACKAGE == 0
-                && node.state & LISTED != 0
-        })
+        self.find(path)
+            .is_some_and(|id| self.nodes[id as usize].listed())
     }
 
     pub fn listed_under(&self, roots: &[PathBuf]) -> Vec<(u32, PathBuf)> {
+        let listed = |id: &u32| self.nodes[*id as usize].listed();
         let mut stack: Vec<(u32, PathBuf)> = roots
             .iter()
-            .filter_map(|root| Some((self.find(root)?, root.clone())))
+            .filter_map(|root| Some((self.find(root).filter(listed)?, root.clone())))
             .collect();
-        let mut listed = Vec::new();
+        let mut found = Vec::new();
         while let Some((id, path)) = stack.pop() {
-            let node = self.nodes[id as usize];
-            if !node.is_dir() || node.flags & PACKAGE != 0 || node.state & LISTED == 0 {
-                continue;
+            for child in self.children(id).filter(listed) {
+                let name = OsStr::from_bytes(self.names.bytes(self.name_of[child as usize]));
+                stack.push((child, path.join(name)));
             }
-            for child in self.children(id) {
-                if self.nodes[child as usize].is_dir() {
-                    let name = OsStr::from_bytes(self.names.bytes(self.name_of[child as usize]));
-                    stack.push((child, path.join(name)));
-                }
-            }
-            listed.push((id, path));
+            found.push((id, path));
         }
-        listed
+        found
     }
 
     pub fn find(&self, path: &Path) -> Option<u32> {
@@ -422,25 +421,19 @@ impl Tree {
         Some(cur)
     }
 
-    pub fn child(&self, dir: u32, name: &[u8]) -> Option<u32> {
+    fn child(&self, dir: u32, name: &[u8]) -> Option<u32> {
         self.children(dir)
             .find(|&id| self.names.bytes(self.name_of[id as usize]) == name)
     }
 
     pub fn children(&self, dir: u32) -> impl Iterator<Item = u32> + '_ {
-        let mut cur = self.nodes[dir as usize].first_child;
-        let mut left = self.nodes.len();
-        std::iter::from_fn(move || {
-            while cur != NONE && left > 0 {
-                let id = cur;
-                left -= 1;
-                cur = self.nodes[id as usize].next_sibling;
-                if !self.nodes[id as usize].deleted() {
-                    return Some(id);
-                }
-            }
-            None
-        })
+        self.siblings(self.nodes[dir as usize].first_child)
+            .filter(|&id| !self.nodes[id as usize].deleted())
+    }
+
+    fn siblings(&self, first: u32) -> impl Iterator<Item = u32> + '_ {
+        let next = |&id: &u32| Some(self.nodes[id as usize].next_sibling).filter(|&id| id != NONE);
+        std::iter::successors(Some(first).filter(|&id| id != NONE), next).take(self.nodes.len())
     }
 
     pub fn ensure(&mut self, path: &Path) -> u32 {
@@ -452,36 +445,33 @@ impl Tree {
             let Some(name) = name.to_str() else {
                 return cur;
             };
-            match self.child(cur, name.as_bytes()) {
-                Some(id) => cur = id,
+            cur = match self.child(cur, name.as_bytes()) {
+                Some(id) => id,
                 None => {
-                    let id = self.push(cur, name, None, false);
+                    let name = self.names.intern(name);
+                    let id = self.push(cur, name);
                     self.nodes[id as usize].next_sibling = self.nodes[cur as usize].first_child;
                     self.nodes[cur as usize].first_child = id;
-                    cur = id;
+                    id
                 }
-            }
+            };
         }
         cur
     }
 
-    fn push(&mut self, parent: u32, name: &str, entry: Option<&Entry>, sealed: bool) -> u32 {
-        let name = self.names.intern(name);
+    fn push(&mut self, parent: u32, name: u32) -> u32 {
         let id = self.nodes.len() as u32;
         reserve(&mut self.nodes, 1);
         reserve(&mut self.name_of, 1);
         let depth = self.nodes[parent as usize].depth.saturating_add(1);
         self.nodes.push(Node::dir(parent, depth));
         self.name_of.push(name);
-        if let Some(entry) = entry {
-            self.write(id, entry, sealed);
-        }
         id
     }
 
-    pub fn write(&mut self, id: u32, entry: &Entry, sealed: bool) {
-        let was_dir = self.nodes[id as usize].is_dir();
+    pub fn set_entry(&mut self, id: u32, entry: &Entry, sealed: bool) {
         let node = &mut self.nodes[id as usize];
+        let was_dir = node.is_dir();
         node.flags = kind_bits(entry.kind)
             | if entry.hidden { HIDDEN } else { 0 }
             | if entry.package { PACKAGE } else { 0 };
@@ -494,7 +484,7 @@ impl Tree {
         if sealed {
             node.state |= VISITED;
         }
-        if was_dir && !self.nodes[id as usize].is_dir() {
+        if was_dir && !node.is_dir() {
             let kids: Vec<u32> = self.children(id).collect();
             self.nodes[id as usize].first_child = NONE;
             for kid in kids {
@@ -507,17 +497,11 @@ impl Tree {
         let mut stack = vec![id];
         while let Some(id) = stack.pop() {
             self.nodes[id as usize].flags |= DELETED;
-            let mut cur = self.nodes[id as usize].first_child;
-            let mut left = self.nodes.len();
-            while cur != NONE && left > 0 {
-                stack.push(cur);
-                left -= 1;
-                cur = self.nodes[cur as usize].next_sibling;
-            }
+            stack.extend(self.siblings(self.nodes[id as usize].first_child));
         }
     }
 
-    pub fn start_relist(&self, dir: u32) -> Relist {
+    pub fn start_relist(&self, dir: u32, len: usize) -> Relist {
         let mut old: Vec<(u32, u32)> = self
             .children(dir)
             .map(|id| (self.name_of[id as usize], id))
@@ -526,33 +510,29 @@ impl Tree {
         Relist {
             dir,
             old,
-            ids: Vec::new(),
+            ids: Vec::with_capacity(len),
         }
     }
 
     pub fn relist(&mut self, state: &mut Relist, entries: &[Entry], sealed: &[bool]) {
-        for (i, entry) in entries.iter().enumerate() {
+        for (entry, &sealed) in entries.iter().zip(sealed) {
             let name = self.names.intern(&entry.name);
-            let id = match state.take(name) {
-                Some(id) => {
-                    self.write(id, entry, sealed[i]);
-                    id
-                }
-                None => self.push(state.dir, &entry.name, Some(entry), sealed[i]),
-            };
+            let id = state
+                .take(name)
+                .unwrap_or_else(|| self.push(state.dir, name));
+            self.set_entry(id, entry, sealed);
             state.ids.push(id);
         }
     }
 
     pub fn end_relist(&mut self, state: Relist) -> Vec<u32> {
         let Relist { dir, old, ids } = state;
-        for pair in ids.windows(2) {
-            self.nodes[pair[0] as usize].next_sibling = pair[1];
+        let mut next = NONE;
+        for &id in ids.iter().rev() {
+            self.nodes[id as usize].next_sibling = next;
+            next = id;
         }
-        if let Some(&last) = ids.last() {
-            self.nodes[last as usize].next_sibling = NONE;
-        }
-        self.nodes[dir as usize].first_child = ids.first().copied().unwrap_or(NONE);
+        self.nodes[dir as usize].first_child = next;
         for (_, id) in old {
             if id != NONE {
                 self.tombstone(id);
@@ -560,10 +540,6 @@ impl Tree {
         }
         self.nodes[dir as usize].state |= LISTED | VISITED | EXACT;
         ids
-    }
-
-    pub fn add_size(&mut self, id: u32, bytes: u64) {
-        self.nodes[id as usize].size += bytes;
     }
 
     pub fn worth_compacting(&self) -> bool {
@@ -597,7 +573,6 @@ impl Tree {
         let mut moved = vec![NONE; self.nodes.len()];
         let mut kept = 0;
         for id in 0..self.nodes.len() {
-            // A parent is always an earlier node, so by here its own fate is known.
             let orphan = id != ROOT as usize && moved[self.nodes[id].parent as usize] == NONE;
             if self.nodes[id].deleted() || orphan {
                 continue;
