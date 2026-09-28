@@ -1,6 +1,3 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::rc::Rc;
-
 use gpui::{App, ElementId, Length, Style, Window, px, relative, size};
 use objc2_app_kit::{
     NSControlSize, NSLevelIndicator, NSLevelIndicatorStyle, NSProgressIndicator,
@@ -9,9 +6,9 @@ use objc2_app_kit::{
 
 use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
+    ControlSize, Layer, NativeHandler, Slot, ValueKind, hosted_element, wire,
 };
-use crate::controls::{axis, fitted};
+use crate::controls::{axis, fitted, hash_of, number_handler, sync_enabled};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum LevelStyle {
@@ -240,19 +237,14 @@ impl NativeLevel {
     }
 
     pub fn on_change(mut self, handler: impl Fn(&f64, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Number(value) = value {
-                handler(&value, window, cx);
-            }
-        }));
+        self.on_change = Some(number_handler(handler));
         self
     }
 
     fn layout(&self) -> Style {
         let (appkit, min, max) = (self.style.appkit(), self.min, self.max);
-        let mut hash = DefaultHasher::new();
-        (appkit.0, min.to_bits(), max.to_bits()).hash(&mut hash);
-        let fitting = fitting_size_keyed("NSLevelIndicator", hash.finish(), |mtm| {
+        let key = hash_of((appkit.0, min.to_bits(), max.to_bits()));
+        let fitting = fitting_size_keyed("NSLevelIndicator", key, |mtm| {
             let probe = NSLevelIndicator::new(mtm);
             probe.setLevelIndicatorStyle(appkit);
             probe.setMinValue(min);
@@ -296,9 +288,7 @@ impl NativeLevel {
             level.setEditable(self.editable);
             level.setContinuous(self.editable);
         }
-        if level.isEnabled() != self.enabled {
-            level.setEnabled(self.enabled);
-        }
+        sync_enabled(&level, self.enabled);
         let wanted = self.value.clamp(self.min, self.max);
         if level.doubleValue() != wanted {
             level.setDoubleValue(wanted);

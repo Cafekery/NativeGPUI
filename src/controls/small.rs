@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Hsla, SharedString, Style, Window, px, relative};
+use gpui::{App, ElementId, Hsla, SharedString, Style, Window, px, relative, size};
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -17,15 +17,13 @@ use objc2_foundation::{
 
 use crate::bridge::appkit::{fitting_size, fitting_size_keyed};
 use crate::bridge::host::{
-    Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, ValueKind, hosted_element,
-    wire,
+    Layer, NativeDispatch, NativeHandler, NativeRead, Slot, ValueKind, hosted_element, wire,
 };
-use crate::controls::fitted;
+use crate::controls::{fitted, nsstring_is, number_handler, sync_enabled};
 use crate::system::color::{from_nscolor, to_nscolor};
 
 type Handler<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
 
-/// A reader's `None` means the control had nothing to report.
 fn forward_some<T: 'static>(user: Option<Handler<T>>) -> Option<NativeDispatch> {
     user.map(|user| -> NativeDispatch {
         Rc::new(move |value: Box<dyn Any>, window, cx| {
@@ -91,11 +89,7 @@ impl NativeStepper {
     }
 
     pub fn on_change(mut self, handler: impl Fn(&f64, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Number(value) = value {
-                handler(&value, window, cx);
-            }
-        }));
+        self.on_change = Some(number_handler(handler));
         self
     }
 
@@ -130,9 +124,7 @@ impl NativeStepper {
         if stepper.doubleValue() != self.value {
             stepper.setDoubleValue(self.value);
         }
-        if stepper.isEnabled() != self.enabled {
-            stepper.setEnabled(self.enabled);
-        }
+        sync_enabled(&stepper, self.enabled);
         slot.on_change(ValueKind::Number, self.on_change.take());
     }
 }
@@ -220,8 +212,7 @@ impl NativeColorWell {
         if well.supportsAlpha() != self.supports_alpha {
             well.setSupportsAlpha(self.supports_alpha);
         }
-        // Diffed against the value last pushed, never the live well: a stale write would land in
-        // a picker the user is dragging in.
+        // Diffed against the last push, not the live well: a stale write lands mid-drag.
         let target = self.color;
         window.with_element_state::<Hsla, _>(slot.id, |pushed, _| {
             if pushed != Some(target) && from_nscolor(&well.color()) != Some(target) {
@@ -229,9 +220,7 @@ impl NativeColorWell {
             }
             ((), target)
         });
-        if well.isEnabled() != self.enabled {
-            well.setEnabled(self.enabled);
-        }
+        sync_enabled(&well, self.enabled);
         let read: NativeRead = Rc::new(|sender: &AnyObject| {
             let color: Retained<NSColor> = unsafe { msg_send![sender, color] };
             Box::new(from_nscolor(&color)) as Box<dyn Any>
@@ -244,12 +233,10 @@ hosted_element!(NativeColorWell);
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum DatePickerStyle {
-    /// Editable fields with a stepper.
     #[default]
     Stepper,
     /// The calendar grid and analog clock.
     Graphical,
-    /// Editable fields, no stepper.
     Text,
 }
 
@@ -362,9 +349,7 @@ impl NativeDatePicker {
             }
             ((), target)
         });
-        if picker.isEnabled() != self.enabled {
-            picker.setEnabled(self.enabled);
-        }
+        sync_enabled(&picker, self.enabled);
         let read: NativeRead = Rc::new(|sender: &AnyObject| {
             let date: Retained<NSDate> = unsafe { msg_send![sender, dateValue] };
             Box::new(Some(date.timeIntervalSince1970())) as Box<dyn Any>
@@ -377,7 +362,6 @@ hosted_element!(NativeDatePicker);
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum PathStyle {
-    /// The Finder-style breadcrumb.
     #[default]
     Standard,
     /// A popup showing the leaf, with the ancestors in its menu.
@@ -460,10 +444,10 @@ impl NativePathControl {
             control.setURL(Some(&NSURL::fileURLWithPath(&NSString::from_str("/"))));
             control.fittingSize()
         });
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = px(fitting.height as f32).into();
-        style
+        Style {
+            size: size(relative(1.).into(), px(fitting.height as f32).into()),
+            ..Default::default()
+        }
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -479,14 +463,10 @@ impl NativePathControl {
         match &self.titles {
             Some(titles) => set_titles(&control, titles, &self.bold),
             None => {
-                let current = control
-                    .URL()
-                    .and_then(|url| url.path())
-                    .map(|path| path.to_string());
-                if current.as_deref() != Some(self.path.as_str()) {
-                    control.setURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(
-                        &self.path,
-                    ))));
+                let current = control.URL().and_then(|url| url.path());
+                if !current.is_some_and(|path| nsstring_is(&path, &self.path)) {
+                    let path = NSString::from_str(&self.path);
+                    control.setURL(Some(&NSURL::fileURLWithPath(&path)));
                 }
             }
         }
@@ -499,10 +479,8 @@ impl NativePathControl {
                 cell.setBackgroundStyle(background);
             }
         }
-        if control.isEnabled() != self.enabled {
-            control.setEnabled(self.enabled);
-        }
-        // Titled items carry no URL, so a click on one reports the path the titles stand for.
+        sync_enabled(&control, self.enabled);
+        // Titled items carry no URL.
         let whole = self.titles.is_some().then(|| self.path.clone());
         // `clickedPathItem` is nil once the action returns, so it is read inside it.
         let read: NativeRead = Rc::new(move |sender: &AnyObject| {
@@ -521,7 +499,6 @@ impl NativePathControl {
 
 hosted_element!(NativePathControl);
 
-/// Rebuilds the items only when a title or its bold characters changed.
 fn set_titles(control: &NSPathControl, titles: &[SharedString], bold: &[usize]) {
     let size = control
         .font()
@@ -569,7 +546,7 @@ fn attributed(
     let whole = NSRange::new(0, string.length());
     // Without a colour the cell draws titles secondary; an emphasized cell still turns it white.
     let color = NSColor::labelColor();
-    // Clipped rather than truncated: a squeezed title fades into its chevron, as Finder's do.
+    // Clipped, not truncated: a squeezed title fades into its chevron.
     let style = NSMutableParagraphStyle::new();
     style.setLineBreakMode(NSLineBreakMode::ByClipping);
     unsafe {
