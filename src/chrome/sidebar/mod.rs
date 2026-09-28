@@ -6,7 +6,6 @@ mod source;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -41,7 +40,7 @@ use crate::materials::RawMaterial;
 use crate::tokens;
 
 pub use self::cell::system_template;
-use self::cell::{SidebarCell, row_view, tint_selected_rows};
+use self::cell::{SidebarCell, row_view, tint_rows};
 use self::diff::{SavedState, apply_diff, expand_groups, plan_diff, reveal};
 pub use self::dragdrop::drag_files;
 use self::dragdrop::{
@@ -297,9 +296,9 @@ struct Shared {
     menu_row: RefCell<Option<SharedString>>,
     suppress: Cell<u32>,
     writes: Cell<u64>,
-    cx: RefCell<AsyncWindowContext>,
+    cx: AsyncWindowContext,
     expand_groups: Cell<bool>,
-    outline: RefCell<Option<Retained<NSOutlineView>>>,
+    outline: Retained<NSOutlineView>,
 }
 
 impl Shared {
@@ -328,17 +327,16 @@ impl Shared {
         self.model.borrow().node(key).is_some_and(test)
     }
 
-    fn id_at_row(&self, outline: &NSOutlineView, row: NSInteger) -> Option<SharedString> {
+    fn id_at_row(&self, row: NSInteger) -> Option<SharedString> {
         if row < 0 {
             return None;
         }
-        let item = outline.itemAtRow(row)?;
+        let item = self.outline.itemAtRow(row)?;
         self.model.borrow().id_for(Self::key_of_item(&item))
     }
 
     fn selected_id(&self) -> Option<SharedString> {
-        let outline = self.outline.borrow().clone()?;
-        self.id_at_row(&outline, outline.selectedRow())
+        self.id_at_row(self.outline.selectedRow())
     }
 
     fn wrote(&self, count: u64) {
@@ -353,7 +351,6 @@ impl Shared {
 
     fn defer(&self, run: impl FnOnce(&mut Window, &mut App) + 'static) {
         self.cx
-            .borrow()
             .spawn(async move |cx| {
                 let _ = cx.update(run);
             })
@@ -362,7 +359,6 @@ impl Shared {
 }
 
 struct Views {
-    outline: Retained<NSOutlineView>,
     scroll: Retained<NSScrollView>,
     split: Retained<NSSplitViewController>,
     sidebar_item: Retained<NSSplitViewItem>,
@@ -370,8 +366,6 @@ struct Views {
     _source: Retained<NSObject>,
     toolbar: Retained<NSToolbar>,
     _toolbar_delegate: Retained<SidebarToolbarDelegate>,
-    _sidebar_vc: Retained<NSViewController>,
-    _content_vc: Retained<NSViewController>,
     content_item: Retained<NSSplitViewItem>,
     inspector: RefCell<Option<Inspector>>,
     inspector_asked: Cell<bool>,
@@ -409,8 +403,7 @@ impl Drop for SidebarState {
     }
 }
 
-// Only a divider the user drags posts its index, which is how a drag shut tells itself apart
-// from a collapse the app asked for.
+// Only a divider the user drags posts its index, telling a drag shut from an asked collapse.
 fn observe_inspector(
     split: &NSSplitViewController,
     item: &NSSplitViewItem,
@@ -461,9 +454,7 @@ fn observe_key_state(
     .map(|name| {
         let shared = shared.clone();
         let block = StackBlock::new(move |_: NonNull<NSNotification>| {
-            if let Some(outline) = shared.outline.borrow().clone() {
-                tint_selected_rows(&outline);
-            }
+            tint_rows(&shared.outline);
         })
         .copy();
         unsafe {
@@ -492,7 +483,6 @@ impl NativeSidebar {
         }
         let sidebar = build(window, cx, options);
         if cx.try_global::<Sidebars>().is_none() {
-            // A closed window's sidebar holds its views and observers until it is dropped here.
             cx.on_window_closed(|cx, closed| {
                 cx.default_global::<Sidebars>()
                     .0
@@ -526,7 +516,7 @@ impl NativeSidebar {
 
     pub fn set_selected(&self, id: Option<&str>) {
         let state = &*self.0;
-        let outline = &state.views.outline;
+        let outline = &state.shared.outline;
 
         let wanted = id.and_then(|id| state.shared.model.borrow().key_for_id(id));
         let row = match wanted {
@@ -600,7 +590,7 @@ impl NativeSidebar {
 
     pub fn set_row_size(&self, size: SidebarRowSize) {
         let state = &*self.0;
-        let outline = &state.views.outline;
+        let outline = &state.shared.outline;
         let wanted = size.appkit();
         if outline.rowSizeStyle() == wanted {
             return;
@@ -615,7 +605,7 @@ impl NativeSidebar {
     }
 
     pub fn row_size(&self) -> SidebarRowSize {
-        match self.0.views.outline.rowSizeStyle() {
+        match self.0.shared.outline.rowSizeStyle() {
             NSTableViewRowSizeStyle::Small => SidebarRowSize::Small,
             NSTableViewRowSizeStyle::Medium => SidebarRowSize::Medium,
             NSTableViewRowSizeStyle::Large => SidebarRowSize::Large,
@@ -637,10 +627,7 @@ impl NativeSidebar {
         self.0.pane_shared.align(&self.0.views.pane);
     }
 
-    /// A trailing inspector: AppKit's own split item, so macOS draws its glass and its divider,
-    /// which drags it between `min` and `max` or shut. `Some` shows it at that thickness
-    /// whenever it opens; `None` collapses it. Changes after the first call animate once the
-    /// window is on screen.
+    /// Opens the trailing inspector at `thickness` or collapses it; the first call never animates.
     pub fn set_inspector(&self, thickness: Option<Pixels>, min: Pixels, max: Pixels) {
         let mtm = MainThreadMarker::new().expect("set_inspector is a main-thread path");
         let mut slot = self.0.views.inspector.borrow_mut();
@@ -693,14 +680,16 @@ impl NativeSidebar {
         };
         let collapse = thickness.is_none();
         let settled = inspector.item.isCollapsed() == collapse;
-        if let (false, Some(thickness)) = (settled || created, thickness) {
-            // A collapsed item opens at its view's width, the width it had when it collapsed.
-            let view = inspector.controller.view();
-            view.setFrameSize(NSSize::new(thickness.to_f64(), view.frame().size.height));
+        if settled && !created {
+            return;
         }
-        match (settled, animate) {
-            (true, _) => {}
-            (false, true) => {
+        if !settled {
+            if let Some(thickness) = thickness.filter(|_| !created) {
+                // A collapsed item opens at its view's width, the width it had when it collapsed.
+                let view = inspector.controller.view();
+                view.setFrameSize(NSSize::new(thickness.to_f64(), view.frame().size.height));
+            }
+            if animate {
                 inspector.sliding.set(true);
                 let item = inspector.item.clone();
                 let sliding = inspector.sliding.clone();
@@ -712,11 +701,9 @@ impl NativeSidebar {
                     }),
                     Some(&StackBlock::new(move || sliding.set(false)).copy()),
                 );
+            } else {
+                inspector.item.setCollapsed(collapse);
             }
-            (false, false) => inspector.item.setCollapsed(collapse),
-        }
-        if settled && !created {
-            return;
         }
         self.0.views.split.view().layoutSubtreeIfNeeded();
         self.0.pane_shared.align(&self.0.views.pane);
@@ -741,9 +728,7 @@ impl NativeSidebar {
         self.0.pane_shared.align(&self.0.views.pane);
     }
 
-    /// The inspector's thickness after AppKit resized it since the previous call, by its
-    /// divider or otherwise; zero once its divider has dragged it shut. Its own slides and
-    /// `set_inspector_thickness` report nothing.
+    /// The width AppKit last resized the inspector to, zero once dragged shut; own slides excluded.
     pub fn take_inspector_resize(&self) -> Option<Pixels> {
         let slot = self.0.views.inspector.borrow();
         slot.as_ref()?.resized.take().map(|width| px(width as f32))
@@ -801,7 +786,7 @@ impl NativeSidebar {
 
     pub fn set_expanded(&self, id: &str, expanded: bool) {
         let state = &*self.0;
-        let outline = &state.views.outline;
+        let outline = &state.shared.outline;
         let Some(item) = state.shared.item_for_id(id) else {
             return;
         };
@@ -822,7 +807,7 @@ impl NativeSidebar {
         self.0
             .shared
             .item_for_id(id)
-            .is_some_and(|item| unsafe { self.0.views.outline.isItemExpanded(Some(&item)) })
+            .is_some_and(|item| unsafe { self.0.shared.outline.isItemExpanded(Some(&item)) })
     }
 
     pub fn scroll_offset(&self) -> f32 {
@@ -871,7 +856,7 @@ impl NativeSidebar {
 
     pub fn probe(&self) -> SidebarProbe {
         let views = &self.0.views;
-        let outline = &views.outline;
+        let outline = &self.0.shared.outline;
         let first_responder = outline
             .window()
             .and_then(|w| w.firstResponder())
@@ -933,7 +918,7 @@ impl NativeSidebar {
     }
 
     pub fn row_layout(&self, row: isize) -> Option<RowLayout> {
-        let outline = &self.0.views.outline;
+        let outline = &self.0.shared.outline;
         if row < 0 || row >= outline.numberOfRows() {
             return None;
         }
@@ -943,20 +928,19 @@ impl NativeSidebar {
         let frame = |view: Option<&NSView>| view.map_or(NSRect::ZERO, |v| v.frame());
         let icon = unsafe { cell.imageView() };
         let title = unsafe { cell.textField() };
-        let badge = cell.ivars().badge.borrow().clone();
         Some(RowLayout {
             row: outline.rectOfRow(row),
             cell: outline.frameOfCellAtColumn_row(0, row),
             icon: frame(icon.as_deref().map(|v| v.as_ref())),
             title: frame(title.as_deref().map(|v| v.as_ref())),
-            badge: frame(badge.as_deref().map(|v| v.as_ref())),
+            badge: cell.ivars().badge.frame(),
             level: outline.levelForRow(row),
             expanded: unsafe { outline.isItemExpanded(Some(&item)) },
         })
     }
 
     pub fn row_point(&self, row: isize) -> Option<NSPoint> {
-        let outline = &self.0.views.outline;
+        let outline = &self.0.shared.outline;
         if row < 0 || row >= outline.numberOfRows() {
             return None;
         }
@@ -985,7 +969,6 @@ struct PaneShared {
     unbacked: bool,
     intended_gpui: Cell<NSRect>,
     metrics: Cell<SidebarMetrics>,
-    published: Cell<SidebarMetrics>,
     align_count: Cell<u64>,
     corrections: Cell<u64>,
     cx: RefCell<AsyncWindowContext>,
@@ -1006,23 +989,20 @@ impl PaneShared {
         let safe = pane.safeAreaInsets();
 
         let wanted = match self.align {
-            PaneAlign::WindowAligned => NSRect::new(
-                NSPoint::new(-pane_in_cv.origin.x, -pane_in_cv.origin.y),
-                cv_size,
-            ),
+            PaneAlign::WindowAligned => {
+                // Unclipped, so the floating sidebar's glass has GPUI's view beneath it to blur.
+                for view in [pane, &*host] {
+                    if view.clipsToBounds() {
+                        view.setClipsToBounds(false);
+                    }
+                }
+                NSRect::new(
+                    NSPoint::new(-pane_in_cv.origin.x, -pane_in_cv.origin.y),
+                    cv_size,
+                )
+            }
             PaneAlign::FillPane => pane.bounds(),
         };
-        // Unclipped, so the floating sidebar's glass has GPUI's view beneath it to blur.
-        if self.align == PaneAlign::WindowAligned {
-            for view in [Some(pane.retain()), unsafe { pane.superview() }]
-                .into_iter()
-                .flatten()
-            {
-                if view.clipsToBounds() {
-                    view.setClipsToBounds(false);
-                }
-            }
-        }
         let as_intended = rects_equal(self.intended_gpui.get(), wanted);
         let in_place = rects_equal(self.gpui.frame(), wanted);
         if !as_intended || !in_place {
@@ -1052,12 +1032,10 @@ impl PaneShared {
             thickness: px(pane_in_cv.origin.x as f32),
             collapsed: pane_in_cv.origin.x <= 1.0,
         };
-        self.metrics.set(metrics);
-        let same = self.published.get() == metrics;
+        let same = self.metrics.replace(metrics) == metrics;
         if same && in_place {
             return;
         }
-        self.published.set(metrics);
         let landed = self.cx.try_borrow_mut().is_ok_and(|mut cx| {
             cx.update(|window, app| {
                 app.set_global(metrics);
@@ -1311,15 +1289,19 @@ define_class!(
     unsafe impl NSToolbarDelegate for SidebarToolbarDelegate {
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_items(&self, _: &NSToolbar) -> Retained<NSArray<NSString>> {
-            NSArray::from_slice(&[unsafe { NSToolbarToggleSidebarItemIdentifier }])
+            toggle_sidebar_only()
         }
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_items(&self, _: &NSToolbar) -> Retained<NSArray<NSString>> {
-            NSArray::from_slice(&[unsafe { NSToolbarToggleSidebarItemIdentifier }])
+            toggle_sidebar_only()
         }
     }
 );
+
+fn toggle_sidebar_only() -> Retained<NSArray<NSString>> {
+    NSArray::from_slice(&[unsafe { NSToolbarToggleSidebarItemIdentifier }])
+}
 
 fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSidebar {
     let mtm = MainThreadMarker::new().expect("gpui runs its windows on the main thread");
@@ -1331,21 +1313,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         .map(|v| v.frame().size)
         .unwrap_or_else(|| old_content.frame().size);
 
-    let shared = Rc::new(Shared {
-        model: RefCell::new(Model::default()),
-        interned: RefCell::new(HashMap::new()),
-        on_select: RefCell::new(None),
-        on_reorder: RefCell::new(None),
-        on_eject: RefCell::new(None),
-        on_drop_paths: RefCell::new(None),
-        on_menu: RefCell::new(None),
-        menu_row: RefCell::new(None),
-        suppress: Cell::new(0),
-        writes: Cell::new(0),
-        cx: RefCell::new(window.to_async(cx)),
-        expand_groups: Cell::new(options.expand_groups),
-        outline: RefCell::new(None),
-    });
     let strip = NSRect::new(
         NSPoint::ZERO,
         NSSize::new(options.thickness.to_f64(), content_size.height),
@@ -1372,6 +1339,21 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     // After `.sourceList`, never before: that style overwrites `rowHeight` and the indentation.
     outline.setRowSizeStyle(options.row_size.appkit());
     outline.setFloatsGroupRows(false);
+    let shared = Rc::new(Shared {
+        model: RefCell::new(Model::default()),
+        interned: RefCell::new(HashMap::new()),
+        on_select: RefCell::new(None),
+        on_reorder: RefCell::new(None),
+        on_eject: RefCell::new(None),
+        on_drop_paths: RefCell::new(None),
+        on_menu: RefCell::new(None),
+        menu_row: RefCell::new(None),
+        suppress: Cell::new(0),
+        writes: Cell::new(0),
+        cx: window.to_async(cx),
+        expand_groups: Cell::new(options.expand_groups),
+        outline: outline.clone(),
+    });
     let menu = NSMenu::new(mtm);
     menu.setAutoenablesItems(false);
     let source = if options.reorderable {
@@ -1387,7 +1369,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::empty(), false);
     }
     outline.registerForDraggedTypes(&NSArray::from_retained_slice(&dragged_types));
-    *shared.outline.borrow_mut() = Some(outline.clone());
 
     let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), strip);
     scroll.setDocumentView(Some(&outline));
@@ -1417,7 +1398,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             NSSize::new(f64::NAN, f64::NAN),
         )),
         metrics: Cell::new(SidebarMetrics::default()),
-        published: Cell::new(SidebarMetrics::default()),
         align_count: Cell::new(0),
         corrections: Cell::new(0),
         cx: RefCell::new(window.to_async(cx)),
@@ -1529,7 +1509,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     let observers = observe_key_state(&ns_window, &shared);
     let state = SidebarState {
         views: Views {
-            outline,
             scroll,
             split,
             sidebar_item,
@@ -1537,8 +1516,6 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             _source: source,
             toolbar,
             _toolbar_delegate: toolbar_delegate,
-            _sidebar_vc: sidebar_vc,
-            _content_vc: content_vc,
             content_item,
             inspector: RefCell::new(None),
             inspector_asked: Cell::new(false),

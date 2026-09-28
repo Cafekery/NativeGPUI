@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use gpui::Window;
 use objc2::rc::Retained;
@@ -44,7 +43,7 @@ fn dragged_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
 }
 
 fn file_drop_target(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
@@ -61,20 +60,23 @@ fn insertable(paths: &[PathBuf]) -> bool {
     paths.iter().all(|path| path.is_dir())
 }
 
-fn file_drop_row(shared: &Rc<Shared>, item: Option<&AnyObject>) -> Option<u64> {
+fn file_drop_row(shared: &Shared, item: Option<&AnyObject>) -> Option<u64> {
     let key = Shared::key_of_item(item?);
     shared.node_is(key, |node| node.drops).then_some(key)
 }
 
 fn validate_file_drop(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
     index: NSInteger,
 ) -> NSDragOperation {
+    if shared.on_drop_paths.borrow().is_none() {
+        return NSDragOperation::empty();
+    }
     let paths = dragged_paths(info);
-    if shared.on_drop_paths.borrow().is_none() || paths.is_empty() {
+    if paths.is_empty() {
         return NSDragOperation::empty();
     }
     if let Some(key) = file_drop_row(shared, item) {
@@ -97,7 +99,7 @@ fn validate_file_drop(
 }
 
 fn accept_file_drop(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
@@ -115,10 +117,7 @@ fn accept_file_drop(
         .and_then(|key| {
             let model = shared.model.borrow();
             let parent = model.parent_key(key)?;
-            let at = model
-                .children_keys(Some(parent))
-                .iter()
-                .position(|&k| k == key)?;
+            let at = model.child_keys(Some(parent)).position(|k| k == key)?;
             Some((parent, at))
         })
         .or_else(|| file_drop_target(shared, outline, info, item, index))
@@ -146,7 +145,7 @@ fn accept_file_drop(
 }
 
 fn drop_target(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
@@ -161,7 +160,7 @@ fn drop_target(
         return Some((Some(key), 0));
     }
     let parent = model.parent_key(key);
-    let at = model.children_keys(parent).iter().position(|&k| k == key)?;
+    let at = model.child_keys(parent).position(|k| k == key)?;
     let rect = outline.rectOfRow(unsafe { outline.rowForItem(item) });
     let point = outline.convertPoint_fromView(info.draggingLocation(), None);
     let below = point.y > rect.origin.y + rect.size.height / 2.;
@@ -169,7 +168,7 @@ fn drop_target(
 }
 
 pub(super) fn row_pasteboard_item(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     item: &AnyObject,
 ) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
     let key = Shared::key_of_item(item);
@@ -185,7 +184,7 @@ pub(super) fn row_pasteboard_item(
 }
 
 pub(super) fn validate_row_drop(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
@@ -206,7 +205,7 @@ pub(super) fn validate_row_drop(
 }
 
 pub(super) fn accept_row_drop(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     item: Option<&AnyObject>,
@@ -222,9 +221,8 @@ pub(super) fn accept_row_drop(
     let Some(from) = shared
         .model
         .borrow()
-        .children_keys(parent)
-        .iter()
-        .position(|&k| k == source)
+        .child_keys(parent)
+        .position(|k| k == source)
     else {
         return false;
     };
