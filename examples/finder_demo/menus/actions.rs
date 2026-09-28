@@ -10,7 +10,9 @@ use super::context;
 use crate::app::FinderDemo;
 use crate::data::{Column, is_trash};
 use crate::ops::After;
+use crate::view::ICON_VIEW;
 use crate::views::header::ColumnSpec;
+use crate::views::icon::Arrangement;
 use crate::{open_finder_tab, open_finder_window};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -26,6 +28,9 @@ pub(crate) enum Act {
     Inspector,
     InspectorAt(&'static str),
     Sort(Column),
+    Arrange(Arrangement),
+    CleanUp,
+    CleanUpBy(Column),
     Open,
     OpenWindow,
     Trash,
@@ -116,6 +121,9 @@ impl FinderDemo {
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
             Act::Sort(column) => self.sort_by(column, cx),
+            Act::Arrange(arrangement) => self.arrange(arrangement, cx),
+            Act::CleanUp => self.clean_up(false, cx),
+            Act::CleanUpBy(column) => self.clean_up_by(column, window, cx),
             Act::Open => self.open_selected(window, cx),
             Act::OpenWindow => self.open_in_window(cx),
             Act::Trash => self.trash_selection(cx),
@@ -412,6 +420,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
+        if self.view == ICON_VIEW && self.arrangement().is_some() {
+            return self.icon_sort(column, cx);
+        }
         let ascending = match self.sort == column {
             true => !self.ascending,
             false => matches!(column, Column::Name | Column::Kind),

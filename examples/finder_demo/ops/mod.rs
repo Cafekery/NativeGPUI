@@ -247,6 +247,7 @@ impl FinderDemo {
             return;
         }
         self.tags.remove(key);
+        self.icons.renamed(old, &name);
         self.run_op(
             Op::Rename {
                 path: PathBuf::from(key.as_ref()),
