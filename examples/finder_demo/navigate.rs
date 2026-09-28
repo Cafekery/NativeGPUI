@@ -111,12 +111,8 @@ impl FinderDemo {
             .unwrap_or(holder)
     }
 
-    pub(crate) fn crumb_path(&self) -> String {
-        self.target().to_string()
-    }
-
     pub(crate) fn title(&self) -> Cow<'static, str> {
-        if self.in_search() {
+        if self.in_search() || self.search_editing {
             return format!("Searching \u{201c}{}\u{201d}", self.scope_name()).into();
         }
         match self.tag_listing.map(tag_title) {

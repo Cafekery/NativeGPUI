@@ -71,6 +71,7 @@ pub(crate) struct FinderDemo {
     pub(crate) header: Option<Entity<HeaderBand>>,
     pub(crate) header_press: Option<f32>,
     pub(crate) query: String,
+    pub(crate) search_editing: bool,
     pub(crate) titled: String,
     /// The query the rows on screen are filtered by; `query` is what has been typed since.
     pub(crate) filtered: String,
@@ -216,6 +217,7 @@ impl FinderDemo {
             header: None,
             header_press: None,
             query: String::new(),
+            search_editing: false,
             filtered: String::new(),
             scope: prefs::search_scope().unwrap_or(scope_bar::THIS_FOLDER),
             expanded: Keys::default(),

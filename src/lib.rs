@@ -17,8 +17,8 @@ pub use bridge::host::{
     Target, ValueKind, element_key, wire,
 };
 pub use bridge::menus::{
-    MenuCommand, MenuSection, add_menu, extend_menu, install_menus, on_menu_enabled, on_menu_state,
-    on_menu_title, prepend_menu, set_menu,
+    MenuCommand, MenuSection, TextCommand, add_menu, extend_menu, install_menus, on_menu_enabled,
+    on_menu_state, on_menu_title, prepend_menu, replace_edit_rows, set_menu,
 };
 pub use bridge::root::{NativeCached, NativeRoot, native_cached, native_root, window_options};
 pub use chrome::sidebar::*;
