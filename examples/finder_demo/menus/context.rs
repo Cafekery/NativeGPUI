@@ -37,7 +37,6 @@ const SORTABLE: [Column; 4] = [Column::Name, Column::Kind, Column::Modified, Col
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
     let mut menu = Menu::default();
     menu.item(MenuEntry::item("New Folder"), Act::NewFolder);
-    menu.item(MenuEntry::item("New Text File"), Act::NewFile);
     menu.separator();
     if can_paste() {
         menu.item(MenuEntry::item("Paste Item"), Act::Paste);
@@ -88,22 +87,35 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Open"), Act::Open);
         let apps = crate::openwith::apps_for(Path::new(line.key.as_ref()));
         match apps.is_empty() {
-            true => menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing),
-            false => menu.submenu(
-                "Open With",
-                apps.iter()
-                    .map(|app| {
-                        let title = match app.default {
-                            true => format!("{} (default)", app.name),
-                            false => app.name.clone(),
-                        };
-                        (
-                            MenuEntry::item(title),
-                            Act::OpenWith(intern(&app.path.to_string_lossy())),
-                        )
-                    })
-                    .collect(),
-            ),
+            true => {
+                menu.item(MenuEntry::item("Open With").disabled(), Act::Nothing);
+                menu.item(
+                    MenuEntry::item("Always Open With")
+                        .disabled()
+                        .option_alternate(),
+                    Act::Nothing,
+                );
+            }
+            false => {
+                let rows = |always: bool| {
+                    apps.iter()
+                        .map(|app| {
+                            let title = match app.default {
+                                true => format!("{} (default)", app.name),
+                                false => app.name.clone(),
+                            };
+                            let at = intern(&app.path.to_string_lossy());
+                            let act = match always {
+                                true => Act::AlwaysOpenWith(at),
+                                false => Act::OpenWith(at),
+                            };
+                            (MenuEntry::item(title), act)
+                        })
+                        .collect()
+                };
+                menu.submenu("Open With", rows(false));
+                menu.alternate_submenu("Always Open With", rows(true));
+            }
         }
     }
     if let Some(path) = line.row.opens {
@@ -119,6 +131,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Empty Trash"), Act::EmptyTrash);
     } else {
         menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
+        menu.item(
+            MenuEntry::item("Delete Immediately…").option_alternate(),
+            Act::DeleteNow,
+        );
     }
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
