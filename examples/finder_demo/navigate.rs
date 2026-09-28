@@ -184,7 +184,7 @@ impl FinderDemo {
             return;
         };
         self.go(parent, window, cx);
-        self.choose_revealed(key);
+        self.choose([key]);
     }
 
     pub(crate) fn enclosing_in_new_window(&self, cx: &mut Context<Self>) {
@@ -193,16 +193,20 @@ impl FinderDemo {
         };
         cx.defer(move |cx| {
             open_finder_window(parent, 1, cx)
-                .update(cx, |demo: &mut FinderDemo, _, _| demo.choose_revealed(key))
+                .update(cx, |demo: &mut FinderDemo, _, _| demo.choose([key]))
                 .ok();
         });
     }
 
-    fn choose_revealed(&mut self, key: SharedString) {
-        self.selected = std::iter::once(key.clone()).collect();
-        self.cursor = Some(key.clone());
-        self.anchor = Some(key.clone());
-        self.reveal_next = Some(key);
+    pub(crate) fn choose(&mut self, keys: impl IntoIterator<Item = SharedString>) {
+        let mut last = None;
+        self.selected = keys
+            .into_iter()
+            .inspect(|key| last = Some(key.clone()))
+            .collect();
+        self.cursor = last.clone();
+        self.anchor = last.clone();
+        self.reveal_next = last;
     }
 
     fn forget_under(&mut self, id: &'static str) -> bool {
@@ -304,7 +308,7 @@ impl FinderDemo {
         let chosen = self.reveal_next.take();
         self.arrive(window, cx);
         if let Some(key) = chosen {
-            self.choose_revealed(key);
+            self.choose([key]);
         }
     }
 

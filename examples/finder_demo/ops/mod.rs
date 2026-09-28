@@ -16,6 +16,8 @@ pub(crate) enum After {
     Nothing,
     Select,
     Rename,
+    /// Select the results in a window showing their folder, opening one if none does.
+    Reveal,
 }
 
 pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
@@ -91,6 +93,9 @@ impl FinderDemo {
             let id = intern_path(dir);
             self.read_folder(id, cx);
         }
+        if after == After::Reveal {
+            return reveal(&results, cx);
+        }
         let shown = |dir: &Path| {
             let id = intern_path(dir);
             id == self.here() || id == self.target() || self.expanded.contains(id)
@@ -99,14 +104,7 @@ impl FinderDemo {
         if after == After::Nothing || !visible {
             return;
         }
-        let keys: Vec<SharedString> = results
-            .iter()
-            .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
-            .collect();
-        self.selected = keys.iter().cloned().collect();
-        self.cursor = keys.last().cloned();
-        self.anchor = self.cursor.clone();
-        self.reveal_next = self.cursor.clone();
+        self.choose(results.iter().map(PathBuf::as_path).map(key_of));
         if after == After::Rename {
             self.renaming = self.cursor.clone();
         }
@@ -258,4 +256,38 @@ impl FinderDemo {
             cx,
         );
     }
+}
+
+fn key_of(path: &Path) -> SharedString {
+    SharedString::from(path.to_string_lossy().into_owned())
+}
+
+fn reveal(results: &[PathBuf], cx: &mut Context<FinderDemo>) {
+    let mut folders: Vec<(&'static str, Vec<SharedString>)> = Vec::new();
+    for path in results {
+        let Some(dir) = path.parent().map(intern_path) else {
+            continue;
+        };
+        match folders.iter_mut().find(|(at, _)| *at == dir) {
+            Some((_, keys)) => keys.push(key_of(path)),
+            None => folders.push((dir, vec![key_of(path)])),
+        }
+    }
+    cx.defer(move |cx| {
+        for (extra, (dir, keys)) in folders.into_iter().enumerate() {
+            let shown = cx
+                .windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<FinderDemo>())
+                .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == dir));
+            let window = shown.unwrap_or_else(|| crate::open_finder_window(dir, extra + 1, cx));
+            window
+                .update(cx, |demo, window, cx| {
+                    window.activate_window();
+                    demo.choose(keys);
+                    cx.notify();
+                })
+                .ok();
+        }
+    });
 }

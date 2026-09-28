@@ -8,7 +8,7 @@ use native_gpui::{MenuEntry, MenuView};
 
 use super::{Act, Menu};
 use crate::app::FinderDemo;
-use crate::data::{Column, Line, intern};
+use crate::data::{Column, Line, intern, is_trash};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
 use crate::view::ICON_VIEW;
@@ -110,7 +110,16 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(path));
     }
     menu.separator();
-    menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
+    let trashed = Path::new(line.key.as_ref())
+        .parent()
+        .is_some_and(|dir| is_trash(&dir.to_string_lossy()));
+    if trashed {
+        menu.item(MenuEntry::item("Put Back"), Act::Trash);
+        menu.item(MenuEntry::item("Delete Immediately…"), Act::DeleteNow);
+        menu.item(MenuEntry::item("Empty Trash"), Act::EmptyTrash);
+    } else {
+        menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
+    }
     menu.separator();
     menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
     menu.item(
