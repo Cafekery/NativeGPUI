@@ -1,4 +1,3 @@
-use crate::chrome::sheet::ConnectSheet;
 use crate::menus::{Act, Menu};
 use block2::RcBlock;
 use gpui::{Context, Window, px};
@@ -93,7 +92,9 @@ const CONNECT: Tool = (
     "rectangle.connected.to.line.below",
     "Connect",
     "Connect to a server",
-    |this, _, _| this.connect_sheet = Some(ConnectSheet::default()),
+    |_, window, cx| {
+        crate::chrome::connect::show(cx.entity().downgrade(), window.window_handle(), cx)
+    },
 );
 const INFO: Tool = (
     "com.apple.finder.INFO",

@@ -1,0 +1,515 @@
+use std::cell::RefCell;
+
+use gpui::{
+    AnyWindowHandle, App, AsyncApp, Bounds, ClickEvent, Context, FontWeight, Render, WeakEntity,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px, size,
+    uniform_list,
+};
+use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::{
+    ButtonBezel, MenuEntry, native_button, native_combo_box, native_label, native_popup,
+    native_root, native_rule, native_spinner, native_symbol, window_options,
+};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSWindowTitleVisibility};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+use crate::app::FinderDemo;
+use crate::data::intern_path;
+use crate::frame::ns_window;
+use crate::prefs;
+use crate::ui::click_kind;
+
+// Finder's Connect to Server window, measured in points from its top-left corner.
+const DEFAULT_W: f32 = 414.;
+const DEFAULT_H: f32 = 227.;
+const EDGE: f32 = 19.;
+const FIELD_Y: f32 = 51.;
+const LABEL_Y: f32 = 87.;
+const LIST_Y: f32 = 110.;
+const LIST_BOTTOM: f32 = 52.;
+const ROW_H: f32 = 19.;
+const ICON_X: f32 = 16.;
+const TEXT_X: f32 = 36.;
+const BAR_BOTTOM: f32 = 19.;
+const BAR_H: f32 = 26.;
+const SQUARE: f32 = 24.;
+const HELP_X: f32 = 118.;
+const SPINNER_RIGHT: f32 = 178.;
+const BROWSE_RIGHT: f32 = 107.;
+const BROWSE_W: f32 = 70.;
+const CONNECT_W: f32 = 77.;
+const RECENTS: usize = 10;
+const ECANCELED: i32 = 89;
+const USER_CANCELED: i32 = -128;
+const HELP: &str = "https://support.apple.com/guide/mac-help/mchlp1140/mac";
+
+thread_local! {
+    static OPEN: RefCell<Option<WindowHandle<Connect>>> = const { RefCell::new(None) };
+}
+
+/// Finder's Connect to Server: one window for the app, navigating the Finder window that asked.
+pub(crate) struct Connect {
+    demo: WeakEntity<FinderDemo>,
+    host: AnyWindowHandle,
+    address: String,
+    favorites: Vec<String>,
+    recents: Vec<String>,
+    picked: Option<usize>,
+    connecting: bool,
+    fresh: bool,
+}
+
+pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut App) {
+    let raised = open().is_some_and(|open| {
+        open.update(cx, |connect, window, _| {
+            (connect.demo, connect.host) = (demo.clone(), host);
+            window.activate_window();
+        })
+        .is_ok()
+    });
+    if raised {
+        return;
+    }
+    let opened = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(DEFAULT_W), px(DEFAULT_H)),
+            })),
+            show: false,
+            is_minimizable: true,
+            window_min_size: Some(size(px(DEFAULT_W), px(DEFAULT_H))),
+            ..window_options()
+        },
+        |window, cx| {
+            window.set_window_title("Connect to Server");
+            cx.new(|_| Connect {
+                demo,
+                host,
+                address: prefs::connect_last().unwrap_or_default(),
+                favorites: prefs::favorite_servers(),
+                recents: prefs::recent_servers(),
+                picked: None,
+                connecting: false,
+                fresh: true,
+            })
+        },
+    );
+    let Ok(opened) = opened else {
+        return;
+    };
+    OPEN.with_borrow_mut(|open| *open = Some(opened));
+    let Ok(Some(ns)) = opened.update(cx, |_, window, _| ns_window(window)) else {
+        return;
+    };
+    // AppKit re-enters gpui as it moves and orders in a window, so not inside this update.
+    cx.spawn(async move |_| {
+        let name = NSString::from_str(prefs::CONNECT_WINDOW);
+        if !ns.setFrameUsingName(&name) {
+            match prefs::finder_connect_frame() {
+                Some([x, y, w, h]) => {
+                    ns.setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)), false)
+                }
+                None => ns.center(),
+            }
+        }
+        ns.setFrameAutosaveName(&name);
+        ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
+        ns.makeKeyAndOrderFront(None);
+    })
+    .detach();
+}
+
+fn open() -> Option<WindowHandle<Connect>> {
+    OPEN.with_borrow(|open| *open)
+}
+
+fn set_connecting(connecting: bool, cx: &mut AsyncApp) {
+    if let Some(open) = open() {
+        open.update(cx, |connect, _, cx| {
+            connect.connecting = connecting;
+            cx.notify();
+        })
+        .ok();
+    }
+}
+
+fn close(cx: &mut AsyncApp) {
+    if let Some(open) = OPEN.with_borrow_mut(Option::take) {
+        open.update(cx, |_, window, _| window.remove_window()).ok();
+    }
+}
+
+/// Finder's alert for a server it could not reach: a sheet on Connect to Server when it is up.
+fn complain(address: &str, code: i32, cx: &mut AsyncApp) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&format!(
+        "Unable to connect to the server at the address you specified ({address})."
+    )));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "Try again later, or try connecting to a different server (error code {code})."
+    )));
+    let sheet = open().and_then(|open| open.update(cx, |_, window, _| ns_window(window)).ok());
+    match sheet.flatten() {
+        Some(window) => alert.beginSheetModalForWindow_completionHandler(&window, None),
+        None => {
+            alert.runModal();
+        }
+    }
+}
+
+fn remember(address: &str) {
+    prefs::set_connect_last(address);
+    let mut recents = prefs::recent_servers();
+    recents.retain(|seen| seen != address);
+    recents.insert(0, address.to_string());
+    recents.truncate(RECENTS);
+    prefs::set_recent_servers(&recents.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+impl FinderDemo {
+    /// Mounts with the system's own sign-in, then shows the share in this window.
+    pub(crate) fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
+        if address.is_empty() {
+            return;
+        }
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            set_connecting(true, cx);
+            let wanted = address.clone();
+            let mounted = cx
+                .background_executor()
+                .spawn(async move { finder_fs::volumes::mount(&wanted) })
+                .await;
+            set_connecting(false, cx);
+            match mounted {
+                Ok(point) => {
+                    remember(&address);
+                    close(cx);
+                    cx.update_window(handle, |_, window, cx| {
+                        this.update(cx, |this, cx| this.go(intern_path(&point), window, cx))
+                    })
+                    .ok();
+                }
+                Err(ECANCELED | USER_CANCELED) => {}
+                Err(code) => complain(&address, code, cx),
+            }
+        })
+        .detach();
+    }
+}
+
+impl Connect {
+    fn connect(&mut self, cx: &mut Context<Self>) {
+        let address = self.address.trim().to_string();
+        let (demo, host) = (self.demo.clone(), self.host);
+        host.update(cx, |_, window, cx| {
+            demo.update(cx, |demo, cx| demo.connect(address, window, cx))
+        })
+        .ok();
+    }
+
+    fn set_favorites(&mut self, favorites: Vec<String>, cx: &mut Context<Self>) {
+        prefs::set_favorite_servers(&favorites.iter().map(String::as_str).collect::<Vec<_>>());
+        self.favorites = favorites;
+        self.picked = self.picked.filter(|&at| at < self.favorites.len());
+        cx.notify();
+    }
+
+    fn add(&mut self, cx: &mut Context<Self>) {
+        let address = self.address.trim().to_string();
+        let mut favorites = self.favorites.clone();
+        favorites.push(address);
+        self.picked = Some(favorites.len() - 1);
+        self.set_favorites(favorites, cx);
+    }
+
+    fn remove(&mut self, cx: &mut Context<Self>) {
+        let Some(at) = self.picked else {
+            return;
+        };
+        let mut favorites = self.favorites.clone();
+        favorites.remove(at);
+        self.picked = None;
+        self.set_favorites(favorites, cx);
+    }
+
+    fn clear_recents(&mut self, ask: bool, window: &Window, cx: &mut Context<Self>) {
+        let clear = |connect: &mut Connect, cx: &mut Context<Connect>| {
+            prefs::set_recent_servers(&[]);
+            connect.recents.clear();
+            cx.notify();
+        };
+        let (Some(mtm), Some(ns)) = (MainThreadMarker::new(), ns_window(window)) else {
+            return;
+        };
+        if !ask {
+            clear(self, cx);
+            return;
+        }
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(
+            "Are you sure you want to clear the list of recent servers?",
+        ));
+        alert.setInformativeText(&NSString::from_str("You can\u{2019}t undo this action."));
+        alert.addButtonWithTitle(&NSString::from_str("Clear"));
+        alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+        let this = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        let handler = block2::RcBlock::new(move |response: NSModalResponse| {
+            if response == NSAlertFirstButtonReturn {
+                this.update(&mut async_cx.clone(), |connect, cx| clear(connect, cx))
+                    .ok();
+            }
+        });
+        alert.beginSheetModalForWindow_completionHandler(&ns, Some(&handler));
+    }
+
+    fn row(&self, at: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let address = self.favorites[at].clone();
+        let picked = self.picked == Some(at);
+        let this = cx.entity().downgrade();
+        div()
+            .id(("ng.finder.connect.row", at))
+            .relative()
+            .h(px(ROW_H))
+            .when(picked, |row| {
+                row.child(
+                    div().absolute().inset_0().child(
+                        native_rule(("ng.finder.connect.pick", at))
+                            .color(SystemColor::SelectedContentBackground),
+                    ),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(ICON_X))
+                    .flex()
+                    .items_center()
+                    .child(native_symbol(
+                        ("ng.finder.connect.icon", at),
+                        "network",
+                        13.,
+                        FontWeight::NORMAL,
+                    )),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(TEXT_X))
+                    .right_0()
+                    .flex()
+                    .items_center()
+                    .child(
+                        native_label(("ng.finder.connect.url", at), &address)
+                            .font_size(tokens::system_font_size())
+                            .color(match picked {
+                                true => SystemColor::AlternateSelectedControlText,
+                                false => SystemColor::Label,
+                            }),
+                    ),
+            )
+            .on_click(move |event: &ClickEvent, _, cx| {
+                let (_, _, twice) = click_kind(event);
+                this.update(cx, |connect, cx| {
+                    connect.picked = Some(at);
+                    connect.address = address.clone();
+                    cx.notify();
+                    if twice {
+                        connect.connect(cx);
+                    }
+                })
+                .ok();
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for Connect {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity().downgrade();
+        let address = self.address.trim().to_string();
+        let can_add = !address.is_empty() && !self.favorites.contains(&address);
+        let mut field = native_combo_box("ng.finder.connect.address", &self.address)
+            .stretch()
+            .placeholder("Server Address")
+            .items(self.recents.clone())
+            .on_change({
+                let this = this.clone();
+                move |text, _, cx| {
+                    let text = text.to_string();
+                    this.update(cx, |connect, cx| {
+                        connect.address = text;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            })
+            .on_submit({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |connect, cx| connect.connect(cx)).ok();
+                }
+            })
+            .on_cancel(|_, window, _| window.remove_window());
+        if std::mem::take(&mut self.fresh) {
+            field = field.editing(0..self.address.chars().count());
+        }
+        let rows = uniform_list("ng.finder.connect.rows", self.favorites.len(), {
+            let this = this.clone();
+            move |range, _, cx| {
+                this.update(cx, |connect, cx| {
+                    range.map(|at| connect.row(at, cx)).collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+            }
+        })
+        .size_full();
+        let bar = |left: f32| div().absolute().bottom(px(BAR_BOTTOM)).left(px(left));
+        let square = |id: &'static str, symbol: &'static str, enabled: bool| {
+            native_button(id, "")
+                .symbol(symbol)
+                .bezel_style(ButtonBezel::SmallSquare)
+                .square(SQUARE)
+                .enabled(enabled)
+        };
+        let clearing = |entry: MenuEntry| match self.recents.is_empty() {
+            true => entry.disabled(),
+            false => entry,
+        };
+        let action = native_popup("ng.finder.connect.action", 0)
+            .pull_down(true)
+            .bezel_style(ButtonBezel::SmallSquare)
+            .entries([
+                MenuEntry::item("").symbol("ellipsis.circle"),
+                clearing(MenuEntry::item("Clear Recent Servers\u{2026}")),
+                clearing(MenuEntry::item("Clear Recent Servers").option_alternate()),
+            ])
+            .on_change({
+                let this = this.clone();
+                move |picked: &usize, window, cx| {
+                    let ask = *picked == 1;
+                    this.update(cx, |connect, cx| connect.clear_recents(ask, window, cx))
+                        .ok();
+                }
+            });
+        native_root(
+            div()
+                .relative()
+                .size_full()
+                .bg(system_color(SystemColor::WindowBackground))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(FIELD_Y))
+                        .left(px(EDGE))
+                        .right(px(EDGE))
+                        .child(field),
+                )
+                .child(
+                    div().absolute().top(px(LABEL_Y)).left(px(EDGE)).child(
+                        native_label("ng.finder.connect.heading", "Favorite Servers:")
+                            .font_size(tokens::small_system_font_size()),
+                    ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(LIST_Y))
+                        .bottom(px(LIST_BOTTOM))
+                        .left(px(EDGE + 1.))
+                        .right(px(EDGE + 1.))
+                        .border_1()
+                        .border_color(system_color(SystemColor::Separator))
+                        .bg(system_color(SystemColor::ControlBackground))
+                        .child(rows),
+                )
+                .child(bar(EDGE + 2.).child(
+                    square("ng.finder.connect.add", "plus", can_add).on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |connect, cx| connect.add(cx)).ok();
+                        }
+                    }),
+                ))
+                .child(bar(EDGE + 2. + SQUARE).child(
+                    square("ng.finder.connect.remove", "minus", self.picked.is_some()).on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |connect, cx| connect.remove(cx)).ok();
+                        }
+                    }),
+                ))
+                .child(bar(EDGE + 2. + 2. * SQUARE).h(px(SQUARE)).child(action))
+                .child(
+                    bar(HELP_X).child(
+                        native_button("ng.finder.connect.help", "")
+                            .bezel_style(ButtonBezel::HelpButton)
+                            .on_click(|_, _, cx| cx.open_url(HELP)),
+                    ),
+                )
+                .when(self.connecting, |root| {
+                    root.child(
+                        div()
+                            .absolute()
+                            .bottom(px(BAR_BOTTOM + (BAR_H - 16.) / 2.))
+                            .right(px(SPINNER_RIGHT))
+                            .child(native_spinner("ng.finder.connect.spinner")),
+                    )
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(BAR_BOTTOM))
+                        .right(px(BROWSE_RIGHT))
+                        .child(
+                            native_button("ng.finder.connect.browse", "Browse")
+                                .width(px(BROWSE_W))
+                                .on_click({
+                                    let this = this.clone();
+                                    move |_, _, cx| {
+                                        this.update(cx, |connect, cx| {
+                                            let Ok(network) =
+                                                cx.build_action("finder_demo::GoNetwork", None)
+                                            else {
+                                                return;
+                                            };
+                                            connect
+                                                .host
+                                                .update(cx, |_, window, cx| {
+                                                    window.dispatch_action(network, cx)
+                                                })
+                                                .ok();
+                                        })
+                                        .ok();
+                                    }
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(BAR_BOTTOM))
+                        .right(px(EDGE + 1.))
+                        .child(
+                            native_button("ng.finder.connect.go", "Connect")
+                                .width(px(CONNECT_W))
+                                .default_button(true)
+                                .enabled(!address.is_empty() && !self.connecting)
+                                .on_click(move |_, _, cx| {
+                                    this.update(cx, |connect, cx| connect.connect(cx)).ok();
+                                }),
+                        ),
+                ),
+        )
+    }
+}

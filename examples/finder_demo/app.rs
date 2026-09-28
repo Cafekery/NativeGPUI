@@ -12,7 +12,7 @@ use finder_fs::queue::{self, Journal, Queue};
 use finder_fs::watch::Watcher;
 use gpui::{
     Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Size,
-    UniformListScrollHandle,
+    UniformListScrollHandle, WindowHandle,
 };
 use native_gpui::sidebar::NativeSidebar;
 use objc2::rc::Retained;
@@ -20,7 +20,7 @@ use objc2_app_kit::NSWindow;
 
 use crate::art::Anchor;
 use crate::chrome::scope_bar;
-use crate::chrome::sheet::{ConnectSheet, GoSheet};
+use crate::chrome::sheet::GoPanel;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Line, Row};
 use crate::dragdrop::Spring;
@@ -112,8 +112,7 @@ pub(crate) struct FinderDemo {
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<gpui::Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
-    pub(crate) go_sheet: Option<GoSheet>,
-    pub(crate) connect_sheet: Option<ConnectSheet>,
+    pub(crate) go_sheet: Option<WindowHandle<GoPanel>>,
     pub(crate) save_sheet: Option<String>,
     pub(crate) ql_icon: Anchor,
     pub(crate) faces: Rc<RefCell<Faces>>,
@@ -255,7 +254,6 @@ impl FinderDemo {
             pressed_at: gpui::Point::default(),
             recents: Vec::new(),
             go_sheet: None,
-            connect_sheet: None,
             save_sheet: None,
             ql_icon: Anchor::default(),
             faces: Rc::default(),
