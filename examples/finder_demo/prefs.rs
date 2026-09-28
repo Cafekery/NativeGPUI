@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use finder_fs::ds_store::IconOptions;
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -19,7 +20,6 @@ const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
-const ICON: &str = "ng.finder.icon";
 const LIST_ICON: &str = "ng.finder.list.icon";
 const STRIP_ICON: &str = "ng.finder.strip.icon";
 
@@ -41,7 +41,8 @@ pub(crate) struct Finder {
     pub(crate) columns: Vec<Column>,
     /// The key column view sorts by, then gallery view's.
     pub(crate) arranged: (Column, Column),
-    pub(crate) icon_arrange: Option<String>,
+    /// Finder's icon view options for folders that record none of their own.
+    pub(crate) icon_options: IconOptions,
 }
 
 /// Column view's `ArrangeBy` codes, in Finder's own table of arrangements.
@@ -154,7 +155,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             column_view.unwrap_or(Column::Name),
             gallery_view.unwrap_or(Column::Name),
         ),
-        icon_arrange: icons.and_then(|icons| text(&icons, "arrangeBy")),
+        icon_options: icons.map_or_else(IconOptions::default, |icons| IconOptions::read(&icons)),
     }
 });
 
@@ -552,14 +553,6 @@ pub(crate) fn set_preview(view: usize, shown: bool) {
     write(preview_key(view), f64::from(u8::from(shown)));
 }
 
-pub(crate) fn icon_size() -> Option<f32> {
-    read(ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_icon_size(size: f32) {
-    write(ICON, size as f64);
-}
-
 pub(crate) fn list_icon() -> Option<f32> {
     read(LIST_ICON).map(|v| v as f32)
 }
@@ -618,13 +611,12 @@ fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
     NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
 }
 
-/// The arrangement chosen for a folder's icons here, as Finder names it (`none`, `grid`, `name`…).
-pub(crate) fn icon_arrangement(folder: &str) -> Option<String> {
-    Some(
-        defaults()
-            .stringForKey(&icon_key("arrange", folder))?
-            .to_string(),
-    )
+/// The icon view options chosen for a listing here, in the shape of Finder's `icvp`.
+pub(crate) fn icon_options(folder: &str) -> IconOptions {
+    defaults()
+        .objectForKey(&icon_key("view", folder))
+        .and_then(|options| options.downcast::<NSDictionary>().ok())
+        .map_or_else(IconOptions::default, |options| IconOptions::read(&options))
 }
 
 fn write_text(key: &str, text: &str) {
@@ -652,9 +644,32 @@ pub(crate) fn set_arranged(view: usize, column: Column) {
     write_text(&format!("ng.finder.arranged.{view}"), column.id());
 }
 
-pub(crate) fn set_icon_arrangement(folder: &str, arrange_by: &str) {
-    let value: &AnyObject = &NSString::from_str(arrange_by);
-    unsafe { defaults().setObject_forKey(Some(value), &icon_key("arrange", folder)) };
+pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
+    let arrange = options.arrange_by.as_deref().map(NSString::from_str);
+    let numbers = [
+        ("iconSize", options.icon_size.map(NSNumber::new_f32)),
+        ("gridSpacing", options.grid_spacing.map(NSNumber::new_f32)),
+        ("textSize", options.text_size.map(NSNumber::new_f32)),
+        (
+            "labelOnBottom",
+            options.label_on_bottom.map(NSNumber::new_bool),
+        ),
+    ];
+    let mut keys = Vec::new();
+    let mut values: Vec<&AnyObject> = Vec::new();
+    if let Some(arrange) = &arrange {
+        keys.push(NSString::from_str("arrangeBy"));
+        values.push(arrange);
+    }
+    for (key, number) in &numbers {
+        if let Some(number) = number {
+            keys.push(NSString::from_str(key));
+            values.push(number);
+        }
+    }
+    let keys: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
+    let value: &AnyObject = &NSDictionary::from_slices(&keys, &values);
+    unsafe { defaults().setObject_forKey(Some(value), &icon_key("view", folder)) };
 }
 
 /// Where each icon of a folder was put here: the centre of its image, as Finder records it.
