@@ -12,7 +12,8 @@ use crate::data::{Column, Line, SORT_KEYS, SORT_TITLES, intern, is_trash};
 use crate::ops::clipboard::can_paste;
 use crate::tags::{finder_color, finder_color_rgb, tags};
 use crate::view::ICON_VIEW;
-use crate::views::header::ColumnSpec;
+use crate::views::header::{ColumnSpec, column_title};
+use crate::views::icon::Arrangement;
 
 thread_local! {
     static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
@@ -30,6 +31,16 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Version", Some(Column::Version)),
     ("Comments", None),
     ("Tags", Some(Column::Tags)),
+];
+
+/// Finder's Clean Up By offers no Date Last Opened or Date Added.
+const CLEAN_UP_BY: [Column; 6] = [
+    Column::Name,
+    Column::Kind,
+    Column::Modified,
+    Column::Created,
+    Column::Size,
+    Column::Tags,
 ];
 
 pub(crate) fn background(demo: &FinderDemo) -> Menu {
@@ -64,10 +75,9 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
         MenuEntry::item("Use Groups").checked(demo.grouped),
         Act::Groups,
     );
-    menu.submenu("Sort By", sort_rows(demo));
-    if demo.view == ICON_VIEW {
-        menu.item(MenuEntry::item("Clean Up"), Act::Sort(Column::Name));
-        menu.submenu("Clean Up By", sort_rows(demo));
+    match demo.view == ICON_VIEW {
+        true => icon_rows(&mut menu, demo),
+        false => menu.submenu("Sort By", sort_rows(demo)),
     }
     menu.item(MenuEntry::item("Show View Options"), Act::ViewOptions);
     menu.separator();
@@ -387,6 +397,49 @@ fn subject(verb: &str, name: &SharedString, many: bool, chosen: usize) -> String
         true => format!("{verb} {chosen} Items"),
         false => format!("{verb} “{name}”"),
     }
+}
+
+fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
+    let Some(arranged) = demo.arrangement() else {
+        menu.submenu("Sort By", sort_rows(demo));
+        return;
+    };
+    let mut sorts = vec![
+        (
+            MenuEntry::item("None").checked(arranged == Arrangement::Free),
+            Act::Arrange(Arrangement::Free),
+        ),
+        (MenuEntry::separator(), Act::Nothing),
+        (
+            MenuEntry::item("Snap to Grid").checked(arranged == Arrangement::Grid),
+            Act::Arrange(Arrangement::Grid),
+        ),
+        (MenuEntry::separator(), Act::Nothing),
+    ];
+    sorts.extend(crate::data::SORT_KEYS.iter().map(|column| {
+        (
+            MenuEntry::item(column_title(*column)).checked(arranged == Arrangement::By(*column)),
+            Act::Arrange(Arrangement::By(*column)),
+        )
+    }));
+    menu.submenu("Sort By", sorts);
+    // Finder leaves both out while the icons are kept sorted.
+    if !demo.cleans_up() {
+        return;
+    }
+    menu.item(MenuEntry::item("Clean Up"), Act::CleanUp);
+    menu.submenu(
+        "Clean Up By",
+        CLEAN_UP_BY
+            .iter()
+            .map(|column| {
+                (
+                    MenuEntry::item(column_title(*column)),
+                    Act::CleanUpBy(*column),
+                )
+            })
+            .collect(),
+    );
 }
 
 fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {

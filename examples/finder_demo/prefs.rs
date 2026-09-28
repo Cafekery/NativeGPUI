@@ -41,6 +41,7 @@ pub(crate) struct Finder {
     pub(crate) columns: Vec<Column>,
     /// The key column view sorts by, then gallery view's.
     pub(crate) arranged: (Column, Column),
+    pub(crate) icon_arrange: Option<String>,
 }
 
 /// Column view's `ArrangeBy` codes, in Finder's own table of arrangements.
@@ -80,6 +81,11 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
     let text = |of: &NSDictionary, key: &str| {
         Some(value(of, key)?.downcast::<NSString>().ok()?.to_string())
     };
+    let icons = dict("StandardViewSettings").and_then(|all| {
+        value(&all, "IconViewSettings")?
+            .downcast::<NSDictionary>()
+            .ok()
+    });
     let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
     let listed: Vec<Retained<NSDictionary>> = list
         .as_deref()
@@ -148,6 +154,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             column_view.unwrap_or(Column::Name),
             gallery_view.unwrap_or(Column::Name),
         ),
+        icon_arrange: icons.and_then(|icons| text(&icons, "arrangeBy")),
     }
 });
 
@@ -607,6 +614,19 @@ fn read_text(key: &str) -> Option<String> {
     )
 }
 
+fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
+    NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
+}
+
+/// The arrangement chosen for a folder's icons here, as Finder names it (`none`, `grid`, `name`…).
+pub(crate) fn icon_arrangement(folder: &str) -> Option<String> {
+    Some(
+        defaults()
+            .stringForKey(&icon_key("arrange", folder))?
+            .to_string(),
+    )
+}
+
 fn write_text(key: &str, text: &str) {
     let text = NSString::from_str(text);
     unsafe { defaults().setObject_forKey(Some(&text), &NSString::from_str(key)) };
@@ -630,4 +650,45 @@ pub(crate) fn arranged(view: usize) -> Option<Column> {
 
 pub(crate) fn set_arranged(view: usize, column: Column) {
     write_text(&format!("ng.finder.arranged.{view}"), column.id());
+}
+
+pub(crate) fn set_icon_arrangement(folder: &str, arrange_by: &str) {
+    let value: &AnyObject = &NSString::from_str(arrange_by);
+    unsafe { defaults().setObject_forKey(Some(value), &icon_key("arrange", folder)) };
+}
+
+/// Where each icon of a folder was put here: the centre of its image, as Finder records it.
+pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
+    let Some(spots) = defaults().dictionaryForKey(&icon_key("at", folder)) else {
+        return HashMap::new();
+    };
+    spots
+        .keys()
+        .filter_map(|name| {
+            let at = spots.objectForKey(&name)?.downcast::<NSArray>().ok()?;
+            let axis = |index| {
+                Some(
+                    at.objectAtIndex(index)
+                        .downcast::<NSNumber>()
+                        .ok()?
+                        .floatValue(),
+                )
+            };
+            (at.count() == 2).then_some(())?;
+            Some((name.to_string(), (axis(0)?, axis(1)?)))
+        })
+        .collect()
+}
+
+pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a str, (f32, f32))>) {
+    let (names, places): (Vec<_>, Vec<_>) = spots
+        .map(|(name, (x, y))| {
+            let place = NSArray::from_retained_slice(&[NSNumber::new_f32(x), NSNumber::new_f32(y)]);
+            (NSString::from_str(name), place)
+        })
+        .unzip();
+    let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
+    let places: Vec<&NSArray<NSNumber>> = places.iter().map(|place| &**place).collect();
+    let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
+    unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
 }

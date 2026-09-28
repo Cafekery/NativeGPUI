@@ -13,6 +13,7 @@ use crate::ops::After;
 use crate::ops::clipboard::Pasting;
 use crate::prefs::{self, WindowTarget};
 use crate::search::RECENTS;
+use crate::views::icon::Arrangement;
 use crate::{open_finder_tab, open_finder_window};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -28,6 +29,9 @@ pub(crate) enum Act {
     Inspector,
     InspectorAt(&'static str),
     Sort(Column),
+    Arrange(Arrangement),
+    CleanUp,
+    CleanUpBy(Column),
     Open,
     OpenWindow,
     Trash,
@@ -123,6 +127,9 @@ impl FinderDemo {
                 cx.defer(move |cx| crate::info::open(&demo, Some(id), false, cx));
             }
             Act::Sort(column) => self.sort_by(column, cx),
+            Act::Arrange(arrangement) => self.arrange(arrangement, cx),
+            Act::CleanUp => self.clean_up(false, cx),
+            Act::CleanUpBy(column) => self.clean_up_by(column, window, cx),
             Act::Open => self.open_selected(window, cx),
             Act::OpenWindow => self.open_in_window(cx),
             Act::Trash => self.trash_selection(cx),

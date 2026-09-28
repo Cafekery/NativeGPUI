@@ -266,6 +266,9 @@ impl FinderDemo {
 
     fn renamed(&mut self, key: &SharedString, name: String, cx: &mut Context<Self>) {
         self.tags.remove(key);
+        if let Some((_, old)) = split_key(key) {
+            self.icons.renamed(old, &name);
+        }
         self.run_op(
             Op::Rename {
                 path: PathBuf::from(key.as_ref()),

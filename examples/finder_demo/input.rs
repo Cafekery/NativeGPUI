@@ -61,31 +61,24 @@ impl FinderDemo {
             "up" | "o" if modifiers.platform => {}
             "down" if modifiers.platform => self.open_selected(window, cx),
             "up" | "down" | "left" | "right" if self.view == ICON_VIEW => {
-                let columns = self.columns(window);
-                let next = match current {
-                    Some(at) => match key {
-                        "up" if at >= columns => at - columns,
-                        "down" if at + columns <= last => at + columns,
-                        "left" if at % columns > 0 => at - 1,
-                        "right" if at % columns + 1 < columns && at < last => at + 1,
-                        _ => at,
-                    },
-                    None if matches!(key, "down" | "right") => 0,
-                    None => last,
+                let Some(line) = self
+                    .icon_step(key, self.cursor.as_ref())
+                    .and_then(|next| self.line_at(&lines, &next))
+                    .map(|at| lines[at].clone())
+                else {
+                    return;
                 };
-                let line = &lines[next];
                 if modifiers.shift {
                     self.selected.insert(line.key.clone());
                     self.cursor = Some(line.key.clone());
                 } else {
-                    self.pick(line, false, false);
+                    self.pick(&line, false, false);
                 }
                 let visible = gpui::size(
                     self.list_room,
                     f32::from(self.icons.scroll.bounds().size.height),
                 );
-                self.icons
-                    .reveal(&line.key, next, columns, self.icon_size as f32, visible);
+                self.icons.reveal(&line.key, visible);
             }
             "home" | "end" if self.view == ICON_VIEW => self.icons.scroll_to_end(key == "end"),
             "left" | "right" if self.view == GALLERY_VIEW => {

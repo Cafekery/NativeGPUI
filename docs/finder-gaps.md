@@ -94,14 +94,18 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   it in the other and leaves gallery and columns; hiding it in gallery or columns leaves the other
   three; a reopened window keeps each (the demo: a relaunch). Finder holds the column setting for
   every window and folder without rewriting `ColumnViewOptions.ShowPreview` while it runs.
-- [ ] Icon view keeps the columns of the first frame that shows a folder's items, whatever the pane
-  or the window does next (a narrower window scrolls sideways), as Finder's free arrangement does.
-  On the user's Mac both lay the 17-item fixture out in 5 columns with the pane shown (label centres
-  282–730 pt) and keep 5 through a hidden pane and windows of 900, 1300 and 1100 pt; laid out with
-  the pane hidden both keep 7 and cut them at the pane. Left: Finder shows the icons beneath its
-  pane's glass (88 over an icon, 38 around it; the demo's canvas stops at the pane), places a new
-  folder's icons in name order where the demo uses the list's sort, and keeps each icon's place
-  across visits; the demo lays a folder out afresh each time it opens.
+- [x] Icon view keeps each icon where it stands, as Finder's free arrangement does: a folder's
+  icons take Finder's recorded places (`Iloc` in its `.DS_Store`, the centre of each icon), then
+  those the demo put there, and the rest fill the first free slots in name order (centres 66 + 112
+  per column, 46 + 112 per row at 64 pt); a narrower window scrolls sideways. Dragging moves an icon
+  by the pointer's travel, or to the nearest free slot under Snap to Grid, and the demo keeps the
+  places across launches. Clean Up moves icons off the grid to the nearest free slot (Finder: 150,300
+  to 178,270 and 420,250 to 402,270); Clean Up By fills the window's width in that key's order,
+  dates newest first. Sort By a key keeps the icons sorted and reflows them with the window; Snap to
+  Grid leaves icons where they are until moved. Left: Finder shows the icons beneath its pane's
+  glass (the demo's canvas stops at the pane), and Finder's first layout after a list window turns
+  to icons took 4 columns in icon areas 620 to 680 pt wide in one run and 5 at 638 in another, while
+  its new items, Clean Up and Clean Up By filled 5; the demo lays out the columns that fit.
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.
@@ -216,8 +220,6 @@ chevron (Δ 0.0) match; what is left:
 - Burn folders and Burn Disc: the hardware is gone.
 - View ▸ Use Stacks: the desktop's, and the demo has no desktop.
 - Eject One and Eject All: the demo ejects the selection, which is the same act.
-- View ▸ Clean Up Selection: the demo's icon view is a grid in sort order with nothing placed by
-  hand, so there is no stray icon to snap back.
 
 ## Sidebar surface
 
