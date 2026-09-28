@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use gpui::{Context, SharedString, Window};
+use gpui::{App, Context, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::data::{Folder, Line, intern, intern_path, split_key, volume_at};
@@ -10,6 +11,27 @@ use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::{home, open_finder_window};
+
+/// How long a window opening a folder keeps the last one up while it reads the new one.
+const HOLD: Duration = Duration::from_millis(100);
+
+/// Where a window is going while it still shows the folder it leaves.
+pub(crate) struct Arriving {
+    history: Vec<&'static str>,
+    at: usize,
+    recent: bool,
+    chosen: Option<Vec<SharedString>>,
+}
+
+/// A key pressed while a window heads for a folder is meant for that folder.
+pub(crate) fn arrive_on_keys(cx: &mut App) {
+    cx.intercept_keystrokes(|_, window, cx| {
+        if let Some(Some(demo)) = window.root::<FinderDemo>() {
+            demo.update(cx, |demo, cx| demo.arrive_now(cx));
+        }
+    })
+    .detach();
+}
 
 pub(crate) fn typed_path(text: &str) -> PathBuf {
     let text = text.trim();
@@ -158,21 +180,117 @@ impl FinderDemo {
     }
 
     pub(crate) fn go(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.visit(id, true, window, cx);
+    }
+
+    /// `hold` keeps the window on the folder it shows while it reads one it has no rows for.
+    fn visit(&mut self, id: &'static str, hold: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(listing) = crate::smart::listing(id) {
             self.show_tag(listing, window, cx);
             return;
         }
         if self.here() == id {
+            self.arriving = None;
             if self.results() {
                 self.arrive(window, cx);
             }
             return;
         }
-        self.history.truncate(self.at + 1);
-        self.history.push(id);
-        self.at = self.history.len() - 1;
-        self.remember_recent(id);
+        let mut history = self.history[..=self.at].to_vec();
+        history.push(id);
+        let at = history.len() - 1;
+        self.travel(history, at, true, hold, window, cx);
+    }
+
+    fn travel(
+        &mut self,
+        history: Vec<&'static str>,
+        at: usize,
+        recent: bool,
+        hold: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = history[at];
+        self.arriving = None;
+        if hold && self.holds_for(id) {
+            self.arriving = Some(Arriving {
+                history,
+                at,
+                recent,
+                chosen: None,
+            });
+            self.read_folder(id, cx);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(HOLD).await;
+                this.update(cx, |this, cx| {
+                    if this.arrived(id, cx) {
+                        this.settle();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        self.history = history;
+        self.at = at;
+        if recent {
+            self.remember_recent(id);
+        }
         self.arrive(window, cx);
+    }
+
+    /// Finder never shows an empty list for a folder that has items: a window keeps showing the
+    /// folder it leaves while it reads one it has no rows for.
+    fn holds_for(&self, id: &'static str) -> bool {
+        id.starts_with('/')
+            && (!self.folders.has(id)
+                || self
+                    .folders
+                    .get(id)
+                    .is_some_and(|folder| folder.loading && folder.rows.is_empty()))
+    }
+
+    /// The folder the window is on its way to, while it still shows the one it leaves.
+    pub(crate) fn headed_for(&self) -> Option<&'static str> {
+        self.arriving
+            .as_ref()
+            .map(|arriving| arriving.history[arriving.at])
+    }
+
+    /// Shows `id` if the window was on its way there: its first rows are read, or `HOLD` passed.
+    pub(crate) fn arrived(&mut self, id: &'static str, cx: &mut Context<Self>) -> bool {
+        let Some(Arriving {
+            history,
+            at,
+            recent,
+            chosen,
+        }) = self
+            .arriving
+            .take_if(|arriving| arriving.history[arriving.at] == id)
+        else {
+            return false;
+        };
+        self.history = history;
+        self.at = at;
+        if recent {
+            self.remember_recent(id);
+        }
+        self.enter(cx);
+        if let Some(keys) = chosen {
+            self.choose(keys);
+        }
+        true
+    }
+
+    pub(crate) fn arrive_now(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.headed_for() else {
+            return;
+        };
+        if self.arrived(id, cx) {
+            self.settle();
+        }
     }
 
     pub(crate) fn show_enclosing(
@@ -200,6 +318,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn choose(&mut self, keys: impl IntoIterator<Item = SharedString>) {
+        if let Some(arriving) = &mut self.arriving {
+            arriving.chosen = Some(keys.into_iter().collect());
+            return;
+        }
         let mut last = None;
         self.selected = keys
             .into_iter()
@@ -237,6 +359,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         cx.notify();
+        self.arrive_now(cx);
         if !self.forget_under(id) {
             return;
         }
@@ -254,6 +377,7 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         cx.notify();
+        self.arrive_now(cx);
         let moved = |path: &'static str| match path.strip_prefix(id) {
             Some(rest) if rest.is_empty() || rest.starts_with('/') => {
                 intern(&format!("{now}{rest}"))
@@ -278,6 +402,12 @@ impl FinderDemo {
         error: &std::io::Error,
         cx: &mut Context<Self>,
     ) {
+        if self.headed_for() == Some(id) {
+            self.arriving = None;
+            self.folders.forget(id);
+            self.refuse(refusal(id, error), cx);
+            return;
+        }
         if id != self.here() {
             return;
         }
@@ -303,7 +433,7 @@ impl FinderDemo {
             return;
         };
         if self.here() != id {
-            self.go(id, window, cx);
+            self.visit(id, false, window, cx);
             return;
         }
         let chosen = self.reveal_next.take();
@@ -322,11 +452,19 @@ impl FinderDemo {
         if next >= self.history.len() {
             return;
         }
-        self.at = next;
-        self.arrive(window, cx);
+        self.travel(self.history.clone(), next, false, true, window, cx);
     }
 
     pub(crate) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.arriving = None;
+        self.enter(cx);
+        self.read_folder(self.here(), cx);
+        self.settle();
+        self.retitle(window);
+    }
+
+    /// What a window lets go of as it lands in a folder.
+    fn enter(&mut self, cx: &mut Context<Self>) {
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
@@ -337,9 +475,6 @@ impl FinderDemo {
         self.icons.forget();
         self.clear_type_filter();
         self.load_columns();
-        self.read_folder(self.here(), cx);
-        self.settle();
-        self.retitle(window);
         self.sidebar_follow();
         cx.notify();
     }
@@ -416,6 +551,10 @@ impl FinderDemo {
             return;
         };
         self.go(parent, window, cx);
+        if self.headed_for().is_some() {
+            self.choose([SharedString::from(from)]);
+            return;
+        }
         let listing = self.lines(self.view == LIST_VIEW);
         let left = listing
             .iter()

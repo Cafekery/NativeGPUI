@@ -57,7 +57,7 @@ use native_gpui::{install_menus, remember_frame, window_options};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::data::intern_path;
-use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
+use crate::menus::{Back, Forward, ShowViewOptions, ZoomIn, ZoomOut};
 
 /// Each save rewrites the whole snapshot, hundreds of MB; a launch replays events since the last.
 const SAVE_EVERY: Duration = Duration::from_secs(3600);
@@ -86,7 +86,10 @@ fn main() {
             KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-shift-=", ZoomIn, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
+            // The panel is never gpui's active window, so the menu row's ⌘J would not reach it.
+            KeyBinding::new("cmd-j", ShowViewOptions, Some(options::CONTEXT)),
         ]);
+        navigate::arrive_on_keys(cx);
         // Helper windows such as the preview pane do not keep the app alive.
         cx.on_window_closed(|cx, _| {
             if !cx
@@ -203,7 +206,11 @@ fn crawl(cx: &mut App) {
         .detach();
 }
 
-fn open_finder_window(start: &'static str, extra: usize, cx: &mut App) -> WindowHandle<FinderDemo> {
+pub(crate) fn open_finder_window(
+    start: &'static str,
+    extra: usize,
+    cx: &mut App,
+) -> WindowHandle<FinderDemo> {
     let step = px(extra as f32 * 30.);
     let bounds = WindowBounds::Windowed(Bounds {
         origin: point(px(160.) + step, px(120.) + step),

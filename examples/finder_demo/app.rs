@@ -28,7 +28,7 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, name_min_w};
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
 use crate::{prefs, read};
@@ -153,6 +153,7 @@ pub(crate) struct FinderDemo {
     pub(crate) tag_listing: Option<&'static str>,
     pub(crate) reveal_next: Option<SharedString>,
     pub(crate) vanished: Option<&'static str>,
+    pub(crate) arriving: Option<crate::navigate::Arriving>,
     pub(crate) host: Option<Retained<NSWindow>>,
     pub(crate) focus: FocusHandle,
     pub(crate) frames: u64,
@@ -302,6 +303,7 @@ impl FinderDemo {
             tag_listing: None,
             reveal_next: None,
             vanished: None,
+            arriving: None,
             host: None,
             focus: cx.focus_handle(),
             frames: 0,
@@ -315,6 +317,8 @@ impl FinderDemo {
         };
         (this.sort, this.ascending) = this.view_sort(this.view);
         this.load_columns();
+        // Read before the window's first frame, which has no earlier folder to keep up.
+        this.read_folder(start, cx);
         cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
             .detach();
         this
@@ -332,7 +336,16 @@ impl FinderDemo {
 
     /// Whether rows need what only their own files say: the sort or a list column shows it.
     pub(crate) fn wants_extras(&self) -> bool {
-        self.sort.extra() || self.list_columns.iter().any(|spec| spec.column.extra())
+        self.extras_with(&self.list_columns)
+    }
+
+    /// `wants_extras` in `folder`, once the window arrives there with its columns.
+    pub(crate) fn extras_in(&self, folder: &str) -> bool {
+        self.extras_with(&columns_for(folder))
+    }
+
+    fn extras_with(&self, columns: &[ColumnSpec]) -> bool {
+        self.sort.extra() || columns.iter().any(|spec| spec.column.extra())
     }
 
     /// A header click or a Sort By row: the list turns round on its own key, the other views
