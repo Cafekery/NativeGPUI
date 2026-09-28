@@ -251,7 +251,7 @@ impl FinderDemo {
             dates: DATES.with(Font::clone),
             // Finder's search results show a path where the Kind column sits.
             searching: self.results(),
-            columns: self.list_columns.clone(),
+            columns: self.shown_columns(),
             bleed: self.list_bleeds(),
             day: today(),
         });
