@@ -129,7 +129,7 @@ fn names_descend((sort, ascending): (Column, bool)) -> bool {
 }
 
 /// Ties on the sort column, and a name sort as a whole, are ordered by names ranked once.
-fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
+pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, sorted_by: (Column, bool)) {
     let ranks = match sorted_by.0 {
         Column::Kind => kind_ranks(&rows.iter().map(|row| &*row.kind).collect::<Vec<_>>()),
         Column::Size => rows.iter().map(|row| row.bytes).collect(),

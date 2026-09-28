@@ -17,12 +17,20 @@ use crate::chrome::toolbar::SEARCH_ID;
 use crate::data::{Column, intern_path};
 use crate::menus::Act;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
+use crate::views::icon::Arrangement;
 
 actions!(
     finder_demo,
     [
         Back,
         CleanUp,
+        CleanUpSelection,
+        CleanUpByName,
+        CleanUpByKind,
+        CleanUpByModified,
+        CleanUpBySize,
+        ArrangeNone,
+        ArrangeGrid,
         UseGroups,
         ShowViewOptions,
         Cut,
@@ -112,6 +120,8 @@ thread_local! {
         const { Cell::new((LIST_VIEW, Column::Name, false, false, false, false)) };
     static CHOSEN: Cell<((u64, u64, usize), bool, bool, bool)> =
         const { Cell::new(((u64::MAX, 0, 0), false, false, false)) };
+    /// Icon view's arrangement of the folder shown, and whether Clean Up may move its icons.
+    static ICONS: Cell<(Option<Arrangement>, bool)> = const { Cell::new((None, false)) };
 }
 
 /// Whether the chosen items refuse to open, can be shared, and all sit in iCloud Drive.
@@ -143,6 +153,8 @@ pub(crate) fn chosen_state(demo: &FinderDemo) -> (bool, bool, bool) {
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
+    let arranged = demo.arrangement().filter(|_| demo.view == ICON_VIEW);
+    ICONS.set((arranged, demo.cleans_up()));
     STATE.set((
         demo.view,
         demo.sort,
@@ -155,6 +167,23 @@ pub(crate) fn remember(demo: &FinderDemo) {
 
 fn enabled(action: &dyn Action) -> bool {
     let (_, _, _, chosen, refused, _) = STATE.get();
+    let (arranged, cleans) = ICONS.get();
+    let tidy: [&dyn Action; 5] = [
+        &CleanUp,
+        &CleanUpByName,
+        &CleanUpByKind,
+        &CleanUpByModified,
+        &CleanUpBySize,
+    ];
+    if tidy.iter().any(|row| action.partial_eq(*row)) {
+        return cleans;
+    }
+    if action.partial_eq(&CleanUpSelection) {
+        return cleans && chosen;
+    }
+    if action.partial_eq(&ArrangeNone) || action.partial_eq(&ArrangeGrid) {
+        return arranged.is_some();
+    }
     let opens: [&dyn Action; 3] = [&OpenSelection, &OpenInNewTab, &OpenInNewWindow];
     if opens.iter().any(|row| action.partial_eq(*row)) {
         return !refused;
@@ -179,15 +208,22 @@ fn enabled(action: &dyn Action) -> bool {
 
 fn checked(action: &dyn Action) -> Option<bool> {
     let (view, sort, grouped, _, _, _) = STATE.get();
-    let rows: [(&dyn Action, bool); 9] = [
+    let arranged = ICONS.get().0;
+    let sorted = |column| match arranged {
+        Some(arrangement) => arrangement == Arrangement::By(column),
+        None => sort == column,
+    };
+    let rows: [(&dyn Action, bool); 11] = [
         (&ViewIcons, view == ICON_VIEW),
         (&ViewList, view == LIST_VIEW),
         (&ViewColumns, view == COLUMN_VIEW),
         (&ViewGallery, view == GALLERY_VIEW),
-        (&SortByName, sort == Column::Name),
-        (&SortByKind, sort == Column::Kind),
-        (&SortByModified, sort == Column::Modified),
-        (&SortBySize, sort == Column::Size),
+        (&SortByName, sorted(Column::Name)),
+        (&SortByKind, sorted(Column::Kind)),
+        (&SortByModified, sorted(Column::Modified)),
+        (&SortBySize, sorted(Column::Size)),
+        (&ArrangeNone, arranged == Some(Arrangement::Free)),
+        (&ArrangeGrid, arranged == Some(Arrangement::Grid)),
         (&UseGroups, grouped),
     ];
     rows.into_iter()
@@ -312,6 +348,10 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::submenu(
                 "Sort By",
                 [
+                    MenuCommand::new("None", ArrangeNone).key("cmd-ctrl-alt-0"),
+                    MenuCommand::separator(),
+                    MenuCommand::new("Snap to Grid", ArrangeGrid),
+                    MenuCommand::separator(),
                     MenuCommand::new("Name", SortByName).key("cmd-ctrl-alt-1"),
                     MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-alt-2"),
                     MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-alt-5"),
@@ -321,13 +361,14 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
             MenuCommand::new("Show View Options", ShowViewOptions).key("cmd-j"),
             MenuCommand::new("Clean Up", CleanUp),
+            MenuCommand::new("Clean Up Selection", CleanUpSelection).option_alternate(),
             MenuCommand::submenu(
                 "Clean Up By",
                 [
-                    MenuCommand::new("Name", SortByName).key("cmd-alt-1"),
-                    MenuCommand::new("Kind", SortByKind).key("cmd-alt-2"),
-                    MenuCommand::new("Date Modified", SortByModified).key("cmd-alt-5"),
-                    MenuCommand::new("Size", SortBySize).key("cmd-alt-6"),
+                    MenuCommand::new("Name", CleanUpByName).key("cmd-alt-1"),
+                    MenuCommand::new("Kind", CleanUpByKind).key("cmd-alt-2"),
+                    MenuCommand::new("Date Modified", CleanUpByModified).key("cmd-alt-5"),
+                    MenuCommand::new("Size", CleanUpBySize).key("cmd-alt-6"),
                 ],
             ),
             MenuCommand::separator(),
@@ -543,8 +584,29 @@ impl FinderDemo {
                 this.grouped = !this.grouped;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &CleanUp, window, cx| {
-                this.run_menu(Act::Sort(this.sort), window, cx);
+            .on_action(cx.listener(|this, _: &CleanUp, _, cx| {
+                this.clean_up(false, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CleanUpSelection, _, cx| {
+                this.clean_up(true, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CleanUpByName, window, cx| {
+                this.clean_up_by(Column::Name, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CleanUpByKind, window, cx| {
+                this.clean_up_by(Column::Kind, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CleanUpByModified, window, cx| {
+                this.clean_up_by(Column::Modified, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CleanUpBySize, window, cx| {
+                this.clean_up_by(Column::Size, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ArrangeNone, _, cx| {
+                this.arrange(Arrangement::Free, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ArrangeGrid, _, cx| {
+                this.arrange(Arrangement::Grid, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 if let Some(sidebar) = this.sidebar.as_ref() {

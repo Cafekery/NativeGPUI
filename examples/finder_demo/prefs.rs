@@ -33,6 +33,7 @@ pub(crate) struct Finder {
     pub(crate) toolbar: Vec<String>,
     pub(crate) folders_first: bool,
     pub(crate) sort: (Column, bool),
+    pub(crate) icon_arrange: Option<String>,
 }
 
 fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
@@ -58,6 +59,11 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
     let text = |of: &NSDictionary, key: &str| {
         Some(value(of, key)?.downcast::<NSString>().ok()?.to_string())
     };
+    let icons = dict("StandardViewSettings").and_then(|all| {
+        value(&all, "IconViewSettings")?
+            .downcast::<NSDictionary>()
+            .ok()
+    });
     let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
     let ascending = list
         .as_deref()
@@ -101,6 +107,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         sort: sort.map_or((Column::Name, true), |column| {
             (column, ascending.unwrap_or(true))
         }),
+        icon_arrange: icons.and_then(|icons| text(&icons, "arrangeBy")),
     }
 });
 
@@ -306,4 +313,58 @@ pub(crate) fn column_view_width(folder: &str) -> Option<f32> {
 
 pub(crate) fn set_column_view_width(folder: &str, width: f32) {
     write(&format!("ng.finder.col.browser.{folder}"), width as f64);
+}
+
+fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
+    NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
+}
+
+/// The arrangement chosen for a folder's icons here, as Finder names it (`none`, `grid`, `name`…).
+pub(crate) fn icon_arrangement(folder: &str) -> Option<String> {
+    Some(
+        defaults()
+            .stringForKey(&icon_key("arrange", folder))?
+            .to_string(),
+    )
+}
+
+pub(crate) fn set_icon_arrangement(folder: &str, arrange_by: &str) {
+    let value: &AnyObject = &NSString::from_str(arrange_by);
+    unsafe { defaults().setObject_forKey(Some(value), &icon_key("arrange", folder)) };
+}
+
+/// Where each icon of a folder was put here: the centre of its image, as Finder records it.
+pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
+    let Some(spots) = defaults().dictionaryForKey(&icon_key("at", folder)) else {
+        return HashMap::new();
+    };
+    spots
+        .keys()
+        .filter_map(|name| {
+            let at = spots.objectForKey(&name)?.downcast::<NSArray>().ok()?;
+            let axis = |index| {
+                Some(
+                    at.objectAtIndex(index)
+                        .downcast::<NSNumber>()
+                        .ok()?
+                        .floatValue(),
+                )
+            };
+            (at.count() == 2).then_some(())?;
+            Some((name.to_string(), (axis(0)?, axis(1)?)))
+        })
+        .collect()
+}
+
+pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a str, (f32, f32))>) {
+    let (names, places): (Vec<_>, Vec<_>) = spots
+        .map(|(name, (x, y))| {
+            let place = NSArray::from_retained_slice(&[NSNumber::new_f32(x), NSNumber::new_f32(y)]);
+            (NSString::from_str(name), place)
+        })
+        .unzip();
+    let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
+    let places: Vec<&NSArray<NSNumber>> = places.iter().map(|place| &**place).collect();
+    let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
+    unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
 }
