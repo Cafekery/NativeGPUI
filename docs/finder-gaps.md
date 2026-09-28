@@ -27,7 +27,7 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Edit ▸ Show Clipboard
 - [x] Window ▸ Cycle Through Windows (⌘`)
 - [x] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
-- [ ] View ▸ Show Preview Options: Finder on the test Mac kept it disabled with the preview pane showing and a text file or an image selected over accessibility, so what its panel offers is unconfirmed
+- [x] View ▸ Show Preview Options: Finder's floating 240 pt panel "Preview Options - <kind>" (Image, Text, PDF document, Movie, Folder read off Finder 27): Tags, Dates, the kind's groups and Show Quick Actions; the demo draws the same rows and keeps the choices per kind
 - [ ] View ▸ Customize Toolbar…, the one menu item the demo greys out
 - [x] Tag swatches read as seven unlabelled groups to VoiceOver; Finder's are radio buttons named “Add “Red” label” and “Remove “Red” label”
 
@@ -145,8 +145,8 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   weighs one the index has not, and says "Folder" only until it has.
 - [x] Finder keeps a second pane width for gallery view (`PreviewPaneGalleryWidth`, 240 on the test
   Mac), and a window switched into or out of gallery view takes that view's width; so does the demo.
-- [ ] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
-  created"); the demo's list is fixed.
+- [x] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
+  created"); the demo's follow the same options.
 - [x] Light appearance: Finder's vibrant text darkens the glass by a fixed depth (headings and
   values 178.5, row titles 102, kind 51.5), and the glass lightens from 237 to 242 when the window
   resigns key; the card follows both, within a level key and non-key. The name is a flat 70% black
