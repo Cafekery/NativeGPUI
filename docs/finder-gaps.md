@@ -141,10 +141,10 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   of 275 assets"); the card shows the app's icon.
 - [ ] A text file: Finder's Quick Look draws the text in a rounded, monospaced page 221x291; the
   card shows the document's thumbnail.
-- [ ] Finder's kind line weighs a folder ("Folder - 6 bytes", "Folder - Zero bytes"); the card
-  says "Folder" until the index has weighed it, and never says "Zero bytes".
-- [ ] Finder keeps a second pane width for gallery view (`PreviewPaneGalleryWidth`, 240 on the test
-  Mac); the demo has one width for every view.
+- [x] Finder's kind line weighs a folder ("Folder - 6 bytes", "Folder - Zero bytes"); the card
+  weighs one the index has not, and says "Folder" only until it has.
+- [x] Finder keeps a second pane width for gallery view (`PreviewPaneGalleryWidth`, 240 on the test
+  Mac), and a window switched into or out of gallery view takes that view's width; so does the demo.
 - [ ] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
   created"); the demo's list is fixed.
 - [x] Light appearance: Finder's vibrant text darkens the glass by a fixed depth (headings and
@@ -157,9 +157,9 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   "Add Tags…" at x 870, y 552–564.5, ink 87 dark, 189 light) and draws no rule under the tags row,
   key and non-key, for a picture and a text file; the card matches within a level, its placeholder
   1 pt wider. On the mini (26A5416b) Finder drew a rule there instead.
-- [ ] Show Preview after Hide Preview brings Finder's pane back 288 wide in list and gallery view,
+- [x] Show Preview after Hide Preview brings Finder's pane back 288 wide in list and gallery view,
   at any window width (900–1300), selection or earlier width (241 and 240 set by the divider), and
-  Finder saves 288; the demo's comes back at the width it had (241).
+  Finder saves 288 for that view; the demo does the same.
 - [ ] Once the content runs into the actions band (a window 600 tall), Finder rules the band off
   across the pane, x 859–1100 (y 529.5: 68 dark, 214 light; y 530: 63, 230); the card's rule has
   the same rows and inks but spans x 862–1094, since its window keeps clear of the divider's grab
