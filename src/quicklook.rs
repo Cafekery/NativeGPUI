@@ -36,6 +36,8 @@ struct State {
     full_screen: bool,
     busy: bool,
     pending: Option<Job>,
+    #[cfg(feature = "private-api")]
+    markup: bool,
 }
 
 thread_local! {
@@ -95,6 +97,28 @@ define_class!(
             thumbnail_of(item, content_rect)
         }
     }
+
+    #[cfg(feature = "private-api")]
+    impl QuickLook {
+        #[unsafe(method(previewPanel:canEditItem:))]
+        fn can_edit(
+            &self,
+            _panel: Option<&QLPreviewPanel>,
+            item: Option<&ProtocolObject<dyn QLPreviewItem>>,
+        ) -> bool {
+            marking_up(item)
+        }
+
+        #[unsafe(method(previewPanel:initialEditModeForItem:))]
+        fn initial_edit_mode(
+            &self,
+            _panel: Option<&QLPreviewPanel>,
+            item: Option<&ProtocolObject<dyn QLPreviewItem>>,
+        ) -> NSInteger {
+            const MARKUP: NSInteger = 1;
+            if marking_up(item) { MARKUP } else { 0 }
+        }
+    }
 );
 
 fn item_at(index: NSInteger) -> Option<Retained<ProtocolObject<dyn QLPreviewItem>>> {
@@ -108,6 +132,11 @@ fn showing(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<PathBuf> 
     STATE
         .with_borrow(|state| state.items.get(state.current) == Some(&path))
         .then_some(path)
+}
+
+#[cfg(feature = "private-api")]
+fn marking_up(item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> bool {
+    STATE.with_borrow(|state| state.markup) && showing(item).is_some()
 }
 
 fn thumbnail_of(
@@ -201,6 +230,10 @@ pub fn quick_look(
         state.on_key = Some(Box::new(on_key));
         state.opening = true;
         state.full_screen = false;
+        #[cfg(feature = "private-api")]
+        {
+            state.markup = false;
+        }
         state
             .sink
             .get_or_insert_with(|| unsafe { msg_send![QuickLook::alloc(mtm), init] });
@@ -217,6 +250,13 @@ pub fn quick_look_full_screen(
 ) {
     quick_look(window, items, current, None, on_key);
     STATE.with_borrow_mut(|state| state.full_screen = true);
+}
+
+/// Opens `item` in Quick Look's Markup, which saves into the file.
+#[cfg(feature = "private-api")]
+pub fn quick_look_markup(window: &Window, item: PathBuf) {
+    quick_look(window, vec![item], 0, None, |_| {});
+    STATE.with_borrow_mut(|state| state.markup = true);
 }
 
 pub fn quick_look_update(
