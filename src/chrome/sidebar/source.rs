@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
@@ -7,9 +5,9 @@ use objc2_app_kit::{NSMenu, NSView};
 use objc2_foundation::{MainThreadMarker, NSInteger};
 
 use super::Shared;
-use super::cell::tint_selected_rows;
+use super::cell::tint_rows;
 
-pub(super) fn children(shared: &Rc<Shared>, item: Option<&AnyObject>) -> NSInteger {
+pub(super) fn children(shared: &Shared, item: Option<&AnyObject>) -> NSInteger {
     shared
         .model
         .borrow()
@@ -18,36 +16,33 @@ pub(super) fn children(shared: &Rc<Shared>, item: Option<&AnyObject>) -> NSInteg
 }
 
 pub(super) fn child(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     index: NSInteger,
     item: Option<&AnyObject>,
 ) -> Retained<AnyObject> {
     let key = shared
         .model
         .borrow()
-        .children_keys(item.map(Shared::key_of_item))
-        .get(index as usize)
-        .copied()
+        .child_keys(item.map(Shared::key_of_item))
+        .nth(index as usize)
         .unwrap_or(0);
     shared.item(key)
 }
 
-pub(super) fn expandable(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+pub(super) fn expandable(shared: &Shared, item: &AnyObject) -> bool {
     shared.node_is(Shared::key_of_item(item), |node| !node.children.is_empty())
 }
 
-pub(super) fn is_group(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+pub(super) fn is_group(shared: &Shared, item: &AnyObject) -> bool {
     shared.node_is(Shared::key_of_item(item), |node| node.group)
 }
 
-pub(super) fn selectable(shared: &Rc<Shared>, item: &AnyObject) -> bool {
+pub(super) fn selectable(shared: &Shared, item: &AnyObject) -> bool {
     shared.node_is(Shared::key_of_item(item), |node| !node.group)
 }
 
-pub(super) fn selection_changed(shared: &Rc<Shared>) {
-    if let Some(outline) = shared.outline.borrow().clone() {
-        tint_selected_rows(&outline);
-    }
+pub(super) fn selection_changed(shared: &Shared) {
+    tint_rows(&shared.outline);
     if shared.suppress.get() > 0 {
         return;
     }
@@ -58,18 +53,14 @@ pub(super) fn selection_changed(shared: &Rc<Shared>) {
     shared.defer(move |window, app| handler(&id, window, app));
 }
 
-pub(super) fn menu_needs_update(shared: &Rc<Shared>, menu: &NSMenu, target: &AnyObject) {
+pub(super) fn menu_needs_update(shared: &Shared, menu: &NSMenu, target: &AnyObject) {
     let mtm = MainThreadMarker::new().expect("outline view callbacks are main-thread");
-    let row = shared
-        .outline
-        .borrow()
-        .clone()
-        .and_then(|outline| shared.id_at_row(&outline, outline.clickedRow()));
-    *shared.menu_row.borrow_mut() = row.clone();
-    let entries = match (row, shared.on_menu.borrow().clone()) {
-        (Some(row), Some((entries, _))) => entries(&row),
+    let row = shared.id_at_row(shared.outline.clickedRow());
+    let entries = match (&row, shared.on_menu.borrow().as_ref()) {
+        (Some(row), Some((entries, _))) => entries(row),
         _ => Vec::new(),
     };
+    *shared.menu_row.borrow_mut() = row;
     crate::controls::menu::sync_menu(
         mtm,
         menu,
@@ -78,23 +69,19 @@ pub(super) fn menu_needs_update(shared: &Rc<Shared>, menu: &NSMenu, target: &Any
     );
 }
 
-pub(super) fn menu_picked(shared: &Rc<Shared>, sender: &AnyObject) {
+pub(super) fn menu_picked(shared: &Shared, sender: &AnyObject) {
     let index: NSInteger = unsafe { msg_send![sender, tag] };
-    let Some(row) = shared.menu_row.borrow().clone() else {
+    let (Some(row), Some((_, picked))) = (
+        shared.menu_row.borrow().clone(),
+        shared.on_menu.borrow().clone(),
+    ) else {
         return;
     };
-    let Some((_, picked)) = shared.on_menu.borrow().clone() else {
-        return;
-    };
-    let index = index.max(0) as usize;
-    shared.defer(move |window, app| picked(&row, index, window, app));
+    shared.defer(move |window, app| picked(&row, index.max(0) as usize, window, app));
 }
 
-pub(super) fn eject_clicked(shared: &Rc<Shared>, sender: &NSView) {
-    let Some(outline) = shared.outline.borrow().clone() else {
-        return;
-    };
-    let Some(id) = shared.id_at_row(&outline, outline.rowForView(sender)) else {
+pub(super) fn eject_clicked(shared: &Shared, sender: &NSView) {
+    let Some(id) = shared.id_at_row(shared.outline.rowForView(sender)) else {
         return;
     };
     let Some(handler) = shared.on_eject.borrow().clone() else {

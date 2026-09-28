@@ -100,11 +100,8 @@ impl Model {
         }
     }
 
-    pub(super) fn children_keys(&self, parent: Option<u64>) -> Vec<u64> {
-        self.children_of(parent)
-            .iter()
-            .map(|&i| self.nodes[i].key)
-            .collect()
+    pub(super) fn child_keys(&self, parent: Option<u64>) -> impl Iterator<Item = u64> + '_ {
+        self.children_of(parent).iter().map(|&i| self.nodes[i].key)
     }
 
     pub(super) fn parent_key(&self, key: u64) -> Option<u64> {

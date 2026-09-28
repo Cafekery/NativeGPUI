@@ -1,6 +1,5 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::OnceLock;
 
 use gpui::{Pixels, SharedString};
@@ -21,21 +20,18 @@ use super::model::Node;
 use super::{BADGE_GAP, CORE_TYPES_BUNDLE, Shared, SidebarIcon, SidebarRowSize};
 
 pub(super) struct CellIvars {
-    pub(super) group: bool,
-    pub(super) badge: RefCell<Option<Retained<NSTextField>>>,
-    pub(super) eject: RefCell<Option<Retained<NSButton>>>,
-    pub(super) tint: RefCell<Option<Retained<NSColor>>>,
-    pub(super) muted: Cell<bool>,
+    group: bool,
+    pub(super) badge: Retained<NSTextField>,
+    eject: Retained<NSButton>,
+    tint: RefCell<Option<Retained<NSColor>>>,
+    muted: Cell<bool>,
 }
 
 impl CellIvars {
-    fn trailing(&self) -> Option<Retained<NSView>> {
-        let visible = |view: &NSView| !view.isHidden();
-        if let Some(eject) = self.eject.borrow().clone().filter(|v| visible(v)) {
-            return Some(Retained::into_super(Retained::into_super(eject)));
-        }
-        let badge = self.badge.borrow().clone().filter(|v| visible(v))?;
-        Some(Retained::into_super(Retained::into_super(badge)))
+    fn trailing(&self) -> Option<&NSView> {
+        let eject: &NSView = &self.eject;
+        let badge: &NSView = &self.badge;
+        [eject, badge].into_iter().find(|view| !view.isHidden())
     }
 }
 
@@ -117,28 +113,6 @@ fn srgb((r, g, b): (u8, u8, u8)) -> Retained<NSColor> {
 }
 
 fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Retained<SidebarCell> {
-    let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
-        group: identifier == ID_GROUP,
-        badge: RefCell::new(None),
-        eject: RefCell::new(None),
-        tint: RefCell::new(None),
-        muted: Cell::new(false),
-    });
-    let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
-    cell.setIdentifier(Some(&NSString::from_str(identifier)));
-
-    let title = label(mtm);
-    cell.addSubview(&title);
-    unsafe { cell.setTextField(Some(&title)) };
-
-    if identifier == ID_ICON {
-        let icon = NSImageView::new(mtm);
-        icon.setImageScaling(NSImageScaling::ScaleProportionallyDown);
-        icon.setImageAlignment(NSImageAlignment::AlignCenter);
-        cell.addSubview(&icon);
-        unsafe { cell.setImageView(Some(&icon)) };
-    }
-
     let badge = label(mtm);
     badge.setAlignment(NSTextAlignment::Right);
     badge.setFont(Some(&NSFont::systemFontOfSize(
@@ -146,8 +120,6 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
     )));
     badge.setTextColor(Some(&NSColor::secondaryLabelColor()));
     badge.setHidden(true);
-    cell.addSubview(&badge);
-    *cell.ivars().badge.borrow_mut() = Some(badge);
 
     let eject = NSButton::new(mtm);
     eject.setBordered(false);
@@ -172,9 +144,31 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
         eject.setTarget(Some(target));
         eject.setAction(Some(sel!(ngSidebarEject:)));
     }
-    cell.addSubview(&eject);
-    *cell.ivars().eject.borrow_mut() = Some(eject);
 
+    let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
+        group: identifier == ID_GROUP,
+        badge,
+        eject,
+        tint: RefCell::new(None),
+        muted: Cell::new(false),
+    });
+    let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
+    cell.setIdentifier(Some(&NSString::from_str(identifier)));
+
+    let title = label(mtm);
+    cell.addSubview(&title);
+    unsafe { cell.setTextField(Some(&title)) };
+
+    if identifier == ID_ICON {
+        let icon = NSImageView::new(mtm);
+        icon.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+        icon.setImageAlignment(NSImageAlignment::AlignCenter);
+        cell.addSubview(&icon);
+        unsafe { cell.setImageView(Some(&icon)) };
+    }
+
+    cell.addSubview(&cell.ivars().badge);
+    cell.addSubview(&cell.ivars().eject);
     cell
 }
 
@@ -196,12 +190,11 @@ fn core_types_template(name: &SharedString, points: f64) -> Option<Retained<NSIm
 }
 
 fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> Option<f64> {
-    available.into_iter().fold(None, |held, candidate| {
-        let better = held.is_none_or(|held: f64| {
-            let (a, b) = ((candidate - wanted).abs(), (held - wanted).abs());
-            a < b || (a == b && candidate > held)
-        });
-        Some(if better { candidate } else { held? })
+    available.into_iter().min_by(|a, b| {
+        (a - wanted)
+            .abs()
+            .total_cmp(&(b - wanted).abs())
+            .then(b.total_cmp(a))
     })
 }
 
@@ -304,25 +297,29 @@ fn label_fades_itself() -> bool {
 }
 
 fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
+    let ivars = cell.ivars();
     // A label colour on a vibrant image view draws far darker than the same colour as text.
-    let (icon_ink, eject_ink) = match key {
-        true => (
+    let (icon_ink, eject_ink) = if key {
+        (
             Some(NSColor::systemGrayColor()),
             NSColor::tertiaryLabelColor(),
-        ),
-        false => (None, NSColor::quaternaryLabelColor()),
+        )
+    } else {
+        (None, NSColor::quaternaryLabelColor())
     };
     if let Some(icon) = unsafe { cell.imageView() } {
-        icon.setContentTintColor(icon_ink.filter(|_| cell.ivars().muted.get()).as_deref());
+        icon.setContentTintColor(icon_ink.filter(|_| ivars.muted.get()).as_deref());
     }
-    if let Some(eject) = cell.ivars().eject.borrow().as_ref() {
-        eject.setContentTintColor(Some(&eject_ink));
-    }
+    ivars.eject.setContentTintColor(Some(&eject_ink));
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
-    let fade = label_fades_itself() && !key && !cell.ivars().group;
-    let tint = cell.ivars().tint.borrow().clone().filter(|_| selected);
+    let fade = label_fades_itself() && !key && !ivars.group;
+    let tint = if selected {
+        ivars.tint.borrow().clone()
+    } else {
+        None
+    };
     let colour = match tint {
         Some(tag) => tag,
         // An explicit colour loses the accent AppKit substitutes on a selected row.
@@ -337,7 +334,7 @@ fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
     title.setTextColor(Some(&colour));
 }
 
-pub(super) fn tint_selected_rows(outline: &NSOutlineView) {
+pub(super) fn tint_rows(outline: &NSOutlineView) {
     let key = key_window(outline);
     for row in 0..outline.numberOfRows() {
         let Some(view) = outline.viewAtColumn_row_makeIfNecessary(0, row, false) else {
@@ -383,28 +380,24 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
         view.setImage(image.as_deref());
     }
 
-    if let Some(badge) = cell.ivars().badge.borrow().as_ref() {
-        match node.badge {
-            Some(count) => {
-                let text = NSString::from_str(&count.to_string());
-                if badge.stringValue() != text {
-                    badge.setStringValue(&text);
-                }
-                badge.setHidden(false);
+    let badge = &cell.ivars().badge;
+    match node.badge {
+        Some(count) => {
+            let text = NSString::from_str(&count.to_string());
+            if badge.stringValue() != text {
+                badge.setStringValue(&text);
             }
-            None => badge.setHidden(true),
+            badge.setHidden(false);
         }
+        None => badge.setHidden(true),
     }
-
-    if let Some(eject) = cell.ivars().eject.borrow().as_ref() {
-        eject.setHidden(!node.eject);
-    }
+    cell.ivars().eject.setHidden(!node.eject);
 
     cell.setNeedsLayout(true);
 }
 
 pub(super) fn row_view(
-    shared: &Rc<Shared>,
+    shared: &Shared,
     outline: &NSOutlineView,
     item: &AnyObject,
     target: &AnyObject,
@@ -433,7 +426,7 @@ pub(super) fn row_view(
     );
     let row = unsafe { outline.rowForItem(Some(item)) };
     tint_cell(&cell, outline.isRowSelected(row), key_window(outline));
-    Some(unsafe { Retained::cast_unchecked::<NSView>(cell) })
+    Some(Retained::into_super(Retained::into_super(cell)))
 }
 
 #[cfg(test)]

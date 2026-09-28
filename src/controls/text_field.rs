@@ -21,8 +21,9 @@ use crate::bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, Target,
     ValueKind, hosted_element, wire,
 };
-use crate::controls::fitted;
+use crate::controls::{fitted, nsstring_is, sync_enabled};
 
+const CHANGE_CHANNEL: u64 = 0;
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
 const CANCEL_CHANNEL: u64 = 0x6a09_e667_f3bc_c908;
 const COMMAND_CHANNEL: u64 = 0xbb67_ae85_84ca_a73b;
@@ -257,24 +258,24 @@ impl NativeTextField {
                 field.setFont(Some(&NSFont::systemFontOfSize(size)));
             }
         }
-        if field.isEnabled() != self.enabled {
-            field.setEnabled(self.enabled);
-        }
+        sync_enabled(&field, self.enabled);
         if self.borderless && field.drawsBackground() {
             field.setBezeled(false);
             field.setBordered(false);
             field.setDrawsBackground(false);
             field.setFocusRingType(NSFocusRingType::None);
         }
-        let placeholder = field
+        let placeholder_matches = field
             .placeholderString()
-            .map_or_else(String::new, |have| have.to_string());
-        if placeholder != *self.placeholder {
+            .map_or(self.placeholder.is_empty(), |have| {
+                nsstring_is(&have, &self.placeholder)
+            });
+        if !placeholder_matches {
             field.setPlaceholderString(Some(&NSString::from_str(&self.placeholder)));
         }
         // `self.text` lags typing by the pending edits; writing it back would eat keystrokes.
         let want_text: &str = &self.text;
-        if pending(&field) == 0 && field.stringValue().to_string() != want_text {
+        if pending(&field) == 0 && !nsstring_is(&field.stringValue(), want_text) {
             field.setStringValue(&NSString::from_str(want_text));
         }
 
@@ -318,7 +319,7 @@ impl NativeTextField {
             window.makeFirstResponder(Some(&field));
         }
         if let Some(editor) = field.currentEditor() {
-            // `editing` counts chars; AppKit ranges count UTF-16 units, two per emoji.
+            // `editing` counts chars; AppKit ranges count UTF-16 units.
             let units = |chars: usize| {
                 want_text
                     .chars()
@@ -370,7 +371,7 @@ fn sync_items(combo: &NSComboBox, items: &[SharedString]) {
     let same = have.len() == items.len()
         && have.iter().zip(items).all(|(had, item)| {
             had.downcast_ref::<NSString>()
-                .is_some_and(|had| had.to_string() == **item)
+                .is_some_and(|had| nsstring_is(had, item))
         });
     if same {
         return;
@@ -383,28 +384,25 @@ fn sync_items(combo: &NSComboBox, items: &[SharedString]) {
 }
 
 fn text_changed(notification: &NSNotification) {
-    let Some(object) = notification.object() else {
-        return;
-    };
-    let Some(control) = object.downcast_ref::<NSControl>() else {
-        return;
-    };
-    let (Some(action), Some(target)) = (control.action(), control.target()) else {
-        return;
-    };
-    if let Some(field) = control.downcast_ref::<NSTextField>() {
-        set_pending(field, pending(field) + 1);
+    if let Some(control) = notification
+        .object()
+        .as_deref()
+        .and_then(|object| object.downcast_ref::<NSControl>())
+    {
+        send_on(control, CHANGE_CHANNEL);
     }
-    let submit = control.tag();
-    control.setTag(submit ^ SUBMIT_CHANNEL as isize);
-    let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };
-    control.setTag(submit);
 }
 
+/// Fires the control's action with its tag moved from the submit channel to `channel`.
 fn send_on(control: &NSControl, channel: u64) -> Bool {
     let (Some(action), Some(target)) = (control.action(), control.target()) else {
         return Bool::NO;
     };
+    if channel == CHANGE_CHANNEL {
+        if let Some(field) = control.downcast_ref::<NSTextField>() {
+            set_pending(field, pending(field) + 1);
+        }
+    }
     let submit = control.tag();
     control.setTag(submit ^ SUBMIT_CHANNEL as isize ^ channel as isize);
     let _: bool = unsafe { msg_send![control, sendAction: action, to: &*target] };

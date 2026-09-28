@@ -8,7 +8,7 @@ use crate::bridge::appkit::fitting_size;
 use crate::bridge::host::{
     Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
-use crate::controls::fitted;
+use crate::controls::{fitted, number_handler, sync_enabled};
 
 pub fn native_slider(id: impl Into<ElementId>, value: f64) -> NativeSlider {
     NativeSlider {
@@ -68,29 +68,24 @@ impl NativeSlider {
     }
 
     pub fn on_change(mut self, handler: impl Fn(&f64, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Number(value) = value {
-                handler(&value, window, cx);
-            }
-        }));
+        self.on_change = Some(number_handler(handler));
         self
     }
 
     fn layout(&self) -> Style {
-        let (vertical, ticks) = (self.vertical, self.ticks);
-        let class = match (vertical, ticks > 0) {
+        let class = match (self.vertical, self.ticks > 0) {
             (false, false) => "NSSlider",
             (false, true) => "NSSlider/ticks",
             (true, false) => "NSSlider/vertical",
             (true, true) => "NSSlider/vertical+ticks",
         };
-        fitted(fitting_size(class, move |mtm| {
+        fitted(fitting_size(class, |mtm| {
             let slider = NSSlider::new(mtm);
-            if vertical {
+            if self.vertical {
                 slider.setVertical(true);
             }
-            if ticks > 0 {
-                slider.setNumberOfTickMarks(ticks as isize);
+            if self.ticks > 0 {
+                slider.setNumberOfTickMarks(self.ticks as isize);
             }
             slider.fittingSize()
         }))
@@ -101,17 +96,13 @@ impl NativeSlider {
             let state = state.unwrap_or_default();
             (state.clone(), state)
         });
-        let fresh = Cell::new(false);
         let slider = slot.place(Layer::Above, |mtm, target| {
             let slider = NSSlider::new(mtm);
             wire(&slider, target, slot.key);
             slider.setContinuous(true);
-            fresh.set(true);
+            held.0.set(None);
             slider
         });
-        if fresh.get() {
-            held.0.set(None);
-        }
 
         if slider.isVertical() != self.vertical {
             slider.setVertical(self.vertical);
@@ -137,9 +128,7 @@ impl NativeSlider {
             slider.setDoubleValue(wanted);
             held.0.set(Some(wanted));
         }
-        if slider.isEnabled() != self.enabled {
-            slider.setEnabled(self.enabled);
-        }
+        sync_enabled(&slider, self.enabled);
 
         let handler = self.on_change.take().map(|handler| -> NativeHandler {
             let held = held.0.clone();

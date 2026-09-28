@@ -10,8 +10,7 @@ pub(super) enum Plan {
     Content(Vec<u64>),
     Structural {
         content: Vec<u64>,
-        /// The *old* model's child lists; the data source already answers from the new one.
-        parents: Vec<(Option<u64>, Vec<u64>)>,
+        old_children: Vec<(Option<u64>, Vec<u64>)>,
     },
 }
 
@@ -26,8 +25,8 @@ pub(super) fn plan_diff(old: &Model, new: &Model) -> Plan {
 
     let mut content = Vec::new();
     let mut structural = old.roots.len() != new.roots.len() || old.nodes.len() != new.nodes.len();
-
     if !structural {
+        structural = !old.child_keys(None).eq(new.child_keys(None));
         for key in new.preorder() {
             let (Some(old_node), Some(new_node)) = (old.node(key), new.node(key)) else {
                 structural = true;
@@ -36,25 +35,24 @@ pub(super) fn plan_diff(old: &Model, new: &Model) -> Plan {
             if old_node.content() != new_node.content() {
                 content.push(key);
             }
+            structural = structural || !old.child_keys(Some(key)).eq(new.child_keys(Some(key)));
         }
-    }
-    if !structural {
-        structural = std::iter::once(None)
-            .chain(new.preorder().into_iter().map(Some))
-            .any(|parent| old.children_keys(parent) != new.children_keys(parent));
     }
 
     if structural {
-        let mut parents = vec![(None, old.children_keys(None))];
-        parents.extend(
+        let mut old_children = vec![(None, old.child_keys(None).collect())];
+        old_children.extend(
             old.preorder()
                 .into_iter()
                 .filter(|&key| {
                     new.node(key).is_some() && old.parent_key(key) == new.parent_key(key)
                 })
-                .map(|key| (Some(key), old.children_keys(Some(key)))),
+                .map(|key| (Some(key), old.child_keys(Some(key)).collect())),
         );
-        return Plan::Structural { content, parents };
+        return Plan::Structural {
+            content,
+            old_children,
+        };
     }
     if content.is_empty() {
         Plan::Nothing
@@ -64,102 +62,101 @@ pub(super) fn plan_diff(old: &Model, new: &Model) -> Plan {
 }
 
 pub(super) fn apply_diff(state: &SidebarState, plan: Plan) -> SidebarDiff {
-    let outline = &state.views.outline;
+    let outline = &state.shared.outline;
     let shared = &state.shared;
     let mut diff = SidebarDiff::default();
 
-    let (content, parents) = match plan {
+    let content = match plan {
         Plan::Nothing => {
-            return SidebarDiff {
-                unchanged: true,
-                ..Default::default()
-            };
+            diff.unchanged = true;
+            return diff;
         }
         Plan::Reload => {
             outline.reloadData();
             expand_groups(state);
             shared.wrote(1);
-            return SidebarDiff {
-                full_reloads: 1,
-                ..Default::default()
-            };
+            diff.full_reloads = 1;
+            return diff;
         }
-        Plan::Content(content) => (content, Vec::new()),
-        Plan::Structural { content, parents } => (content, parents),
+        Plan::Content(content) => content,
+        Plan::Structural {
+            content,
+            old_children,
+        } => {
+            apply_structure(state, &old_children, &mut diff);
+            content
+        }
     };
 
-    if !parents.is_empty() {
-        let saved = SavedState::capture(state);
-        outline.beginUpdates();
-        for (parent, was) in &parents {
-            let (inserted, removed, moved) = diff_children(state, *parent, was);
-            diff.inserted += inserted;
-            diff.removed += removed;
-            diff.moved += moved;
-        }
-        outline.endUpdates();
-        shared.wrote((diff.inserted + diff.removed + diff.moved) as u64);
-        expand_groups(state);
-
-        if outline.numberOfRows() != expected_rows(state) {
-            outline.reloadData();
-            expand_groups(state);
-            saved.restore(state);
-            diff.full_reloads += 1;
-            shared.wrote(1);
-        }
-    }
-
     for key in content {
-        let item = shared.item(key);
-        unsafe { outline.reloadItem(Some(&item)) };
+        unsafe { outline.reloadItem(Some(&shared.item(key))) };
         diff.reloaded_items += 1;
     }
     shared.wrote(diff.reloaded_items as u64);
-
     diff
 }
 
-fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usize, usize, usize) {
-    let outline = &state.views.outline;
+fn apply_structure(
+    state: &SidebarState,
+    old_children: &[(Option<u64>, Vec<u64>)],
+    diff: &mut SidebarDiff,
+) {
+    let outline = &state.shared.outline;
     let shared = &state.shared;
-    let parent_item = parent.map(|key| shared.item(key));
-    let parent_ref = parent_item.as_deref();
-
-    let mut current: Vec<u64> = was.to_vec();
-    let wanted = shared.model.borrow().children_keys(parent);
-    if current == wanted {
-        return (0, 0, 0);
+    let saved = SavedState::capture(state);
+    outline.beginUpdates();
+    for (parent, was) in old_children {
+        diff_children(state, *parent, was, diff);
     }
+    outline.endUpdates();
+    shared.wrote((diff.inserted + diff.removed + diff.moved) as u64);
+    expand_groups(state);
 
-    let doomed: Vec<usize> = current
-        .iter()
-        .enumerate()
-        .filter(|(_, key)| !wanted.contains(key))
-        .map(|(index, _)| index)
-        .collect();
-    let removed = doomed.len();
-    if removed > 0 {
-        let set = NSMutableIndexSet::new();
-        for &index in &doomed {
-            set.addIndex(index);
+    if outline.numberOfRows() != expected_rows(state) {
+        outline.reloadData();
+        expand_groups(state);
+        saved.restore(state);
+        diff.full_reloads += 1;
+        shared.wrote(1);
+    }
+}
+
+fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64], diff: &mut SidebarDiff) {
+    let outline = &state.shared.outline;
+    let wanted: Vec<u64> = state.shared.model.borrow().child_keys(parent).collect();
+    if was == wanted {
+        return;
+    }
+    let parent_item = parent.map(|key| state.shared.item(key));
+    let parent_item = parent_item.as_deref();
+
+    let doomed = NSMutableIndexSet::new();
+    let mut removed = 0;
+    for (index, key) in was.iter().enumerate() {
+        if !wanted.contains(key) {
+            doomed.addIndex(index);
+            removed += 1;
         }
+    }
+    if removed > 0 {
         unsafe {
             outline.removeItemsAtIndexes_inParent_withAnimation(
-                &set,
-                parent_ref,
+                &doomed,
+                parent_item,
                 NSTableViewAnimationOptions::EffectNone,
             )
         };
-        for &index in doomed.iter().rev() {
-            current.remove(index);
-        }
     }
 
+    let mut current: Vec<u64> = was
+        .iter()
+        .copied()
+        .filter(|key| wanted.contains(key))
+        .collect();
     let survivors: Vec<u64> = wanted
         .iter()
         .copied()
-        .filter(|k| current.contains(k))
+        .filter(|key| was.contains(key))
         .collect();
     let mut moved = 0;
     for (target, key) in survivors.iter().enumerate() {
@@ -172,9 +169,9 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
         unsafe {
             outline.moveItemAtIndex_inParent_toIndex_inParent(
                 from as NSInteger,
-                parent_ref,
+                parent_item,
                 target as NSInteger,
-                parent_ref,
+                parent_item,
             )
         };
         let key = current.remove(from);
@@ -182,12 +179,11 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
         moved += 1;
     }
 
-    let mut inserted = 0;
     let fresh = NSMutableIndexSet::new();
+    let mut inserted = 0;
     for (index, key) in wanted.iter().enumerate() {
-        if !current.contains(key) {
+        if !was.contains(key) {
             fresh.addIndex(index);
-            current.insert(index.min(current.len()), *key);
             inserted += 1;
         }
     }
@@ -195,26 +191,23 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64]) -> (usi
         unsafe {
             outline.insertItemsAtIndexes_inParent_withAnimation(
                 &fresh,
-                parent_ref,
+                parent_item,
                 NSTableViewAnimationOptions::EffectNone,
             )
         };
     }
 
-    (inserted, removed, moved)
+    diff.inserted += inserted;
+    diff.removed += removed;
+    diff.moved += moved;
 }
 
 pub(super) fn reveal(state: &SidebarState, key: u64) {
-    let outline = &state.views.outline;
-    let mut ancestors = Vec::new();
-    {
+    let outline = &state.shared.outline;
+    let ancestors: Vec<u64> = {
         let model = state.shared.model.borrow();
-        let mut walk = model.parent_key(key);
-        while let Some(parent) = walk {
-            ancestors.push(parent);
-            walk = model.parent_key(parent);
-        }
-    }
+        std::iter::successors(model.parent_key(key), |&parent| model.parent_key(parent)).collect()
+    };
     for parent in ancestors.into_iter().rev() {
         let item = state.shared.item(parent);
         if !unsafe { outline.isItemExpanded(Some(&item)) } {
@@ -228,16 +221,16 @@ pub(super) fn expand_groups(state: &SidebarState) {
     if !state.shared.expand_groups.get() {
         return;
     }
-    let outline = &state.views.outline;
-    let keys: Vec<u64> = {
-        let model = state.shared.model.borrow();
-        model
-            .nodes
-            .iter()
-            .filter(|node| node.group && !node.children.is_empty())
-            .map(|node| node.key)
-            .collect()
-    };
+    let outline = &state.shared.outline;
+    let keys: Vec<u64> = state
+        .shared
+        .model
+        .borrow()
+        .nodes
+        .iter()
+        .filter(|node| node.group && !node.children.is_empty())
+        .map(|node| node.key)
+        .collect();
     for key in keys {
         let item = state.shared.item(key);
         if !unsafe { outline.isItemExpanded(Some(&item)) } {
@@ -247,7 +240,7 @@ pub(super) fn expand_groups(state: &SidebarState) {
 }
 
 fn expected_rows(state: &SidebarState) -> NSInteger {
-    let outline = &state.views.outline;
+    let outline = &state.shared.outline;
     let model = state.shared.model.borrow();
     let mut total = 0;
     let mut stack: Vec<usize> = model.roots.iter().rev().copied().collect();
@@ -273,14 +266,16 @@ pub(super) struct SavedState {
 
 impl SavedState {
     pub(super) fn capture(state: &SidebarState) -> Self {
-        let outline = &state.views.outline;
-        let model = state.shared.model.borrow();
+        let outline = &state.shared.outline;
         let row = outline.selectedRow();
         let selected = (row >= 0)
             .then(|| outline.itemAtRow(row))
             .flatten()
             .map(|item| Shared::key_of_item(&item));
-        let expanded = model
+        let expanded = state
+            .shared
+            .model
+            .borrow()
             .preorder()
             .into_iter()
             .filter(|&key| {
@@ -296,17 +291,15 @@ impl SavedState {
     }
 
     pub(super) fn restore(&self, state: &SidebarState) {
-        let outline = &state.views.outline;
+        let outline = &state.shared.outline;
         let shared = &state.shared;
+        let exists = |key: u64| shared.model.borrow().node(key).is_some();
         for &key in &self.expanded {
-            if shared.model.borrow().node(key).is_some() {
+            if exists(key) {
                 unsafe { outline.expandItem(Some(&shared.item(key))) };
             }
         }
-        let selected = self
-            .selected
-            .filter(|&key| shared.model.borrow().node(key).is_some());
-        if let Some(key) = selected {
+        if let Some(key) = self.selected.filter(|&key| exists(key)) {
             let row = unsafe { outline.rowForItem(Some(&shared.item(key))) };
             if row >= 0 {
                 shared.quietly(|| {

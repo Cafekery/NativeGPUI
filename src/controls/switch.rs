@@ -1,13 +1,9 @@
-use std::rc::Rc;
-
 use gpui::{App, ElementId, Style, Window};
 use objc2_app_kit::{NSControlStateValueOff, NSControlStateValueOn, NSSwitch};
 
 use crate::bridge::appkit::fitting_size;
-use crate::bridge::host::{
-    Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
-};
-use crate::controls::fitted;
+use crate::bridge::host::{Layer, NativeHandler, Slot, ValueKind, hosted_element, wire};
+use crate::controls::{bool_handler, fitted, sync_enabled};
 
 pub fn native_switch(id: impl Into<ElementId>, on: bool) -> NativeSwitch {
     NativeSwitch {
@@ -27,11 +23,7 @@ pub struct NativeSwitch {
 
 impl NativeSwitch {
     pub fn on_change(mut self, handler: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
-        self.on_change = Some(Rc::new(move |value, window, cx| {
-            if let NativeValue::Bool(on) = value {
-                handler(&on, window, cx);
-            }
-        }));
+        self.on_change = Some(bool_handler(handler));
         self
     }
 
@@ -60,9 +52,7 @@ impl NativeSwitch {
         if switch.state() != wanted {
             switch.setState(wanted);
         }
-        if switch.isEnabled() != self.enabled {
-            switch.setEnabled(self.enabled);
-        }
+        sync_enabled(&switch, self.enabled);
         slot.on_change(ValueKind::Bool, self.on_change.take());
     }
 }
