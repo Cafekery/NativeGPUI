@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use finder_fs::entry::{Entry, EntryKind};
@@ -35,6 +35,7 @@ pub(crate) enum Column {
     Size,
     Tags,
     Version,
+    Comments,
 }
 
 /// Finder's Sort By keys, in its order.
@@ -62,7 +63,7 @@ pub(crate) const SORT_TITLES: [&str; 8] = [
 ];
 
 impl Column {
-    const ALL: [Column; 9] = [
+    const ALL: [Column; 10] = [
         Column::Name,
         Column::Kind,
         Column::Opened,
@@ -72,6 +73,7 @@ impl Column {
         Column::Size,
         Column::Tags,
         Column::Version,
+        Column::Comments,
     ];
 
     /// Finder's identifier for the column in its view settings.
@@ -86,6 +88,7 @@ impl Column {
             Column::Size => "size",
             Column::Tags => "label",
             Column::Version => "version",
+            Column::Comments => "comments",
         }
     }
 
@@ -97,7 +100,7 @@ impl Column {
     pub(crate) fn first_ascending(self) -> bool {
         matches!(
             self,
-            Column::Name | Column::Kind | Column::Tags | Column::Version
+            Column::Name | Column::Kind | Column::Tags | Column::Version | Column::Comments
         )
     }
 
@@ -109,9 +112,13 @@ impl Column {
         )
     }
 
-    /// Whether only the item's own file, not its listing, says what the column shows.
+    /// Whether only the item's own file or its folder's `.DS_Store`, not its listing, says what
+    /// the column shows.
     pub(crate) fn extra(self) -> bool {
-        matches!(self, Column::Opened | Column::Tags | Column::Version)
+        matches!(
+            self,
+            Column::Opened | Column::Tags | Column::Version | Column::Comments
+        )
     }
 }
 
@@ -159,6 +166,7 @@ impl Row {
             Column::Kind => Some(&self.kind),
             Column::Tags => extra?.tags.first().map(|(name, _)| &**name),
             Column::Version => extra?.version.as_deref(),
+            Column::Comments => Some(&extra?.comment),
             _ => None,
         }
     }
@@ -330,30 +338,44 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
     }
 }
 
-/// Rows for `entries`; with `extras`, each carries what its own file says as well.
+/// Rows for `entries`; with `extras`, each carries what its own file and its folder's
+/// `.DS_Store` say as well.
 pub(crate) fn rows_of<'a>(
     dir: &'static str,
     entries: impl IntoIterator<Item = &'a Entry>,
     folders: &HashMap<String, Facts>,
     extras: bool,
 ) -> Vec<Arc<Row>> {
+    let mut comments = match extras {
+        true => finder_fs::ds_store::comments(Path::new(dir)),
+        false => HashMap::new(),
+    };
     entries
         .into_iter()
         .map(|entry| {
             let mut row = row_of(dir, entry, facts_of(entry, folders));
             if extras {
-                row.extra = Some(extra_of(&row.path, row.package));
+                let comment = comments.remove(&entry.name);
+                row.extra = Some(extra_of(&row.path, row.package, comment));
             }
             Arc::new(row)
         })
         .collect()
 }
 
-/// Reads, for each row not yet read, what only its own file says.
+/// Reads, for each row not yet read, what only its own file and its folder's `.DS_Store` say.
 pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
+    let mut comments: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     for row in rows.iter_mut().filter(|row| row.extra.is_none()) {
+        let path = Path::new(&*row.path);
+        let comment = path.parent().zip(path.file_name()).and_then(|(dir, name)| {
+            if !comments.contains_key(dir) {
+                comments.insert(dir.to_path_buf(), finder_fs::ds_store::comments(dir));
+            }
+            comments.get_mut(dir)?.remove(name.to_str()?)
+        });
         *row = Arc::new(Row {
-            extra: Some(extra_of(&row.path, row.package)),
+            extra: Some(extra_of(&row.path, row.package, comment)),
             ..(**row).clone()
         });
     }

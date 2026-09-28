@@ -88,6 +88,19 @@ pub fn icon_view(folder: &Path) -> IconView {
     }
 }
 
+/// The comment Finder keeps for each item of `folder`, by name.
+pub fn comments(folder: &Path) -> HashMap<String, String> {
+    let bytes = std::fs::read(folder.join(".DS_Store")).unwrap_or_default();
+    records(&bytes)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|record| match record.value {
+            Value::Text(text) if &record.code == b"cmmt" => Some((record.name, text)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn icon_locations(records: &[Record]) -> HashMap<String, (f32, f32)> {
     records
         .iter()
@@ -233,5 +246,24 @@ mod tests {
         for end in 0..bytes.len() {
             assert!(records(&bytes[..end]).is_none_or(|cut| cut == found));
         }
+    }
+
+    #[test]
+    fn reads_the_comment_finder_set_on_each_item() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-comments-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = include_bytes!("testdata/comments.DS_Store");
+        std::fs::write(dir.join(".DS_Store"), store).unwrap();
+        let expected: HashMap<String, String> = [
+            ("Banana.txt", "beta note"),
+            ("Cherry.txt", "cmmt only"),
+            ("Date.txt", "alpha note"),
+        ]
+        .into_iter()
+        .map(|(name, comment)| (name.to_owned(), comment.to_owned()))
+        .collect();
+        let found = comments(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, expected);
     }
 }

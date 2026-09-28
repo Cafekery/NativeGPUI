@@ -19,10 +19,11 @@ use crate::views::list::{ICON_SMALL, detail_text, name_prefix, row_font};
 
 pub(crate) const COL_DATE: f32 = 181.;
 pub(crate) const COL_SIZE: f32 = 97.;
-pub(crate) const COL_KIND: f32 = 121.;
+pub(crate) const COL_KIND: f32 = 115.;
 const COL_OPENED: f32 = 200.;
 const COL_TAGS: f32 = 100.;
 const COL_VERSION: f32 = 75.;
+const COL_COMMENTS: f32 = 300.;
 
 pub(crate) const HEADER_H: f32 = 28.;
 
@@ -48,6 +49,12 @@ const COL_MIN_W: f32 = 10.;
 const DIVIDER_GRAB: f32 = 5.;
 const DIVIDER_LEAD: f32 = 3.;
 const PRESS_ALPHA: f32 = 0.31;
+
+/// Finder draws the last column this much wider than it keeps it.
+pub(crate) const LAST_EXTRA: f32 = 6.;
+
+/// Finder opens a list that overflows with Name at least this wide, wider than its least.
+const NAME_OPEN_LEAST: f32 = 206.;
 
 /// Finder never narrows Name below its fit's least, which grows with the icon. Finder's widths
 /// count from the column, which starts a row inset in; `name_w` counts from the row.
@@ -75,6 +82,7 @@ impl ColumnSpec {
             Column::Kind => COL_KIND,
             Column::Tags => COL_TAGS,
             Column::Version => COL_VERSION,
+            Column::Comments => COL_COMMENTS,
         };
         Self { column, width }
     }
@@ -110,7 +118,7 @@ pub(crate) enum HeaderDrag {
 }
 
 pub(crate) fn column_title(column: Column) -> &'static str {
-    const KEYS: [(Column, &str, &str); 9] = [
+    const KEYS: [(Column, &str, &str); 10] = [
         (Column::Name, "N220", "Name"),
         (Column::Kind, "N224", "Kind"),
         (Column::Opened, "N169.32", "Date Last Opened"),
@@ -120,6 +128,7 @@ pub(crate) fn column_title(column: Column) -> &'static str {
         (Column::Size, "N223", "Size"),
         (Column::Tags, "N225", "Tags"),
         (Column::Version, "N226", "Version"),
+        (Column::Comments, "N227", "Comments"),
     ];
     static TITLES: LazyLock<Vec<String>> = LazyLock::new(|| {
         KEYS.iter()
@@ -195,22 +204,30 @@ impl FinderDemo {
         self.fit_name_column();
     }
 
+    /// Name takes what the window gives or takes while the list fills it; a list that overflows
+    /// keeps its widths until the window outgrows it.
     pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room;
-        let fixed = self.list_content_w() - self.name_w;
+        let content = self.list_content_w();
         if self.list_span.is_nan() {
-            self.name_w = (span - fixed).max(name_min_w(self.list_icon));
+            self.name_w = (span - content + self.name_w).max(name_min_w(self.list_icon));
         } else if span != self.list_span {
-            let delta = span - self.list_span;
-            let overflow = (self.list_content_w() - self.list_span).max(0.);
-            let change = if delta < 0. {
-                delta
-            } else {
-                (delta - overflow).max(0.)
+            let change = match ((content - self.list_span) * 100.).round() > 0. {
+                true => (span - content).max(0.),
+                false => span - self.list_span,
             };
             self.name_w = (self.name_w + change).max(name_min_w(self.list_icon));
         }
         self.list_span = span;
+    }
+
+    /// The columns after Name as Finder draws them.
+    pub(crate) fn shown_columns(&self) -> Vec<ColumnSpec> {
+        let mut columns = self.list_columns.clone();
+        if let Some(last) = columns.last_mut() {
+            last.width += LAST_EXTRA;
+        }
+        columns
     }
 
     pub(crate) fn header_row(&mut self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -222,7 +239,7 @@ impl FinderDemo {
             self.header_drag = None;
         }
         let look = HeaderLook {
-            columns: self.list_columns.clone(),
+            columns: self.shown_columns(),
             name_w: self.name_w,
             sort: self.sort,
             ascending: self.ascending,
@@ -370,17 +387,23 @@ impl FinderDemo {
         prefs::set_list_columns(self.here(), &columns);
     }
 
-    /// The folder's own columns and widths, as they were last left there.
+    /// The folder's own columns and widths, as they were last left there, Name filling what the
+    /// others leave.
     pub(crate) fn load_columns(&mut self) {
         let here = self.here();
         self.list_columns = columns_for(here);
-        self.name_w = prefs::list_column_width(here, Column::Name)
-            .unwrap_or_else(|| name_min_w(self.list_icon));
         for spec in &mut self.list_columns {
             spec.width = prefs::list_column_width(here, spec.column)
                 .unwrap_or_else(|| ColumnSpec::of(spec.column).width);
         }
-        self.refit_name_column();
+        let least = name_min_w(self.list_icon).max(PANE_INSET + NAME_OPEN_LEAST);
+        self.name_w =
+            prefs::list_column_width(here, Column::Name).map_or(least, |kept| kept.max(least));
+        let fill = self.list_room - self.list_content_w() + self.name_w;
+        if fill >= least {
+            self.name_w = fill;
+        }
+        self.list_span = self.list_room;
     }
 
     pub(crate) fn toggle_column(&mut self, column: Column, cx: &mut Context<Self>) {
