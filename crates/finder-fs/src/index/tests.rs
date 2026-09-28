@@ -23,9 +23,16 @@ impl Drop for Temp {
     }
 }
 
-fn tree(name: &str) -> Temp {
+fn empty(name: &str) -> Temp {
     let root = std::env::temp_dir().join(format!("finder-fs-index-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    Temp(fs::canonicalize(&root).unwrap())
+}
+
+fn tree(name: &str) -> Temp {
+    let temp = empty(name);
+    let root = &temp.0;
     let deep = root.join("a/b/c");
     fs::create_dir_all(&deep).unwrap();
     fs::write(root.join("a/one.txt"), vec![b'x'; 4]).unwrap();
@@ -51,7 +58,7 @@ fn tree(name: &str) -> Temp {
     fs::create_dir_all(&locked).unwrap();
     fs::write(locked.join("secret.txt"), vec![b'q'; 1000]).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    Temp(fs::canonicalize(&root).unwrap())
+    temp
 }
 
 fn crawled(root: &Path) -> Arc<Index> {
@@ -62,14 +69,22 @@ fn crawled(root: &Path) -> Arc<Index> {
     index
 }
 
-fn sync(index: &Arc<Index>, root: &Path) {
+fn finished(start: impl FnOnce(Box<dyn Fn(Progress) + Send>)) {
     let (tx, rx) = mpsc::channel();
-    index.sync(vec![root.to_path_buf()], move |progress: Progress| {
+    start(Box::new(move |progress: Progress| {
         if progress.done {
             let _ = tx.send(());
         }
-    });
+    }));
     rx.recv_timeout(Duration::from_secs(120)).unwrap();
+}
+
+fn crawl(index: &Arc<Index>, root: &Path) {
+    finished(|report| index.crawl(vec![root.to_path_buf()], report));
+}
+
+fn sync(index: &Arc<Index>, root: &Path) {
+    finished(|report| index.sync(vec![root.to_path_buf()], report));
 }
 
 fn store(name: &str) -> PathBuf {
@@ -89,16 +104,6 @@ fn reads_under(root: &Path, mark: usize) -> Vec<PathBuf> {
 
 fn reads_mark() -> usize {
     crate::list::READS.lock().unwrap().len()
-}
-
-fn crawl(index: &Arc<Index>, root: &Path) {
-    let (tx, rx) = mpsc::channel();
-    index.crawl(vec![root.to_path_buf()], move |progress: Progress| {
-        if progress.done {
-            let _ = tx.send(());
-        }
-    });
-    rx.recv_timeout(Duration::from_secs(120)).unwrap();
 }
 
 fn names(index: &Index, dir: &Path) -> Vec<String> {
@@ -196,17 +201,13 @@ fn a_second_crawl_is_ignored() {
     let temp = tree("second");
     let root = &temp.0;
     let index = Index::open(&store("second"));
-    let (first, done) = mpsc::channel();
-    index.crawl(vec![root.clone()], move |progress: Progress| {
-        if progress.done {
-            let _ = first.send(());
-        }
-    });
     let (second, ignored) = mpsc::channel();
-    index.crawl(vec![root.join("a")], move |progress: Progress| {
-        let _ = second.send(progress.done);
+    finished(|report| {
+        index.crawl(vec![root.clone()], report);
+        index.crawl(vec![root.join("a")], move |progress: Progress| {
+            let _ = second.send(progress.done);
+        });
     });
-    done.recv_timeout(Duration::from_secs(120)).unwrap();
     assert!(ignored.try_recv().is_err());
     assert_eq!(index.stats().files as usize, MANY + 6);
 }
@@ -254,10 +255,7 @@ fn search_ranks_and_scopes() {
 
 #[test]
 fn a_hit_below_a_byte_of_depth_carries_its_real_path() {
-    let root = std::env::temp_dir().join(format!("finder-fs-index-depth-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    let temp = Temp(fs::canonicalize(&root).unwrap());
+    let temp = empty("depth");
     let mut leaf = temp.0.clone();
     for _ in 0..DEEP_LEVELS {
         leaf.push("d");
@@ -282,10 +280,7 @@ fn dated(dir: &Path, name: &str, at: SystemTime) {
 
 #[test]
 fn a_date_outside_the_unsigned_epoch_reads_alike_from_the_index_and_the_disk() {
-    let root = std::env::temp_dir().join(format!("finder-fs-index-dates-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    let temp = Temp(fs::canonicalize(&root).unwrap());
+    let temp = empty("dates");
     let before_epoch = UNIX_EPOCH - Duration::from_secs(14_182_940);
     let reference = UNIX_EPOCH + Duration::from_secs(978_307_200);
     let next_century = UNIX_EPOCH + Duration::from_secs(4_102_444_800);
@@ -799,16 +794,7 @@ fn a_root_inside_another_is_walked_once() {
     let root = &temp.0;
     let index = Index::open(&store("nested-roots"));
     let mark = reads_mark();
-    let (tx, rx) = mpsc::channel();
-    index.crawl(
-        vec![root.join("a"), root.clone()],
-        move |progress: Progress| {
-            if progress.done {
-                let _ = tx.send(());
-            }
-        },
-    );
-    rx.recv_timeout(Duration::from_secs(120)).unwrap();
+    finished(|report| index.crawl(vec![root.join("a"), root.clone()], report));
 
     assert_eq!(reads_under(&root.join("a/b/c"), mark).len(), 1);
     assert_eq!(index.stats().files as usize, MANY + 6);

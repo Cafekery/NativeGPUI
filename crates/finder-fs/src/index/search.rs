@@ -1,10 +1,9 @@
-use std::borrow::Cow;
 use std::ops::Range;
 use std::thread;
 
 use super::Hit;
-use super::lookup::Lookup;
-use super::store::{DOTTED, NEEDS_FOLD, NONE, PACKAGE, ROOT, Tree, folded, mask_of};
+use super::lookup::{Lookup, signature};
+use super::store::{DOTTED, NONE, PACKAGE, ROOT, Tree, mask_of};
 
 const SUBSTRING: u8 = 1;
 const WORD: u8 = 2;
@@ -70,8 +69,7 @@ fn class_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
                 return best;
             }
             match class_at(name, position, query, folds) {
-                PREFIX => return PREFIX,
-                WORD => return WORD,
+                class @ (PREFIX | WORD) => return class,
                 class => best = best.max(class),
             }
         }
@@ -79,8 +77,7 @@ fn class_of(name: &[u8], query: &[u8], folds: &[u8]) -> u8 {
     }
     for position in at..=last {
         match class_at(name, position, query, folds) {
-            PREFIX => return PREFIX,
-            WORD => return WORD,
+            class @ (PREFIX | WORD) => return class,
             class => best = best.max(class),
         }
     }
@@ -118,10 +115,7 @@ impl Word {
 
 fn classed(words: &[Word], name: &[u8], first: impl Fn(&Word, &[u8]) -> u8) -> u8 {
     let class = first(&words[0], name);
-    if class == 0 {
-        return 0;
-    }
-    if !words[1..].iter().all(|word| word.class_of(name) != 0) {
+    if class == 0 || words[1..].iter().any(|word| word.class_of(name) == 0) {
         return 0;
     }
     match class == PREFIX && words.len() == 1 && name.len() == words[0].bytes.len() {
@@ -162,21 +156,12 @@ struct Query<'a> {
 }
 
 impl Query<'_> {
-    fn name(&self, id: u32, mask: u64) -> Cow<'_, [u8]> {
-        let bytes = self.tree.names.bytes(id);
-        match mask & NEEDS_FOLD == 0 {
-            true => Cow::Borrowed(bytes),
-            false => folded(bytes),
-        }
-    }
-
     fn order(&self, a: &Found, b: &Found) -> std::cmp::Ordering {
         b.0.cmp(&a.0)
             .then_with(|| self.tree.names.bytes(a.1).cmp(self.tree.names.bytes(b.1)))
             .then_with(|| a.2.cmp(&b.2))
     }
 
-    /// `(hidden, under the home)`, or `None` inside a package.
     fn placed(&self, id: u32) -> Option<(bool, bool)> {
         let masks = self.tree.names.masks();
         let dotted = |id: u32| masks[self.tree.name_of[id as usize] as usize] & DOTTED != 0;
@@ -238,11 +223,11 @@ impl Query<'_> {
         let mut best = Vec::new();
         let mut cutoff = 0;
         for id in ids {
-            let mask = masks[id as usize];
-            if mask & self.wanted != self.wanted || !self.lookup.holds(id, self.pairs) {
+            if masks[id as usize] & self.wanted != self.wanted || !self.lookup.holds(id, self.pairs)
+            {
                 continue;
             }
-            let class = class(&self.name(id, mask));
+            let class = class(&self.tree.names.folded(id));
             if class == 0 {
                 continue;
             }
@@ -261,9 +246,8 @@ impl Query<'_> {
         for id in self.lookup.tail()..self.tree.name_of.len() {
             let name = self.tree.name_of[id];
             if last.0 != name {
-                let mask = masks[name as usize];
-                let class = match mask & self.wanted == self.wanted {
-                    true => class(&self.name(name, mask)),
+                let class = match masks[name as usize] & self.wanted == self.wanted {
+                    true => class(&self.tree.names.folded(name)),
                     false => 0,
                 };
                 last = (name, class);
@@ -283,16 +267,14 @@ impl Query<'_> {
     }
 
     fn spread(&self, ids: &[u32], class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        let mut best = parallel(ids.len(), |range| {
+        let best = parallel(ids.len(), |range| {
             self.sift(ids[range].iter().copied(), &class)
         });
-        let fresh = self.lookup.names() as u32..self.tree.names.len() as u32;
-        best.extend(self.sift(fresh, &class));
         self.ranked(best, &class)
     }
 
     fn all(&self, class: impl Fn(&[u8]) -> u8 + Sync) -> Vec<Found> {
-        let best = parallel(self.tree.names.len(), |range| {
+        let best = parallel(self.lookup.names(), |range| {
             self.sift(range.start as u32..range.end as u32, &class)
         });
         self.ranked(best, &class)
@@ -306,6 +288,9 @@ pub fn search(
     under: Option<u32>,
     limit: usize,
 ) -> Vec<Hit> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let folded = crate::sort::fold(query);
     let words: Vec<Word> = folded
         .split_ascii_whitespace()
@@ -314,19 +299,16 @@ pub fn search(
     let Some(first) = words.first() else {
         return Vec::new();
     };
-    if limit == 0 {
-        return Vec::new();
-    }
     let query = Query {
         tree,
         lookup,
         wanted: words
             .iter()
             .fold(0, |mask, word| mask | mask_of(&word.bytes)),
-        pairs: words.iter().fold(0, |pairs, word| {
-            pairs | super::lookup::signature(&word.bytes)
-        }),
-        home: super::resolve(tree, &super::crawl::home()),
+        pairs: words
+            .iter()
+            .fold(0, |pairs, word| pairs | signature(&word.bytes)),
+        home: super::resolve(tree, &super::home()),
         under,
         limit,
         cap: limit.saturating_mul(4).max(64),
