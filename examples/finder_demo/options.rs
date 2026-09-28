@@ -1,13 +1,20 @@
+use std::cell::Cell;
+
 use gpui::{
     App, Bounds, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, point, prelude::*, px,
+    size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{MenuEntry, native_popup, native_root, native_slider, window_options};
+use objc2_app_kit::NSWindowTitleVisibility;
 
 use crate::app::FinderDemo;
 use crate::data::Column;
+use crate::frame::ns_window;
 use crate::view::ICON_VIEW;
+
+const TITLEBAR_H: f32 = 34.;
 
 const SORTS: [(Column, &str); 4] = [
     (Column::Name, "Name"),
@@ -38,7 +45,7 @@ impl ViewOptions {
 }
 
 impl Render for ViewOptions {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(demo) = self.demo.upgrade() else {
             return div().into_any_element();
         };
@@ -47,6 +54,7 @@ impl Render for ViewOptions {
             .folder()
             .map(|folder| folder.title)
             .unwrap_or("Finder");
+        window.set_window_title(title);
         let sort = SORTS.iter().position(|(column, _)| *column == state.sort);
         let icon_size = state.icon_size;
         let icons = state.view == ICON_VIEW;
@@ -55,16 +63,11 @@ impl Render for ViewOptions {
             div()
                 .size_full()
                 .p(px(14.))
+                .pt(px(TITLEBAR_H))
                 .flex()
                 .flex_col()
                 .gap(px(10.))
                 .bg(system_color(SystemColor::WindowBackground))
-                .child(
-                    div()
-                        .text_size(tokens::small_system_font_size())
-                        .text_color(system_color(SystemColor::Label))
-                        .child(SharedString::from(title.to_string())),
-                )
                 .child(Self::row(
                     "Sort by:",
                     native_popup("ng.finder.options.sort", sort.unwrap_or(0))
@@ -103,17 +106,52 @@ impl Render for ViewOptions {
     }
 }
 
+thread_local! {
+    static OPEN: Cell<Option<WindowHandle<ViewOptions>>> = const { Cell::new(None) };
+}
+
+/// Whether the View Options window is up.
+pub(crate) fn shown(cx: &App) -> bool {
+    OPEN.get().is_some_and(|open| {
+        cx.windows()
+            .iter()
+            .any(|window| window.window_id() == open.window_id())
+    })
+}
+
+/// Finder's ⌘J toggles its one View Options window.
 pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
+    if shown(cx) {
+        if let Some(open) = OPEN.take() {
+            let _ = open.update(cx, |_, window, _| window.remove_window());
+        }
+        return;
+    }
+    let watched = demo.clone();
     let demo = demo.downgrade();
-    let _ = cx.open_window(
+    let opened = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(320.), px(220.)),
-                size: size(px(268.), px(150.)),
+                size: size(px(268.), px(150.) + px(TITLEBAR_H - 14.)),
             })),
-            titlebar: None,
+            is_resizable: false,
+            is_minimizable: false,
             ..window_options()
         },
-        |_, cx| cx.new(|_| ViewOptions { demo }),
+        |_, cx| {
+            cx.new(|cx| {
+                cx.observe(&watched, |_, _, cx| cx.notify()).detach();
+                ViewOptions { demo }
+            })
+        },
     );
+    if let Ok(opened) = opened {
+        OPEN.set(Some(opened));
+        let _ = opened.update(cx, |_, window, _| {
+            if let Some(ns_window) = ns_window(window) {
+                ns_window.setTitleVisibility(NSWindowTitleVisibility::Visible);
+            }
+        });
+    }
 }
