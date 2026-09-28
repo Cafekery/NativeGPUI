@@ -108,6 +108,11 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] Column view sorts by `ColumnViewOptions.ArrangeBy` (dnam: name) and gallery view by
   `GalleryViewSettings.arrangeBy`, each in the direction Finder first sorts that key, not by the
   list's sort; the demo sorts the rows before it shows the view, and keeps each view's own key.
+  Finder's Sort By in column and gallery view lists the same eight keys, ✓ on that view's key.
+- [x] Switching to column view with an item selected deep in a long path: Finder shows the last
+  column at once. The demo laid the path's columns out as their folders were read and then slid
+  sideways to the end (0 to -1201 pt over about 190 ms on a 14-column path); it now shows the end
+  in every frame, and only a column the selection opens slides in.
 - [x] Sort By: Name ⌃⌥⌘1, Kind ⌃⌥⌘2, Date Last Opened ⌃⌥⌘3, Date Added ⌃⌥⌘4, Date Modified ⌃⌥⌘5,
   Date Created, Size ⌃⌥⌘6, Tags ⌃⌥⌘7; Clean Up By: Name, Kind, Date Modified, Date Created, Size,
   Tags (⌥⌘). Read off Finder 27 with lists of a 7-item fixture: Date Last Opened is Spotlight's
