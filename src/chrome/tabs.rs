@@ -4,7 +4,7 @@ use std::ffi::CStr;
 
 use gpui::{Action, AnyWindowHandle, App, AppContext, AsyncApp, Window};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Imp, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, Sel};
 use objc2::{ClassType, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWindowTabbingMode};
 use objc2_foundation::{MainThreadMarker, NSSize};
@@ -114,6 +114,49 @@ fn restore_appkit_tabs(window: &NSWindow) {
         }
     }
     answer_new_tab(class);
+    let validate: extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool = validate_tab_item;
+    unsafe {
+        objc2::ffi::class_addMethod(
+            class as *const AnyClass as *mut AnyClass,
+            sel!(validateMenuItem:),
+            std::mem::transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool, Imp>(
+                validate,
+            ),
+            c"B@:@".as_ptr(),
+        );
+    }
+}
+
+// GPUI's window enables its tab rows for a lone window; Finder greys them until there are tabs.
+extern "C" fn validate_tab_item(this: &AnyObject, _: Sel, item: *mut AnyObject) -> Bool {
+    let window = unsafe { &*(this as *const AnyObject).cast::<NSWindow>() };
+    let action: Option<Sel> = unsafe { msg_send![item, action] };
+    let group = window.tabbedWindows();
+    let tabs = group.as_ref().map_or(1, |tabs| tabs.count());
+    let merges = || {
+        let ours = window.tabbingIdentifier();
+        NSApplication::sharedApplication(MainThreadMarker::from(window))
+            .windows()
+            .iter()
+            .filter(|other| other.isVisible() && *other.tabbingIdentifier() == *ours)
+            .filter(|other| !std::ptr::eq(&**other, window))
+            .any(|other| {
+                group
+                    .as_ref()
+                    .is_none_or(|group| !group.containsObject(&other))
+            })
+    };
+    match action {
+        Some(tab)
+            if tab == sel!(selectNextTab:)
+                || tab == sel!(selectPreviousTab:)
+                || tab == sel!(moveTabToNewWindow:) =>
+        {
+            Bool::new(tabs > 1)
+        }
+        Some(merge) if merge == sel!(mergeAllWindows:) => Bool::new(merges()),
+        _ => unsafe { msg_send![super(this, NSWindow::class()), validateMenuItem: item] },
+    }
 }
 
 // GPUI turns automatic tabbing off whenever an untabbed window opens, hiding a lone window's bar.

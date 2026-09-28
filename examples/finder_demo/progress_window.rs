@@ -20,12 +20,14 @@ thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Progress>>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn show(_: &ShowProgressWindow, cx: &mut App) {
-    let raised = OPEN.with_borrow(|open| *open).is_some_and(|open| {
-        open.update(cx, |_, window, _| window.activate_window())
-            .is_ok()
-    });
-    if raised {
+pub(crate) fn shown() -> bool {
+    OPEN.with_borrow(|open| open.is_some())
+}
+
+/// Finder's Show Progress Window hides the window again while it is up.
+pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
+    if let Some(open) = OPEN.with_borrow(|open| *open) {
+        open.update(cx, |_, window, _| window.remove_window()).ok();
         return;
     }
     // Deferred: the first draw reads every Finder window, and the menu fires inside one's update.
@@ -40,9 +42,13 @@ pub(crate) fn show(_: &ShowProgressWindow, cx: &mut App) {
             },
             |window, cx| {
                 window.set_window_title("Progress");
-                cx.new(|_| Progress {
-                    watched: HashSet::new(),
-                    watching: Vec::new(),
+                cx.new(|cx| {
+                    cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
+                        .detach();
+                    Progress {
+                        watched: HashSet::new(),
+                        watching: Vec::new(),
+                    }
                 })
             },
         );

@@ -77,13 +77,6 @@ thread_local! {
 }
 
 pub(crate) fn remember(demo: &FinderDemo) {
-    if !demo
-        .host
-        .as_ref()
-        .is_some_and(|window| window.isMainWindow())
-    {
-        return;
-    }
     FRONT.with_borrow_mut(|front| {
         let seen = (demo.selected.rev(), demo.folders.changed(), demo.view);
         if front.seen != seen {

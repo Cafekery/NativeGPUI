@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use gpui::{Context, KeyDownEvent, Keystroke, Modifiers, Window, prelude::*};
+use gpui::{
+    Bounds, Context, KeyDownEvent, Keystroke, Modifiers, Pixels, SharedString, Window, prelude::*,
+};
 use native_gpui::{
     QuickLookKey, quick_look, quick_look_close, quick_look_full_screen, quick_look_update,
     quick_look_visible,
@@ -31,33 +33,48 @@ impl FinderDemo {
             quick_look_close();
             return;
         }
-        let Some((items, current)) = self.quick_look_items() else {
+        let Some((shown, source)) = self.quick_look_subject() else {
             return;
         };
-        let source = self.ql_icon.bounds();
-        self.ql_shown = self.cursor.clone().map(|key| (key, source));
+        let Some((items, current)) = self.quick_look_items(&shown) else {
+            return;
+        };
+        self.ql_shown = Some((shown, source));
         quick_look(window, items, current, source, key_forwarder(window, cx));
     }
 
     pub(crate) fn slideshow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((items, current)) = self.quick_look_items() else {
+        let Some((items, current)) = self
+            .quick_look_subject()
+            .and_then(|(shown, _)| self.quick_look_items(&shown))
+        else {
             return;
         };
         self.ql_shown = None;
         quick_look_full_screen(window, items, current, key_forwarder(window, cx));
     }
 
-    fn quick_look_items(&self) -> Option<(Vec<PathBuf>, usize)> {
-        let cursor = self.cursor.clone()?;
+    /// The cursor's item and its icon, or the folder itself while nothing is selected.
+    fn quick_look_subject(&self) -> Option<(SharedString, Option<Bounds<Pixels>>)> {
+        match self.selected.is_empty() {
+            true => Some((self.here().into(), None)),
+            false => Some((self.cursor.clone()?, self.ql_icon.bounds())),
+        }
+    }
+
+    fn quick_look_items(&self, shown: &SharedString) -> Option<(Vec<PathBuf>, usize)> {
+        if self.selected.is_empty() {
+            return Some((vec![PathBuf::from(shown.as_ref())], 0));
+        }
         let lines = self.lines(self.view == LIST_VIEW);
         let mut items: Vec<&Line> = lines
             .iter()
             .filter(|line| self.selected.contains(&line.key))
             .collect();
-        if !items.iter().any(|line| line.key == cursor) {
-            items = lines.iter().filter(|line| line.key == cursor).collect();
+        if !items.iter().any(|line| line.key == *shown) {
+            items = lines.iter().filter(|line| line.key == *shown).collect();
         }
-        let current = items.iter().position(|line| line.key == cursor)?;
+        let current = items.iter().position(|line| line.key == *shown)?;
         let paths = items
             .iter()
             .map(|line| PathBuf::from(line.row.path.as_ref()))
@@ -70,22 +87,22 @@ impl FinderDemo {
             self.ql_shown = None;
             return;
         }
-        let Some(cursor) = self.cursor.clone() else {
+        let Some(subject) = self.quick_look_subject() else {
             return;
         };
-        let source = self.ql_icon.bounds();
-        if self
-            .ql_shown
-            .as_ref()
-            .is_some_and(|(key, at)| *key == cursor && *at == source)
-        {
+        let settled = match &self.ql_shown {
+            Some(shown) => *shown == subject,
+            // A window that did not open the panel never hands it its folder.
+            None => self.selected.is_empty(),
+        };
+        if settled {
             return;
         }
-        let Some((items, current)) = self.quick_look_items() else {
+        let Some((items, current)) = self.quick_look_items(&subject.0) else {
             return;
         };
-        quick_look_update(window, items, current, source);
-        self.ql_shown = Some((cursor, source));
+        quick_look_update(window, items, current, subject.1);
+        self.ql_shown = Some(subject);
     }
 
     fn quick_look_key(&mut self, key: QuickLookKey, window: &mut Window, cx: &mut Context<Self>) {
