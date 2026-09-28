@@ -95,17 +95,26 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   three; a reopened window keeps each (the demo: a relaunch). Finder holds the column setting for
   every window and folder without rewriting `ColumnViewOptions.ShowPreview` while it runs.
 - [x] Icon view keeps each icon where it stands, as Finder's free arrangement does: a folder's
-  icons take Finder's recorded places (`Iloc` in its `.DS_Store`, the centre of each icon), then
-  those the demo put there, and the rest fill the first free slots in name order (centres 66 + 112
-  per column, 46 + 112 per row at 64 pt); a narrower window scrolls sideways. Dragging moves an icon
-  by the pointer's travel, or to the nearest free slot under Snap to Grid, and the demo keeps the
-  places across launches. Clean Up moves icons off the grid to the nearest free slot (Finder: 150,300
-  to 178,270 and 420,250 to 402,270); Clean Up By fills the window's width in that key's order,
-  dates newest first. Sort By a key keeps the icons sorted and reflows them with the window; Snap to
-  Grid leaves icons where they are until moved. Left: Finder shows the icons beneath its pane's
-  glass (the demo's canvas stops at the pane), and Finder's first layout after a list window turns
-  to icons took 4 columns in icon areas 620 to 680 pt wide in one run and 5 at 638 in another, while
-  its new items, Clean Up and Clean Up By filled 5; the demo lays out the columns that fit.
+  icons take Finder's recorded places (`Iloc`, the centre of each image), then those moved here,
+  and the rest fill the first free slots in name order; Finder writes a folder's places only once
+  one of them changes, so an untouched folder is laid out afresh on each visit. Icon size, grid
+  spacing, text size and label position are per folder, from Finder's `icvp` record or the View
+  Options panel, the status bar slider and ⌘+/⌘−; changing one moves each icon to the same place
+  in the new grid. Finder's grid: an icon framed at 9/8 of its size, cells as wide as that frame
+  plus 10 or the label box (which grows with the grid spacing in steps of the text's line height),
+  10 pt margins, rows filled across, or down the window's height with labels on the right. Kept
+  sorted, rows spread evenly across the window 4 pt in from each side (columns packed down it
+  with labels on the right). Dragging moves an icon by the pointer's travel, or under Snap to
+  Grid to the nearest free slot (Finder: alpha dropped at 300,150 went to 402,270, as here).
+  Items dropped in from another window or app land where they are let go, or in the nearest free
+  slot. Finder lays the first icons of a new window out for its default window (998 pt wide here:
+  4 columns in a window widened to 1100, overflowing one narrowed to 800) unless it built the
+  window on the spot (the first after its settings change, or one opened right after another: 5);
+  the demo does the same with its own default window, and lays its launch window out for its own
+  width. Left: Finder's drop from its own windows lands 10 pt left and 3 pt above the drag image,
+  and under Snap to Grid sets it in the chosen cell's top left corner (24 pt left, 4 pt up of its
+  slot); the demo keeps dropped icons on their slots and cannot learn where another app's drag
+  image was grabbed, so it centres the icon on the pointer.
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.
