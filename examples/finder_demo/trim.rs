@@ -54,7 +54,6 @@ impl Time {
     }
 }
 
-/// Finder's trim panel is this wide.
 const WIDTH: f64 = 370.;
 const POLL: Duration = Duration::from_millis(20);
 const POLLS: u32 = 250;
@@ -73,7 +72,6 @@ thread_local! {
 }
 
 define_class!(
-    /// One movie's trim window, and its delegate.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[ivars = Ivars]
@@ -97,8 +95,6 @@ define_class!(
     }
 );
 
-/// Finder's Trim: the movie in a player in trimming mode. A changed range saves over the movie or
-/// into a new clip, without undo.
 pub(crate) fn trim(item: PathBuf, cx: &mut Context<FinderDemo>) {
     cx.spawn(async move |finder, cx| {
         let Some(mtm) = MainThreadMarker::new() else {
@@ -217,7 +213,6 @@ impl Trimmer {
         }
     }
 
-    /// The range kept, unless that is the whole movie.
     fn range(&self) -> Option<(f64, f64)> {
         let item = self.player_item()?;
         let length = Time::seconds(unsafe { msg_send![&item, duration] })?;

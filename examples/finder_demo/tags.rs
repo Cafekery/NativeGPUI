@@ -20,7 +20,6 @@ const TAG_LIGHTEN: f32 = 0.2;
 const TAG_PILL_ALPHA: f32 = 0.85;
 const KNOWN_MAX: usize = 20_000;
 
-/// The tags this window shows, shared with each frame rather than copied into it.
 #[derive(Clone, Default)]
 pub(crate) struct Tags(Arc<HashMap<SharedString, Vec<usize>>>);
 
@@ -79,7 +78,7 @@ pub(crate) fn tag_ns_color(color: u8) -> Option<objc2::rc::Retained<NSColor>> {
     tag_system_color(color).map(|system| system.ns_color())
 }
 
-pub(crate) fn finder_edge(color: u8) -> Hsla {
+fn finder_edge(color: u8) -> Hsla {
     tag_system_color(color).map_or(gpui::white(), system_color)
 }
 
@@ -109,14 +108,6 @@ pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
     let rgba = gpui::Rgba::from(finder_color(color));
     let byte = |channel: f32| (channel * 255.).round().clamp(0., 255.) as u8;
     Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
-}
-
-pub(crate) fn tag_index(name: &str) -> Option<usize> {
-    tags().iter().position(|tag| tag.name == name)
-}
-
-pub(crate) fn finder_tag(index: usize) -> finder_fs::tags::Tag {
-    tags()[index].clone()
 }
 
 pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
@@ -187,11 +178,11 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-/// Tags as the disk has them; background work only.
+/// Reads the disk: background work only.
 pub(crate) fn read_row_tags(path: &str) -> Vec<usize> {
     finder_fs::tags::of(Path::new(path))
         .iter()
-        .filter_map(|tag| tag_index(&tag.name))
+        .filter_map(|tag| tags().iter().position(|known| known.name == tag.name))
         .collect()
 }
 
@@ -267,8 +258,7 @@ static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
     Mutex::new(send)
 });
 
-/// Menus ask for a row's tags as they are built; reading them there would stall the window on
-/// a share that stopped answering, so an unread row reads as untagged until its read lands.
+/// Never reads the disk, which a stalled share would hang; an unread row is untagged till it lands.
 pub(crate) fn row_tags(path: &str) -> Vec<usize> {
     let mut known = KNOWN.lock().unwrap();
     if let Some(tags) = known.get(path) {
@@ -279,12 +269,10 @@ pub(crate) fn row_tags(path: &str) -> Vec<usize> {
     Vec::new()
 }
 
-/// How many reads have landed.
 pub(crate) fn tags_landed() -> u64 {
     LANDED.load(Ordering::Acquire)
 }
 
-/// A folder changed on disk: its items' tags are read again when next asked for.
 pub(crate) fn forget_tags_in(dir: &Path) {
     KNOWN.lock().unwrap().forget(dir);
 }
@@ -297,7 +285,7 @@ impl FinderDemo {
             .iter()
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();
-        let wanted = finder_tag(tag);
+        let wanted = tags()[tag].clone();
         self.retag(
             paths,
             move |paths| {
