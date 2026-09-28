@@ -20,12 +20,15 @@ use crate::data::Face;
 use crate::menus::Act;
 use crate::ops::After;
 
-/// Finder's Quick Actions that public APIs reach. Markup and Trim run inside Quick Look's own
-/// editing modes, which no public API opens.
+/// Finder's Quick Actions. Markup is Quick Look's own editing mode, which only a private delegate
+/// method opens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum QuickAct {
     RotateLeft,
     RotateRight,
+    #[cfg(feature = "private-api")]
+    Markup,
+    Trim,
     CreatePdf,
     ConvertImage,
     RemoveBackground,
@@ -37,6 +40,9 @@ impl QuickAct {
         match self {
             QuickAct::RotateLeft => "Rotate Left",
             QuickAct::RotateRight => "Rotate Right",
+            #[cfg(feature = "private-api")]
+            QuickAct::Markup => "Markup",
+            QuickAct::Trim => "Trim",
             QuickAct::CreatePdf => "Create PDF",
             QuickAct::ConvertImage => "Convert Image",
             QuickAct::RemoveBackground => "Remove Background",
@@ -48,16 +54,23 @@ impl QuickAct {
         match self {
             QuickAct::RotateLeft => "rotate.left",
             QuickAct::RotateRight => "rotate.right",
+            #[cfg(feature = "private-api")]
+            QuickAct::Markup => "pencil.tip.crop.circle",
+            QuickAct::Trim => "scissors",
             QuickAct::CreatePdf => "doc.richtext",
             QuickAct::ConvertImage => "photo.on.rectangle.angled",
             QuickAct::RemoveBackground => "person.and.background.dotted",
             QuickAct::Customize => "ellipsis.circle",
         }
     }
+
+    /// What Option turns this into.
+    pub(crate) fn alternate(self) -> Option<QuickAct> {
+        (self == QuickAct::RotateLeft).then_some(QuickAct::RotateRight)
+    }
 }
 
-/// What Finder offers for a selection of these kinds, in its order; Rotate Right is Rotate
-/// Left's Option alternate.
+/// What Finder offers for a selection of these kinds, in its order.
 pub(crate) fn offered(faces: &[Face]) -> Vec<QuickAct> {
     if faces.is_empty() {
         return Vec::new();
@@ -66,6 +79,13 @@ pub(crate) fn offered(faces: &[Face]) -> Vec<QuickAct> {
     let mut acts = Vec::new();
     if all(|face| matches!(face, Face::Image | Face::Movie)) {
         acts.push(QuickAct::RotateLeft);
+    }
+    #[cfg(feature = "private-api")]
+    if let [Face::Image | Face::Pdf] = faces {
+        acts.push(QuickAct::Markup);
+    }
+    if faces == [Face::Movie] {
+        acts.push(QuickAct::Trim);
     }
     if all(|face| matches!(face, Face::Image | Face::Pdf))
         && (faces.len() > 1 || faces[0] == Face::Image)
@@ -84,10 +104,10 @@ pub(crate) fn menu_rows(acts: &[QuickAct]) -> Vec<(MenuEntry, Act)> {
     let mut rows = Vec::new();
     for act in acts {
         rows.push((MenuEntry::item(act.title()), Act::Quick(*act)));
-        if *act == QuickAct::RotateLeft {
+        if let Some(alternate) = act.alternate() {
             rows.push((
-                MenuEntry::item(QuickAct::RotateRight.title()).option_alternate(),
-                Act::Quick(QuickAct::RotateRight),
+                MenuEntry::item(alternate.title()).option_alternate(),
+                Act::Quick(alternate),
             ));
         }
     }
@@ -122,6 +142,9 @@ impl FinderDemo {
             }
             _ if items.is_empty() => return,
             QuickAct::ConvertImage => return self.ask_convert(items, cx),
+            QuickAct::Trim => return crate::trim::trim(items[0].clone(), cx),
+            #[cfg(feature = "private-api")]
+            QuickAct::Markup => return self.markup(items[0].clone(), cx),
             QuickAct::RotateLeft | QuickAct::RotateRight => Quick::Rotate {
                 items,
                 left: act == QuickAct::RotateLeft,
@@ -135,6 +158,21 @@ impl FinderDemo {
             _ => After::Rename,
         };
         self.run_op(Op::Quick(quick), after, cx);
+    }
+
+    /// Quick Look answers to the window whose keys it takes: the main window, even from the pane.
+    #[cfg(feature = "private-api")]
+    fn markup(&mut self, item: PathBuf, cx: &mut Context<Self>) {
+        self.ql_shown = self.cursor.clone().map(|key| (key, self.ql_icon.bounds()));
+        cx.defer(move |cx| {
+            if let Some(window) = cx.active_window() {
+                window
+                    .update(cx, |_, window, _| {
+                        native_gpui::quick_look_markup(window, item)
+                    })
+                    .ok();
+            }
+        });
     }
 
     /// Finder's Convert Image window: format, size and metadata, asked once for the selection.
