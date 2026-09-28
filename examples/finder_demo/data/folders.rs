@@ -24,6 +24,27 @@ pub(crate) struct Folder {
 }
 
 pub(crate) fn folder_of(id: &'static str) -> Folder {
+    let (title, parent, crumbs) = match crate::locations::place(id) {
+        Some((title, parent)) => (title, parent, vec![title]),
+        None => {
+            let crumbs = crumbs_of(id);
+            let title = crumbs[crumbs.len() - 1];
+            (title, Path::new(id).parent().map(intern_path), crumbs)
+        }
+    };
+    Folder {
+        title,
+        parent,
+        crumbs,
+        rows: Arc::default(),
+        staged: None,
+        loading: true,
+        rev: next_rev(),
+        stale: false,
+    }
+}
+
+fn crumbs_of(id: &'static str) -> Vec<&'static str> {
     // Finder roots the Trash's path at "Trash", not at .Trash inside the home folder.
     let trash = standard(Standard::Trash).filter(|trash| Path::new(id).starts_with(trash));
     let (mount, volume) = match trash {
@@ -37,16 +58,7 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
         at = format!("{at}/{part}");
         intern(&finder_fs::name::of_path(Path::new(&at)))
     }));
-    Folder {
-        title: crumbs.last().copied().unwrap_or(volume),
-        parent: Path::new(id).parent().map(intern_path),
-        crumbs,
-        rows: Arc::default(),
-        staged: None,
-        loading: true,
-        rev: next_rev(),
-        stale: false,
-    }
+    crumbs
 }
 
 #[derive(Default)]
@@ -68,7 +80,10 @@ impl Folders {
         let folder = self.cache.get(id);
         let read = match folder {
             Some(folder) => folder.stale,
-            None => id.starts_with('/') && !self.reading.contains(id),
+            None => {
+                (id.starts_with('/') || crate::locations::is_location(id))
+                    && !self.reading.contains(id)
+            }
         };
         if read {
             let mut wanted = self.wanted.borrow_mut();

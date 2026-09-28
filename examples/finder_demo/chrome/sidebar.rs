@@ -136,8 +136,8 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
     use finder_fs::sidebar::Special::*;
     let id = match (&listed.path, listed.special) {
         (Some(path), _) => intern_path(path),
-        (None, Some(AirDrop)) => "airdrop",
-        (None, Some(Network)) => "/Network",
+        (None, Some(AirDrop)) => crate::locations::AIRDROP,
+        (None, Some(Network)) => crate::locations::NETWORK,
         _ => return None,
     };
     let glyph = match listed.special {
@@ -346,7 +346,9 @@ impl FinderDemo {
         );
         sidebar.on_select(cx.listener(|this, id: &Option<SharedString>, window, cx| {
             match id.as_deref() {
-                Some(path) if path.starts_with('/') => this.go(intern(path), window, cx),
+                Some(path) if path.starts_with('/') || crate::locations::is_location(path) => {
+                    this.go(intern(path), window, cx)
+                }
                 Some(tag) if tag.starts_with("tag:") => this.show_tag(intern(tag), window, cx),
                 _ => {}
             }

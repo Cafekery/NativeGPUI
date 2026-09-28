@@ -398,6 +398,13 @@ impl FinderDemo {
             .spring
             .as_ref()
             .map_or_else(|| self.here(), |spring| spring.into);
+        if into == crate::locations::AIRDROP {
+            self.airdrop_paths(dropped.paths());
+            return;
+        }
+        if crate::locations::is_location(into) {
+            return;
+        }
         let keys = dropped.keys(&self.selected.snapshot());
         self.drop_into(into, &keys, window, cx);
         cx.notify();
