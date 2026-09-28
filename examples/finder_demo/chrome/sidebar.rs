@@ -9,6 +9,8 @@ use native_gpui::sidebar::{
     sidebar_group, sidebar_item,
 };
 use native_gpui::{CheckState, Material};
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSString, NSURL};
 
 use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, server_symbol, volume_roots};
@@ -65,8 +67,7 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
 }
 
 impl Row {
-    /// A row an item can be filed into. Never stat a path to decide: a row can name a share
-    /// that stopped answering.
+    /// Never stat a path to decide: a row can name a share that stopped answering.
     fn dropping(mut self) -> Row {
         self.drops = true;
         self
@@ -131,7 +132,7 @@ fn pinned_glyph(path: &Path) -> Glyph {
 }
 
 fn trash_path() -> Option<PathBuf> {
-    finder_fs::volumes::standard(finder_fs::volumes::Standard::Trash)
+    finder_fs::volumes::standard(Standard::Trash)
 }
 
 fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row> {
@@ -176,8 +177,6 @@ fn listed_rows(listed: Vec<finder_fs::sidebar::Listed>, location: bool) -> Vec<R
         .collect()
 }
 
-/// A row of Settings ▸ Sidebar. Whether it shows is the demo's own choice once made, else what
-/// Finder's lists say.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Shown {
     Recents,
@@ -233,18 +232,15 @@ fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> 
     let special = |which| locations.iter().any(|listed| listed.special == Some(which));
     let [recents, shared] = finder_fs::sidebar::top_rows_shown();
     let [disks, external, servers] = finder_fs::sidebar::volume_kinds_shown();
-    let folders: Vec<(Shown, bool)> = FOLDERS
-        .iter()
-        .map(|&(shown, which)| {
-            let listed = favourites.iter().any(|listed| {
-                listed
-                    .path
-                    .as_deref()
-                    .is_some_and(|it| is_standard(it, which))
-            });
-            (shown, listed)
-        })
-        .collect();
+    let folders = FOLDERS.iter().map(|&(shown, which)| {
+        let listed = favourites.iter().any(|listed| {
+            listed
+                .path
+                .as_deref()
+                .is_some_and(|it| is_standard(it, which))
+        });
+        (shown, listed)
+    });
     let recent_tags = prefs::setting_on("ShowRecentTags", true);
     let finder = [
         (Shown::Recents, recents),
@@ -262,21 +258,20 @@ fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> 
         (Shown::Trash, special(Special::Trash)),
         (Shown::RecentTags, recent_tags),
     ];
-    let all: Vec<(Shown, bool)> = folders.into_iter().chain(finder).collect();
+    let all: Vec<(Shown, bool)> = folders.chain(finder).collect();
     move |shown| {
         let finder = all.iter().any(|&(it, on)| it == shown && on);
         (finder, prefs::setting_on(&key(shown), finder))
     }
 }
 
-/// Settings ▸ Sidebar, section by section: each row's title and checkbox state.
 pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, bool)>)> {
     let favourites = finder_fs::sidebar::listed_favorites();
     let locations = finder_fs::sidebar::listed_locations();
     let on = visibility(&favourites, &locations);
     let row = |shown: Shown, title: String| (shown, title, on(shown).1);
     let home = finder_fs::volumes::standard(Standard::Home).unwrap_or_default();
-    let computer = computer_name();
+    let computer = crate::locations::computer_name().to_owned();
     let said = |text: &str| finder_fs::words::say(text).into_owned();
     vec![
         (
@@ -314,14 +309,6 @@ pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, bool)>)
         ),
         ("Tags", vec![row(Shown::RecentTags, said("Recent Tags"))]),
     ]
-}
-
-/// The name the Sharing settings give this Mac, as Finder titles its Computer.
-#[allow(deprecated)]
-pub(crate) fn computer_name() -> String {
-    objc2_foundation::NSHost::currentHost()
-        .localizedName()
-        .map_or_else(|| "Computer".into(), |name| name.to_string())
 }
 
 pub(crate) fn set_row_shown(shown: Shown, on: bool) {
@@ -473,9 +460,10 @@ pub(crate) fn groups() -> Vec<Group> {
     }
     let locations = listed_rows(locations, true);
 
-    let recent = match shows(Shown::RecentTags) {
-        true => Vec::new(),
-        false => finder_fs::tags::recent(),
+    let recent = if shows(Shown::RecentTags) {
+        Vec::new()
+    } else {
+        finder_fs::tags::recent()
     };
     let mut tags: Vec<Row> = crate::tags::all()
         .iter()
@@ -543,8 +531,7 @@ pub(crate) fn pinned(id: &str) -> bool {
         .any(|group| prefs::pinned(group).iter().any(|kept| kept == id))
 }
 
-/// The group's rows in the order the demo keeps, each row it has not placed yet after the row it
-/// follows in Finder's order.
+/// The demo's kept order, each row it has not placed yet after the row it follows in Finder's.
 fn arranged(kept: &[String], group: &Group) -> Vec<&'static str> {
     let mut rows: Vec<&'static str> = Vec::new();
     for kept in kept {
@@ -572,7 +559,6 @@ pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
         .collect()
 }
 
-/// Finder's sidebar is one list: a change made in one window shows in every window.
 pub(crate) fn reload_sidebars(cx: &mut App) {
     let windows: Vec<_> = cx
         .windows()
@@ -622,10 +608,14 @@ impl FinderDemo {
     pub(crate) fn sidebar_took(&mut self, groups: Vec<Group>) {
         self.sidebar_rows = stored_rows(&groups);
         self.sidebar_groups = groups;
+        self.update_sidebar();
+        self.sidebar_follow();
+    }
+
+    fn update_sidebar(&self) {
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
         }
-        self.sidebar_follow();
     }
 
     pub(crate) fn sidebar_follow(&self) {
@@ -740,9 +730,7 @@ impl FinderDemo {
         for rows in &mut self.sidebar_rows {
             rows.retain(|row| *row != id);
         }
-        if let Some(sidebar) = &self.sidebar {
-            sidebar.update(&self.sidebar_items());
-        }
+        self.update_sidebar();
         reload_sidebars(cx);
     }
 
@@ -840,9 +828,7 @@ impl FinderDemo {
             index += 1;
         }
         self.store_rows(at);
-        if let Some(sidebar) = &self.sidebar {
-            sidebar.update(&self.sidebar_items());
-        }
+        self.update_sidebar();
         reload_sidebars(cx);
     }
 
@@ -876,11 +862,8 @@ impl FinderDemo {
     }
 
     pub(crate) fn eject(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let url =
-            objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(id));
-        if let Err(error) =
-            objc2_app_kit::NSWorkspace::sharedWorkspace().unmountAndEjectDeviceAtURL_error(&url)
-        {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(id));
+        if let Err(error) = NSWorkspace::sharedWorkspace().unmountAndEjectDeviceAtURL_error(&url) {
             self.complain(&error.localizedDescription().to_string());
             return;
         }
@@ -894,8 +877,7 @@ impl FinderDemo {
             this.update_in(cx, |this, window, cx| {
                 this.refresh_sidebar();
                 if left && this.here().starts_with(id.as_str()) {
-                    let home = finder_fs::volumes::standard(finder_fs::volumes::Standard::Home);
-                    if let Some(home) = home {
+                    if let Some(home) = finder_fs::volumes::standard(Standard::Home) {
                         this.go(intern_path(&home), window, cx);
                     }
                 }

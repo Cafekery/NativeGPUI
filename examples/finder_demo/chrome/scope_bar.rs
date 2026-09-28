@@ -30,7 +30,6 @@ impl FinderDemo {
         let folder_name = self.folder().map_or("this Mac".to_string(), |folder| {
             format!("\u{201c}{}\u{201d}", folder.title)
         });
-        let this = cx.entity().downgrade();
         div()
             .h(px(SCOPE_H))
             .w_full()
@@ -59,10 +58,9 @@ impl FinderDemo {
                     .style(SegmentStyle::Capsule)
                     .control_size(ControlSize::Small)
                     .selected_bezel_color(SystemColor::UnemphasizedSelectedContentBackground)
-                    .on_change(move |index, _, cx| {
-                        let index = *index;
-                        this.update(cx, |this, cx| this.set_scope(index, cx)).ok();
-                    }),
+                    .on_change(
+                        cx.listener(|this, index: &usize, _, cx| this.set_scope(*index, cx)),
+                    ),
             )
             .child(div().flex_1())
             .child(

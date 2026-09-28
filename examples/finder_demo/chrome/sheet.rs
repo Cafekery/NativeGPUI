@@ -1,10 +1,11 @@
 use std::ffi::CString;
+use std::ops::Range;
 
 use finder_fs::sort::fold;
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, FontWeight, MouseButton, Pixels,
-    ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
-    WindowOptions, div, point, prelude::*, px, size, uniform_list,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, FontWeight, MouseButton, ScrollStrategy,
+    SharedString, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions, div,
+    point, prelude::*, px, size, uniform_list,
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{
@@ -26,7 +27,6 @@ use crate::ui::{focus_gpui, key_to_parent, native_text_field, text_width};
 use crate::{home, index};
 
 const SHEET_W: f32 = 520.;
-// Finder's Go to Folder sheet, measured in points.
 const PANEL_W: f32 = 460.;
 const PANEL_H: f32 = 183.;
 const MIN_W: f32 = 434.;
@@ -50,11 +50,11 @@ const PATH_X: f32 = 15.;
 const PATH_RIGHT: f32 = 11.;
 const HEADING_FONT: f32 = 12.;
 const CLEAR_GLYPH: f32 = 14.;
-/// Our field fits 29pt tall where Finder's is 22; measured, its text then sits 3.5pt high.
+/// Our field is 29pt tall to Finder's 22, which sets its text this much higher.
 const FIELD_DROP: f32 = 3.5;
 const PICK_INSET: f32 = 10.;
 const PICK_RADIUS: f32 = 8.;
-/// A borderless field sets its line above centre; measured, it sits 3.5pt above a centred label.
+/// A borderless field sets its line above centre; a centred label does not.
 const GHOST_LIFT: f32 = 7.;
 const CHOICES: usize = 200;
 const HISTORY: usize = 8;
@@ -66,13 +66,11 @@ const COMMANDS: &[&str] = &[
     "deleteWordBackward:",
 ];
 
-#[derive(Clone)]
 enum GoLine {
     Heading(&'static str),
     Path(String),
 }
 
-/// Finder's Go to Folder sheet: a window of its own, attached to the Finder window it navigates.
 pub(crate) struct GoPanel {
     demo: WeakEntity<FinderDemo>,
     host: AnyWindowHandle,
@@ -105,10 +103,13 @@ fn go_rows(typed: &str) -> Vec<String> {
         .then(|| typed_path(typed))
         .filter(|path| finder_fs::list::is_dir(path))
         .map(|path| path.to_string_lossy().into_owned());
-    let found = finder_fs::complete::complete(typed, Some(index()), CHOICES)
+    folder.into_iter().chain(completions(typed)).collect()
+}
+
+fn completions(typed: &str) -> impl Iterator<Item = String> {
+    finder_fs::complete::complete(typed, Some(index()), CHOICES)
         .into_iter()
-        .map(|found| found.path.to_string_lossy().into_owned());
-    folder.into_iter().chain(found).collect()
+        .map(|found| found.path.to_string_lossy().into_owned())
 }
 
 fn drop_folder(typed: &str) -> String {
@@ -166,22 +167,16 @@ fn section(heading: &'static str, paths: Vec<String>) -> Vec<GoLine> {
         .collect()
 }
 
-/// A bare name lists matches in the current folder and among recents, as Finder does; a path, or
-/// a name found in neither, lists completions.
+/// A bare name lists matches here and among recents; a path, or a name found in neither, completes.
 fn go_lines(typed: &str, here: &str) -> Vec<GoLine> {
     let bare = !typed.contains('/') && !typed.starts_with('~');
     if !bare {
         return section("Go to:", go_rows(typed));
     }
-    let nearby: Vec<String> = match here.starts_with('/') {
-        true => {
-            let inside = format!("{}/{typed}", here.trim_end_matches('/'));
-            finder_fs::complete::complete(&inside, Some(index()), CHOICES)
-                .into_iter()
-                .map(|found| found.path.to_string_lossy().into_owned())
-                .collect()
-        }
-        false => Vec::new(),
+    let nearby: Vec<String> = if here.starts_with('/') {
+        completions(&format!("{}/{typed}", here.trim_end_matches('/'))).collect()
+    } else {
+        Vec::new()
     };
     let recent: Vec<String> = prefs::go_history()
         .into_iter()
@@ -212,7 +207,6 @@ fn go_heading(at: usize, heading: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// Finder draws each row as a path control, which clips the longest crumbs and keeps the leaf.
 fn go_row(
     at: usize,
     path: &str,
@@ -289,7 +283,6 @@ fn remember_go(path: &str) {
 }
 
 impl FinderDemo {
-    /// Finder's field holds the last path it went to, selected, and the sheet its last size.
     pub(crate) fn open_go(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.go_sheet.is_some() {
             return;
@@ -343,8 +336,7 @@ impl FinderDemo {
     }
 }
 
-/// macOS centres a sheet in its window unless the sheet answers AppKit's private `sheetBehavior`
-/// with 3, which hangs it from the toolbar, or from where the window's delegate places it.
+/// AppKit centres a sheet unless it answers the private `sheetBehavior` with 3: hang from the toolbar.
 fn hang_below_toolbar(sheet: &NSWindow, host: &NSWindow) {
     type Behave = extern "C" fn(&NSWindow, Sel) -> isize;
     let behave: Behave = sheet_behavior;
@@ -371,8 +363,7 @@ fn hang_below_toolbar(sheet: &NSWindow, host: &NSWindow) {
     }
 }
 
-/// KVO slips a subclass under an observed window, and `respondsToSelector:`, which AppKit asks
-/// before calling a delegate, looks up the class the window reports instead.
+/// AppKit's `respondsToSelector:` looks up the class a window reports, not the KVO subclass under it.
 fn reported_class(window: &NSWindow) -> &'static AnyClass {
     unsafe { msg_send![window, class] }
 }
@@ -394,9 +385,10 @@ extern "C" fn place_sheet(
 }
 
 extern "C" fn sheet_behavior(this: &NSWindow, _: Sel) -> isize {
-    match this.frameAutosaveName().to_string() == prefs::GO_SHEET {
-        true => HANG_FROM_TOOLBAR,
-        false => unsafe { msg_send![super(this, NSWindow::class()), sheetBehavior] },
+    if this.frameAutosaveName().to_string() == prefs::GO_SHEET {
+        HANG_FROM_TOOLBAR
+    } else {
+        unsafe { msg_send![super(this, NSWindow::class()), sheetBehavior] }
     }
 }
 
@@ -432,7 +424,6 @@ impl GoPanel {
         .detach();
     }
 
-    /// Steps over the section headings.
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
         let paths: Vec<usize> = (0..self.lines.len())
             .filter(|&at| matches!(self.lines[at], GoLine::Path(_)))
@@ -505,7 +496,6 @@ impl GoPanel {
         .detach();
     }
 
-    /// Ends the sheet, then runs `then` on the Finder window it was attached to.
     fn close(
         &mut self,
         window: &mut Window,
@@ -537,51 +527,29 @@ impl GoPanel {
 
 impl Render for GoPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let this: WeakEntity<Self> = cx.entity().downgrade();
-        let (typing, commanded, submitting, leaving, clearing) = (
-            this.clone(),
-            this.clone(),
-            this.clone(),
-            this.clone(),
-            this.clone(),
-        );
+        let this = cx.entity().downgrade();
         let field = native_text_field("ng.finder.go", &self.typed)
             .stretch()
             .borderless()
             .font_size(FIELD_FONT)
             .placeholder("Go to Folder")
             .editing(0..self.typed.chars().count())
-            .on_change(move |text, _, cx| {
-                let text = text.to_string();
-                typing
-                    .update(cx, |panel: &mut GoPanel, cx| panel.typing(text, cx))
-                    .ok();
-            })
+            .on_change(cx.listener(|panel, text: &String, _, cx| panel.typing(text.clone(), cx)))
             .on_command(COMMANDS, move |command, text, _, cx| {
-                commanded
-                    .update(cx, |panel: &mut GoPanel, cx| match command {
-                        "moveUp:" => panel.step(-1, cx),
-                        "moveDown:" => panel.step(1, cx),
-                        "deleteWordBackward:" => panel.typing(drop_folder(text), cx),
-                        _ => panel.accept(cx),
-                    })
-                    .ok();
+                this.update(cx, |panel: &mut GoPanel, cx| match command {
+                    "moveUp:" => panel.step(-1, cx),
+                    "moveDown:" => panel.step(1, cx),
+                    "deleteWordBackward:" => panel.typing(drop_folder(text), cx),
+                    _ => panel.accept(cx),
+                })
+                .ok();
             })
-            .on_submit(move |typed, window, cx| {
-                let typed = typed.to_string();
-                submitting
-                    .update(cx, |panel: &mut GoPanel, cx| {
-                        panel.submit(&typed, window, cx)
-                    })
-                    .ok();
-            })
-            .on_cancel(move |_, window, cx| {
-                leaving
-                    .update(cx, |panel: &mut GoPanel, cx| {
-                        panel.close(window, cx, |_, _, _| {})
-                    })
-                    .ok();
-            });
+            .on_submit(
+                cx.listener(|panel, typed: &String, window, cx| panel.submit(typed, window, cx)),
+            )
+            .on_cancel(
+                cx.listener(|panel, _: &String, window, cx| panel.close(window, cx, |_, _, _| {})),
+            );
 
         let typed_w = text_width(window, self.typed.clone(), px(FIELD_FONT));
         let ghost = ghost(self).map(|ghost| {
@@ -618,13 +586,10 @@ impl Render for GoPanel {
                 )
                 .tint(SystemColor::SecondaryLabel),
             )
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                clearing
-                    .update(cx, |panel: &mut GoPanel, cx| {
-                        panel.typing(String::new(), cx)
-                    })
-                    .ok();
-            });
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|panel, _, _, cx| panel.typing(String::new(), cx)),
+            );
         let entry = div()
             .absolute()
             .top(px(FIELD_Y + FIELD_DROP))
@@ -637,25 +602,23 @@ impl Render for GoPanel {
             .children(ghost)
             .child(div().w_full().pr(px(FIELD_TAIL)).child(field));
 
-        let (lines, selected) = (self.lines.clone(), self.selected);
-        let tail = self
-            .typed
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        // Only the rows in view host controls.
-        let list = uniform_list("ng.finder.go.rows", lines.len(), move |range, _, _| {
-            range
-                .map(|at| match &lines[at] {
-                    GoLine::Heading(heading) => go_heading(at, heading),
-                    GoLine::Path(path) => {
-                        let bold = marks(&tail, leaf(path)).unwrap_or_default();
-                        go_row(at, path, selected == Some(at), bold, this.clone())
-                    }
-                })
-                .collect()
-        })
+        let list = uniform_list(
+            "ng.finder.go.rows",
+            self.lines.len(),
+            cx.processor(|panel, range: Range<usize>, _, cx| {
+                let this = cx.entity().downgrade();
+                let tail = panel.typed.rsplit('/').next().unwrap_or_default();
+                range
+                    .map(|at| match &panel.lines[at] {
+                        GoLine::Heading(heading) => go_heading(at, heading),
+                        GoLine::Path(path) => {
+                            let bold = marks(tail, leaf(path)).unwrap_or_default();
+                            go_row(at, path, panel.selected == Some(at), bold, this.clone())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
         .size_full()
         .track_scroll(&self.scroll);
 
@@ -671,8 +634,7 @@ impl Render for GoPanel {
                 .left_0()
                 .right_0()
         };
-        // Opaque like Finder's. Gray fills the sheet, the field's white takes its top with the
-        // sheet's own corners, and a square gray strip hides the white's rounded bottom corners.
+        // Gray fills the sheet; the white band takes its top corners, a gray strip squares its bottom.
         native_root(
             div()
                 .relative()
@@ -720,94 +682,65 @@ impl FinderDemo {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let this: WeakEntity<Self> = cx.entity().downgrade();
-        let leave = this.clone();
         let field = native_text_field("ng.finder.save", name)
             .stretch()
             .editing(0..name.chars().count())
-            .on_submit(move |typed, window, cx| {
-                let typed = typed.trim().to_string();
-                this.update(cx, |demo: &mut FinderDemo, cx| {
-                    demo.save_sheet = None;
-                    focus_gpui(window);
-                    key_to_parent(window);
-                    if !typed.is_empty() {
-                        demo.save_search(&typed, window, cx);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .on_cancel(move |_, window, cx| {
-                leave
-                    .update(cx, |demo: &mut FinderDemo, cx| {
-                        demo.save_sheet = None;
-                        focus_gpui(window);
-                        key_to_parent(window);
-                        cx.notify();
-                    })
-                    .ok();
-            });
-        glass(
-            "ng.finder.save.glass",
-            "Save As:",
-            field,
-            None,
-            self.metrics().top,
-            window,
-        )
+            .on_submit(cx.listener(|demo, typed: &String, window, cx| {
+                demo.end_save_sheet(window, cx);
+                let typed = typed.trim();
+                if !typed.is_empty() {
+                    demo.save_search(typed, window, cx);
+                }
+            }))
+            .on_cancel(cx.listener(|demo, _: &String, window, cx| demo.end_save_sheet(window, cx)));
+        let corner = system_corner_radius(window);
+        div()
+            .absolute()
+            .top(self.metrics().top)
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .relative()
+                    .w(px(SHEET_W))
+                    .rounded(corner)
+                    .overflow_hidden()
+                    .shadow_lg()
+                    .block_mouse_except_scroll()
+                    // Native and Above, like the Go panel: the header band covers all of GPUI.
+                    .child(
+                        material("ng.finder.save.glass", Material::Popover)
+                            .layer(Layer::Above)
+                            .blending(Blending::WithinWindow)
+                            .corner_radius(corner)
+                            .absolute()
+                            .inset_0(),
+                    )
+                    .child(
+                        div()
+                            .relative()
+                            .px(px(20.))
+                            .py(px(18.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                native_label(("ng.finder.save.glass", 1usize), "Save As:")
+                                    .font_size(px(13.))
+                                    .weight(FontWeight::SEMIBOLD),
+                            )
+                            .child(div().h(px(24.)).child(field)),
+                    ),
+            )
+            .into_any_element()
     }
-}
 
-fn glass(
-    id: &'static str,
-    title: &'static str,
-    field: impl IntoElement,
-    below: Option<AnyElement>,
-    top: Pixels,
-    window: &Window,
-) -> AnyElement {
-    let corner = system_corner_radius(window);
-    div()
-        .absolute()
-        .top(top)
-        .left_0()
-        .right_0()
-        .flex()
-        .justify_center()
-        .child(
-            div()
-                .relative()
-                .w(px(SHEET_W))
-                .rounded(corner)
-                .overflow_hidden()
-                .shadow_lg()
-                .block_mouse_except_scroll()
-                // Native and Above, like the Go panel: the header band covers all of GPUI.
-                .child(
-                    material(id, Material::Popover)
-                        .layer(Layer::Above)
-                        .blending(Blending::WithinWindow)
-                        .corner_radius(corner)
-                        .absolute()
-                        .inset_0(),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .px(px(20.))
-                        .py(px(18.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .child(
-                            native_label((id, 1usize), title)
-                                .font_size(px(13.))
-                                .weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(div().h(px(24.)).child(field))
-                        .children(below),
-                ),
-        )
-        .into_any_element()
+    fn end_save_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_sheet = None;
+        focus_gpui(window);
+        key_to_parent(window);
+        cx.notify();
+    }
 }
