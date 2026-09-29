@@ -632,6 +632,7 @@ pub(crate) fn detail_text(row: &Row, column: Column) -> SharedString {
         }
         Column::Version => extra.version.clone().unwrap_or_default(),
         Column::Comments => extra.comment.clone(),
+        Column::SharedBy => extra.sharer_cell(),
         _ => SharedString::default(),
     }
 }

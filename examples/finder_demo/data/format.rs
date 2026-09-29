@@ -21,6 +21,7 @@ use objc2_foundation::{
     NSNumberFormatterStyle, NSString,
 };
 
+use finder_fs::meta::Sharer;
 use finder_fs::words;
 
 use super::face::Face;
@@ -435,6 +436,15 @@ impl Bands {
                     }
                 }
             }
+            Column::SharedBy => match row
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.shared_by.as_ref())
+            {
+                Some(Sharer::Me) => finder("GV16", "Shared By Me", &[]),
+                Some(Sharer::Named(name)) => finder("GV19", "Shared By ^0", &[&**name]),
+                None => finder("GV18", "Not Shared", &[]),
+            },
             group => fresh(match row.words(group).filter(|words| !words.is_empty()) {
                 Some(words) => words.to_string(),
                 None if group == Column::Tags => words::finder("GV12", "No Tags"),
