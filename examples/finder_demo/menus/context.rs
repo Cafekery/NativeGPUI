@@ -29,7 +29,7 @@ const COLUMNS: [(&str, Option<Column>); 11] = [
     ("Size", Some(Column::Size)),
     ("Kind", Some(Column::Kind)),
     ("Last Modified By", None),
-    ("Shared By", None),
+    ("Shared By", Some(Column::SharedBy)),
     ("Version", Some(Column::Version)),
     ("Comments", Some(Column::Comments)),
     ("Tags", Some(Column::Tags)),
@@ -450,10 +450,10 @@ fn holds(path: &Path) -> bool {
         || path == Path::new("/Network"))
 }
 
-pub(crate) fn header(columns: &[ColumnSpec]) -> Menu {
+pub(crate) fn header(columns: &[ColumnSpec], here: &str) -> Menu {
     let mut menu = Menu::default();
     for (title, column) in COLUMNS {
-        match column {
+        match column.filter(|column| column.offered_at(here)) {
             Some(column) => {
                 let shown = columns.iter().any(|spec| spec.column == column);
                 menu.item(MenuEntry::item(title).checked(shown), Act::Toggle(column));

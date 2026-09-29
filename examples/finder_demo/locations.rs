@@ -252,7 +252,9 @@ fn shared_rows() -> Vec<Arc<Row>> {
         return Vec::new();
     };
     let found = String::from_utf8_lossy(&found.stdout);
-    data::rows_at(found.lines().take(HITS), crate::index())
+    let mut rows = data::rows_at(found.lines().take(HITS), crate::index());
+    data::read_sharers(&mut rows);
+    rows
 }
 
 fn rows_of(id: &'static str) -> Vec<Arc<Row>> {

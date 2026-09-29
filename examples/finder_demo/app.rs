@@ -385,11 +385,13 @@ impl FinderDemo {
     }
 
     pub(crate) fn toggle_groups(&mut self, cx: &mut Context<Self>) {
-        let last = prefs::look_text(LIST_VIEW, self.here(), "lastGroupBy");
+        let here = self.here();
+        let last = prefs::look_text(LIST_VIEW, here, "lastGroupBy");
         let group = match self.sorting.group {
             Some(_) => None,
             None => Some(
                 last.and_then(|id| Column::from_id(&id))
+                    .filter(|column| column.offered_at(here))
                     .unwrap_or(prefs::finder().group),
             ),
         };
@@ -463,8 +465,11 @@ pub(crate) struct Sorting {
 impl Sorting {
     fn of(folder: &str) -> Self {
         let finder = prefs::finder();
-        let key =
-            |view, name| prefs::look_text(view, folder, name).and_then(|id| Column::from_id(&id));
+        let key = |view, name| {
+            prefs::look_text(view, folder, name)
+                .and_then(|id| Column::from_id(&id))
+                .filter(|column| column.offered_at(folder))
+        };
         let list = match key(LIST_VIEW, "sortColumn") {
             Some(sort) => {
                 let ascending = prefs::look_on(LIST_VIEW, folder, "ascending");

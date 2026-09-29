@@ -16,6 +16,7 @@ use super::face::{Face, face_of};
 use super::format::{byte_string, reference_seconds};
 use super::paths::{intern, intern_path, join};
 use super::volumes::{special, volume_at};
+use crate::locations::SHARED;
 
 const WEIGHTS_HELD: usize = 4096;
 
@@ -42,6 +43,7 @@ pub(crate) enum Column {
     Comments,
     /// The app that opens an item: a group key only.
     Application,
+    SharedBy,
 }
 
 pub(crate) const SORT_KEYS: [Column; 8] = [
@@ -66,10 +68,11 @@ pub(crate) const SORT_TITLES: [&str; 8] = [
     "Tags",
 ];
 
-pub(crate) const GROUP_KEYS: [Column; 9] = [
+pub(crate) const GROUP_KEYS: [Column; 10] = [
     Column::Name,
     Column::Kind,
     Column::Application,
+    Column::SharedBy,
     Column::Opened,
     Column::Added,
     Column::Modified,
@@ -100,12 +103,18 @@ impl Column {
             Column::Version => "version",
             Column::Comments => "comments",
             Column::Application => "application",
+            Column::SharedBy => "shareOwner",
         }
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
         (SORT_KEYS.into_iter())
-            .chain([Column::Version, Column::Comments, Column::Application])
+            .chain([
+                Column::Version,
+                Column::Comments,
+                Column::Application,
+                Column::SharedBy,
+            ])
             .find(|column| column.id() == id)
     }
 
@@ -118,6 +127,7 @@ impl Column {
                 | Column::Version
                 | Column::Comments
                 | Column::Application
+                | Column::SharedBy
         )
     }
 
@@ -131,8 +141,13 @@ impl Column {
     pub(crate) fn extra(self) -> bool {
         matches!(
             self,
-            Column::Opened | Column::Tags | Column::Version | Column::Comments
+            Column::Opened | Column::Tags | Column::Version | Column::Comments | Column::SharedBy
         )
+    }
+
+    /// Finder offers Shared By in the Shared location alone.
+    pub(crate) fn offered_at(self, folder: &str) -> bool {
+        self != Column::SharedBy || folder == SHARED
     }
 }
 
@@ -180,6 +195,7 @@ impl Row {
             Column::Version => extra?.version.as_deref(),
             Column::Comments => Some(&extra?.comment),
             Column::Application => self.app.as_deref(),
+            Column::SharedBy => extra?.sharer_words(),
             _ => None,
         }
     }
@@ -431,6 +447,16 @@ pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
             extra: Some(extra_of(&row.path, row.package, comment)),
             ..(**row).clone()
         });
+    }
+}
+
+pub(crate) fn read_sharers(rows: &mut [Arc<Row>]) {
+    read_extras(rows);
+    for row in rows {
+        let row = Arc::make_mut(row);
+        if let Some(extra) = &mut row.extra {
+            Arc::make_mut(extra).shared_by = finder_fs::meta::sharer(Path::new(&*row.path));
+        }
     }
 }
 

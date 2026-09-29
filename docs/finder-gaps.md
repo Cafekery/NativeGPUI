@@ -50,10 +50,13 @@ a context menu but not in the menu bar are listed as wiring, not as features.
   `com.apple.sharingd`, 12 pt off the bottom. No path bar, preview pane or status text. Setting the
   mode needs sharingd's private entitlement `com.apple.private.airdrop.settings`, so picking
   another opens System Settings' AirDrop & Handoff pane and the pop-up keeps the current mode
+- [x] At AirDrop the toolbar's view switcher (the control and each segment), Group and Action are
+  off, as Finder's, and on again anywhere else; a disabled Group or Action opens no menu
 - [ ] AirDrop: Finder's photo is the Contacts me-card's, the demo's the account picture (the user
-  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access; Finder turns the view
-  switcher, Group and Action off there, and the demo's toolbar has no way to grey a group or menu
-  item. Nearby people and devices are Sharing's private API
+  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access. Finder's greyed view
+  switcher shows icons chosen there, the demo's the window's view. In a window too narrow for them
+  the demo's Group and Action rows in the toolbar's overflow menu still open there; Finder's
+  overflow was not read. Nearby people and devices are Sharing's private API
 - [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
   “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
   Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each
@@ -70,12 +73,17 @@ a context menu but not in the menu bar are listed as wiring, not as features.
   location's own chain (Network, then the computer) and its computer row opens Computer
 - [x] Go ▸ Shared (⇧⌘S), after iCloud Drive as in Finder's menu: the items Spotlight marks as shared
   (`kMDItemIsShared == 1`)
-- [ ] Shared lists its items without Finder's Shared By column and grouping. Finder's Shared By
-  (`shareOwner`, 200 pt, after Date Last Opened) shows the owner's name (“William Jones” from the
-  share's name components, else `kMDItemOwnerName`: “Guillaume C.”); Group By Shared By heads each
-  group “Shared By <owner>” (“Shared By Me” for the owner, `kMDItemSharedItemCurrentUserRole`),
-  groups by name ascending. With neither on, the name cell carries “Shared by WJ” (the abbreviated
-  name). Its View Options and Sort By list Shared By and Last Modified By
+- [x] Shared offers Finder's Shared By column (`shareOwner`, 200 pt): “Me” where the user's
+  `kMDItemSharedItemCurrentUserRole` is the owner's, else `kMDItemOwnerName` (“William Jones”,
+  “Guillaume C.”, the names Finder shows), `--` for no one. It sorts by that text, ascending
+  first, no one last either way; Group By Shared By heads each group “Shared By <owner>”, “Shared
+  By Me” or “Not Shared”, in the same order, Not Shared last. The header menu, View Options' Show
+  Columns and Group By, and the toolbar's Group menu (after Application, with Option its sort)
+  offer it only there, and no other folder shows the column or groups or sorts by it
+- [ ] Shared: with neither Shared By column nor grouping on, Finder's name cell carries “Shared by
+  WJ” (the abbreviated name); its Last Modified By column is missing, and its Sort By lists Shared
+  By and Last Modified By, the demo's neither. Where Finder puts “Shared By Me” among the named
+  groups was not measured: nothing on this Mac is shared by its user
 - [x] File ▸ New Smart Folder, and saved searches with it: Save in a search's scope bar writes a .savedSearch in Finder's own format to ~/Library/Saved Searches and adds it to the sidebar, and opening one, the demo's or Finder's, runs its query through Spotlight. The Save sheet asks only for the name, without Finder's tags, Where and Add To Sidebar controls
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
@@ -223,8 +231,9 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   reads `cmmt` with the other extras, off the main thread, and offers the column in the header
   menu and View Options, which lists Finder's Show Columns in its order.
 - [ ] Shared By, Last Modified By and View Options' iCloud Status: Finder offers them only in
-  iCloud Drive and shows neither column elsewhere, even when its settings ask for them; the demo
-  lists them disabled everywhere.
+  iCloud Drive, the first two in Shared too, and shows neither column elsewhere, even when its
+  settings ask for them; the demo offers Shared By in Shared and lists the rest disabled
+  everywhere.
 - [x] Column widths, read over AX in a Finder window at eight widths (14 pt text, 16 pt icons):
   Name takes what the other columns leave while the list fills the window, down to its least
   (198); below that the list overflows and every width holds until the window outgrows the

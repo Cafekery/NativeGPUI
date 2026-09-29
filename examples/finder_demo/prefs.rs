@@ -601,6 +601,7 @@ fn column_key(column: Column) -> &'static str {
         Column::Version => "ng.finder.col.version",
         Column::Comments => "ng.finder.col.comments",
         Column::Application => "ng.finder.col.application",
+        Column::SharedBy => "ng.finder.col.shared_by",
     }
 }
 

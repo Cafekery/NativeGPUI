@@ -728,6 +728,7 @@ pub enum ToolbarItem {
         selected: usize,
         width: ToolbarGroupWidth,
         tool_tip: Option<String>,
+        enabled: bool,
         on_select: Option<ToolbarIndexHandler>,
     },
     Search {
@@ -744,6 +745,7 @@ pub enum ToolbarItem {
         label: String,
         entries: Vec<MenuEntry>,
         tool_tip: Option<String>,
+        enabled: bool,
         on_select: Option<ToolbarIndexHandler>,
         on_open: Option<ToolbarEntriesBuilder>,
     },
@@ -801,6 +803,7 @@ impl ToolbarItem {
             selected,
             width: ToolbarGroupWidth::default(),
             tool_tip: None,
+            enabled: true,
             on_select: None,
         }
     }
@@ -828,6 +831,7 @@ impl ToolbarItem {
             label: label.into(),
             entries: entries.into_iter().collect(),
             tool_tip: None,
+            enabled: true,
             on_select: None,
             on_open: None,
         }
@@ -969,20 +973,24 @@ impl ToolbarItem {
         self
     }
 
-    /// A button or share item AppKit greys out and does not send.
+    /// An item AppKit greys out and does not send; a group greys every segment.
     pub fn enabled(mut self, on: bool) -> Self {
-        if let ToolbarItem::Symbol { enabled, .. } | ToolbarItem::Share { enabled, .. } = &mut self
-        {
-            *enabled = on;
+        match &mut self {
+            ToolbarItem::Symbol { enabled, .. }
+            | ToolbarItem::Group { enabled, .. }
+            | ToolbarItem::Menu { enabled, .. }
+            | ToolbarItem::Share { enabled, .. } => *enabled = on,
+            _ => {}
         }
         self
     }
 
     fn enabled_state(&self) -> Option<bool> {
         match self {
-            ToolbarItem::Symbol { enabled, .. } | ToolbarItem::Share { enabled, .. } => {
-                Some(*enabled)
-            }
+            ToolbarItem::Symbol { enabled, .. }
+            | ToolbarItem::Group { enabled, .. }
+            | ToolbarItem::Menu { enabled, .. }
+            | ToolbarItem::Share { enabled, .. } => Some(*enabled),
             _ => None,
         }
     }
@@ -1590,6 +1598,11 @@ impl ToolbarDelegate {
             let Some((_, item)) = built.iter().find(|(found, _)| *found == id) else {
                 continue;
             };
+            if let Some(enabled) = spec.enabled_state() {
+                if item.isEnabled() != enabled {
+                    item.setEnabled(enabled);
+                }
+            }
             match spec {
                 ToolbarItem::Group {
                     segments,
@@ -1659,18 +1672,12 @@ impl ToolbarDelegate {
                         Some((self.as_ref(), sel!(ngToolbarMenu:))),
                     );
                 }
-                _ => {
-                    if let Some(enabled) = spec.enabled_state() {
-                        if item.isEnabled() != enabled {
-                            item.setEnabled(enabled);
-                        }
-                    }
-                    if let ToolbarItem::Symbol { label, .. } = spec {
-                        if item.label().to_string() != *label {
-                            item.setLabel(&NSString::from_str(label));
-                        }
+                ToolbarItem::Symbol { label, .. } => {
+                    if item.label().to_string() != *label {
+                        item.setLabel(&NSString::from_str(label));
                     }
                 }
+                _ => {}
             }
         }
     }
