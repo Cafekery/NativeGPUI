@@ -1,17 +1,17 @@
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::Path;
 
 use finder_fs::ds_store::Background;
 use gpui::{
-    AnyElement, App, AsyncApp, Bounds, Context, Entity, ExternalPaths, Hsla, Render, Rgba,
-    SharedString, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div,
-    point, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, ElementId, Entity, ExternalPaths, FontWeight, Hsla, Render,
+    Rgba, SharedString, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions,
+    div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, FileType, SystemColor, system_color};
 use native_gpui::{
-    CheckState, ControlSize, MenuEntry, NativePopup, native_button, native_checkbox,
-    native_color_well, native_image, native_label, native_popup, native_radio, native_raster,
-    native_root, native_slider, native_symbol, window_options,
+    CheckState, ControlSize, MenuEntry, NativeCheckbox, NativePopup, NativeSlider, native_button,
+    native_checkbox, native_color_well, native_image, native_label, native_popup, native_radio,
+    native_raster, native_root, native_slider, native_symbol, window_options,
 };
 use objc2::msg_send;
 use objc2_app_kit::{
@@ -61,7 +61,6 @@ const SHOW_COLUMNS: [(&str, Option<Column>); 12] = [
     ("Tags", Some(Column::Tags)),
 ];
 
-/// Finder's own images for the three thumbnail sizes, where Finder draws them.
 const THUMBS: [(f32, &str, &str, (f32, f32), f32); 3] = [
     (
         32.,
@@ -86,7 +85,6 @@ const THUMBS: [(f32, &str, &str, (f32, f32), f32); 3] = [
     ),
 ];
 
-const PANEL: (f32, f32) = (236., 646.);
 const SMALL: ControlSize = ControlSize::Small;
 
 pub(crate) struct ViewOptions {
@@ -111,11 +109,6 @@ fn at(x: f32, y: f32, child: impl IntoElement) -> AnyElement {
         .top(px(y))
         .child(child)
         .into_any_element()
-}
-
-fn label(id: &'static str, (x, y, width): (f32, f32, f32), text: &str) -> AnyElement {
-    let text = native_label(id, text).font_size(tokens::system_font_size_for(SMALL));
-    at(x, y, div().w(px(width)).child(text))
 }
 
 fn small_popup(popup: NativePopup, width: f32) -> NativePopup {
@@ -150,14 +143,12 @@ fn name_thumbnails() {
     }
 }
 
-fn color_of([red, green, blue]: [f32; 3]) -> Hsla {
-    Rgba {
-        r: red,
-        g: green,
-        b: blue,
-        a: 1.,
-    }
-    .into()
+fn shows(demo: &FinderDemo, column: Column) -> bool {
+    demo.list_columns.iter().any(|spec| spec.column == column)
+}
+
+fn set_background(demo: &mut FinderDemo, background: Background, cx: &mut Context<FinderDemo>) {
+    demo.change_icon_options(|options| options.background = Some(background), cx);
 }
 
 struct Build<'a> {
@@ -181,28 +172,40 @@ impl Build<'_> {
         self.out.extend(element.into());
     }
 
+    fn label(&mut self, id: &'static str, (y, width): (f32, f32), text: &str) {
+        let text = native_label(id, text).font_size(tokens::system_font_size_for(SMALL));
+        self.put(at(18., y, div().w(px(width)).child(text)));
+    }
+
+    fn checkbox(
+        &self,
+        id: &'static str,
+        title: impl Into<String>,
+        on: bool,
+        change: Change<bool>,
+    ) -> NativeCheckbox {
+        let run = self.run(change);
+        native_checkbox(id, on)
+            .title(title)
+            .control_size(SMALL)
+            .on_change(move |state: &CheckState, _, cx| run(*state == CheckState::On, cx))
+    }
+
     fn check(
         &mut self,
         id: &'static str,
-        (x, y): (f32, f32),
-        title: &str,
+        y: f32,
+        title: impl Into<String>,
         on: bool,
         change: Change<bool>,
     ) {
-        let run = self.run(change);
-        self.put(at(
-            x,
-            y,
-            native_checkbox(id, on)
-                .title(title)
-                .control_size(SMALL)
-                .on_change(move |state: &CheckState, _, cx| run(*state == CheckState::On, cx)),
-        ));
+        let checkbox = self.checkbox(id, title, on, change);
+        self.put(at(20., y, checkbox));
     }
 
     fn radio<T: Copy + 'static>(
         &mut self,
-        id: impl Into<gpui::ElementId>,
+        id: impl Into<ElementId>,
         (x, y): (f32, f32),
         title: &str,
         (value, chosen): (T, bool),
@@ -242,12 +245,16 @@ impl Build<'_> {
         );
     }
 
-    fn text_size(&mut self, (x, y): (f32, f32), size: f32, change: Change<f32>) {
-        self.put(label(
-            "ng.finder.options.text.label",
-            (18., y + 3., 54.),
-            "Text size:",
-        ));
+    fn slider(&mut self, slider: NativeSlider, y: f32, change: Change<f64>) {
+        let run = self.run(change);
+        let slider = slider
+            .control_size(SMALL)
+            .on_change(move |value: &f64, _, cx| run(*value, cx));
+        self.put(at(44., y, div().w(px(132.)).child(slider)));
+    }
+
+    fn text_size(&mut self, y: f32, size: f32, change: Change<f32>) {
+        self.label("ng.finder.options.text.label", (y + 3., 54.), "Text size:");
         let chosen = TEXT_SIZES.iter().position(|at| *at == size.round());
         let run = self.run(change);
         let popup = native_popup("ng.finder.options.text", chosen.unwrap_or(2))
@@ -261,15 +268,11 @@ impl Build<'_> {
                     run(size, cx);
                 }
             });
-        self.put(at(x, y, small_popup(popup, 64.)));
+        self.put(at(77.5, y, small_popup(popup, 64.)));
     }
 
     fn group(&mut self) {
-        self.put(label(
-            "ng.finder.options.group.label",
-            (18., 92., 57.),
-            "Group By:",
-        ));
+        self.label("ng.finder.options.group.label", (92., 57.), "Group By:");
         let here = self.state.here();
         let keys: Vec<Column> = (GROUP_KEYS.into_iter())
             .filter(|key| key.offered_at(here))
@@ -297,11 +300,7 @@ impl Build<'_> {
     }
 
     fn sort(&mut self, y: f32) {
-        self.put(label(
-            "ng.finder.options.sort.label",
-            (18., y + 3., 46.),
-            "Sort By:",
-        ));
+        self.label("ng.finder.options.sort.label", (y + 3., 46.), "Sort By:");
         let popup = match self
             .state
             .arrangement()
@@ -348,43 +347,35 @@ impl Build<'_> {
     }
 
     fn previews(&mut self, y: f32) {
-        let on = self.state.icon_previews();
         self.check(
             "ng.finder.options.previews",
-            (20., y),
+            y,
             "Show icon preview",
-            on,
+            self.state.icon_previews(),
             |this, on, cx| this.set_icon_previews(on, cx),
         );
     }
 
     fn preview_column(&mut self, y: f32) {
-        let on = self.state.preview;
         self.check(
             "ng.finder.options.preview",
-            (20., y),
+            y,
             "Show preview column",
-            on,
+            self.state.preview,
             |this, on, _| this.show_preview(on),
         );
     }
 
     fn list(&mut self) {
         let look = self.state.list_look();
-        self.put(label(
-            "ng.finder.options.icon.label",
-            (18., 172., 54.),
-            "Icon size:",
-        ));
-        for (side, (x, y), radio) in [(16., (94., 170.), 95.), (32., (131., 154.), 140.)] {
+        self.label("ng.finder.options.icon.label", (172., 54.), "Icon size:");
+        let change: Change<f32> =
+            |this, icon, cx| this.change_list_look(|look| look.icon = icon, cx);
+        for (side, id, (x, y), radio) in [
+            (16., "ng.finder.options.icon.small", (94., 170.), 95.),
+            (32., "ng.finder.options.icon.large", (131., 154.), 140.),
+        ] {
             let small = side < 24.;
-            let id = if small {
-                "ng.finder.options.icon.small"
-            } else {
-                "ng.finder.options.icon.large"
-            };
-            let change: Change<f32> =
-                |this, icon, cx| this.change_list_look(|look| look.icon = icon, cx);
             self.pick(id, (x, y), document(id, side), (side, change));
             self.radio(
                 ("ng.finder.options.icon.size", usize::from(small)),
@@ -394,30 +385,20 @@ impl Build<'_> {
                 change,
             );
         }
-        self.text_size((77.5, 218.), look.text, |this, text, cx| {
+        self.text_size(218., look.text, |this, text, cx| {
             this.change_list_look(|look| look.text = text, cx)
         });
-        self.put(label(
-            "ng.finder.options.columns",
-            (18., 246., 85.),
-            "Show Columns:",
-        ));
-        let shown: Vec<Column> = self
-            .state
-            .list_columns
-            .iter()
-            .map(|spec| spec.column)
-            .collect();
+        self.label("ng.finder.options.columns", (246., 85.), "Show Columns:");
         let here = self.state.here();
-        for (at_row, &(title, column)) in SHOW_COLUMNS.iter().enumerate() {
+        for (row, &(title, column)) in SHOW_COLUMNS.iter().enumerate() {
             let column = column.filter(|column| column.offered_at(here));
             let demo = self.demo.clone();
             self.put(at(
                 20.,
-                264. + 20. * at_row as f32,
+                264. + 20. * row as f32,
                 native_checkbox(
-                    ("ng.finder.options.column", at_row),
-                    column.is_some_and(|column| shown.contains(&column)),
+                    ("ng.finder.options.column", row),
+                    column.is_some_and(|column| shows(self.state, column)),
                 )
                 .title(title)
                 .control_size(SMALL)
@@ -427,8 +408,7 @@ impl Build<'_> {
                         return;
                     };
                     demo.update(cx, |this, cx| {
-                        let shown = this.list_columns.iter().any(|spec| spec.column == column);
-                        if shown != (*state == CheckState::On) {
+                        if shows(this, column) != (*state == CheckState::On) {
                             this.toggle_column(column, cx);
                             cx.notify();
                         }
@@ -438,14 +418,14 @@ impl Build<'_> {
         }
         self.check(
             "ng.finder.options.relative",
-            (20., 515.),
+            515.,
             "Use relative dates",
             look.relative,
             |this, on, cx| this.change_list_look(|look| look.relative = on, cx),
         );
         self.check(
             "ng.finder.options.sizes",
-            (20., 535.),
+            535.,
             "Calculate all sizes",
             look.sizes,
             |this, on, cx| this.change_list_look(|look| look.sizes = on, cx),
@@ -455,12 +435,12 @@ impl Build<'_> {
 
     fn column(&mut self) {
         let look = self.state.column_look();
-        self.text_size((77.5, 154.), look.text, |this, text, cx| {
+        self.text_size(154., look.text, |this, text, cx| {
             this.change_column_look(|look| look.text = text, cx)
         });
         self.check(
             "ng.finder.options.icons",
-            (20., 182.),
+            182.,
             "Show icons",
             look.icons,
             |this, on, cx| this.change_column_look(|look| look.icons = on, cx),
@@ -469,7 +449,7 @@ impl Build<'_> {
         self.preview_column(222.);
         self.check(
             "ng.finder.options.fit",
-            (20., 242.),
+            242.,
             "Resize columns to fit filenames",
             look.fit,
             |this, on, cx| this.change_column_look(|look| look.fit = on, cx),
@@ -479,21 +459,16 @@ impl Build<'_> {
     fn gallery(&mut self) {
         name_thumbnails();
         let look = self.state.gallery_look();
-        self.put(label(
+        self.label(
             "ng.finder.options.thumb.label",
-            (18., 126., 87.),
+            (126., 87.),
             "Thumbnail size:",
-        ));
+        );
         let change: Change<f32> =
             |this, thumb, cx| this.change_gallery_look(|look| look.thumb = thumb, cx);
         for (index, (side, name, _, (x, y), radio)) in THUMBS.into_iter().enumerate() {
-            let id = ("ng.finder.options.thumb", index);
-            self.pick(
-                name,
-                (x, y),
-                Some(native_image(id, name).into_any_element()),
-                (side, change),
-            );
+            let image = native_image(("ng.finder.options.thumb", index), name);
+            self.pick(name, (x, y), Some(image.into_any_element()), (side, change));
             self.radio(
                 ("ng.finder.options.thumb.size", index),
                 (radio, 208.),
@@ -506,7 +481,7 @@ impl Build<'_> {
         self.previews(259.);
         self.check(
             "ng.finder.options.filename",
-            (20., 279.),
+            279.,
             "Show filename",
             look.filename,
             |this, on, cx| this.change_gallery_look(|look| look.filename = on, cx),
@@ -515,51 +490,27 @@ impl Build<'_> {
 
     fn icon(&mut self) {
         let options = self.state.icon_options();
-        let placed = |doc: Option<AnyElement>, (x, y)| doc.map(|doc| at(x, y, doc));
-        self.put(label(
-            "ng.finder.options.icon.label",
-            (18., 154., 54.),
-            "Icon size:",
-        ));
-        self.put(at(
-            76.,
-            154.,
-            div().w(px(42.)).child(
-                native_label(
-                    "ng.finder.options.icon.points",
-                    &format!("{0} \u{d7} {0}", options.size),
-                )
-                .font_size(tokens::system_font_size_for(SMALL))
-                .color(SystemColor::SecondaryLabel),
-            ),
-        ));
-        self.put(placed(
-            document("ng.finder.options.icon.small", 16.),
-            (20., 172.),
-        ));
-        let run = self.run(|this, step: f64, cx| {
+        self.label("ng.finder.options.icon.label", (154., 54.), "Icon size:");
+        let points = native_label(
+            "ng.finder.options.icon.points",
+            &format!("{0} \u{d7} {0}", options.size),
+        )
+        .font_size(tokens::system_font_size_for(SMALL))
+        .color(SystemColor::SecondaryLabel);
+        self.put(at(76., 154., div().w(px(42.)).child(points)));
+        self.put(document("ng.finder.options.icon.small", 16.).map(|doc| at(20., 172., doc)));
+        let size = native_slider("ng.finder.options.size", size_slider(options.size))
+            .range(0., SIZE_STEPS)
+            .ticks(9);
+        self.slider(size, 171., |this, step, cx| {
             this.change_icon_options(|options| options.icon_size = Some(slider_size(step)), cx)
         });
-        self.put(at(
-            44.,
-            171.,
-            div().w(px(132.)).child(
-                native_slider("ng.finder.options.size", size_slider(options.size))
-                    .range(0., SIZE_STEPS)
-                    .ticks(9)
-                    .control_size(SMALL)
-                    .on_change(move |step: &f64, _, cx| run(*step, cx)),
-            ),
-        ));
-        self.put(placed(
-            document("ng.finder.options.icon.large", 32.),
-            (184., 164.),
-        ));
-        self.put(label(
+        self.put(document("ng.finder.options.icon.large", 32.).map(|doc| at(184., 164., doc)));
+        self.label(
             "ng.finder.options.spacing.label",
-            (18., 199., 74.),
+            (199., 74.),
             "Grid spacing:",
-        ));
+        );
         self.put(at(
             20.,
             217.,
@@ -567,26 +518,18 @@ impl Build<'_> {
                 "ng.finder.options.spacing.small",
                 "square.grid.3x3",
                 13.,
-                gpui::FontWeight::NORMAL,
+                FontWeight::NORMAL,
             ),
         ));
-        let run = self.run(|this, spacing: f64, cx| {
+        let spacing = native_slider("ng.finder.options.spacing", f64::from(options.spacing))
+            .range(1., 100.)
+            .ticks(8);
+        self.slider(spacing, 216., |this, spacing, cx| {
             this.change_icon_options(
                 |options| options.grid_spacing = Some(spacing.round() as f32),
                 cx,
             )
         });
-        self.put(at(
-            44.,
-            216.,
-            div().w(px(132.)).child(
-                native_slider("ng.finder.options.spacing", f64::from(options.spacing))
-                    .range(1., 100.)
-                    .ticks(8)
-                    .control_size(SMALL)
-                    .on_change(move |spacing: &f64, _, cx| run(*spacing, cx)),
-            ),
-        ));
         self.put(at(
             185.,
             210.,
@@ -594,37 +537,32 @@ impl Build<'_> {
                 "ng.finder.options.spacing.large",
                 "square.grid.2x2",
                 26.,
-                gpui::FontWeight::NORMAL,
+                FontWeight::NORMAL,
             ),
         ));
-        self.text_size((77.5, 258.), options.text, |this, text, cx| {
+        self.text_size(258., options.text, |this, text, cx| {
             this.change_icon_options(|options| options.text_size = Some(text), cx)
         });
-        self.put(label(
+        self.label(
             "ng.finder.options.label.label",
-            (18., 286., 81.),
+            (286., 81.),
             "Label position:",
-        ));
+        );
         let placed: Change<bool> = |this, bottom, cx| {
             this.change_icon_options(|options| options.label_on_bottom = Some(bottom), cx)
         };
-        self.radio(
-            ("ng.finder.options.label", 1usize),
-            (20., 307.),
-            "Bottom",
-            (true, options.bottom),
-            placed,
-        );
-        self.radio(
-            ("ng.finder.options.label", 0usize),
-            (84.5, 307.),
-            "Right",
-            (false, !options.bottom),
-            placed,
-        );
+        for (bottom, x, title) in [(true, 20., "Bottom"), (false, 84.5, "Right")] {
+            self.radio(
+                ("ng.finder.options.label", usize::from(bottom)),
+                (x, 307.),
+                title,
+                (bottom, options.bottom == bottom),
+                placed,
+            );
+        }
         self.check(
             "ng.finder.options.info",
-            (20., 338.),
+            338.,
             "Show item info",
             options.info,
             |this, on, cx| {
@@ -632,25 +570,26 @@ impl Build<'_> {
             },
         );
         self.previews(358.);
-        self.background(&self.state.icon_background());
+        self.background();
     }
 
-    fn background(&mut self, background: &Background) {
-        self.put(label(
+    fn background(&mut self) {
+        self.label(
             "ng.finder.options.background.label",
-            (18., 409., 70.),
+            (409., 70.),
             "Background:",
-        ));
-        let chosen: Change<u8> = |this, kind, cx| {
+        );
+        let chosen: Change<usize> = |this, kind, cx| {
             let background = match (kind, this.icon_background()) {
                 (0, _) => Background::Default,
-                (1, Background::Color(color)) => Background::Color(color),
+                (1, kept @ Background::Color(_)) => kept,
                 (1, _) => Background::Color([1., 1., 1.]),
-                (_, Background::Picture(path)) => Background::Picture(path),
+                (_, kept @ Background::Picture(_)) => kept,
                 _ => Background::Picture(String::new()),
             };
-            this.change_icon_options(|options| options.background = Some(background), cx)
+            set_background(this, background, cx)
         };
+        let background = self.state.icon_background();
         let kind = match background {
             Background::Default => 0,
             Background::Color(_) => 1,
@@ -661,41 +600,31 @@ impl Build<'_> {
                 ("ng.finder.options.background", index),
                 (20., 426. + 18. * index as f32),
                 title,
-                (index as u8, kind == index),
+                (index, kind == index),
                 chosen,
             );
         }
         match background {
-            Background::Color(color) => {
-                let demo = self.demo.clone();
-                self.put(at(
-                    93.,
-                    440.,
-                    native_color_well("ng.finder.options.color", color_of(*color))
-                        .supports_alpha(false)
-                        .on_change(move |color: &Hsla, _, cx| {
-                            let rgb = color.to_rgb();
-                            demo.update(cx, |this, cx| {
-                                this.change_icon_options(
-                                    |options| {
-                                        options.background =
-                                            Some(Background::Color([rgb.r, rgb.g, rgb.b]))
-                                    },
-                                    cx,
-                                )
-                            });
-                        }),
-                ));
+            Background::Color([r, g, b]) => {
+                let run = self.run(set_background);
+                let color = Rgba { r, g, b, a: 1. };
+                let well = native_color_well("ng.finder.options.color", color.into())
+                    .supports_alpha(false)
+                    .on_change(move |color: &Hsla, _, cx| {
+                        let rgb = color.to_rgb();
+                        run(Background::Color([rgb.r, rgb.g, rgb.b]), cx)
+                    });
+                self.put(at(93., 440., well));
             }
-            Background::Picture(path) => self.picture_well(path),
+            Background::Picture(path) => self.picture_well(&path),
             Background::Default => {}
         }
     }
 
     fn picture_well(&mut self, path: &str) {
         let demo = self.demo.clone();
-        let dropped = self.demo.clone();
-        let named = PathBuf::from(path)
+        let dropped = self.run(set_background);
+        let named = Path::new(path)
             .file_name()
             .map(|name| SharedString::from(name.to_string_lossy().into_owned()));
         self.put(
@@ -718,16 +647,10 @@ impl Build<'_> {
                 .child(named.unwrap_or_else(|| "Drag image here".into()))
                 .on_click(move |_, _, cx| demo.update(cx, |_, cx| choose_picture(cx)))
                 .on_drop(move |paths: &ExternalPaths, _, cx| {
-                    let Some(path) = paths.paths().first() else {
-                        return;
-                    };
-                    let path = path.to_string_lossy().into_owned();
-                    dropped.update(cx, |this, cx| {
-                        this.change_icon_options(
-                            |options| options.background = Some(Background::Picture(path)),
-                            cx,
-                        )
-                    });
+                    if let Some(path) = paths.paths().first() {
+                        let path = path.to_string_lossy().into_owned();
+                        dropped(Background::Picture(path), cx);
+                    }
                 })
                 .into_any_element(),
         );
@@ -736,29 +659,20 @@ impl Build<'_> {
 
 fn choose_picture(cx: &mut Context<FinderDemo>) {
     // From a task, outside GPUI's borrow of the app, which the modal loop would re-enter.
-    cx.spawn(async move |this, cx: &mut AsyncApp| {
+    cx.spawn(async move |this, cx| {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
         let panel = NSOpenPanel::openPanel(mtm);
-        panel.setCanChooseFiles(true);
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(false);
         if panel.runModal() != NSModalResponseOK {
             return;
         }
         let Some(path) = panel.URL().and_then(|url| url.path()) else {
             return;
         };
-        let path = path.to_string();
-        this.update(cx, |this, cx| {
-            this.change_icon_options(
-                |options| options.background = Some(Background::Picture(path)),
-                cx,
-            );
-            cx.notify();
-        })
-        .ok();
+        let picture = Background::Picture(path.to_string());
+        this.update(cx, |this, cx| set_background(this, picture, cx))
+            .ok();
     })
     .detach();
 }
@@ -784,24 +698,18 @@ impl Render for ViewOptions {
         };
         build.check(
             "ng.finder.options.always",
-            (20., 36.),
-            &format!("Always open in {name} view"),
+            36.,
+            format!("Always open in {name} view"),
             opens.is_some(),
             |this, on, _| this.always_open(on),
         );
-        let run = build.run(|this, on, _| this.always_browse(on));
-        build.put(at(
-            30.,
-            58.,
-            native_checkbox(
-                "ng.finder.options.browse",
-                opens.is_some_and(|(_, browse)| browse),
-            )
-            .title(format!("Browse in {name} view"))
-            .control_size(SMALL)
-            .enabled(opens.is_some())
-            .on_change(move |state: &CheckState, _, cx| run(*state == CheckState::On, cx)),
-        ));
+        let browse = build.checkbox(
+            "ng.finder.options.browse",
+            format!("Browse in {name} view"),
+            opens.is_some_and(|(_, browse)| browse),
+            |this, on, _| this.always_browse(on),
+        );
+        build.put(at(30., 58., browse.enabled(opens.is_some())));
         match view {
             GALLERY_VIEW => build.sort(89.),
             _ => {
@@ -827,14 +735,13 @@ impl Render for ViewOptions {
                     .on_click(move |_, _, cx| run((), cx)),
             ));
         }
-        let children = build.out;
 
         native_root(
             div()
                 .size_full()
                 .relative()
                 .bg(system_color(SystemColor::WindowBackground))
-                .children(children),
+                .children(build.out),
         )
         .into_any_element()
     }
@@ -866,7 +773,7 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
             kind: WindowKind::Floating,
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(320.), px(220.)),
-                size: size(px(PANEL.0), px(PANEL.1)),
+                size: size(px(236.), px(646.)),
             })),
             is_resizable: false,
             is_minimizable: false,
