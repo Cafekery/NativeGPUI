@@ -210,7 +210,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   The demo matches at equal list widths; it keeps its own widths, not Finder's.
 - [ ] In the same window the demo's list runs 4 pt wider than Finder's; the widths above were read
   with the demo's window 4 pt narrower.
-- [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
+- [x] On a folder the user can't list, Finder's context menu has Open in New Tab and ⌥ Open in New
+  Window off (read with a fixture folder at mode 000); so does the demo's.
+- [ ] On that folder Finder's context menu also leaves out Compress and Share… and reads Quick Look
+  “<name>”; the demo's keeps Compress and Share… and reads Quick Look.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
 - [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row
