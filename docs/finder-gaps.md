@@ -121,10 +121,12 @@ rule: the title keeps a quarter of the window width; the search field gives way 
 then its 40pt button), then the view switcher (164 → 50pt popup), then the title (to 160), the last
 space and, last, items into the overflow menu. Every threshold moves 4/3pt per point of sidebar.
 
-- [x] The demo's sidebar opens at 216 and stops at 158, as a new Finder window's, and its preview
-  pane takes Finder's saved width (`PreviewPaneWidth`, 241 here, and `PreviewPaneGalleryWidth` in
-  gallery view), 288 when there is none, down to 240. At those defaults Finder starts shrinking
-  the field at 1365, collapses it at 1145 and collapses the view switcher at 979.
+- [x] The demo's sidebar opens at Finder's saved width (`SidebarWidth2`, 221 here, which a new
+  Finder window opened at; 216 when there is none) and stops at 158, as
+  a new Finder window's, and its preview pane takes Finder's saved width (`PreviewPaneWidth`, 241
+  here, and `PreviewPaneGalleryWidth` in gallery view), 288 when there is none, down to 240. At
+  those defaults Finder starts shrinking the field at 1365, collapses it at 1145 and collapses the
+  view switcher at 979.
 - [ ] After one resize that re-expands a collapsed search field (773 → 1400 at sidebar 216), Finder
   keeps the item 4pt wider (333, title 372) until the next resize; the demo settles at 329 and 376.
 - [ ] Growing 1pt at a time from Finder's minimum width, the demo read a 44pt search button and a
@@ -208,8 +210,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   otherwise; Comments 306 of 300; Date Added 187 of 181), and a list that overflows as it opens
   shows Name at 206 at least (Finder's kept Name plus 6 when that is wider: 250 opened at 256).
   The demo matches at equal list widths; it keeps its own widths, not Finder's.
-- [ ] In the same window the demo's list runs 4 pt wider than Finder's; the widths above were read
-  with the demo's window 4 pt narrower.
+- [x] In the same window the demo's list ran 4 pt wider than Finder's: Finder's sidebar had been
+  dragged to 221 (`SidebarWidth2`) where the demo's always opened at 216, less the pane's 1 pt
+  (241 against 240). Read over AX at 240,120 1100x680, both now put the sidebar's divider at 221
+  and the list at 221..860, 639 wide, its rows 639 wide from 221.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
