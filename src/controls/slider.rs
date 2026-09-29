@@ -2,13 +2,12 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{App, ElementId, Style, Window};
-use objc2_app_kit::{NSControlSize, NSSlider};
+use objc2_app_kit::NSSlider;
 
-use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
     ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
-use crate::controls::{fitted, number_handler, sync_enabled};
+use crate::controls::{measured, number_handler, sync_control_size, sync_enabled};
 
 pub fn native_slider(id: impl Into<ElementId>, value: f64) -> NativeSlider {
     NativeSlider {
@@ -86,7 +85,7 @@ impl NativeSlider {
             (true, false) => "NSSlider/vertical",
             (true, true) => "NSSlider/vertical+ticks",
         };
-        fitted(fitting_size_keyed(class, self.control_size as u64, |mtm| {
+        measured(class, self.control_size, |mtm| {
             let slider = NSSlider::new(mtm);
             slider.setControlSize(self.control_size.into());
             if self.vertical {
@@ -96,7 +95,7 @@ impl NativeSlider {
                 slider.setNumberOfTickMarks(self.ticks as isize);
             }
             slider.fittingSize()
-        }))
+        })
     }
 
     fn paint(&mut self, slot: Slot, window: &mut Window, _: &mut App) {
@@ -115,10 +114,7 @@ impl NativeSlider {
         if slider.isVertical() != self.vertical {
             slider.setVertical(self.vertical);
         }
-        let control_size = NSControlSize::from(self.control_size);
-        if slider.controlSize() != control_size {
-            slider.setControlSize(control_size);
-        }
+        sync_control_size(&slider, self.control_size);
         // Range before value: the value is clamped into the range as it is written.
         if slider.minValue() != self.min {
             slider.setMinValue(self.min);

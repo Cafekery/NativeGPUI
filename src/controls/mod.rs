@@ -16,11 +16,11 @@ use std::rc::Rc;
 
 use gpui::{App, Length, Pixels, Style, Window, px, relative, size};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSControl, NSImage};
+use objc2_app_kit::{NSControl, NSControlSize, NSFont, NSImage};
 use objc2_foundation::{MainThreadMarker, NSSize, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
-use crate::bridge::host::{NativeHandler, NativeValue, Slot};
+use crate::bridge::host::{ControlSize, NativeHandler, NativeValue, Slot};
 
 pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
@@ -94,6 +94,22 @@ fn snap_origin(slot: &mut Slot, scale: f32) {
 fn sync_enabled(control: &NSControl, enabled: bool) {
     if control.isEnabled() != enabled {
         control.setEnabled(enabled);
+    }
+}
+
+fn sync_control_size(control: &NSControl, size: ControlSize) {
+    let size = NSControlSize::from(size);
+    if control.controlSize() != size {
+        control.setControlSize(size);
+    }
+}
+
+fn sync_font_size(control: &NSControl, size: Option<f64>) {
+    let Some(size) = size else {
+        return;
+    };
+    if control.font().map(|font| font.pointSize()) != Some(size) {
+        control.setFont(Some(&NSFont::systemFontOfSize(size)));
     }
 }
 

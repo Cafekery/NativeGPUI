@@ -9,7 +9,7 @@ use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSComboBox, NSComboBoxDelegate, NSControl, NSControlSize, NSControlTextEditingDelegate,
-    NSFocusRingType, NSFont, NSSearchField, NSSearchFieldDelegate, NSSecureTextField, NSTextField,
+    NSFocusRingType, NSSearchField, NSSearchFieldDelegate, NSSecureTextField, NSTextField,
     NSTextFieldDelegate, NSTextView,
 };
 use objc2_foundation::{
@@ -21,7 +21,7 @@ use crate::bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, Target,
     ValueKind, hosted_element, wire,
 };
-use crate::controls::{fitted, nsstring_is, sync_enabled};
+use crate::controls::{fitted, nsstring_is, sync_control_size, sync_enabled, sync_font_size};
 
 const CHANGE_CHANNEL: u64 = 0;
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -77,9 +77,7 @@ impl Kind {
             Kind::Combo => Retained::into_super(NSComboBox::new(mtm)),
         };
         field.setControlSize(control_size);
-        if let Some(size) = font_size {
-            field.setFont(Some(&NSFont::systemFontOfSize(f64::from(size))));
-        }
+        sync_font_size(&field, font_size.map(f64::from));
         field.fittingSize()
     }
 }
@@ -249,15 +247,8 @@ impl NativeTextField {
             }
         };
 
-        let control_size = NSControlSize::from(self.control_size);
-        if field.controlSize() != control_size {
-            field.setControlSize(control_size);
-        }
-        if let Some(size) = self.font_size.map(f64::from) {
-            if field.font().map(|font| font.pointSize()) != Some(size) {
-                field.setFont(Some(&NSFont::systemFontOfSize(size)));
-            }
-        }
+        sync_control_size(&field, self.control_size);
+        sync_font_size(&field, self.font_size.map(f64::from));
         sync_enabled(&field, self.enabled);
         if self.borderless && field.drawsBackground() {
             field.setBezeled(false);

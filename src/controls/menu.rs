@@ -16,7 +16,7 @@ use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole, NSBezierPath, NSBox,
-    NSBoxType, NSButton, NSColor, NSColorSystemEffect, NSControlSize, NSControlStateValueOff,
+    NSBoxType, NSButton, NSColor, NSColorSystemEffect, NSControlStateValueOff,
     NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName, NSImage,
     NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSStringDrawing, NSTitlePosition, NSView,
 };
@@ -31,7 +31,10 @@ use crate::bridge::host::{
     wire,
 };
 use crate::controls::button::ButtonBezel;
-use crate::controls::{hash_of, measured, nsstring_is, symbol_image, sync_enabled, with_width};
+use crate::controls::{
+    hash_of, measured, nsstring_is, symbol_image, sync_control_size, sync_enabled, sync_font_size,
+    with_width,
+};
 use crate::system::color::to_nscolor;
 use crate::system::wording::worded;
 
@@ -859,13 +862,12 @@ impl NativePopup {
     }
 
     fn layout(&self) -> Style {
-        let font_size = self.font_size.map(|size| f32::from(size).to_bits());
         let inputs = (
             &self.entries,
             self.pull_down,
             self.bezel,
             self.control_size,
-            font_size,
+            self.font_size,
         );
         let fitted = measured("NSPopUpButton", inputs, |mtm| {
             let probe = NSPopUpButton::initWithFrame_pullsDown(
@@ -875,10 +877,8 @@ impl NativePopup {
             );
             probe.setAutoenablesItems(false);
             probe.setBezelStyle(self.bezel.to_native());
-            probe.setControlSize(NSControlSize::from(self.control_size));
-            if let Some(size) = self.font_size {
-                probe.setFont(Some(&NSFont::systemFontOfSize(size.to_f64())));
-            }
+            probe.setControlSize(self.control_size.into());
+            sync_font_size(&probe, self.font_size.map(Pixels::to_f64));
             if let Some(menu) = probe.menu() {
                 sync_menu(mtm, &menu, &self.entries, None);
             }
@@ -900,15 +900,8 @@ impl NativePopup {
             popup
         });
 
-        let control_size = NSControlSize::from(self.control_size);
-        if popup.controlSize() != control_size {
-            popup.setControlSize(control_size);
-        }
-        if let Some(size) = self.font_size.map(|size| size.to_f64()) {
-            if popup.font().map(|font| font.pointSize()) != Some(size) {
-                popup.setFont(Some(&NSFont::systemFontOfSize(size)));
-            }
-        }
+        sync_control_size(&popup, self.control_size);
+        sync_font_size(&popup, self.font_size.map(Pixels::to_f64));
         // `setPullsDown:` reverses the item array, so the diff runs after it.
         if popup.pullsDown() != self.pull_down {
             popup.setPullsDown(self.pull_down);

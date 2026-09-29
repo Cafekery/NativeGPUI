@@ -5,9 +5,9 @@ use gpui::{App, ElementId, Length, Style, Window, px, size};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSCellImagePosition, NSControlSize, NSControlStateValue,
-    NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle,
-    NSSegmentSwitchTracking, NSSegmentedControl,
+    NSBezelStyle, NSButton, NSCellImagePosition, NSControlStateValue, NSControlStateValueMixed,
+    NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle, NSSegmentSwitchTracking,
+    NSSegmentedControl,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -15,7 +15,8 @@ use crate::bridge::host::{
     ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
 use crate::controls::{
-    bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_enabled, with_width,
+    bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_control_size,
+    sync_enabled, with_width,
 };
 use crate::system::tokens::SystemColor;
 
@@ -39,11 +40,15 @@ fn place_titled(slot: &Slot, make: Titled, title: &str, size: ControlSize) -> Re
         wire(&button, target, slot.key);
         button
     });
-    let size = NSControlSize::from(size);
-    if button.controlSize() != size {
-        button.setControlSize(size);
-    }
+    sync_control_size(&button, size);
     button
+}
+
+/// Auto Layout's width, which `fittingSize` rounds up to a whole point.
+fn intrinsic_layout(class: &'static str, make: Titled, title: &str, size: ControlSize) -> Style {
+    measured(class, (title, size), |mtm| {
+        titled(mtm, make, title, size).intrinsicContentSize()
+    })
 }
 
 fn sync_title(button: &NSButton, wanted: &str) {
@@ -163,12 +168,12 @@ impl NativeCheckbox {
     }
 
     fn layout(&self) -> Style {
-        let (title, size) = (&self.title, self.control_size);
-        // Auto Layout's width, which `fittingSize` rounds up to a whole point.
-        measured("NSButton.checkbox", (title, size), |mtm| {
-            let make = NSButton::checkboxWithTitle_target_action;
-            titled(mtm, make, title, size).intrinsicContentSize()
-        })
+        intrinsic_layout(
+            "NSButton.checkbox",
+            NSButton::checkboxWithTitle_target_action,
+            &self.title,
+            self.control_size,
+        )
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -237,11 +242,12 @@ impl NativeRadio {
     }
 
     fn layout(&self) -> Style {
-        let (title, size) = (&self.title, self.control_size);
-        measured("NSButton.radio", (title, size), |mtm| {
-            let make = NSButton::radioButtonWithTitle_target_action;
-            titled(mtm, make, title, size).intrinsicContentSize()
-        })
+        intrinsic_layout(
+            "NSButton.radio",
+            NSButton::radioButtonWithTitle_target_action,
+            &self.title,
+            self.control_size,
+        )
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -582,7 +588,7 @@ impl NativeSegmented {
             let control = NSSegmentedControl::new(mtm);
             fill_segments(&control, &self.segments, &self.symbols);
             control.setSegmentStyle(self.style.to_native());
-            control.setControlSize(NSControlSize::from(self.control_size));
+            control.setControlSize(self.control_size.into());
             control.fittingSize()
         })
     }
@@ -599,10 +605,7 @@ impl NativeSegmented {
         if control.segmentStyle() != style {
             control.setSegmentStyle(style);
         }
-        let control_size = NSControlSize::from(self.control_size);
-        if control.controlSize() != control_size {
-            control.setControlSize(control_size);
-        }
+        sync_control_size(&control, self.control_size);
         let bezel = self.selected_bezel.map(SystemColor::ns_color);
         if control.selectedSegmentBezelColor() != bezel {
             control.setSelectedSegmentBezelColor(bezel.as_deref());
