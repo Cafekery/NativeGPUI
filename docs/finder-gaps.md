@@ -6,11 +6,14 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 ## Wiring: the demo has the action, the menu bar does not offer it
 
-- [ ] File ▸ Open With, and Always Open With under ⌥
+- [x] File ▸ Open With, and Always Open With under ⌥: LaunchServices' apps for the whole selection,
+  the default first above a rule, then App Store… and Other…
 - [x] File ▸ Compress
 - [x] File ▸ Share…
-- [ ] File ▸ Add to Dock (⇧⌃⌘T)
-- [ ] File ▸ Open in New Window and Close (⌥⌘O on a window that closes behind it)
+- [x] File ▸ Add to Dock (⇧⌃⌘T), the ⇧ alternate of Add to Sidebar
+- [x] File ▸ Open and Close Window (⌥⌘O), Open's ⌥ alternate; it reads Open in New Window and Close
+  while only folders are chosen
+- [x] File ▸ Eject One (⌃⌘E) and Eject All (⌥⌘E), Eject's alternates
 - [x] Go ▸ Library, which Finder shows only while ⌥ is held
 - [x] Go ▸ Select Startup Disk
 - [x] Go ▸ Open Enclosing Folder in New Window (⌃⌘↑)
@@ -19,40 +22,94 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 
 - [x] Edit ▸ Search by Name… (⇧⌃⌘F): a search scoped to the name, which the criteria row can carry
 - [x] File ▸ Get Summary Info (⌃⌘I): one window for a whole selection
-- [ ] Edit ▸ Copy as Link (⌥⌃⌘C): Finder keeps it disabled on a local file and on an iCloud Drive
-  file alike, so what it copies is unconfirmed
-- [ ] Edit ▸ Paste Exactly (⇧⌥⌘V): the demo's copies already keep dates, permissions, extended
-  attributes and ACLs; what Finder adds is the original's owner (unconfirmed), which takes admin
-  rights
+- [ ] Edit ▸ Copy as Link (⌃⌥⌘C), Copy's ⌥ alternate: the row is there and always off. Finder kept
+  it off on a local file and on an iCloud Drive file alike, and its binary ties
+  `validateCopyAsLink:` to CloudSharingUI's CopyLink, so what it copies, and when, is unconfirmed
+- [x] Edit ▸ Paste Exactly (⇧⌥⌘V), and Paste Item Exactly in the context menus: a copy that then
+  gives each item its original's owner and group, or the group alone where the process may not
+  give the item away. A plain copy takes the destination folder's group
 - [x] Edit ▸ Show Clipboard
 - [x] Window ▸ Cycle Through Windows (⌘`)
-- [x] Window ▸ Show Progress Window: the demo has a jobs popover, Finder has a window
+- [x] Window ▸ Show Progress Window: a Progress window of the running operations; the row reads
+  Hide Progress Window while it is open, and is off while nothing runs and it is closed
 - [x] View ▸ Show Preview Options: Finder's floating 240 pt panel "Preview Options - <kind>" (Image, Text, PDF document, Movie, Folder read off Finder 27): Tags, Dates, the kind's groups and Show Quick Actions; the demo draws the same rows and keeps the choices per kind
-- [ ] View ▸ Customize Toolbar…, the one menu item the demo greys out
+- [x] View ▸ Customize Toolbar…: AppKit's palette, over a toolbar that starts from Finder's own
+  arrangement (`NSToolbar Configuration Browser`)
 - [x] Tag swatches read as seven unlabelled groups to VoiceOver; Finder's are radio buttons named “Add “Red” label” and “Remove “Red” label”
 
 ## Features
 
 - [x] Go ▸ Recents (⇧⌘F)
 - [x] Go ▸ Connect to Server… (⌘K)
-- [x] Go ▸ AirDrop (⇧⌘R), and the toolbar's AirDrop button, send the selection through AppKit's AirDrop sheet; Finder's own AirDrop window, where nearby people are listed before anything is chosen, has no public API
-- [ ] Go ▸ Shared (⇧⌘S): Finder's view of iCloud items shared with you has no public API to show it
+- [x] Go ▸ AirDrop (⇧⌘R) opens an AirDrop location in the window, titled AirDrop as Finder's;
+  items dropped on it, and the toolbar's AirDrop button, send through AppKit's AirDrop sheet
+- [ ] The AirDrop location lists nothing. Finder's shows the `airdrop` symbol, “AirDrop lets you
+  share instantly with people nearby.”, “Allow me to be discovered by:” with a popover of No One,
+  Contacts Only and Everyone (`DiscoverableMode` in `com.apple.sharingd`), “Don’t see who you’re
+  looking for?”, and the people nearby, which have no public API; setting the mode takes a
+  private call
+- [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
+  “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
+  Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each
+  with its model's icon, and opening one connects over SMB, else AFP, else screen sharing
+- [ ] Enclosing Folder (⌘↑) and ⌃⌘↑ from a volume's root, and Select Startup Disk, open /Volumes
+  where Finder shows Computer; column view rooted at Computer can lose that column two levels
+  down; the path bar, the toolbar's path menu and the first crumb don't know the locations
+- [x] Go ▸ Shared (⇧⌘S), after iCloud Drive as in Finder's menu: the items Spotlight marks as shared
+  (`kMDItemIsShared == 1`)
+- [ ] Shared lists its items without Finder's Shared By column and grouping
 - [x] File ▸ New Smart Folder, and saved searches with it: Save in a search's scope bar writes a .savedSearch in Finder's own format to ~/Library/Saved Searches and adds it to the sidebar, and opening one, the demo's or Finder's, runs its query through Spotlight. The Save sheet asks only for the name, without Finder's tags, Where and Add To Sidebar controls
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
-- [ ] File ▸ Create/Copy iCloud Link, Manage Shared File…
-- [ ] Quick Actions in the context menu: Rotate, Markup, Create PDF, and custom ones
+- [ ] File ▸ Create/Copy iCloud Link and Manage Shared File…/Folder…: no API was found whose effect
+  could be checked
+- [x] Quick Actions, in the item menu and the preview pane, as Finder offers them: Rotate Left (⌥
+  Rotate Right) for pictures and movies, Markup for one picture or PDF, Trim for one movie, Create
+  PDF for one picture or several pictures and PDFs, Convert Image and Remove Background for
+  pictures, then Customize…. The pane shows the first two and More…, its first button reading
+  Rotate Right while ⌥ is held. Create PDF, Convert Image and Remove Background start a rename of
+  what they make, as Finder's do; Rotate only selects
+- [x] Trim opens a trimmer, then Finder's question, “Do you want to save the changes made to the
+  document “X”?”, with New Clip, Replace and Cancel in Finder's order. Replace wrote the same file
+  as Finder's (a 2 s clip cut to 1.5 s, 13,140 bytes); New Clip saves a new file through a save
+  sheet with name, Where and Tags. Neither app can undo it
+- [ ] Quick Actions list none of the user's own (Shortcuts, Automator); Markup, which opens Quick
+  Look's Markup mode, is only in the build with the `private-api` feature
+- [ ] AVKit's trimmer is a window titled by the file, 370×310, with Trim (off until a handle moves)
+  and Cancel; Finder's is titled Quick Look, 370×283, with Done and Revert. Convert Image's window
+  reads as a dialog (`AXDialog`) where Finder's is a standard window
+- [x] App menu ▸ Settings… (⌘,), between About and Empty Trash: Finder's General, Tags, Sidebar and
+  Advanced panes in one window 377 wide, 497, 591, 828 and 392 tall, the last pane remembered. Each
+  choice is kept in the demo's own defaults under Finder's key and read before Finder's, so
+  Finder's settings are never written
+- [ ] Settings has no Sync Desktop & Documents folders, Suggest file names or Tint folders based on
+  tags (a system-wide setting no app can override for itself), and only stores Remove items from
+  the Trash after 30 days and the desktop's settings. Its tag list holds only the sidebar's tags
+  where Finder's has every tag, favourites can't be dragged into its strip, and its panes switch
+  by a segmented control where Finder's toolbar has four buttons
+- [x] Quit and Keep Windows (⌥⌘Q): the next launch reopens the windows and tabs that were open;
+  after a plain Quit only one window opens
 - [x] The Services submenu
 
 ## ⌥ in context menus
 
-Finder swaps some context-menu rows while ⌥ is held. These were read off Finder 26's own menus through the accessibility API, which lists each alternate with its modifier mask. The demo's context menus have no alternates at all; the crate's context-menu entries would need an alternate flag first, the way `MenuCommand::option_alternate` works in the menu bar.
+Finder swaps some context-menu rows while ⌥ is held. Read off Finder 27's menus for a file, a
+folder, two items, the folder's background and a sidebar item through the accessibility API,
+which lists each alternate with its modifier mask; the demo's menus carry the same alternates.
 
-- [ ] A file: Open With becomes Always Open With (the same app list, and the choice sticks for that kind of file)
-- [x] The folder's background: Get Info becomes Show Inspector
-- [ ] The folder's background: Paste Item becomes Paste Item Exactly, with ⌥⇧ held
-- [x] A sidebar item: Open in New Tab becomes Open in New Window
-- [ ] A selected file or folder, not yet read off Finder: Copy becomes Copy as Pathname, Quick Look becomes Slideshow, Move to Trash becomes Delete Immediately…, Get Info becomes Show Inspector. Finder on the test Mac refused to open an item's menu over accessibility after the first read, so these rest on memory of Finder, not on this probe
+- [x] Open With becomes Always Open With (the same app list, and the choice sticks for that kind of
+  file)
+- [x] Get Info becomes Show Inspector, in every menu that has it; with several items chosen, Get
+  Summary Info sits under ⌃
+- [x] Quick Look becomes Slideshow “X” (Slideshow 2 Items), Copy becomes Copy “X” as Pathname (Copy
+  2 Items as Pathnames), and Duplicate becomes Duplicate Exactly under ⌥⇧
+- [x] Compress has a ⌥ twin (the same Compress “X” for one item, Compress 2 Items for two) that
+  makes the same plain archive: Finder 27's wrote an unencrypted zip and asked nothing
+- [x] A folder and the folder's background offer Paste Item, which becomes Paste Item Exactly under
+  ⌥⇧; no other menu offers it, and none has a ⌥ Move Item Here
+- [x] A folder or a sidebar item: Open in New Tab becomes Open in New Window
+- [x] Move to Trash has no alternate
+- [ ] Finder's item menu has Show Preview Options after the tags; the demo's has not
 
 ## Toolbar: where the search field shrinks and collapses
 
@@ -64,11 +121,10 @@ rule: the title keeps a quarter of the window width; the search field gives way 
 then its 40pt button), then the view switcher (164 → 50pt popup), then the title (to 160), the last
 space and, last, items into the overflow menu. Every threshold moves 4/3pt per point of sidebar.
 
-- [ ] The demo's sidebar opens at 192pt, a new Finder window's at 216, so at default widths the demo
-  starts shrinking the field at 1333 (Finder 1365), collapses it at 1113 (Finder 1145) and collapses
-  the view switcher at 947 (Finder 979). Finder's sidebar stops at 158; the demo's at 120.
-- [ ] The demo's preview pane is 304–366pt wide, Finder's 241, so the demo's window stops shrinking
-  63–125pt earlier and never reaches Finder's narrowest toolbar states (title at 160, overflow).
+- [x] The demo's sidebar opens at 216 and stops at 158, as a new Finder window's, and its preview
+  pane takes Finder's saved width (`PreviewPaneWidth`, 241 here, and `PreviewPaneGalleryWidth` in
+  gallery view), 288 when there is none, down to 240. At those defaults Finder starts shrinking
+  the field at 1365, collapses it at 1145 and collapses the view switcher at 979.
 - [ ] After one resize that re-expands a collapsed search field (773 → 1400 at sidebar 216), Finder
   keeps the item 4pt wider (333, title 372) until the next resize; the demo settles at 329 and 376.
 - [ ] Growing 1pt at a time from Finder's minimum width, the demo read a 44pt search button and a
@@ -115,6 +171,8 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   and under Snap to Grid sets it in the chosen cell's top left corner (24 pt left, 4 pt up of its
   slot); the demo keeps dropped icons on their slots and cannot learn where another app's drag
   image was grabbed, so it centres the icon on the pointer.
+- [ ] Finder draws icon view's icons on beneath its preview pane's glass; the demo's stop at the
+  pane.
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.
@@ -150,6 +208,8 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   otherwise; Comments 306 of 300; Date Added 187 of 181), and a list that overflows as it opens
   shows Name at 206 at least (Finder's kept Name plus 6 when that is wider: 250 opened at 256).
   The demo matches at equal list widths; it keeps its own widths, not Finder's.
+- [ ] In the same window the demo's list runs 4 pt wider than Finder's; the widths above were read
+  with the demo's window 4 pt narrower.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
@@ -166,8 +226,26 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   duplicate play `system/Volume Mount.aif`; rename, new folder, make alias, their undos, Delete
   Immediately, mount and eject play nothing.
 - [ ] Empty Trash's sound was not measured, as that empties the user's Trash; the demo plays
-  `finder/empty trash.aif`. Finder's undo of Duplicate deletes the copy; the demo moves it to the
-  Trash.
+  `finder/empty trash.aif`.
+- [x] Undo of Duplicate deletes the copy outright, as Finder's does.
+- [x] ⌘I with nothing chosen shows Info for the folder shown, and a selection opens one Info window
+  per item however many there are, as in Finder. Get Summary Info (⌃⌘I) opens an item's own Info
+  window for one item and one “Multiple Item Info” window, headed “N items”, for several.
+- [x] ⌘N and ⌘T open what Settings' “New Finder windows show” names (`NewWindowTarget`,
+  `NewWindowTargetPath`), not the folder shown.
+- [x] Make Alias and New Folder with Selection start renaming what they make, as Finder's do.
+- [x] ⌥↑ and ⌥↓ select the first and last item in list view, as in Finder.
+- [ ] In column view ⌥↓ still moves one row; Finder's ⌥↑ and ⌥↓ were not read in column, icon or
+  gallery view.
+- [x] Go ▸ Utilities (⇧⌘U) opens /Applications/Utilities.
+- [ ] Finder shows /System/Applications' apps inside /Applications and its Utilities; the demo lists
+  each folder as it is on disk.
+- [x] Quick Look (⌘Y or Space) with nothing selected previews the folder shown, and follows the
+  selection once there is one; File reads Quick Look “<folder>” and Slideshow “<folder>”, then
+  Close Quick Look and Slideshow while the panel is up.
+- [ ] Escape out of the ⌥⌘Y slideshow leaves the demo's Quick Look panel up in a window, where
+  Finder's closes; while that panel is key the Window menu's tab rows read on, where Finder's
+  stay off.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.
@@ -188,6 +266,13 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   Mac), and a window switched into or out of gallery view takes that view's width; so does the demo.
 - [x] The rows under Show More are Finder's per-kind Preview Options (for a PNG here only "Content
   created"); the demo's follow the same options.
+- [x] Media values read as Finder's: durations rounded to the second (00:02, 01:15, 01:02:05),
+  sample rates in kHz (44.1 kHz, 48 kHz), channels Mono, Stereo or a count, dimensions and
+  resolution with a hair space either side of × (320 × 240), codecs in the reverse of Spotlight's
+  order (MPEG-4 AAC, H.264), colour space RGB.
+- [ ] Finder's Preview Options panel takes key as it opens and shows its title in its title bar;
+  the demo's never takes key and hides its title. Its tables for audio, applications and every
+  other kind were not read off Finder.
 - [x] Light appearance: Finder's vibrant text darkens the glass by a fixed depth (headings and
   values 178.5, row titles 102, kind 51.5), and the glass lightens from 237 to 242 when the window
   resigns key; the card follows both, within a level key and non-key. The name is a flat 70% black
@@ -207,6 +292,8 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   and the window's resize edge.
 - [ ] The quick actions' Rotate Left symbol sits 0.5 pt left of Finder's (x 897–911 against
   897.5–911.5); its row, Markup and More… match (626–641, 627–641).
+- [ ] The pane's quick action buttons have no tooltips; Finder's first button's help reads Rotate
+  Right while ⌥ is held.
 - [x] Column view's preview column has no glass under it, and Finder draws its text in plain label
   colours there (dark: name and values 221, kind, titles and action labels 154, rules 54 on the
   column's 32; light: 39, 128, 230 on 255); the card uses them in column view.
@@ -241,7 +328,6 @@ chevron (Δ 0.0) match; what is left:
 
 - Burn folders and Burn Disc: the hardware is gone.
 - View ▸ Use Stacks: the desktop's, and the demo has no desktop.
-- Eject One and Eject All: the demo ejects the selection, which is the same act.
 
 ## Sidebar surface
 
@@ -272,19 +358,21 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
   Locations icons are `systemGrayColor` while key (181 181 186 in both) and AppKit's inactive tint
   otherwise (144 in both): a label colour on a vibrant image view draws far darker than as text
   (secondary 94, tertiary 32). The non-key eject reads 72.8 against Finder's 70.5.
-- Favorites and Locations come from Finder's lists through `sharedfilelistd`: macOS refuses an app
-  (not a shell) the list files themselves, which left the demo on its built-in rows. Tags stay the 7
-  standard ones where Finder lists its 14: Finder keeps them in its iCloud key-value store, whose
-  database an app may not open either.
+- Favorites, Locations and Tags come from Finder's lists through `sharedfilelistd`: macOS refuses
+  an app (not a shell) the list files themselves, which left the demo on its built-in rows. Tags
+  are the ones Finder's sidebar lists, in its order, pinned and recent alike; the menus' swatches
+  are Finder's favourite tags (`FavoriteTagNames`), the 7 standard ones when it has none.
 - A mounted server is one row named by its host, as in Finder, with CoreTypes' `SidebarDisplay`;
   Finder 27 draws a flat box with a rule and a dot, not yet compared glyph for glyph. The row opens the
   first share mounted from that host, where Finder shows the host's shares, and its eject unmounts that
   share only.
-- A cloud storage row (a File Provider domain) shows `externaldrive.badge.icloud`; Finder shows the
-  provider's own icon.
-- Finder's Computer and Remote Disc rows are not shown; Network always is.
-- The demo reads Finder's lists and never writes them, so Remove from Sidebar and reordering of a row
-  that comes from them last until the next launch.
+- A cloud storage row (a File Provider domain) shows `externaldrive.badge.icloud` and the folder's
+  name (S3Mount-NoahBucket); Finder shows the provider's own icon and name (Noah Bucket), which no
+  public API gives.
+- Finder's Computer and Remote Disc rows are not shown; Network is, unless Settings turns off
+  Bonjour computers.
+- Remove from Sidebar and reordering of a Favorites or Locations row last across launches in the
+  demo's own list; Finder's lists are read, never written.
 ## Launch
 
 Measured on macOS 27.0 (26A428) against a WebDAV share mounted from this Mac whose server was
@@ -318,45 +406,72 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   The demo reads the same table and fits 20 pt inside the column: 17 kinds matched on the mini;
   Finder's exact slack lies between 100.87 and 102.95 pt of text for a 121 pt column, not swept.
 - [x] Date column: one style for the whole column, as Finder; see the user's Mac below.
-- [ ] Column view with nothing selected: Finder shows the ancestor columns with the current folder
-  selected in its parent's; the demo shows only the current folder's column.
-- [ ] Menu enabling: with nothing selected Finder disables New Folder with Selection, Rename, Compress,
-  Duplicate, Make Alias, Share…, Show Original, Move to Trash, Eject, Print, Cut, Copy, Deselect
-  All, Back and Forward without history, Clean Up in list view and Show Progress Window with no
-  operation running. The demo now disables its own selection rows the same way; Back and Forward,
-  Clean Up and Show Progress Window stay enabled.
-- [ ] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
-  Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item. The demo's titles are fixed.
-- [ ] File menu order, Finder: New Finder Window, New Folder, New Folder with Selection, New Smart
-  Folder, New Tab, Open, Open With, Close Window (⌥ Close All), Get Info, Rename, Compress, Duplicate,
-  Make Alias, Quick Look, Share…, Manage Shared Folder…, Show Original, Add to Sidebar (⌥ Add to
-  Dock), Move to Trash, Eject, the tag swatches, Print. The demo adds New Text File, puts New Tab,
-  Close and Close All last, and has no Open With, Add to Dock, Manage Shared Folder… or tag row. ⌥⌘O is Open and Close Window in Finder, Open in New Window in the demo.
-- [ ] Edit menu: Finder puts Show Clipboard, Search (⌘F) and Search by Name… (⇧⌃⌘F) above Writing
-  Tools, AutoFill, Start Dictation and Emoji & Symbols, and has no Paste and Match Style or Delete;
-  the demo keeps AppKit's Paste and Match Style and Delete.
-- [ ] View menu, Finder: Use Groups before Sort By; Sort By adds Date Last Opened (⌃⌥⌘3), Date Added
-  (⌃⌥⌘4), Date Created and Tags (⌃⌥⌘7); Clean Up Selection; after Hide Sidebar: Hide Preview, Hide
-  Toolbar, Hide Path Bar, Show Status Bar, Customize Toolbar…, Show View Options, Show Preview
-  Options. The demo's Show Preview and Show Path Bar do not flip their titles and it lists Show
-  Hidden Files (⇧⌘.), which Finder's menu does not.
-- [ ] App menu: Settings… (⌘,), and the ⌥ rows Empty Trash and Quit and Keep Windows (⌥⌘Q).
-- [ ] Go menu: Shared (⇧⌘S), Library under ⌥, the user's own locations, and Recent Folders above Go
-  to Folder…; the demo has Recent Folders last. Help: Finder lists Mac User Guide and Tips for Your
-  Mac, the demo "Found'er Help" (⌘?).
+- [x] Column view with nothing selected: as in Finder, the ancestor columns show with the current
+  folder selected in its parent's.
+- [x] Menu enabling: with nothing selected Finder disables New Folder with Selection, Rename,
+  Compress, Duplicate, Make Alias, Share…, Show Original, Move to Trash, Eject, Print, Cut, Copy,
+  Deselect All, Back and Forward without history, Clean Up in list view and Show Progress Window
+  with no operation running; so does the demo. Clean Up and Clean Up By need icon view without a
+  sort, and the Window menu's tab rows stay off until the window has tabs.
+- [ ] Sort By's None and Snap to Grid: Finder's menu has them only in icon view, the demo's shows
+  them greyed in the other views. AppKit's Remove Window from Set sits above Cycle Through Windows,
+  where Finder's order needs AppKit's private `_cycleWindows:`.
+- [x] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
+  Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item; Show turns to Hide on
+  Preview, Path Bar, Status Bar, Inspector, View Options, Preview Options and Progress Window.
+- [ ] With a folder chosen Finder's tag row ends in Customize Folder…; the demo's stays Tags…, having
+  no folder customisation.
+- [x] File menu, in Finder's order with its alternates: New Finder Window, New Folder, New Folder
+  with Selection, New Smart Folder, New Tab, Open (⌃ Open in New Tab, ⌥ Open and Close Window ⌥⌘O),
+  Open With (⌥ Always Open With), Close Window (⌥ Close All), Get Info (⌥ Show Inspector, ⌃ Get
+  Summary Info), Rename, Compress, Duplicate (⌥⇧ Duplicate Exactly), Make Alias, Quick Look (⌥
+  Slideshow), Share…, Show Original, Add to Sidebar (⇧ Add to Dock), Move to Trash (⌥ Delete
+  Immediately…), Eject, the tag row (the favourite tags' swatches and Tags… in one row), Print.
+  Finder's Manage Shared Folder… is missing.
+- [x] Edit menu, as Finder's: Undo, Redo, Cut, Copy (⌥ Copy as Pathname, ⌃⌥ Copy as Link), Paste
+  (⌥ Move Items Here, ⇧⌥ Paste Exactly), Select All (⌥ Deselect All), Show Clipboard, Search (⌃
+  Search by Name…), then AppKit's Writing Tools, AutoFill, Start Dictation and Emoji & Symbols,
+  with no Paste and Match Style or Delete. While a text field has the keyboard the rows act on its
+  text (Undo Typing, Paste); otherwise Cut stays off.
+- [ ] Move Items Here turns on only for a copy made in the demo or items carrying Finder's
+  `com.apple.finder.noderef`: a rule taken from one reading (a file copied elsewhere left it off)
+  and Finder's binary.
+- [x] View menu, as Finder's: Use Groups before Sort By; Sort By with None ⌃⌥⌘0 and Snap to Grid,
+  then Name, Kind, Date Last Opened, Date Added, Date Modified, Date Created, Size and Tags; Clean
+  Up, ⌥ Clean Up Selection, Clean Up By; after the sidebar: Preview, Toolbar, Path Bar, Status Bar,
+  Customize Toolbar…, View Options, Preview Options. Show Hidden Files (⇧⌘.) is a key, not a row,
+  as in Finder.
+- [x] App menu: Settings… (⌘,), Empty Trash… with ⌥ Empty Trash, and Quit and Keep Windows (⌥⌘Q).
+- [x] Go menu: Shared (⇧⌘S) after iCloud Drive, Library under ⌥, the user's own cloud locations,
+  and Recent Folders above Go to Folder…. Help: Mac User Guide and Tips for Your Mac, as Finder's.
 - [ ] Toolbar: Finder's back and forward segments are 36 and 37 wide in a 75pt group, the demo's 38 and
   38 in 76, which moves the title 1pt right; AirDrop is 44 wide, the demo's 40. With nothing
   selected the demo greys Share, Tags ("Edit Tags"; "Add Tags" with a selection) and AirDrop as
   Finder does, greys Share and AirDrop while any chosen item is a folder the user can't list (Tags
   stays on), and shows AirDrop only when Finder's toolbar has it. The demo's Progress item has no
   Finder counterpart.
-- [ ] Get Info, Connect to Server, New Folder, rename, conflicts, the tag editor, the tab bar and
-  the progress window were captured from Finder 27 but not yet compared with the demo's.
-- [ ] Go to Folder: the demo's panel sits where Finder's default one does on the user's Mac
-  (460×183, centred on the window, 102 pt below its top); Finder reopens it at the size it was last
-  resized to (`NSWindow Frame GoToSheet`, 854×345 there). A path longer than the field wraps to a
-  second line in the demo, and for a folder the user can't list Finder lists nothing under the
-  field where the demo lists its path.
+- [ ] Get Info, New Folder, rename, conflicts, the tag editor, the tab bar and the progress window
+  were captured from Finder 27 but not yet compared with the demo's.
+- [x] Go to Folder: a sheet hung 102 pt below the window's top, as Finder's, between 434×183 and
+  854×345, reopened at its last size under Finder's own autosave name (`NSWindow Frame
+  GoToSheet`, Finder's size until the demo has saved one) and holding the last path gone to.
+  AppKit on macOS 27 centres every sheet unless the sheet answers the private `sheetBehavior` with
+  3 and the window places it through `window:willPositionSheet:usingRect:`; both have to go on the
+  class the window reports, not its KVO subclass, or AppKit never asks.
+- [ ] Go to Folder: a path longer than the field wraps to a second line in the demo, and for a
+  folder the user can't list Finder lists nothing under the field where the demo lists its path.
+- [x] Connect to Server: its own window at Finder's saved frame (`FXConnectToBounds`), 355×234 at
+  least, zoom off, as Finder's: the last server (`FXConnectToLastURL`) in a combo box of recent
+  servers, Favorite Servers with + and −, an action menu with Clear Recent Servers… (⌥ Clear Recent
+  Servers), Help, Browse (a new window on Network) and Connect. Favourites and recents come from
+  Finder's lists until the demo keeps its own.
+- [ ] Connect to Server: Clear Recent Servers' confirmation, the Help page and Finder's answer to a
+  cancelled sign-in were not measured; the demo says nothing on a cancelled sign-in.
+- [x] View Options: a floating panel that does not activate (`AXSystemFloatingWindow`, as Finder's),
+  titled with the folder, which ⌘J opens and closes from either window. In list view it lists
+  Finder's twelve Show Columns in Finder's order.
+- [ ] Finder's list-view View Options panel is 236×646 and also holds Group By and text size among
+  other rows; the demo's is 268×341, with Sort By and Show Columns only.
 - Measured on the user's Mac (textSize 14, iconSize 16, "Show all filename extensions" on, so both
   apps show full names): rows 21 pt and stripes below the last row on the same 21 pt pitch, header
   labels within 0.5 pt, titles in the same glyph positions. Differences left:
@@ -413,8 +528,11 @@ answering.
 - A folder on a share that stops answering stays empty while the window stays responsive (largest
   gap on the main thread 33 ms across the 4.6 s the share was stopped); nothing says why. What
   Finder shows while a share times out was not measured.
-- Renaming with a new extension or a leading dot happens without a question. Finder's questions
-  were not captured: typing into Finder's name field by synthetic keys did not register in three
+- Changing or removing an extension asks first, while Settings' warning is on, in a sheet with
+  Finder's words (“Are you sure you want to change the extension from “.x” to “.y”?”) and buttons
+  (Keep .x, then Use .y or Remove), taken from Finder's strings, not a capture. An extension given
+  to a name that had none, or a leading dot, renames without a question. Finder's questions were
+  not captured: typing into Finder's name field by synthetic keys did not register in three
   attempts.
 - When a folder above the one shown is renamed, the demo follows to the new path; Finder's window
   title still read the old path 2.5 s later.
