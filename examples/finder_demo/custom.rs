@@ -35,7 +35,6 @@ pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
     found
 }
 
-/// For a change the app makes itself, which no listing reports.
 pub(crate) fn set_custom_icon(path: &SharedString, custom: bool) {
     SEEN.lock().unwrap().insert(path.clone(), custom);
 }

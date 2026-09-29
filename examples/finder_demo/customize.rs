@@ -1,18 +1,18 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 
 use block2::RcBlock;
 use finder_fs::folder_icon::{self, Decoration};
 use finder_fs::tags::Tag;
 use finder_fs::words::{customize as said, symbol_label};
-use gpui::{App, Bounds, Context, SharedString, Window, point, px, size};
+use gpui::{App, Context, SharedString, Window, point, px, size};
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{
-    NativePopover, PopoverBehavior, PopoverOptions, SurfaceActions, SurfaceAnchor, present_popover,
+    NativePopover, PopoverBehavior, PopoverOptions, SurfaceActions, present_popover,
 };
+use objc2::MainThreadOnly;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{Bool, ProtocolObject};
-use objc2::{MainThreadOnly, Message};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityHeadingRole, NSAccessibilityMenuButtonRole, NSApplication,
     NSBezelStyle, NSBezierPath, NSButton, NSCellImagePosition, NSColor,
@@ -82,7 +82,6 @@ const GROUPS: [(&str, &str, &[&str]); 4] = [
 ];
 
 pub(crate) struct Customizer {
-    folder: PathBuf,
     key: SharedString,
     name: SharedString,
     decoration: Option<Decoration>,
@@ -93,9 +92,9 @@ pub(crate) struct Customizer {
 struct Parts {
     icon: Retained<NSImageView>,
     symbols: Vec<(&'static str, Retained<NSButton>)>,
-    swatches: Vec<(Tag, Retained<NSButton>)>,
+    swatches: Vec<(&'static Tag, Retained<NSButton>)>,
     more: Retained<NSPopUpButton>,
-    more_tags: Vec<Tag>,
+    more_tags: Vec<&'static Tag>,
     field: Retained<NSTextField>,
     typing: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
@@ -108,14 +107,13 @@ impl Drop for Parts {
 
 enum Change {
     Decorate(Option<Decoration>),
-    Toggle(Tag),
+    Toggle(&'static Tag),
     Untag,
     More,
     Emoji,
     Typed,
 }
 
-/// `top` counts down from the top of an unflipped view `within` tall.
 fn frame(x: f64, top: f64, width: f64, height: f64, within: f64) -> NSRect {
     NSRect::new(
         NSPoint::new(x, within - top - height),
@@ -168,11 +166,8 @@ fn disc(color: Option<Retained<NSColor>>, on: bool) -> Retained<NSImage> {
     NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(26., 26.), true, &draw)
 }
 
-fn named(view: &NSView, id: &str, help: Option<&str>) {
+fn identify(view: &NSView, id: &str) {
     view.setAccessibilityIdentifier(Some(&ns(id)));
-    if let Some(help) = help {
-        view.setToolTip(Some(&ns(help)));
-    }
 }
 
 fn image_button(mtm: MainThreadMarker, at: NSRect) -> Retained<NSButton> {
@@ -191,44 +186,35 @@ fn push_button(mtm: MainThreadMarker, title: &str, at: NSRect) -> Retained<NSBut
     button
 }
 
-fn label(mtm: MainThreadMarker, text: &str, font: &NSFont, at: NSRect) -> Retained<NSTextField> {
+fn bold_label(mtm: MainThreadMarker, text: &str, at: NSRect) -> Retained<NSTextField> {
     let label = NSTextField::labelWithString(&ns(text), mtm);
-    label.setFont(Some(font));
+    label.setFont(Some(&NSFont::boldSystemFontOfSize(13.)));
     label.setFrame(at);
     label
 }
 
 impl FinderDemo {
-    /// The one chosen item when it is a folder: Customize Folder… stands where Tags… would.
-    pub(crate) fn lone_folder(&self) -> Option<Line> {
-        match self.chosen_lines().as_slice() {
-            [line] if line.row.opens.is_some() => Some(line.clone()),
-            _ => None,
-        }
-    }
-
     pub(crate) fn tags_or_customize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.lone_folder() {
-            Some(line) => self.customize_folder(line, window, cx),
-            None => self.edit_tags(window, cx),
+        match self.chosen_lines().as_slice() {
+            [line] if line.row.opens.is_some() => self.customize_folder(line, window, cx),
+            _ => self.edit_tags(window, cx),
         }
     }
 
-    fn customize_folder(&mut self, line: Line, window: &mut Window, cx: &mut Context<Self>) {
+    fn customize_folder(&mut self, line: &Line, window: &mut Window, cx: &mut Context<Self>) {
         self.close_customizer();
-        let folder = PathBuf::from(line.key.as_ref());
+        let folder = Path::new(line.key.as_ref());
         self.customizer = Some(Customizer {
-            decoration: folder_icon::read(&folder),
-            held: finder_fs::tags::of(&folder)
+            key: line.key.clone(),
+            name: line.row.display.clone(),
+            decoration: folder_icon::read(folder),
+            held: finder_fs::tags::of(folder)
                 .into_iter()
                 .map(|tag| tag.name)
                 .collect(),
-            folder,
-            key: line.key,
-            name: line.row.display.clone(),
             shown: None,
         });
-        // A fresh anchor learns in the next paint whether the folder's icon is on screen at all.
+        // A fresh anchor gets bounds only if the next paint shows the folder's icon.
         self.ql_icon = Anchor::default();
         cx.notify();
         let demo = cx.entity().downgrade();
@@ -250,16 +236,8 @@ impl FinderDemo {
         let Some(customizer) = &self.customizer else {
             return;
         };
-        let anchor = match self.ql_icon.bounds() {
-            Some(_) => self.ql_icon.clone(),
-            None => {
-                let middle = window.viewport_size();
-                SurfaceAnchor::at(Bounds::new(
-                    point(middle.width / 2., middle.height / 2.),
-                    size(px(1.), px(1.)),
-                ))
-            }
-        };
+        let middle = window.viewport_size();
+        let anchor = self.icon_anchor_or(point(middle.width / 2., middle.height / 2.));
         let spec = PopoverOptions {
             size: size(px(WIDTH as f32), px(HEIGHT as f32)),
             edge: SurfaceEdge::Right,
@@ -303,7 +281,10 @@ impl FinderDemo {
         let Some(customizer) = &mut self.customizer else {
             return;
         };
-        let folder = customizer.folder.clone();
+        let Some((_, parts)) = &customizer.shown else {
+            return;
+        };
+        let folder = PathBuf::from(customizer.key.as_ref());
         match change {
             Change::Decorate(decoration) => {
                 if let Err(error) = folder_icon::write(&folder, decoration.as_ref()) {
@@ -320,10 +301,10 @@ impl FinderDemo {
                     Some(at) => _ = customizer.held.remove(at),
                     None => customizer.held.push(tag.name.clone()),
                 }
-                let tag = tag.clone();
+                let tag = *tag;
                 self.retag(
                     vec![folder],
-                    move |paths| _ = finder_fs::tags::toggle(paths, &tag),
+                    move |paths| _ = finder_fs::tags::toggle(paths, tag),
                     cx,
                 );
             }
@@ -336,21 +317,18 @@ impl FinderDemo {
                 );
             }
             Change::More => {
-                let Some((_, parts)) = &customizer.shown else {
-                    return;
-                };
-                let (at, listed) = (parts.more.indexOfSelectedItem(), parts.more_tags.len());
+                let at = parts.more.indexOfSelectedItem();
+                let listed = parts.more_tags.len() as isize;
                 let tag = usize::try_from(at - 1)
                     .ok()
-                    .and_then(|at| parts.more_tags.get(at))
-                    .cloned();
+                    .and_then(|at| parts.more_tags.get(at).copied());
                 match tag {
                     Some(tag) => self.change_folder(&Change::Toggle(tag), window, cx),
-                    None if at == listed as isize + 2 => {
+                    None if at == listed + 2 => {
                         self.close_customizer();
                         self.edit_tags(window, cx);
                     }
-                    None if at == listed as isize + 3 => {
+                    None if at == listed + 3 => {
                         self.close_customizer();
                         crate::settings::open_pane("Tags", cx);
                     }
@@ -359,9 +337,6 @@ impl FinderDemo {
                 return;
             }
             Change::Emoji => {
-                let Some((_, parts)) = &customizer.shown else {
-                    return;
-                };
                 if let Some(popover) = parts.field.window() {
                     parts.field.setEditable(true);
                     popover.makeFirstResponder(Some(&parts.field));
@@ -371,12 +346,8 @@ impl FinderDemo {
                 return;
             }
             Change::Typed => {
-                let Some((_, parts)) = &customizer.shown else {
-                    return;
-                };
                 let typed = parts.field.stringValue().to_string();
                 parts.field.setStringValue(&ns(""));
-                // The palette types into whatever holds the keyboard, and so do the keys.
                 let emoji = typed.chars().any(|c| !c.is_ascii() && !c.is_alphanumeric())
                     && !typed.chars().any(char::is_whitespace);
                 if emoji {
@@ -401,10 +372,9 @@ impl Customizer {
         let Some((_, parts)) = &self.shown else {
             return;
         };
-        let path = ns(&self.folder.to_string_lossy());
-        parts
-            .icon
-            .setImage(Some(&NSWorkspace::sharedWorkspace().iconForFile(&path)));
+        parts.icon.setImage(Some(
+            &NSWorkspace::sharedWorkspace().iconForFile(&ns(&self.key)),
+        ));
         let chosen = match &self.decoration {
             Some(Decoration::Symbol(name)) => Some(name.as_str()),
             _ => None,
@@ -418,8 +388,9 @@ impl Customizer {
         }
         let held = |tag: &Tag| self.held.contains(&tag.name);
         for (tag, button) in &parts.swatches {
-            button.setImage(Some(&disc(tag_ns_color(tag.color), held(tag))));
-            button.setToolTip(Some(&ns(&match held(tag) {
+            let on = held(tag);
+            button.setImage(Some(&disc(tag_ns_color(tag.color), on)));
+            button.setToolTip(Some(&ns(&match on {
                 true => said("Remove tag from folder", "Remove tag from folder"),
                 false => said("Add tag to folder", "Add tag to folder"),
             })));
@@ -447,16 +418,10 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
     let icon = NSImageView::initWithFrame(NSImageView::alloc(mtm), at(112., 12., 96., 96.));
     icon.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
     view.addSubview(&icon);
-    let bold = NSFont::boldSystemFontOfSize(13.);
-    let name = label(
-        mtm,
-        &customizer.name,
-        &bold,
-        at(10., 116., WIDTH - 20., 16.),
-    );
+    let name = bold_label(mtm, &customizer.name, at(10., 116., WIDTH - 20., 16.));
     name.setAlignment(NSTextAlignment::Center);
     name.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
-    named(&name, "folderName", None);
+    identify(&name, "folderName");
     view.addSubview(&name);
 
     let untag = image_button(mtm, at(11., 147., 20., 20.));
@@ -466,28 +431,27 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
         "Remove all tags [text]",
         "Remove all tags",
     ))));
-    named(&untag, "RemoveAllTagsButton", None);
+    identify(&untag, "RemoveAllTagsButton");
     actions.on_action(&untag, change(Change::Untag));
     view.addSubview(&untag);
 
-    let shown: Vec<Tag> = tags().iter().take(SWATCHES).cloned().collect();
-    let swatches = shown
+    let swatches: Vec<_> = tags()
         .iter()
+        .take(SWATCHES)
         .enumerate()
         .map(|(index, tag)| {
             let swatch = image_button(mtm, at(41. + 34. * index as f64, 144., 26., 26.));
             swatch.setAccessibilityLabel(Some(&ns(&tag.name)));
-            named(&swatch, &format!("tag-{}", tag.name), None);
-            actions.on_action(&swatch, change(Change::Toggle(tag.clone())));
+            identify(&swatch, &format!("tag-{}", tag.name));
+            actions.on_action(&swatch, change(Change::Toggle(tag)));
             view.addSubview(&swatch);
-            (tag.clone(), swatch)
+            (tag, swatch)
         })
         .collect();
 
-    let more_tags: Vec<Tag> = crate::tags::all()
+    let more_tags: Vec<_> = crate::tags::all()
         .iter()
-        .filter(|tag| !shown.iter().any(|swatch| swatch.name == tag.name))
-        .cloned()
+        .filter(|tag| !swatches.iter().any(|(shown, _)| shown.name == tag.name))
         .collect();
     let more = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(mtm),
@@ -509,13 +473,12 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
         face.setImage(symbol("plus", 13., None).as_deref());
     }
     for tag in &more_tags {
-        let color = tag_ns_color(tag.color);
-        let (disc, tint) = match &color {
-            Some(color) => ("circle.fill", color.retain()),
+        let (glyph, tint) = match tag_ns_color(tag.color) {
+            Some(color) => ("circle.fill", color),
             None => ("circle", NSColor::secondaryLabelColor()),
         };
         if let Some(item) = add(&tag.name) {
-            item.setImage(symbol(disc, 13., Some(&tint)).as_deref());
+            item.setImage(symbol(glyph, 13., Some(&tint)).as_deref());
         }
     }
     if let Some(menu) = more.menu() {
@@ -525,7 +488,7 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
     add(&said("Edit All Tags…", "Edit All Tags…"));
     more.setAccessibilityRole(Some(unsafe { NSAccessibilityMenuButtonRole }));
     more.setAccessibilityTitle(Some(&ns("Add")));
-    named(&more, "tagOverflowMenuButton", None);
+    identify(&more, "tagOverflowMenuButton");
     actions.on_action(&more, change(Change::More));
     view.addSubview(&more);
 
@@ -538,24 +501,18 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
         NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, inside)),
     );
     grid.setAccessibilityLabel(Some(&ns(&said("Symbol Selection", "Symbol Selection"))));
-    let pick = said("select symbol for folder", "select symbol for folder");
+    let pick = ns(&said(
+        "select symbol for folder",
+        "select symbol for folder",
+    ));
     let mut symbols = Vec::new();
     let mut top = GAP;
     for (english, group, list) in GROUPS {
         let title = said(&format!("{english} [Symbol category group name]"), english);
-        let heading = label(
-            mtm,
-            &title,
-            &bold,
-            frame(10., top, WIDTH - 20., HEADING_H, inside),
-        );
+        let heading = bold_label(mtm, &title, frame(10., top, WIDTH - 20., HEADING_H, inside));
         heading.setAccessibilityRole(Some(unsafe { NSAccessibilityHeadingRole }));
         heading.setAccessibilityLabel(Some(&ns(&title)));
-        named(
-            &heading,
-            &format!("symbolGroupHeader-group-key-{group}"),
-            None,
-        );
+        identify(&heading, &format!("symbolGroupHeader-group-key-{group}"));
         grid.addSubview(&heading);
         top += HEADING_H;
         for (index, name) in list.iter().enumerate() {
@@ -566,7 +523,8 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
             if let Some(text) = symbol_label(name) {
                 cell.setAccessibilityLabel(Some(&ns(&text)));
             }
-            named(&cell, name, Some(&pick));
+            identify(&cell, name);
+            cell.setToolTip(Some(&pick));
             let decoration = Decoration::Symbol((*name).to_owned());
             actions.on_action(&cell, change(Change::Decorate(Some(decoration))));
             grid.addSubview(&cell);
@@ -582,12 +540,12 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
     let clip = scroll.contentView();
     clip.scrollToPoint(NSPoint::new(0., inside - GRID_H));
     scroll.reflectScrolledClipView(&clip);
-    named(&scroll, "symbolScrollView", None);
+    identify(&scroll, "symbolScrollView");
     view.addSubview(&scroll);
 
     let clear_title = said("Clear folder symbol or emoji [button text]", "Clear");
     let clear = push_button(mtm, &clear_title, at(8., 638., 147., 24.));
-    named(&clear, "clearButton", None);
+    identify(&clear, "clearButton");
     actions.on_action(&clear, change(Change::Decorate(None)));
     view.addSubview(&clear);
     let emoji_title = said("Open Emoji picker [button text]", "Emoji");
@@ -596,11 +554,12 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
         "Select emoji for folder [ax hint]",
         "Select emoji for folder",
     );
-    named(&emoji, "emojiButton", Some(&hint));
+    identify(&emoji, "emojiButton");
+    emoji.setToolTip(Some(&ns(&hint)));
     actions.on_action(&emoji, change(Change::Emoji));
     view.addSubview(&emoji);
 
-    // Invisible, and editable only once Emoji asks: the character palette types into it.
+    // The character palette types into the first responder, which Emoji makes this field.
     let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), at(165., 638., 1., 1.));
     field.setEditable(false);
     field.setAlphaValue(0.);
