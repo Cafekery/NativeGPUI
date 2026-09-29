@@ -169,7 +169,7 @@ impl Render for FinderDemo {
                                 div()
                                     .flex_1()
                                     .flex()
-                                    .overflow_hidden()
+                                    .when(self.view != ICON_VIEW, |row| row.overflow_hidden())
                                     .when(!list_view, |row| row.pl(metrics.left))
                                     .child(self.list_column(
                                         body, headers, path_bar, &palette, metrics, cx,
@@ -282,10 +282,11 @@ impl FinderDemo {
                     .pl(metrics.left),
             )
         };
+        let icons = self.view == ICON_VIEW;
         let surface = div()
             .absolute()
             .left_0()
-            .right_0()
+            .right(if icons { -metrics.right } else { px(0.) })
             .bottom(px(bar))
             .top(if banded { px(0.) } else { top })
             .flex()
@@ -308,8 +309,20 @@ impl FinderDemo {
         div()
             .flex_1()
             .relative()
-            .overflow_hidden()
+            .when(!icons, |column| column.overflow_hidden())
             .child(surface)
+            // The pane shows the icons beneath its glass, but a GPUI drag would still hit-test them.
+            .when(icons, |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(-metrics.right)
+                        .w(metrics.right)
+                        .occlude(),
+                )
+            })
             // A Layer::Above material blurs only what is painted before it: the rows and the header.
             .when(banded || scope_h > 0., |column| {
                 column.child(band_glass(top + header_h))
@@ -355,7 +368,7 @@ impl FinderDemo {
                     .absolute()
                     .top(top + header_h)
                     .bottom(px(bar))
-                    .left(metrics.left)
+                    .left(if banded { metrics.left } else { px(0.) })
                     .right_0()
                     .child(bars)
             }))
