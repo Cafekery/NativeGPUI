@@ -148,13 +148,12 @@ pub enum Sharer {
     Named(Arc<str>),
 }
 
-/// Who shared a shared item: the user when their role is its owner's, else its owner by name.
 pub fn sharer(path: &Path) -> Option<Sharer> {
     let item = Cf::item(path)?;
-    let text = |name| item.attribute(name)?.string();
+    let string = |name| item.attribute(name)?.string();
     sharer_of(
-        text("kMDItemSharedItemCurrentUserRole").as_deref(),
-        text("kMDItemOwnerName"),
+        string("kMDItemSharedItemCurrentUserRole").as_deref(),
+        string("kMDItemOwnerName"),
     )
 }
 
