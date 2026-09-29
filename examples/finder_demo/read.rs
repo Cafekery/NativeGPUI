@@ -248,15 +248,46 @@ fn read_batches(
 ) -> Result<Batches, Trouble> {
     let mut batches: Batches = Vec::new();
     finder_fs::list::list_dir_batched(Path::new(id), BATCH, |entries| {
-        ask_for_apps(id, &entries);
-        let (entries, facts) = (Arc::new(entries), folders.clone());
-        let listed = entries.clone();
-        let rows = executor.spawn(async move { data::rows_of(id, listed.iter(), &facts, extras) });
-        batches.push((entries, rows));
+        batches.push(batch(id, entries, folders.clone(), extras, executor));
     })
     .map_err(|error| trouble(id, error))?;
+    if let Some(system) = system_twin(id) {
+        let listed: HashSet<&str> = batches
+            .iter()
+            .flat_map(|(entries, _)| entries.iter().map(|entry| entry.name.as_str()))
+            .collect();
+        let apps: Vec<Entry> = finder_fs::list::list_dir(Path::new(system))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| !listed.contains(entry.name.as_str()))
+            .collect();
+        let facts = Arc::new(index().folders_in(Path::new(system)));
+        batches.push(batch(system, apps, facts, extras, executor));
+    }
     remember(id);
     Ok(batches)
+}
+
+fn batch(
+    dir: &'static str,
+    entries: Vec<Entry>,
+    facts: Arc<HashMap<String, Facts>>,
+    extras: bool,
+    executor: &BackgroundExecutor,
+) -> (Arc<Vec<Entry>>, Task<Vec<Arc<Row>>>) {
+    ask_for_apps(dir, &entries);
+    let entries = Arc::new(entries);
+    let listed = entries.clone();
+    let rows = executor.spawn(async move { data::rows_of(dir, listed.iter(), &facts, extras) });
+    (entries, rows)
+}
+
+fn system_twin(id: &str) -> Option<&'static str> {
+    match id {
+        "/Applications" => Some("/System/Applications"),
+        "/Applications/Utilities" => Some("/System/Applications/Utilities"),
+        _ => None,
+    }
 }
 
 fn ask_for_apps<'a>(id: &str, entries: impl IntoIterator<Item = &'a Entry>) {
@@ -368,6 +399,7 @@ fn list(
     let count = screen.0;
     let folders = Arc::new(index().folders_in(Path::new(id)));
     let icloud = finder_fs::icloud::is_drive(Path::new(id));
+    let twin = system_twin(id);
     let read = {
         let (folders, executor) = (folders.clone(), executor.clone());
         move || read_batches(id, &folders, extras, &executor)
@@ -380,11 +412,13 @@ fn list(
         (rows, (hidden, lines))
     };
     let vouched = matches!(sorted_by.0, Column::Name | Column::Modified | Column::Size);
-    let known = first.filter(|_| vouched && !icloud).and_then(|hidden| {
-        let entries = indexed_screen(id, &folders, sorted_by, hidden, count)?;
-        let rows = screen_rows(id, entries.iter(), &folders, extras, screen);
-        Some(shown(rows, hidden))
-    });
+    let known = first
+        .filter(|_| vouched && !icloud && twin.is_none())
+        .and_then(|hidden| {
+            let entries = indexed_screen(id, &folders, sorted_by, hidden, count)?;
+            let rows = screen_rows(id, entries.iter(), &folders, extras, screen);
+            Some(shown(rows, hidden))
+        });
     if known.is_some() {
         let rest = executor.spawn(async move {
             Ok(finish(id, batches()?, None, (sorted_by, plain, extras), screen).await)
@@ -396,17 +430,30 @@ fn list(
         .iter()
         .flat_map(|(entries, _)| entries.iter())
         .collect();
+    let own = entries.len() - twin.map_or(0, |_| batches.last().map_or(0, |(twin, _)| twin.len()));
     let (shared, first) = first
         .filter(|_| !icloud)
         .and_then(|hidden| {
             let chosen = first_screen(id, &entries, &folders, sorted_by, hidden, count, false)?;
-            let rows = screen_rows(
-                id,
-                chosen.iter().map(|&at| entries[at]),
-                &folders,
-                extras,
-                screen,
-            );
+            let rows_in = |dir, facts: &HashMap<String, Facts>, ours: bool| {
+                let picked = chosen.iter().filter(move |&&at| (at < own) == ours);
+                screen_rows(dir, picked.map(|&at| entries[at]), facts, extras, screen)
+            };
+            let rows = match twin {
+                None => rows_in(id, &folders, true),
+                Some(twin) => {
+                    let facts = index().folders_in(Path::new(twin));
+                    let mut ours = rows_in(id, &folders, true).into_iter();
+                    let mut theirs = rows_in(twin, &facts, false).into_iter();
+                    chosen
+                        .iter()
+                        .filter_map(|&at| match at < own {
+                            true => ours.next(),
+                            false => theirs.next(),
+                        })
+                        .collect()
+                }
+            };
             Some(((chosen, rows.clone()), (rows, hidden)))
         })
         .unzip();

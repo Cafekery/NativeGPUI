@@ -239,8 +239,9 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   view ⌥↑ and ⌥← select the first item, ⌥↓ and ⌥→ the last, and plain ↑ ↓ do nothing; in icon view
   ⌥ changes nothing, the arrows move one icon. All as read off Finder 27.
 - [x] Go ▸ Utilities (⇧⌘U) opens /Applications/Utilities.
-- [ ] Finder shows /System/Applications' apps inside /Applications and its Utilities; the demo lists
-  each folder as it is on disk.
+- [x] /Applications and /Applications/Utilities list /System/Applications' apps (and its
+  Utilities') merged in, each name once, as Finder shows them. The first screen still lands with
+  the listing's first read: 8 ms for /Applications, as before the merge.
 - [x] Quick Look (⌘Y or Space) with nothing selected previews the folder shown, and follows the
   selection once there is one; File reads Quick Look “<folder>” and Slideshow “<folder>”, then
   Close Quick Look and Slideshow while the panel is up.
