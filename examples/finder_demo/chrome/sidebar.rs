@@ -632,7 +632,7 @@ impl FinderDemo {
             window,
             cx,
             SidebarOptions {
-                thickness: px(SIDEBAR_W),
+                thickness: px(crate::prefs::finder().sidebar_width.unwrap_or(SIDEBAR_W)),
                 min_thickness: px(158.),
                 max_thickness: px(0.),
                 content_min_thickness: px(crate::preview::LIST_MIN_W),
