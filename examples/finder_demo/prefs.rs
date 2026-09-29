@@ -60,6 +60,7 @@ fn group_key(name: &str) -> Option<Column> {
     Some(match name {
         "Name" => Column::Name,
         "Kind" => Column::Kind,
+        "Application" => Column::Application,
         "Date Last Opened" => Column::Opened,
         "Date Added" => Column::Added,
         "Date Modified" => Column::Modified,
@@ -590,6 +591,7 @@ fn column_key(column: Column) -> &'static str {
         Column::Tags => "ng.finder.col.tags",
         Column::Version => "ng.finder.col.version",
         Column::Comments => "ng.finder.col.comments",
+        Column::Application => "ng.finder.col.application",
     }
 }
 

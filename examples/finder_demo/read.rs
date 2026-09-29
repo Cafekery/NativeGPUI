@@ -196,6 +196,9 @@ pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, order: Order, extras: bool) {
     if extras || sort.extra() || order.group.is_some_and(Column::extra) {
         data::read_extras(rows);
     }
+    if order.group == Some(Column::Application) {
+        data::read_apps(rows);
+    }
     let ranks = match sort {
         Column::Size => rows.iter().map(|row| row.bytes).collect(),
         sort if sort == Column::Name || sort.dated() => vec![0; rows.len()],
