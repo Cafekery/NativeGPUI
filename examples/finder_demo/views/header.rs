@@ -26,6 +26,7 @@ const COL_OPENED: f32 = 200.;
 const COL_TAGS: f32 = 100.;
 const COL_VERSION: f32 = 75.;
 const COL_COMMENTS: f32 = 300.;
+const COL_SHARED_BY: f32 = 200.;
 
 pub(crate) const HEADER_H: f32 = 28.;
 pub(crate) const PANE_INSET: f32 = 10.;
@@ -72,6 +73,7 @@ impl ColumnSpec {
             Column::Tags => COL_TAGS,
             Column::Version => COL_VERSION,
             Column::Comments => COL_COMMENTS,
+            Column::SharedBy => COL_SHARED_BY,
         };
         Self { column, width }
     }
@@ -81,6 +83,7 @@ pub(crate) fn columns_for(folder: &str) -> Vec<ColumnSpec> {
     prefs::list_columns(folder)
         .unwrap_or_else(|| prefs::finder().columns.clone())
         .into_iter()
+        .filter(|column| column.offered_at(folder))
         .map(ColumnSpec::of)
         .collect()
 }
@@ -106,7 +109,7 @@ pub(crate) enum HeaderDrag {
 }
 
 pub(crate) fn column_title(column: Column) -> &'static str {
-    const KEYS: [(Column, &str, &str); 11] = [
+    const KEYS: [(Column, &str, &str); 12] = [
         (Column::Name, "N220", "Name"),
         (Column::Kind, "N224", "Kind"),
         (Column::Opened, "N169.32", "Date Last Opened"),
@@ -118,6 +121,7 @@ pub(crate) fn column_title(column: Column) -> &'static str {
         (Column::Version, "N226", "Version"),
         (Column::Comments, "N227", "Comments"),
         (Column::Application, "KIND_FORMATTER_20_0", "Application"),
+        (Column::SharedBy, "N231", "Shared By"),
     ];
     static TITLES: LazyLock<Vec<String>> = LazyLock::new(|| {
         KEYS.iter()
@@ -220,6 +224,7 @@ impl FinderDemo {
         }
         let look = HeaderLook {
             columns: self.shown_columns(),
+            here: self.here(),
             name_w: self.name_w,
             sort: self.sort,
             ascending: self.ascending,
@@ -451,6 +456,7 @@ impl FinderDemo {
 #[derive(PartialEq)]
 struct HeaderLook {
     columns: Vec<ColumnSpec>,
+    here: &'static str,
     name_w: f32,
     sort: Column,
     ascending: bool,
@@ -636,7 +642,7 @@ fn header_cell(
     });
     menus::attach(
         ("ng.finder.header.menu", slot),
-        menus::header(&look.columns),
+        menus::header(&look.columns, look.here),
         demo.clone(),
         cell.into_any_element(),
     )

@@ -19,7 +19,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{GROUP_KEYS, SORT_KEYS, intern_path};
+use crate::data::{Column, GROUP_KEYS, intern_path};
 use crate::locations::{COMPUTER, computer_name, place};
 use crate::menus::{Act, Menu};
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
@@ -494,7 +494,10 @@ impl FinderDemo {
             },
             (MenuEntry::separator(), Act::Nothing),
         ];
-        for column in GROUP_KEYS {
+        for column in GROUP_KEYS
+            .into_iter()
+            .filter(|key| key.offered_at(self.here()))
+        {
             let title = column_title(column);
             rows.push((
                 grouping(MenuEntry::item(title).checked(group == Some(column))),
@@ -503,7 +506,7 @@ impl FinderDemo {
             let sorts = MenuEntry::item(title)
                 .checked(sorted == Some(column))
                 .option_alternate();
-            rows.push(match SORT_KEYS.contains(&column) {
+            rows.push(match column != Column::Application {
                 true => (sorts, Act::Sort(column)),
                 false => (sorts.disabled(), Act::Nothing),
             });

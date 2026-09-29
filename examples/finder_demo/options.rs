@@ -49,7 +49,7 @@ const ARRANGEMENTS: [Option<Arrangement>; 12] = [
 const SHOW_COLUMNS: [(&str, Option<Column>); 12] = [
     ("iCloud Status", None),
     ("Last Modified By", None),
-    ("Shared By", None),
+    ("Shared By", Some(Column::SharedBy)),
     ("Date Modified", Some(Column::Modified)),
     ("Date Created", Some(Column::Created)),
     ("Date Last Opened", Some(Column::Opened)),
@@ -263,18 +263,18 @@ impl Build<'_> {
             (19., 91., 55.),
             "Group By:",
         ));
+        let here = self.state.here();
+        let keys: Vec<Column> = (GROUP_KEYS.into_iter())
+            .filter(|key| key.offered_at(here))
+            .collect();
         let chosen = self
             .state
             .group()
-            .and_then(|group| GROUP_KEYS.iter().position(|key| *key == group))
+            .and_then(|group| keys.iter().position(|key| *key == group))
             .map_or(0, |at| at + 2);
         let entries = [MenuEntry::item("None"), MenuEntry::separator()]
             .into_iter()
-            .chain(
-                GROUP_KEYS
-                    .iter()
-                    .map(|key| MenuEntry::item(column_title(*key))),
-            );
+            .chain(keys.iter().map(|key| MenuEntry::item(column_title(*key))));
         let run = self.run(|this, group, cx| this.set_group(group, cx));
         self.put(at(
             81.,
@@ -285,7 +285,7 @@ impl Build<'_> {
                 .on_change(move |index: &usize, _, cx| match index.checked_sub(2) {
                     None => run(None, cx),
                     Some(at) => {
-                        if let Some(key) = GROUP_KEYS.get(at) {
+                        if let Some(key) = keys.get(at) {
                             run(Some(*key), cx);
                         }
                     }
@@ -405,7 +405,9 @@ impl Build<'_> {
             .iter()
             .map(|spec| spec.column)
             .collect();
+        let here = self.state.here();
         for (at_row, &(title, column)) in SHOW_COLUMNS.iter().enumerate() {
+            let column = column.filter(|column| column.offered_at(here));
             let demo = self.demo.clone();
             self.put(at(
                 19.,
