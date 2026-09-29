@@ -34,7 +34,7 @@ impl GalleryLook {
             .or_else(|| prefs::finder_look_number("GalleryViewSettings", "iconSize"));
         Self {
             thumb: thumb.map_or(48., |size| size as f32),
-            filename: prefs::view_option(OPTIONS, "ShowTitles").is_some_and(|on| on != 0.),
+            filename: prefs::view_option_on(OPTIONS, "ShowTitles").unwrap_or(false),
         }
     }
 }
@@ -218,10 +218,6 @@ impl FinderDemo {
         self.strip.set_offset(point(px(-next.max(0.)), px(0.)));
     }
 
-    pub(crate) fn gallery_look(&self) -> GalleryLook {
-        self.gallery_look
-    }
-
     pub(crate) fn change_gallery_look(
         &mut self,
         change: impl FnOnce(&mut GalleryLook),
@@ -234,7 +230,7 @@ impl FinderDemo {
             prefs::set_look_number(GALLERY_VIEW, self.here(), "iconSize", f64::from(look.thumb));
         }
         if look.filename != was.filename {
-            prefs::set_view_option(OPTIONS, "ShowTitles", f64::from(u8::from(look.filename)));
+            prefs::set_view_option_on(OPTIONS, "ShowTitles", look.filename);
         }
         cx.notify();
     }

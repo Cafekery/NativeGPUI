@@ -65,7 +65,7 @@ impl ColumnLook {
         Self {
             text: prefs::view_option(OPTIONS, "FontSize")
                 .map_or(f32::from(tokens::system_font_size()), |size| size as f32),
-            icons: prefs::view_option(OPTIONS, "ColumnShowIcons").is_none_or(|on| on != 0.),
+            icons: prefs::view_option_on(OPTIONS, "ColumnShowIcons").unwrap_or(true),
             fit: prefs::setting_on(AUTOSIZE, true),
         }
     }
@@ -506,10 +506,6 @@ impl FinderDemo {
         self.column_fits.insert(folder, fit);
     }
 
-    pub(crate) fn column_look(&self) -> ColumnLook {
-        self.column_look
-    }
-
     pub(crate) fn change_column_look(
         &mut self,
         change: impl FnOnce(&mut ColumnLook),
@@ -522,7 +518,7 @@ impl FinderDemo {
             prefs::set_view_option(OPTIONS, "FontSize", f64::from(look.text));
         }
         if look.icons != was.icons {
-            prefs::set_view_option(OPTIONS, "ColumnShowIcons", f64::from(u8::from(look.icons)));
+            prefs::set_view_option_on(OPTIONS, "ColumnShowIcons", look.icons);
         }
         if look.fit != was.fit {
             prefs::set_setting_on(AUTOSIZE, look.fit);

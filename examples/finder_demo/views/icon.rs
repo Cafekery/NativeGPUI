@@ -1334,10 +1334,6 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn icon_background(&self) -> Background {
-        self.icon_paint().background
-    }
-
     pub(crate) fn change_icon_options(
         &mut self,
         change: impl FnOnce(&mut IconOptions),

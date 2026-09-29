@@ -34,7 +34,7 @@ impl Previews {
         };
         Self {
             list: look(LIST_VIEW, "ExtendedListViewSettingsV2"),
-            column: prefs::view_option(COLUMN_OPTIONS, COLUMN_PREVIEWS).is_none_or(|on| on != 0.),
+            column: prefs::view_option_on(COLUMN_OPTIONS, COLUMN_PREVIEWS).unwrap_or(true),
             gallery: look(GALLERY_VIEW, "GalleryViewSettings"),
         }
     }
@@ -56,9 +56,7 @@ impl FinderDemo {
             ICON_VIEW => {
                 return self.change_icon_options(|icon| icon.show_icon_preview = Some(on), cx);
             }
-            COLUMN_VIEW => {
-                prefs::set_view_option(COLUMN_OPTIONS, COLUMN_PREVIEWS, f64::from(u8::from(on)))
-            }
+            COLUMN_VIEW => prefs::set_view_option_on(COLUMN_OPTIONS, COLUMN_PREVIEWS, on),
             view => prefs::set_look_on(view, here, PREVIEWS, on),
         }
         self.previews = Previews::of(here);
