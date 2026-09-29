@@ -220,8 +220,8 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   and the list at 221..860, 639 wide, its rows 639 wide from 221.
 - [x] On a folder the user can't list, Finder's context menu has Open in New Tab and ⌥ Open in New
   Window off (read with a fixture folder at mode 000); so does the demo's.
-- [ ] On that folder Finder's context menu also leaves out Compress and Share… and reads Quick Look
-  “<name>”; the demo's keeps Compress and Share… and reads Quick Look.
+- [x] On that folder Finder's context menu also leaves out Compress and Share… (one rule stands
+  between Copy and the tag row) and reads Quick Look “<name>”; so does the demo's.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
 - [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row

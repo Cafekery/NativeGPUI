@@ -163,17 +163,25 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         MenuEntry::item(if many { "Rename…" } else { "Rename" }),
         Act::Rename,
     );
-    let compress = subject("Compress", &line.row.display, many, chosen);
-    let plain = match many {
-        true => "Compress".to_string(),
-        false => compress.clone(),
-    };
-    menu.item(MenuEntry::item(plain), Act::Compress);
-    menu.item(MenuEntry::item(compress).option_alternate(), Act::Compress);
+    // Finder neither compresses nor shares a folder the user can't list, and names it in Quick Look.
+    let unlistable = !many && refuses(line);
+    if !unlistable {
+        let compress = subject("Compress", &line.row.display, many, chosen);
+        let plain = match many {
+            true => "Compress".to_string(),
+            false => compress.clone(),
+        };
+        menu.item(MenuEntry::item(plain), Act::Compress);
+        menu.item(MenuEntry::item(compress).option_alternate(), Act::Compress);
+    }
     menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
     menu.item(exactly("Duplicate Exactly"), Act::Duplicate);
     menu.item(MenuEntry::item("Make Alias"), Act::MakeAlias);
-    menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
+    let look = match unlistable {
+        true => subject("Quick Look", &line.row.display, false, chosen),
+        false => "Quick Look".to_string(),
+    };
+    menu.item(MenuEntry::item(look), Act::QuickLook);
     menu.item(
         MenuEntry::item(subject("Slideshow", &line.row.display, many, chosen)).option_alternate(),
         Act::Slideshow,
@@ -189,8 +197,10 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         Act::CopyPathnames,
     );
     menu.separator();
-    menu.item(MenuEntry::item("Share…"), Act::Share);
-    menu.separator();
+    if !unlistable {
+        menu.item(MenuEntry::item("Share…"), Act::Share);
+        menu.separator();
+    }
     let carried: Vec<Vec<usize>> = match selected.contains(&line.key) {
         true => selected
             .iter()
