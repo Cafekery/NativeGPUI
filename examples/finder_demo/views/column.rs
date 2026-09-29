@@ -603,6 +603,12 @@ impl FinderDemo {
             .as_ref()
             .and_then(|key| lines.iter().position(|line| &line.key == key));
         match (key, at) {
+            ("up", Some(_)) if modifiers.alt => {
+                self.pick_in(&lines, &lines[0], modifiers.shift, false)
+            }
+            ("down", Some(_)) if modifiers.alt => {
+                self.pick_in(&lines, &lines[lines.len() - 1], modifiers.shift, false)
+            }
             ("up", Some(at)) => {
                 self.pick_in(&lines, &lines[at.saturating_sub(1)], modifiers.shift, false)
             }
