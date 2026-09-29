@@ -138,6 +138,67 @@ pub fn fill(text: &str, args: &[&str]) -> String {
     filled
 }
 
+const DESKTOP_SERVICES_UI: &str =
+    "/System/Library/PrivateFrameworks/DesktopServicesUI.framework/Resources/Localizable.loctable";
+
+/// Customize Folder…'s table: its words in Finder's language, then every key, each carrying a note.
+static CUSTOMIZE: LazyLock<(HashMap<String, String>, Vec<String>)> = LazyLock::new(|| {
+    let table = std::fs::read(DESKTOP_SERVICES_UI)
+        .ok()
+        .and_then(|bytes| crate::plist_dict(&bytes));
+    let Some(table) = table else {
+        return Default::default();
+    };
+    let text = |object: Retained<AnyObject>| Some(object.downcast::<NSString>().ok()?.to_string());
+    let words = |language: &NSString| {
+        let words = table
+            .objectForKey(language)?
+            .downcast::<NSDictionary>()
+            .ok()?;
+        let keys = words.allKeys();
+        let pairs = keys.iter().filter_map(|key| {
+            let value = text(words.objectForKey(&key)?)?;
+            Some((text(key)?, value))
+        });
+        Some(pairs.collect::<HashMap<_, _>>())
+    };
+    let language = FINDER
+        .as_ref()
+        .and_then(|finder| finder.preferredLocalizations().firstObject());
+    let said = language
+        .and_then(|language| words(&language))
+        .unwrap_or_default();
+    let keys = table
+        .allKeys()
+        .iter()
+        .find_map(|language| words(&language))
+        .map(|words| words.into_keys().collect())
+        .unwrap_or_default();
+    (said, keys)
+});
+
+/// A Customize Folder… string in Finder's language, looked up by its key in that popover's table.
+pub fn customize(key: &str, english: &str) -> String {
+    CUSTOMIZE
+        .0
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| english.to_owned())
+}
+
+/// VoiceOver's name for `symbol` in Customize Folder…'s grid; the English is its key less the note.
+pub fn symbol_label(symbol: &str) -> Option<String> {
+    let note = format!(" [AX for symbol {symbol}]");
+    let key = CUSTOMIZE.1.iter().find(|key| key.ends_with(&note))?;
+    Some(
+        CUSTOMIZE
+            .0
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key[..key.len() - note.len()].to_owned()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

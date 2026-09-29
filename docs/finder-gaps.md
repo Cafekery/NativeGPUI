@@ -238,8 +238,8 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   and the list at 221..860, 639 wide, its rows 639 wide from 221.
 - [x] On a folder the user can't list, Finder's context menu has Open in New Tab and ⌥ Open in New
   Window off (read with a fixture folder at mode 000); so does the demo's.
-- [ ] On that folder Finder's context menu also leaves out Compress and Share… and reads Quick Look
-  “<name>”; the demo's keeps Compress and Share… and reads Quick Look.
+- [x] On that folder Finder's context menu also leaves out Compress and Share… (one rule stands
+  between Copy and the tag row) and reads Quick Look “<name>”; so does the demo's.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
 - [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row
@@ -470,18 +470,27 @@ Traffic lights, corner radius, window shadow and title type measure identical.
 - [x] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
   Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item; Show turns to Hide on
   Preview, Path Bar, Status Bar, Inspector, View Options, Preview Options and Progress Window.
-- [ ] With exactly one folder chosen (an unlistable one too; not two folders, not a folder and a
-  file) Finder's tag row ends in Customize Folder… where Tags… stood; the demo's stays Tags…. It
-  opens a popover (320×670 content) at the folder's icon: the folder's name, a tag row (Remove all
-  tags, the seven colours, an Add menu), a grid of 113 SF Symbols in four groups (People 41,
-  Animals & Nature 45, Food & Drinks 13, Activity 14, 44 pt cells, seven across), then Clear and
-  Emoji. Emoji opens a second popover (320×444) holding the system emoji picker: a search field and
-  the emoji grid, frequently used first; it has no public API, `orderFrontCharacterPalette:` being
-  the public stand-in. A pick leaves the popover up and writes `com.apple.icon.folder#S` as
+- [x] With exactly one folder chosen (an unlistable one too; not two folders, not a folder and a
+  file) the tag row ends in Customize Folder… where Tags… stood, in the File menu and in the
+  context menu, whose tag row is one view like the File menu's (Finder's has no Tags… row of its
+  own). It opens a popover (320×670 content) off the right edge of the folder's icon, or of the
+  window's centre while the icon is off screen: the folder's name, a tag row (Remove all tags, the
+  seven colours, an Add menu of the other tags then Edit Tags… and Edit All Tags…), a grid of 113
+  SF Symbols in four groups (People 41, Animals & Nature 45, Food & Drinks 13, Activity 14, 44 pt
+  cells, seven across), then Clear and Emoji. The symbols and their order are read off Finder's AX
+  tree: DesktopServicesUI keeps the list in code, and its table only names them for VoiceOver,
+  which the demo's cells use. A pick leaves the popover up and writes `com.apple.icon.folder#S` as
   `{"sym":"person.fill"}` or `{"emoji":"…"}` plus FinderInfo's kHasCustomIcon (00…04 00 at byte
-  8); Clear removes both. With both set, `iconForFile:` draws the decoration and follows each
-  change at once, so the demo already shows Finder's customised folders through its custom-icon
-  path; what it lacks is the popover.
+  8), byte for byte as Finder does; Clear removes both, and the folder's icon redraws in the same
+  turn. Neither is undoable in Finder: Edit ▸ Undo is off while the popover is up and names the
+  action before once it closes.
+- [ ] Finder's Emoji opens a second popover (320×444) holding the system emoji picker: a search
+  field and the emoji grid, frequently used first. It has no public API; the demo's Emoji opens the
+  character palette (`orderFrontCharacterPalette:`), whose pick applies.
+- [ ] Finder's Add menu lists Work, School, Grey, Personal, Important, Home, System, application:
+  its own order, and a tag the sidebar leaves out. The demo's lists the sidebar's tags.
+- [ ] AX describes nothing in the 116 pt above the name in Finder's popover; the demo shows the
+  folder's icon there at 96 pt, unchecked against pixels.
 - [x] File menu, in Finder's order with its alternates: New Finder Window, New Folder, New Folder
   with Selection, New Smart Folder, New Tab, Open (⌃ Open in New Tab, ⌥ Open and Close Window ⌥⌘O),
   Open With (⌥ Always Open With), Close Window (⌥ Close All), Get Info (⌥ Show Inspector, ⌃ Get

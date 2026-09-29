@@ -120,7 +120,8 @@ impl FinderDemo {
         match act {
             Act::Nothing => return,
             Act::Swatch => match context::picked_swatch() {
-                Some(tag) => self.tag_selection(tag, cx),
+                Some(Some(tag)) => self.tag_selection(tag, cx),
+                Some(None) => self.tags_or_customize(window, cx),
                 None => return,
             },
             Act::NewFolder => self.new_folder(cx),
@@ -162,7 +163,7 @@ impl FinderDemo {
             Act::MakeAlias => self.with_selection(Op::MakeAlias, After::Rename, cx),
             Act::Compress => self.with_selection(Op::Compress, After::Select, cx),
             Act::Share => self.share_selection(window, cx),
-            Act::Tags => self.edit_tags(window, cx),
+            Act::Tags => self.tags_or_customize(window, cx),
             Act::PreviewOptions => crate::preview::options::toggle(self, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),

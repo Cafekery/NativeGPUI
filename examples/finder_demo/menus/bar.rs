@@ -225,7 +225,7 @@ thread_local! {
         ..Chosen::default()
     }));
     static LOCATIONS: RefCell<Option<Vec<(String, &'static str)>>> = const { RefCell::new(None) };
-    // The last pick in the File menu's tag row: a swatch, or None for its Tags… button.
+    // The last pick in the File menu's tag row: a swatch, or None for its button.
     static TAG_PICK: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
 
@@ -650,10 +650,14 @@ fn tag_row() -> native_gpui::MenuView {
         .map(|key| crate::tags::row_tags(key))
         .collect();
     let picked = !carried.is_empty();
+    let button = match chosen.count == 1 && chosen.folders == 1 {
+        true => "Customize Folder…",
+        false => "Tags…",
+    };
     native_gpui::MenuView::swatches_with_button(
         super::context::tag_swatches(&carried),
         picked,
-        ("tag", "Tags…", picked),
+        ("tag", button, picked),
         |hit| TAG_PICK.set(Some(hit)),
     )
 }
