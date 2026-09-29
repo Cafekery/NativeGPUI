@@ -330,22 +330,59 @@ pub(crate) fn kind_text(kind: &SharedString, room: f32, size: f32) -> SharedStri
     }
 }
 
+const SIZE_EDGES: [u64; 5] = [1, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000];
+
+fn size_band(bytes: u64) -> usize {
+    SIZE_EDGES.partition_point(|&edge| edge <= bytes)
+}
+
 pub(crate) struct Bands {
-    sort: Column,
+    group: Column,
     days: [f64; 6],
     months: Vec<(f64, f64, SharedString)>,
 }
 
 impl Bands {
-    pub(crate) fn new(sort: Column) -> Self {
+    pub(crate) fn new(group: Column) -> Self {
         Self {
-            sort,
-            days: match sort.dated() {
+            group,
+            days: match group.dated() {
                 true => midnights(),
                 false => [0.; 6],
             },
             months: Vec::new(),
         }
+    }
+
+    pub(crate) fn initial(name: &str) -> SharedString {
+        match name.chars().next() {
+            Some(first) if first.is_ascii_digit() => SharedString::new_static("0 \u{2013} 9"),
+            Some(first) => first.to_uppercase().collect::<String>().into(),
+            None => SharedString::new_static("\u{2014}"),
+        }
+    }
+
+    /// Where a size band sorts: bigger items' above smaller ones', folders' below all.
+    pub(crate) fn size_place(folder: bool, bytes: u64) -> f64 {
+        match folder {
+            true => -1.,
+            false => size_band(bytes) as f64,
+        }
+    }
+
+    /// Where the band of a date sorts: a later band above an earlier one.
+    pub(crate) fn place(&mut self, at: f64) -> f64 {
+        let days = self.days;
+        match self.day(at) {
+            Some(day) => days[day],
+            None if at >= days[4] => self.month(at).0.max(days[4]),
+            None => self.month(at).0,
+        }
+    }
+
+    /// Which of Previous 30 Days, Previous 7 Days, Yesterday and Today holds `at`.
+    fn day(&self, at: f64) -> Option<usize> {
+        (0..4).find(|&day| (self.days[day]..self.days[day + 1]).contains(&at))
     }
 
     pub(crate) fn next(&mut self, row: &Row, band: Option<&SharedString>) -> Option<SharedString> {
@@ -355,14 +392,11 @@ impl Bands {
         let finder = |key: &str, english: &str, args: &[&str]| {
             fresh(words::fill(&words::finder(key, english), args))
         };
-        match self.sort {
-            Column::Name => match row.name.chars().next() {
-                Some(first) if first.is_ascii_digit() => fixed("0 \u{2013} 9"),
-                Some(first) => band
-                    .is_none_or(|band| !band.chars().eq(first.to_uppercase()))
-                    .then(|| SharedString::from(first.to_uppercase().to_string())),
-                None => fixed("\u{2014}"),
-            },
+        match self.group {
+            Column::Name => {
+                let initial = Self::initial(&row.name);
+                (band != Some(&initial)).then_some(initial)
+            }
             Column::Kind => {
                 let kind = row.kind.as_ref();
                 let plural = kind.ends_with('s');
@@ -376,47 +410,39 @@ impl Bands {
                 })
             }
             Column::Size if row.face == Face::Folder => finder("GROUP_DIRECTORIES", "Folders", &[]),
-            Column::Size if row.bytes == 0 => fresh(band_bytes(0)),
-            Column::Size if row.bytes < 1_000_000 => {
-                finder("GV10", "Under ^0", &[&band_bytes(1_000_000)])
-            }
-            Column::Size => fixed(match row.bytes {
-                bytes if bytes < 10_000_000 => "1 MB to 10 MB",
-                bytes if bytes < 100_000_000 => "10 MB to 100 MB",
-                bytes if bytes < 1_000_000_000 => "100 MB to 1 GB",
-                _ => "Over 1 GB",
-            }),
-            sort if sort.dated() => {
-                let Some(at) = row.date(sort) else {
+            Column::Size => match size_band(row.bytes) {
+                0 => fresh(band_bytes(0)),
+                1 => finder("GV10", "Under ^0", &[&band_bytes(1_000_000)]),
+                2 => fixed("1 MB to 10 MB"),
+                3 => fixed("10 MB to 100 MB"),
+                4 => fixed("100 MB to 1 GB"),
+                _ => fixed("Over 1 GB"),
+            },
+            group if group.dated() => {
+                let Some(at) = row.date(group) else {
                     return finder("GROUP_FUTURE", "No Date", &[]);
                 };
-                let days = self.days;
-                match () {
-                    _ if (days[3]..days[4]).contains(&at) => finder("GROUP_TODAY", "Today", &[]),
-                    _ if (days[2]..days[3]).contains(&at) => {
-                        finder("GROUP_YESTERDAY", "Yesterday", &[])
-                    }
-                    _ if (days[1]..days[2]).contains(&at) => {
-                        finder("GROUP_PREVIOUS7DAYS", "Previous ^0 Days", &[&count(7)])
-                    }
-                    _ if (days[0]..days[1]).contains(&at) => {
-                        finder("GROUP_PREVIOUS30DAYS", "Previous ^0 Days", &[&count(30)])
-                    }
-                    _ => {
-                        let month = self.month(at);
+                match self.day(at) {
+                    Some(3) => finder("GROUP_TODAY", "Today", &[]),
+                    Some(2) => finder("GROUP_YESTERDAY", "Yesterday", &[]),
+                    Some(1) => finder("GROUP_PREVIOUS7DAYS", "Previous ^0 Days", &[&count(7)]),
+                    Some(_) => finder("GROUP_PREVIOUS30DAYS", "Previous ^0 Days", &[&count(30)]),
+                    None => {
+                        let (_, month) = self.month(at);
                         (band != Some(&month)).then_some(month)
                     }
                 }
             }
-            sort => fresh(match row.words(sort).filter(|words| !words.is_empty()) {
+            group => fresh(match row.words(group).filter(|words| !words.is_empty()) {
                 Some(words) => words.to_string(),
-                None if sort == Column::Tags => words::finder("GV12", "No Tags"),
+                None if group == Column::Tags => words::finder("GV12", "No Tags"),
                 None => "--".to_string(),
             }),
         }
     }
 
-    fn month(&mut self, at: f64) -> SharedString {
+    /// The start and name of the month holding `at`.
+    fn month(&mut self, at: f64) -> (f64, SharedString) {
         thread_local! {
             static FORMATTER: Retained<NSDateFormatter> = {
                 let formatter = NSDateFormatter::new();
@@ -424,12 +450,12 @@ impl Bands {
                 formatter
             };
         }
-        if let Some((_, _, name)) = self
+        if let Some((from, _, name)) = self
             .months
             .iter()
             .find(|(from, to, _)| (*from..*to).contains(&at))
         {
-            return name.clone();
+            return (*from, name.clone());
         }
         let date = NSDate::dateWithTimeIntervalSinceReferenceDate(at);
         let mut start = None;
@@ -443,11 +469,12 @@ impl Bands {
             )
         };
         let name: SharedString = FORMATTER.with(|formatter| formatted(formatter, at).into());
-        if let Some(start) = start.filter(|_| found) {
-            let from = start.timeIntervalSinceReferenceDate();
-            self.months.push((from, from + length, name.clone()));
-        }
-        name
+        let Some(start) = start.filter(|_| found) else {
+            return (at, name);
+        };
+        let from = start.timeIntervalSinceReferenceDate();
+        self.months.push((from, from + length, name.clone()));
+        (from, name)
     }
 }
 

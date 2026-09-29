@@ -62,6 +62,25 @@ pub(crate) const SORT_TITLES: [&str; 8] = [
     "Tags",
 ];
 
+pub(crate) const GROUP_KEYS: [Column; 8] = [
+    Column::Name,
+    Column::Kind,
+    Column::Opened,
+    Column::Added,
+    Column::Modified,
+    Column::Created,
+    Column::Size,
+    Column::Tags,
+];
+
+/// Rows sort by their group's band first, the bands in the order their key sorts first.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct Order {
+    pub(crate) group: Option<Column>,
+    pub(crate) sort: Column,
+    pub(crate) ascending: bool,
+}
+
 impl Column {
     pub(crate) fn id(self) -> &'static str {
         match self {

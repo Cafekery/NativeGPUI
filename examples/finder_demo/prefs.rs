@@ -39,6 +39,7 @@ pub(crate) struct Finder {
     pub(crate) columns: Vec<Column>,
     pub(crate) arranged: (Column, Column),
     pub(crate) icon_options: IconOptions,
+    pub(crate) group: Column,
 }
 
 fn column_view_key(code: &str) -> Option<Column> {
@@ -51,6 +52,20 @@ fn column_view_key(code: &str) -> Option<Column> {
         "ascd" => Column::Created,
         "logs" => Column::Size,
         "ftat" => Column::Tags,
+        _ => return None,
+    })
+}
+
+fn group_key(name: &str) -> Option<Column> {
+    Some(match name {
+        "Name" => Column::Name,
+        "Kind" => Column::Kind,
+        "Date Last Opened" => Column::Opened,
+        "Date Added" => Column::Added,
+        "Date Modified" => Column::Modified,
+        "Date Created" => Column::Created,
+        "Size" => Column::Size,
+        "Tags" => Column::Tags,
         _ => return None,
     })
 }
@@ -152,6 +167,9 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             gallery_view.unwrap_or(Column::Name),
         ),
         icon_options: icons.map_or_else(IconOptions::default, |icons| IconOptions::read(&icons)),
+        group: read("FXPreferredGroupBy")
+            .and_then(|name| group_key(&name.downcast::<NSString>().ok()?.to_string()))
+            .unwrap_or(Column::Kind),
     }
 });
 

@@ -214,25 +214,22 @@ impl FinderDemo {
         if !self.folders.has(id) {
             self.folders.deliver(id, Vec::new(), true);
         }
-        let sorted_by = (self.sort, self.ascending);
-        if id == NETWORK {
+        let order = self.order();
+        let servers = (id == NETWORK).then(|| {
             follow_network(cx);
-            let mut rows = network_rows();
-            crate::read::sort_rows(&mut rows, sorted_by, false);
-            self.deliver(id, Some(rows), None, true, sorted_by, cx);
-            return;
-        }
+            network_rows()
+        });
         cx.spawn(async move |this, cx| {
             let rows = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut rows = rows_of(id);
-                    crate::read::sort_rows(&mut rows, sorted_by, false);
+                    let mut rows = servers.unwrap_or_else(|| rows_of(id));
+                    crate::read::sort_rows(&mut rows, order, false);
                     rows
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.deliver(id, Some(rows), None, true, sorted_by, cx)
+                this.deliver(id, Some(rows), None, true, order, cx)
             })
             .ok();
         })
