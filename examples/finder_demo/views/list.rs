@@ -287,7 +287,7 @@ impl FinderDemo {
             menu_row: self.menu_row.clone(),
             cursor: self.cursor.clone(),
             ql_icon: self.ql_icon.clone(),
-            anchor_held: self.tag_editor.is_some(),
+            anchor_held: self.tag_editor.is_some() || self.customizer.is_some(),
             dropping: self.drop_row().cloned(),
             springing: self.spring_flash().cloned(),
             faces,
