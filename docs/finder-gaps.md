@@ -404,11 +404,13 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   max(icon, ceil(ascent + descent)) + 4 (20 at 13 pt text, 21 at 14, 36 at 32 pt icons); only 20
   (mini) and 21 (this Mac) were read off Finder's windows.
 - [ ] Header rule, dark: Finder 1pt #414241 with 0.5pt #303030 beneath; the demo 1pt #3d3d3d.
-- [ ] Kind column: Finder shortens a kind to the fullest of its own names for it that fits
-  (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text", "PDF
-  document" → "PDF Document", "QuickTime movie" → "QT movie", "Pages document" → "Pages" at 121 pt).
-  The demo reads the same table and fits 20 pt inside the column: 17 kinds matched on the mini;
-  Finder's exact slack lies between 100.87 and 102.95 pt of text for a 121 pt column, not swept.
+- [x] Kind column: Finder shortens a kind to the fullest of its names that fits 20 pt inside the
+  drawn column (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text",
+  "PDF document" → "PDF Document", "QuickTime movie" → "QT movie", "Pages document" → "Pages" at
+  121 pt), starting from its own name, never a fuller one: at 166 pt "MPEG-4 movie" and "HEIF Image"
+  stay themselves where "Apple MPEG-4 movie" and "High Efficiency Image" would fit. Swept over AX
+  at 14 pt text with Kind drawn 76 to 166 pt, 23 kinds: 19 switches put the slack between 19.96 and
+  20.02 pt. The demo takes the same names at 121 and 166.
 - [x] Date column: one style for the whole column, as Finder; see the user's Mac below.
 - [x] Column view with nothing selected: as in Finder, the ancestor columns show with the current
   folder selected in its parent's.

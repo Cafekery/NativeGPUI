@@ -267,7 +267,7 @@ fn date_samples(size: f32) -> [f32; 3] {
 
 struct KindNames {
     names: Vec<Vec<String>>,
-    by_name: HashMap<String, usize>,
+    by_name: HashMap<String, (usize, usize)>,
 }
 
 static KIND_NAMES: LazyLock<KindNames> = LazyLock::new(|| {
@@ -289,7 +289,9 @@ static KIND_NAMES: LazyLock<KindNames> = LazyLock::new(|| {
             .collect()
     });
     let by_name = (names.iter().enumerate())
-        .flat_map(|(kind, all)| all.iter().map(move |name| (name.to_lowercase(), kind)))
+        .flat_map(|(kind, all)| {
+            (all.iter().enumerate()).map(move |(at, name)| (name.to_lowercase(), (kind, at)))
+        })
         .collect();
     KindNames { names, by_name }
 });
@@ -303,8 +305,9 @@ pub(crate) fn kind_text(kind: &SharedString, room: f32, size: f32) -> SharedStri
         if let Some((_, names)) = measured.get(kind).filter(|(at, _)| *at == size.to_bits()) {
             return names.clone();
         }
+        // Finder only shortens: "MPEG-4 movie" never widens to "Apple MPEG-4 movie".
         let names: Names = match KIND_NAMES.by_name.get(&kind.to_lowercase()) {
-            Some(&at) => KIND_NAMES.names[at]
+            Some(&(kind, at)) => KIND_NAMES.names[kind][at..]
                 .iter()
                 .map(|name| (name.clone().into(), appkit_width(name, size, false)))
                 .collect(),
