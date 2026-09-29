@@ -412,7 +412,7 @@ impl FinderDemo {
         };
         let (size, icon) = (self.list_look.text, self.list_look.icon);
         if column.dated() {
-            return self.fitted(index, column, date_fit(size), cx);
+            return self.fitted(index, column, date_fit(size, self.list_look.relative), cx);
         }
         let rows = self.fit_rows(column);
         let here = self.here();
