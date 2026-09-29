@@ -20,6 +20,7 @@ use crate::art::{Anchor, art_at, item_art};
 use crate::data::{Column, Line, Order, Row};
 use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
+use crate::item_info::item_info;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::prefs;
@@ -310,7 +311,6 @@ fn standard_options() -> IconOptions {
     prefs::icon_defaults().or(prefs::finder().icon_options.clone())
 }
 
-/// What an icon view paints without laying it out.
 #[derive(Clone, Default)]
 pub(crate) struct Paint {
     pub(crate) previews: bool,
@@ -1102,16 +1102,10 @@ impl FinderDemo {
             ))
             .map(|canvas| match paint.background {
                 Background::Color([r, g, b]) => canvas.bg(Rgba { r, g, b, a: 1. }),
+                Background::Picture(path) if !path.is_empty() => {
+                    canvas.child(img(Path::new(&path)).absolute().left(shift.x).top(shift.y))
+                }
                 _ => canvas,
-            })
-            .children(match &paint.background {
-                Background::Picture(path) if !path.is_empty() => Some(
-                    img(Path::new(path))
-                        .absolute()
-                        .left(shift.x)
-                        .top(shift.y),
-                ),
-                _ => None,
             })
             // Tiles are absolute and add no scroll extent; this spacer does.
             .child(
@@ -1131,10 +1125,7 @@ impl FinderDemo {
             let held = dragging.as_ref() == Some(&line.key);
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
-            let info = options
-                .info
-                .then(|| crate::item_info::item_info(&line.row))
-                .flatten();
+            let info = options.info.then(|| item_info(&line.row)).flatten();
 
             let tile = div()
                 .id(("ng.finder.tile", index))

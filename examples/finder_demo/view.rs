@@ -34,15 +34,13 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// A folder that always opens in a view shows it; the rest take the window's own style.
     pub(crate) fn open_as_kept(&mut self, cx: &mut Context<Self>) {
         let view = match prefs::opens_in(self.here()) {
-            Some((view, browses)) => {
-                if browses {
-                    self.style = view;
-                }
+            Some((view, true)) => {
+                self.style = view;
                 view
             }
+            Some((view, false)) => view,
             None => self.style,
         };
         if view != self.pending_view.unwrap_or(self.view) {
@@ -170,9 +168,8 @@ impl FinderDemo {
                     self.change_gallery_look(|look| look.thumb = size, cx);
                 }
             }
-            _ => return,
+            _ => {}
         }
-        cx.notify();
     }
 
     pub(crate) fn list_content_w(&self) -> f32 {

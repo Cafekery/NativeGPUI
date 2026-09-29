@@ -28,8 +28,6 @@ unsafe extern "C" {}
 
 const HELD: usize = 4096;
 
-/// What Finder's `InfoDisplayOptions.plist` shows under a kind's name; the rest show nothing.
-#[derive(Clone, Copy)]
 enum Fact {
     Count,
     Pixels,
@@ -54,7 +52,6 @@ fn fact(row: &Row) -> Option<Fact> {
     }
 }
 
-/// The line icon view shows under an item's name; `None` until it has been read.
 pub(crate) fn item_info(row: &Row) -> Option<SharedString> {
     let fact = fact(row)?;
     let key = (row.path.clone(), row.modified_at.to_bits());
