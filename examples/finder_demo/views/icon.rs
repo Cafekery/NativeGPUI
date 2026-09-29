@@ -148,7 +148,7 @@ pub(crate) struct Options {
 
 impl Options {
     pub(crate) fn new(chosen: &IconOptions) -> Self {
-        let standard = &prefs::finder().icon_options;
+        let standard = &prefs::icon_defaults().or(prefs::finder().icon_options.clone());
         let icon = chosen
             .icon_size
             .or(standard.icon_size)
