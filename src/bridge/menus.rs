@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSEventTrackingRunLoopMode, NSMenu, NSMenuDelegate, NSMenuItem, NSText,
+    NSEventTrackingRunLoopMode, NSMenu, NSMenuDelegate, NSMenuItem, NSText, NSWindow,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSRunLoop,
@@ -88,6 +88,7 @@ pub struct MenuCommand {
     checked: bool,
     text: Option<TextCommand>,
     selector: Option<Sel>,
+    main_window: bool,
     fill: Option<Rc<Fill>>,
     view: Option<Rc<ViewFill>>,
 }
@@ -112,6 +113,12 @@ impl MenuCommand {
             selector: Some(Sel::register(selector)),
             ..Self::separator()
         }
+    }
+
+    /// Sends the row's selector to the main window, which answers for it even while a panel is key.
+    pub fn to_main_window(mut self) -> Self {
+        self.main_window = true;
+        self
     }
 
     /// A row showing the view `view` builds each time its menu opens; a pick sends `action`.
@@ -169,6 +176,7 @@ impl MenuCommand {
             checked: false,
             text: None,
             selector: None,
+            main_window: false,
             fill: None,
             view: None,
         }
@@ -505,7 +513,15 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
     let nested = !command.rows.is_empty() || command.fill.is_some();
     let row = match (command.action, command.selector) {
         (None, _) if nested => nested_row(mtm, &command.title, command.rows, command.fill),
-        (None, Some(selector)) => menu_item(mtm, &command.title, selector, &key, mask),
+        (None, Some(selector)) => {
+            let row = menu_item(mtm, &command.title, selector, &key, mask);
+            if command.main_window {
+                let relay =
+                    RELAY.with(|relay| relay.get_or_init(|| MainWindowRelay::new(mtm)).clone());
+                unsafe { row.setTarget(Some(&relay)) };
+            }
+            row
+        }
         (None, None) => NSMenuItem::separatorItem(mtm),
         (Some(action), _) => {
             let row = if nested {
@@ -864,6 +880,51 @@ define_class!(
     }
 );
 
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGMainWindowRelay"]
+    struct MainWindowRelay;
+
+    impl MainWindowRelay {
+        #[unsafe(method(respondsToSelector:))]
+        fn responds_to(&self, selector: Sel) -> Bool {
+            let own: Bool = unsafe { msg_send![super(self), respondsToSelector: selector] };
+            let main = self.main_window();
+            Bool::new(own.as_bool() || main.is_some_and(|main| main.respondsToSelector(selector)))
+        }
+
+        #[unsafe(method_id(forwardingTargetForSelector:))]
+        fn forwarding_target(&self, _selector: Sel) -> Option<Retained<NSWindow>> {
+            self.main_window()
+        }
+
+        #[unsafe(method(validateMenuItem:))]
+        fn validate(&self, item: &NSMenuItem) -> Bool {
+            let Some(window) = self.main_window() else {
+                return Bool::NO;
+            };
+            if window.respondsToSelector(sel!(validateMenuItem:)) {
+                return unsafe { msg_send![&*window, validateMenuItem: item] };
+            }
+            if window.respondsToSelector(sel!(validateUserInterfaceItem:)) {
+                return unsafe { msg_send![&*window, validateUserInterfaceItem: item] };
+            }
+            Bool::YES
+        }
+    }
+);
+
+impl MainWindowRelay {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), init] }
+    }
+
+    fn main_window(&self) -> Option<Retained<NSWindow>> {
+        NSApplication::sharedApplication(MainThreadMarker::from(self)).mainWindow()
+    }
+}
+
 thread_local! {
     static SHARED: RefCell<Option<Retained<CommandSink>>> = const { RefCell::new(None) };
     static STATE: RefCell<Option<Rc<MenuState>>> = const { RefCell::new(None) };
@@ -873,6 +934,7 @@ thread_local! {
     static COMMANDS: RefCell<Vec<(Box<dyn Action>, Option<TextCommand>)>> =
         const { RefCell::new(Vec::new()) };
     static STOCK_EDIT: RefCell<Vec<Retained<NSMenuItem>>> = const { RefCell::new(Vec::new()) };
+    static RELAY: OnceCell<Retained<MainWindowRelay>> = const { OnceCell::new() };
 }
 
 impl CommandSink {

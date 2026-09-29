@@ -253,9 +253,9 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] Quick Look (⌘Y or Space) with nothing selected previews the folder shown, and follows the
   selection once there is one; File reads Quick Look “<folder>” and Slideshow “<folder>”, then
   Close Quick Look and Slideshow while the panel is up.
-- [ ] Escape out of the ⌥⌘Y slideshow leaves the demo's Quick Look panel up in a window, where
-  Finder's closes; while that panel is key the Window menu's tab rows read on, where Finder's
-  stay off.
+- [x] Escape out of the ⌥⌘Y slideshow closes the Quick Look panel, as Finder's does: the panel
+  goes full screen without first showing in a window. While that panel is key the Window menu's
+  tab rows follow the window behind it, off until it has tabs, as Finder's do.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.

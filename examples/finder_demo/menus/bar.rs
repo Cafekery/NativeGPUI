@@ -747,10 +747,14 @@ fn window_rows() -> Vec<MenuCommand> {
         MenuCommand::appkit("Bring All to Front", c"arrangeInFront:"),
         MenuCommand::new("Cycle Through Windows", CycleWindows).key("cmd-`"),
         MenuCommand::separator(),
-        MenuCommand::appkit("Show Previous Tab", c"selectPreviousTab:").key("ctrl-shift-tab"),
-        MenuCommand::appkit("Show Next Tab", c"selectNextTab:").key("ctrl-tab"),
-        MenuCommand::appkit("Move Tab to New Window", c"moveTabToNewWindow:"),
-        MenuCommand::appkit("Merge All Windows", c"mergeAllWindows:"),
+        MenuCommand::appkit("Show Previous Tab", c"selectPreviousTab:")
+            .key("ctrl-shift-tab")
+            .to_main_window(),
+        MenuCommand::appkit("Show Next Tab", c"selectNextTab:")
+            .key("ctrl-tab")
+            .to_main_window(),
+        MenuCommand::appkit("Move Tab to New Window", c"moveTabToNewWindow:").to_main_window(),
+        MenuCommand::appkit("Merge All Windows", c"mergeAllWindows:").to_main_window(),
         MenuCommand::separator(),
         MenuCommand::new("Show Progress Window", ShowProgressWindow),
     ]
