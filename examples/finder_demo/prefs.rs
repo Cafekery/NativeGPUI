@@ -776,6 +776,9 @@ pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
     if let Some(bottom) = options.label_on_bottom {
         set_look_on(ICON_VIEW, folder, "labelOnBottom", bottom);
     }
+    if let Some(on) = options.show_icon_preview {
+        set_look_on(ICON_VIEW, folder, "showIconPreview", on);
+    }
 }
 
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
@@ -811,4 +814,30 @@ pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a 
     let places: Vec<&NSArray<NSNumber>> = places.iter().map(|place| &**place).collect();
     let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
     unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
+}
+
+fn finder_number(group: &str, view: &str, key: &str) -> Option<f64> {
+    let all = finder_pref(group)?.downcast::<NSDictionary>().ok()?;
+    let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
+    Some(
+        value(&view, key)?
+            .downcast::<NSNumber>()
+            .ok()?
+            .doubleValue(),
+    )
+}
+
+/// A view's global option as Finder keys it in `StandardViewOptions`: the demo's own, else Finder's.
+pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {
+    read(&format!("ng.finder.{options}.{key}"))
+        .or_else(|| finder_number("StandardViewOptions", options, key))
+}
+
+pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
+    write(&format!("ng.finder.{options}.{key}"), value);
+}
+
+/// Finder's standard per-folder setting, below every folder's own and Use as Defaults.
+pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
+    finder_number("StandardViewSettings", settings, key)
 }

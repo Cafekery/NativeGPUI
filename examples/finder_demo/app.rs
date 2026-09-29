@@ -18,7 +18,7 @@ use native_gpui::sidebar::NativeSidebar;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
-use crate::art::Anchor;
+use crate::art::{Anchor, Previews};
 use crate::chrome::sheet::GoPanel;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Row};
@@ -137,6 +137,7 @@ pub(crate) struct FinderDemo {
     pub(crate) column_grab: Option<(&'static str, f32)>,
     pub(crate) icons: Grid,
     pub(crate) bands: Bands,
+    pub(crate) previews: Previews,
     pub(crate) scale: f32,
     pub(crate) viewport: Size<Pixels>,
     pub(crate) window_min_w: f32,
@@ -279,6 +280,7 @@ impl FinderDemo {
             column_grab: None,
             icons: Grid::default(),
             bands: Bands::default(),
+            previews: Previews::of(start),
             scale: 2.,
             viewport: Size::default(),
             window_min_w: f32::NAN,

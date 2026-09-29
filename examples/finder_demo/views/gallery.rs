@@ -4,7 +4,7 @@ use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::{native_callout, native_scroll_bars};
 
 use crate::app::FinderDemo;
-use crate::art::{Poster, art_at, poster_art, row_art};
+use crate::art::{Poster, art_at, item_art, poster_art};
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
@@ -64,6 +64,7 @@ impl FinderDemo {
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
         let scale = self.scale;
+        let previews = self.previews.gallery;
         if chosen.len() <= 1 {
             self.ask_beside_cursor(size);
         }
@@ -121,7 +122,7 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(row_art(&line.row, strip.icon, scale, true))
+                    .child(item_art(&line.row, strip.icon, scale, previews))
                     .on_click(pick_on_click(line, this.clone()));
                 native_callout(
                     ("ng.finder.strip.tip", index),

@@ -16,7 +16,7 @@ use native_gpui::tokens::{SystemColor, system_color};
 use objc2_app_kit::NSFont;
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, art_at, row_art};
+use crate::art::{Anchor, art_at, item_art};
 use crate::data::{Column, Line, Row};
 use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
@@ -148,7 +148,7 @@ pub(crate) struct Options {
 
 impl Options {
     pub(crate) fn new(chosen: &IconOptions) -> Self {
-        let standard = &prefs::icon_defaults().or(prefs::finder().icon_options.clone());
+        let standard = &standard_options();
         let icon = chosen
             .icon_size
             .or(standard.icon_size)
@@ -294,6 +294,28 @@ impl Options {
             }
         };
         point(px(x.floor()), px((2. * MARGIN + at.y + y).floor()))
+    }
+}
+
+fn standard_options() -> IconOptions {
+    prefs::icon_defaults().or(prefs::finder().icon_options.clone())
+}
+
+/// What an icon view paints without laying it out.
+#[derive(Clone, Default)]
+pub(crate) struct Paint {
+    pub(crate) previews: bool,
+}
+
+impl Paint {
+    fn new(chosen: &IconOptions) -> Self {
+        let standard = standard_options();
+        Self {
+            previews: chosen
+                .show_icon_preview
+                .or(standard.show_icon_preview)
+                .unwrap_or(true),
+        }
     }
 }
 
@@ -497,6 +519,7 @@ impl Places {
 pub(crate) struct Grid {
     places: Option<Places>,
     options: Option<(&'static str, Options)>,
+    paint: Paint,
     reading: Option<&'static str>,
     moved: u64,
     /// Finder leaves icons where it first put them, whatever the window does next.
@@ -541,6 +564,7 @@ impl Grid {
         let options = Options::new(&chosen);
         self.places = Some(Places::new(folder, view, &chosen, options));
         self.options = Some((folder, options));
+        self.paint = Paint::new(&chosen);
         self.reading = None;
         self.moved += 1;
     }
@@ -847,16 +871,18 @@ struct Ghost {
     line: Line,
     options: Options,
     scale: f32,
+    previews: bool,
     look: Look,
     tags: Vec<usize>,
 }
 
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let art = item_art(&self.line.row, self.options.size, self.scale, self.previews);
         tile(
             &self.line,
             self.options,
-            self.scale,
+            art,
             self.look,
             true,
             &self.tags,
@@ -872,7 +898,7 @@ impl Render for Ghost {
 fn tile(
     line: &Line,
     options: Options,
-    scale: f32,
+    art: AnyElement,
     look: Look,
     selected: bool,
     tags: &[usize],
@@ -904,7 +930,7 @@ fn tile(
                 .bg(look.backdrop),
         );
     }
-    let icon = icon.child(art_at(row_art(&line.row, size, scale, true), size, anchor));
+    let icon = icon.child(art_at(art, size, anchor));
 
     let dots = tag_dots_w(tags.len());
     let room = match options.bottom {
@@ -1003,6 +1029,7 @@ impl FinderDemo {
         let lanes = self.columns(window);
         let room = self.icon_room(f32::from(window.viewport_size().width));
         let options = self.icon_options();
+        let paint = self.icon_paint();
         let scale = self.scale;
         let cell = options.cell;
         let look = Look::new(palette);
@@ -1059,7 +1086,7 @@ impl FinderDemo {
                 .child(tile(
                     line,
                     options,
-                    scale,
+                    item_art(&line.row, options.size, scale, paint.previews),
                     look,
                     is_selected,
                     &carried,
@@ -1085,6 +1112,7 @@ impl FinderDemo {
                                 line: line.clone(),
                                 options,
                                 scale,
+                                previews: paint.previews,
                                 look,
                                 tags: carried.clone(),
                             })
@@ -1194,7 +1222,9 @@ impl FinderDemo {
         if !self.keeps_places() {
             self.icons.places = None;
             if self.icons.options.is_none_or(|(at, _)| at != here) {
-                self.icons.options = Some((here, Options::new(&prefs::icon_options(here))));
+                let chosen = prefs::icon_options(here);
+                self.icons.options = Some((here, Options::new(&chosen)));
+                self.icons.paint = Paint::new(&chosen);
             }
             return true;
         }
@@ -1244,6 +1274,13 @@ impl FinderDemo {
         }
     }
 
+    pub(crate) fn icon_paint(&self) -> Paint {
+        match self.icons.options {
+            Some((at, _)) if at == self.here() => self.icons.paint.clone(),
+            _ => Paint::new(&prefs::icon_options(self.here())),
+        }
+    }
+
     pub(crate) fn change_icon_options(
         &mut self,
         change: impl FnOnce(&mut IconOptions),
@@ -1263,7 +1300,8 @@ impl FinderDemo {
             .as_ref()
             .map(|places| places.recorded.clone())
             .unwrap_or_default();
-        let options = Options::new(&chosen.or(recorded));
+        let chosen = chosen.or(recorded);
+        let options = Options::new(&chosen);
         if let Some(places) = places {
             for spots in [
                 &mut places.own,
@@ -1278,6 +1316,7 @@ impl FinderDemo {
             places.save();
         }
         self.icons.options = Some((here, options));
+        self.icons.paint = Paint::new(&chosen);
         self.icons.moved += 1;
         cx.notify();
     }
