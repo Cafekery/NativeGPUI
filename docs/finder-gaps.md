@@ -278,7 +278,9 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   resolution with a hair space either side of × (320 × 240), codecs in the reverse of Spotlight's
   order (MPEG-4 AAC, H.264), colour space RGB.
 - [ ] Finder's Preview Options panel takes key as it opens and shows its title in its title bar;
-  the demo's never takes key and hides its title. Its tables for audio, applications and every
+  the demo's never takes key and hides its title. Opened with focus and a visible title it reads as
+  Finder's, but View ▸ Hide Preview Options then no longer closes it while it is key, even with
+  the action handled on the panel's own focused root. Its tables for audio, applications and every
   other kind were not read off Finder.
 - [x] Light appearance: Finder's vibrant text darkens the glass by a fixed depth (headings and
   values 178.5, row titles 102, kind 51.5), and the glass lightens from 237 to 242 when the window
@@ -300,7 +302,11 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
 - [ ] The quick actions' Rotate Left symbol sits 0.5 pt left of Finder's (x 897–911 against
   897.5–911.5); its row, Markup and More… match (626–641, 627–641).
 - [ ] The pane's quick action buttons have no tooltips; Finder's first button's help reads Rotate
-  Right while ⌥ is held.
+  Right while ⌥ is held. AppKit does show tooltips in a clear, non-key, key-capable child panel of
+  the active app, but only over pixels painted at an alpha of at least 1/255: the window server hands
+  the mouse through the rest to the window below. In the demo no tooltip appeared at all, not the
+  pane's (host rects, or a hosted view's `toolTip`, over a 30% fill) and not even an NSToolbarItem's
+  in the key main window, so something process-wide stops them.
 - [x] Column view's preview column has no glass under it, and Finder draws its text in plain label
   colours there (dark: name and values 221, kind, titles and action labels 154, rules 54 on the
   column's 32; light: 39, 128, 230 on 255); the card uses them in column view.
@@ -469,8 +475,10 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   AppKit on macOS 27 centres every sheet unless the sheet answers the private `sheetBehavior` with
   3 and the window places it through `window:willPositionSheet:usingRect:`; both have to go on the
   class the window reports, not its KVO subclass, or AppKit never asks.
-- [ ] Go to Folder: a path longer than the field wraps to a second line in the demo, and for a
-  folder the user can't list Finder lists nothing under the field where the demo lists its path.
+- [x] Go to Folder: a path longer than the field stays on one line and scrolls, as Finder's (the
+  last of 161 characters sits on the first glyph's line in both), and a folder the user can't list
+  is never offered: typed with or without its slash, Finder and the demo list nothing under the
+  field, and Return leaves the sheet up.
 - [x] Connect to Server: its own window at Finder's saved frame (`FXConnectToBounds`), 355×234 at
   least, zoom off, as Finder's: the last server (`FXConnectToLastURL`) in a combo box of recent
   servers, Favorite Servers with + and −, an action menu with Clear Recent Servers… (⌥ Clear Recent
@@ -482,7 +490,22 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   titled with the folder, which ⌘J opens and closes from either window. In list view it lists
   Finder's twelve Show Columns in Finder's order.
 - [ ] Finder's list-view View Options panel is 236×646 and also holds Group By and text size among
-  other rows; the demo's is 268×341, with Sort By and Show Columns only.
+  other rows; the demo's is 268×341, with Sort By and Show Columns only. Read over AX (window
+  points, every view 236×646, title shown): Always open in <view> view (19,35) and Browse in
+  <view> view (29,57, off until the first is on; help "Select if you want to set the default style
+  of this window to <view> view"); Group By (label 19,91, popup 81,88 136×22: None, rule, Name, Kind,
+  Application, Date Last Opened, Date Added, Date Modified, Date Created, Size, Tags) and Sort By
+  (19,119 / 81,116: the same without None and Application), gallery having Sort By alone at 88.
+  List: Icon size (19,171) with the generic document icon at 16 and 32 as buttons (93,169 18×18;
+  130,153 34×34) over radios (94,193; 139,193), Text size (19,220, popup 76.5,217 66×22, 10–16),
+  Show Columns (19,245), its twelve boxes from 263 on a 20 pt pitch, Use relative dates (514),
+  Calculate all sizes (534), Show icon preview (554). Column: Text size (156/153), Show icons,
+  Show icon preview, Show preview column, Resize columns to fit filenames (181–241), no Use as
+  Defaults. Gallery: Thumbnail size (19,125) with Finder's `viewOptionsThumbnail32/48/64` images
+  (19,173 34×28; 77,160 50×41; 151,147 66×54) over radios (28/94/176,207), Show preview column
+  (238), Show icon preview (258), Show filename (278). Use as Defaults (56.5,605 123×22) was off in
+  every view for a folder with no settings of its own. The demo groups by its sort column, so Group
+  By and Sort By can't yet be two settings as Finder's are.
 - Measured on the user's Mac (textSize 14, iconSize 16, "Show all filename extensions" on, so both
   apps show full names): rows 21 pt and stripes below the last row on the same 21 pt pitch, header
   labels within 0.5 pt, titles in the same glyph positions. Differences left:
