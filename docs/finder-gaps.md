@@ -235,8 +235,9 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   `NewWindowTargetPath`), not the folder shown.
 - [x] Make Alias and New Folder with Selection start renaming what they make, as Finder's do.
 - [x] ⌥↑ and ⌥↓ select the first and last item in list view, as in Finder.
-- [ ] In column view ⌥↓ still moves one row; Finder's ⌥↑ and ⌥↓ were not read in column, icon or
-  gallery view.
+- [x] ⌥↑ and ⌥↓ select the first and last item of the focused column in column view; in gallery
+  view ⌥↑ and ⌥← select the first item, ⌥↓ and ⌥→ the last, and plain ↑ ↓ do nothing; in icon view
+  ⌥ changes nothing, the arrows move one icon. All as read off Finder 27.
 - [x] Go ▸ Utilities (⇧⌘U) opens /Applications/Utilities.
 - [ ] Finder shows /System/Applications' apps inside /Applications and its Utilities; the demo lists
   each folder as it is on disk.
