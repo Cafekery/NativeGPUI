@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::iter;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -19,7 +20,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, intern_path};
-use crate::locations::computer_name;
+use crate::locations::{COMPUTER, computer_name, place};
 use crate::menus::{Act, Menu};
 
 pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, Column, bool);
@@ -337,7 +338,7 @@ impl FinderDemo {
                 .tool_tip("See the location of the current folder")
                 .entries_on_open(read(&this, Self::path_rows))
                 .on_select(select(&this, |this, index, window, cx| {
-                    if let Some(id) = this.path_targets().get(index).copied() {
+                    if let Some((_, id)) = this.path_places().get(index).copied() {
                         this.go(id, window, cx);
                     }
                 })),
@@ -441,28 +442,31 @@ impl FinderDemo {
     }
 
     fn path_rows(&self) -> Vec<MenuEntry> {
-        let crumbs = self
-            .folder()
-            .map_or(&[][..], |folder| folder.crumbs.as_slice());
-        crumbs
-            .iter()
-            .rev()
-            .copied()
-            .chain([computer_name()])
+        self.path_places()
+            .into_iter()
             .enumerate()
-            .map(|(at, name)| MenuEntry::item(name).checked(at == 0))
+            .map(|(at, (name, _))| MenuEntry::item(name).checked(at == 0))
             .collect()
     }
 
-    fn path_targets(&self) -> Vec<&'static str> {
-        let crumbs = self.folder().map_or(0, |folder| folder.crumbs.len());
-        let mut targets: Vec<&'static str> = Path::new(self.here())
-            .ancestors()
-            .take(crumbs)
-            .map(intern_path)
+    fn path_places(&self) -> Vec<(&'static str, &'static str)> {
+        let here = self.here();
+        if place(here).is_some() {
+            return iter::successors(Some(here), |id| place(id)?.1)
+                .filter_map(|id| Some((place(id)?.0, id)))
+                .collect();
+        }
+        let crumbs = self
+            .folder()
+            .map_or(&[][..], |folder| folder.crumbs.as_slice());
+        let mut places: Vec<(&'static str, &'static str)> = crumbs
+            .iter()
+            .rev()
+            .copied()
+            .zip(Path::new(here).ancestors().map(intern_path))
             .collect();
-        targets.push("/");
-        targets
+        places.push((computer_name(), COMPUTER));
+        places
     }
 
     fn action_rows(&self) -> Menu {

@@ -97,7 +97,8 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar = self.path_bar_shown.then(|| self.path_bar(&palette, cx));
+        let path_bar =
+            (self.path_bar_shown && !self.airdrop_shown()).then(|| self.path_bar(&palette, cx));
         let status_bar = self.status_bar_shown.then(|| self.status_bar(cx));
         let list_view = self.view == LIST_VIEW;
         let body = match self.view {

@@ -61,12 +61,11 @@ a context menu but not in the menu bar are listed as wiring, not as features.
   startup disk selected
 - [x] Column view rooted at Computer keeps Computer's column first however deep the selection
   goes; a folder reached any other way starts its columns at its volume
-- [ ] The path bar and the toolbar's path menu don't know the locations. Finder's path bar starts
-  a folder's path at its volume (“Macintosh HD › Users › …”, no computer crumb); at Computer it is
-  the lone crumb “Jace’s MacBook Pro”, at Network “Network”, in Shared and Recents empty until an
-  item is chosen, and AirDrop has none. With a volume chosen in Computer it shows just the volume.
-  The demo's first crumb at a location draws the startup disk's icon, and its path menu's last row
-  (the computer) opens / instead of Computer
+- [x] The path bar and the toolbar's Path menu know the locations, as Finder's: a folder's path
+  starts at its volume (“Macintosh HD › Users › …”, no computer crumb); at Computer the lone crumb
+  is the computer's name with its icon, at Network “Network”, in Shared and Recents nothing until
+  an item is chosen, and AirDrop has no path bar. A chosen volume shows alone. The Path menu lists a
+  location's own chain (Network, then the computer) and its computer row opens Computer
 - [x] Go ▸ Shared (⇧⌘S), after iCloud Drive as in Finder's menu: the items Spotlight marks as shared
   (`kMDItemIsShared == 1`)
 - [ ] Shared lists its items without Finder's Shared By column and grouping. Finder's Shared By
