@@ -8,7 +8,7 @@ use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{Bool, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
@@ -516,9 +516,11 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
         (None, Some(selector)) => {
             let row = menu_item(mtm, &command.title, selector, &key, mask);
             if command.main_window {
-                let relay =
-                    RELAY.with(|relay| relay.get_or_init(|| MainWindowRelay::new(mtm)).clone());
-                unsafe { row.setTarget(Some(&relay)) };
+                RELAY.with(|relay| {
+                    let relay = relay
+                        .get_or_init(|| unsafe { msg_send![MainWindowRelay::alloc(mtm), init] });
+                    unsafe { row.setTarget(Some(relay)) };
+                });
             }
             row
         }
@@ -779,17 +781,17 @@ fn command_of(item: &NSMenuItem) -> Option<(Box<dyn Action>, Option<TextCommand>
 
 fn text_allows(item: &NSMenuItem, text: TextCommand) -> bool {
     let app = NSApplication::sharedApplication(MainThreadMarker::from(item));
-    let Some(target) = (unsafe { app.targetForAction_to_from(text.selector(), None, Some(item)) })
-    else {
-        return false;
-    };
-    let answers =
-        |check: Sel| -> bool { unsafe { msg_send![&*target, respondsToSelector: check] } };
+    unsafe { app.targetForAction_to_from(text.selector(), None, Some(item)) }
+        .is_some_and(|target| validates(&target, item))
+}
+
+fn validates(target: &AnyObject, item: &NSMenuItem) -> bool {
+    let answers = |check: Sel| -> bool { unsafe { msg_send![target, respondsToSelector: check] } };
     if answers(sel!(validateMenuItem:)) {
-        return unsafe { msg_send![&*target, validateMenuItem: item] };
+        return unsafe { msg_send![target, validateMenuItem: item] };
     }
     if answers(sel!(validateUserInterfaceItem:)) {
-        return unsafe { msg_send![&*target, validateUserInterfaceItem: item] };
+        return unsafe { msg_send![target, validateUserInterfaceItem: item] };
     }
     true
 }
@@ -889,9 +891,8 @@ define_class!(
     impl MainWindowRelay {
         #[unsafe(method(respondsToSelector:))]
         fn responds_to(&self, selector: Sel) -> Bool {
-            let own: Bool = unsafe { msg_send![super(self), respondsToSelector: selector] };
-            let main = self.main_window();
-            Bool::new(own.as_bool() || main.is_some_and(|main| main.respondsToSelector(selector)))
+            let own: bool = unsafe { msg_send![super(self), respondsToSelector: selector] };
+            Bool::new(own || self.main_window().is_some_and(|main| main.respondsToSelector(selector)))
         }
 
         #[unsafe(method_id(forwardingTargetForSelector:))]
@@ -901,25 +902,12 @@ define_class!(
 
         #[unsafe(method(validateMenuItem:))]
         fn validate(&self, item: &NSMenuItem) -> Bool {
-            let Some(window) = self.main_window() else {
-                return Bool::NO;
-            };
-            if window.respondsToSelector(sel!(validateMenuItem:)) {
-                return unsafe { msg_send![&*window, validateMenuItem: item] };
-            }
-            if window.respondsToSelector(sel!(validateUserInterfaceItem:)) {
-                return unsafe { msg_send![&*window, validateUserInterfaceItem: item] };
-            }
-            Bool::YES
+            Bool::new(self.main_window().is_some_and(|window| validates(&window, item)))
         }
     }
 );
 
 impl MainWindowRelay {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        unsafe { msg_send![Self::alloc(mtm), init] }
-    }
-
     fn main_window(&self) -> Option<Retained<NSWindow>> {
         NSApplication::sharedApplication(MainThreadMarker::from(self)).mainWindow()
     }
