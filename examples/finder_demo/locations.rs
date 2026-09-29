@@ -305,6 +305,10 @@ fn follow_network(cx: &mut App) {
 }
 
 impl FinderDemo {
+    pub(crate) fn airdrop_shown(&self) -> bool {
+        self.here() == AIRDROP && self.tag_listing.is_none() && !self.in_search()
+    }
+
     pub(crate) fn read_location(&mut self, id: &'static str, cx: &mut Context<Self>) {
         if !self.folders.start(id) {
             return;
