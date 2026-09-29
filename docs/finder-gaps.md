@@ -109,7 +109,8 @@ which lists each alternate with its modifier mask; the demo's menus carry the sa
   ⌥⇧; no other menu offers it, and none has a ⌥ Move Item Here
 - [x] A folder or a sidebar item: Open in New Tab becomes Open in New Window
 - [x] Move to Trash has no alternate
-- [ ] Finder's item menu has Show Preview Options after the tags; the demo's has not
+- [x] Finder's item menu has Show Preview Options after the tags, Hide Preview Options while that
+  panel is open; so does the demo's
 
 ## Toolbar: where the search field shrinks and collapses
 
