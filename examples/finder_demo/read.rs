@@ -633,11 +633,14 @@ impl FinderDemo {
             .folders
             .get(id)
             .is_some_and(|folder| folder.rows.is_empty());
-        let order = self.order();
         let headed = self.headed_for() == Some(id);
-        let (plain, extras) = match headed {
-            true => (self.plain_on_arrival(), self.extras_in(id)),
-            false => (self.plain(), self.wants_extras()),
+        let (order, plain, extras) = match headed {
+            true => (
+                self.order_for(id),
+                self.plain_on_arrival(),
+                self.extras_in(id),
+            ),
+            false => (self.order(), self.plain(), self.wants_extras()),
         };
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
