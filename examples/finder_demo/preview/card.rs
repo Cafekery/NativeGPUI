@@ -7,10 +7,10 @@ use gpui::{
     SharedString, div, hsla, img, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
-use native_gpui::native_context_menu;
 use native_gpui::tokens::{
     self, Appearance, SymbolColor, SystemColor, sf_symbol_colored, system_color,
 };
+use native_gpui::{native_context_menu, native_tooltip};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags};
 use objc2_foundation::{
@@ -1006,15 +1006,18 @@ impl Shown {
                             );
                         let finder = finder.downgrade();
                         match act {
-                            Some(act) => slot
-                                .on_click(move |event, _, cx| {
+                            Some(act) => native_tooltip(
+                                ("action.tip", at),
+                                label,
+                                slot.on_click(move |event, _, cx| {
                                     let act = match event.modifiers().alt {
                                         true => act.alternate().unwrap_or(act),
                                         false => act,
                                     };
                                     finder.update(cx, |demo, cx| demo.run_quick(act, cx)).ok();
-                                })
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                             None => {
                                 let rows = menu_rows(
                                     &card.actions[card.actions.len().min(ACTION_BUTTONS)..],
