@@ -43,21 +43,37 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Go ▸ Connect to Server… (⌘K)
 - [x] Go ▸ AirDrop (⇧⌘R) opens an AirDrop location in the window, titled AirDrop as Finder's;
   items dropped on it, and the toolbar's AirDrop button, send through AppKit's AirDrop sheet
-- [ ] The AirDrop location lists nothing. Finder's shows the `airdrop` symbol, “AirDrop lets you
-  share instantly with people nearby.”, “Allow me to be discovered by:” with a popover of No One,
-  Contacts Only and Everyone (`DiscoverableMode` in `com.apple.sharingd`), “Don’t see who you’re
-  looking for?”, and the people nearby, which have no public API; setting the mode takes a
-  private call
+- [ ] The AirDrop location lists nothing. Finder 27 shows DeviceDiscoveryUI's SwiftUI view, not
+  its AirDropInfoView.nib, and no `airdrop` symbol: top left, 16 pt in, the Contacts me-card photo
+  (48 pt, round) beside “Use AirDrop as” (13 pt) over the name (15 pt semibold); bottom left, 16 pt
+  in, “AirDrop lets you share instantly with people nearby.” (12 pt) over “Allow me to be
+  discovered by: ” (12 pt) and a 114×20 pop-up of No One, Contacts Only and Everyone
+  (`DiscoverableMode` in `com.apple.sharingd`), its bottom 12 pt above the status bar. No path bar;
+  the view switcher, Group and Action are off. Setting the mode needs sharingd's private
+  entitlement `com.apple.private.airdrop.settings`; System Settings' pane is
+  `x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension`
 - [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
   “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
   Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each
   with its model's icon, and opening one connects over SMB, else AFP, else screen sharing
-- [ ] Enclosing Folder (⌘↑) and ⌃⌘↑ from a volume's root, and Select Startup Disk, open /Volumes
-  where Finder shows Computer; column view rooted at Computer can lose that column two levels
-  down; the path bar, the toolbar's path menu and the first crumb don't know the locations
+- [x] Enclosing Folder (⌘↑) from a volume's root opens Computer with the volume selected, and
+  ⌃⌘↑ opens it in a new window, as Finder's do; Select Startup Disk shows Computer with the
+  startup disk selected
+- [ ] Column view rooted at Computer can lose that column two levels down
+- [ ] The path bar and the toolbar's path menu don't know the locations. Finder's path bar starts
+  a folder's path at its volume (“Macintosh HD › Users › …”, no computer crumb); at Computer it is
+  the lone crumb “Jace’s MacBook Pro”, at Network “Network”, in Shared and Recents empty until an
+  item is chosen, and AirDrop has none. With a volume chosen in Computer it shows just the volume.
+  The demo's first crumb at a location draws the startup disk's icon, and its path menu's last row
+  (the computer) opens / instead of Computer
 - [x] Go ▸ Shared (⇧⌘S), after iCloud Drive as in Finder's menu: the items Spotlight marks as shared
   (`kMDItemIsShared == 1`)
-- [ ] Shared lists its items without Finder's Shared By column and grouping
+- [ ] Shared lists its items without Finder's Shared By column and grouping. Finder's Shared By
+  (`shareOwner`, 200 pt, after Date Last Opened) shows the owner's name (“William Jones” from the
+  share's name components, else `kMDItemOwnerName`: “Guillaume C.”); Group By Shared By heads each
+  group “Shared By <owner>” (“Shared By Me” for the owner, `kMDItemSharedItemCurrentUserRole`),
+  groups by name ascending. With neither on, the name cell carries “Shared by WJ” (the abbreviated
+  name). Its View Options and Sort By list Shared By and Last Modified By
 - [x] File ▸ New Smart Folder, and saved searches with it: Save in a search's scope bar writes a .savedSearch in Finder's own format to ~/Library/Saved Searches and adds it to the sidebar, and opening one, the demo's or Finder's, runs its query through Spotlight. The Save sheet asks only for the name, without Finder's tags, Where and Add To Sidebar controls
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
