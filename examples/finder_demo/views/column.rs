@@ -10,7 +10,7 @@ use native_gpui::native_scroll_bars;
 use native_gpui::tokens::{self, SystemColor, system_color};
 
 use crate::app::FinderDemo;
-use crate::art::{art_at, row_art};
+use crate::art::{art_at, item_art};
 use crate::data::{Line, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
@@ -187,6 +187,7 @@ impl FinderDemo {
     ) -> AnyElement {
         let folder = rung.folder;
         let rows = self.column_listing(folder);
+        let previews = self.previews.column;
         let scale = self.scale;
         let look = self.column_look;
         let handle = self.column_scrolls[index].clone();
@@ -290,7 +291,7 @@ impl FinderDemo {
                             })
                             .when(look.icons, |cell| {
                                 cell.child(art_at(
-                                    row_art(&line.row, ICON, scale, true),
+                                    item_art(&line.row, ICON, scale, previews),
                                     ICON,
                                     (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
                                 ))
