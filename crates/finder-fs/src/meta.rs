@@ -1,8 +1,9 @@
 use std::ffi::c_void;
 use std::path::Path;
+use std::ptr::NonNull;
 
 use objc2::runtime::AnyObject;
-use objc2_foundation::{NSArray, NSDate, NSDictionary, NSNumber, NSString};
+use objc2_foundation::{NSArray, NSDate, NSNumber, NSString, ns_string};
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -36,80 +37,65 @@ pub struct Meta {
     pub encoders: Vec<String>,
     pub category: Option<String>,
     pub duration: Option<f64>,
-    /// Every other attribute the item has, by Spotlight name, as text.
+    /// Every attribute by Spotlight name, as text.
     pub values: Vec<(String, String)>,
 }
 
-struct Item(*mut c_void);
+/// An owned CoreFoundation reference.
+struct Cf(NonNull<c_void>);
 
-impl Drop for Item {
+impl Drop for Cf {
     fn drop(&mut self) {
-        unsafe { CFRelease(self.0) };
+        unsafe { CFRelease(self.0.as_ptr()) };
     }
 }
 
-impl Item {
-    fn attribute(&self, name: &str) -> Option<Attribute> {
+impl Cf {
+    fn new(created: *mut c_void) -> Option<Self> {
+        NonNull::new(created).map(Self)
+    }
+
+    fn item(path: &Path) -> Option<Self> {
+        let path = NSString::from_str(path.to_str()?);
+        Self::new(unsafe { MDItemCreate(std::ptr::null(), (&*path as *const NSString).cast()) })
+    }
+
+    fn attribute(&self, name: &str) -> Option<Self> {
         let key = NSString::from_str(name);
-        let value = unsafe { MDItemCopyAttribute(self.0, (&*key as *const NSString).cast()) };
-        // Not `then_some`: that builds the wrapper first and releases a null attribute.
-        (!value.is_null()).then(|| Attribute(value))
+        Self::new(unsafe {
+            MDItemCopyAttribute(self.0.as_ptr(), (&*key as *const NSString).cast())
+        })
     }
 
-    fn string(&self, name: &str) -> Option<String> {
-        self.attribute(name)?.string()
-    }
-
-    fn number(&self, name: &str) -> Option<f64> {
-        self.attribute(name)?.number()
-    }
-
-    fn date(&self, name: &str) -> Option<f64> {
-        self.attribute(name)?.date()
-    }
-
-    fn strings(&self, name: &str) -> Vec<String> {
-        self.attribute(name)
-            .map(|value| value.strings())
-            .unwrap_or_default()
-    }
-}
-
-struct Attribute(*mut c_void);
-
-impl Drop for Attribute {
-    fn drop(&mut self) {
-        unsafe { CFRelease(self.0) };
-    }
-}
-
-impl Attribute {
     fn is(&self, id: usize) -> bool {
-        unsafe { CFGetTypeID(self.0) == id }
+        unsafe { CFGetTypeID(self.0.as_ptr()) == id }
+    }
+
+    fn cast<T>(&self) -> &T {
+        unsafe { self.0.cast::<T>().as_ref() }
     }
 
     fn string(&self) -> Option<String> {
         if !self.is(unsafe { CFStringGetTypeID() }) {
             return None;
         }
-        let text = unsafe { &*self.0.cast::<NSString>() }.to_string();
+        let text = self.cast::<NSString>().to_string();
         (!text.is_empty()).then_some(text)
     }
 
     fn number(&self) -> Option<f64> {
         self.is(unsafe { CFNumberGetTypeID() })
-            .then(|| unsafe { &*self.0.cast::<NSNumber>() }.doubleValue())
+            .then(|| self.cast::<NSNumber>().doubleValue())
     }
 
     fn date(&self) -> Option<f64> {
         self.is(unsafe { CFDateGetTypeID() })
-            .then(|| unsafe { &*self.0.cast::<NSDate>() }.timeIntervalSinceReferenceDate())
+            .then(|| self.cast::<NSDate>().timeIntervalSinceReferenceDate())
     }
 
-    /// A number, a yes or no, or a list of words.
     fn text(&self) -> Option<String> {
         if self.is(unsafe { CFBooleanGetTypeID() }) {
-            let on = unsafe { &*self.0.cast::<NSNumber>() }.boolValue();
+            let on = self.cast::<NSNumber>().boolValue();
             return Some(if on { "Yes" } else { "No" }.to_owned());
         }
         if let Some(number) = self.number() {
@@ -121,8 +107,8 @@ impl Attribute {
         if !self.is(unsafe { CFArrayGetTypeID() }) {
             return None;
         }
-        let array = unsafe { &*self.0.cast::<NSArray<AnyObject>>() };
-        let words: Vec<String> = array
+        let words: Vec<String> = self
+            .cast::<NSArray<AnyObject>>()
             .iter()
             .filter_map(|word| Some(word.downcast::<NSString>().ok()?.to_string()))
             .collect();
@@ -133,36 +119,34 @@ impl Attribute {
         if !self.is(unsafe { CFArrayGetTypeID() }) {
             return Vec::new();
         }
-        let array = unsafe { &*self.0.cast::<NSArray<NSString>>() };
-        array.iter().map(|text| text.to_string()).collect()
+        self.cast::<NSArray<NSString>>()
+            .iter()
+            .map(|text| text.to_string())
+            .collect()
     }
 }
 
-fn pair(item: &Item, width: &str, height: &str) -> Option<(u64, u64)> {
-    let (width, height) = (item.number(width)?, item.number(height)?);
+fn pair(item: &Cf, width: &str, height: &str) -> Option<(u64, u64)> {
+    let width = item.attribute(width)?.number()?;
+    let height = item.attribute(height)?.number()?;
     (width > 0. && height > 0.).then_some((width as u64, height as u64))
 }
 
-/// The item's `kMDItemLastUsedDate`, in seconds since the reference date: the date Finder's
-/// Date Last Opened shows, which Spotlight makes up from the modification date where it has
-/// not indexed the item.
+/// Spotlight makes this up from the modification date where it has not indexed the item.
 pub fn last_used(path: &Path) -> Option<f64> {
-    let text = NSString::from_str(path.to_str()?);
-    let item = unsafe { MDItemCreate(std::ptr::null(), (&*text as *const NSString).cast()) };
-    (!item.is_null()).then_some(())?;
-    Item(item).date("kMDItemLastUsedDate")
+    Cf::item(path)?.attribute("kMDItemLastUsedDate")?.date()
 }
 
-/// A bundle's version as its Info.plist states it.
+pub(crate) fn kind(path: &Path) -> Option<String> {
+    Cf::item(path)?.attribute("kMDItemKind")?.string()
+}
+
 pub fn bundle_version(path: &Path) -> Option<String> {
     ["Contents/Info.plist", "Resources/Info.plist", "Info.plist"]
         .into_iter()
         .find_map(|inner| {
-            let info = crate::tags::plist(&std::fs::read(path.join(inner)).ok()?)?
-                .downcast::<NSDictionary>()
-                .ok()?;
-            let version = info
-                .objectForKey(&NSString::from_str("CFBundleShortVersionString"))?
+            let version = crate::plist_dict(&std::fs::read(path.join(inner)).ok()?)?
+                .objectForKey(ns_string!("CFBundleShortVersionString"))?
                 .downcast::<NSString>()
                 .ok()?
                 .to_string();
@@ -171,45 +155,36 @@ pub fn bundle_version(path: &Path) -> Option<String> {
 }
 
 pub fn meta(path: &Path) -> Meta {
-    let Some(text) = path.to_str() else {
+    let Some(item) = Cf::item(path) else {
         return Meta::default();
     };
-    let path = NSString::from_str(text);
-    let item = unsafe {
-        MDItemCreate(
-            std::ptr::null(),
-            (&*path as *const NSString).cast::<c_void>(),
-        )
-    };
-    if item.is_null() {
-        return Meta::default();
-    }
-    let item = Item(item);
+    let string = |name| item.attribute(name)?.string();
+    let number = |name| item.attribute(name)?.number();
+    let date = |name| item.attribute(name)?.date();
     Meta {
-        content_created: item.date("kMDItemContentCreationDate"),
-        last_used: item.date("kMDItemLastUsedDate"),
+        content_created: date("kMDItemContentCreationDate"),
+        last_used: date("kMDItemLastUsedDate"),
         pixels: pair(&item, "kMDItemPixelWidth", "kMDItemPixelHeight"),
-        color_space: item.string("kMDItemColorSpace"),
-        color_profile: item.string("kMDItemProfileName"),
-        version: item.string("kMDItemVersion"),
-        pages: item
-            .number("kMDItemNumberOfPages")
-            .map(|pages| pages as u64),
+        color_space: string("kMDItemColorSpace"),
+        color_profile: string("kMDItemProfileName"),
+        version: string("kMDItemVersion"),
+        pages: number("kMDItemNumberOfPages").map(|pages| pages as u64),
         page: pair(&item, "kMDItemPageWidth", "kMDItemPageHeight"),
-        security: item.string("kMDItemSecurityMethod"),
-        encoders: item.strings("kMDItemEncodingApplications"),
-        category: item.string("kMDItemAppStoreCategory"),
-        duration: item.number("kMDItemDurationSeconds"),
+        security: string("kMDItemSecurityMethod"),
+        encoders: item
+            .attribute("kMDItemEncodingApplications")
+            .map(|value| value.strings())
+            .unwrap_or_default(),
+        category: string("kMDItemAppStoreCategory"),
+        duration: number("kMDItemDurationSeconds"),
         values: values(&item),
     }
 }
 
-fn values(item: &Item) -> Vec<(String, String)> {
-    let names = unsafe { MDItemCopyAttributeNames(item.0) };
-    if names.is_null() {
+fn values(item: &Cf) -> Vec<(String, String)> {
+    let Some(names) = Cf::new(unsafe { MDItemCopyAttributeNames(item.0.as_ptr()) }) else {
         return Vec::new();
-    }
-    let names = Attribute(names);
+    };
     names
         .strings()
         .into_iter()

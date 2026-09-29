@@ -1,3 +1,11 @@
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if *$crate::index::TRACE {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 mod catchup;
 mod crawl;
 mod lookup;
@@ -12,14 +20,14 @@ use std::fs::{File, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::entry::{Entry, EntryKind};
 use crate::list::list_dir;
 use crate::watch::Replay;
 use crawl::Walk;
-use store::{COMPLETE, EXACT, HIDDEN, LISTED, PACKAGE, Tree, VISITED};
+use store::{COMPLETE, EXACT, HIDDEN, Tree, VISITED};
 
 pub use crawl::off_limits;
 
@@ -27,18 +35,17 @@ const BATCH: usize = 4096;
 const YIELDS: usize = 64;
 /// Long enough for an instance that is quitting as this one launches to let go of the store.
 const CLAIM_WAIT: Duration = Duration::from_millis(500);
-/// A folder whose relist cost more than this waits `COOLDOWN` times that cost before the next,
-/// so one big folder under constant change holds at most a twentieth of a core. A rescan's check
-/// cools its roots the same way: macOS rescans a whole root each time it drops events.
 const COSTLY: Duration = Duration::from_millis(10);
 const COOLDOWN: u32 = 20;
 const MIN_GAP: Duration = Duration::from_secs(2);
-/// Room for coarse timestamps when finding the folders modified since the tree was in sync.
+/// Room for coarse modification times.
 const SYNC_MARGIN: Duration = Duration::from_secs(2);
 /// A snapshot can be saved while the tree trails the disk, so its catch-up looks this far back.
 const SAVE_GAP: Duration = Duration::from_secs(3600);
 /// fseventsd answers a history query only after several milliseconds.
 const PROBE_WAIT: Duration = Duration::from_millis(25);
+
+static TRACE: LazyLock<bool> = LazyLock::new(|| std::env::var_os("NG_CRAWL_TRACE").is_some());
 
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
@@ -65,8 +72,6 @@ pub struct Stats {
     pub event_id: u64,
 }
 
-/// What the live follower still owes the tree: folders to walk, folders put off while they cool
-/// down, and the last event it applied since the one it started from.
 #[derive(Default)]
 struct Pending {
     roots: Vec<PathBuf>,
@@ -82,6 +87,16 @@ struct Pending {
     synced: Option<SystemTime>,
 }
 
+impl Pending {
+    fn put_off(&mut self, dir: &Path, now: Instant) -> bool {
+        let Some(until) = self.cooling.get(dir).copied().filter(|until| *until > now) else {
+            return false;
+        };
+        self.later.insert(dir.to_path_buf(), until);
+        true
+    }
+}
+
 pub struct Index {
     store: PathBuf,
     tree: RwLock<Tree>,
@@ -89,11 +104,8 @@ pub struct Index {
     /// Readers queued on `tree`: a writer yields to them, or a stream of writes starves them.
     waiting: AtomicUsize,
     crawling: AtomicBool,
-    /// A rescan's check runs apart from crawling, so new folders keep landing while it reads.
     checking: AtomicBool,
     pending: Mutex<Pending>,
-    /// Only the store's owner walks whole roots and writes the snapshot; any other instance
-    /// reads it and follows the disk live.
     owner: bool,
     _lock: Option<File>,
     dirty: AtomicBool,
@@ -175,11 +187,10 @@ impl Index {
         (node.modified != store::NO_TIME).then(|| store::time(node.modified))
     }
 
-    /// `children`, while the index holds every change FSEvents has for the folder's entries and
-    /// its folders' own. A write to a file held open reports only when it closes.
+    /// `children`, while the index holds every change FSEvents has for the folder's entries.
     pub fn current_children(&self, dir: &Path) -> Option<Vec<Entry>> {
         let real = crate::watch::resolved(dir);
-        catchup::open_to_us(&real, &crawl::home()).then_some(())?;
+        crawl::open_to_us(&real, &home()).then_some(())?;
         let (from, applied) = {
             let pending = self.pending.lock().unwrap();
             let at = |path: &PathBuf| path == &real || path.parent() == Some(real.as_path());
@@ -266,12 +277,11 @@ impl Index {
     pub fn extensions(&self, limit: usize) -> Vec<PathBuf> {
         let tree = self.read();
         let mut counts: HashMap<&[u8], (usize, u32)> = HashMap::new();
-        for id in 0..tree.name_of.len() as u32 {
-            let node = &tree.nodes[id as usize];
+        for (id, node) in tree.nodes.iter().enumerate() {
             if node.deleted() || node.is_dir() {
                 continue;
             }
-            let name = tree.names.bytes(tree.name_of[id as usize]);
+            let name = tree.names.bytes(tree.name_of[id]);
             let Some(at) = name.iter().rposition(|byte| *byte == b'.') else {
                 continue;
             };
@@ -279,7 +289,7 @@ impl Index {
             if ext.is_empty() || ext.len() > 12 {
                 continue;
             }
-            counts.entry(ext).or_insert((0, id)).0 += 1;
+            counts.entry(ext).or_insert((0, id as u32)).0 += 1;
         }
         let mut common: Vec<(usize, u32)> = counts.into_values().collect();
         common.sort_unstable_by_key(|found| std::cmp::Reverse(found.0));
@@ -301,34 +311,22 @@ impl Index {
     }
 
     pub fn note_changed(&self, dirs: &[PathBuf]) {
-        let home = crawl::home();
+        let home = home();
         let now = Instant::now();
-        for dir in dirs {
-            if !catchup::open_to_us(dir, &home) {
-                continue;
+        for dir in dirs.iter().filter(|dir| crawl::open_to_us(dir, &home)) {
+            let put_off = self.pending.lock().unwrap().put_off(dir, now);
+            if !put_off {
+                self.refresh_cooled(dir.clone(), &home);
             }
-            {
-                let mut pending = self.pending.lock().unwrap();
-                if let Some(until) = pending
-                    .cooling
-                    .get(dir)
-                    .copied()
-                    .filter(|until| *until > now)
-                {
-                    pending.later.insert(dir.clone(), until);
-                    continue;
-                }
-            }
-            let started = Instant::now();
-            self.refresh(dir, &home);
-            self.cool(dir.clone(), started.elapsed());
         }
     }
 
-    fn cool(&self, dir: PathBuf, took: Duration) {
-        // A folder written many times a second is read again at most once per gap.
-        let until = Instant::now() + (took * COOLDOWN).max(MIN_GAP);
+    fn refresh_cooled(&self, dir: PathBuf, home: &Path) -> Vec<PathBuf> {
+        let started = Instant::now();
+        let deeper = self.refresh(&dir, home);
+        let until = Instant::now() + (started.elapsed() * COOLDOWN).max(MIN_GAP);
         self.pending.lock().unwrap().cooling.insert(dir, until);
+        deeper
     }
 
     pub fn follow(self: &Arc<Self>, roots: Vec<PathBuf>) -> crate::watch::Watcher {
@@ -344,55 +342,38 @@ impl Index {
 
     /// Whether it put work off until a folder cools down or a check comes due.
     fn apply(self: &Arc<Self>, replay: Replay) -> bool {
-        let home = crawl::home();
-        let open = |dir: &PathBuf| catchup::open_to_us(dir, &home);
+        let home = home();
+        let open = |dir: &PathBuf| crawl::open_to_us(dir, &home);
         let rescans: Vec<PathBuf> = replay.rescan.into_iter().filter(open).collect();
-        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            for dir in &rescans {
-                eprintln!("rescan {}", dir.display());
-            }
+        for dir in &rescans {
+            trace!("rescan {}", dir.display());
         }
-        let mut deeper = Vec::new();
         let mut dirs: Vec<PathBuf> = replay.dirs.into_iter().filter(open).collect();
         let now = Instant::now();
         {
-            let mut pending = self.pending.lock().unwrap();
-            let due: Vec<PathBuf> = pending
-                .later
-                .iter()
-                .filter(|(_, at)| **at <= now)
-                .map(|(dir, _)| dir.clone())
-                .collect();
-            for dir in due {
-                pending.later.remove(&dir);
-                dirs.push(dir);
-            }
-            let rechecks: Vec<PathBuf> = pending
-                .rechecks
-                .iter()
-                .filter(|(_, at)| **at <= now)
-                .map(|(dir, _)| dir.clone())
-                .collect();
-            for dir in rechecks {
-                pending.rechecks.remove(&dir);
-                pending.rescans.push(dir);
-            }
+            let mut guard = self.pending.lock().unwrap();
+            let pending = &mut *guard;
+            dirs.extend(
+                pending
+                    .later
+                    .extract_if(|_, at| *at <= now)
+                    .map(|(dir, _)| dir),
+            );
+            pending.rescans.extend(
+                pending
+                    .rechecks
+                    .extract_if(|_, at| *at <= now)
+                    .map(|(dir, _)| dir),
+            );
             pending.cooling.retain(|_, until| *until > now);
             dirs.sort_unstable();
             dirs.dedup();
-            dirs.retain(|dir| match pending.cooling.get(dir).copied() {
-                Some(until) => {
-                    pending.later.insert(dir.clone(), until);
-                    false
-                }
-                None => true,
-            });
+            dirs.retain(|dir| !pending.put_off(dir, now));
         }
-        for dir in dirs {
-            let started = Instant::now();
-            deeper.extend(self.refresh(&dir, &home));
-            self.cool(dir, started.elapsed());
-        }
+        let deeper: Vec<PathBuf> = dirs
+            .into_iter()
+            .flat_map(|dir| self.refresh_cooled(dir, &home))
+            .collect();
         let mut pending = self.pending.lock().unwrap();
         pending.dirs.extend(deeper);
         pending.rescans.extend(rescans);
@@ -403,8 +384,6 @@ impl Index {
         !pending.later.is_empty() || !pending.rechecks.is_empty()
     }
 
-    /// With nothing left to walk, every followed root is current to the last event applied, so
-    /// the next launch catches up only on what happened while it was closed.
     fn walk_pending(self: &Arc<Self>) {
         loop {
             if self.crawling.swap(true, Ordering::SeqCst) {
@@ -426,27 +405,8 @@ impl Index {
                 match self.checking.swap(true, Ordering::SeqCst) {
                     true => pending.rescans.extend(check),
                     false => {
-                        let since = pending
-                            .synced
-                            .map_or(std::time::UNIX_EPOCH, |at| at - SYNC_MARGIN);
-                        let index = self.clone();
-                        std::thread::spawn(move || {
-                            crate::utility_qos();
-                            let started = Instant::now();
-                            let deeper = index.verify(&check, since, &crawl::home());
-                            if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-                                eprintln!(
-                                    "check {:?} took {} ms deeper {}",
-                                    check,
-                                    started.elapsed().as_millis(),
-                                    deeper.len()
-                                );
-                            }
-                            index.cool_check(&check, started.elapsed());
-                            index.pending.lock().unwrap().dirs.extend(deeper);
-                            index.checking.store(false, Ordering::SeqCst);
-                            index.walk_pending();
-                        });
+                        let since = pending.synced.map_or(UNIX_EPOCH, |at| at - SYNC_MARGIN);
+                        self.spawn_check(check, since);
                     }
                 }
             }
@@ -460,19 +420,18 @@ impl Index {
                 };
                 return crawl::spawn(self, walk, |_| {});
             }
-            // A folder put off until it cools down, or a check still reading, still owes its change.
             let settled = pending.later.is_empty()
                 && pending.rechecks.is_empty()
                 && pending.rescans.is_empty()
                 && !self.checking.load(Ordering::SeqCst)
                 && pending.applied > pending.advanced;
-            let (roots, applied, from) = (pending.roots.clone(), pending.applied, pending.from);
-            if settled {
-                pending.advanced = applied;
+            let advance = settled.then(|| {
+                pending.advanced = pending.applied;
                 pending.synced = Some(SystemTime::now());
-            }
+                (pending.roots.clone(), pending.applied, pending.from)
+            });
             drop(pending);
-            if settled {
+            if let Some((roots, applied, from)) = advance {
                 self.write().advance(&roots, applied, from);
             }
             self.crawling.store(false, Ordering::SeqCst);
@@ -484,19 +443,33 @@ impl Index {
         }
     }
 
-    fn cool_check(&self, roots: &[PathBuf], took: Duration) {
-        if took <= COSTLY {
-            return;
-        }
-        let until = Instant::now() + took * COOLDOWN;
-        let mut pending = self.pending.lock().unwrap();
-        for root in roots {
-            pending.checked.insert(root.clone(), until);
-        }
+    fn spawn_check(self: &Arc<Self>, roots: Vec<PathBuf>, since: SystemTime) {
+        let index = self.clone();
+        std::thread::spawn(move || {
+            crate::utility_qos();
+            let started = Instant::now();
+            let deeper = index.verify(&roots, since, &home());
+            let took = started.elapsed();
+            trace!(
+                "check {roots:?} took {} ms deeper {}",
+                took.as_millis(),
+                deeper.len()
+            );
+            let mut pending = index.pending.lock().unwrap();
+            if took > COSTLY {
+                let until = Instant::now() + took * COOLDOWN;
+                pending
+                    .checked
+                    .extend(roots.into_iter().map(|root| (root, until)));
+            }
+            pending.dirs.extend(deeper);
+            drop(pending);
+            index.checking.store(false, Ordering::SeqCst);
+            index.walk_pending();
+        });
     }
 
-    /// After dropped events, the folders read again are the ones modified since `since`: an added,
-    /// removed or renamed entry moves its folder's time, new contents in a file do not.
+    /// An added, removed or renamed entry moves its folder's time; new contents in a file do not.
     fn verify(&self, roots: &[PathBuf], since: SystemTime, home: &Path) -> Vec<PathBuf> {
         let dirs = self.read().listed_under(&outermost(roots.to_vec()));
         {
@@ -511,28 +484,24 @@ impl Index {
             let changed = std::fs::symlink_metadata(&dir)
                 .and_then(|meta| meta.modified())
                 .map_or(true, |at| at >= since);
-            if changed && catchup::open_to_us(&dir, home) {
+            if changed && crawl::open_to_us(&dir, home) {
                 refreshed += 1;
                 deeper.extend(self.refresh(&dir, home));
             }
         }
-        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            eprintln!("verify {known} known folders, {refreshed} read again");
-        }
+        trace!("verify {known} known folders, {refreshed} read again");
         deeper
     }
 
     fn refresh(&self, dir: &Path, home: &Path) -> Vec<PathBuf> {
         let started = Instant::now();
         let deeper = self.relisted(dir, home);
-        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            eprintln!(
-                "refresh {} us {} deeper {}",
-                started.elapsed().as_micros(),
-                deeper.len(),
-                dir.display()
-            );
-        }
+        trace!(
+            "refresh {} us {} deeper {}",
+            started.elapsed().as_micros(),
+            deeper.len(),
+            dir.display()
+        );
         deeper
     }
 
@@ -542,26 +511,25 @@ impl Index {
         };
         let entries = match list_dir(dir) {
             Ok(entries) => entries,
-            Err(error) => {
-                if error.kind() == io::ErrorKind::NotFound {
-                    let mut tree = self.write();
-                    let size = tree.nodes[id as usize].size;
-                    tree.tombstone(id);
-                    tree.propagate(id, -(size as i64));
-                }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut tree = self.write();
+                let size = tree.nodes[id as usize].size;
+                tree.tombstone(id);
+                tree.propagate(id, -(size as i64));
                 return Vec::new();
             }
+            Err(_) => return Vec::new(),
         };
         let sealed: Vec<bool> = entries
             .iter()
-            .map(|entry| crawl::sealed(&dir.join(&entry.name), entry, home))
+            .map(|entry| crawl::sealed(dir, entry, home))
             .collect();
         let own = crate::list::entry_at(dir).ok();
-        let ids = relist(self, id, &entries, &sealed);
+        let ids = self.relist(id, &entries, &sealed);
         let mut tree = self.write();
         // FSEvents names only this folder when an entry moves its time, which its parent lists.
         if let Some(own) = own.filter(|own| own.kind == EntryKind::Directory) {
-            tree.write(id, &own, false);
+            tree.set_entry(id, &own, false);
         }
         let before = tree.nodes[id as usize].size;
         let after: u64 = tree
@@ -581,6 +549,14 @@ impl Index {
             .collect()
     }
 
+    fn relist(&self, dir: u32, entries: &[Entry], sealed: &[bool]) -> Vec<u32> {
+        let mut state = self.read().start_relist(dir, entries.len());
+        for (batch, sealed) in entries.chunks(BATCH).zip(sealed.chunks(BATCH)) {
+            self.write().relist(&mut state, batch, sealed);
+        }
+        self.write().end_relist(state)
+    }
+
     pub fn save(&self) {
         if !self.owner {
             return;
@@ -596,14 +572,12 @@ impl Index {
         if written.is_err() {
             self.dirty.store(true, Ordering::Release);
         }
-        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            let bytes = std::fs::metadata(&self.store).map_or(0, |meta| meta.len());
-            eprintln!(
-                "save {} ms {bytes} {}",
-                started.elapsed().as_millis(),
-                written.is_ok()
-            );
-        }
+        trace!(
+            "save {} ms {} {}",
+            started.elapsed().as_millis(),
+            std::fs::metadata(&self.store).map_or(0, |meta| meta.len()),
+            written.is_ok()
+        );
     }
 
     pub fn settle(&self, budget: Duration) {
@@ -647,12 +621,8 @@ impl Index {
     }
 }
 
-fn relist(index: &Index, dir: u32, entries: &[Entry], sealed: &[bool]) -> Vec<u32> {
-    let mut state = index.read().start_relist(dir);
-    for (batch, sealed) in entries.chunks(BATCH).zip(sealed.chunks(BATCH)) {
-        index.write().relist(&mut state, batch, sealed);
-    }
-    index.write().end_relist(state)
+fn home() -> PathBuf {
+    crate::home().unwrap_or_default()
 }
 
 fn resolve(tree: &Tree, path: &Path) -> Option<u32> {
@@ -660,7 +630,6 @@ fn resolve(tree: &Tree, path: &Path) -> Option<u32> {
         .or_else(|| tree.find(&std::fs::canonicalize(path).ok()?))
 }
 
-/// A burst of dropped events asks for the same subtree again and again; one walk covers them all.
 fn outermost(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     dirs.sort_unstable();
     let mut kept: Vec<PathBuf> = Vec::with_capacity(dirs.len());
@@ -696,16 +665,12 @@ fn claim(store: &Path) -> (bool, Option<File>) {
 }
 
 fn listed_dir(tree: &Tree, dir: &Path) -> Option<u32> {
-    listed(tree, resolve(tree, dir)?)
-}
-
-fn listed(tree: &Tree, id: u32) -> Option<u32> {
-    let node = tree.nodes[id as usize];
-    (node.is_dir() && node.flags & PACKAGE == 0 && node.state & LISTED != 0).then_some(id)
+    resolve(tree, dir).filter(|&id| tree.nodes[id as usize].listed())
 }
 
 fn visible(tree: &Tree, id: u32) -> Option<usize> {
-    let id = listed(tree, id)?;
     let shown = |child: &u32| tree.nodes[*child as usize].flags & HIDDEN == 0;
-    Some(tree.children(id).filter(shown).count())
+    tree.nodes[id as usize]
+        .listed()
+        .then(|| tree.children(id).filter(shown).count())
 }

@@ -4,10 +4,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use objc2_foundation::{
-    NSData, NSDictionary, NSFileManager, NSNumber, NSPropertyListMutabilityOptions,
-    NSPropertyListSerialization, NSString, NSURL, NSURLHasHiddenExtensionKey,
-};
+use objc2_foundation::{NSFileManager, NSNumber, NSString, NSURL, NSURLHasHiddenExtensionKey};
 
 const SYSTEM: u8 = 0;
 const HIDE: u8 = 1;
@@ -15,34 +12,22 @@ const SHOW: u8 = 2;
 
 static EXTENSIONS: AtomicU8 = AtomicU8::new(SYSTEM);
 
-/// The folder names LaunchServices shows in the user's language wherever the system keeps them.
+/// Folder names LaunchServices shows translated wherever the system keeps them.
 static TRANSLATED: LazyLock<HashSet<String>> = LazyLock::new(|| {
     let path = "/System/Library/CoreServices/SystemFolderLocalizations/en.lproj/SystemFolderLocalizations.strings";
-    let Ok(bytes) = std::fs::read(path) else {
-        return HashSet::new();
-    };
-    let names = unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &NSData::with_bytes(&bytes),
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    };
-    names
+    std::fs::read(path)
         .ok()
-        .and_then(|names| names.downcast::<NSDictionary>().ok())
+        .and_then(|bytes| crate::plist_dict(&bytes))
         .map_or_else(HashSet::new, |names| {
             names
                 .allKeys()
                 .iter()
-                .filter_map(|name| Some(name.downcast::<NSString>().ok()?.to_string()))
+                .map(|name| name.to_string())
                 .collect()
         })
 });
 
-/// A name as Finder draws it: `:` as the `/` the user typed, a control character as `?`, and a
-/// direction override closed before the extension, so `\u{202e}gnp.txt` can't pass for a
-/// `.png`.
+/// Closes direction overrides before the extension, so `\u{202e}gnp.txt` can't pass for a `.png`.
 pub fn display(name: &str) -> Cow<'_, str> {
     let mapped = |c: char| c == ':' || (c.is_control() && c != '\t');
     let open = name.chars().fold(0usize, |open, c| match c {
@@ -71,8 +56,7 @@ pub fn display(name: &str) -> Cow<'_, str> {
     )
 }
 
-/// Overrides "Show all filename extensions" for every name shown here; `None` follows the
-/// system-wide setting, the only one LaunchServices reads.
+/// `None` follows the system-wide setting, the only one LaunchServices reads.
 pub fn show_all_extensions(show: Option<bool>) {
     let mode = match show {
         None => SYSTEM,
@@ -92,7 +76,7 @@ fn launch_services(path: &Path) -> String {
     .into_owned()
 }
 
-/// LaunchServices' own answer, which counts an application's extension as hidden.
+/// Counts an application's extension as hidden.
 fn hides_extension(path: &Path) -> bool {
     let path = NSString::from_str(&path.to_string_lossy());
     let url = NSURL::fileURLWithPath_isDirectory(&path, false);
@@ -103,9 +87,6 @@ fn hides_extension(path: &Path) -> bool {
         .is_some_and(|hidden| hidden.boolValue())
 }
 
-/// The name Finder shows for a path: LaunchServices' display name, which leaves off an
-/// extension the item hides or an application's, keeps it under "Show all filename extensions",
-/// and drops `.localized`.
 pub fn of_path(path: &Path) -> String {
     match (
         EXTENSIONS.load(Ordering::Relaxed),
@@ -119,8 +100,7 @@ pub fn of_path(path: &Path) -> String {
     }
 }
 
-/// `of_path` for an item a listing read, asked of LaunchServices only when the item can lose
-/// part of its name or wear a translated one: the answer costs about 40 µs an item.
+/// `of_path` that asks LaunchServices only when the name can change: each answer is slow.
 pub fn shown(dir: &Path, name: &str, ext_hidden: bool) -> String {
     named(EXTENSIONS.load(Ordering::Relaxed), dir, name, ext_hidden)
 }

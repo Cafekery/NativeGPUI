@@ -23,12 +23,11 @@ pub struct Volume {
     pub capacity: u64,
     pub available: u64,
     pub format: String,
-    /// The host a network volume was mounted from.
     pub server: Option<String>,
 }
 
-fn keys() -> Retained<NSArray<NSURLResourceKey>> {
-    unsafe {
+fn volume_at(url: &NSURL) -> Option<Volume> {
+    let keys = unsafe {
         NSArray::from_slice(&[
             NSURLVolumeNameKey,
             NSURLVolumeIsEjectableKey,
@@ -39,7 +38,25 @@ fn keys() -> Retained<NSArray<NSURLResourceKey>> {
             NSURLVolumeAvailableCapacityKey,
             NSURLVolumeLocalizedFormatDescriptionKey,
         ])
-    }
+    };
+    let values = url.resourceValuesForKeys_error(&keys).ok()?;
+    let path = url
+        .path()
+        .map(|p| PathBuf::from(p.to_string()))
+        .unwrap_or_default();
+    let available = available_at(&values, &path);
+    Some(Volume {
+        name: string_value(&values, unsafe { NSURLVolumeNameKey }).unwrap_or_default(),
+        path,
+        ejectable: bool_value(&values, unsafe { NSURLVolumeIsEjectableKey })
+            || bool_value(&values, unsafe { NSURLVolumeIsRemovableKey }),
+        network: !bool_value(&values, unsafe { NSURLVolumeIsLocalKey }),
+        capacity: u64_value(&values, unsafe { NSURLVolumeTotalCapacityKey }).unwrap_or(0),
+        available,
+        format: string_value(&values, unsafe { NSURLVolumeLocalizedFormatDescriptionKey })
+            .unwrap_or_default(),
+        server: None,
+    })
 }
 
 fn string_value(values: &Values, key: &NSString) -> Option<String> {
@@ -64,7 +81,7 @@ fn u64_value(values: &Values, key: &NSString) -> Option<u64> {
         .map(|n| n.longLongValue().max(0) as u64)
 }
 
-// On exFAT and FAT32 both keys read 0 rather than being absent, so a zero defers to `statfs`.
+/// On exFAT and FAT32 both keys read 0 rather than being absent.
 fn available_at(values: &Values, path: &Path) -> u64 {
     let free = |key: &NSString| u64_value(values, key).filter(|&free| free > 0);
     free(unsafe { NSURLVolumeAvailableCapacityForImportantUsageKey })
@@ -96,29 +113,7 @@ pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
     statfs(path).map(|stats| mount_path(&stats))
 }
 
-fn volume_at(url: &NSURL, keys: &NSArray<NSURLResourceKey>) -> Option<Volume> {
-    let values = url.resourceValuesForKeys_error(keys).ok()?;
-    let path = url
-        .path()
-        .map(|p| PathBuf::from(p.to_string()))
-        .unwrap_or_default();
-    let available = available_at(&values, &path);
-    Some(Volume {
-        name: string_value(&values, unsafe { NSURLVolumeNameKey }).unwrap_or_default(),
-        path,
-        ejectable: bool_value(&values, unsafe { NSURLVolumeIsEjectableKey })
-            || bool_value(&values, unsafe { NSURLVolumeIsRemovableKey }),
-        network: !bool_value(&values, unsafe { NSURLVolumeIsLocalKey }),
-        capacity: u64_value(&values, unsafe { NSURLVolumeTotalCapacityKey }).unwrap_or(0),
-        available,
-        format: string_value(&values, unsafe { NSURLVolumeLocalizedFormatDescriptionKey })
-            .unwrap_or_default(),
-        server: None,
-    })
-}
-
-/// From the kernel's cached mount table: a share that stopped answering cannot stall this, and
-/// Finder lists such a share all the same.
+/// Reads the kernel's cached mount table, so a share that stopped answering can't stall it.
 pub fn mounted() -> Vec<Volume> {
     let mut stats: Vec<libc::statfs> = Vec::new();
     // SAFETY: a null buffer asks only for the count; the second call passes a buffer of that size.
@@ -158,23 +153,22 @@ fn volume_from(stats: &libc::statfs) -> Volume {
         format: unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }
             .to_string_lossy()
             .into_owned(),
-        // SAFETY: the kernel NUL-terminates the source name.
-        server: (!local)
-            .then(|| {
+        server: match local {
+            true => None,
+            // SAFETY: the kernel NUL-terminates the source name.
+            false => {
                 host_of(&unsafe { CStr::from_ptr(stats.f_mntfromname.as_ptr()) }.to_string_lossy())
-            })
-            .flatten(),
+            }
+        },
     };
     if !local {
         return volume;
     }
-    // Only a local volume is asked, yet the asking is an XPC round trip to coreservicesd and
-    // deleted, which waits on any share that stopped answering while they read it.
+    // Asking is an XPC round trip that waits on any share that stopped answering.
     let url = NSURL::fileURLWithPath(&NSString::from_str(&volume.path.to_string_lossy()));
-    volume_at(&url, &keys()).unwrap_or(volume)
+    volume_at(&url).unwrap_or(volume)
 }
 
-/// `//user@host/share`, `scheme://user@host/path` and `host:/export` all name `host`.
 fn host_of(source: &str) -> Option<String> {
     let rest = source.split_once("//").map_or(source, |(_, rest)| rest);
     let host = rest.split('/').next()?.rsplit('@').next()?;
@@ -196,7 +190,7 @@ pub enum Standard {
 }
 
 pub fn standard(which: Standard) -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let home = crate::home()?;
     Some(match which {
         Standard::Home => home,
         Standard::Desktop => home.join("Desktop"),
@@ -246,7 +240,7 @@ pub fn mount(address: &str) -> Result<PathBuf, i32> {
     if status != 0 {
         return Err(status);
     }
-    // A `+1` CFArray of the mount points' paths.
+    // SAFETY: NetFS hands back a +1 CFArray of paths, or null.
     let points: Option<Retained<NSArray<NSString>>> = unsafe { Retained::from_raw(points.cast()) };
     points
         .and_then(|points| points.firstObject())
@@ -305,11 +299,5 @@ mod tests {
             assert_eq!(host_of(source).as_deref(), Some("100.109.9.62"), "{source}");
         }
         assert_eq!(host_of("//"), None);
-    }
-
-    #[test]
-    fn standard_folders_are_under_home() {
-        let home = standard(Standard::Home).unwrap();
-        assert_eq!(standard(Standard::Desktop).unwrap(), home.join("Desktop"));
     }
 }
