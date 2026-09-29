@@ -27,10 +27,39 @@ pub(crate) fn overflows(content: f32, room: f32) -> bool {
 
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.style = view;
+        prefs::set_view(view);
         self.set_view(view, cx);
         self.install_toolbar(window, cx);
         self.retitle(window);
         cx.notify();
+    }
+
+    /// A folder that always opens in a view shows it; the rest take the window's own style.
+    pub(crate) fn open_as_kept(&mut self, cx: &mut Context<Self>) {
+        let view = match prefs::opens_in(self.here()) {
+            Some((view, browses)) => {
+                if browses {
+                    self.style = view;
+                }
+                view
+            }
+            None => self.style,
+        };
+        if view != self.pending_view.unwrap_or(self.view) {
+            self.set_view(view, cx);
+        }
+    }
+
+    pub(crate) fn always_open(&mut self, on: bool) {
+        prefs::set_opens_in(self.here(), on.then_some((self.view, false)));
+    }
+
+    pub(crate) fn always_browse(&mut self, on: bool) {
+        prefs::set_opens_in(self.here(), Some((self.view, on)));
+        if on {
+            self.style = self.view;
+        }
     }
 
     pub(crate) fn set_view(&mut self, view: usize, cx: &mut Context<Self>) {
@@ -48,7 +77,6 @@ impl FinderDemo {
         }
         self.view = view;
         self.preview = prefs::preview(view);
-        prefs::set_view(view);
         self.settle();
     }
 

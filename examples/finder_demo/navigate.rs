@@ -462,6 +462,7 @@ impl FinderDemo {
         self.clear_type_filter();
         self.load_columns();
         self.sidebar_follow();
+        self.open_as_kept(cx);
         cx.notify();
     }
 

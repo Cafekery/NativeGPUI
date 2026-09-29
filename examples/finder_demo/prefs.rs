@@ -484,6 +484,31 @@ pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
 }
 
+/// The view a folder always opens in, and whether the window then keeps browsing in it.
+pub(crate) fn opens_in(folder: &str) -> Option<(usize, bool)> {
+    let view = read(&format!("ng.finder.opens.{folder}"))?;
+    let browses = read(&format!("ng.finder.browses.{folder}")).is_some_and(|on| on != 0.);
+    Some((view as usize, browses))
+}
+
+pub(crate) fn set_opens_in(folder: &str, opens: Option<(usize, bool)>) {
+    let keys = [
+        format!("ng.finder.opens.{folder}"),
+        format!("ng.finder.browses.{folder}"),
+    ];
+    match opens {
+        Some((view, browses)) => {
+            write(&keys[0], view as f64);
+            write(&keys[1], f64::from(u8::from(browses)));
+        }
+        None => {
+            for key in keys {
+                defaults().removeObjectForKey(&NSString::from_str(&key));
+            }
+        }
+    }
+}
+
 pub(crate) fn search_scope() -> usize {
     match setting_text("FXDefaultSearchScope").as_deref() {
         Some("SCcf") => THIS_FOLDER,
