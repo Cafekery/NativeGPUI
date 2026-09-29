@@ -462,6 +462,7 @@ impl FinderDemo {
         self.clear_type_filter();
         self.load_columns();
         self.sidebar_follow();
+        self.previews = crate::art::Previews::of(self.here());
         cx.notify();
     }
 
