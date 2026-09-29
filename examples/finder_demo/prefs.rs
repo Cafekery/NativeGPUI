@@ -21,7 +21,6 @@ const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
 const LIST_ICON: &str = "ng.finder.list.icon";
-const STRIP_ICON: &str = "ng.finder.strip.icon";
 
 fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -552,14 +551,6 @@ pub(crate) fn set_list_icon(size: f32) {
     write(LIST_ICON, size as f64);
 }
 
-pub(crate) fn strip_icon() -> Option<f32> {
-    read(STRIP_ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_strip_icon(size: f32) {
-    write(STRIP_ICON, size as f64);
-}
-
 fn column_key(column: Column) -> &'static str {
     match column {
         Column::Name => "ng.finder.col.name",
@@ -832,4 +823,9 @@ pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {
 
 pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
     write(&format!("ng.finder.{options}.{key}"), value);
+}
+
+/// Finder's standard per-folder setting, below every folder's own and Use as Defaults.
+pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
+    finder_number("StandardViewSettings", settings, key)
 }

@@ -11,6 +11,7 @@ use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::ColumnLook;
+use crate::views::gallery::GalleryLook;
 use crate::{home, open_finder_window};
 
 const HOLD: Duration = Duration::from_millis(100);
@@ -463,6 +464,7 @@ impl FinderDemo {
         self.clear_type_filter();
         self.load_columns();
         self.column_look = ColumnLook::load();
+        self.gallery_look = GalleryLook::load(self.here());
         self.sidebar_follow();
         cx.notify();
     }
