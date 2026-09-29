@@ -121,10 +121,12 @@ rule: the title keeps a quarter of the window width; the search field gives way 
 then its 40pt button), then the view switcher (164 → 50pt popup), then the title (to 160), the last
 space and, last, items into the overflow menu. Every threshold moves 4/3pt per point of sidebar.
 
-- [x] The demo's sidebar opens at 216 and stops at 158, as a new Finder window's, and its preview
-  pane takes Finder's saved width (`PreviewPaneWidth`, 241 here, and `PreviewPaneGalleryWidth` in
-  gallery view), 288 when there is none, down to 240. At those defaults Finder starts shrinking
-  the field at 1365, collapses it at 1145 and collapses the view switcher at 979.
+- [x] The demo's sidebar opens at Finder's saved width (`SidebarWidth2`, 221 here, which a new
+  Finder window opened at; 216 when there is none) and stops at 158, as
+  a new Finder window's, and its preview pane takes Finder's saved width (`PreviewPaneWidth`, 241
+  here, and `PreviewPaneGalleryWidth` in gallery view), 288 when there is none, down to 240. At
+  those defaults Finder starts shrinking the field at 1365, collapses it at 1145 and collapses the
+  view switcher at 979.
 - [ ] After one resize that re-expands a collapsed search field (773 → 1400 at sidebar 216), Finder
   keeps the item 4pt wider (333, title 372) until the next resize; the demo settles at 329 and 376.
 - [ ] Growing 1pt at a time from Finder's minimum width, the demo read a 44pt search button and a
@@ -136,8 +138,8 @@ space and, last, items into the overflow menu. Every threshold moves 4/3pt per p
 Read off Finder 27 on the test Mac beside the demo, same window, folder, view and icon size.
 
 - [x] A folder the user cannot open (mode 000, 111, 444, or an ACL that denies list and search) wears Finder's red no-entry badge. The demo takes the user's access from the listing it already makes (`ATTR_CMN_USERACCESS` in `getattrlistbulk`, which the file system answers from its catalogue without opening the folder, so Desktop, Documents and Downloads are not touched) and draws such a folder with `iconForFile:`, which carries the badge.
-- [ ] Like Finder, the demo shows a folder's first frame with its icons, but it waits at most 60 ms for them: an icon IconServices has never rendered (an app just installed, a size never drawn) lands a frame or more after the listing. Warm, /Applications in list and icon view had 0 ms of fill after the listing in 5 of 5 runs.
-- [ ] A folder with a custom icon that scrolls into view shows the plain folder for a frame or two before its own icon (Adobe's folders in /Applications: 1 frame in a 3 s scroll through); Finder has it at once. The demo learns of a custom icon when the row is first drawn, or for a listing's first 64 rows, while it reads the listing.
+- [ ] Like Finder, the demo shows a folder's first frame with its icons, but it waits at most 60 ms for them: an icon IconServices has never rendered (an app just installed, a size never drawn) can land a frame or more after the listing. The art every entry tells of itself (its own icon, its extension's) now starts drawing before the rows are built. Warm, /Applications in list and icon view had 0 ms of fill after the listing in 5 of 5 runs.
+- [x] A folder with a custom icon shows it from its first frame and as it scrolls into view, as Finder's: the listing reads FinderInfo's custom-icon flag with every entry, so the icon is drawn with the first screen and ahead of the scroll. On 64 folders with never-drawn custom icons among 300 files, 24 of them on the first screen, a 3 s scroll through drew the plain folder in 0 row-frames (before: 59 of the 64 rows, about 400 row-frames in all).
 - [ ] Whether a 32 pt list row previews documents was not read off Finder: its AppleScript view options ignored the size change. The demo previews pictures and movies only in list rows, as Finder does at 16 pt, and documents in icon, column and gallery views.
 ## Behaviour against Finder 27 on the test Mac
 
@@ -171,8 +173,11 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   and under Snap to Grid sets it in the chosen cell's top left corner (24 pt left, 4 pt up of its
   slot); the demo keeps dropped icons on their slots and cannot learn where another app's drag
   image was grabbed, so it centres the icon on the pointer.
-- [ ] Finder draws icon view's icons on beneath its preview pane's glass; the demo's stop at the
-  pane.
+- [x] Icon view runs on beneath the preview pane's glass, as Finder's: icons placed past the pane's
+  edge draw under it, the view scrolls only as far as that edge (886 pt of icons in a 639 pt view:
+  247 pt of travel in both) and its scroll bars span the view as Finder's (the horizontal one 641
+  wide from x 460 in both). The pane takes the pointer: a drag over a folder beneath it neither
+  springs it nor drops into it.
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.
@@ -208,8 +213,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   otherwise; Comments 306 of 300; Date Added 187 of 181), and a list that overflows as it opens
   shows Name at 206 at least (Finder's kept Name plus 6 when that is wider: 250 opened at 256).
   The demo matches at equal list widths; it keeps its own widths, not Finder's.
-- [ ] In the same window the demo's list runs 4 pt wider than Finder's; the widths above were read
-  with the demo's window 4 pt narrower.
+- [x] In the same window the demo's list ran 4 pt wider than Finder's: Finder's sidebar had been
+  dragged to 221 (`SidebarWidth2`) where the demo's always opened at 216, less the pane's 1 pt
+  (241 against 240). Read over AX at 240,120 1100x680, both now put the sidebar's divider at 221
+  and the list at 221..860, 639 wide, its rows 639 wide from 221.
 - [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
@@ -396,15 +403,19 @@ Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both wi
 1100x680 in list view on the same folder, sidebar 216 and preview pane 241 wide, nothing selected.
 Traffic lights, corner radius, window shadow and title type measure identical.
 
-- [ ] Rows: the demo now takes Finder's list text and icon sizes and Finder's own row rule,
-  max(icon, ceil(ascent + descent)) + 4 (20 at 13 pt text, 21 at 14, 36 at 32 pt icons); only 20
-  (mini) and 21 (this Mac) were read off Finder's windows.
+- [x] Rows: Finder's rule, max(icon, ceil(ascent + descent)) + 4, read off Finder over AX at text
+  10 to 16 with 16 and 32 pt icons: 20, 20, 20, 20, 21, 22, 23 and 36 throughout; each row as wide
+  as the list and flush with it, the first 5 pt under the header. The demo's rows match in all of
+  them. At 32 pt icons Finder sets the name 2 pt further from the icon (its field 6 pt off against
+  4 at 16 pt), as the demo now does.
 - [ ] Header rule, dark: Finder 1pt #414241 with 0.5pt #303030 beneath; the demo 1pt #3d3d3d.
-- [ ] Kind column: Finder shortens a kind to the fullest of its own names for it that fits
-  (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text", "PDF
-  document" → "PDF Document", "QuickTime movie" → "QT movie", "Pages document" → "Pages" at 121 pt).
-  The demo reads the same table and fits 20 pt inside the column: 17 kinds matched on the mini;
-  Finder's exact slack lies between 100.87 and 102.95 pt of text for a 121 pt column, not swept.
+- [x] Kind column: Finder shortens a kind to the fullest of its names that fits 20 pt inside the
+  drawn column (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text",
+  "PDF document" → "PDF Document", "QuickTime movie" → "QT movie", "Pages document" → "Pages" at
+  121 pt), starting from its own name, never a fuller one: at 166 pt "MPEG-4 movie" and "HEIF Image"
+  stay themselves where "Apple MPEG-4 movie" and "High Efficiency Image" would fit. Swept over AX
+  at 14 pt text with Kind drawn 76 to 166 pt, 23 kinds: 19 switches put the slack between 19.96 and
+  20.02 pt. The demo takes the same names at 121 and 166.
 - [x] Date column: one style for the whole column, as Finder; see the user's Mac below.
 - [x] Column view with nothing selected: as in Finder, the ancestor columns show with the current
   folder selected in its parent's.

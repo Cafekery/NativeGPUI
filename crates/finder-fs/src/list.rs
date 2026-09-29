@@ -14,6 +14,7 @@ const VLNK: u32 = 5;
 const HAS_BUNDLE: u16 = 0x2000;
 const EXT_HIDDEN: u16 = 0x0010;
 const IS_ALIAS: u16 = 0x8000;
+const HAS_CUSTOM_ICON: u16 = 0x0400;
 const SF_DATALESS: u32 = 0x4000_0000;
 
 const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
@@ -352,6 +353,7 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         package,
         ext_hidden: finder_flags & EXT_HIDDEN != 0,
         alias: kind == EntryKind::File && finder_flags & IS_ALIAS != 0,
+        custom_icon: finder_flags & HAS_CUSTOM_ICON != 0,
         dataless,
         readable,
         file_id,
@@ -461,6 +463,27 @@ mod tests {
             );
         }
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_with_a_custom_icon_says_so() {
+        let dir = std::env::temp_dir().join(format!("finder-fs-custom-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("custom")).unwrap();
+        fs::create_dir(dir.join("plain")).unwrap();
+        let info = format!("{:0<64}", "00000000000000000400");
+        let status = std::process::Command::new("xattr")
+            .args(["-wx", "com.apple.FinderInfo", &info])
+            .arg(dir.join("custom"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let entries = list_dir(&dir).unwrap();
+        let map = by_name(&entries);
+        assert!(map["custom"].custom_icon);
+        assert!(!map["plain"].custom_icon);
         fs::remove_dir_all(&dir).unwrap();
     }
 

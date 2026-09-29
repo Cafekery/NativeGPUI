@@ -9,7 +9,6 @@ use std::time::Duration;
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::list::Identity;
 use gpui::{App, BackgroundExecutor, Context, Task, Window};
-use native_gpui::tokens::FileType;
 
 use crate::app::FinderDemo;
 use crate::data::{self, Column, Facts, Line, Row, intern, intern_path};
@@ -300,10 +299,10 @@ fn screen_rows<'a>(
     extras: bool,
     (count, art): (usize, f32),
 ) -> Vec<Arc<Row>> {
-    let own = entries.clone().filter(|entry| data::own_icon(entry));
-    ask_for_apps(id, own.clone());
-    let own = own.map(|entry| FileType::Path(intern(&data::join(id, &entry.name))));
-    let drawing = icons::begin(own, art);
+    ask_for_apps(id, entries.clone());
+    let early = (entries.clone())
+        .filter_map(|entry| data::early_artwork(&data::join(id, &entry.name), entry));
+    let drawing = icons::begin(early, art);
     let rows = data::rows_of(id, entries, folders, extras);
     drawing.finish();
     icons::prepare(&rows, count, art);
