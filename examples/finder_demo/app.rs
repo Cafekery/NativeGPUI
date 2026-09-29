@@ -64,7 +64,6 @@ pub(crate) struct FinderDemo {
     /// The held rows' order: the shown view's, or the pending one's.
     pub(crate) sort: Column,
     pub(crate) ascending: bool,
-    /// The held rows' group, as `sort` is their column.
     pub(crate) banded: Option<Column>,
     pub(crate) sorting: Sorting,
     pub(crate) column_sort: Column,
@@ -114,7 +113,6 @@ pub(crate) struct FinderDemo {
     pub(crate) crumb_drop: Option<usize>,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
-    /// The view this window browses in where a folder doesn't ask for its own.
     pub(crate) style: usize,
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<Pixels>,
@@ -203,12 +201,12 @@ impl FinderDemo {
             queue_sink.lock().unwrap().push(event);
             read::EVENTS.ring();
         });
-        let style = prefs::view().unwrap_or(LIST_VIEW);
-        let view = prefs::opens_in(start).map_or(style, |(view, _)| view);
-        let style = match prefs::opens_in(start) {
+        let kept = prefs::opens_in(start);
+        let style = match kept {
             Some((view, true)) => view,
-            _ => style,
+            _ => prefs::view().unwrap_or(LIST_VIEW),
         };
+        let view = kept.map_or(style, |(view, _)| view);
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
@@ -350,12 +348,10 @@ impl FinderDemo {
         self.sorting.order(view, self.column_sort)
     }
 
-    /// The order `folder`'s rows take once it is entered.
     pub(crate) fn order_for(&self, folder: &'static str) -> Order {
         Sorting::of(folder).order(self.pending_view.unwrap_or(self.view), self.column_sort)
     }
 
-    /// The entered folder's sorts; the held rows take its order at once.
     pub(crate) fn load_sorting(&mut self, cx: &mut Context<Self>) {
         self.sorting = Sorting::of(self.here());
         let wanted = self.view_sort(self.view);
@@ -365,7 +361,6 @@ impl FinderDemo {
         }
     }
 
-    /// The folder's group key; gallery view never groups.
     pub(crate) fn group(&self) -> Option<Column> {
         self.sorting.group.filter(|_| self.view != GALLERY_VIEW)
     }
@@ -385,16 +380,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn toggle_groups(&mut self, cx: &mut Context<Self>) {
-        let here = self.here();
-        let last = prefs::look_text(LIST_VIEW, here, "lastGroupBy");
-        let group = match self.sorting.group {
-            Some(_) => None,
-            None => Some(
-                last.and_then(|id| Column::from_id(&id))
-                    .filter(|column| column.offered_at(here))
-                    .unwrap_or(prefs::finder().group),
-            ),
-        };
+        let group = self.sorting.group.is_none().then(|| {
+            kept_column(LIST_VIEW, self.here(), "lastGroupBy").unwrap_or(prefs::finder().group)
+        });
         self.set_group(group, cx);
     }
 
@@ -453,8 +441,6 @@ impl FinderDemo {
     }
 }
 
-/// A folder's list sort and grouping and its gallery sort: its own, else what Use as Defaults
-/// kept, else Finder's.
 #[derive(Clone, Copy)]
 pub(crate) struct Sorting {
     list: (Column, bool),
@@ -465,22 +451,14 @@ pub(crate) struct Sorting {
 impl Sorting {
     fn of(folder: &str) -> Self {
         let finder = prefs::finder();
-        let key = |view, name| {
-            prefs::look_text(view, folder, name)
-                .and_then(|id| Column::from_id(&id))
-                .filter(|column| column.offered_at(folder))
-        };
-        let list = match key(LIST_VIEW, "sortColumn") {
-            Some(sort) => {
-                let ascending = prefs::look_on(LIST_VIEW, folder, "ascending");
-                (sort, ascending.unwrap_or(sort.first_ascending()))
-            }
-            None => finder.sort,
-        };
+        let list = kept_column(LIST_VIEW, folder, "sortColumn").map_or(finder.sort, |sort| {
+            let ascending = prefs::look_on(LIST_VIEW, folder, "ascending");
+            (sort, ascending.unwrap_or(sort.first_ascending()))
+        });
         Self {
             list,
-            group: key(LIST_VIEW, "groupBy"),
-            gallery: key(GALLERY_VIEW, "arrangeBy")
+            group: kept_column(LIST_VIEW, folder, "groupBy"),
+            gallery: kept_column(GALLERY_VIEW, folder, "arrangeBy")
                 .or_else(|| prefs::arranged(GALLERY_VIEW))
                 .unwrap_or(finder.arranged.1),
         }
@@ -498,4 +476,10 @@ impl Sorting {
             ascending,
         }
     }
+}
+
+fn kept_column(view: usize, folder: &str, key: &str) -> Option<Column> {
+    prefs::look_text(view, folder, key)
+        .and_then(|id| Column::from_id(&id))
+        .filter(|column| column.offered_at(folder))
 }
