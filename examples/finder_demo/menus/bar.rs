@@ -685,23 +685,7 @@ fn view_rows() -> Vec<MenuCommand> {
         MenuCommand::new("as Gallery", ViewGallery).key("cmd-4"),
         MenuCommand::separator(),
         MenuCommand::new("Use Groups", UseGroups).key("cmd-ctrl-0"),
-        MenuCommand::submenu(
-            "Sort By",
-            [
-                MenuCommand::new("None", ArrangeNone).key("cmd-ctrl-alt-0"),
-                MenuCommand::separator(),
-                MenuCommand::new("Snap to Grid", ArrangeGrid),
-                MenuCommand::separator(),
-                MenuCommand::new("Name", SortByName).key("cmd-ctrl-alt-1"),
-                MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-alt-2"),
-                MenuCommand::new("Date Last Opened", SortByOpened).key("cmd-ctrl-alt-3"),
-                MenuCommand::new("Date Added", SortByAdded).key("cmd-ctrl-alt-4"),
-                MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-alt-5"),
-                MenuCommand::new("Date Created", SortByCreated),
-                MenuCommand::new("Size", SortBySize).key("cmd-ctrl-alt-6"),
-                MenuCommand::new("Tags", SortByTags).key("cmd-ctrl-alt-7"),
-            ],
-        ),
+        MenuCommand::submenu("Sort By", []).filled(sort_by_rows),
         MenuCommand::new("Clean Up", CleanUp),
         MenuCommand::new("Clean Up Selection", CleanUpSelection).option_alternate(),
         MenuCommand::new("Clean Up By", CleanUpBy).rows([
@@ -730,6 +714,29 @@ fn view_rows() -> Vec<MenuCommand> {
         MenuCommand::separator(),
         MenuCommand::appkit("Enter Full Screen", c"toggleFullScreen:").key("cmd-ctrl-f"),
     ]
+}
+
+fn sort_by_rows() -> Vec<MenuCommand> {
+    let mut rows = Vec::new();
+    if MIRROR.get().view == ICON_VIEW {
+        rows.extend([
+            MenuCommand::new("None", ArrangeNone).key("cmd-ctrl-alt-0"),
+            MenuCommand::separator(),
+            MenuCommand::new("Snap to Grid", ArrangeGrid),
+            MenuCommand::separator(),
+        ]);
+    }
+    rows.extend([
+        MenuCommand::new("Name", SortByName).key("cmd-ctrl-alt-1"),
+        MenuCommand::new("Kind", SortByKind).key("cmd-ctrl-alt-2"),
+        MenuCommand::new("Date Last Opened", SortByOpened).key("cmd-ctrl-alt-3"),
+        MenuCommand::new("Date Added", SortByAdded).key("cmd-ctrl-alt-4"),
+        MenuCommand::new("Date Modified", SortByModified).key("cmd-ctrl-alt-5"),
+        MenuCommand::new("Date Created", SortByCreated),
+        MenuCommand::new("Size", SortBySize).key("cmd-ctrl-alt-6"),
+        MenuCommand::new("Tags", SortByTags).key("cmd-ctrl-alt-7"),
+    ]);
+    rows
 }
 
 fn window_rows() -> Vec<MenuCommand> {

@@ -413,9 +413,10 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   Deselect All, Back and Forward without history, Clean Up in list view and Show Progress Window
   with no operation running; so does the demo. Clean Up and Clean Up By need icon view without a
   sort, and the Window menu's tab rows stay off until the window has tabs.
-- [ ] Sort By's None and Snap to Grid: Finder's menu has them only in icon view, the demo's shows
-  them greyed in the other views. AppKit's Remove Window from Set sits above Cycle Through Windows,
-  where Finder's order needs AppKit's private `_cycleWindows:`.
+- [x] Sort By's None and Snap to Grid are rows only in icon view, as in Finder; the submenu is
+  filled as it opens, and its ⌃⌥⌘ keys still reach it in every view.
+- [ ] AppKit's Remove Window from Set sits above Cycle Through Windows, where Finder's order needs
+  AppKit's private `_cycleWindows:`.
 - [x] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
   Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item; Show turns to Hide on
   Preview, Path Bar, Status Bar, Inspector, View Options, Preview Options and Progress Window.
