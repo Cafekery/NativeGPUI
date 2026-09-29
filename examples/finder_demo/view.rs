@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use gpui::{Context, Size, Window, size};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
@@ -81,7 +79,7 @@ impl FinderDemo {
                 let t = (started.elapsed().as_secs_f32() / LIST_ZOOM_SECS).min(1.);
                 from + (to - from) * gpui::ease_in_out(t)
             }
-            None => self.list_icon,
+            None => self.list_look.icon,
         }
     }
 
@@ -95,7 +93,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn row_h(&self) -> f32 {
-        row_h(self.list_icon_now())
+        row_h(self.list_icon_now(), self.list_look.text)
     }
 
     pub(crate) fn on_screen(&self) -> usize {
@@ -127,13 +125,8 @@ impl FinderDemo {
         }
         match self.view {
             LIST_VIEW => {
-                let to = if larger { ICON_SIZE } else { ICON_SMALL };
-                if to != self.list_icon {
-                    let from = self.list_icon_now();
-                    self.list_icon = to;
-                    self.list_zoom = Some((from, to, Instant::now()));
-                    prefs::set_list_icon(to);
-                }
+                let icon = if larger { ICON_SIZE } else { ICON_SMALL };
+                self.change_list_look(|look| look.icon = icon, cx);
             }
             ICON_VIEW => {
                 if let Some(size) = step(&ICON_STOPS, self.icon_options().size, larger) {

@@ -460,6 +460,7 @@ impl FinderDemo {
         self.tag_listing = None;
         self.icons.forget();
         self.clear_type_filter();
+        self.list_look = crate::views::list::ListLook::of(self.here());
         self.load_columns();
         self.sidebar_follow();
         cx.notify();
