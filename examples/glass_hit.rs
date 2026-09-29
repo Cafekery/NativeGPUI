@@ -1,41 +1,32 @@
 //! Gate: a `glass_container` declines mouse points that belong to something else, and a glass
 //! member still claims its own. Exits 0 pass, 1 fail.
 
+#[path = "support/hit_probe.rs"]
+mod hit_probe;
+
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
 
-use gpui::{
-    App, AsyncApp, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, size,
-};
-use native_gpui::{glass, glass_container, native_root, native_switch, window_options};
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2_app_kit::NSView;
+use gpui::{Context, Render, Window, div, prelude::*, px};
+use hit_probe::{centre_in, class_of, covers, fail, find, gpui_view, hit_rows, report_due};
+use native_gpui::{glass, glass_container, native_root, native_switch};
 use objc2_foundation::NSPoint;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-const TRIES: usize = 12;
 
 struct Probe {
     frames: usize,
     on: bool,
-    done: bool,
 }
 
 impl Render for Probe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frames += 1;
-        if self.frames > 3 && !self.done {
-            self.done = true;
+        if report_due(self.frames) {
             report(window);
         }
-        let on = self.on;
         native_root(
             div()
                 .size_full()
                 .child(div().absolute().left(px(20.)).top(px(20.)).child(
-                    native_switch("knob", on).on_change(
+                    native_switch("knob", self.on).on_change(
                         cx.listener(|probe: &mut Probe, checked: &bool, _, _| probe.on = *checked),
                     ),
                 ))
@@ -52,90 +43,6 @@ impl Render for Probe {
                 ),
         )
     }
-}
-
-static FAILED: AtomicU8 = AtomicU8::new(0);
-static RAN: AtomicU8 = AtomicU8::new(0);
-
-fn fail(why: &str) {
-    println!("FAIL: {why}");
-    FAILED.store(1, Ordering::Relaxed);
-}
-
-fn gpui_view(window: &Window) -> Retained<NSView> {
-    let handle = HasWindowHandle::window_handle(window).expect("macOS window has an AppKit handle");
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        unreachable!("macOS-only example saw a non-AppKit window handle");
-    };
-    unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
-        .expect("the AppKit handle always carries a live NSView")
-}
-
-fn class_of(view: &NSView) -> String {
-    let obj: &AnyObject = view.as_ref();
-    obj.class().name().to_string_lossy().into_owned()
-}
-
-/// By ancestry, not name: AppKit's private hosting view carries the container's name in its own.
-fn is_kind(view: &NSView, name: &str) -> bool {
-    let obj: &AnyObject = view.as_ref();
-    let mut class = Some(obj.class());
-    while let Some(current) = class {
-        if current.name().to_string_lossy() == name {
-            return true;
-        }
-        class = current.superclass();
-    }
-    false
-}
-
-fn find(root: &NSView, name: &str) -> Option<Retained<NSView>> {
-    let subviews = root.subviews();
-    for i in 0..subviews.count() {
-        let sub = subviews.objectAtIndex(i);
-        if is_kind(&sub, name) {
-            return Some(sub);
-        }
-        if let Some(found) = find(&sub, name) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn within(hit: *mut NSView, target: &NSView) -> bool {
-    let target: *const NSView = target;
-    let Some(mut cursor) = (unsafe { Retained::retain(hit) }) else {
-        return false;
-    };
-    loop {
-        if std::ptr::eq(Retained::as_ptr(&cursor), target) {
-            return true;
-        }
-        match unsafe { cursor.superview() } {
-            Some(parent) => cursor = parent,
-            None => return false,
-        }
-    }
-}
-
-fn centre_in(view: &NSView, space: &NSView) -> NSPoint {
-    let b = view.bounds();
-    view.convertPoint_toView(
-        NSPoint::new(
-            b.origin.x + b.size.width / 2.,
-            b.origin.y + b.size.height / 2.,
-        ),
-        Some(space),
-    )
-}
-
-fn covers(view: &NSView, space: &NSView, point: NSPoint) -> bool {
-    let r = view.convertRect_toView(view.bounds(), Some(space));
-    point.x >= r.origin.x
-        && point.x <= r.origin.x + r.size.width
-        && point.y >= r.origin.y
-        && point.y <= r.origin.y + r.size.height
 }
 
 fn report(window: &Window) {
@@ -177,99 +84,27 @@ fn report(window: &Window) {
         return;
     }
 
-    println!("{:<40} {:<16} {:<34} VERDICT", "ROW", "POINT", "hitTest:");
-    let rows: [(&str, NSPoint, &NSView, bool); 4] = [
-        (
-            "over the switch, below the container",
-            knob_at,
-            &knob,
-            false,
-        ),
-        ("over a glass member", panel_at, &panel, false),
-        ("the member's point, y mirrored", mirror_at, &gpui, true),
-        ("over bare GPUI inside the container", empty_at, &gpui, true),
-    ];
-    for (what, at, want, exact) in rows {
-        // `hitTest:` takes its point in the receiver's superview space.
-        let hit: *mut NSView = unsafe { objc2::msg_send![&*gpui, hitTest: at] };
-        let name = if hit.is_null() {
-            "nil".to_string()
-        } else {
-            class_of(unsafe { &*hit })
-        };
-        let ok = if exact {
-            std::ptr::eq(hit.cast_const(), want as *const NSView)
-        } else {
-            within(hit, want)
-        };
-        if !ok {
-            FAILED.store(1, Ordering::Relaxed);
-        }
-        let verdict = if ok {
-            "ok".to_string()
-        } else if exact {
-            format!("WRONG: wanted exactly {}", class_of(want))
-        } else {
-            format!("WRONG: wanted {}", class_of(want))
-        };
-        println!(
-            "{:<40} {:<16} {:<34} {verdict}",
-            what,
-            format!("{:.0},{:.0}", at.x, at.y),
-            name,
-        );
-    }
-    RAN.store(1, Ordering::Relaxed);
+    hit_rows(
+        &gpui,
+        &[
+            (
+                "over the switch, below the container",
+                knob_at,
+                &knob,
+                false,
+            ),
+            ("over a glass member", panel_at, &panel, false),
+            ("the member's point, y mirrored", mirror_at, &gpui, true),
+            ("over bare GPUI inside the container", empty_at, &gpui, true),
+        ],
+        40,
+        34,
+    );
 }
 
 fn main() -> ExitCode {
-    gpui_platform::application().run(|cx: &mut App| {
-        let window = cx
-            .open_window(
-                gpui::WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds {
-                        origin: point(px(0.), px(0.)),
-                        size: size(px(260.), px(200.)),
-                    })),
-                    // gpui starts its display link only once occlusion reports visible.
-                    focus: false,
-                    ..window_options()
-                },
-                |_, cx| {
-                    cx.new(|_| Probe {
-                        frames: 0,
-                        on: false,
-                        done: false,
-                    })
-                },
-            )
-            .unwrap();
-
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            for _ in 0..TRIES {
-                cx.background_executor()
-                    .timer(Duration::from_millis(20))
-                    .await;
-                let done = window
-                    .update(cx, |probe, _, cx| {
-                        cx.notify();
-                        probe.done
-                    })
-                    .unwrap_or(true);
-                if done {
-                    break;
-                }
-            }
-            if RAN.load(Ordering::Relaxed) == 0 {
-                println!(
-                    "FAIL: no row was evaluated — the window rendered fewer than 4 frames within \
-                     {TRIES} tries, or the probe bailed out above"
-                );
-                std::process::exit(1);
-            }
-            std::process::exit(FAILED.load(Ordering::Relaxed) as i32);
-        })
-        .detach();
-    });
-    ExitCode::SUCCESS
+    hit_probe::run(260., 200., || Probe {
+        frames: 0,
+        on: false,
+    })
 }

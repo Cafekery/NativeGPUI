@@ -32,7 +32,7 @@ fn name(labels: &[&'static str], index: usize) -> &'static str {
     labels.get(index).copied().unwrap_or("none")
 }
 
-fn labelled(control: AnyElement, value: impl Into<String>) -> AnyElement {
+fn labelled(control: AnyElement, value: String) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -43,9 +43,13 @@ fn labelled(control: AnyElement, value: impl Into<String>) -> AnyElement {
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let s = &d.segmented;
-    let (selected, pair, many) = (s.selected, s.pair, s.many);
-    let (pressed, presses) = (s.pressed, s.presses);
+    let State {
+        selected,
+        pair,
+        many,
+        pressed,
+        presses,
+    } = d.segmented;
 
     stack(vec![
         demo(
@@ -53,10 +57,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             labelled(
                 native_segmented("stages", selected)
                     .segments(STAGES)
-                    .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                        d.segmented.selected = *index;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, index| d.segmented.selected = index))
                     .into_any_element(),
                 format!("selected = {selected} ({})", name(&STAGES, selected)),
             ),
@@ -71,20 +72,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     .child(labelled(
                         native_segmented("pair", pair)
                             .segments(SIDES)
-                            .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                                d.segmented.pair = *index;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, index| d.segmented.pair = index))
                             .into_any_element(),
                         format!("2 items, {pair}"),
                     ))
                     .child(labelled(
                         native_segmented("many", many)
                             .segments(DAYS)
-                            .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                                d.segmented.many = *index;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, index| d.segmented.many = index))
                             .into_any_element(),
                         format!("5 items, {many} ({})", name(&DAYS, many)),
                     ))
@@ -102,18 +97,15 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_segmented("actions", 0)
                         .segments(ACTIONS)
                         .tracking_mode(TrackingMode::Momentary)
-                        .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                            d.segmented.pressed = Some(*index);
+                        .on_change(set(cx, |d, index| {
+                            d.segmented.pressed = Some(index);
                             d.segmented.presses += 1;
-                            cx.notify();
                         }))
                         .into_any_element(),
                 )
                 .child(mono("selectedSegment = -1, always"))
                 .child(mono(match pressed {
-                    Some(index) => {
-                        format!("{presses} presses, last {}", name(&ACTIONS, index))
-                    }
+                    Some(index) => format!("{presses} presses, last {}", name(&ACTIONS, index)),
                     None => "no presses yet".into(),
                 }))
                 .child(caption(

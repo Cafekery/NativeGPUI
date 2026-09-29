@@ -1,10 +1,10 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, ElementId, Window, prelude::*, px};
+use gpui::{AnyElement, Context, Window, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
-    Blending, Layer, RawMaterial, material, native_popup, native_segmented, native_slider,
-    native_switch,
+    Blending, Layer, NativeMaterial, RawMaterial, material, native_popup, native_segmented,
+    native_slider, native_switch,
 };
 
 const SPECIMEN: f32 = 128.;
@@ -34,11 +34,10 @@ impl Default for State {
     }
 }
 
-fn over_checker(id: impl Into<ElementId>, m: RawMaterial) -> AnyElement {
+fn over_checker(m: NativeMaterial) -> AnyElement {
     checker(
         SPECIMEN,
-        material(id, m)
-            .layer(Layer::Above)
+        m.layer(Layer::Above)
             .blending(Blending::WithinWindow)
             .size_full()
             .into_any_element(),
@@ -51,7 +50,7 @@ fn catalogue_tile(m: RawMaterial) -> AnyElement {
     } else {
         m.title().to_string()
     };
-    tile(label, SPECIMEN, over_checker(m.title(), m))
+    tile(label, SPECIMEN, over_checker(material(m.title(), m)))
 }
 
 fn collisions(id: &'static str, group: &[RawMaterial]) -> AnyElement {
@@ -59,7 +58,7 @@ fn collisions(id: &'static str, group: &[RawMaterial]) -> AnyElement {
         group
             .iter()
             .enumerate()
-            .map(|(i, m)| tile(m.title(), SPECIMEN, over_checker((id, i), *m)))
+            .map(|(i, m)| tile(m.title(), SPECIMEN, over_checker(material((id, i), *m))))
             .collect(),
     )
 }
@@ -87,20 +86,12 @@ fn undocumented() -> Vec<AnyElement> {
             tile(
                 "artificial_chameleon(false)",
                 SPECIMEN,
-                over_checker("chameleon-off", REFERENCE),
+                over_checker(material("chameleon-off", REFERENCE)),
             ),
             tile(
                 "artificial_chameleon(true)",
                 SPECIMEN,
-                checker(
-                    SPECIMEN,
-                    material("chameleon-on", REFERENCE)
-                        .layer(Layer::Above)
-                        .blending(Blending::WithinWindow)
-                        .artificial_chameleon(true)
-                        .size_full()
-                        .into_any_element(),
-                ),
+                over_checker(material("chameleon-on", REFERENCE).artificial_chameleon(true)),
             ),
         ]),
     ]
@@ -113,14 +104,22 @@ fn undocumented() -> Vec<AnyElement> {
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
     let materials: Vec<RawMaterial> = RawMaterial::all().collect();
-    let index = d.material.selected.min(materials.len() - 1);
+    let State {
+        selected,
+        within_window: within,
+        emphasized,
+        radius,
+        dims_when_inactive: dims,
+        above,
+    } = d.material;
+    let index = selected.min(materials.len() - 1);
     let chosen = materials[index];
-    let within = d.material.within_window;
-    let emphasized = d.material.emphasized;
-    let radius = d.material.radius;
-    let dims = d.material.dims_when_inactive;
-    let above = d.material.above;
     let layer_name = if above { "Above" } else { "Below" };
+    let blending_name = if within {
+        "WithinWindow"
+    } else {
+        "BehindWindow"
+    };
     let deprecated = RawMaterial::DOCUMENTED
         .iter()
         .filter(|m| m.is_deprecated())
@@ -214,7 +213,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     tile(
                         "WithinWindow — the checkerboard",
                         SPECIMEN,
-                        over_checker("blend-within", REFERENCE),
+                        over_checker(material("blend-within", REFERENCE)),
                     ),
                 ]),
             ],
@@ -264,10 +263,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     layer_name,
                     native_segmented("layer-knob", usize::from(above))
                         .segments(["Below", "Above"])
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.material.above = *value == 1;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, index: usize| d.material.above = index == 1))
                         .into_any_element(),
                 ),
             ],
@@ -284,20 +280,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     tile(
                         "Selection — emphasized(false)",
                         SPECIMEN,
-                        over_checker("emph-off", RawMaterial::Selection),
+                        over_checker(material("emph-off", RawMaterial::Selection)),
                     ),
                     tile(
                         "Selection — emphasized(true)",
                         SPECIMEN,
-                        checker(
-                            SPECIMEN,
-                            material("emph-on", RawMaterial::Selection)
-                                .layer(Layer::Above)
-                                .blending(Blending::WithinWindow)
-                                .emphasized(true)
-                                .size_full()
-                                .into_any_element(),
-                        ),
+                        over_checker(material("emph-on", RawMaterial::Selection).emphasized(true)),
                     ),
                 ]),
             ],
@@ -318,14 +306,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                             tile(
                                 format!("{r:.0} px"),
                                 SPECIMEN,
-                                checker(
-                                    SPECIMEN,
-                                    material(("radius-sample", i), REFERENCE)
-                                        .layer(Layer::Above)
-                                        .blending(Blending::WithinWindow)
-                                        .corner_radius(px(*r))
-                                        .size_full()
-                                        .into_any_element(),
+                                over_checker(
+                                    material(("radius-sample", i), REFERENCE).corner_radius(px(*r)),
                                 ),
                             )
                         })
@@ -346,20 +328,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     tile(
                         "false — pins Active",
                         SPECIMEN,
-                        over_checker("dims-off", REFERENCE),
+                        over_checker(material("dims-off", REFERENCE)),
                     ),
                     tile(
                         "true — AppKit's default",
                         SPECIMEN,
-                        checker(
-                            SPECIMEN,
-                            material("dims-on", REFERENCE)
-                                .layer(Layer::Above)
-                                .blending(Blending::WithinWindow)
-                                .dims_when_inactive(true)
-                                .size_full()
-                                .into_any_element(),
-                        ),
+                        over_checker(material("dims-on", REFERENCE).dims_when_inactive(true)),
                     ),
                 ]),
             ],
@@ -453,24 +427,16 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     chosen.title(),
                     native_popup("picker", index)
                         .items(materials.iter().map(|m| m.title()))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.material.selected = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.material.selected = value))
                         .into_any_element(),
                 ),
                 knob(
                     "blending",
-                    if within {
-                        "WithinWindow"
-                    } else {
-                        "BehindWindow"
-                    },
+                    blending_name,
                     native_segmented("blending-knob", usize::from(within))
                         .segments(["BehindWindow", "WithinWindow"])
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.material.within_window = *value == 1;
-                            cx.notify();
+                        .on_change(set(cx, |d, index: usize| {
+                            d.material.within_window = index == 1
                         }))
                         .into_any_element(),
                 ),
@@ -478,10 +444,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "emphasized",
                     emphasized.to_string(),
                     native_switch("emphasized-knob", emphasized)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.material.emphasized = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.material.emphasized = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -489,20 +452,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{radius:.0} px"),
                     native_slider("radius-knob", radius)
                         .range(0., 40.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.material.radius = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.material.radius = value))
                         .into_any_element(),
                 ),
                 knob(
                     "dims_when_inactive",
                     dims.to_string(),
                     native_switch("dims-knob", dims)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.material.dims_when_inactive = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.material.dims_when_inactive = value))
                         .into_any_element(),
                 ),
             ],
@@ -527,14 +484,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 "RawMaterial::all()",
                 format!("{} in this build", materials.len()),
             ),
-            (
-                "blending(Blending)",
-                if within {
-                    "WithinWindow".into()
-                } else {
-                    "BehindWindow".into()
-                },
-            ),
+            ("blending(Blending)", blending_name.into()),
             ("emphasized(bool)", emphasized.to_string()),
             ("corner_radius(Pixels)", format!("{radius:.0} px")),
             ("dims_when_inactive(bool)", dims.to_string()),

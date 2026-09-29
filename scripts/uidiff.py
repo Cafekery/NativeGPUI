@@ -24,8 +24,7 @@ def full_width_steps(a, frac=0.55, threshold=10.0):
     return [int(i) + 1 for i in np.nonzero(spanning > frac)[0]], luma.mean(axis=1)
 
 
-def pitch(luma, y0, y1):
-    """Dominant period of the alternating row bands, by autocorrelation."""
+def row_pitch(luma, y0, y1):
     seg = luma[y0:y1]
     if len(seg) < 40:
         return None, 0.0
@@ -35,14 +34,11 @@ def pitch(luma, y0, y1):
     ac = np.correlate(seg, seg, mode="full")[len(seg) - 1 :]
     ac /= ac[0]
     lo, hi = 12, min(160, len(ac) - 1)
-    if hi <= lo:
-        return None, 0.0
     k = int(np.argmax(ac[lo:hi])) + lo
     return k, float(ac[k])
 
 
 def col_edges(a, y0, y1, threshold=8.0):
-    """x where the band's column-mean luma steps."""
     band = a[y0:y1].mean(axis=2).mean(axis=0)
     d = np.abs(np.diff(band))
     return [int(i) + 1 for i in np.nonzero(d > threshold)[0]]
@@ -64,7 +60,7 @@ def describe(path, scale):
     list_top = top_third[-1] if top_third else steps[0]
     print(f"  chrome ends / list starts at: {pt(list_top)} pt")
 
-    k, strength = pitch(luma, list_top, size[1])
+    k, strength = row_pitch(luma, list_top, size[1])
     if k:
         print(f"  row pitch: {k} px = {pt(k)} pt  (autocorrelation {strength:.2f})")
         if strength < 0.25:

@@ -18,32 +18,23 @@ impl Default for State {
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (on, second) = (d.switch.on, d.switch.second);
+    let State { on, second } = d.switch;
 
     stack(vec![
         demo(
             "state",
             native_switch("live", on)
-                .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                    d.switch.on = *value;
-                    cx.notify();
-                }))
+                .on_change(set(cx, |d, on| d.switch.on = on))
                 .into_any_element(),
         ),
         row(
             "two independent switches",
             vec![
                 native_switch("a", on)
-                    .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                        d.switch.on = *value;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, on| d.switch.on = on))
                     .into_any_element(),
                 native_switch("b", second)
-                    .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                        d.switch.second = *value;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, on| d.switch.second = on))
                     .into_any_element(),
             ],
         ),

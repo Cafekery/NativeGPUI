@@ -1,22 +1,22 @@
+use std::fmt::Display;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext, AsyncApp, Bounds, Context, FocusHandle, MouseDownEvent, Render, SharedString,
-    Window, WindowBounds, WindowHandle, div, point, prelude::*, px, rgb, size,
+    App, AppContext, AsyncApp, Bounds, Context, FocusHandle, MouseDownEvent, Render, Window,
+    WindowBounds, WindowHandle, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
     native_button, native_root, native_slider, native_switch, native_text_field, window_options,
 };
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
-use objc2::{ClassType, MainThreadOnly, Message};
+use objc2::{DowncastTarget, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSPasteboard, NSPasteboardTypeString, NSScreen, NSSlider, NSSwitch, NSTextField, NSView,
-    NSWindow, NSWindowStyleMask,
+    NSPasteboard, NSPasteboardTypeString, NSResponder, NSScreen, NSSlider, NSSwitch, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSPoint, NSProcessInfo, NSRange, NSRect, NSSize, NSString,
@@ -132,10 +132,10 @@ impl Render for Keys {
                                 cx.notify();
                             }),
                         )
-                        .child(SharedString::from(format!(
+                        .child(format!(
                             "gpui clicks {} · default {} · plain {} · submits {}",
                             self.gpui_clicks, self.default_clicks, self.plain_clicks, self.submits
-                        ))),
+                        )),
                 ),
         )
     }
@@ -151,20 +151,14 @@ struct Controls {
 }
 
 fn descend(view: &NSView, out: &mut Vec<Retained<NSView>>) {
-    let subviews = view.subviews();
-    for index in 0..subviews.count() {
-        let sub = subviews.objectAtIndex(index);
+    for sub in view.subviews().iter() {
         descend(&sub, out);
         out.push(sub);
     }
 }
 
-fn as_kind<T: objc2::Message + objc2::ClassType>(view: &Retained<NSView>) -> Option<Retained<T>> {
-    if view.isKindOfClass(T::class()) {
-        Some(unsafe { Retained::cast_unchecked::<T>(view.clone()) })
-    } else {
-        None
-    }
+fn as_kind<T: DowncastTarget>(view: &Retained<NSView>) -> Option<Retained<T>> {
+    view.downcast_ref::<T>().map(T::retain)
 }
 
 impl Controls {
@@ -197,10 +191,6 @@ impl Controls {
     }
 }
 
-fn same(a: &impl objc2::Message, b: &impl objc2::Message) -> bool {
-    std::ptr::eq(a as *const _ as *const (), b as *const _ as *const ())
-}
-
 fn board() -> String {
     NSPasteboard::generalPasteboard()
         .stringForType(unsafe { NSPasteboardTypeString })
@@ -214,7 +204,38 @@ fn set_board(text: &str) {
     pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString });
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+fn selection_of(field: &NSTextField) -> String {
+    match field.currentEditor() {
+        Some(editor) => {
+            let range = editor.selectedRange();
+            format!("({},{})", range.location, range.length)
+        }
+        None => "unfocused".into(),
+    }
+}
+
+/// `makeFirstResponder:` selects everything and may not install the editor yet: read it back.
+async fn focus_at(cx: &AsyncApp, window: &NSWindow, field: &NSTextField, caret: usize) -> String {
+    let want = format!("({caret},0)");
+    let mut armed = "<never armed>".to_owned();
+    for _ in 0..60 {
+        window.makeFirstResponder(Some(field));
+        if let Some(editor) = field.currentEditor() {
+            editor.setSelectedRange(NSRange {
+                location: caret,
+                length: 0,
+            });
+            armed = selection_of(field);
+            if armed == want {
+                break;
+            }
+        }
+        sleep(cx, POLL).await;
+    }
+    armed
+}
+
+#[derive(PartialEq)]
 enum Sabotage {
     None,
     Want,
@@ -239,7 +260,7 @@ fn residual_modifiers() -> String {
 }
 
 struct Sent {
-    key: String,
+    key: &'static str,
     frontmost: String,
     frontmost_ok: bool,
     key_window_before: bool,
@@ -284,25 +305,14 @@ fn describe(view: Option<&NSView>) -> String {
     let Some(view) = view else {
         return "<nil>".into();
     };
-    let class = view.class().name().to_string_lossy().into_owned();
-    if !view.isKindOfClass(NSTextField::class()) {
-        return class;
-    }
-    let field = unsafe { Retained::cast_unchecked::<NSTextField>(view.retain()) };
-    match field.placeholderString() {
+    let class = view.class().name().to_string_lossy();
+    match view
+        .downcast_ref::<NSTextField>()
+        .and_then(|field| field.placeholderString())
+    {
         Some(placeholder) => format!("{class}[{placeholder}]"),
-        None => class,
+        None => class.into_owned(),
     }
-}
-
-struct Row {
-    name: &'static str,
-    verdict: &'static str,
-    pre: String,
-    post: String,
-    want: String,
-    key: String,
-    frontmost: String,
 }
 
 struct Suite {
@@ -313,9 +323,8 @@ struct Suite {
     controls: Controls,
     app: Retained<NSApplication>,
     screen_height: f64,
-    rows: Vec<Row>,
+    tally: [usize; 6],
     controls_passed: usize,
-    name: String,
     pid: u32,
 }
 
@@ -332,38 +341,33 @@ impl Suite {
         let Some(responder) = self.controls.window.firstResponder() else {
             return "<none>".into();
         };
-        for (field, name) in [
-            (&self.controls.alpha, "editor:alpha"),
-            (&self.controls.beta, "editor:beta"),
-        ] {
-            if let Some(editor) = field.currentEditor() {
-                if same(&*editor, &*responder) {
-                    return name.into();
-                }
-            }
-        }
-        if same(&*self.controls.toggle, &*responder) {
-            return "switch".into();
-        }
-        if same(&*self.controls.slider, &*responder) {
-            return "slider".into();
-        }
-        if same(&*self.controls.gpui, &*responder) {
-            return "gpui".into();
-        }
-        if same(&*self.controls.window, &*responder) {
-            return "window".into();
-        }
-        responder.class().name().to_string_lossy().into_owned()
+        let is = |candidate: &NSResponder| std::ptr::eq(candidate, &*responder);
+        let editing = |field: &NSTextField| field.currentEditor().is_some_and(|editor| is(&editor));
+        let name = if editing(&self.controls.alpha) {
+            "editor:alpha"
+        } else if editing(&self.controls.beta) {
+            "editor:beta"
+        } else if is(&self.controls.toggle) {
+            "switch"
+        } else if is(&self.controls.slider) {
+            "slider"
+        } else if is(&self.controls.gpui) {
+            "gpui"
+        } else if is(&self.controls.window) {
+            "window"
+        } else {
+            return responder.class().name().to_string_lossy().into_owned();
+        };
+        name.into()
     }
 
     fn selection(&self) -> String {
-        match self.controls.alpha.currentEditor() {
-            Some(editor) => {
-                let range = editor.selectedRange();
-                format!("({},{})", range.location, range.length)
-            }
-            None => "unfocused".into(),
+        selection_of(&self.controls.alpha)
+    }
+
+    fn select(&self, location: usize, length: usize) {
+        if let Some(editor) = self.controls.alpha.currentEditor() {
+            editor.setSelectedRange(NSRange { location, length });
         }
     }
 
@@ -375,13 +379,11 @@ impl Suite {
         format!("{:?}|{}", self.alpha_text(), self.selection())
     }
 
-    /// `makeFirstResponder:` selects everything and may not install the editor yet: read it back.
-    async fn arm(&mut self, cx: &mut AsyncApp, text: &str, caret: usize) {
+    async fn arm(&self, cx: &mut AsyncApp, text: &str, caret: usize) {
         self.controls.window.makeFirstResponder(None);
-        let owned = text.to_owned();
         self.handle
             .update(cx, |keys, _, cx| {
-                keys.alpha = owned;
+                keys.alpha = text.to_owned();
                 cx.notify();
             })
             .ok();
@@ -391,22 +393,7 @@ impl Suite {
                 break;
             }
         }
-        let want = format!("({caret},0)");
-        for _ in 0..60 {
-            self.controls
-                .window
-                .makeFirstResponder(Some(&self.controls.alpha));
-            if let Some(editor) = self.controls.alpha.currentEditor() {
-                editor.setSelectedRange(NSRange {
-                    location: caret,
-                    length: 0,
-                });
-            }
-            if self.selection() == want {
-                return;
-            }
-            sleep(cx, POLL).await;
-        }
+        focus_at(cx, &self.controls.window, &self.controls.alpha, caret).await;
     }
 
     async fn run_script(&mut self, cx: &mut AsyncApp, script: String) -> String {
@@ -435,29 +422,15 @@ impl Suite {
         "<timeout>".to_owned()
     }
 
-    /// `body` is System Events, `tool` cliclick: one cannot click, the other cannot chord a letter.
-    async fn deliver(&mut self, cx: &mut AsyncApp, key: &str, body: &str, tool: &str) -> Sent {
-        if !self.window_is_key() {
-            cx.update(|cx| cx.activate(true));
-            sleep(cx, Duration::from_millis(300)).await;
-        }
-        let key_window_before = self.window_is_key();
-        let suppress = self.sabotage == Sabotage::NoKeys;
-        let delivered = if suppress { "delay 0.01" } else { body };
-        // Release every modifier: one lost keyup would hold it down for the rest of the run.
-        let tool = if suppress || tool.is_empty() {
-            String::new()
-        } else {
-            format!("{tool} ku:cmd,alt,ctrl,shift,fn")
-        };
-        fs::write(self.dir.join("req.cliclick"), &tool).ok();
-        // One script, or this could type into whatever the user focused between check and send.
+    /// One script, or this could type into whatever the user focused between check and send.
+    async fn run_guarded(&mut self, cx: &mut AsyncApp, body: &str, tool: &str) -> String {
+        fs::write(self.dir.join("req.cliclick"), tool).ok();
         let pid = self.pid;
         let script = format!(
             "tell application \"System Events\"\n\
              \tset fg to unix id of first application process whose frontmost is true\n\
              \tif fg is {pid} then\n\
-             \t\t{delivered}\n\
+             \t\t{body}\n\
              \tend if\n\
              end tell\n\
              return (fg as string)\n"
@@ -465,8 +438,33 @@ impl Suite {
         let frontmost = self.run_script(cx, script).await;
         fs::write(self.dir.join("req.cliclick"), "").ok();
         sleep(cx, SETTLE).await;
+        frontmost
+    }
+
+    /// `body` is System Events, `tool` cliclick: one cannot click, the other cannot chord a letter.
+    async fn deliver(
+        &mut self,
+        cx: &mut AsyncApp,
+        key: &'static str,
+        body: &str,
+        tool: &str,
+    ) -> Sent {
+        if !self.window_is_key() {
+            cx.update(|cx| cx.activate(true));
+            sleep(cx, Duration::from_millis(300)).await;
+        }
+        let key_window_before = self.window_is_key();
+        let suppress = self.sabotage == Sabotage::NoKeys;
+        let body = if suppress { "delay 0.01" } else { body };
+        // Release every modifier: one lost keyup would hold it down for the rest of the run.
+        let tool = if suppress || tool.is_empty() {
+            String::new()
+        } else {
+            format!("{tool} ku:cmd,alt,ctrl,shift,fn")
+        };
+        let frontmost = self.run_guarded(cx, body, &tool).await;
         Sent {
-            key: key.to_owned(),
+            key,
             frontmost_ok: frontmost == self.pid.to_string(),
             frontmost,
             key_window_before,
@@ -475,16 +473,16 @@ impl Suite {
         }
     }
 
-    async fn send(&mut self, cx: &mut AsyncApp, key: &str, body: &str) -> Sent {
+    async fn send(&mut self, cx: &mut AsyncApp, key: &'static str, body: &str) -> Sent {
         self.deliver(cx, key, body, "").await
     }
 
-    async fn press(&mut self, cx: &mut AsyncApp, key: &str, tool: &str) -> Sent {
+    async fn press(&mut self, cx: &mut AsyncApp, key: &'static str, tool: &str) -> Sent {
         self.deliver(cx, key, "delay 0.02", tool).await
     }
 
     /// Only inside this window's frame: anywhere else the click lands in whatever app owns the pixel.
-    async fn click(&mut self, cx: &mut AsyncApp, label: &str, x: f64, y: f64) -> Sent {
+    async fn click(&mut self, cx: &mut AsyncApp, label: &'static str, (x, y): (f64, f64)) -> Sent {
         let frame = self.controls.window.frame();
         let top = self.screen_height - (frame.origin.y + frame.size.height);
         let inside = x >= frame.origin.x
@@ -493,7 +491,7 @@ impl Suite {
             && y <= top + frame.size.height;
         if !inside {
             return Sent {
-                key: label.to_owned(),
+                key: label,
                 frontmost: "<outside own window>".to_owned(),
                 frontmost_ok: false,
                 key_window_before: self.window_is_key(),
@@ -559,45 +557,11 @@ impl Suite {
             .clone()
             .unwrap_or_else(|| self.controls.window.clone());
 
-        let mut armed = "<never armed>".to_owned();
-        for _ in 0..60 {
-            host.makeFirstResponder(Some(&field));
-            if let Some(editor) = field.currentEditor() {
-                editor.setSelectedRange(NSRange {
-                    location: 3,
-                    length: 0,
-                });
-                let range = editor.selectedRange();
-                armed = format!("({},{})", range.location, range.length);
-                if armed == "(3,0)" {
-                    break;
-                }
-            }
-            sleep(cx, POLL).await;
-        }
+        let armed = focus_at(cx, &host, &field, 3).await;
         let key = host.isKeyWindow();
-        let pid = self.pid;
-        let script = format!(
-            "tell application \"System Events\"\n\
-             \tset fg to unix id of first application process whose frontmost is true\n\
-             \tif fg is {pid} then\n\
-             \t\tdelay 0.02\n\
-             \tend if\n\
-             end tell\n\
-             return (fg as string)\n"
-        );
-        fs::write(self.dir.join("req.cliclick"), tool).ok();
-        let frontmost = self.run_script(cx, script).await;
-        fs::write(self.dir.join("req.cliclick"), "").ok();
-        sleep(cx, SETTLE).await;
+        let frontmost = self.run_guarded(cx, "delay 0.02", tool).await;
 
-        let editor_state = match field.currentEditor() {
-            Some(editor) => {
-                let range = editor.selectedRange();
-                format!("({},{})", range.location, range.length)
-            }
-            None => "unfocused".into(),
-        };
+        let editor_state = selection_of(&field);
         let result = format!(
             "{:?}|{editor_state} armed={armed} host_key={key} fg={frontmost}",
             field.stringValue().to_string()
@@ -629,11 +593,8 @@ impl Suite {
         self.run_script(cx, script).await
     }
 
-    fn push(&mut self, row: Row) {
-        let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            row.name, row.verdict, row.pre, row.post, row.want, row.key, row.frontmost
-        );
+    fn push(&mut self, row: [&str; 7]) {
+        let line = row.join("\t");
         println!("{line}");
         if let Ok(mut file) = fs::OpenOptions::new()
             .create(true)
@@ -642,89 +603,63 @@ impl Suite {
         {
             let _ = writeln!(file, "{line}");
         }
-        self.rows.push(row);
+        let [_, verdict, ..] = row;
+        self.tally[match verdict {
+            "PASS" => 0,
+            "FAIL" => 1,
+            "VACUOUS" => 2,
+            "NOKEY" => 3,
+            "STUCKMOD" => 4,
+            _ => 5,
+        }] += 1;
     }
 
-    fn expect(&mut self, name: &'static str, pre: &str, post: &str, want: &str, sent: &Sent) {
+    fn expect(&mut self, name: &str, pre: &str, post: &str, want: &str, sent: &Sent) {
         let want = match self.sabotage {
             Sabotage::Want => format!("{want}·sabotaged"),
             _ => want.to_owned(),
         };
-        let verdict = if let Some(reason) = sent.disqualified() {
-            reason
-        } else if post != want {
-            "FAIL"
-        } else if pre == want {
-            "VACUOUS"
-        } else {
-            "PASS"
+        let verdict = match sent.disqualified() {
+            Some(reason) => reason,
+            None if post != want => "FAIL",
+            None if pre == want => "VACUOUS",
+            None => "PASS",
         };
-        self.push(Row {
+        self.push([
             name,
             verdict,
-            pre: pre.to_owned(),
-            post: post.to_owned(),
-            want,
-            key: sent.key.clone(),
-            frontmost: sent.provenance(),
-        });
+            pre,
+            post,
+            &want,
+            sent.key,
+            &sent.provenance(),
+        ]);
     }
 
-    fn expect_change(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
-        let inverted = self.sabotage == Sabotage::Want;
-        let changed = pre != post;
-        let verdict = if let Some(reason) = sent.disqualified() {
-            reason
-        } else if changed != !inverted {
-            "FAIL"
-        } else {
-            "PASS"
+    fn expect_same(&mut self, name: &str, pre: &str, post: &str, same: bool, sent: &Sent) -> bool {
+        let same = same != (self.sabotage == Sabotage::Want);
+        let verdict = match sent.disqualified() {
+            Some(reason) => reason,
+            None if (pre == post) != same => "FAIL",
+            None => "PASS",
         };
-        self.push(Row {
-            name,
-            verdict,
-            pre: pre.to_owned(),
-            post: post.to_owned(),
-            want: if inverted { "= pre" } else { "≠ pre" }.into(),
-            key: sent.key.clone(),
-            frontmost: sent.provenance(),
-        });
+        let want = if same { "= pre" } else { "≠ pre" };
+        self.push([name, verdict, pre, post, want, sent.key, &sent.provenance()]);
+        verdict == "PASS"
     }
 
-    fn expect_stable(&mut self, name: &'static str, pre: &str, post: &str, sent: &Sent) {
-        let inverted = self.sabotage == Sabotage::Want;
-        let stable = pre == post;
-        let verdict = if let Some(reason) = sent.disqualified() {
-            reason
-        } else if stable != !inverted {
-            "FAIL"
-        } else {
-            "PASS"
-        };
-        if verdict == "PASS" {
+    fn expect_change(&mut self, name: &str, pre: &str, post: &str, sent: &Sent) {
+        self.expect_same(name, pre, post, false, sent);
+    }
+
+    fn expect_stable(&mut self, name: &str, pre: &str, post: &str, sent: &Sent) {
+        if self.expect_same(name, pre, post, true, sent) {
             self.controls_passed += 1;
         }
-        self.push(Row {
-            name,
-            verdict,
-            pre: pre.to_owned(),
-            post: post.to_owned(),
-            want: if inverted { "≠ pre" } else { "= pre" }.into(),
-            key: sent.key.clone(),
-            frontmost: sent.provenance(),
-        });
     }
 
-    fn note(&mut self, name: &'static str, value: String) {
-        self.push(Row {
-            name,
-            verdict: "NOTE",
-            pre: String::new(),
-            post: value,
-            want: String::new(),
-            key: "-".into(),
-            frontmost: String::new(),
-        });
+    fn note(&mut self, name: &str, value: impl Display) {
+        self.push([name, "NOTE", "", &value.to_string(), "", "-", ""]);
     }
 
     fn point_of(&self, view: &NSView) -> (f64, f64) {
@@ -745,45 +680,34 @@ impl Suite {
         )
     }
 
-    async fn model(&mut self, cx: &mut AsyncApp) -> (u32, u32, u32, bool) {
+    fn model<R: Default>(&self, cx: &mut AsyncApp, read: impl FnOnce(&Keys, &Window) -> R) -> R {
         self.handle
-            .update(cx, |keys, window, _| {
-                (
-                    keys.default_clicks,
-                    keys.submits,
-                    keys.gpui_clicks,
-                    keys.focus.is_focused(window),
-                )
-            })
-            .unwrap_or((0, 0, 0, false))
+            .update(cx, |keys, window, _| read(keys, window))
+            .unwrap_or_default()
     }
 }
 
 fn menu_titles(app: &NSApplication) -> String {
-    match app.mainMenu() {
-        None => "<no main menu>".into(),
-        Some(menu) => {
-            let mut titles = Vec::new();
-            for index in 0..menu.numberOfItems() {
-                if let Some(item) = menu.itemAtIndex(index) {
-                    titles.push(item.title().to_string());
-                }
-            }
-            if titles.is_empty() {
-                "<empty main menu>".into()
-            } else {
-                titles.join("/")
-            }
-        }
+    let Some(menu) = app.mainMenu() else {
+        return "<no main menu>".into();
+    };
+    let titles: Vec<String> = menu
+        .itemArray()
+        .iter()
+        .map(|item| item.title().to_string())
+        .collect();
+    if titles.is_empty() {
+        "<empty main menu>".into()
+    } else {
+        titles.join("/")
     }
 }
 
 async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let mtm = MainThreadMarker::new().expect("gpui runs its app closure on the main thread");
-    let app = NSApplication::sharedApplication(mtm);
     // A click tool's top-left space flips on the display at the global origin, not `screens[0]`.
     let screens = NSScreen::screens(mtm);
-    let frames = || (0..screens.count()).map(|index| screens.objectAtIndex(index).frame());
+    let frames = || screens.iter().map(|screen| screen.frame());
     let screen_height = frames()
         .find(|frame| frame.origin.x == 0. && frame.origin.y == 0.)
         .or_else(|| frames().next())
@@ -807,26 +731,25 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         return;
     };
 
-    let sabotage = match std::env::var("KEYS_SABOTAGE").as_deref() {
-        Ok("want") => Sabotage::Want,
-        Ok("nokeys") => Sabotage::NoKeys,
-        _ => Sabotage::None,
+    let (sabotage, sabotage_name) = match std::env::var("KEYS_SABOTAGE").as_deref() {
+        Ok("want") => (Sabotage::Want, "want"),
+        Ok("nokeys") => (Sabotage::NoKeys, "nokeys"),
+        _ => (Sabotage::None, "none"),
     };
     let mut suite = Suite {
-        dir: dir.clone(),
+        dir,
         seq: 0,
         sabotage,
         handle,
         controls,
-        app,
+        app: NSApplication::sharedApplication(mtm),
         screen_height,
-        rows: Vec::new(),
+        tally: [0; 6],
         controls_passed: 0,
-        name: NSProcessInfo::processInfo().processName().to_string(),
         pid: std::process::id(),
     };
-    fs::write(dir.join("who"), suite.pid.to_string()).ok();
-    fs::write(dir.join("req.cliclick"), "").ok();
+    fs::write(suite.dir.join("who"), suite.pid.to_string()).ok();
+    fs::write(suite.dir.join("req.cliclick"), "").ok();
 
     for _ in 0..400 {
         if suite.window_is_key() {
@@ -836,27 +759,28 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     }
 
     let saved_board = board();
-    let menus = menu_titles(&suite.app);
-    let full_keyboard_access = suite.app.isFullKeyboardAccessEnabled();
-    suite.note("env.menus", menus);
-    suite.note("env.full_keyboard_access", full_keyboard_access.to_string());
+    suite.note("env.menus", menu_titles(&suite.app));
+    suite.note(
+        "env.full_keyboard_access",
+        suite.app.isFullKeyboardAccessEnabled(),
+    );
     suite.note(
         "env.install_menus",
         match std::env::var("KEYS_MENUS").as_deref() {
-            Ok("0") => "skipped".into(),
-            _ => "called".into(),
+            Ok("0") => "skipped",
+            _ => "called",
         },
     );
+    suite.note("env.sabotage", sabotage_name);
+    suite.note("env.window_is_key", suite.window_is_key());
     suite.note(
-        "env.sabotage",
-        match sabotage {
-            Sabotage::None => "none".into(),
-            Sabotage::Want => "want".into(),
-            Sabotage::NoKeys => "nokeys".into(),
-        },
+        "env.process",
+        format!(
+            "{} pid={}",
+            NSProcessInfo::processInfo().processName(),
+            suite.pid
+        ),
     );
-    suite.note("env.window_is_key", suite.window_is_key().to_string());
-    suite.note("env.process", format!("{} pid={}", suite.name, suite.pid));
     suite.note("env.screen_height", format!("{screen_height:.0}"));
     let frame = suite.controls.window.frame();
     suite.note(
@@ -874,12 +798,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     );
     suite.note(
         "env.default_button_cell",
-        suite
-            .controls
-            .window
-            .defaultButtonCell()
-            .is_some()
-            .to_string(),
+        suite.controls.window.defaultButtonCell().is_some(),
     );
     let os_menu_bar = suite.menu_bar_from_os(cx).await;
     suite.note("env.menu_bar_from_os", os_menu_bar);
@@ -888,8 +807,9 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.controls.window.makeFirstResponder(None);
     sleep(cx, POLL).await;
     let pre = suite.responder();
-    let (x, y) = suite.point_of(&suite.controls.alpha);
-    let sent = suite.click(cx, "click alpha", x, y).await;
+    let sent = suite
+        .click(cx, "click alpha", suite.point_of(&suite.controls.alpha))
+        .await;
     let post = suite.responder();
     suite.expect("focus.click_field", &pre, &post, "editor:alpha", &sent);
 
@@ -925,20 +845,23 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.note("probe.hosted_arrow_fn", state);
     suite.arm(cx, "abcdef", 3).await;
     let sent = suite.send(cx, "left(se)", "key code 123").await;
-    let state = format!("{} trusted={}", suite.caret_state(), sent.trusted());
-    suite.note("probe.hosted_arrow_system_events", state);
-    let state = suite.probe_bare_field(cx, "kp:arrow-left", "plain").await;
-    suite.note("probe.bare_field_plain_window", state);
-    let state = suite.probe_bare_field(cx, "kp:arrow-left", "content").await;
-    suite.note("probe.bare_field_window_content_view", state);
-    let state = suite.probe_bare_field(cx, "kp:arrow-left", "gpui").await;
-    suite.note("probe.bare_field_gpui_view", state);
+    suite.note(
+        "probe.hosted_arrow_system_events",
+        format!("{} trusted={}", suite.caret_state(), sent.trusted()),
+    );
 
-    for (name, tool) in [
-        ("probe.bare_field_plain_home", "kp:home"),
-        ("probe.bare_field_plain_end", "kp:end"),
+    for (name, tool, parent) in [
+        ("probe.bare_field_plain_window", "kp:arrow-left", "plain"),
+        (
+            "probe.bare_field_window_content_view",
+            "kp:arrow-left",
+            "content",
+        ),
+        ("probe.bare_field_gpui_view", "kp:arrow-left", "gpui"),
+        ("probe.bare_field_plain_home", "kp:home", "plain"),
+        ("probe.bare_field_plain_end", "kp:end", "plain"),
     ] {
-        let state = suite.probe_bare_field(cx, tool, "plain").await;
+        let state = suite.probe_bare_field(cx, tool, parent).await;
         suite.note(name, state);
     }
 
@@ -1107,12 +1030,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.expect("edit.cmd_a_select_all", &pre, &post, "(0,6)", &sent);
 
     suite.arm(cx, "abcdef", 0).await;
-    if let Some(editor) = suite.controls.alpha.currentEditor() {
-        editor.setSelectedRange(NSRange {
-            location: 0,
-            length: 6,
-        });
-    }
+    suite.select(0, 6);
     set_board("sentinel-copy");
     let pre = board();
     let sent = suite
@@ -1131,12 +1049,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.expect("edit.cmd_v_paste", &pre, &post, "abcdefXY", &sent);
 
     suite.arm(cx, "abcdef", 0).await;
-    if let Some(editor) = suite.controls.alpha.currentEditor() {
-        editor.setSelectedRange(NSRange {
-            location: 0,
-            length: 6,
-        });
-    }
+    suite.select(0, 6);
     set_board("sentinel-cut");
     let pre = format!("text={}|board={}", suite.alpha_text(), board());
     let sent = suite
@@ -1254,11 +1167,12 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     );
 
     suite.arm(cx, "abcdef", 6).await;
-    let (_, _, clicks_before, _) = suite.model(cx).await;
+    let clicks_before = suite.model(cx, |keys, _| keys.gpui_clicks);
     let pre = format!("resp={}|gpui_clicks={}", suite.responder(), clicks_before);
-    let (x, y) = suite.gpui_point();
-    let sent = suite.click(cx, "click gpui", x, y).await;
-    let (_, _, clicks_after, gpui_focused) = suite.model(cx).await;
+    let sent = suite.click(cx, "click gpui", suite.gpui_point()).await;
+    let (clicks_after, gpui_focused) = suite.model(cx, |keys, window| {
+        (keys.gpui_clicks, keys.focus.is_focused(window))
+    });
     let post = format!("resp={}|gpui_clicks={}", suite.responder(), clicks_after);
     suite.expect(
         "focus.click_gpui_returns_responder",
@@ -1267,10 +1181,10 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         &format!("resp=gpui|gpui_clicks={}", clicks_before + 1),
         &sent,
     );
-    suite.note("focus.gpui_handle_focused", gpui_focused.to_string());
+    suite.note("focus.gpui_handle_focused", gpui_focused);
 
     let no_key = Sent {
-        key: "-".into(),
+        key: "-",
         frontmost: String::new(),
         frontmost_ok: true,
         key_window_before: true,
@@ -1286,7 +1200,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         .makeFirstResponder(Some(&suite.controls.toggle));
     sleep(cx, POLL).await;
     let post = suite.responder();
-    suite.note("control.switch_makeFirstResponder", took.to_string());
+    suite.note("control.switch_makeFirstResponder", took);
     suite.expect("control.switch_takes_focus", &pre, &post, "switch", &no_key);
 
     // `want` is `!before`, never `!post`, which no outcome could equal.
@@ -1312,7 +1226,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         .makeFirstResponder(Some(&suite.controls.slider));
     sleep(cx, POLL).await;
     let post = suite.responder();
-    suite.note("control.slider_makeFirstResponder", took.to_string());
+    suite.note("control.slider_makeFirstResponder", took);
     suite.expect("control.slider_takes_focus", &pre, &post, "slider", &no_key);
 
     let pre = format!("{:.4}", suite.controls.slider.doubleValue());
@@ -1322,26 +1236,24 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
 
     suite.controls.window.makeFirstResponder(None);
     sleep(cx, POLL).await;
-    let (default_before, _, _, _) = suite.model(cx).await;
-    let pre = default_before.to_string();
+    let default_before = suite.model(cx, |keys, _| keys.default_clicks);
     let sent = suite.press(cx, "return", "kp:return").await;
-    let (default_after, _, _, _) = suite.model(cx).await;
+    let default_after = suite.model(cx, |keys, _| keys.default_clicks);
     suite.expect(
         "control.return_fires_default_button",
-        &pre,
+        &default_before.to_string(),
         &default_after.to_string(),
         &(default_before + 1).to_string(),
         &sent,
     );
 
     suite.arm(cx, "abcdef", 6).await;
-    let (_, submits_before, _, _) = suite.model(cx).await;
-    let pre = submits_before.to_string();
+    let submits_before = suite.model(cx, |keys, _| keys.submits);
     let sent = suite.press(cx, "return", "kp:return").await;
-    let (_, submits_after, _, _) = suite.model(cx).await;
+    let submits_after = suite.model(cx, |keys, _| keys.submits);
     suite.expect(
         "control.return_in_field_submits",
-        &pre,
+        &submits_before.to_string(),
         &submits_after.to_string(),
         &(submits_before + 1).to_string(),
         &sent,
@@ -1380,27 +1292,17 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.expect_stable("control.unbound_chord_changes_nothing", &pre, &post, &sent);
 
     set_board(&saved_board);
-    let mut counts = [0usize; 6];
-    for row in &suite.rows {
-        let slot = match row.verdict {
-            "PASS" => 0,
-            "FAIL" => 1,
-            "VACUOUS" => 2,
-            "NOKEY" => 3,
-            "STUCKMOD" => 4,
-            _ => 5,
-        };
-        counts[slot] += 1;
-    }
+    let [pass, fail, vacuous, nokey, stuckmod, notes] = suite.tally;
     suite.note(
         "summary",
         format!(
-            "pass={} fail={} vacuous={} nokey={} stuckmod={} notes={} control_rows_passing={}",
-            counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], suite.controls_passed
+            "pass={pass} fail={fail} vacuous={vacuous} nokey={nokey} stuckmod={stuckmod} \
+             notes={notes} control_rows_passing={}",
+            suite.controls_passed
         ),
     );
 
-    fs::write(dir.join("done"), "1").ok();
+    fs::write(suite.dir.join("done"), "1").ok();
     sleep(cx, Duration::from_millis(120)).await;
     cx.update(|cx| cx.quit());
 }

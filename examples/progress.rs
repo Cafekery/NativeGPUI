@@ -110,13 +110,13 @@ fn main() {
                             cx.background_executor()
                                 .timer(Duration::from_millis(33))
                                 .await;
-                            let advanced = this
+                            if this
                                 .update(cx, |demo: &mut Demo, cx| {
                                     demo.fraction = (demo.fraction + 1. / 120.).fract();
                                     cx.notify();
                                 })
-                                .is_ok();
-                            if !advanced {
+                                .is_err()
+                            {
                                 break;
                             }
                         }

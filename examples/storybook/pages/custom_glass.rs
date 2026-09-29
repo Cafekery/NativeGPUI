@@ -1,36 +1,18 @@
-//! A live editor for every input of the private `glassBackground` filter.
-
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Window};
-
-#[cfg(feature = "private-api")]
-use gpui::{Hsla, div, hsla, prelude::*, px};
-#[cfg(feature = "private-api")]
+use gpui::{AnyElement, Context, Hsla, Window, div, hsla, prelude::*, px};
 use native_gpui::{
     ColorWellStyle, GlassRecipe, INERT_INPUTS, custom_glass, custom_glass_available,
     native_color_well, native_popup, native_slider, native_switch,
 };
 
-#[cfg(not(feature = "private-api"))]
-#[derive(Default)]
-pub struct State;
-
-#[cfg(not(feature = "private-api"))]
-pub fn render(_d: &mut Demo, _window: &mut Window, _cx: &mut Context<Demo>) -> AnyElement {
-    stack(vec![note("Run with --features private-api")])
-}
-
-#[cfg(feature = "private-api")]
 #[derive(Default)]
 pub struct State {
     pub recipe: GlassRecipe,
 }
 
-#[cfg(feature = "private-api")]
 type Preset = (&'static str, fn() -> GlassRecipe);
 
-#[cfg(feature = "private-api")]
 const PRESETS: [Preset; 4] = [
     ("Regular (dark)", GlassRecipe::regular),
     ("Regular (light)", GlassRecipe::regular_light),
@@ -38,7 +20,6 @@ const PRESETS: [Preset; 4] = [
     ("Blob", GlassRecipe::blob),
 ];
 
-#[cfg(feature = "private-api")]
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
     let r = d.custom_glass.recipe;
     let available = custom_glass_available();
@@ -47,7 +28,19 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         .find(|(_, build)| build() == r)
         .map_or("custom", |(name, _)| *name);
 
-    let mut page: Vec<AnyElement> = Vec::new();
+    macro_rules! dial {
+        ($field:ident, $min:expr, $max:expr) => {
+            dial(
+                stringify!($field),
+                r.$field,
+                ($min, $max),
+                |r, v| r.$field = v,
+                cx,
+            )
+        };
+    }
+
+    let mut page = Vec::new();
 
     if !available {
         page.push(note(
@@ -57,7 +50,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         ));
     }
 
-    page.push(row(
+    page.extend([
+    row(
         "specimen",
         vec![
             specimen(r),
@@ -66,14 +60,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 custom_glass("live-checker").recipe(r).into_any_element(),
             ),
         ],
-    ));
-
-    page.push(row(
+    ),
+    row(
         "preset",
         vec![preset_popup(cx), mono(format!("recipe == {matched}"))],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Fidelity against a stock NSGlassEffectView",
         vec![
             caption(
@@ -90,272 +82,80 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                  the specular rim.",
             ),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Field and geometry",
         vec![
-            dial(
-                "corner_radius",
-                r.corner_radius,
-                (0., 300.),
-                |r, v| r.corner_radius = v,
-                cx,
-            ),
-            dial(
-                "ovalization",
-                r.ovalization,
-                (0., 1.),
-                |r, v| r.ovalization = v,
-                cx,
-            ),
-            dial(
-                "margin_width",
-                r.margin_width,
-                (0., 200.),
-                |r, v| r.margin_width = v,
-                cx,
-            ),
-            dial(
-                "backdrop_scale",
-                r.backdrop_scale,
-                (0.05, 1.),
-                |r, v| r.backdrop_scale = v,
-                cx,
-            ),
+            dial!(corner_radius, 0., 300.),
+            dial!(ovalization, 0., 1.),
+            dial!(margin_width, 0., 200.),
+            dial!(backdrop_scale, 0.05, 1.),
             caption(
                 "margin_width is how far outside its own bounds the backdrop samples, so at zero \
                  refraction has nothing to bend in from beyond the edge.",
             ),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Blur",
         vec![
-            dial(
-                "blur_radius",
-                r.blur_radius,
-                (0., 60.),
-                |r, v| r.blur_radius = v,
-                cx,
-            ),
-            dial(
-                "blur_opacity0",
-                r.blur_opacity0,
-                (0., 1.),
-                |r, v| r.blur_opacity0 = v,
-                cx,
-            ),
-            dial(
-                "blur_opacity1",
-                r.blur_opacity1,
-                (0., 1.),
-                |r, v| r.blur_opacity1 = v,
-                cx,
-            ),
-            dial(
-                "blur_opacity2",
-                r.blur_opacity2,
-                (0., 1.),
-                |r, v| r.blur_opacity2 = v,
-                cx,
-            ),
-            dial(
-                "blur_distance2",
-                r.blur_distance2,
-                (-1., 1.),
-                |r, v| r.blur_distance2 = v,
-                cx,
-            ),
-            dial(
-                "blur_distance3",
-                r.blur_distance3,
-                (-1., 1.),
-                |r, v| r.blur_distance3 = v,
-                cx,
-            ),
+            dial!(blur_radius, 0., 60.),
+            dial!(blur_opacity0, 0., 1.),
+            dial!(blur_opacity1, 0., 1.),
+            dial!(blur_opacity2, 0., 1.),
+            dial!(blur_distance2, -1., 1.),
+            dial!(blur_distance3, -1., 1.),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Refraction",
         vec![
-            dial(
-                "refraction_opacity",
-                r.refraction_opacity,
-                (0., 1.),
-                |r, v| r.refraction_opacity = v,
-                cx,
-            ),
-            dial(
-                "inner_refraction_amount",
-                r.inner_refraction_amount,
-                (-300., 300.),
-                |r, v| r.inner_refraction_amount = v,
-                cx,
-            ),
-            dial(
-                "inner_refraction_height",
-                r.inner_refraction_height,
-                (0., 200.),
-                |r, v| r.inner_refraction_height = v,
-                cx,
-            ),
-            dial(
-                "outer_refraction_amount",
-                r.outer_refraction_amount,
-                (-300., 300.),
-                |r, v| r.outer_refraction_amount = v,
-                cx,
-            ),
-            dial(
-                "outer_refraction_height",
-                r.outer_refraction_height,
-                (0., 200.),
-                |r, v| r.outer_refraction_height = v,
-                cx,
-            ),
-            dial(
-                "refraction_distance0",
-                r.refraction_distance0,
-                (-1., 1.),
-                |r, v| r.refraction_distance0 = v,
-                cx,
-            ),
-            dial(
-                "refraction_distance1",
-                r.refraction_distance1,
-                (-1., 1.),
-                |r, v| r.refraction_distance1 = v,
-                cx,
-            ),
+            dial!(refraction_opacity, 0., 1.),
+            dial!(inner_refraction_amount, -300., 300.),
+            dial!(inner_refraction_height, 0., 200.),
+            dial!(outer_refraction_amount, -300., 300.),
+            dial!(outer_refraction_height, 0., 200.),
+            dial!(refraction_distance0, -1., 1.),
+            dial!(refraction_distance1, -1., 1.),
             caption("refraction_opacity gates both amounts: at zero the whole group is inert."),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Face",
         vec![
-            dial(
-                "face_opacity",
-                r.face_opacity,
-                (0., 1.),
-                |r, v| r.face_opacity = v,
-                cx,
-            ),
-            dial(
-                "face_white",
-                r.face_white,
-                (0., 2.),
-                |r, v| r.face_white = v,
-                cx,
-            ),
-            dial(
-                "face_black",
-                r.face_black,
-                (0., 1.),
-                |r, v| r.face_black = v,
-                cx,
-            ),
-            dial(
-                "face_saturation",
-                r.face_saturation,
-                (0., 4.),
-                |r, v| r.face_saturation = v,
-                cx,
-            ),
+            dial!(face_opacity, 0., 1.),
+            dial!(face_white, 0., 2.),
+            dial!(face_black, 0., 1.),
+            dial!(face_saturation, 0., 4.),
             fill("face_fill", r.face_fill, |r, c| r.face_fill = c, cx),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Bleed",
         vec![
-            dial(
-                "bleed_opacity",
-                r.bleed_opacity,
-                (0., 1.),
-                |r, v| r.bleed_opacity = v,
-                cx,
-            ),
-            dial(
-                "bleed_amount",
-                r.bleed_amount,
-                (0., 200.),
-                |r, v| r.bleed_amount = v,
-                cx,
-            ),
-            dial(
-                "bleed_height",
-                r.bleed_height,
-                (0., 200.),
-                |r, v| r.bleed_height = v,
-                cx,
-            ),
-            dial(
-                "bleed_blur_radius",
-                r.bleed_blur_radius,
-                (0., 300.),
-                |r, v| r.bleed_blur_radius = v,
-                cx,
-            ),
-            dial(
-                "bleed_distance0",
-                r.bleed_distance0,
-                (-1., 1.),
-                |r, v| r.bleed_distance0 = v,
-                cx,
-            ),
-            dial(
-                "bleed_distance1",
-                r.bleed_distance1,
-                (-1., 1.),
-                |r, v| r.bleed_distance1 = v,
-                cx,
-            ),
+            dial!(bleed_opacity, 0., 1.),
+            dial!(bleed_amount, 0., 200.),
+            dial!(bleed_height, 0., 200.),
+            dial!(bleed_blur_radius, 0., 300.),
+            dial!(bleed_distance0, -1., 1.),
+            dial!(bleed_distance1, -1., 1.),
             flag(
                 "bleed_darken_blend",
                 r.bleed_darken_blend,
                 |r, v| r.bleed_darken_blend = v,
                 cx,
             ),
-            dial(
-                "bleed_white",
-                r.bleed_white,
-                (0., 2.),
-                |r, v| r.bleed_white = v,
-                cx,
-            ),
-            dial(
-                "bleed_black",
-                r.bleed_black,
-                (0., 1.),
-                |r, v| r.bleed_black = v,
-                cx,
-            ),
-            dial(
-                "bleed_saturation",
-                r.bleed_saturation,
-                (0., 4.),
-                |r, v| r.bleed_saturation = v,
-                cx,
-            ),
+            dial!(bleed_white, 0., 2.),
+            dial!(bleed_black, 0., 1.),
+            dial!(bleed_saturation, 0., 4.),
             fill("bleed_fill", r.bleed_fill, |r, c| r.bleed_fill = c, cx),
             caption("bleed_opacity gates every other input in this group."),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Shadow",
         vec![
-            dial(
-                "shadow_radius",
-                r.shadow_radius,
-                (0., 300.),
-                |r, v| r.shadow_radius = v,
-                cx,
-            ),
+            dial!(shadow_radius, 0., 300.),
             dial(
                 "shadow_offset.x",
                 r.shadow_offset.x,
@@ -370,78 +170,23 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 |r, v| r.shadow_offset.y = v,
                 cx,
             ),
-            dial(
-                "shadow_amount",
-                r.shadow_amount,
-                (0., 200.),
-                |r, v| r.shadow_amount = v,
-                cx,
-            ),
-            dial(
-                "shadow_height",
-                r.shadow_height,
-                (0., 200.),
-                |r, v| r.shadow_height = v,
-                cx,
-            ),
-            dial(
-                "shadow_blur_radius",
-                r.shadow_blur_radius,
-                (0., 200.),
-                |r, v| r.shadow_blur_radius = v,
-                cx,
-            ),
-            dial(
-                "shadow_opacity",
-                r.shadow_opacity,
-                (0., 1.),
-                |r, v| r.shadow_opacity = v,
-                cx,
-            ),
-            dial(
-                "shadow_opacity_sdr",
-                r.shadow_opacity_sdr,
-                (0., 1.),
-                |r, v| r.shadow_opacity_sdr = v,
-                cx,
-            ),
-            dial(
-                "shadow_vibrancy",
-                r.shadow_vibrancy,
-                (0., 2.),
-                |r, v| r.shadow_vibrancy = v,
-                cx,
-            ),
-            dial(
-                "shadow_white",
-                r.shadow_white,
-                (0., 2.),
-                |r, v| r.shadow_white = v,
-                cx,
-            ),
-            dial(
-                "shadow_black",
-                r.shadow_black,
-                (0., 1.),
-                |r, v| r.shadow_black = v,
-                cx,
-            ),
-            dial(
-                "shadow_saturation",
-                r.shadow_saturation,
-                (0., 4.),
-                |r, v| r.shadow_saturation = v,
-                cx,
-            ),
+            dial!(shadow_amount, 0., 200.),
+            dial!(shadow_height, 0., 200.),
+            dial!(shadow_blur_radius, 0., 200.),
+            dial!(shadow_opacity, 0., 1.),
+            dial!(shadow_opacity_sdr, 0., 1.),
+            dial!(shadow_vibrancy, 0., 2.),
+            dial!(shadow_white, 0., 2.),
+            dial!(shadow_black, 0., 1.),
+            dial!(shadow_saturation, 0., 4.),
             fill("shadow_fill", r.shadow_fill, |r, c| r.shadow_fill = c, cx),
             caption(
                 "shadow_opacity_sdr is the dominant one on an SDR display and is separately live \
                  from shadow_opacity.",
             ),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "Tone and gradient",
         vec![
             flag(
@@ -450,37 +195,18 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 |r, v| r.holding_tone = v,
                 cx,
             ),
-            dial(
-                "holding_tone_white",
-                r.holding_tone_white,
-                (0., 2.),
-                |r, v| r.holding_tone_white = v,
-                cx,
-            ),
+            dial!(holding_tone_white, 0., 2.),
             headroom(r.max_headroom, cx),
-            dial(
-                "gradient_distance0",
-                r.gradient_distance0,
-                (-1., 1.),
-                |r, v| r.gradient_distance0 = v,
-                cx,
-            ),
-            dial(
-                "gradient_distance1",
-                r.gradient_distance1,
-                (-1., 1.),
-                |r, v| r.gradient_distance1 = v,
-                cx,
-            ),
+            dial!(gradient_distance0, -1., 1.),
+            dial!(gradient_distance1, -1., 1.),
             caption(
                 "holding_tone gates the four below it. max_headroom is log-scaled here because \
                  every preset ships 9999, meaning unclamped, and the range that clamps anything \
                  is under about 64.",
             ),
         ],
-    ));
-
-    page.push(section(
+    ),
+    section(
         "No dial",
         vec![
             caption(
@@ -490,9 +216,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             mono(INERT_INPUTS.join(", ")),
         ],
-    ));
-
-    page.push(props(&[
+    ),
+    props(&[
         ("custom_glass(id)", "two specimens".into()),
         ("recipe(GlassRecipe)", matched.into()),
         (
@@ -509,12 +234,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         ("custom_glass_available()", available.to_string()),
         ("GlassRecipe fields", "50, every one on a control".into()),
         ("INERT_INPUTS", INERT_INPUTS.len().to_string()),
-    ]));
+    ]),
+    ]);
 
     stack(page)
 }
 
-#[cfg(feature = "private-api")]
 fn specimen(recipe: GlassRecipe) -> AnyElement {
     let bars = (0..24).map(|i| {
         div()
@@ -554,7 +279,6 @@ fn specimen(recipe: GlassRecipe) -> AnyElement {
 }
 
 // A pull-down hides entry 0 from the list, so re-picking the row you are already on still fires.
-#[cfg(feature = "private-api")]
 fn preset_popup(cx: &mut Context<Demo>) -> AnyElement {
     native_popup("preset", 0)
         .pull_down(true)
@@ -568,7 +292,6 @@ fn preset_popup(cx: &mut Context<Demo>) -> AnyElement {
         .into_any_element()
 }
 
-#[cfg(feature = "private-api")]
 fn dial(
     field: &'static str,
     value: f32,
@@ -589,7 +312,6 @@ fn dial(
     )
 }
 
-#[cfg(feature = "private-api")]
 fn flag(
     field: &'static str,
     value: bool,
@@ -609,7 +331,6 @@ fn flag(
 }
 
 // The switch expresses `None` — a fully transparent swatch is a clear fill, not an absent one.
-#[cfg(feature = "private-api")]
 fn fill(
     field: &'static str,
     value: Option<Hsla>,
@@ -648,7 +369,6 @@ fn fill(
     )
 }
 
-#[cfg(feature = "private-api")]
 fn headroom(value: f32, cx: &mut Context<Demo>) -> AnyElement {
     const TOP: f32 = 9999.;
     let travel = value.clamp(1., TOP).ln() / TOP.ln();
@@ -666,10 +386,8 @@ fn headroom(value: f32, cx: &mut Context<Demo>) -> AnyElement {
     )
 }
 
-#[cfg(feature = "private-api")]
 fn fmt(value: f32) -> String {
-    format!("{value:.3}")
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_string()
+    let mut text = format!("{value:.3}");
+    text.truncate(text.trim_end_matches('0').trim_end_matches('.').len());
+    text
 }

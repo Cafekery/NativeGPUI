@@ -31,8 +31,7 @@ launch() { # <app> <process name> [env...]
   return 1
 }
 window_of() { ./scripts/winlist.sh | awk -F'\t' -v p="$1" '$2==p && $3==0 {print $1"\t"$4}' | sort -t, -k3 -n -r | head -1; }
-# The window server captures a window that hangs off the display as one frozen image, so the
-# probes place their windows well inside it first.
+# The window server captures a window hanging off the display as one frozen image.
 place() { osascript -e "tell application \"System Events\" to set position of window 1 of process \"$1\" to {100, 140}" >/dev/null 2>&1; sleep 0.5; }
 
 unique_fps() { # <cap> <from> <to>
@@ -59,7 +58,7 @@ probe() { # <name> <fps> <min>
   fi
 }
 
-# Scrolling: the storybook's buttons page, 4 px per event at 125 Hz, the trackpad's rate, for 1.5 s.
+# A trackpad-rate scroll train: 4 px per event at 125 Hz for 1.5 s.
 pid=$(launch "$storybook" Storybook --env NG_PAGE=buttons) || { echo "no storybook window"; exit 1; }
 sleep 1.5; place Storybook
 win=$(window_of "$pid"); wid=${win%%	*}; IFS=, read -r wx wy ww wh <<<"${win#*	}"
@@ -70,8 +69,7 @@ cappid=$!; sleep 0.8
 wait $cappid; kill "$pid" 2>/dev/null
 probe scroll "$(unique_fps "$cap" 0.9 2.2)" "${FPS_MIN_SCROLL:-100}"
 
-# Resizing: the right edge dragged 200 pt in 120 steps over about a second. The demo autosaves its
-# frame, so each run would otherwise start 200 pt wider than the last until it hangs off the display.
+# The demo autosaves its frame, so each resize run would otherwise start 200 pt wider.
 defaults delete dev.cafekery.nativegpui.finder_demo "NSWindow Frame ng.finder.window" >/dev/null 2>&1
 pid=$(launch "$finder" "Found'er") || { echo "no finder window"; exit 1; }
 sleep 1.5; place "Found'er"

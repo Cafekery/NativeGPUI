@@ -29,6 +29,7 @@ const ROWS: usize = 5;
 const W: f32 = 2. * MARGIN_X + COLS as f32 * PITCH_X;
 const H: f32 = 2. * MARGIN_Y + ROWS as f32 * PITCH_Y;
 
+#[derive(Clone, Copy)]
 enum Slot {
     Bare,
     Public { clear: bool },
@@ -39,56 +40,47 @@ enum Slot {
     Lensing,
 }
 
-fn slots() -> Vec<(&'static str, Slot)> {
-    let mut slots = vec![("bare-0", Slot::Bare)];
-    slots.extend(
-        GlassVariant::ALL
-            .iter()
-            .zip(VARIANT_KEYS)
-            .map(|(&variant, key)| (key, Slot::Variant(variant))),
-    );
-    slots.extend([
-        ("bare-1", Slot::Bare),
-        ("public-regular", Slot::Public { clear: false }),
-        ("public-clear", Slot::Public { clear: true }),
-        ("bare-2", Slot::Bare),
-        (
-            "interactive",
-            Slot::Interaction(GlassInteractionState::Interactive),
-        ),
-        ("pressed", Slot::Interaction(GlassInteractionState::Pressed)),
-        ("subdued", Slot::Subdued),
-        ("scrim", Slot::Scrim),
-        ("lensing", Slot::Lensing),
-        ("bare-3", Slot::Bare),
-        ("bare-4", Slot::Bare),
-    ]);
-    slots
-}
-
-const _: () = assert!(VARIANT_KEYS.len() == GlassVariant::ALL.len());
-
-const VARIANT_KEYS: [&str; 13] = [
-    "automatic",
-    "clear",
-    "dock",
-    "appicons",
-    "widgets",
-    "avplayer",
-    "notificationcenter",
-    "monogram",
-    "bubbles",
-    "keyboard",
-    "sidebar",
-    "slider",
-    "cartouchepopover",
+const SLOTS: [(&str, Slot); COLS * ROWS] = [
+    ("bare-0", Slot::Bare),
+    ("automatic", Slot::Variant(GlassVariant::Automatic)),
+    ("clear", Slot::Variant(GlassVariant::Clear)),
+    ("dock", Slot::Variant(GlassVariant::Dock)),
+    ("appicons", Slot::Variant(GlassVariant::AppIcons)),
+    ("widgets", Slot::Variant(GlassVariant::Widgets)),
+    ("avplayer", Slot::Variant(GlassVariant::AvPlayer)),
+    (
+        "notificationcenter",
+        Slot::Variant(GlassVariant::NotificationCenter),
+    ),
+    ("monogram", Slot::Variant(GlassVariant::Monogram)),
+    ("bubbles", Slot::Variant(GlassVariant::Bubbles)),
+    ("keyboard", Slot::Variant(GlassVariant::Keyboard)),
+    ("sidebar", Slot::Variant(GlassVariant::Sidebar)),
+    ("slider", Slot::Variant(GlassVariant::Slider)),
+    (
+        "cartouchepopover",
+        Slot::Variant(GlassVariant::CartouchePopover),
+    ),
+    ("bare-1", Slot::Bare),
+    ("public-regular", Slot::Public { clear: false }),
+    ("public-clear", Slot::Public { clear: true }),
+    ("bare-2", Slot::Bare),
+    (
+        "interactive",
+        Slot::Interaction(GlassInteractionState::Interactive),
+    ),
+    ("pressed", Slot::Interaction(GlassInteractionState::Pressed)),
+    ("subdued", Slot::Subdued),
+    ("scrim", Slot::Scrim),
+    ("lensing", Slot::Lensing),
+    ("bare-3", Slot::Bare),
+    ("bare-4", Slot::Bare),
 ];
 
 struct Catalogue {
     phase: usize,
     quit_at: Option<u64>,
     frame: u64,
-    announced: bool,
 }
 
 fn backdrop(phase: usize) -> Div {
@@ -124,8 +116,7 @@ fn backdrop(phase: usize) -> Div {
 impl Render for Catalogue {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.frame += 1;
-        if !self.announced {
-            self.announced = true;
+        if self.frame == 1 {
             self.announce(window);
         }
         if let Some(quit_at) = self.quit_at {
@@ -143,7 +134,7 @@ impl Render for Catalogue {
             window.request_animation_frame();
         }
 
-        let panels = slots().into_iter().enumerate().map(|(index, (key, slot))| {
+        let panels = SLOTS.into_iter().enumerate().map(|(index, (key, slot))| {
             let (x, y) = cell_origin(index);
             let panel = div()
                 .absolute()
@@ -203,7 +194,7 @@ impl Catalogue {
             frame.origin.x,
             cg_y,
         );
-        for (index, (key, _)) in slots().into_iter().enumerate() {
+        for (index, (key, _)) in SLOTS.into_iter().enumerate() {
             let (x, y) = cell_origin(index);
             println!(
                 "GLASS-CELL {key} x={:.0} y={:.0} w={:.0} h={:.0}",
@@ -254,14 +245,13 @@ fn ns_window(window: &Window) -> Retained<NSWindow> {
     view.window().expect("gpui's view is always in a window")
 }
 
+fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
 fn main() {
-    let phase = std::env::var("NG_PHASE")
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(0);
-    let quit_at = std::env::var("NG_QUIT")
-        .ok()
-        .and_then(|value| value.trim().parse().ok());
+    let phase = env("NG_PHASE").unwrap_or(0);
+    let quit_at = env("NG_QUIT");
 
     gpui_platform::application().run(move |cx: &mut App| {
         cx.open_window(
@@ -277,7 +267,6 @@ fn main() {
                     phase,
                     quit_at,
                     frame: 0,
-                    announced: false,
                 })
             },
         )

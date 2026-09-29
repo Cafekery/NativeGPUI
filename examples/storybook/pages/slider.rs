@@ -26,20 +26,25 @@ impl Default for State {
 }
 
 // A vertical slider's `fittingSize` is zero on the free axis, so it needs an explicit height.
-fn upright(height: f32, child: AnyElement, value: String) -> AnyElement {
+fn upright(child: AnyElement, value: String) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().h(px(height)).flex().child(child))
+        .child(div().h(px(150.)).flex().child(child))
         .child(mono(value))
         .into_any_element()
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let s = &d.slider;
-    let (continuous, ranged, ticked) = (s.continuous, s.ranged, s.ticked);
-    let (snapped, vertical, vertical_ticked) = (s.snapped, s.vertical, s.vertical_ticked);
+    let State {
+        continuous,
+        ranged,
+        ticked,
+        snapped,
+        vertical,
+        vertical_ticked,
+    } = d.slider;
 
     stack(vec![
         section(
@@ -49,10 +54,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "continuous",
                     format!("{continuous:.3}"),
                     native_slider("continuous", continuous)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.slider.continuous = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.slider.continuous = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -60,10 +62,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     format!("{ranged:+.1} dB"),
                     native_slider("ranged", ranged)
                         .range(-20., 20.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.slider.ranged = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.slider.ranged = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -72,10 +71,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_slider("ticked", ticked)
                         .range(0., 100.)
                         .ticks(11)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.slider.ticked = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.slider.ticked = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -84,10 +80,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     native_slider("snapped", snapped)
                         .ticks(5)
                         .snap_to_ticks(true)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.slider.snapped = *value;
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |d, value| d.slider.snapped = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -104,26 +97,18 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     .items_start()
                     .gap_8()
                     .child(upright(
-                        150.,
                         native_slider("vertical", vertical)
                             .vertical(true)
-                            .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                                d.slider.vertical = *value;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, value| d.slider.vertical = value))
                             .into_any_element(),
                         format!("{vertical:.3}"),
                     ))
                     .child(upright(
-                        150.,
                         native_slider("vertical-ticked", vertical_ticked)
                             .vertical(true)
                             .ticks(5)
                             .snap_to_ticks(true)
-                            .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                                d.slider.vertical_ticked = *value;
-                                cx.notify();
-                            }))
+                            .on_change(set(cx, |d, value| d.slider.vertical_ticked = value))
                             .into_any_element(),
                         format!("{vertical_ticked:.3}"),
                     ))

@@ -1,6 +1,5 @@
 use gpui::{
-    App, Bounds, Context, Div, Render, SharedString, Window, WindowBounds, div, point, prelude::*,
-    px, rgb, size,
+    App, Bounds, Context, Div, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{GlassRecipe, custom_glass, glass, native_root, window_options};
 
@@ -53,17 +52,17 @@ fn slot(index: usize, band: f32, panel: impl IntoElement) -> Div {
         .child(panel)
 }
 
-fn caption(index: usize, text: impl Into<SharedString>) -> Div {
+fn caption(index: usize, text: &'static str) -> Div {
     div()
         .absolute()
         .left(px(MARGIN + index as f32 * PITCH))
         .top(px(TOP + PANEL_H + 8.))
         .text_size(px(11.))
         .text_color(rgb(0xf2f2f7))
-        .child(text.into())
+        .child(text)
 }
 
-fn row(band: f32) -> impl IntoIterator<Item = Div> {
+fn row(band: f32) -> [Div; COUNT] {
     let regular = GlassRecipe::regular();
     let key = |name: &'static str| (name, band as u32);
     let tuned = move |name: &'static str, recipe: GlassRecipe| {
@@ -73,7 +72,7 @@ fn row(band: f32) -> impl IntoIterator<Item = Div> {
         })
     };
 
-    vec![
+    [
         slot(0, band, glass(key("stock")).corner_radius(px(RADIUS))),
         slot(1, band, tuned("regular", regular)),
         slot(2, band, tuned("clear", GlassRecipe::clear())),
@@ -142,9 +141,9 @@ impl Render for Demo {
                 .children(row(BAND))
                 .children(
                     LABELS
-                        .iter()
+                        .into_iter()
                         .enumerate()
-                        .map(|(index, label)| caption(index, *label)),
+                        .map(|(index, label)| caption(index, label)),
                 ),
         )
     }
