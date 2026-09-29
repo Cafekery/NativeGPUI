@@ -466,6 +466,7 @@ impl FinderDemo {
         self.column_look = ColumnLook::load();
         self.gallery_look = GalleryLook::load(self.here());
         self.sidebar_follow();
+        self.previews = crate::art::Previews::of(self.here());
         self.open_as_kept(cx);
         cx.notify();
     }
