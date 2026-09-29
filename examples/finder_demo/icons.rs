@@ -129,20 +129,15 @@ pub(crate) fn draw_stand_ins(size: f32) {
     });
 }
 
-/// Draws `path`'s own icon anew at every size held; returns the images it replaced.
 pub(crate) fn redraw(path: &str) -> Vec<Arc<RenderImage>> {
     STATE.with_borrow_mut(|state| {
-        let keys: Vec<Key> = state
+        state
             .held
-            .keys()
-            .filter(|(kind, _)| {
+            .iter_mut()
+            .filter(|((kind, _), _)| {
                 matches!(kind, FileType::Path(at) | FileType::FullPath(at) if *at == path)
             })
-            .copied()
-            .collect();
-        keys.into_iter()
-            .filter_map(|key| {
-                let held = state.held.get_mut(&key)?;
+            .filter_map(|(&key, held)| {
                 let old = std::mem::replace(&mut held.icon, draw(key));
                 state.per_file_bytes = state.per_file_bytes - bytes_of(&old) + bytes_of(&held.icon);
                 Some(old?.image)

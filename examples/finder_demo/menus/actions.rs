@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op, Restore};
-use gpui::{App, Bounds, Context, SharedString, Window, point, px, size};
+use gpui::{App, Bounds, Context, Pixels, Point, SharedString, Window, point, px, size};
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{ShareItem, SharePicker, SurfaceAnchor, present_share_picker};
 use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
@@ -283,21 +283,19 @@ impl FinderDemo {
         }
     }
 
+    pub(crate) fn icon_anchor_or(&self, fallback: Point<Pixels>) -> SurfaceAnchor {
+        match self.ql_icon.bounds() {
+            Some(_) => self.ql_icon.clone(),
+            None => SurfaceAnchor::at(Bounds::new(fallback, size(px(1.), px(1.)))),
+        }
+    }
+
     pub(crate) fn share_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let items = self.share_urls();
         if items.is_empty() {
             return;
         }
-        let at = match self.ql_icon.bounds() {
-            Some(_) => self.ql_icon.clone(),
-            None => {
-                let width = window.viewport_size().width;
-                SurfaceAnchor::at(Bounds::new(
-                    point(width / 2., px(60.)),
-                    size(px(1.), px(1.)),
-                ))
-            }
-        };
+        let at = self.icon_anchor_or(point(window.viewport_size().width / 2., px(60.)));
         let picker = SharePicker {
             edge: SurfaceEdge::Below,
             ..Default::default()
