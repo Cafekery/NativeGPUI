@@ -779,6 +779,9 @@ pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
     if let Some(on) = options.show_icon_preview {
         set_look_on(ICON_VIEW, folder, "showIconPreview", on);
     }
+    if let Some(on) = options.show_item_info {
+        set_look_on(ICON_VIEW, folder, "showItemInfo", on);
+    }
 }
 
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
