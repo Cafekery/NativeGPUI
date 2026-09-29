@@ -783,6 +783,7 @@ pub fn native_popup(id: impl Into<ElementId>, selected: usize) -> NativePopup {
         pull_down: false,
         bezel: ButtonBezel::Automatic,
         control_size: ControlSize::default(),
+        font_size: None,
         width: None,
         enabled: true,
         on_change: None,
@@ -796,6 +797,7 @@ pub struct NativePopup {
     pull_down: bool,
     bezel: ButtonBezel,
     control_size: ControlSize,
+    font_size: Option<Pixels>,
     width: Option<Length>,
     enabled: bool,
     on_change: Option<NativeDispatch>,
@@ -828,6 +830,12 @@ impl NativePopup {
         self
     }
 
+    /// The system font at this size; AppKit keeps a pop-up's font whatever its control size.
+    pub fn font_size(mut self, font_size: Pixels) -> Self {
+        self.font_size = Some(font_size);
+        self
+    }
+
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = Some(width.into());
         self
@@ -851,7 +859,14 @@ impl NativePopup {
     }
 
     fn layout(&self) -> Style {
-        let inputs = (&self.entries, self.pull_down, self.bezel, self.control_size);
+        let font_size = self.font_size.map(|size| f32::from(size).to_bits());
+        let inputs = (
+            &self.entries,
+            self.pull_down,
+            self.bezel,
+            self.control_size,
+            font_size,
+        );
         let fitted = measured("NSPopUpButton", inputs, |mtm| {
             let probe = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
@@ -861,6 +876,9 @@ impl NativePopup {
             probe.setAutoenablesItems(false);
             probe.setBezelStyle(self.bezel.to_native());
             probe.setControlSize(NSControlSize::from(self.control_size));
+            if let Some(size) = self.font_size {
+                probe.setFont(Some(&NSFont::systemFontOfSize(size.to_f64())));
+            }
             if let Some(menu) = probe.menu() {
                 sync_menu(mtm, &menu, &self.entries, None);
             }
@@ -885,6 +903,11 @@ impl NativePopup {
         let control_size = NSControlSize::from(self.control_size);
         if popup.controlSize() != control_size {
             popup.setControlSize(control_size);
+        }
+        if let Some(size) = self.font_size.map(|size| size.to_f64()) {
+            if popup.font().map(|font| font.pointSize()) != Some(size) {
+                popup.setFont(Some(&NSFont::systemFontOfSize(size)));
+            }
         }
         // `setPullsDown:` reverses the item array, so the diff runs after it.
         if popup.pullsDown() != self.pull_down {

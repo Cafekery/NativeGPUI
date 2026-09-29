@@ -13,8 +13,8 @@ use native_gpui::{
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSWindowButton, NSWindowCollectionBehavior,
-    NSWindowTitleVisibility,
+    NSAlert, NSAlertFirstButtonReturn, NSHelpManager, NSModalResponse, NSWindowButton,
+    NSWindowCollectionBehavior, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -45,9 +45,9 @@ const BROWSE_RIGHT: f32 = 107.;
 const BROWSE_W: f32 = 70.;
 const CONNECT_W: f32 = 77.;
 const RECENTS: usize = 10;
-const ECANCELED: i32 = 89;
-const USER_CANCELED: i32 = -128;
-const HELP: &str = "https://support.apple.com/guide/mac-help/mchlp1140/mac";
+const EINVAL: i32 = 22;
+const PARAM_ERR: i32 = -50;
+const HELP_ANCHOR: &str = "mchlp3015";
 
 thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Connect>>> = const { RefCell::new(None) };
@@ -180,6 +180,16 @@ fn remember(address: &str) {
     prefs::set_recent_servers(&recents.iter().map(String::as_str).collect::<Vec<_>>());
 }
 
+fn open_help() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSHelpManager::sharedHelpManager(mtm).openHelpAnchor_inBook(
+        &NSString::from_str(HELP_ANCHOR),
+        Some(&NSString::from_str("com.apple.machelp")),
+    );
+}
+
 impl FinderDemo {
     pub(crate) fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         if address.is_empty() {
@@ -203,8 +213,9 @@ impl FinderDemo {
                     })
                     .ok();
                 }
-                Err(ECANCELED | USER_CANCELED) => {}
-                Err(code) => complain(&address, code, cx),
+                // NetFS refuses a malformed address without a word; NetAuth reports every other failure.
+                Err(code @ (EINVAL | PARAM_ERR)) => complain(&address, code, cx),
+                Err(_) => {}
             }
         })
         .detach();
@@ -437,7 +448,7 @@ impl Render for Connect {
                     bar(HELP_X).child(
                         native_button("ng.finder.connect.help", "")
                             .bezel_style(ButtonBezel::HelpButton)
-                            .on_click(|_, _, cx| cx.open_url(HELP)),
+                            .on_click(|_, _, _| open_help()),
                     ),
                 )
                 .when(self.connecting, |root| {
