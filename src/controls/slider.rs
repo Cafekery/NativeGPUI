@@ -2,11 +2,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{App, ElementId, Style, Window};
-use objc2_app_kit::NSSlider;
+use objc2_app_kit::{NSControlSize, NSSlider};
 
-use crate::bridge::appkit::fitting_size;
+use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
-    Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
+    ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
 };
 use crate::controls::{fitted, number_handler, sync_enabled};
 
@@ -19,6 +19,7 @@ pub fn native_slider(id: impl Into<ElementId>, value: f64) -> NativeSlider {
         ticks: 0,
         snap_to_ticks: false,
         vertical: false,
+        control_size: ControlSize::default(),
         enabled: true,
         on_change: None,
     }
@@ -32,6 +33,7 @@ pub struct NativeSlider {
     ticks: usize,
     snap_to_ticks: bool,
     vertical: bool,
+    control_size: ControlSize,
     enabled: bool,
     on_change: Option<NativeHandler>,
 }
@@ -62,6 +64,11 @@ impl NativeSlider {
         self
     }
 
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
+        self
+    }
+
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -79,8 +86,9 @@ impl NativeSlider {
             (true, false) => "NSSlider/vertical",
             (true, true) => "NSSlider/vertical+ticks",
         };
-        fitted(fitting_size(class, |mtm| {
+        fitted(fitting_size_keyed(class, self.control_size as u64, |mtm| {
             let slider = NSSlider::new(mtm);
+            slider.setControlSize(self.control_size.into());
             if self.vertical {
                 slider.setVertical(true);
             }
@@ -106,6 +114,10 @@ impl NativeSlider {
 
         if slider.isVertical() != self.vertical {
             slider.setVertical(self.vertical);
+        }
+        let control_size = NSControlSize::from(self.control_size);
+        if slider.controlSize() != control_size {
+            slider.setControlSize(control_size);
         }
         // Range before value: the value is clamped into the range as it is written.
         if slider.minValue() != self.min {
