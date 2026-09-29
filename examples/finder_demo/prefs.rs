@@ -20,7 +20,6 @@ const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
-const LIST_ICON: &str = "ng.finder.list.icon";
 
 fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -31,6 +30,7 @@ pub(crate) struct Finder {
     pub(crate) text_size: f32,
     pub(crate) icon_size: f32,
     pub(crate) relative_dates: bool,
+    pub(crate) calculate_all_sizes: bool,
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
@@ -132,6 +132,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         text_size: number("textSize").unwrap_or(13.) as f32,
         icon_size: number("iconSize").unwrap_or(16.) as f32,
         relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
+        calculate_all_sizes: number("calculateAllSizes").is_some_and(|on| on != 0.),
         toolbar: toolbar.map_or_else(Vec::new, |ids| {
             ids.iter()
                 .filter_map(|id| Some(id.downcast_ref::<NSString>()?.to_string()))
@@ -566,14 +567,6 @@ pub(crate) fn preview(view: usize) -> bool {
 
 pub(crate) fn set_preview(view: usize, shown: bool) {
     write(preview_key(view), f64::from(u8::from(shown)));
-}
-
-pub(crate) fn list_icon() -> Option<f32> {
-    read(LIST_ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_list_icon(size: f32) {
-    write(LIST_ICON, size as f64);
 }
 
 fn column_key(column: Column) -> &'static str {
