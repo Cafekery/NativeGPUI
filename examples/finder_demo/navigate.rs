@@ -254,7 +254,8 @@ impl FinderDemo {
                 || self
                     .folders
                     .get(id)
-                    .is_some_and(|folder| folder.loading && folder.rows.is_empty()))
+                    .is_some_and(|folder| folder.loading && folder.rows.is_empty())
+                || self.order_for(id) != self.order())
     }
 
     pub(crate) fn headed_for(&self) -> Option<&'static str> {
@@ -461,6 +462,7 @@ impl FinderDemo {
         self.icons.forget();
         self.clear_type_filter();
         self.load_columns();
+        self.load_sorting(cx);
         self.sidebar_follow();
         cx.notify();
     }
