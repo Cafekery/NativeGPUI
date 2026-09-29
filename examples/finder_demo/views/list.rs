@@ -63,6 +63,7 @@ thread_local! {
 pub(crate) struct ListLook {
     pub(crate) text: f32,
     pub(crate) icon: f32,
+    pub(crate) relative: bool,
 }
 
 impl ListLook {
@@ -72,6 +73,8 @@ impl ListLook {
         Self {
             text: number("textSize").unwrap_or(finder.text_size),
             icon: number("iconSize").unwrap_or(finder.icon_size),
+            relative: prefs::look_on(LIST_VIEW, folder, "useRelativeDates")
+                .unwrap_or(finder.relative_dates),
         }
         .clamped()
     }
@@ -84,6 +87,7 @@ impl ListLook {
             } else {
                 ICON_SMALL
             },
+            ..self
         }
     }
 
@@ -96,6 +100,9 @@ impl ListLook {
                 prefs::set_look_number(LIST_VIEW, folder, key, f64::from(value));
             }
         }
+        if self.relative != was.relative {
+            prefs::set_look_on(LIST_VIEW, folder, "useRelativeDates", self.relative);
+        }
     }
 }
 
@@ -103,6 +110,7 @@ impl ListLook {
 struct Look {
     icon: f32,
     text: f32,
+    relative: bool,
     row_h: f32,
     name_w: f32,
     scale: f32,
@@ -329,6 +337,7 @@ impl FinderDemo {
         let look = faces.borrow_mut().frame(Look {
             icon,
             text: self.list_look.text,
+            relative: self.list_look.relative,
             row_h: row_h(icon, self.list_look.text),
             name_w: self.name_w,
             scale: self.scale,
@@ -617,12 +626,14 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             let cell = cell.pl(px(CELL_PAD)).whitespace_nowrap().overflow_hidden();
             match column {
                 column if column.dated() => {
-                    let style = date_style(spec.width, look.text);
+                    let style = date_style(spec.width, look.text, look.relative);
                     cell.when(style >= 2, |cell| cell.font(look.dates.clone()))
                         .child(
                             line.row
                                 .date(column)
-                                .map_or(SharedString::new_static("--"), |at| list_date(at, style)),
+                                .map_or(SharedString::new_static("--"), |at| {
+                                    list_date(at, style, look.relative)
+                                }),
                         )
                 }
                 Column::Kind if look.searching => {
