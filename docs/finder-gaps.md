@@ -537,8 +537,14 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   servers, Favorite Servers with + and −, an action menu with Clear Recent Servers… (⌥ Clear Recent
   Servers), Help, Browse (a new window on Network) and Connect. Favourites and recents come from
   Finder's lists until the demo keeps its own.
-- [ ] Connect to Server: Clear Recent Servers' confirmation, the Help page and Finder's answer to a
-  cancelled sign-in were not measured; the demo says nothing on a cancelled sign-in.
+- [x] Connect to Server: Help opens Finder's page in Tips ("Servers and shared computers you can
+  connect to on Mac"), anchor `mchlp3015` in `com.apple.machelp`. After a failed connect only
+  NetAuth's alert shows, as Finder's: NetAuth reports an unknown host (65) and an unsupported scheme
+  (45, which AFP now is); the demo's own alert is left for the addresses NetFS refuses without a
+  word (no scheme, -50; not a URL, 22).
+- [ ] Connect to Server: Clear Recent Servers' confirmation and Finder's answer to a cancelled
+  sign-in were not measured; the demo says nothing on a cancelled sign-in. Finder's own reaction to
+  a failed connect was read from its code, not run, since a connect may add to the recent servers.
 - [x] View Options: a floating panel that does not activate (`AXSystemFloatingWindow`, as Finder's),
   titled with the folder, which ⌘J opens and closes from either window. In list view it lists
   Finder's twelve Show Columns in Finder's order.
@@ -562,11 +568,17 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   (19,173 34×28; 77,160 50×41; 151,147 66×54) over radios (28/94/176,207), Show preview column
   (238), Show icon preview (258), Show filename (278). Use as Defaults (56.5,605 123×22) was off in
   every view for a folder with no settings of its own.
-- [ ] View Options: the panel's controls are regular size where Finder's are small (11 pt); hosted
-  checkboxes and radios have no control size yet. Each hosted frame sits 1 pt outside its gpui
-  bounds, so AX frames read 1 pt up-left and 2 pt larger than Finder's. The list view's icon-size
-  images are AXImage where Finder's are AXButton, Browse in has no AXHelp, and icon and column views
-  draw no groups. Where Finder puts the colour and picture wells was not read.
+- [x] View Options: every control is small, as in Finder's nib: 11 pt labels, pop-ups and boxes,
+  sliders with Finder's 9 and 8 tick marks. AppKit reports every control's AX frame 1 pt outside
+  its alignment rect (plain views and boxes excepted), Finder's too, and a checkbox's, radio's,
+  push button's or pop-up's alignment insets are zero at every size, so the readings above are the
+  frames outset by 1 pt; the demo lays out Finder's frames and every box, radio, pop-up, button,
+  label and slider reads Finder's AX frame, fractional widths included.
+- [ ] View Options: the list view's icon-size images are AXImage where Finder's are AXButton,
+  Browse in has no AXHelp, and icon and column views draw no groups. The Background radios are
+  Finder's 68 pt wide each, the demo's their own width; the grid spacing images are symbols where
+  Finder's are 16 and 32 pt buttons; at 64 × 64 Finder's icon size slider reads 24, the demo's 23.
+  Where Finder puts the colour and picture wells was not read.
 - Measured on the user's Mac (textSize 14, iconSize 16, "Show all filename extensions" on, so both
   apps show full names): rows 21 pt and stripes below the last row on the same 21 pt pitch, header
   labels within 0.5 pt, titles in the same glyph positions. Differences left:
