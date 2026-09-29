@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSArray, NSDate, NSNumber, NSString, ns_string};
@@ -141,6 +142,29 @@ pub(crate) fn kind(path: &Path) -> Option<String> {
     Cf::item(path)?.attribute("kMDItemKind")?.string()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sharer {
+    Me,
+    Named(Arc<str>),
+}
+
+/// Who shared a shared item: the user when their role is its owner's, else its owner by name.
+pub fn sharer(path: &Path) -> Option<Sharer> {
+    let item = Cf::item(path)?;
+    let text = |name| item.attribute(name)?.string();
+    sharer_of(
+        text("kMDItemSharedItemCurrentUserRole").as_deref(),
+        text("kMDItemOwnerName"),
+    )
+}
+
+fn sharer_of(role: Option<&str>, owner: Option<String>) -> Option<Sharer> {
+    match role {
+        Some("NSURLUbiquitousSharedItemRoleOwner") => Some(Sharer::Me),
+        _ => owner.map(|name| Sharer::Named(name.into())),
+    }
+}
+
 pub fn bundle_version(path: &Path) -> Option<String> {
     ["Contents/Info.plist", "Resources/Info.plist", "Info.plist"]
         .into_iter()
@@ -194,4 +218,23 @@ fn values(item: &Cf) -> Vec<(String, String)> {
             Some((name, text))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_owner_role_is_me_whatever_name_the_item_carries() {
+        let owner = Some("NSURLUbiquitousSharedItemRoleOwner");
+        let participant = Some("NSURLUbiquitousSharedItemRoleParticipant");
+        assert_eq!(sharer_of(owner, Some("Jace".into())), Some(Sharer::Me));
+        assert_eq!(sharer_of(owner, None), Some(Sharer::Me));
+        assert_eq!(
+            sharer_of(participant, Some("William Jones".into())),
+            Some(Sharer::Named("William Jones".into()))
+        );
+        assert_eq!(sharer_of(participant, None), None);
+        assert_eq!(sharer_of(None, None), None);
+    }
 }
