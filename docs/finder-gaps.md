@@ -238,6 +238,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] ⌥↑ and ⌥↓ select the first and last item of the focused column in column view; in gallery
   view ⌥↑ and ⌥← select the first item, ⌥↓ and ⌥→ the last, and plain ↑ ↓ do nothing; in icon view
   ⌥ changes nothing, the arrows move one icon. All as read off Finder 27.
+- [x] Tab and ⇧Tab select the next and previous item by name whatever the sort, wrapping at either
+  end; with nothing selected, even after ⌥⌘A, they select the first and the last. Column view
+  ignores both. Finder takes ⇧Tab's Shift from the keyboard's state: a Tab posted to it with only
+  the Shift flag reads as Tab, so read it with the Shift key itself held.
 - [x] Go ▸ Utilities (⇧⌘U) opens /Applications/Utilities.
 - [x] /Applications and /Applications/Utilities list /System/Applications' apps (and its
   Utilities') merged in, each name once, as Finder shows them. The first screen still lands with
