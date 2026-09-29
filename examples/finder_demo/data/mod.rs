@@ -18,8 +18,8 @@ pub(crate) use self::paths::{enclosing_name, intern, intern_path, join, split_ke
 pub(crate) use self::row::{
     Column, Facts, GROUP_KEYS, Line, Order, Row, SORT_KEYS, SORT_TITLES, bytes_of, early_artwork,
     facts_of, folder_artwork, hit_row, icloud_rows, is_trash, kind_at, modified_at, path_line,
-    read_extras, recent_rows, rows_at, rows_of, tagged_rows, unweigh, weigh, weigh_packages,
-    weighed_folders,
+    read_extras, read_sharers, recent_rows, rows_at, rows_of, tagged_rows, unweigh, weigh,
+    weigh_packages, weighed_folders,
 };
 pub(crate) use self::volumes::{
     VolumeInfo, available_bytes, follow_volumes, is_volume_root, network_roots, refresh_volumes,

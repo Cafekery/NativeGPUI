@@ -19,14 +19,14 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{GROUP_KEYS, SORT_KEYS, intern_path};
+use crate::data::{Column, GROUP_KEYS, intern_path};
 use crate::locations::{COMPUTER, computer_name, place};
 use crate::menus::{Act, Menu};
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
 use crate::views::header::column_title;
 use crate::views::icon::Arrangement;
 
-pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize);
+pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, bool);
 
 const AIRDROP_ART: f32 = 18.;
 const AIRDROP_BOX: f64 = 21.;
@@ -279,7 +279,7 @@ impl FinderDemo {
             return;
         }
         let state = self.toolbar_state();
-        let (_, _, picked, shareable, cloud, progress, ..) = state;
+        let (_, _, picked, shareable, cloud, progress, _, airdrop) = state;
         let this = cx.entity().downgrade();
         let tool = |(id, symbol, label, tip, run): Tool, enabled: bool| {
             ToolbarItem::symbol(id, symbol, label)
@@ -320,6 +320,7 @@ impl FinderDemo {
                 })),
             ToolbarItem::menu(GROUP_ID, "", "Group", self.group_menu())
                 .tool_tip("Change the item grouping (hold down Option to change the sort)")
+                .enabled(!airdrop)
                 .entries_on_open(read(&this, Self::group_menu))
                 .on_select(select(&this, |this, index, window, cx| {
                     let act = this
@@ -337,6 +338,7 @@ impl FinderDemo {
                 self.view,
             )
             .tool_tip("Show items as icons, in a list, in columns, or in a gallery")
+            .enabled(!airdrop)
             // Automatic, not Expanded: the capsule has to collapse when the search field opens.
             .group_width(ToolbarGroupWidth::Automatic)
             .on_select(select(&this, |this, index, _, cx| {
@@ -345,6 +347,7 @@ impl FinderDemo {
             })),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")
+                .enabled(!airdrop)
                 .entries_on_open(move |window, cx| {
                     let menu = actions(window, cx);
                     *built.borrow_mut() = menu.acts;
@@ -419,6 +422,7 @@ impl FinderDemo {
             cloud,
             self.progress_shown(),
             self.view,
+            self.airdrop_shown(),
         )
     }
 
@@ -494,7 +498,10 @@ impl FinderDemo {
             },
             (MenuEntry::separator(), Act::Nothing),
         ];
-        for column in GROUP_KEYS {
+        for column in GROUP_KEYS
+            .into_iter()
+            .filter(|key| key.offered_at(self.here()))
+        {
             let title = column_title(column);
             rows.push((
                 grouping(MenuEntry::item(title).checked(group == Some(column))),
@@ -503,7 +510,7 @@ impl FinderDemo {
             let sorts = MenuEntry::item(title)
                 .checked(sorted == Some(column))
                 .option_alternate();
-            rows.push(match SORT_KEYS.contains(&column) {
+            rows.push(match column != Column::Application {
                 true => (sorts, Act::Sort(column)),
                 false => (sorts.disabled(), Act::Nothing),
             });
