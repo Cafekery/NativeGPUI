@@ -22,16 +22,28 @@ use crate::system::tokens::SystemColor;
 type Titled =
     unsafe fn(&NSString, Option<&AnyObject>, Option<Sel>, MainThreadMarker) -> Retained<NSButton>;
 
-fn titled(mtm: MainThreadMarker, make: Titled, title: &str) -> Retained<NSButton> {
-    unsafe { make(&NSString::from_str(title), None, None, mtm) }
+fn titled(
+    mtm: MainThreadMarker,
+    make: Titled,
+    title: &str,
+    size: ControlSize,
+) -> Retained<NSButton> {
+    let button = unsafe { make(&NSString::from_str(title), None, None, mtm) };
+    button.setControlSize(size.into());
+    button
 }
 
-fn place_titled(slot: &Slot, make: Titled, title: &str) -> Retained<NSButton> {
-    slot.place(Layer::Above, |mtm, target| {
-        let button = titled(mtm, make, title);
+fn place_titled(slot: &Slot, make: Titled, title: &str, size: ControlSize) -> Retained<NSButton> {
+    let button = slot.place(Layer::Above, |mtm, target| {
+        let button = titled(mtm, make, title, size);
         wire(&button, target, slot.key);
         button
-    })
+    });
+    let size = NSControlSize::from(size);
+    if button.controlSize() != size {
+        button.setControlSize(size);
+    }
+    button
 }
 
 fn sync_title(button: &NSButton, wanted: &str) {
@@ -93,6 +105,7 @@ pub fn native_checkbox(id: impl Into<ElementId>, checked: bool) -> NativeCheckbo
         state: checked.into(),
         allows_mixed: false,
         title: String::new(),
+        control_size: ControlSize::default(),
         enabled: true,
         on_change: None,
     }
@@ -103,6 +116,7 @@ pub struct NativeCheckbox {
     state: CheckState,
     allows_mixed: bool,
     title: String,
+    control_size: ControlSize,
     enabled: bool,
     on_change: Option<NativeHandler>,
 }
@@ -126,6 +140,11 @@ impl NativeCheckbox {
         self
     }
 
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
+        self
+    }
+
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -144,8 +163,11 @@ impl NativeCheckbox {
     }
 
     fn layout(&self) -> Style {
-        measured("NSButton.checkbox", &self.title, |mtm| {
-            titled(mtm, NSButton::checkboxWithTitle_target_action, &self.title).fittingSize()
+        let (title, size) = (&self.title, self.control_size);
+        // Auto Layout's width, which `fittingSize` rounds up to a whole point.
+        measured("NSButton.checkbox", (title, size), |mtm| {
+            let make = NSButton::checkboxWithTitle_target_action;
+            titled(mtm, make, title, size).intrinsicContentSize()
         })
     }
 
@@ -154,6 +176,7 @@ impl NativeCheckbox {
             &slot,
             NSButton::checkboxWithTitle_target_action,
             &self.title,
+            self.control_size,
         );
         // Before the state: a mixed state on a two-state box is refused.
         if button.allowsMixedState() != self.allows_mixed {
@@ -177,6 +200,7 @@ pub fn native_radio(id: impl Into<ElementId>, selected: bool) -> NativeRadio {
         id: id.into(),
         selected,
         title: String::new(),
+        control_size: ControlSize::default(),
         enabled: true,
         on_change: None,
     }
@@ -186,6 +210,7 @@ pub struct NativeRadio {
     id: ElementId,
     selected: bool,
     title: String,
+    control_size: ControlSize,
     enabled: bool,
     on_change: Option<NativeHandler>,
 }
@@ -193,6 +218,11 @@ pub struct NativeRadio {
 impl NativeRadio {
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    pub fn control_size(mut self, control_size: ControlSize) -> Self {
+        self.control_size = control_size;
         self
     }
 
@@ -207,13 +237,10 @@ impl NativeRadio {
     }
 
     fn layout(&self) -> Style {
-        measured("NSButton.radio", &self.title, |mtm| {
-            titled(
-                mtm,
-                NSButton::radioButtonWithTitle_target_action,
-                &self.title,
-            )
-            .fittingSize()
+        let (title, size) = (&self.title, self.control_size);
+        measured("NSButton.radio", (title, size), |mtm| {
+            let make = NSButton::radioButtonWithTitle_target_action;
+            titled(mtm, make, title, size).intrinsicContentSize()
         })
     }
 
@@ -222,6 +249,7 @@ impl NativeRadio {
             &slot,
             NSButton::radioButtonWithTitle_target_action,
             &self.title,
+            self.control_size,
         );
         let wanted = CheckState::from(self.selected).to_native();
         if button.state() != wanted {
@@ -382,8 +410,8 @@ impl NativeButton {
             self.control_size,
         );
         let fitted = measured("NSButton.push", inputs, |mtm| {
-            let button = titled(mtm, NSButton::buttonWithTitle_target_action, &self.title);
-            button.setControlSize(NSControlSize::from(self.control_size));
+            let make = NSButton::buttonWithTitle_target_action;
+            let button = titled(mtm, make, &self.title, self.control_size);
             button.setBezelStyle(self.bezel.to_native());
             sync_symbol(
                 &button,
@@ -397,11 +425,12 @@ impl NativeButton {
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let button = place_titled(&slot, NSButton::buttonWithTitle_target_action, &self.title);
-        let control_size = NSControlSize::from(self.control_size);
-        if button.controlSize() != control_size {
-            button.setControlSize(control_size);
-        }
+        let button = place_titled(
+            &slot,
+            NSButton::buttonWithTitle_target_action,
+            &self.title,
+            self.control_size,
+        );
         let bezel = self.bezel.to_native();
         if button.bezelStyle() != bezel {
             button.setBezelStyle(bezel);
