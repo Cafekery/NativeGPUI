@@ -45,6 +45,7 @@ impl SurfaceAnchor {
     pub fn at(bounds: Bounds<Pixels>) -> Self {
         let anchor = Self::default();
         anchor.0.bounds.set(Some(bounds));
+        anchor.0.mask.set(Some(bounds));
         anchor
     }
 
@@ -313,7 +314,7 @@ define_class!(
     }
 );
 
-/// `None` if `anchor` has never painted.
+/// `None` if `anchor` has never painted and was not made [`SurfaceAnchor::at`] a rect.
 pub fn present_popover(
     window: &mut Window,
     cx: &mut App,
