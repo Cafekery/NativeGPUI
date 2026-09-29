@@ -360,6 +360,8 @@ fn configure(field: &NSTextField, target: &Target, submit: u64) {
     field.setUsesSingleLineMode(true);
     if let Some(cell) = field.cell() {
         cell.setSendsActionOnEndEditing(false);
+        // An `init`-made cell wraps a long line onto a second one, single-line mode or not.
+        cell.setScrollable(true);
     }
     wire(field, target, submit);
     let delegate = shared_delegate(MainThreadMarker::from(field));
