@@ -979,8 +979,12 @@ mod tests {
 
     fn purge(paths: &[PathBuf]) {
         for path in paths {
-            let _ = fs::remove_file(path);
-            let _ = fs::remove_dir_all(path);
+            let removed = match fs::symlink_metadata(path) {
+                Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+                Ok(_) => fs::remove_file(path),
+                Err(err) => Err(err),
+            };
+            removed.unwrap_or_else(|err| panic!("{} was left behind: {err}", path.display()));
         }
     }
 
@@ -1136,6 +1140,9 @@ mod tests {
 
     #[test]
     fn merge_recurses_and_files_replace() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("merge");
         let src = dir.join("Folder");
         let dst_parent = dir.join("dest");
@@ -1268,6 +1275,9 @@ mod tests {
 
     #[test]
     fn replace_undoes_back_to_the_item_it_displaced() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("replace-undo");
         let into = dir.join("dest");
         fs::create_dir_all(&into).unwrap();
@@ -1325,6 +1335,9 @@ mod tests {
 
     #[test]
     fn a_rename_onto_a_taken_name_resolves_like_a_move() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("rename-conflict");
         let source = dir.join("a.txt");
         let taken = dir.join("b.txt");
@@ -1508,6 +1521,9 @@ mod tests {
 
     #[test]
     fn put_back_restores_the_name_the_trash_took() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("put-back");
         let file = dir.join("collide.txt");
         touch(&file, "first");
@@ -1865,6 +1881,9 @@ mod tests {
 
     #[test]
     fn a_locked_item_is_unlocked_and_removed() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("locked");
         let lock = |path: &Path| {
             assert!(
@@ -2047,6 +2066,9 @@ mod tests {
 
     #[test]
     fn trash_and_put_back() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("finder-fs-ops-trash-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("throwaway.txt");
@@ -2106,6 +2128,9 @@ mod tests {
 
     #[test]
     fn undoing_a_merge_leaves_what_was_already_there() {
+        if !crate::trash_reachable() {
+            return;
+        }
         for is_move in [false, true] {
             let dir = temp_dir(if is_move {
                 "merge-undo-move"
@@ -2129,7 +2154,7 @@ mod tests {
                 false => Op::Copy { items, into },
             };
             let done = perform(op, Conflict::Merge).unwrap();
-            let back = perform(done.undo.expect("a merge undoes"), Conflict::KeepBoth);
+            let back = perform(done.undo.expect("a merge undoes"), Conflict::KeepBoth).unwrap();
 
             let read = |path: PathBuf| fs::read_to_string(path).ok();
             assert_eq!(
@@ -2145,15 +2170,13 @@ mod tests {
                     Some("child")
                 );
             }
-            if let Ok(back) = back {
-                purge(
-                    &back
-                        .results
-                        .into_iter()
-                        .filter(|p| !p.starts_with(&dir))
-                        .collect::<Vec<_>>(),
-                );
-            }
+            purge(
+                &back
+                    .results
+                    .into_iter()
+                    .filter(|p| !p.starts_with(&dir))
+                    .collect::<Vec<_>>(),
+            );
             let _ = fs::remove_dir_all(&dir);
         }
     }
@@ -2180,6 +2203,9 @@ mod tests {
 
     #[test]
     fn a_replaced_item_goes_to_the_trash_under_its_own_name() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("replaced-name");
         let name = format!("replaced-{}.txt", std::process::id());
         fs::create_dir_all(dir.join("a")).unwrap();
@@ -2206,6 +2232,9 @@ mod tests {
 
     #[test]
     fn merge_never_follows_a_link_into_its_target() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("merge-link");
         let elsewhere = dir.join("elsewhere");
         fs::create_dir_all(&elsewhere).unwrap();
@@ -2240,6 +2269,9 @@ mod tests {
 
     #[test]
     fn trashing_a_locked_folder_keeps_the_locks_inside() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("locked-folder");
         let folder = dir.join("LockedFolder");
         fs::create_dir_all(&folder).unwrap();
@@ -2269,6 +2301,9 @@ mod tests {
 
     #[test]
     fn a_put_back_keeps_going_past_an_item_that_refuses() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("put-back-partial");
         let kept = dir.join("kept.txt");
         touch(&kept, "kept");
@@ -2293,6 +2328,9 @@ mod tests {
 
     #[test]
     fn an_unfinished_put_back_names_only_what_refused() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("put-back-left");
         let kept = dir.join("kept.txt");
         touch(&kept, "kept");
