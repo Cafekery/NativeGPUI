@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSKeyedUnarchiver, NSNumber, NSString, NSURL, NSUserDefaults,
+    NSKeyedUnarchiver, NSMutableDictionary, NSNumber, NSString, NSURL, NSUserDefaults,
 };
 
 use crate::chrome::scope_bar::{THIS_FOLDER, THIS_MAC};
@@ -168,8 +168,8 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             gallery_view.unwrap_or(Column::Name),
         ),
         icon_options: icons.map_or_else(IconOptions::default, |icons| IconOptions::read(&icons)),
-        group: read("FXPreferredGroupBy")
-            .and_then(|name| group_key(&name.downcast::<NSString>().ok()?.to_string()))
+        group: finder_string("FXPreferredGroupBy")
+            .and_then(|name| group_key(&name))
             .unwrap_or(Column::Kind),
     }
 });
@@ -503,7 +503,6 @@ pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
 }
 
-/// The view a folder always opens in, and whether the window then keeps browsing in it.
 pub(crate) fn opens_in(folder: &str) -> Option<(usize, bool)> {
     let view = read(&format!("ng.finder.opens.{folder}"))?;
     let browses = read(&format!("ng.finder.browses.{folder}")).is_some_and(|on| on != 0.);
@@ -629,8 +628,8 @@ fn read_text(key: &str) -> Option<String> {
     )
 }
 
-fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
-    NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
+fn spots_key(folder: &str) -> Retained<NSString> {
+    NSString::from_str(&format!("ng.finder.icons.at.{folder}"))
 }
 
 fn look_key(view: usize, folder: Option<&str>) -> Retained<NSString> {
@@ -646,40 +645,37 @@ fn look_key(view: usize, folder: Option<&str>) -> Retained<NSString> {
     })
 }
 
-fn look_entries(
+fn saved_look(
     view: usize,
     folder: Option<&str>,
-) -> Vec<(Retained<NSString>, Retained<AnyObject>)> {
-    let Some(kept) = defaults().dictionaryForKey(&look_key(view, folder)) else {
-        return Vec::new();
-    };
-    kept.keys()
-        .filter_map(|key| Some((key.clone(), kept.objectForKey(&key)?)))
-        .collect()
+) -> Option<Retained<NSDictionary<NSString, AnyObject>>> {
+    defaults().dictionaryForKey(&look_key(view, folder))
 }
 
-fn keep_look(view: usize, folder: Option<&str>, keys: &[&NSString], values: &[&AnyObject]) {
-    let kept: &AnyObject = &NSDictionary::from_slices(keys, values);
-    unsafe { defaults().setObject_forKey(Some(kept), &look_key(view, folder)) };
+fn edit_look(
+    view: usize,
+    folder: Option<&str>,
+    edit: impl FnOnce(&NSMutableDictionary<NSString, AnyObject>),
+) {
+    let look = NSMutableDictionary::new();
+    if let Some(saved) = saved_look(view, folder) {
+        look.addEntriesFromDictionary(&saved);
+    }
+    edit(&look);
+    let look: &AnyObject = &look;
+    unsafe { defaults().setObject_forKey(Some(look), &look_key(view, folder)) };
 }
 
-/// A folder's own view setting, else the one Use as Defaults kept.
-pub(crate) fn look(view: usize, folder: &str, key: &str) -> Option<Retained<AnyObject>> {
+fn look_value(view: usize, folder: &str, key: &str) -> Option<Retained<AnyObject>> {
     let key = NSString::from_str(key);
-    [Some(folder), None].into_iter().find_map(|at| {
-        defaults()
-            .dictionaryForKey(&look_key(view, at))?
-            .objectForKey(&key)
-    })
+    [Some(folder), None]
+        .into_iter()
+        .find_map(|at| saved_look(view, at)?.objectForKey(&key))
 }
 
 pub(crate) fn look_number(view: usize, folder: &str, key: &str) -> Option<f64> {
-    Some(
-        look(view, folder, key)?
-            .downcast::<NSNumber>()
-            .ok()?
-            .doubleValue(),
-    )
+    let number = look_value(view, folder, key)?;
+    Some(number.downcast_ref::<NSNumber>()?.doubleValue())
 }
 
 pub(crate) fn look_on(view: usize, folder: &str, key: &str) -> Option<bool> {
@@ -687,24 +683,14 @@ pub(crate) fn look_on(view: usize, folder: &str, key: &str) -> Option<bool> {
 }
 
 pub(crate) fn look_text(view: usize, folder: &str, key: &str) -> Option<String> {
-    Some(
-        look(view, folder, key)?
-            .downcast::<NSString>()
-            .ok()?
-            .to_string(),
-    )
+    let text = look_value(view, folder, key)?;
+    Some(text.downcast_ref::<NSString>()?.to_string())
 }
 
 fn set_look(view: usize, folder: &str, key: &str, value: &AnyObject) {
-    let own = look_entries(view, Some(folder));
-    let name = NSString::from_str(key);
-    let mut keys: Vec<&NSString> = vec![&name];
-    let mut values: Vec<&AnyObject> = vec![value];
-    for (at, kept) in own.iter().filter(|(at, _)| **at != *name) {
-        keys.push(at);
-        values.push(kept);
-    }
-    keep_look(view, Some(folder), &keys, &values);
+    edit_look(view, Some(folder), |look| {
+        look.insert(&*NSString::from_str(key), value)
+    });
 }
 
 pub(crate) fn set_look_number(view: usize, folder: &str, key: &str, value: f64) {
@@ -727,24 +713,17 @@ fn columns_key(folder: Option<&str>) -> String {
 }
 
 pub(crate) fn has_own_look(view: usize, folder: &str) -> bool {
-    let own = defaults().dictionaryForKey(&look_key(view, Some(folder)));
-    own.is_some_and(|own| own.count() > 0)
+    saved_look(view, Some(folder)).is_some_and(|own| own.count() > 0)
         || view == LIST_VIEW && read_text(&columns_key(Some(folder))).is_some()
 }
 
-/// The folder's settings become those of every folder without its own.
 pub(crate) fn use_as_defaults(view: usize, folder: &str) {
-    let own = look_entries(view, Some(folder));
-    let kept = look_entries(view, None);
-    let mut keys: Vec<&NSString> = own.iter().map(|(key, _)| &**key).collect();
-    let mut values: Vec<&AnyObject> = own.iter().map(|(_, value)| &**value).collect();
-    for (key, value) in &kept {
-        if !keys.contains(&&**key) {
-            keys.push(key);
-            values.push(value);
+    let own = saved_look(view, Some(folder));
+    edit_look(view, None, |kept| {
+        if let Some(own) = own {
+            kept.addEntriesFromDictionary(&own);
         }
-    }
-    keep_look(view, None, &keys, &values);
+    });
     defaults().removeObjectForKey(&look_key(view, Some(folder)));
     if view != LIST_VIEW {
         return;
@@ -766,7 +745,6 @@ pub(crate) fn icon_options(folder: &str) -> IconOptions {
     read_icon_options(Some(folder))
 }
 
-/// What Use as Defaults kept, below a folder's own and Finder's per-folder options.
 pub(crate) fn icon_defaults() -> IconOptions {
     read_icon_options(None)
 }
@@ -790,51 +768,56 @@ pub(crate) fn set_arranged(view: usize, column: Column) {
 }
 
 pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
-    if let Some(arrange) = options.arrange_by.as_deref() {
-        set_look_text(ICON_VIEW, folder, "arrangeBy", arrange);
-    }
-    let numbers = [
-        ("iconSize", options.icon_size),
-        ("gridSpacing", options.grid_spacing),
-        ("textSize", options.text_size),
-    ];
-    for (key, number) in numbers {
-        if let Some(number) = number {
-            set_look_number(ICON_VIEW, folder, key, f64::from(number));
+    edit_look(ICON_VIEW, Some(folder), |look| {
+        let put = |key: &str, value: &AnyObject| look.insert(&*NSString::from_str(key), value);
+        let number = |key, value: f32| put(key, &NSNumber::new_f64(f64::from(value)));
+        if let Some(arrange) = &options.arrange_by {
+            put("arrangeBy", &NSString::from_str(arrange));
         }
-    }
-    if let Some(bottom) = options.label_on_bottom {
-        set_look_on(ICON_VIEW, folder, "labelOnBottom", bottom);
-    }
-    if let Some(on) = options.show_icon_preview {
-        set_look_on(ICON_VIEW, folder, "showIconPreview", on);
-    }
-    if let Some(on) = options.show_item_info {
-        set_look_on(ICON_VIEW, folder, "showItemInfo", on);
-    }
-    match &options.background {
-        Some(Background::Default) => set_look_number(ICON_VIEW, folder, "backgroundType", 0.),
-        Some(Background::Color(parts)) => {
-            set_look_number(ICON_VIEW, folder, "backgroundType", 1.);
-            let keys = [
-                "backgroundColorRed",
-                "backgroundColorGreen",
-                "backgroundColorBlue",
-            ];
-            for (key, part) in keys.into_iter().zip(parts) {
-                set_look_number(ICON_VIEW, folder, key, f64::from(*part));
+        let numbers = [
+            ("iconSize", options.icon_size),
+            ("gridSpacing", options.grid_spacing),
+            ("textSize", options.text_size),
+        ];
+        for (key, value) in numbers {
+            if let Some(value) = value {
+                number(key, value);
             }
         }
-        Some(Background::Picture(path)) => {
-            set_look_number(ICON_VIEW, folder, "backgroundType", 2.);
-            set_look_text(ICON_VIEW, folder, "backgroundImagePath", path);
+        let flags = [
+            ("labelOnBottom", options.label_on_bottom),
+            ("showIconPreview", options.show_icon_preview),
+            ("showItemInfo", options.show_item_info),
+        ];
+        for (key, on) in flags {
+            if let Some(on) = on {
+                put(key, &NSNumber::new_bool(on));
+            }
         }
-        None => {}
-    }
+        match &options.background {
+            Some(Background::Default) => number("backgroundType", 0.),
+            Some(Background::Color(parts)) => {
+                number("backgroundType", 1.);
+                let keys = [
+                    "backgroundColorRed",
+                    "backgroundColorGreen",
+                    "backgroundColorBlue",
+                ];
+                for (key, part) in keys.into_iter().zip(parts) {
+                    number(key, *part);
+                }
+            }
+            Some(Background::Picture(path)) => {
+                number("backgroundType", 2.);
+                put("backgroundImagePath", &NSString::from_str(path));
+            }
+            None => {}
+        }
+    });
 }
 
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
-    let Some(spots) = defaults().dictionaryForKey(&icon_key("at", folder)) else {
+    let Some(spots) = defaults().dictionaryForKey(&spots_key(folder)) else {
         return HashMap::new();
     };
     spots
@@ -865,21 +848,16 @@ pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a 
     let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
     let places: Vec<&NSArray<NSNumber>> = places.iter().map(|place| &**place).collect();
     let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
-    unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
+    unsafe { defaults().setObject_forKey(Some(value), &spots_key(folder)) };
 }
 
 fn finder_number(group: &str, view: &str, key: &str) -> Option<f64> {
     let all = finder_pref(group)?.downcast::<NSDictionary>().ok()?;
     let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
-    Some(
-        value(&view, key)?
-            .downcast::<NSNumber>()
-            .ok()?
-            .doubleValue(),
-    )
+    let number = value(&view, key)?;
+    Some(number.downcast_ref::<NSNumber>()?.doubleValue())
 }
 
-/// A view's global option as Finder keys it in `StandardViewOptions`: the demo's own, else Finder's.
 pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {
     read(&format!("ng.finder.{options}.{key}"))
         .or_else(|| finder_number("StandardViewOptions", options, key))
@@ -889,7 +867,6 @@ pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
     write(&format!("ng.finder.{options}.{key}"), value);
 }
 
-/// Finder's standard per-folder setting, below every folder's own and Use as Defaults.
 pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
     finder_number("StandardViewSettings", settings, key)
 }
