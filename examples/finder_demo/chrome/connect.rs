@@ -13,8 +13,8 @@ use native_gpui::{
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSHelpManager, NSModalResponse, NSWindowButton,
-    NSWindowCollectionBehavior, NSWindowTitleVisibility,
+    NSAlert, NSAlertFirstButtonReturn, NSModalResponse, NSWindowButton, NSWindowCollectionBehavior,
+    NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -178,16 +178,6 @@ fn remember(address: &str) {
     recents.insert(0, address.to_string());
     recents.truncate(RECENTS);
     prefs::set_recent_servers(&recents.iter().map(String::as_str).collect::<Vec<_>>());
-}
-
-fn open_help() {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    NSHelpManager::sharedHelpManager(mtm).openHelpAnchor_inBook(
-        &NSString::from_str(HELP_ANCHOR),
-        Some(&NSString::from_str("com.apple.machelp")),
-    );
 }
 
 impl FinderDemo {
@@ -448,7 +438,7 @@ impl Render for Connect {
                     bar(HELP_X).child(
                         native_button("ng.finder.connect.help", "")
                             .bezel_style(ButtonBezel::HelpButton)
-                            .on_click(|_, _, _| open_help()),
+                            .on_click(|_, _, _| crate::menus::open_mac_help(HELP_ANCHOR)),
                     ),
                 )
                 .when(self.connecting, |root| {
