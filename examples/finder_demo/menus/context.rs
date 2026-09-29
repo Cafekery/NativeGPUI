@@ -204,6 +204,12 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
     menu.separator();
+    let options = match crate::preview::options::is_open() {
+        true => "Hide Preview Options",
+        false => "Show Preview Options",
+    };
+    menu.item(MenuEntry::item(options), Act::PreviewOptions);
+    menu.separator();
     let faces: Vec<_> = match selected.contains(&line.key) {
         true => demo_faces(selected),
         false => vec![line.row.face],
