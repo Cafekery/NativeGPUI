@@ -38,7 +38,7 @@ fn by_name(typed: &str, index: Option<&Index>, limit: usize) -> Vec<Completion> 
         return Vec::new();
     };
     let mut hits = index.search(typed, None, limit.saturating_mul(4).max(64));
-    hits.retain(|hit| hit.entry.is_dir() && hit.entry.readable);
+    hits.retain(|hit| hit.entry.is_dir());
     hits.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
@@ -160,6 +160,7 @@ mod tests {
     use super::*;
     use crate::index::{Index, Progress};
     use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -220,7 +221,6 @@ mod tests {
 
     #[test]
     fn a_folder_the_user_cannot_list_is_never_offered() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tree("locked");
         let locked = root.join("Devlocked");
         fs::create_dir_all(&locked).unwrap();
@@ -293,7 +293,6 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_index_when_the_directory_is_gone() {
-        use std::os::unix::fs::PermissionsExt as _;
         let root = tree("fallback");
         let index = crawled(&root);
         let sealed = root.join("Developer");

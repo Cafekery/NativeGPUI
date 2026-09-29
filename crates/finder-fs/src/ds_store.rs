@@ -61,7 +61,6 @@ pub enum Background {
     #[default]
     Default,
     Color([f32; 3]),
-    /// An empty path is a picture chosen before any image.
     Picture(String),
 }
 
