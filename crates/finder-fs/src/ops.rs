@@ -948,6 +948,7 @@ fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::purge;
     use objc2_foundation::NSURLBookmarkResolutionOptions;
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
@@ -968,17 +969,6 @@ mod tests {
             Op::PutBack(items) => items.iter().map(|item| item.item.clone()).collect(),
             Op::Batch(ops) => ops.iter().flat_map(displaced).collect(),
             _ => Vec::new(),
-        }
-    }
-
-    fn purge(paths: &[PathBuf]) {
-        for path in paths {
-            let removed = match fs::symlink_metadata(path) {
-                Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
-                Ok(_) => fs::remove_file(path),
-                Err(err) => Err(err),
-            };
-            removed.unwrap_or_else(|err| panic!("{} was left behind: {err}", path.display()));
         }
     }
 

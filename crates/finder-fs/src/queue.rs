@@ -749,9 +749,7 @@ mod tests {
         let back = ops::perform(undo, Conflict::Replace).unwrap();
         assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
 
-        for trashed in back.results {
-            fs::remove_file(&trashed).expect("the trashed copy is removed");
-        }
+        crate::purge(&back.results);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -798,9 +796,7 @@ mod tests {
         let back = ops::perform(undo, Conflict::Replace).unwrap();
         assert!(!dst.join("good.txt").exists());
 
-        for trashed in back.results {
-            fs::remove_file(&trashed).expect("the trashed copy is removed");
-        }
+        crate::purge(&back.results);
         let _ = fs::remove_dir_all(&dir);
     }
 
