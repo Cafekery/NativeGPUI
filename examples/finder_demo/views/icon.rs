@@ -95,6 +95,7 @@ struct Look {
     selection: Hsla,
     selection_text: Hsla,
     backdrop: Hsla,
+    info: Hsla,
 }
 
 impl Look {
@@ -104,6 +105,7 @@ impl Look {
             selection: palette.selection,
             selection_text: palette.selection_text,
             backdrop: system_color(SystemColor::QuaternaryLabel),
+            info: system_color(SystemColor::Link),
         }
     }
 }
@@ -142,6 +144,7 @@ pub(crate) struct Options {
     pub(crate) spacing: f32,
     pub(crate) text: f32,
     pub(crate) bottom: bool,
+    pub(crate) info: bool,
     line: f32,
     cell: Size<f32>,
 }
@@ -165,8 +168,13 @@ impl Options {
             .label_on_bottom
             .or(standard.label_on_bottom)
             .unwrap_or(true);
+        let info = chosen
+            .show_item_info
+            .or(standard.show_item_info)
+            .unwrap_or(false);
         let font = NSFont::systemFontOfSize(text.into());
         let line = (font.ascender().round() - font.descender().round()) as f32;
+        let info_line = if info { line } else { 0. };
         let frame = icon * FRAME_PER_ICON;
         let even_line = 2. * (line / 2.).floor();
         let label = 2.
@@ -175,7 +183,7 @@ impl Options {
                 .round();
         let cell = match bottom {
             true => {
-                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.));
+                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.)) + info_line;
                 size(
                     (frame + MARGIN).max(label),
                     2. * ((frame + MARGIN + under) / 2.).floor(),
@@ -183,7 +191,7 @@ impl Options {
             }
             false => size(
                 frame + label + LABEL_GAP,
-                (frame + SIDE_FRAME_PAD).max(2. * line + SIDE_TEXT_PAD),
+                (frame + SIDE_FRAME_PAD).max(2. * line + info_line + SIDE_TEXT_PAD),
             ),
         };
         Self {
@@ -191,6 +199,7 @@ impl Options {
             spacing,
             text,
             bottom,
+            info,
             line,
             cell,
         }
@@ -874,6 +883,7 @@ struct Ghost {
     previews: bool,
     look: Look,
     tags: Vec<usize>,
+    info: Option<SharedString>,
 }
 
 impl Render for Ghost {
@@ -889,6 +899,7 @@ impl Render for Ghost {
             None,
             None,
             None,
+            self.info.clone(),
         )
         .opacity(GHOST_ALPHA)
     }
@@ -905,6 +916,7 @@ fn tile(
     editor: Option<AnyElement>,
     anchor: Option<Anchor>,
     drop: Option<Hsla>,
+    info: Option<SharedString>,
 ) -> Div {
     let (cell, frame, size) = (options.cell, options.frame(), options.size);
     let pad = options.pad();
@@ -968,6 +980,26 @@ fn tile(
         .gap(px(4.))
         .child(caption)
         .children(tag_dots(tags));
+    let label = match info {
+        Some(info) => div()
+            .flex()
+            .flex_col()
+            .when(options.bottom, |text| text.items_center())
+            .child(label)
+            .child(
+                div()
+                    .px(px(LABEL_PAD))
+                    .max_w(px(room))
+                    .text_size(px(options.text))
+                    .line_height(px(options.line))
+                    .text_color(look.info)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(info),
+            ),
+        None => label,
+    };
 
     let tile = div()
         .w(px(cell.width))
@@ -1075,6 +1107,10 @@ impl FinderDemo {
             let held = dragging.as_ref() == Some(&line.key);
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
+            let info = options
+                .info
+                .then(|| crate::item_info::item_info(&line.row))
+                .flatten();
 
             let tile = div()
                 .id(("ng.finder.tile", index))
@@ -1093,6 +1129,7 @@ impl FinderDemo {
                     editor,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
                     self.drop_fill(&line.key, look.selection),
+                    info.clone(),
                 ))
                 .when(held, |tile| tile.opacity(SOURCE_ALPHA))
                 .on_drag(
@@ -1115,6 +1152,7 @@ impl FinderDemo {
                                 previews: paint.previews,
                                 look,
                                 tags: carried.clone(),
+                                info: info.clone(),
                             })
                         }
                     },

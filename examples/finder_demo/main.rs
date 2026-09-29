@@ -13,6 +13,7 @@ mod icons;
 mod info;
 mod input;
 mod inspector;
+mod item_info;
 mod keep;
 mod listing;
 mod locations;

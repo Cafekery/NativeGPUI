@@ -462,6 +462,7 @@ impl FinderDemo {
         crate::icons::draw_wanted(&cx.entity(), cx);
         crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::custom::fetch_wanted(&cx.entity(), cx);
+        crate::item_info::fetch_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
         // A row asks for its thumbnail as the list lays itself out, which is after this runs.
         cx.defer(|_| crate::thumbs::collect_thumbnails());

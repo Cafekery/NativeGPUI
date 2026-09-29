@@ -32,7 +32,7 @@ unsafe extern "C" {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Time {
+pub(crate) struct Time {
     value: i64,
     scale: i32,
     flags: u32,
@@ -47,7 +47,7 @@ unsafe impl Encode for Time {
 }
 
 impl Time {
-    fn seconds(self) -> Option<f64> {
+    pub(crate) fn seconds(self) -> Option<f64> {
         const VALID: u32 = 1;
         let seconds = unsafe { CMTimeGetSeconds(self) };
         (self.flags & VALID != 0 && seconds.is_finite()).then_some(seconds)
