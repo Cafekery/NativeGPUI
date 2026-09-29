@@ -38,7 +38,7 @@ fn by_name(typed: &str, index: Option<&Index>, limit: usize) -> Vec<Completion> 
         return Vec::new();
     };
     let mut hits = index.search(typed, None, limit.saturating_mul(4).max(64));
-    hits.retain(|hit| hit.entry.is_dir());
+    hits.retain(|hit| hit.entry.is_dir() && hit.entry.readable);
     hits.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
@@ -63,6 +63,7 @@ fn in_dir(dir: &Path, prefix: &str, index: Option<&Index>, limit: usize) -> Vec<
     for entry in entries
         .iter()
         .filter(|entry| hidden || !entry.name.starts_with('.'))
+        .filter(|entry| entry.readable || !entry.is_dir())
     {
         let name = entry.name.to_lowercase();
         if entry.is_dir() {
@@ -215,6 +216,26 @@ mod tests {
         assert!(!names(&listed).iter().any(|name| name.contains("/.config")));
         let dotted = complete(&format!("{}/.c", root.display()), None, 10);
         assert_eq!(names(&dotted), [format!("{}/.config/", root.display())]);
+    }
+
+    #[test]
+    fn a_folder_the_user_cannot_list_is_never_offered() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tree("locked");
+        let locked = root.join("Devlocked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let offered = names(&complete(&format!("{}/Dev", root.display()), None, 10));
+        let exact = complete(&format!("{}/Devlocked", root.display()), None, 10);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            offered,
+            [
+                format!("{}/DevOps/", root.display()),
+                format!("{}/Developer/", root.display()),
+            ]
+        );
+        assert!(exact.is_empty());
     }
 
     #[test]
