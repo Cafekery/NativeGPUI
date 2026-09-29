@@ -212,7 +212,11 @@ fn indent(line: &Line) -> f32 {
 }
 
 pub(crate) fn name_prefix(line: &Line, icon: f32) -> f32 {
-    indent(line) + icon + LABEL_GAP
+    indent(line) + icon + label_gap(icon)
+}
+
+fn label_gap(icon: f32) -> f32 {
+    LABEL_GAP + (icon - ICON_SMALL) / 8.
 }
 
 pub(crate) fn row_h(icon: f32) -> f32 {
@@ -471,7 +475,7 @@ fn twist(drawn: &Drawn) -> Stateful<Div> {
 
 fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
     let (line, look) = (&drawn.line, &drawn.look);
-    let label = div().ml(px(LABEL_GAP));
+    let label = div().ml(px(label_gap(look.icon)));
     div()
         .w(px(look.name_w))
         .flex_none()

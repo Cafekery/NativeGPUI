@@ -309,6 +309,7 @@ mod tests {
             package: false,
             ext_hidden: false,
             alias: false,
+            custom_icon: false,
             dataless: false,
             readable: true,
             file_id: 0,

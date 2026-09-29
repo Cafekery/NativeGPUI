@@ -35,6 +35,7 @@ pub(crate) struct Finder {
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
+    pub(crate) sidebar_width: Option<f32>,
     pub(crate) columns: Vec<Column>,
     pub(crate) arranged: (Column, Column),
     pub(crate) icon_options: IconOptions,
@@ -141,6 +142,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             (column, ascending.unwrap_or(true))
         }),
         pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
+        sidebar_width: width("SidebarWidth2"),
         columns: match listed.is_empty() {
             true => vec![Column::Modified, Column::Size, Column::Kind],
             false => columns,

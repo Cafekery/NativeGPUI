@@ -130,6 +130,7 @@ pub(crate) fn drop_hover<D: Grabbed>(
         })
         .flatten();
         this.update(cx, |demo: &mut FinderDemo, cx| {
+            let over = over.filter(|_| !demo.beneath_pane(at));
             demo.hover_folder(&key, into, over, cx);
         })
         .ok();
@@ -247,6 +248,11 @@ impl Render for DragGhost {
 }
 
 impl FinderDemo {
+    /// A drag reports each target's own bounds, so what runs on beneath the pane still matches.
+    fn beneath_pane(&self, at: Point<Pixels>) -> bool {
+        at.x >= self.viewport.width - self.metrics().right
+    }
+
     fn hover_folder(
         &mut self,
         key: &SharedString,
