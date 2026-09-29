@@ -314,7 +314,7 @@ define_class!(
     }
 );
 
-/// `None` if `anchor` has never painted and was not made [`SurfaceAnchor::at`] a rect.
+/// `None` if `anchor` has never painted and was not made with [`SurfaceAnchor::at`].
 pub fn present_popover(
     window: &mut Window,
     cx: &mut App,
