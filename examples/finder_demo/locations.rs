@@ -225,7 +225,7 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let mut rows = servers.unwrap_or_else(|| rows_of(id));
-                    crate::read::sort_rows(&mut rows, order, false);
+                    crate::read::sort_rows(&mut rows, order, false, true);
                     rows
                 })
                 .await;

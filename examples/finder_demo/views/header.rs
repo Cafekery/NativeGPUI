@@ -17,7 +17,7 @@ use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::click_kind;
 use crate::view::overflows;
-use crate::views::list::{ICON_SMALL, detail_text, name_prefix, row_font};
+use crate::views::list::{ICON_SMALL, detail_text, name_prefix};
 
 const COL_DATE: f32 = 181.;
 const COL_SIZE: f32 = 97.;
@@ -55,10 +55,6 @@ fn name_least(size: f32, icon: f32) -> f32 {
     PANE_INSET + NAME_FIT_LEAST + icon - ICON_SMALL + NAME_FIT_PER_POINT * size
 }
 
-pub(crate) fn name_min_w(icon: f32) -> f32 {
-    name_least(row_font(), icon)
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ColumnSpec {
     pub(crate) column: Column,
@@ -68,7 +64,7 @@ pub(crate) struct ColumnSpec {
 impl ColumnSpec {
     pub(crate) fn of(column: Column) -> Self {
         let width = match column {
-            Column::Name => name_min_w(ICON_SMALL),
+            Column::Name => name_least(prefs::finder().text_size, ICON_SMALL),
             Column::Modified | Column::Created | Column::Added => COL_DATE,
             Column::Opened => COL_OPENED,
             Column::Size => COL_SIZE,
@@ -187,18 +183,22 @@ fn cell_body(
 }
 
 impl FinderDemo {
+    pub(crate) fn name_min_w(&self) -> f32 {
+        name_least(self.list_look.text, self.list_look.icon)
+    }
+
     /// Name absorbs window resizes while the list fits; an overflowing list keeps its widths.
     pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room;
         let content = self.list_content_w();
         if self.list_span.is_nan() {
-            self.name_w = (span - content + self.name_w).max(name_min_w(self.list_icon));
+            self.name_w = (span - content + self.name_w).max(self.name_min_w());
         } else if span != self.list_span {
             let change = match overflows(content, self.list_span) {
                 true => (span - content).max(0.),
                 false => span - self.list_span,
             };
-            self.name_w = (self.name_w + change).max(name_min_w(self.list_icon));
+            self.name_w = (self.name_w + change).max(self.name_min_w());
         }
         self.list_span = span;
     }
@@ -263,7 +263,7 @@ impl FinderDemo {
 
     fn resized_column(&self, index: usize) -> (f32, f32) {
         match index {
-            0 => (self.name_w, name_min_w(self.list_icon)),
+            0 => (self.name_w, self.name_min_w()),
             index => (
                 self.list_columns
                     .get(index - 1)
@@ -377,7 +377,7 @@ impl FinderDemo {
             spec.width = prefs::list_column_width(here, spec.column)
                 .unwrap_or_else(|| ColumnSpec::of(spec.column).width);
         }
-        let least = name_min_w(self.list_icon).max(PANE_INSET + NAME_OPEN_LEAST);
+        let least = self.name_min_w().max(PANE_INSET + NAME_OPEN_LEAST);
         self.name_w =
             prefs::list_column_width(here, Column::Name).map_or(least, |kept| kept.max(least));
         let fill = self.list_room - self.list_content_w() + self.name_w;
@@ -411,9 +411,9 @@ impl FinderDemo {
         let Some(column) = self.column_at(index) else {
             return;
         };
-        let (size, icon) = (row_font(), self.list_icon);
+        let (size, icon) = (self.list_look.text, self.list_look.icon);
         if column.dated() {
-            return self.fitted(index, column, date_fit(size), cx);
+            return self.fitted(index, column, date_fit(size, self.list_look.relative), cx);
         }
         let rows = self.fit_rows(column);
         let here = self.here();
@@ -434,7 +434,7 @@ impl FinderDemo {
             .iter()
             .map(|line| match column {
                 Column::Name => (name_prefix(line, icon), line.row.display.clone()),
-                Column::Size => (0., line.row.size.clone()),
+                Column::Size => (0., line.row.size_shown(self.list_look.sizes)),
                 Column::Kind => (0., line.row.kind.clone()),
                 column => (0., detail_text(&line.row, column)),
             })

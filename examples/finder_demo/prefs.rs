@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use finder_fs::ds_store::IconOptions;
+use finder_fs::ds_store::{Background, IconOptions};
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -20,8 +20,6 @@ const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
-const LIST_ICON: &str = "ng.finder.list.icon";
-const STRIP_ICON: &str = "ng.finder.strip.icon";
 
 fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -32,6 +30,7 @@ pub(crate) struct Finder {
     pub(crate) text_size: f32,
     pub(crate) icon_size: f32,
     pub(crate) relative_dates: bool,
+    pub(crate) calculate_all_sizes: bool,
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
@@ -149,6 +148,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         text_size: number("textSize").unwrap_or(13.) as f32,
         icon_size: number("iconSize").unwrap_or(16.) as f32,
         relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
+        calculate_all_sizes: number("calculateAllSizes").is_some_and(|on| on != 0.),
         toolbar: toolbar.map_or_else(Vec::new, |ids| {
             ids.iter()
                 .filter_map(|id| Some(id.downcast_ref::<NSString>()?.to_string()))
@@ -503,6 +503,31 @@ pub(crate) fn set_view(view: usize) {
     write(VIEW, view as f64);
 }
 
+/// The view a folder always opens in, and whether the window then keeps browsing in it.
+pub(crate) fn opens_in(folder: &str) -> Option<(usize, bool)> {
+    let view = read(&format!("ng.finder.opens.{folder}"))?;
+    let browses = read(&format!("ng.finder.browses.{folder}")).is_some_and(|on| on != 0.);
+    Some((view as usize, browses))
+}
+
+pub(crate) fn set_opens_in(folder: &str, opens: Option<(usize, bool)>) {
+    let keys = [
+        format!("ng.finder.opens.{folder}"),
+        format!("ng.finder.browses.{folder}"),
+    ];
+    match opens {
+        Some((view, browses)) => {
+            write(&keys[0], view as f64);
+            write(&keys[1], f64::from(u8::from(browses)));
+        }
+        None => {
+            for key in keys {
+                defaults().removeObjectForKey(&NSString::from_str(&key));
+            }
+        }
+    }
+}
+
 pub(crate) fn search_scope() -> usize {
     match setting_text("FXDefaultSearchScope").as_deref() {
         Some("SCcf") => THIS_FOLDER,
@@ -561,22 +586,6 @@ pub(crate) fn preview(view: usize) -> bool {
 
 pub(crate) fn set_preview(view: usize, shown: bool) {
     write(preview_key(view), f64::from(u8::from(shown)));
-}
-
-pub(crate) fn list_icon() -> Option<f32> {
-    read(LIST_ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_list_icon(size: f32) {
-    write(LIST_ICON, size as f64);
-}
-
-pub(crate) fn strip_icon() -> Option<f32> {
-    read(STRIP_ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_strip_icon(size: f32) {
-    write(STRIP_ICON, size as f64);
 }
 
 fn column_key(column: Column) -> &'static str {
@@ -796,6 +805,31 @@ pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
     if let Some(bottom) = options.label_on_bottom {
         set_look_on(ICON_VIEW, folder, "labelOnBottom", bottom);
     }
+    if let Some(on) = options.show_icon_preview {
+        set_look_on(ICON_VIEW, folder, "showIconPreview", on);
+    }
+    if let Some(on) = options.show_item_info {
+        set_look_on(ICON_VIEW, folder, "showItemInfo", on);
+    }
+    match &options.background {
+        Some(Background::Default) => set_look_number(ICON_VIEW, folder, "backgroundType", 0.),
+        Some(Background::Color(parts)) => {
+            set_look_number(ICON_VIEW, folder, "backgroundType", 1.);
+            let keys = [
+                "backgroundColorRed",
+                "backgroundColorGreen",
+                "backgroundColorBlue",
+            ];
+            for (key, part) in keys.into_iter().zip(parts) {
+                set_look_number(ICON_VIEW, folder, key, f64::from(*part));
+            }
+        }
+        Some(Background::Picture(path)) => {
+            set_look_number(ICON_VIEW, folder, "backgroundType", 2.);
+            set_look_text(ICON_VIEW, folder, "backgroundImagePath", path);
+        }
+        None => {}
+    }
 }
 
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
@@ -831,4 +865,30 @@ pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a 
     let places: Vec<&NSArray<NSNumber>> = places.iter().map(|place| &**place).collect();
     let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
     unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
+}
+
+fn finder_number(group: &str, view: &str, key: &str) -> Option<f64> {
+    let all = finder_pref(group)?.downcast::<NSDictionary>().ok()?;
+    let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
+    Some(
+        value(&view, key)?
+            .downcast::<NSNumber>()
+            .ok()?
+            .doubleValue(),
+    )
+}
+
+/// A view's global option as Finder keys it in `StandardViewOptions`: the demo's own, else Finder's.
+pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {
+    read(&format!("ng.finder.{options}.{key}"))
+        .or_else(|| finder_number("StandardViewOptions", options, key))
+}
+
+pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
+    write(&format!("ng.finder.{options}.{key}"), value);
+}
+
+/// Finder's standard per-folder setting, below every folder's own and Use as Defaults.
+pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
+    finder_number("StandardViewSettings", settings, key)
 }

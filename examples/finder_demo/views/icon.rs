@@ -6,17 +6,17 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use finder_fs::ds_store::{self, IconOptions, IconView};
+use finder_fs::ds_store::{self, Background, IconOptions, IconView};
 use finder_fs::sort::name_cmp;
 use gpui::{
-    AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollHandle, SharedString, Size, TextAlign, Window, div, point, prelude::*, px, size,
+    AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point, Rgba,
+    ScrollHandle, SharedString, Size, TextAlign, Window, div, img, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{SystemColor, system_color};
 use objc2_app_kit::NSFont;
 
 use crate::app::FinderDemo;
-use crate::art::{Anchor, art_at, row_art};
+use crate::art::{Anchor, art_at, item_art};
 use crate::data::{Column, Line, Order, Row};
 use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
@@ -95,6 +95,7 @@ struct Look {
     selection: Hsla,
     selection_text: Hsla,
     backdrop: Hsla,
+    info: Hsla,
 }
 
 impl Look {
@@ -104,6 +105,7 @@ impl Look {
             selection: palette.selection,
             selection_text: palette.selection_text,
             backdrop: system_color(SystemColor::QuaternaryLabel),
+            info: system_color(SystemColor::Link),
         }
     }
 }
@@ -142,13 +144,14 @@ pub(crate) struct Options {
     pub(crate) spacing: f32,
     pub(crate) text: f32,
     pub(crate) bottom: bool,
+    pub(crate) info: bool,
     line: f32,
     cell: Size<f32>,
 }
 
 impl Options {
     pub(crate) fn new(chosen: &IconOptions) -> Self {
-        let standard = &prefs::icon_defaults().or(prefs::finder().icon_options.clone());
+        let standard = &standard_options();
         let icon = chosen
             .icon_size
             .or(standard.icon_size)
@@ -165,8 +168,13 @@ impl Options {
             .label_on_bottom
             .or(standard.label_on_bottom)
             .unwrap_or(true);
+        let info = chosen
+            .show_item_info
+            .or(standard.show_item_info)
+            .unwrap_or(false);
         let font = NSFont::systemFontOfSize(text.into());
         let line = (font.ascender().round() - font.descender().round()) as f32;
+        let info_line = if info { line } else { 0. };
         let frame = icon * FRAME_PER_ICON;
         let even_line = 2. * (line / 2.).floor();
         let label = 2.
@@ -175,7 +183,7 @@ impl Options {
                 .round();
         let cell = match bottom {
             true => {
-                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.));
+                let under = line + line.min(SECOND_LINE_PER_SPACING * (spacing - 1.)) + info_line;
                 size(
                     (frame + MARGIN).max(label),
                     2. * ((frame + MARGIN + under) / 2.).floor(),
@@ -183,7 +191,7 @@ impl Options {
             }
             false => size(
                 frame + label + LABEL_GAP,
-                (frame + SIDE_FRAME_PAD).max(2. * line + SIDE_TEXT_PAD),
+                (frame + SIDE_FRAME_PAD).max(2. * line + info_line + SIDE_TEXT_PAD),
             ),
         };
         Self {
@@ -191,6 +199,7 @@ impl Options {
             spacing,
             text,
             bottom,
+            info,
             line,
             cell,
         }
@@ -297,6 +306,34 @@ impl Options {
     }
 }
 
+fn standard_options() -> IconOptions {
+    prefs::icon_defaults().or(prefs::finder().icon_options.clone())
+}
+
+/// What an icon view paints without laying it out.
+#[derive(Clone, Default)]
+pub(crate) struct Paint {
+    pub(crate) previews: bool,
+    pub(crate) background: Background,
+}
+
+impl Paint {
+    fn new(chosen: &IconOptions) -> Self {
+        let standard = standard_options();
+        Self {
+            previews: chosen
+                .show_icon_preview
+                .or(standard.show_icon_preview)
+                .unwrap_or(true),
+            background: chosen
+                .background
+                .clone()
+                .or(standard.background)
+                .unwrap_or_default(),
+        }
+    }
+}
+
 fn claim_nearest(at: Point<Pixels>, taken: &mut HashSet<Slot>, options: Options) -> Point<Pixels> {
     let (column, row) = options.nearest_slot(at);
     let reach = options.cell.width.min(options.cell.height);
@@ -337,7 +374,7 @@ fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
         sort: column,
         ascending: column.first_ascending(),
     };
-    crate::read::sort_rows(&mut rows, by, true);
+    crate::read::sort_rows(&mut rows, by, true, true);
     let order: HashMap<*const Row, usize> = rows
         .iter()
         .enumerate()
@@ -502,6 +539,7 @@ impl Places {
 pub(crate) struct Grid {
     places: Option<Places>,
     options: Option<(&'static str, Options)>,
+    paint: Paint,
     reading: Option<&'static str>,
     moved: u64,
     /// Finder leaves icons where it first put them, whatever the window does next.
@@ -546,6 +584,7 @@ impl Grid {
         let options = Options::new(&chosen);
         self.places = Some(Places::new(folder, view, &chosen, options));
         self.options = Some((folder, options));
+        self.paint = Paint::new(&chosen);
         self.reading = None;
         self.moved += 1;
     }
@@ -852,22 +891,26 @@ struct Ghost {
     line: Line,
     options: Options,
     scale: f32,
+    previews: bool,
     look: Look,
     tags: Vec<usize>,
+    info: Option<SharedString>,
 }
 
 impl Render for Ghost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let art = item_art(&self.line.row, self.options.size, self.scale, self.previews);
         tile(
             &self.line,
             self.options,
-            self.scale,
+            art,
             self.look,
             true,
             &self.tags,
             None,
             None,
             None,
+            self.info.clone(),
         )
         .opacity(GHOST_ALPHA)
     }
@@ -877,13 +920,14 @@ impl Render for Ghost {
 fn tile(
     line: &Line,
     options: Options,
-    scale: f32,
+    art: AnyElement,
     look: Look,
     selected: bool,
     tags: &[usize],
     editor: Option<AnyElement>,
     anchor: Option<Anchor>,
     drop: Option<Hsla>,
+    info: Option<SharedString>,
 ) -> Div {
     let (cell, frame, size) = (options.cell, options.frame(), options.size);
     let pad = options.pad();
@@ -909,7 +953,7 @@ fn tile(
                 .bg(look.backdrop),
         );
     }
-    let icon = icon.child(art_at(row_art(&line.row, size, scale, true), size, anchor));
+    let icon = icon.child(art_at(art, size, anchor));
 
     let dots = tag_dots_w(tags.len());
     let room = match options.bottom {
@@ -947,6 +991,26 @@ fn tile(
         .gap(px(4.))
         .child(caption)
         .children(tag_dots(tags));
+    let label = match info {
+        Some(info) => div()
+            .flex()
+            .flex_col()
+            .when(options.bottom, |text| text.items_center())
+            .child(label)
+            .child(
+                div()
+                    .px(px(LABEL_PAD))
+                    .max_w(px(room))
+                    .text_size(px(options.text))
+                    .line_height(px(options.line))
+                    .text_color(look.info)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(info),
+            ),
+        None => label,
+    };
 
     let tile = div()
         .w(px(cell.width))
@@ -1008,6 +1072,7 @@ impl FinderDemo {
         let lanes = self.columns(window);
         let room = self.icon_room(f32::from(window.viewport_size().width));
         let options = self.icon_options();
+        let paint = self.icon_paint();
         let scale = self.scale;
         let cell = options.cell;
         let look = Look::new(palette);
@@ -1035,6 +1100,19 @@ impl FinderDemo {
                 |this| (&mut this.bands.icons, this.icons.scroll.clone()),
                 cx,
             ))
+            .map(|canvas| match paint.background {
+                Background::Color([r, g, b]) => canvas.bg(Rgba { r, g, b, a: 1. }),
+                _ => canvas,
+            })
+            .children(match &paint.background {
+                Background::Picture(path) if !path.is_empty() => Some(
+                    img(Path::new(path))
+                        .absolute()
+                        .left(shift.x)
+                        .top(shift.y),
+                ),
+                _ => None,
+            })
             // Tiles are absolute and add no scroll extent; this spacer does.
             .child(
                 div()
@@ -1053,6 +1131,10 @@ impl FinderDemo {
             let held = dragging.as_ref() == Some(&line.key);
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
+            let info = options
+                .info
+                .then(|| crate::item_info::item_info(&line.row))
+                .flatten();
 
             let tile = div()
                 .id(("ng.finder.tile", index))
@@ -1064,13 +1146,14 @@ impl FinderDemo {
                 .child(tile(
                     line,
                     options,
-                    scale,
+                    item_art(&line.row, options.size, scale, paint.previews),
                     look,
                     is_selected,
                     &carried,
                     editor,
                     (self.cursor.as_ref() == Some(&line.key)).then(|| self.ql_icon.clone()),
                     self.drop_fill(&line.key, look.selection),
+                    info.clone(),
                 ))
                 .when(held, |tile| tile.opacity(SOURCE_ALPHA))
                 .on_drag(
@@ -1090,8 +1173,10 @@ impl FinderDemo {
                                 line: line.clone(),
                                 options,
                                 scale,
+                                previews: paint.previews,
                                 look,
                                 tags: carried.clone(),
+                                info: info.clone(),
                             })
                         }
                     },
@@ -1199,7 +1284,9 @@ impl FinderDemo {
         if !self.keeps_places() {
             self.icons.places = None;
             if self.icons.options.is_none_or(|(at, _)| at != here) {
-                self.icons.options = Some((here, Options::new(&prefs::icon_options(here))));
+                let chosen = prefs::icon_options(here);
+                self.icons.options = Some((here, Options::new(&chosen)));
+                self.icons.paint = Paint::new(&chosen);
             }
             return true;
         }
@@ -1249,6 +1336,17 @@ impl FinderDemo {
         }
     }
 
+    pub(crate) fn icon_paint(&self) -> Paint {
+        match self.icons.options {
+            Some((at, _)) if at == self.here() => self.icons.paint.clone(),
+            _ => Paint::new(&prefs::icon_options(self.here())),
+        }
+    }
+
+    pub(crate) fn icon_background(&self) -> Background {
+        self.icon_paint().background
+    }
+
     pub(crate) fn change_icon_options(
         &mut self,
         change: impl FnOnce(&mut IconOptions),
@@ -1268,7 +1366,8 @@ impl FinderDemo {
             .as_ref()
             .map(|places| places.recorded.clone())
             .unwrap_or_default();
-        let options = Options::new(&chosen.or(recorded));
+        let chosen = chosen.or(recorded);
+        let options = Options::new(&chosen);
         if let Some(places) = places {
             for spots in [
                 &mut places.own,
@@ -1283,6 +1382,7 @@ impl FinderDemo {
             places.save();
         }
         self.icons.options = Some((here, options));
+        self.icons.paint = Paint::new(&chosen);
         self.icons.moved += 1;
         cx.notify();
     }

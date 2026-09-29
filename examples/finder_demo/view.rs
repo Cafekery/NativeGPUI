@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use gpui::{Context, Size, Window, size};
 use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 
@@ -7,6 +5,7 @@ use crate::app::FinderDemo;
 use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
+use crate::views::gallery::GalleryLook;
 use crate::views::header::{LAST_EXTRA, PANE_INSET};
 use crate::views::icon::Arrangement;
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
@@ -27,10 +26,39 @@ pub(crate) fn overflows(content: f32, room: f32) -> bool {
 
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.style = view;
+        prefs::set_view(view);
         self.set_view(view, cx);
         self.install_toolbar(window, cx);
         self.retitle(window);
         cx.notify();
+    }
+
+    /// A folder that always opens in a view shows it; the rest take the window's own style.
+    pub(crate) fn open_as_kept(&mut self, cx: &mut Context<Self>) {
+        let view = match prefs::opens_in(self.here()) {
+            Some((view, browses)) => {
+                if browses {
+                    self.style = view;
+                }
+                view
+            }
+            None => self.style,
+        };
+        if view != self.pending_view.unwrap_or(self.view) {
+            self.set_view(view, cx);
+        }
+    }
+
+    pub(crate) fn always_open(&mut self, on: bool) {
+        prefs::set_opens_in(self.here(), on.then_some((self.view, false)));
+    }
+
+    pub(crate) fn always_browse(&mut self, on: bool) {
+        prefs::set_opens_in(self.here(), Some((self.view, on)));
+        if on {
+            self.style = self.view;
+        }
     }
 
     pub(crate) fn set_view(&mut self, view: usize, cx: &mut Context<Self>) {
@@ -48,7 +76,9 @@ impl FinderDemo {
         }
         self.view = view;
         self.preview = prefs::preview(view);
-        prefs::set_view(view);
+        if view == GALLERY_VIEW {
+            self.gallery_look = GalleryLook::load(self.here());
+        }
         self.settle();
     }
 
@@ -81,21 +111,21 @@ impl FinderDemo {
                 let t = (started.elapsed().as_secs_f32() / LIST_ZOOM_SECS).min(1.);
                 from + (to - from) * gpui::ease_in_out(t)
             }
-            None => self.list_icon,
+            None => self.list_look.icon,
         }
     }
 
     pub(crate) fn art_size(&self) -> f32 {
         match self.view {
             ICON_VIEW => self.icon_options().size,
-            GALLERY_VIEW => self.strip_icon,
+            GALLERY_VIEW => self.gallery_look.thumb,
             COLUMN_VIEW => COLUMN_ICON,
             _ => self.list_icon_now(),
         }
     }
 
     pub(crate) fn row_h(&self) -> f32 {
-        row_h(self.list_icon_now())
+        row_h(self.list_icon_now(), self.list_look.text)
     }
 
     pub(crate) fn on_screen(&self) -> usize {
@@ -108,7 +138,7 @@ impl FinderDemo {
                 let tile = self.icon_options().cell();
                 (width / tile.width).floor().max(1.) * (height / tile.height).ceil()
             }
-            GALLERY_VIEW => width / self.strip_icon,
+            GALLERY_VIEW => width / self.gallery_look.thumb,
             _ => height / self.row_h(),
         };
         match fits >= 1. {
@@ -127,13 +157,8 @@ impl FinderDemo {
         }
         match self.view {
             LIST_VIEW => {
-                let to = if larger { ICON_SIZE } else { ICON_SMALL };
-                if to != self.list_icon {
-                    let from = self.list_icon_now();
-                    self.list_icon = to;
-                    self.list_zoom = Some((from, to, Instant::now()));
-                    prefs::set_list_icon(to);
-                }
+                let icon = if larger { ICON_SIZE } else { ICON_SMALL };
+                self.change_list_look(|look| look.icon = icon, cx);
             }
             ICON_VIEW => {
                 if let Some(size) = step(&ICON_STOPS, self.icon_options().size, larger) {
@@ -141,9 +166,8 @@ impl FinderDemo {
                 }
             }
             GALLERY_VIEW => {
-                if let Some(size) = step(&STRIP_STOPS, self.strip_icon, larger) {
-                    self.strip_icon = size;
-                    prefs::set_strip_icon(size);
+                if let Some(size) = step(&STRIP_STOPS, self.gallery_look.thumb, larger) {
+                    self.change_gallery_look(|look| look.thumb = size, cx);
                 }
             }
             _ => return,
