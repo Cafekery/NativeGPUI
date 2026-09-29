@@ -430,8 +430,18 @@ Traffic lights, corner radius, window shadow and title type measure identical.
 - [x] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
   Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item; Show turns to Hide on
   Preview, Path Bar, Status Bar, Inspector, View Options, Preview Options and Progress Window.
-- [ ] With a folder chosen Finder's tag row ends in Customize Folder…; the demo's stays Tags…, having
-  no folder customisation.
+- [ ] With exactly one folder chosen (an unlistable one too; not two folders, not a folder and a
+  file) Finder's tag row ends in Customize Folder… where Tags… stood; the demo's stays Tags…. It
+  opens a popover (320×670 content) at the folder's icon: the folder's name, a tag row (Remove all
+  tags, the seven colours, an Add menu), a grid of 113 SF Symbols in four groups (People 41,
+  Animals & Nature 45, Food & Drinks 13, Activity 14, 44 pt cells, seven across), then Clear and
+  Emoji. Emoji opens a second popover (320×444) holding the system emoji picker: a search field and
+  the emoji grid, frequently used first; it has no public API, `orderFrontCharacterPalette:` being
+  the public stand-in. A pick leaves the popover up and writes `com.apple.icon.folder#S` as
+  `{"sym":"person.fill"}` or `{"emoji":"…"}` plus FinderInfo's kHasCustomIcon (00…04 00 at byte
+  8); Clear removes both. With both set, `iconForFile:` draws the decoration and follows each
+  change at once, so the demo already shows Finder's customised folders through its custom-icon
+  path; what it lacks is the popover.
 - [x] File menu, in Finder's order with its alternates: New Finder Window, New Folder, New Folder
   with Selection, New Smart Folder, New Tab, Open (⌃ Open in New Tab, ⌥ Open and Close Window ⌥⌘O),
   Open With (⌥ Always Open With), Close Window (⌥ Close All), Get Info (⌥ Show Inspector, ⌃ Get
