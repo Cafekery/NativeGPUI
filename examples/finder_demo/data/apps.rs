@@ -26,20 +26,16 @@ fn app_of(path: &SharedString, modified: f64) -> Option<SharedString> {
     let url = NSURL::fileURLWithPath(&NSString::from_str(path));
     let opener = NSWorkspace::sharedWorkspace()
         .URLForApplicationToOpenURL(&url)
-        .and_then(|app| app.path())
-        .map(|app| app.to_string());
-    let named =
-        (opener.as_ref()).and_then(|opener| APPS.lock().unwrap().names.get(opener).cloned());
-    let app = named.or_else(|| {
-        let opener = opener?;
-        let name = {
-            let name = finder_fs::name::of_path(Path::new(&opener));
-            SharedString::from(name.strip_suffix(".app").unwrap_or(&name).to_owned())
-        };
-        APPS.lock().unwrap().names.insert(opener, name.clone());
-        Some(name)
-    });
+        .and_then(|app| app.path());
     let mut apps = APPS.lock().unwrap();
+    let app = opener.map(|opener| {
+        let entry = apps.names.entry(opener.to_string());
+        let name = entry.or_insert_with_key(|opener| {
+            let name = finder_fs::name::of_path(Path::new(opener));
+            name.strip_suffix(".app").unwrap_or(&name).to_owned().into()
+        });
+        name.clone()
+    });
     if apps.items.len() >= ITEMS_HELD {
         apps.items.clear();
     }
@@ -47,15 +43,11 @@ fn app_of(path: &SharedString, modified: f64) -> Option<SharedString> {
     app
 }
 
-/// Each row's default app by name, asked of LaunchServices once per path and modification date.
 pub(crate) fn read_apps(rows: &mut [Arc<Row>]) {
-    for row in rows.iter_mut() {
+    for row in rows {
         let app = app_of(&row.path, row.modified_at);
         if row.app != app {
-            *row = Arc::new(Row {
-                app,
-                ..(**row).clone()
-            });
+            Arc::make_mut(row).app = app;
         }
     }
 }

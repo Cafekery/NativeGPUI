@@ -23,7 +23,6 @@ impl Extra {
         })
     }
 
-    /// Finder's sharing columns say `--` for no one.
     pub(crate) fn sharer_cell(&self) -> SharedString {
         match &self.shared_by {
             Some(Sharer::Me) => SharedString::new_static(ME.as_str()),
