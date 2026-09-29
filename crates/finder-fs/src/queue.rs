@@ -696,6 +696,9 @@ mod tests {
 
     #[test]
     fn a_cancelled_copy_keeps_what_landed() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("cancel-landed");
         let src = dir.join("src");
         let dst = dir.join("dst");
@@ -747,13 +750,16 @@ mod tests {
         assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
 
         for trashed in back.results {
-            let _ = fs::remove_file(trashed);
+            fs::remove_file(&trashed).expect("the trashed copy is removed");
         }
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_batch_that_fails_keeps_what_landed() {
+        if !crate::trash_reachable() {
+            return;
+        }
         let dir = temp_dir("partial");
         let src = dir.join("src");
         let dst = dir.join("dst");
@@ -793,7 +799,7 @@ mod tests {
         assert!(!dst.join("good.txt").exists());
 
         for trashed in back.results {
-            let _ = fs::remove_file(trashed);
+            fs::remove_file(&trashed).expect("the trashed copy is removed");
         }
         let _ = fs::remove_dir_all(&dir);
     }
