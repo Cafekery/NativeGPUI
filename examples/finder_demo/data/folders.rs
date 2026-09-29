@@ -24,27 +24,27 @@ pub(crate) struct Folder {
 }
 
 pub(crate) fn folder_of(id: &'static str) -> Folder {
-    let (title, parent, crumbs) = match crate::locations::place(id) {
-        Some((title, parent)) => (title, parent, vec![title]),
-        None => {
-            let crumbs = crumbs_of(id);
-            let title = crumbs[crumbs.len() - 1];
-            let parent = match is_volume_root(id) {
-                true => Some(crate::locations::COMPUTER),
-                false => Path::new(id).parent().map(intern_path),
-            };
-            (title, parent, crumbs)
-        }
+    let crumbs = match crate::locations::place(id) {
+        Some((title, _)) => vec![title],
+        None => crumbs_of(id),
     };
     Folder {
-        title,
-        parent,
+        title: crumbs[crumbs.len() - 1],
+        parent: parent_of(id),
         crumbs,
         rows: Arc::default(),
         staged: None,
         loading: true,
         rev: next_rev(),
         stale: false,
+    }
+}
+
+pub(crate) fn parent_of(id: &str) -> Option<&'static str> {
+    match crate::locations::place(id) {
+        Some((_, parent)) => parent,
+        None if is_volume_root(id) => Some(crate::locations::COMPUTER),
+        None => Path::new(id).parent().map(intern_path),
     }
 }
 

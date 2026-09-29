@@ -13,7 +13,7 @@ use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
 
 use crate::app::FinderDemo;
-use crate::data::{intern, intern_path, server_symbol, volume_roots};
+use crate::data::{intern, intern_path, is_volume_root, server_symbol};
 use crate::ops::After;
 use crate::prefs;
 use crate::tags::finder_color_rgb;
@@ -867,7 +867,7 @@ impl FinderDemo {
             self.complain(&error.localizedDescription().to_string());
             return;
         }
-        let left = volume_roots().contains(&intern(id));
+        let left = is_volume_root(id);
         let id = id.to_string();
         // Reading every volume's capacity waits on any network volume that stopped answering.
         cx.spawn_in(window, async move |this, cx| {
