@@ -41,7 +41,6 @@ pub(crate) enum Column {
     Tags,
     Version,
     Comments,
-    /// The app that opens an item: a group key only.
     Application,
     SharedBy,
 }
@@ -81,7 +80,6 @@ pub(crate) const GROUP_KEYS: [Column; 10] = [
     Column::Tags,
 ];
 
-/// Rows sort by their group's band first, the bands in the order their key sorts first.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Order {
     pub(crate) group: Option<Column>,
@@ -108,27 +106,13 @@ impl Column {
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
-        (SORT_KEYS.into_iter())
-            .chain([
-                Column::Version,
-                Column::Comments,
-                Column::Application,
-                Column::SharedBy,
-            ])
+        (GROUP_KEYS.into_iter())
+            .chain([Column::Version, Column::Comments])
             .find(|column| column.id() == id)
     }
 
     pub(crate) fn first_ascending(self) -> bool {
-        matches!(
-            self,
-            Column::Name
-                | Column::Kind
-                | Column::Tags
-                | Column::Version
-                | Column::Comments
-                | Column::Application
-                | Column::SharedBy
-        )
+        !self.dated() && self != Column::Size
     }
 
     pub(crate) fn dated(self) -> bool {
@@ -145,7 +129,6 @@ impl Column {
         )
     }
 
-    /// Finder offers Shared By in the Shared location alone.
     pub(crate) fn offered_at(self, folder: &str) -> bool {
         self != Column::SharedBy || folder == SHARED
     }
@@ -200,7 +183,6 @@ impl Row {
         }
     }
 
-    /// Neither a package nor a volume: Finder's list sizes one only with "Calculate all sizes".
     pub(crate) fn is_folder(&self) -> bool {
         self.discloses && self.face != Face::Volume
     }
@@ -235,7 +217,6 @@ fn own_icon(entry: &Entry) -> bool {
         || !entry.readable
 }
 
-/// A row's art where its entry alone tells, before its kind is read: none for a plain folder.
 pub(crate) fn early_artwork(path: &str, entry: &Entry) -> Option<FileType<'static>> {
     if own_icon(entry) {
         return Some(FileType::Path(intern(path)));
@@ -312,7 +293,7 @@ pub(crate) fn weigh(path: &SharedString, modified: f64) -> u64 {
     bytes
 }
 
-/// Forgets the weight of every folder holding one of `dirs`: a change deep inside keeps its date.
+// A change deep inside a folder keeps the folder's date.
 pub(crate) fn unweigh(dirs: &[PathBuf]) {
     let mut weights = WEIGHTS.lock().unwrap();
     weights.retain(|(path, _), _| !dirs.iter().any(|dir| dir.starts_with(&**path)));
@@ -336,7 +317,6 @@ pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
     }
 }
 
-/// Sizes the folders already weighed, walking none.
 pub(crate) fn weighed_folders(rows: &mut [Arc<Row>]) {
     let weights = WEIGHTS.lock().unwrap();
     for row in rows

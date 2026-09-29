@@ -238,11 +238,8 @@ fn date_samples(size: f32, relative: bool) -> [f32; 3] {
     }
     let day = today();
     let key = (size.to_bits(), relative);
-    if let Some(widest) = WIDEST.with_borrow(|all| {
-        all.get(&key)
-            .filter(|(on, _)| *on == day)
-            .map(|(_, widest)| *widest)
-    }) {
+    let known = WIDEST.with_borrow(|all| all.get(&key).copied());
+    if let Some((_, widest)) = known.filter(|(on, _)| *on == day) {
         return widest;
     }
     let at = |days: f64, hour: isize| {
@@ -365,7 +362,6 @@ impl Bands {
         }
     }
 
-    /// Where a size band sorts: bigger items' above smaller ones', folders' below all.
     pub(crate) fn size_place(folder: bool, bytes: u64) -> f64 {
         match folder {
             true => -1.,
@@ -373,7 +369,6 @@ impl Bands {
         }
     }
 
-    /// Where the band of a date sorts: a later band above an earlier one.
     pub(crate) fn place(&mut self, at: f64) -> f64 {
         let days = self.days;
         match self.day(at) {
@@ -383,7 +378,6 @@ impl Bands {
         }
     }
 
-    /// Which of Previous 30 Days, Previous 7 Days, Yesterday and Today holds `at`.
     fn day(&self, at: f64) -> Option<usize> {
         (0..4).find(|&day| (self.days[day]..self.days[day + 1]).contains(&at))
     }
@@ -453,7 +447,6 @@ impl Bands {
         }
     }
 
-    /// The start and name of the month holding `at`.
     fn month(&mut self, at: f64) -> (f64, SharedString) {
         thread_local! {
             static FORMATTER: Retained<NSDateFormatter> = {
