@@ -56,10 +56,13 @@ impl FinderDemo {
                 None => picked,
             }
         };
-        let text = words::fill(
-            &words::finder("SB1", "^0, ^1 available"),
-            &[&what, &available],
-        );
+        let text = match self.airdrop_shown() {
+            true => String::new(),
+            false => words::fill(
+                &words::finder("SB1", "^0, ^1 available"),
+                &[&what, &available],
+            ),
+        };
         let slider = matches!(self.view, ICON_VIEW | GALLERY_VIEW);
         let paint = BarPaint::now();
 

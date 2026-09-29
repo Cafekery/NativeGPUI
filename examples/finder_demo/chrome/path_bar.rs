@@ -37,7 +37,7 @@ const CRUMB_ICON: f32 = 16.;
 const CRUMB_ART: f32 = 15.;
 
 // An NSTextField label draws its text 2pt inside its frame.
-const LABEL_INSET: f32 = 2.;
+pub(crate) const LABEL_INSET: f32 = 2.;
 
 const LABEL_LEAD: f32 = 1.;
 
