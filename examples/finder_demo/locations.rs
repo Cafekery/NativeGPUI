@@ -71,40 +71,30 @@ fn sysctl_text(name: &CStr) -> String {
         .to_owned()
 }
 
-fn this_mac() -> FileType<'static> {
-    static TYPE: LazyLock<&'static str> = LazyLock::new(|| {
-        let model = sysctl_text(c"hw.model");
-        finder_fs::servers::model_type(Some(&model))
-            .map_or("com.apple.mac", |(uti, _)| intern(&uti))
-    });
-    FileType::Uti(*TYPE)
+fn computer_type(model: Option<&str>) -> (&'static str, String) {
+    finder_fs::servers::model_type(model)
+        .map(|(uti, kind)| (intern(&uti), kind))
+        .unwrap_or(("com.apple.mac", String::new()))
 }
 
 pub(crate) fn artwork(id: &str) -> Option<FileType<'static>> {
+    static THIS_MAC: LazyLock<&'static str> =
+        LazyLock::new(|| computer_type(Some(&sysctl_text(c"hw.model"))).0);
     match id {
-        COMPUTER => Some(this_mac()),
+        COMPUTER => Some(FileType::Uti(*THIS_MAC)),
         NETWORK => Some(FileType::Named("NSNetwork")),
         AIRDROP => Some(FileType::Path(AIRDROP_APP)),
         _ => None,
     }
 }
 
-/// The line an Info window describes for a location Finder gives one.
 pub(crate) fn info_line(id: &'static str) -> Option<Line> {
-    let (title, _) = place(id)?;
     let kind = match id {
         NETWORK => "Neighborhood",
         AIRDROP => "AirDrop",
         _ => "",
     };
-    let row = location_row(
-        id,
-        title.into(),
-        finder_fs::words::say(kind).into_owned().into(),
-        "",
-        Some(id),
-        artwork(id)?,
-    );
+    let row = place_row(id, kind)?;
     Some(Line {
         key: row.path.clone(),
         row,
@@ -112,7 +102,6 @@ pub(crate) fn info_line(id: &'static str) -> Option<Line> {
     })
 }
 
-/// Finder's Info window gives the computer its processor and memory, the others their kind.
 pub(crate) fn info_fields(row: &Row) -> Option<Vec<(&'static str, SharedString)>> {
     static COMPUTER_FIELDS: LazyLock<[(&str, SharedString); 2]> = LazyLock::new(|| {
         let memory = sysctl(c"hw.memsize")
@@ -205,22 +194,26 @@ fn location_row(
     })
 }
 
+fn place_row(id: &'static str, kind: &str) -> Option<Arc<Row>> {
+    let (title, _) = place(id)?;
+    let kind = finder_fs::words::say(kind).into_owned().into();
+    Some(location_row(
+        id,
+        title.into(),
+        kind,
+        "",
+        Some(id),
+        artwork(id)?,
+    ))
+}
+
 fn computer_rows() -> Vec<Arc<Row>> {
-    let mut rows: Vec<Arc<Row>> = data::volume_roots()
+    data::volume_roots()
         .into_iter()
         .filter_map(data::path_line)
         .map(|line| line.row)
-        .collect();
-    let network = place(NETWORK).map_or(NETWORK, |(title, _)| title);
-    rows.push(location_row(
-        NETWORK,
-        network.into(),
-        network.into(),
-        "",
-        Some(NETWORK),
-        FileType::Named("NSNetwork"),
-    ));
-    rows
+        .chain(place_row(NETWORK, "Network"))
+        .collect()
 }
 
 fn network_rows() -> Vec<Arc<Row>> {
@@ -228,9 +221,7 @@ fn network_rows() -> Vec<Arc<Row>> {
         listed
             .iter()
             .map(|computer| {
-                let (uti, kind) = finder_fs::servers::model_type(computer.model.as_deref())
-                    .map(|(uti, kind)| (intern(&uti), kind))
-                    .unwrap_or(("com.apple.mac", String::new()));
+                let (uti, kind) = computer_type(computer.model.as_deref());
                 location_row(
                     intern(&server_key(&computer.name)),
                     computer.name.clone().into(),
