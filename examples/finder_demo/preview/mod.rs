@@ -27,7 +27,7 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSPoint, NSRect, NSRunLoop, NSSize,
 };
 
-pub(crate) use self::card::follow_stacks;
+pub(crate) use self::card::{duration, follow_stacks};
 pub(crate) use self::stats::{Stats, sized_by_index, summarize};
 use crate::app::FinderDemo;
 use crate::frame::ns_window;

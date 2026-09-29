@@ -1,8 +1,9 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::rc::Rc;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, Context, Div, Entity, Font, FontWeight, Hsla,
@@ -13,14 +14,18 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{Column, Line, Row, date_style, enclosing_name, kind_text, list_date, today};
+use crate::data::{
+    Column, Line, Row, date_style, enclosing_name, intern, kind_text, list_date, today,
+};
 use crate::dragdrop::{DragGhost, RowDrag, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
+use crate::prefs;
 use crate::tags::{Tags, tag_dots};
 use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
+use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HEADER_H, PANE_INSET};
 use crate::views::{chevron, folder_drop, run_pill};
 
@@ -56,16 +61,70 @@ thread_local! {
     static DATES: Font = tokens::system_font_tabular(FontWeight::NORMAL);
 }
 
-pub(crate) fn row_font() -> f32 {
-    crate::prefs::finder().text_size
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ListLook {
+    pub(crate) text: f32,
+    pub(crate) icon: f32,
+    pub(crate) relative: bool,
+    pub(crate) sizes: bool,
+}
+
+impl ListLook {
+    pub(crate) fn of(folder: &str) -> Self {
+        let finder = prefs::finder();
+        let number = |key| prefs::look_number(LIST_VIEW, folder, key).map(|value| value as f32);
+        let on = |key| prefs::look_on(LIST_VIEW, folder, key);
+        Self {
+            text: number("textSize").unwrap_or(finder.text_size),
+            icon: number("iconSize").unwrap_or(finder.icon_size),
+            relative: on("useRelativeDates").unwrap_or(finder.relative_dates),
+            sizes: on("calculateAllSizes").unwrap_or(finder.calculate_all_sizes),
+        }
+        .clamped()
+    }
+
+    fn clamped(self) -> Self {
+        Self {
+            text: self.text.round().clamp(10., 16.),
+            icon: if self.icon > ICON_SMALL {
+                ICON_SIZE
+            } else {
+                ICON_SMALL
+            },
+            ..self
+        }
+    }
+
+    fn keep(self, folder: &str, was: Self) {
+        for (key, value, before) in [
+            ("textSize", self.text, was.text),
+            ("iconSize", self.icon, was.icon),
+        ] {
+            if value != before {
+                prefs::set_look_number(LIST_VIEW, folder, key, f64::from(value));
+            }
+        }
+        for (key, on, before) in [
+            ("useRelativeDates", self.relative, was.relative),
+            ("calculateAllSizes", self.sizes, was.sizes),
+        ] {
+            if on != before {
+                prefs::set_look_on(LIST_VIEW, folder, key, on);
+            }
+        }
+    }
 }
 
 #[derive(PartialEq)]
 struct Look {
     icon: f32,
+    text: f32,
+    relative: bool,
+    sizes: bool,
     row_h: f32,
     name_w: f32,
     scale: f32,
+    previews: bool,
     label: Hsla,
     secondary: Hsla,
     stripe: Hsla,
@@ -219,12 +278,17 @@ fn label_gap(icon: f32) -> f32 {
     LABEL_GAP + (icon - ICON_SMALL) / 8.
 }
 
-pub(crate) fn row_h(icon: f32) -> f32 {
-    static LINE: LazyLock<f32> = LazyLock::new(|| {
-        let font = tokens::system_font_metrics(px(row_font()), FontWeight::NORMAL);
-        (font.ascent + font.descent.abs()).ceil()
-    });
-    icon.max(*LINE) + 4.
+pub(crate) fn row_h(icon: f32, text: f32) -> f32 {
+    thread_local! {
+        static LINE: Cell<(u32, f32)> = const { Cell::new((0, 0.)) };
+    }
+    let (size, mut line) = LINE.get();
+    if size != text.to_bits() {
+        let font = tokens::system_font_metrics(px(text), FontWeight::NORMAL);
+        line = (font.ascent + font.descent.abs()).ceil();
+        LINE.set((text.to_bits(), line));
+    }
+    icon.max(line) + 4.
 }
 
 /// Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
@@ -242,6 +306,42 @@ fn slot_line(slots: &Option<Arc<Vec<Slot>>>, at: usize) -> Option<usize> {
 }
 
 impl FinderDemo {
+    pub(crate) fn list_look(&self) -> ListLook {
+        self.list_look
+    }
+
+    pub(crate) fn change_list_look(
+        &mut self,
+        change: impl FnOnce(&mut ListLook),
+        cx: &mut Context<Self>,
+    ) {
+        let was = self.list_look();
+        let mut look = was;
+        change(&mut look);
+        let look = look.clamped();
+        if look == was {
+            return;
+        }
+        look.keep(self.here(), was);
+        if look.icon != was.icon {
+            self.list_zoom = Some((self.list_icon_now(), look.icon, Instant::now()));
+        }
+        self.list_look = look;
+        self.name_w = self.name_w.max(self.name_min_w());
+        if look.sizes != was.sizes {
+            if self.sort == Column::Size {
+                self.sort_held(self.order(), cx);
+            }
+            let shown: Vec<&'static str> = (self.expanded.iter().map(|key| intern(key)))
+                .chain([self.here()])
+                .collect();
+            for id in shown {
+                self.weigh_folders(id, cx);
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn list_inset(&self) -> (usize, f32) {
         let scope_h = if self.in_search() {
             self.search_bars_h()
@@ -258,9 +358,13 @@ impl FinderDemo {
         let faces = self.faces.clone();
         let look = faces.borrow_mut().frame(Look {
             icon,
-            row_h: row_h(icon),
+            text: self.list_look.text,
+            relative: self.list_look.relative,
+            sizes: self.list_look.sizes,
+            row_h: row_h(icon, self.list_look.text),
             name_w: self.name_w,
             scale: self.scale,
+            previews: self.previews.list,
             label: palette.label,
             secondary: palette.secondary,
             stripe: palette.stripe,
@@ -541,17 +645,19 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             .flex()
             .justify_end()
             .font(look.dates.clone())
-            .child(line.row.size.clone()),
+            .child(line.row.size_shown(look.sizes)),
         column => {
             let cell = cell.pl(px(CELL_PAD)).whitespace_nowrap().overflow_hidden();
             match column {
                 column if column.dated() => {
-                    let style = date_style(spec.width, row_font());
+                    let style = date_style(spec.width, look.text, look.relative);
                     cell.when(style >= 2, |cell| cell.font(look.dates.clone()))
                         .child(
                             line.row
                                 .date(column)
-                                .map_or(SharedString::new_static("--"), |at| list_date(at, style)),
+                                .map_or(SharedString::new_static("--"), |at| {
+                                    list_date(at, style, look.relative)
+                                }),
                         )
                 }
                 Column::Kind if look.searching => {
@@ -560,7 +666,7 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
                 Column::Kind => cell.text_ellipsis_middle().child(kind_text(
                     &line.row.kind,
                     spec.width - 20.,
-                    row_font(),
+                    look.text,
                 )),
                 column => cell.text_ellipsis().child(detail_text(&line.row, column)),
             }
@@ -570,17 +676,17 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
 
 fn drop_band(line: &Line, look: &Look, window: &Window) -> (f32, f32) {
     thread_local! {
-        static WIDTHS: RefCell<HashMap<SharedString, f32>> = RefCell::new(HashMap::new());
+        static WIDTHS: RefCell<HashMap<(SharedString, u32), f32>> = RefCell::new(HashMap::new());
     }
-    let display = &line.row.display;
-    let known = WIDTHS.with_borrow(|widths| widths.get(display).copied());
+    let key = (line.row.display.clone(), look.text.to_bits());
+    let known = WIDTHS.with_borrow(|widths| widths.get(&key).copied());
     let text = known.unwrap_or_else(|| {
-        let width = text_width(window, display.clone(), px(row_font()));
+        let width = text_width(window, key.0.clone(), px(look.text));
         WIDTHS.with_borrow_mut(|widths| {
             if widths.len() >= WIDTHS_HELD {
                 widths.clear();
             }
-            widths.insert(display.clone(), width);
+            widths.insert(key, width);
         });
         width
     });
@@ -671,7 +777,7 @@ fn row(
         ring,
         dropping,
         tags: marks.tags.get(&line.key).cloned(),
-        art: list_art(&line.row, look.icon, look.scale),
+        art: list_art(&line.row, look.icon, look.scale, look.previews),
         anchor: cursor.then(|| marks.ql_icon.clone()),
         open: marks.expanded.contains(&line.key),
         this: marks.this.clone(),
@@ -694,7 +800,7 @@ fn shell(drawn: &Drawn, pixels: Div, window: &Window) -> AnyElement {
         .h(px(look.row_h))
         .relative()
         .font_family(tokens::system_font_family())
-        .text_size(px(row_font()))
+        .text_size(px(look.text))
         .text_color(if drawn.selected || drawn.dropping.is_some() {
             look.selection_text
         } else {

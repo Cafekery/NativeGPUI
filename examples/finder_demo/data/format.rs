@@ -187,11 +187,10 @@ fn appkit_width(text: &str, size: f32, tabular: bool) -> f32 {
     text.size().width as f32
 }
 
-pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
+pub(crate) fn list_date(seconds: f64, style: usize, relative: bool) -> SharedString {
     thread_local! {
-        static FORMATTERS: Vec<Retained<NSDateFormatter>> = {
+        static FORMATTERS: [Vec<Retained<NSDateFormatter>>; 2] = [false, true].map(|relative| {
             use NSDateFormatterStyle as Style;
-            let relative = crate::prefs::finder().relative_dates;
             [
                 (Style::LongStyle, Style::ShortStyle),
                 (Style::MediumStyle, Style::ShortStyle),
@@ -208,60 +207,63 @@ pub(crate) fn list_date(seconds: f64, style: usize) -> SharedString {
                 formatter
             })
             .collect()
-        };
-        static SEEN: RefCell<Seen<(i64, usize)>> = seen();
+        });
+        static SEEN: RefCell<Seen<(i64, usize, bool)>> = seen();
     }
     let days = midnights();
     // Finder's date-only style shows today as its time.
-    let today = style == 3
-        && crate::prefs::finder().relative_dates
-        && (days[3]..days[4]).contains(&seconds);
+    let today = style == 3 && relative && (days[3]..days[4]).contains(&seconds);
     let style = if today { 4 } else { style };
-    remembered(&SEEN, (minute(seconds), style), || {
-        FORMATTERS.with(|all| formatted(&all[style], seconds).into())
+    remembered(&SEEN, (minute(seconds), style, relative), || {
+        FORMATTERS.with(|all| formatted(&all[usize::from(relative)][style], seconds).into())
     })
 }
 
 // Finder's rule for every row: the fullest style whose samples leave 16 pt, else the date alone.
-pub(crate) fn date_style(width: f32, size: f32) -> usize {
-    let widest = date_samples(size);
+pub(crate) fn date_style(width: f32, size: f32, relative: bool) -> usize {
+    let widest = date_samples(size, relative);
     (0..3)
         .find(|&style| widest[style] + 16. <= width)
         .unwrap_or(3)
 }
 
-pub(crate) fn date_fit(size: f32) -> f32 {
-    (date_samples(size)[0] + 20.).round()
+pub(crate) fn date_fit(size: f32, relative: bool) -> f32 {
+    (date_samples(size, relative)[0] + 20.).round()
 }
 
-fn date_samples(size: f32) -> [f32; 3] {
+fn date_samples(size: f32, relative: bool) -> [f32; 3] {
     thread_local! {
-        static WIDEST: Cell<(u32, f64, [f32; 3])> = const { Cell::new((0, f64::NAN, [0.; 3])) };
+        static WIDEST: RefCell<HashMap<(u32, bool), (f64, [f32; 3])>> = RefCell::new(HashMap::new());
     }
     let day = today();
-    let (measured, on, mut widest) = WIDEST.get();
-    if measured != size.to_bits() || on != day {
-        let at = |days: f64, hour: isize| {
-            let day = NSDate::dateWithTimeIntervalSinceNow(-days * 86_400.);
-            NSCalendar::currentCalendar()
-                .dateBySettingHour_minute_second_ofDate_options(
-                    hour,
-                    0,
-                    0,
-                    &day,
-                    NSCalendarOptions::empty(),
-                )
-                .map_or(0., |date| date.timeIntervalSinceReferenceDate())
-        };
-        let samples = [at(1., 22), at(6., 10)];
-        widest = [0, 1, 2].map(|style| {
-            samples
-                .iter()
-                .map(|&sample| appkit_width(&list_date(sample, style), size, style == 2))
-                .fold(0., f32::max)
-        });
-        WIDEST.set((size.to_bits(), day, widest));
+    let key = (size.to_bits(), relative);
+    if let Some(widest) = WIDEST.with_borrow(|all| {
+        all.get(&key)
+            .filter(|(on, _)| *on == day)
+            .map(|(_, widest)| *widest)
+    }) {
+        return widest;
     }
+    let at = |days: f64, hour: isize| {
+        let day = NSDate::dateWithTimeIntervalSinceNow(-days * 86_400.);
+        NSCalendar::currentCalendar()
+            .dateBySettingHour_minute_second_ofDate_options(
+                hour,
+                0,
+                0,
+                &day,
+                NSCalendarOptions::empty(),
+            )
+            .map_or(0., |date| date.timeIntervalSinceReferenceDate())
+    };
+    let samples = [at(1., 22), at(6., 10)];
+    let widest = [0, 1, 2].map(|style| {
+        samples
+            .iter()
+            .map(|&sample| appkit_width(&list_date(sample, style, relative), size, style == 2))
+            .fold(0., f32::max)
+    });
+    WIDEST.with_borrow_mut(|all| all.insert(key, (day, widest)));
     widest
 }
 

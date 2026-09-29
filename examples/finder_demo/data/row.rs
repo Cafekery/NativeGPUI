@@ -17,7 +17,9 @@ use super::format::{byte_string, reference_seconds};
 use super::paths::{intern, intern_path, join};
 use super::volumes::{special, volume_at};
 
-const PACKAGES_HELD: usize = 4096;
+const WEIGHTS_HELD: usize = 4096;
+
+static WEIGHTS: LazyLock<Mutex<HashMap<(SharedString, u64), u64>>> = LazyLock::new(Mutex::default);
 
 #[derive(Clone)]
 pub(crate) struct Line {
@@ -181,6 +183,18 @@ impl Row {
             _ => None,
         }
     }
+
+    /// Neither a package nor a volume: Finder's list sizes one only with "Calculate all sizes".
+    pub(crate) fn is_folder(&self) -> bool {
+        self.discloses && self.face != Face::Volume
+    }
+
+    pub(crate) fn size_shown(&self, sizes: bool) -> SharedString {
+        match sizes || !self.is_folder() {
+            true => self.size.clone(),
+            false => SharedString::new_static("--"),
+        }
+    }
 }
 
 pub(crate) type Facts = (Option<u64>, Option<usize>);
@@ -268,30 +282,54 @@ fn target_of(path: &str) -> (Option<&'static str>, bool) {
     )
 }
 
+pub(crate) fn weigh(path: &SharedString, modified: f64) -> u64 {
+    let key = (path.clone(), modified.to_bits());
+    if let Some(&bytes) = WEIGHTS.lock().unwrap().get(&key) {
+        return bytes;
+    }
+    let bytes = finder_fs::ops::walk_size(Path::new(&**path));
+    let mut weights = WEIGHTS.lock().unwrap();
+    if weights.len() >= WEIGHTS_HELD {
+        weights.clear();
+    }
+    weights.insert(key, bytes);
+    bytes
+}
+
+/// Forgets the weight of every folder holding one of `dirs`: a change deep inside keeps its date.
+pub(crate) fn unweigh(dirs: &[PathBuf]) {
+    let mut weights = WEIGHTS.lock().unwrap();
+    weights.retain(|(path, _), _| !dirs.iter().any(|dir| dir.starts_with(&**path)));
+}
+
+fn sized(row: &Row, bytes: u64) -> Arc<Row> {
+    Arc::new(Row {
+        size: byte_string(bytes).into(),
+        bytes,
+        ..row.clone()
+    })
+}
+
 // Finder weighs every package it lists, whatever "Calculate all sizes" says.
 pub(crate) fn weigh_packages(rows: &mut [Arc<Row>]) {
-    static WEIGHED: LazyLock<Mutex<HashMap<(SharedString, u64), u64>>> =
-        LazyLock::new(Mutex::default);
     for row in rows
         .iter_mut()
         .filter(|row| row.package && row.size == "--")
     {
-        let key = (row.path.clone(), row.modified_at.to_bits());
-        let known = WEIGHED.lock().unwrap().get(&key).copied();
-        let bytes = known.unwrap_or_else(|| {
-            let bytes = finder_fs::ops::walk_size(Path::new(&*row.path));
-            let mut weighed = WEIGHED.lock().unwrap();
-            if weighed.len() >= PACKAGES_HELD {
-                weighed.clear();
-            }
-            weighed.insert(key, bytes);
-            bytes
-        });
-        *row = Arc::new(Row {
-            size: byte_string(bytes).into(),
-            bytes,
-            ..(**row).clone()
-        });
+        *row = sized(row, weigh(&row.path, row.modified_at));
+    }
+}
+
+/// Sizes the folders already weighed, walking none.
+pub(crate) fn weighed_folders(rows: &mut [Arc<Row>]) {
+    let weights = WEIGHTS.lock().unwrap();
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.is_folder() && row.size == "--")
+    {
+        if let Some(&bytes) = weights.get(&(row.path.clone(), row.modified_at.to_bits())) {
+            *row = sized(row, bytes);
+        }
     }
 }
 

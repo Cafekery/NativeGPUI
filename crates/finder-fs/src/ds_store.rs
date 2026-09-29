@@ -57,25 +57,52 @@ pub fn records(bytes: &[u8]) -> Option<Vec<Record<'_>>> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub enum Background {
+    #[default]
+    Default,
+    Color([f32; 3]),
+    /// An empty path is a picture chosen before any image.
+    Picture(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct IconOptions {
     pub arrange_by: Option<String>,
     pub icon_size: Option<f32>,
     pub grid_spacing: Option<f32>,
     pub text_size: Option<f32>,
     pub label_on_bottom: Option<bool>,
+    pub show_item_info: Option<bool>,
+    pub show_icon_preview: Option<bool>,
+    pub background: Option<Background>,
 }
 
 impl IconOptions {
     pub fn read(options: &NSDictionary) -> Self {
         let value = |key: &str| options.objectForKey(&NSString::from_str(key));
         let number = |key: &str| value(key)?.downcast::<NSNumber>().ok();
+        let text = |key: &str| Some(value(key)?.downcast::<NSString>().ok()?.to_string());
+        let part = |key: &str| number(key).map_or(1., |part| part.floatValue());
         Self {
-            arrange_by: value("arrangeBy")
-                .and_then(|text| Some(text.downcast::<NSString>().ok()?.to_string())),
+            arrange_by: text("arrangeBy"),
             icon_size: number("iconSize").map(|size| size.floatValue()),
             grid_spacing: number("gridSpacing").map(|spacing| spacing.floatValue()),
             text_size: number("textSize").map(|size| size.floatValue()),
             label_on_bottom: number("labelOnBottom").map(|bottom| bottom.boolValue()),
+            show_item_info: number("showItemInfo").map(|on| on.boolValue()),
+            show_icon_preview: number("showIconPreview").map(|on| on.boolValue()),
+            background: number("backgroundType").and_then(|kind| match kind.integerValue() {
+                0 => Some(Background::Default),
+                1 => Some(Background::Color([
+                    part("backgroundColorRed"),
+                    part("backgroundColorGreen"),
+                    part("backgroundColorBlue"),
+                ])),
+                2 => Some(Background::Picture(
+                    text("backgroundImagePath").unwrap_or_default(),
+                )),
+                _ => None,
+            }),
         }
     }
 
@@ -86,6 +113,9 @@ impl IconOptions {
             grid_spacing: self.grid_spacing.or(fallback.grid_spacing),
             text_size: self.text_size.or(fallback.text_size),
             label_on_bottom: self.label_on_bottom.or(fallback.label_on_bottom),
+            show_item_info: self.show_item_info.or(fallback.show_item_info),
+            show_icon_preview: self.show_icon_preview.or(fallback.show_icon_preview),
+            background: self.background.or(fallback.background),
         }
     }
 }

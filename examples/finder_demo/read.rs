@@ -4,17 +4,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::list::Identity;
-use gpui::{App, BackgroundExecutor, Context, Task, Window};
+use gpui::{App, BackgroundExecutor, Context, SharedString, Task, Window};
 
 use crate::app::FinderDemo;
 use crate::data::{self, Bands, Column, Face, Facts, Line, Order, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
 use crate::signal::Signal;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
+use crate::views::list::ListLook;
 use crate::{icons, index, listing, preview};
 
 const BATCH: usize = 64;
@@ -191,7 +192,7 @@ fn names_descend(order: Order) -> bool {
     order.sort == Column::Name && !order.ascending
 }
 
-pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, order: Order, extras: bool) {
+pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, order: Order, extras: bool, sizes: bool) {
     let sort = order.sort;
     if extras || sort.extra() || order.group.is_some_and(Column::extra) {
         data::read_extras(rows);
@@ -200,7 +201,16 @@ pub(crate) fn sort_rows(rows: &mut Vec<Arc<Row>>, order: Order, extras: bool) {
         data::read_apps(rows);
     }
     let ranks = match sort {
-        Column::Size => rows.iter().map(|row| row.bytes).collect(),
+        Column::Size => rows
+            .iter()
+            .map(|row| {
+                if sizes || !row.is_folder() {
+                    row.bytes
+                } else {
+                    0
+                }
+            })
+            .collect(),
         sort if sort == Column::Name || sort.dated() => vec![0; rows.len()],
         sort => text_ranks(rows.iter().map(|row| row.words(sort))),
     };
@@ -236,7 +246,7 @@ fn first_screen(
     id: &'static str,
     entries: &[&Entry],
     folders: &HashMap<String, Facts>,
-    order: Order,
+    (order, sizes): (Order, bool),
     hidden: bool,
     count: usize,
     coarse: bool,
@@ -258,6 +268,7 @@ fn first_screen(
             .map(|&at| {
                 let entry = entries[at];
                 match data::bytes_of(entry, data::facts_of(entry, folders).0) {
+                    _ if !sizes && entry.is_dir() => Some(0),
                     None if entry.package => None,
                     bytes => Some(bytes.unwrap_or(0)),
                 }
@@ -357,7 +368,7 @@ async fn finish(
     id: &'static str,
     batches: Batches,
     shared: Option<(Vec<usize>, Vec<Arc<Row>>)>,
-    (order, plain, extras): (Order, Option<bool>, bool),
+    (order, plain, extras, sizes): (Order, Option<bool>, bool, bool),
     (count, art): (usize, f32),
 ) -> Sorted {
     let mut all: Vec<Arc<Row>> = Vec::new();
@@ -374,7 +385,8 @@ async fn finish(
         all.extend(data::icloud_rows(index()));
     }
     data::weigh_packages(&mut all);
-    sort_rows(&mut all, order, extras);
+    data::weighed_folders(&mut all);
+    sort_rows(&mut all, order, extras, sizes);
     icons::prepare(&all, count, art);
     let lines = plain.map(|hidden| (hidden, listing::lines_of(&all, hidden)));
     (all, lines)
@@ -391,7 +403,8 @@ fn screen_rows<'a>(
     let early = (entries.clone())
         .filter_map(|entry| data::early_artwork(&data::join(id, &entry.name), entry));
     let drawing = icons::begin(early, art);
-    let rows = data::rows_of(id, entries, folders, extras);
+    let mut rows = data::rows_of(id, entries, folders, extras);
+    data::weighed_folders(&mut rows);
     drawing.finish();
     icons::prepare(&rows, count, art);
     rows
@@ -400,7 +413,7 @@ fn screen_rows<'a>(
 fn indexed_screen(
     id: &'static str,
     folders: &HashMap<String, Facts>,
-    order: Order,
+    (order, sizes): (Order, bool),
     hidden: bool,
     count: usize,
 ) -> Option<Vec<Entry>> {
@@ -422,7 +435,7 @@ fn indexed_screen(
     };
     let coarse = order.sort == Column::Modified;
     let listed: Vec<&Entry> = known.iter().collect();
-    let chosen = first_screen(id, &listed, folders, order, hidden, count, coarse)?;
+    let chosen = first_screen(id, &listed, folders, (order, sizes), hidden, count, coarse)?;
     (!chosen.is_empty() && chosen.len() <= REREAD).then_some(())?;
     let read: Vec<Entry> = chosen
         .into_iter()
@@ -441,7 +454,7 @@ fn indexed_screen(
         return Some(read);
     }
     let refs: Vec<&Entry> = read.iter().collect();
-    let exact = first_screen(id, &refs, folders, order, hidden, count, false)?;
+    let exact = first_screen(id, &refs, folders, (order, sizes), hidden, count, false)?;
     Some(exact.into_iter().map(|at| read[at].clone()).collect())
 }
 
@@ -451,7 +464,7 @@ fn by_name(order: Order) -> bool {
 
 fn list(
     id: &'static str,
-    order: Order,
+    (order, sizes): (Order, bool),
     (first, plain): (Option<bool>, Option<bool>),
     (screen, extras): ((usize, f32), bool),
     executor: BackgroundExecutor,
@@ -475,13 +488,13 @@ fn list(
         .flatten()
         .all(|column| matches!(column, Column::Name | Column::Modified | Column::Size));
     let known = first.filter(|_| vouched && !icloud).and_then(|hidden| {
-        let entries = indexed_screen(id, &folders, order, hidden, count)?;
+        let entries = indexed_screen(id, &folders, (order, sizes), hidden, count)?;
         let rows = screen_rows(id, entries.iter(), &folders, extras, screen);
         Some(shown(rows, hidden))
     });
     if known.is_some() {
         let rest = executor.spawn(async move {
-            Ok(finish(id, batches()?, None, (order, plain, extras), screen).await)
+            Ok(finish(id, batches()?, None, (order, plain, extras, sizes), screen).await)
         });
         return Ok(Listed { first: known, rest });
     }
@@ -493,7 +506,8 @@ fn list(
     let (shared, first) = first
         .filter(|_| !icloud)
         .and_then(|hidden| {
-            let chosen = first_screen(id, &entries, &folders, order, hidden, count, false)?;
+            let chosen =
+                first_screen(id, &entries, &folders, (order, sizes), hidden, count, false)?;
             let rows = screen_rows(
                 id,
                 chosen.iter().map(|&at| entries[at]),
@@ -505,7 +519,7 @@ fn list(
         })
         .unzip();
     let rest = executor.spawn(async move {
-        Ok(finish(id, batches, shared, (order, plain, extras), screen).await)
+        Ok(finish(id, batches, shared, (order, plain, extras, sizes), screen).await)
     });
     let first = first.map(|(rows, hidden)| shown(rows, hidden));
     Ok(Listed { first, rest })
@@ -557,10 +571,11 @@ impl FinderDemo {
         crate::icons::draw_wanted(&cx.entity(), cx);
         crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::custom::fetch_wanted(&cx.entity(), cx);
+        crate::item_info::fetch_wanted(&cx.entity(), cx);
         crate::thumbs::frame_drawn();
         // A row asks for its thumbnail as the list lays itself out, which is after this runs.
         cx.defer(|_| crate::thumbs::collect_thumbnails());
-        self.follow();
+        self.follow(cx);
     }
 
     pub(crate) fn stats_key(&self) -> (u64, usize) {
@@ -637,13 +652,19 @@ impl FinderDemo {
             .get(id)
             .is_some_and(|folder| folder.rows.is_empty());
         let headed = self.headed_for() == Some(id);
-        let (order, plain, extras) = match headed {
+        let (order, plain, extras, sizes) = match headed {
             true => (
                 self.order_for(id),
                 self.plain_on_arrival(),
                 self.extras_in(id),
+                ListLook::of(id).sizes,
             ),
-            false => (self.order(), self.plain(), self.wants_extras()),
+            false => (
+                self.order(),
+                self.plain(),
+                self.wants_extras(),
+                self.list_look.sizes,
+            ),
         };
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
@@ -651,7 +672,7 @@ impl FinderDemo {
         let executor = cx.background_executor().clone();
         let listed = cx
             .background_executor()
-            .spawn(async move { list(id, order, (first, plain), screen, executor) });
+            .spawn(async move { list(id, (order, sizes), (first, plain), screen, executor) });
         cx.spawn(async move |this, cx| {
             let rest = match listed.await {
                 Ok(Listed { first, rest }) => {
@@ -720,6 +741,7 @@ impl FinderDemo {
         }
         if done {
             self.expand_landed(id);
+            self.weigh_folders(id, cx);
         }
         if arrived || (done && id == self.here() && self.view == GALLERY_VIEW) {
             self.settle();
@@ -738,18 +760,60 @@ impl FinderDemo {
         }
     }
 
+    fn weighs(&self, id: &'static str) -> bool {
+        self.view == LIST_VIEW && self.list_look.sizes && self.folders.shown(id)
+    }
+
+    /// Weighs the folders listed in `id` off the main thread, re-reading `id` as sizes land.
+    pub(crate) fn weigh_folders(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        if !self.weighs(id) || self.weighing.contains_key(id) {
+            return;
+        }
+        let owed: Vec<(SharedString, f64)> = (self.folders.get(id).into_iter())
+            .flat_map(|folder| folder.rows.iter())
+            .filter(|row| row.is_folder() && row.readable && row.size == "--")
+            .map(|row| (row.path.clone(), row.modified_at))
+            .collect();
+        if owed.is_empty() {
+            return;
+        }
+        let weighing = cx.spawn(async move |this, cx| {
+            let mut shown = Instant::now();
+            for (path, at) in owed {
+                if !this.update(cx, |this, _| this.weighs(id)).unwrap_or(false) {
+                    break;
+                }
+                (cx.background_executor())
+                    .spawn(async move { data::weigh(&path, at) })
+                    .await;
+                if shown.elapsed() >= TICK {
+                    shown = Instant::now();
+                    this.update(cx, |this, cx| this.read_folder(id, cx)).ok();
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.weighing.remove(id);
+                if this.weighs(id) {
+                    this.read_folder(id, cx);
+                }
+            })
+            .ok();
+        });
+        self.weighing.insert(id, weighing);
+    }
+
     fn sort_folder(&mut self, id: &'static str, by: Order, cx: &mut Context<Self>) {
         let Some(mut rows) = self.folders.get(id).map(|folder| folder.rows.to_vec()) else {
             return;
         };
         let was = rows.len();
         let plain = self.plain().filter(|_| id == self.here());
-        let extras = self.wants_extras();
+        let (extras, sizes) = (self.wants_extras(), self.list_look.sizes);
         cx.spawn(async move |this, cx| {
             let sorted = cx
                 .background_executor()
                 .spawn(async move {
-                    sort_rows(&mut rows, by, extras);
+                    sort_rows(&mut rows, by, extras, sizes);
                     let lines = plain.map(|hidden| (hidden, listing::lines_of(&rows, hidden)));
                     (rows, lines)
                 })
@@ -795,7 +859,7 @@ impl FinderDemo {
             held.iter().map(|(id, rows)| (*id, rows.len())).collect();
         let view = self.pending_view.unwrap_or(self.view);
         let shape = self.shape_sorted(view == LIST_VIEW, by);
-        let extras = self.wants_extras();
+        let (extras, sizes) = (self.wants_extras(), self.list_look.sizes);
         cx.spawn(async move |this, cx| {
             let sorted = cx
                 .background_executor()
@@ -803,7 +867,7 @@ impl FinderDemo {
                     let mut folders: HashMap<&'static str, Vec<Arc<Row>>> =
                         held.into_iter().collect();
                     for rows in folders.values_mut() {
-                        sort_rows(rows, by, extras);
+                        sort_rows(rows, by, extras, sizes);
                     }
                     let walk = shape.build(&|id| folders.get(id).map(Vec::as_slice));
                     (folders, shape, walk)
@@ -856,7 +920,7 @@ impl FinderDemo {
         }
     }
 
-    fn follow(&mut self) {
+    fn follow(&mut self, cx: &mut Context<Self>) {
         let moved = (self.expanded.rev(), self.here(), self.target(), self.view);
         if self.followed == Some(moved) {
             return;
@@ -868,6 +932,9 @@ impl FinderDemo {
             wanted.extend(self.crumb_ids());
         }
         self.folders.pin(wanted.iter().copied());
+        for &id in &wanted {
+            self.weigh_folders(id, cx);
+        }
         IDENTITIES
             .lock()
             .unwrap()
@@ -903,6 +970,7 @@ impl FinderDemo {
         if dirs.is_empty() {
             return;
         }
+        data::unweigh(&dirs);
         for dir in &dirs {
             crate::tags::forget_tags_in(dir);
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
@@ -910,6 +978,13 @@ impl FinderDemo {
                     true => self.read_folder(id, cx),
                     false => self.folders.stale(id),
                 }
+            }
+            let holders: Vec<&'static str> = (dir.ancestors().skip(1))
+                .filter_map(|up| self.folders.known(&up.to_string_lossy()))
+                .filter(|&id| self.weighs(id))
+                .collect();
+            for id in holders {
+                self.read_folder(id, cx);
             }
         }
         cx.background_executor()

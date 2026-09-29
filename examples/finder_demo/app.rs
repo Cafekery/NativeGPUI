@@ -18,7 +18,7 @@ use native_gpui::sidebar::NativeSidebar;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
-use crate::art::Anchor;
+use crate::art::{Anchor, Previews};
 use crate::chrome::sheet::GoPanel;
 use crate::chrome::sidebar;
 use crate::data::{Column, Folders, Order, Row};
@@ -28,9 +28,11 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
+use crate::views::column::{ColumnFit, ColumnLook};
+use crate::views::gallery::GalleryLook;
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for};
 use crate::views::icon::Grid;
-use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
+use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL, ListLook};
 use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
@@ -112,6 +114,8 @@ pub(crate) struct FinderDemo {
     pub(crate) crumb_drop: Option<usize>,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
+    /// The view this window browses in where a folder doesn't ask for its own.
+    pub(crate) style: usize,
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
@@ -121,9 +125,9 @@ pub(crate) struct FinderDemo {
     pub(crate) faces: Rc<RefCell<Faces>>,
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
-    pub(crate) list_icon: f32,
+    pub(crate) list_look: ListLook,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
-    pub(crate) strip_icon: f32,
+    pub(crate) gallery_look: GalleryLook,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -132,11 +136,14 @@ pub(crate) struct FinderDemo {
     pub(crate) column_reveal: Option<(f32, Instant)>,
     /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
-    pub(crate) column_widths: HashMap<&'static str, f32>,
+    pub(crate) column_widths: HashMap<&'static str, Option<f32>>,
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
+    pub(crate) column_look: ColumnLook,
+    pub(crate) column_fits: HashMap<&'static str, ColumnFit>,
     pub(crate) icons: Grid,
     pub(crate) bands: Bands,
+    pub(crate) previews: Previews,
     pub(crate) scale: f32,
     pub(crate) viewport: Size<Pixels>,
     pub(crate) window_min_w: f32,
@@ -159,6 +166,7 @@ pub(crate) struct FinderDemo {
     pub(crate) conflict: Option<conflicts::Sheet>,
     pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) jobs_open: bool,
+    pub(crate) weighing: HashMap<&'static str, gpui::Task<()>>,
 }
 
 impl FinderDemo {
@@ -193,7 +201,12 @@ impl FinderDemo {
             queue_sink.lock().unwrap().push(event);
             read::EVENTS.ring();
         });
-        let view = prefs::view().unwrap_or(LIST_VIEW);
+        let style = prefs::view().unwrap_or(LIST_VIEW);
+        let view = prefs::opens_in(start).map_or(style, |(view, _)| view);
+        let style = match prefs::opens_in(start) {
+            Some((view, true)) => view,
+            _ => style,
+        };
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
@@ -214,7 +227,7 @@ impl FinderDemo {
             column_sort: prefs::arranged(COLUMN_VIEW).unwrap_or(finder.arranged.0),
             pending_view: None,
             list_columns: Vec::new(),
-            name_w: name_min_w(ICON_SMALL),
+            name_w: 0.,
             header_drag: None,
             header: None,
             header_press: None,
@@ -254,6 +267,7 @@ impl FinderDemo {
             crumb_drop: None,
             status_bar_shown: false,
             show_hidden: false,
+            style,
             spring: None,
             pressed_at: gpui::Point::default(),
             recents: Vec::new(),
@@ -263,9 +277,9 @@ impl FinderDemo {
             faces: Rc::default(),
             tag_editor: None,
             ql_shown: None,
-            list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
+            list_look: ListLook::of(start),
             list_zoom: None,
-            strip_icon: prefs::strip_icon().unwrap_or(48.),
+            gallery_look: GalleryLook::load(start),
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
@@ -276,8 +290,11 @@ impl FinderDemo {
             column_widths: HashMap::new(),
             column_scrolls: Vec::new(),
             column_grab: None,
+            column_look: ColumnLook::load(),
+            column_fits: HashMap::new(),
             icons: Grid::default(),
             bands: Bands::default(),
+            previews: Previews::of(start),
             scale: 2.,
             viewport: Size::default(),
             window_min_w: f32::NAN,
@@ -303,6 +320,7 @@ impl FinderDemo {
             conflict: None,
             jobs: Vec::new(),
             jobs_open: false,
+            weighing: HashMap::new(),
         };
         this.set_order(this.view_sort(this.view));
         this.load_columns();
