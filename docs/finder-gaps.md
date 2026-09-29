@@ -43,15 +43,17 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Go ▸ Connect to Server… (⌘K)
 - [x] Go ▸ AirDrop (⇧⌘R) opens an AirDrop location in the window, titled AirDrop as Finder's;
   items dropped on it, and the toolbar's AirDrop button, send through AppKit's AirDrop sheet
-- [ ] The AirDrop location lists nothing. Finder 27 shows DeviceDiscoveryUI's SwiftUI view, not
-  its AirDropInfoView.nib, and no `airdrop` symbol: top left, 16 pt in, the Contacts me-card photo
-  (48 pt, round) beside “Use AirDrop as” (13 pt) over the name (15 pt semibold); bottom left, 16 pt
-  in, “AirDrop lets you share instantly with people nearby.” (12 pt) over “Allow me to be
-  discovered by: ” (12 pt) and a 114×20 pop-up of No One, Contacts Only and Everyone
-  (`DiscoverableMode` in `com.apple.sharingd`), its bottom 12 pt above the status bar. No path bar;
-  the view switcher, Group and Action are off. Setting the mode needs sharingd's private
-  entitlement `com.apple.private.airdrop.settings`; System Settings' pane is
-  `x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension`
+- [x] The AirDrop location is Finder 27's view: top left, 16 pt in, the account picture (48 pt,
+  round) beside “Use AirDrop as” (13 pt) over the user's full name (15 pt semibold); bottom left,
+  “AirDrop lets you share instantly with people nearby.” (12 pt) over “Allow me to be discovered
+  by: ” and a 114×20 pop-up of No One, Contacts Only and Everyone showing `DiscoverableMode` from
+  `com.apple.sharingd`, 12 pt off the bottom. No path bar, preview pane or status text. Setting the
+  mode needs sharingd's private entitlement `com.apple.private.airdrop.settings`, so picking
+  another opens System Settings' AirDrop & Handoff pane and the pop-up keeps the current mode
+- [ ] AirDrop: Finder's photo is the Contacts me-card's, the demo's the account picture (the user
+  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access; Finder turns the view
+  switcher, Group and Action off there, and the demo's toolbar has no way to grey a group or menu
+  item. Nearby people and devices are Sharing's private API
 - [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
   “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
   Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each

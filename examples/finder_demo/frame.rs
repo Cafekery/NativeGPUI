@@ -97,11 +97,12 @@ impl Render for FinderDemo {
         let palette = Palette::new(self.list_focused);
         let family = tokens::text_font_family(cx).unwrap_or_else(tokens::system_font_family);
 
-        let path_bar =
-            (self.path_bar_shown && !self.airdrop_shown()).then(|| self.path_bar(&palette, cx));
+        let airdrop = self.airdrop_shown();
+        let path_bar = (self.path_bar_shown && !airdrop).then(|| self.path_bar(&palette, cx));
         let status_bar = self.status_bar_shown.then(|| self.status_bar(cx));
-        let list_view = self.view == LIST_VIEW;
+        let list_view = self.view == LIST_VIEW && !airdrop;
         let body = match self.view {
+            _ if airdrop => self.airdrop_body(cx),
             ICON_VIEW => self.icon_body(&palette, window, cx),
             COLUMN_VIEW => self.column_body(&palette, window, cx),
             GALLERY_VIEW => self.gallery_body(&palette, window, cx),
