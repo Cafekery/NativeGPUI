@@ -38,6 +38,16 @@ pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+#[cfg(test)]
+pub(crate) fn trash_reachable() -> bool {
+    let trash = volumes::standard(volumes::Standard::Trash);
+    let reachable = trash.is_some_and(|trash| std::fs::read_dir(trash).is_ok());
+    if !reachable {
+        eprintln!("skipping: the Trash is not readable here");
+    }
+    reachable
+}
+
 pub(crate) fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
     unsafe {
         NSPropertyListSerialization::propertyListWithData_options_format_error(
