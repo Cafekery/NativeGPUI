@@ -59,7 +59,8 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Enclosing Folder (⌘↑) from a volume's root opens Computer with the volume selected, and
   ⌃⌘↑ opens it in a new window, as Finder's do; Select Startup Disk shows Computer with the
   startup disk selected
-- [ ] Column view rooted at Computer can lose that column two levels down
+- [x] Column view rooted at Computer keeps Computer's column first however deep the selection
+  goes; a folder reached any other way starts its columns at its volume
 - [ ] The path bar and the toolbar's path menu don't know the locations. Finder's path bar starts
   a folder's path at its volume (“Macintosh HD › Users › …”, no computer crumb); at Computer it is
   the lone crumb “Jace’s MacBook Pro”, at Network “Network”, in Shared and Recents empty until an

@@ -769,6 +769,9 @@ impl FinderDemo {
         wanted.extend(self.expanded.iter().map(|key| intern(key)));
         if self.view == COLUMN_VIEW {
             wanted.extend(self.crumb_ids());
+            if self.columns_from_computer {
+                wanted.insert(crate::locations::COMPUTER);
+            }
         }
         self.folders.pin(wanted.iter().copied());
         IDENTITIES

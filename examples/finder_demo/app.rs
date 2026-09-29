@@ -132,6 +132,7 @@ pub(crate) struct FinderDemo {
     pub(crate) column_reveal: Option<(f32, Instant)>,
     /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
+    pub(crate) columns_from_computer: bool,
     pub(crate) column_widths: HashMap<&'static str, f32>,
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
@@ -274,6 +275,7 @@ impl FinderDemo {
             column_depth: 0,
             column_reveal: None,
             column_cursor: None,
+            columns_from_computer: start == crate::locations::COMPUTER,
             column_widths: HashMap::new(),
             column_scrolls: Vec::new(),
             column_grab: None,

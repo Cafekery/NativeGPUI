@@ -112,21 +112,22 @@ impl FinderDemo {
 
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
-        let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
+        let Some(key) = self.cursor.as_ref() else {
             return here;
         };
         if self.results() {
-            return holder;
+            return split_key(key).map_or(here, |(holder, _)| holder);
         }
         if self.view != COLUMN_VIEW {
             return here;
         }
+        let Some(holder) = self.column_holder(key) else {
+            return here;
+        };
         if self.selected.len() > 1 {
             return holder;
         }
-        self.folders
-            .get(holder)
-            .and_then(|folder| folder.rows.iter().find(|row| row.name == name))
+        self.column_row(holder, key)
             .filter(|row| row.readable)
             .and_then(|row| row.opens)
             .unwrap_or(holder)
@@ -458,6 +459,7 @@ impl FinderDemo {
         self.icons.forget();
         self.clear_type_filter();
         self.load_columns();
+        self.columns_from_computer = self.here() == crate::locations::COMPUTER;
         self.sidebar_follow();
         cx.notify();
     }
