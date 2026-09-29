@@ -9,7 +9,7 @@ mod volumes;
 
 pub(crate) use self::apps::read_apps;
 pub(crate) use self::face::Face;
-pub(crate) use self::folders::{Folder, Folders, folder_of};
+pub(crate) use self::folders::{Folder, Folders, folder_of, parent_of};
 pub(crate) use self::format::{
     Bands, byte_string, count, date_fit, date_style, date_text, day_string, kind_text, list_date,
     reference_seconds, small_text_width, stamp, today,

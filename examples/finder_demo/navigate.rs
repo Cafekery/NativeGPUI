@@ -7,7 +7,7 @@ use gpui::{App, Context, SharedString, Window};
 
 use crate::app::FinderDemo;
 use crate::art::Previews;
-use crate::data::{Folder, Line, intern, intern_path, is_volume_root, split_key};
+use crate::data::{Folder, Line, intern, intern_path, parent_of, split_key};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
@@ -80,12 +80,7 @@ pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
 }
 
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
-    let above = match crate::locations::place(id) {
-        Some((_, above)) => above?,
-        None if is_volume_root(id) => crate::locations::COMPUTER,
-        None => intern_path(Path::new(id).parent()?),
-    };
-    Some((above, SharedString::from(id)))
+    Some((parent_of(id)?, SharedString::from(id)))
 }
 
 fn refusal(id: &str, error: &std::io::Error) -> String {
