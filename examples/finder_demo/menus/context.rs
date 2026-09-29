@@ -101,11 +101,8 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
                 false => (Act::OpenTab(folder), Act::OpenWindowAt(folder)),
             };
             let refused = match many {
-                true => selected
-                    .iter()
-                    .filter_map(|key| crate::data::path_line(intern(key)))
-                    .all(|line| refuses(&line)),
-                false => refuses(line),
+                true => selected_lines(selected).all(|line| unlistable_folder(&line)),
+                false => unlistable_folder(line),
             };
             let open = |title| match refused {
                 true => MenuEntry::item(title).disabled(),
@@ -167,8 +164,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         MenuEntry::item(if many { "Rename…" } else { "Rename" }),
         Act::Rename,
     );
-    // Finder neither compresses nor shares a folder the user can't list, and names it in Quick Look.
-    let unlistable = !many && refuses(line);
+    let unlistable = !many && unlistable_folder(line);
     if !unlistable {
         let compress = subject("Compress", &line.row.display, many, chosen);
         let plain = match many {
@@ -212,17 +208,8 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
             .collect(),
         false => vec![crate::tags::row_tags(&line.key)],
     };
-    let button = match !many && line.row.opens.is_some() {
-        true => "Customize Folder…",
-        false => "Tags…",
-    };
     menu.view(
-        MenuView::swatches_with_button(
-            tag_swatches(&carried),
-            true,
-            ("tag", button, true),
-            |hit| SWATCH.set(Some(hit)),
-        ),
+        swatch_row(&carried, !many && line.row.opens.is_some()),
         Act::Swatch,
     );
     menu.separator();
@@ -233,7 +220,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu.item(MenuEntry::item(options), Act::PreviewOptions);
     menu.separator();
     let faces: Vec<_> = match selected.contains(&line.key) {
-        true => demo_faces(selected),
+        true => selected_lines(selected).map(|line| line.row.face).collect(),
         false => vec![line.row.face],
     };
     menu.submenu(
@@ -243,7 +230,21 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu
 }
 
-pub(super) fn tag_swatches(carried: &[Vec<usize>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
+pub(super) fn swatch_row(carried: &[Vec<usize>], lone_folder: bool) -> MenuView {
+    let picked = !carried.is_empty();
+    let button = match lone_folder {
+        true => "Customize Folder…",
+        false => "Tags…",
+    };
+    MenuView::swatches_with_button(
+        tag_swatches(carried),
+        picked,
+        ("tag", button, picked),
+        |hit| SWATCH.set(Some(hit)),
+    )
+}
+
+fn tag_swatches(carried: &[Vec<usize>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
     tags().iter().enumerate().map(|(index, tag)| {
         let removes = !carried.is_empty() && carried.iter().all(|tags| tags.contains(&index));
         let verb = if removes { "Remove" } else { "Add" };
@@ -265,12 +266,10 @@ fn paste_rows(menu: &mut Menu, into: &'static str) {
     );
 }
 
-fn demo_faces(selected: &HashSet<SharedString>) -> Vec<crate::data::Face> {
+fn selected_lines(selected: &HashSet<SharedString>) -> impl Iterator<Item = Line> + '_ {
     selected
         .iter()
-        .filter_map(|key| crate::data::path_line(crate::data::intern(key)))
-        .map(|line| line.row.face)
-        .collect()
+        .filter_map(|key| crate::data::path_line(intern(key)))
 }
 
 fn open_with(menu: &mut Menu, line: &Line) {
@@ -316,7 +315,7 @@ fn folder_behind(line: &Line) -> Option<&'static str> {
     (original.is_dir() && !package).then(|| intern_path(&original))
 }
 
-fn refuses(line: &Line) -> bool {
+pub(super) fn unlistable_folder(line: &Line) -> bool {
     line.row.opens.is_some() && !line.row.readable
 }
 
@@ -559,7 +558,6 @@ fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
         .collect()
 }
 
-/// The dot hit in an item's tag row, or `Some(None)` for its button.
 pub(super) fn picked_swatch() -> Option<Option<usize>> {
     SWATCH.with(Cell::take)
 }
