@@ -159,6 +159,7 @@ pub(crate) struct FinderDemo {
     pub(crate) conflict: Option<conflicts::Sheet>,
     pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) jobs_open: bool,
+    pub(crate) weighing: HashMap<&'static str, gpui::Task<()>>,
 }
 
 impl FinderDemo {
@@ -304,6 +305,7 @@ impl FinderDemo {
             conflict: None,
             jobs: Vec::new(),
             jobs_open: false,
+            weighing: HashMap::new(),
         };
         (this.sort, this.ascending) = this.view_sort(this.view);
         this.load_columns();

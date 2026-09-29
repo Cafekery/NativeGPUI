@@ -433,7 +433,7 @@ impl FinderDemo {
             .iter()
             .map(|line| match column {
                 Column::Name => (name_prefix(line, icon), line.row.display.clone()),
-                Column::Size => (0., line.row.size.clone()),
+                Column::Size => (0., line.row.size_shown(self.list_look.sizes)),
                 Column::Kind => (0., line.row.kind.clone()),
                 column => (0., detail_text(&line.row, column)),
             })
