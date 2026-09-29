@@ -1,36 +1,33 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use convert::{Format, Job, Report, convert, relevant_targets};
-use gpui::Context;
+use convert::{Format, Job, Kind, convert, relevant_targets};
+use gpui::{Context, SharedString};
 
-use crate::app::{ConvertDemo, Item};
+use crate::app::{ConvertDemo, count_noun};
 
-pub fn unique_dest(source: &Path, target: Format, folder: Option<&Path>) -> PathBuf {
+fn stem(path: &Path) -> Cow<'_, str> {
+    path.file_stem()
+        .map_or(Cow::Borrowed("out"), |stem| stem.to_string_lossy())
+}
+
+fn unique_dest(source: &Path, target: Format, folder: Option<&Path>) -> PathBuf {
     let parent = folder.unwrap_or_else(|| source.parent().unwrap_or_else(|| Path::new(".")));
     let dest = parent.join(dest_leaf(source, target));
     if !dest.exists() {
         return dest;
     }
-    let stem = dest
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "out".into());
+    let stem = stem(&dest);
     let ext = target.ext();
-    for n in 2..1000 {
-        let candidate = parent.join(format!("{stem}-{n}.{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    dest
+    let found = (2..1000)
+        .map(|n| parent.join(format!("{stem}-{n}.{ext}")))
+        .find(|candidate| !candidate.exists());
+    found.unwrap_or(dest)
 }
 
 fn dest_leaf(source: &Path, target: Format) -> String {
-    let stem = source
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "out".into());
+    let stem = stem(source);
     let ext = target.ext();
     let clashes = relevant_targets(target)
         .iter()
@@ -53,29 +50,28 @@ pub fn start(this: &mut ConvertDemo, cx: &mut Context<ConvertDemo>, only: Option
     }
     let target = this.target;
     let intent = this.intent;
-    let keep = this.should_keep_metadata;
-    let folder = this.output_dir.clone();
+    let keep_metadata = this.should_keep_metadata;
     let mut jobs = Vec::new();
-    let mut skipped_kind = 0;
+    let mut skipped = 0;
     for (index, item) in this.items.iter_mut().enumerate() {
         if only.is_some_and(|only| only != index) {
             continue;
         }
-        let Some(probe) = item.probe.as_ref() else {
+        let Some(probe) = &item.probe else {
             continue;
         };
         if probe.kind != target.kind() {
             if only.is_some() {
-                item.error = Some(format!(
-                    "This is {}",
+                item.error = Some(
                     match probe.kind {
-                        convert::Kind::Image => "a photo",
-                        convert::Kind::Audio => "audio",
-                        convert::Kind::Font => "a font",
+                        Kind::Image => "This is a photo",
+                        Kind::Audio => "This is audio",
+                        Kind::Font => "This is a font",
                     }
-                ));
+                    .into(),
+                );
             } else {
-                skipped_kind += 1;
+                skipped += 1;
             }
             continue;
         }
@@ -85,7 +81,7 @@ pub fn start(this: &mut ConvertDemo, cx: &mut Context<ConvertDemo>, only: Option
         item.is_busy = true;
         item.error = None;
         item.report = None;
-        let dest = unique_dest(&item.path, target, folder.as_deref());
+        let dest = unique_dest(&item.path, target, this.output_dir.as_deref());
         item.dest = Some(dest.clone());
         jobs.push((
             index,
@@ -95,22 +91,14 @@ pub fn start(this: &mut ConvertDemo, cx: &mut Context<ConvertDemo>, only: Option
                 target,
                 intent,
                 max_edge: intent.default_max_edge(),
-                keep_metadata: keep,
+                keep_metadata,
             },
         ));
     }
-    this.notice = if skipped_kind > 0 {
-        Some(format!(
-            "{skipped_kind} {} left out of this batch",
-            if skipped_kind == 1 {
-                "file was"
-            } else {
-                "files were"
-            }
-        ))
-    } else {
-        None
-    };
+    this.notice = (skipped > 0).then(|| {
+        let files = count_noun(skipped, "file was", "files were");
+        format!("{files} left out of this batch").into()
+    });
     this.summary = None;
     if jobs.is_empty() {
         return;
@@ -143,8 +131,8 @@ pub fn start(this: &mut ConvertDemo, cx: &mut Context<ConvertDemo>, only: Option
                 if let Some(item) = this.items.get_mut(index) {
                     item.is_busy = false;
                     match result {
-                        Ok(report) => apply_report(item, report),
-                        Err(err) => item.error = Some(plain_error(&err.to_string())),
+                        Ok(report) => item.report = Some(report),
+                        Err(err) => item.error = Some(plain_error(err.to_string())),
                     }
                 }
                 this.done += 1;
@@ -160,16 +148,12 @@ pub fn start(this: &mut ConvertDemo, cx: &mut Context<ConvertDemo>, only: Option
     .detach();
 }
 
-fn apply_report(item: &mut Item, report: Report) {
-    item.report = Some(report);
-}
-
-fn plain_error(err: &str) -> String {
+fn plain_error(err: String) -> SharedString {
     if err.contains("avifenc") {
         "Can't write AVIF on this Mac".into()
     } else if err.contains("ffmpeg") {
         "Can't convert audio — ffmpeg isn't installed".into()
     } else {
-        err.to_string()
+        err.into()
     }
 }

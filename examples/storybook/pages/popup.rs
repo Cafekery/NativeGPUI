@@ -1,6 +1,6 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Modifiers, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, Modifiers, Window, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{MenuEntry, MenuOrigin, native_context_menu, native_popup};
 
@@ -79,7 +79,7 @@ fn name_of(names: &[&str], index: usize) -> String {
     )
 }
 
-fn target(label: &str) -> AnyElement {
+fn target(label: &'static str) -> AnyElement {
     div()
         .w(px(240.))
         .h(px(88.))
@@ -92,14 +92,17 @@ fn target(label: &str) -> AnyElement {
         .bg(system_color(SystemColor::TertiarySystemFill))
         .text_sm()
         .text_color(system_color(SystemColor::SecondaryLabel))
-        .child(SharedString::from(label.to_string()))
+        .child(label)
         .into_any_element()
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let (colour, tool) = (d.popup.colour, d.popup.tool);
-    let action = d.popup.action.clone();
-    let picked = d.popup.picked.clone();
+    let State {
+        colour,
+        tool,
+        ref action,
+        ref picked,
+    } = d.popup;
 
     stack(vec![
         row(
@@ -107,10 +110,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             vec![
                 native_popup("colour", colour)
                     .items(COLOURS.iter().copied())
-                    .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                        d.popup.colour = *index;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, index| d.popup.colour = index))
                     .into_any_element(),
                 mono(format!("{colour} — {}", name_of(COLOURS, colour))),
                 native_popup("colour-off", colour)
@@ -124,10 +124,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             vec![
                 native_popup("tool", tool)
                     .entries(tools())
-                    .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                        d.popup.tool = *index;
-                        cx.notify();
-                    }))
+                    .on_change(set(cx, |d, index| d.popup.tool = index))
                     .into_any_element(),
                 mono(format!("{tool} — {}", title_of(&tools(), tool))),
             ],
@@ -138,13 +135,11 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 native_popup("actions", 0)
                     .entries(actions())
                     .pull_down(true)
-                    .on_change(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                        d.popup.action =
-                            Some(format!("{index} — {}", title_of(&actions(), *index)));
-                        cx.notify();
+                    .on_change(set(cx, |d, index: usize| {
+                        d.popup.action = Some(format!("{index} — {}", title_of(&actions(), index)));
                     }))
                     .into_any_element(),
-                mono(action.clone().unwrap_or_else(|| "nothing picked".into())),
+                mono(action.as_deref().unwrap_or("nothing picked")),
             ],
         ),
         note(
@@ -159,10 +154,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "right-click or control-click — menu at the pointer",
                     native_context_menu("ctx-pointer", target("Right-click anywhere in here"))
                         .entries(row_entries())
-                        .on_select(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
+                        .on_select(set(cx, |d, index: usize| {
                             d.popup.picked =
-                                Some(format!("{index} — {}", title_of(&row_entries(), *index)));
-                            cx.notify();
+                                Some(format!("{index} — {}", title_of(&row_entries(), index)));
                         }))
                         .into_any_element(),
                 ),
@@ -174,14 +168,13 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     )
                     .items(EDITS.iter().copied())
                     .origin(MenuOrigin::ElementTopLeft)
-                    .on_select(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
-                        d.popup.picked = Some(format!("{index} — {}", name_of(EDITS, *index)));
-                        cx.notify();
+                    .on_select(set(cx, |d, index: usize| {
+                        d.popup.picked = Some(format!("{index} — {}", name_of(EDITS, index)));
                     }))
                     .into_any_element(),
                 ),
                 caption("last context-menu pick"),
-                mono(picked.clone().unwrap_or_else(|| "nothing picked".into())),
+                mono(picked.as_deref().unwrap_or("nothing picked")),
             ],
         ),
         section(
@@ -191,10 +184,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "right-click — checkmarks, chord labels and a submenu",
                     native_context_menu("ctx-full", target("Right-click for the full set"))
                         .entries(full_entries())
-                        .on_select(cx.listener(|d: &mut Demo, index: &usize, _, cx| {
+                        .on_select(set(cx, |d, index: usize| {
                             d.popup.picked =
-                                Some(format!("{index} — {}", title_of(&full_entries(), *index)));
-                            cx.notify();
+                                Some(format!("{index} — {}", title_of(&full_entries(), index)));
                         }))
                         .into_any_element(),
                 ),
@@ -234,12 +226,16 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             (
                 "pull_down(bool)",
-                action.unwrap_or_else(|| "pickable rows start at 1".into()),
+                action
+                    .clone()
+                    .unwrap_or_else(|| "pickable rows start at 1".into()),
             ),
             ("enabled(bool)", "false on the second pop-up".into()),
             (
                 "native_context_menu(id, child)",
-                picked.unwrap_or_else(|| "right-click a target above".into()),
+                picked
+                    .clone()
+                    .unwrap_or_else(|| "right-click a target above".into()),
             ),
             (
                 "origin(MenuOrigin)",

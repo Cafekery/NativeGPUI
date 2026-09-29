@@ -101,14 +101,7 @@ else
 	sleep 2
 fi
 
-if ((offline)); then
-	status=0
-else
-
-osascript scripts/menubar.applescript "$pid" >"$dump" 2>/tmp/ng-menubar-ax.err
-status=$?
-fi
-if ((status)); then
+if ! ((offline)) && ! osascript scripts/menubar.applescript "$pid" >"$dump" 2>/tmp/ng-menubar-ax.err; then
 	echo "System Events could not reach the process (needs an Accessibility grant for whatever runs this):"
 	cat /tmp/ng-menubar-ax.err
 	exit 1

@@ -32,9 +32,8 @@ fn hex8(c: Hsla) -> String {
 }
 
 /// AppKit hands back premultiplied RGBA; gpui's `RenderImage` wants straight-alpha BGRA.
-fn to_straight_bgra(rgba: &[u8]) -> Vec<u8> {
-    let mut out = rgba.to_vec();
-    for px in out.chunks_exact_mut(4) {
+fn to_straight_bgra(mut pixels: Vec<u8>) -> Vec<u8> {
+    for px in pixels.chunks_exact_mut(4) {
         px.swap(0, 2);
         let a = px[3] as u32;
         if a > 0 && a < 255 {
@@ -43,7 +42,7 @@ fn to_straight_bgra(rgba: &[u8]) -> Vec<u8> {
             }
         }
     }
-    out
+    pixels
 }
 
 struct TextStrip {
@@ -125,7 +124,7 @@ fn appkit_text_strip(text: &str, point_size: f64, color: &NSColor, scale: f64) -
     TextStrip {
         size: point_size as f32,
         image: Arc::new(RenderImage::new(vec![Frame::new(
-            RgbaImage::from_raw(pw as u32, ph as u32, to_straight_bgra(&rgba))
+            RgbaImage::from_raw(pw as u32, ph as u32, to_straight_bgra(rgba))
                 .expect("strip buffer is w*h*4"),
         )])),
         w: w as f32,
@@ -215,7 +214,8 @@ impl Tokens {
             .map(|(n, s)| format!("{n}={:.0}pt", f32::from(tokens::system_font_size_for(s))))
             .join("  ")
         );
-        let m = system_font_metrics(system_font_size(), gpui::FontWeight::NORMAL);
+        let w = gpui::FontWeight::NORMAL;
+        let m = system_font_metrics(system_font_size(), w);
         println!(
             "metrics at {:.0}pt: asc={:+.3} desc={:+.3} lead={:.3} cap={:.3} x={:.3}  face={}",
             f32::from(system_font_size()),
@@ -227,7 +227,6 @@ impl Tokens {
             m.resolved_name
         );
 
-        let w = gpui::FontWeight::NORMAL;
         println!("\nadvance of 'x', GPUI minus AppKit, in points:");
         println!(
             "  {:>5} {:>11} {:>10} {:>10} {:>12}",
@@ -251,12 +250,10 @@ impl Tokens {
 
         println!("\ncumulative drift over {SAMPLE:?}:");
         let ts = cx.text_system();
-        let mut font = system_font(w);
+        let id = ts.resolve_font(&system_font(w));
         for size in [11.0f32, 13.0, 17.0] {
             let appkit =
                 tokens::appkit_string_width(system_font_family(), px(size), w, SAMPLE).unwrap();
-            font.family = system_font_family().into();
-            let id = ts.resolve_font(&font);
             let gpui: f32 = SAMPLE
                 .chars()
                 .filter_map(|ch| ts.advance(id, px(size), ch).ok())
@@ -282,47 +279,49 @@ impl Tokens {
     fn swatch_grid(&self) -> impl IntoElement {
         let all = SystemColor::ALL;
         let rows = all.len().div_ceil(SWATCH_COLS);
-        let mut grid = div().flex().flex_row().gap(px(4.));
-        for col in 0..SWATCH_COLS {
-            let mut column = div().flex().flex_col().w(px(130.)).overflow_hidden();
-            for row in 0..rows {
-                let Some(c) = all.get(col * rows + row) else {
-                    break;
-                };
-                column = column.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(3.))
-                        .h(px(13.))
-                        .child(
-                            // `w()` is a flex basis, not a floor: a long label squeezes the swatch.
-                            div()
-                                .flex_shrink_0()
-                                .w(px(24.))
-                                .h(px(11.))
-                                .bg(tokens::system_color(*c))
-                                .border_1()
-                                .border_color(tokens::system_color(SystemColor::Separator)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(8.))
-                                .text_color(tokens::system_color(SystemColor::SecondaryLabel))
-                                .child(c.objc_name().trim_end_matches("Color").to_string()),
-                        ),
-                );
-            }
-            grid = grid.child(column);
-        }
-        grid
+        div()
+            .flex()
+            .flex_row()
+            .gap(px(4.))
+            .children((0..SWATCH_COLS).map(|col| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(130.))
+                    .overflow_hidden()
+                    .children(all.iter().skip(col * rows).take(rows).map(|&c| {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(3.))
+                            .h(px(13.))
+                            .child(
+                                // `w()` is a flex basis, not a floor: a long label squeezes the swatch.
+                                div()
+                                    .flex_shrink_0()
+                                    .w(px(24.))
+                                    .h(px(11.))
+                                    .bg(tokens::system_color(c))
+                                    .border_1()
+                                    .border_color(tokens::system_color(SystemColor::Separator)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(8.))
+                                    .text_color(tokens::system_color(SystemColor::SecondaryLabel))
+                                    .child(c.objc_name().trim_end_matches("Color")),
+                            )
+                    }))
+            }))
     }
 
     fn font_rows(&self) -> impl IntoElement {
-        let mut col = div().flex().flex_col().gap(px(2.));
-        for strip in &self.strips {
-            col = col.child(
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .children(self.strips.iter().map(|strip| {
                 div()
                     .flex()
                     .flex_row()
@@ -349,32 +348,36 @@ impl Tokens {
                             .text_size(px(8.))
                             .text_color(tokens::system_color(SystemColor::TertiaryLabel))
                             .child("< GPUI | AppKit >"),
-                    ),
-            );
-        }
-        col
+                    )
+            }))
     }
 
     /// A `Symbol` held across an appearance change is a stale raster, so ask for one per render.
     fn symbol_row(&self) -> impl IntoElement {
         let size = system_font_size();
-        let mut row = div().flex().flex_row().flex_wrap().gap(px(6.));
-        for (name, color) in SYMBOLS {
-            let mut cell = div().flex().flex_row().items_center().gap(px(3.));
-            if let Some(s) = sf_symbol_colored(name, size, gpui::FontWeight::NORMAL, &color()) {
-                cell = cell.child(s.img());
-            }
-            row = row.child(
-                cell.child(
-                    div()
-                        .font(system_font(gpui::FontWeight::NORMAL))
-                        .text_size(size)
-                        .text_color(tokens::system_color(SystemColor::Label))
-                        .child(name.to_string()),
-                ),
-            );
-        }
-        row
+        div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(6.))
+            .children(SYMBOLS.iter().map(|&(name, color)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(3.))
+                    .children(
+                        sf_symbol_colored(name, size, gpui::FontWeight::NORMAL, &color())
+                            .map(|symbol| symbol.img()),
+                    )
+                    .child(
+                        div()
+                            .font(system_font(gpui::FontWeight::NORMAL))
+                            .text_size(size)
+                            .text_color(tokens::system_color(SystemColor::Label))
+                            .child(name),
+                    )
+            }))
     }
 }
 

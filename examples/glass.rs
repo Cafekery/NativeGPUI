@@ -69,23 +69,21 @@ impl Render for Demo {
                             .text_color(rgb(0xffffff))
                             .child("Sharp GPUI text — frosted wherever a panel covers it"),
                     )
-                    .child(div().flex().gap_5().children([
-                        cell(150., 104., "regular", glass("regular")),
-                        cell(150., 104., "clear", glass("clear").clear(true)),
-                        cell(150., 104., "tint 0.35", glass("tint").tint(blue)),
-                        cell(
-                            150.,
-                            104.,
-                            "tint 1.0",
-                            glass("tint-opaque").tint(hsla(0.58, 0.9, 0.55, 1.)),
+                    .child(
+                        div().flex().gap_5().children(
+                            [
+                                ("regular", glass("regular")),
+                                ("clear", glass("clear").clear(true)),
+                                ("tint 0.35", glass("tint").tint(blue)),
+                                (
+                                    "tint 1.0",
+                                    glass("tint-opaque").tint(hsla(0.58, 0.9, 0.55, 1.)),
+                                ),
+                                ("clear + tint", glass("tint-clear").clear(true).tint(orange)),
+                            ]
+                            .map(|(label, panel)| cell(150., 104., label, panel)),
                         ),
-                        cell(
-                            150.,
-                            104.,
-                            "clear + tint",
-                            glass("tint-clear").clear(true).tint(orange),
-                        ),
-                    ]))
+                    )
                     .child(div().flex().gap_5().children(RADII.map(|radius| {
                         cell(
                             120.,

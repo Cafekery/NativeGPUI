@@ -18,43 +18,37 @@ const FIRST: u64 = 101;
 const MIDDLE: u64 = 102;
 const LAST: u64 = 103;
 
-#[derive(Copy, Clone, PartialEq)]
-enum Middle {
-    Plain,
-    Switch,
-}
-
 struct Phase {
     what: &'static str,
     order: [u64; 3],
-    middle: Middle,
+    middle_is_switch: bool,
 }
 
 const SCRIPT: [Phase; 5] = [
     Phase {
         what: "first frame",
         order: [FIRST, MIDDLE, LAST],
-        middle: Middle::Plain,
+        middle_is_switch: false,
     },
     Phase {
         what: "middle view replaced",
         order: [FIRST, MIDDLE, LAST],
-        middle: Middle::Switch,
+        middle_is_switch: true,
     },
     Phase {
         what: "middle view replaced back",
         order: [FIRST, MIDDLE, LAST],
-        middle: Middle::Plain,
+        middle_is_switch: false,
     },
     Phase {
         what: "pure reorder",
         order: [LAST, MIDDLE, FIRST],
-        middle: Middle::Plain,
+        middle_is_switch: false,
     },
     Phase {
         what: "nothing changed",
         order: [LAST, MIDDLE, FIRST],
-        middle: Middle::Plain,
+        middle_is_switch: false,
     },
 ];
 
@@ -72,8 +66,8 @@ struct Probe {
 
 impl Render for Probe {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let host = NativeHost::get(window, cx);
         if self.phase > 0 {
-            let host = NativeHost::get(window, cx);
             self.readings.push(Reading {
                 phase: self.phase - 1,
                 stack: host.stacking(Layer::Above),
@@ -86,20 +80,17 @@ impl Render for Probe {
                 origin: point(px(0.), px(0.)),
                 size: size(px(4000.), px(4000.)),
             };
-            let host = NativeHost::get(window, cx);
-            for (row, key) in phase.order.iter().enumerate() {
+            for (row, &key) in phase.order.iter().enumerate() {
                 let bounds = Bounds {
                     origin: point(px(20.), px(20. + 40. * row as f32)),
                     size: size(px(60.), px(24.)),
                 };
-                if *key == MIDDLE && phase.middle == Middle::Switch {
+                if key == MIDDLE && phase.middle_is_switch {
                     let _: Retained<NSSwitch> =
-                        host.place(*key, Layer::Above, bounds, mask, |mtm, _| {
-                            NSSwitch::new(mtm)
-                        });
+                        host.place(key, Layer::Above, bounds, mask, |mtm, _| NSSwitch::new(mtm));
                 } else {
                     let _: Retained<NSView> =
-                        host.place(*key, Layer::Above, bounds, mask, |mtm, _| {
+                        host.place(key, Layer::Above, bounds, mask, |mtm, _| {
                             NSView::initWithFrame(
                                 NSView::alloc(mtm),
                                 NSRect::new(NSPoint::ZERO, NSSize::new(24., 24.)),
@@ -137,16 +128,15 @@ fn report(readings: &[Reading]) {
     );
     for reading in readings {
         let phase = &SCRIPT[reading.phase];
-        let want = phase.order.to_vec();
-        let stacked = reading.stack == want;
-        let chained = reading.chain == want;
+        let stacked = reading.stack == phase.order;
+        let chained = reading.chain == phase.order;
         if !stacked || !chained {
             FAILED.store(1, Ordering::Relaxed);
         }
         println!(
             "{:<26} {:<16} {:<16} {:<16} {}",
             phase.what,
-            keys(&want),
+            keys(&phase.order),
             keys(&reading.stack),
             keys(&reading.chain),
             match (stacked, chained) {

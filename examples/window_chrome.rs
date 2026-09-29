@@ -1,11 +1,12 @@
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
 use std::fs;
 use std::io::Write;
 use std::ptr::NonNull;
 
 use gpui::{
-    App, Bounds, Context, MouseButton, Render, Size, Window, WindowBounds, div, point, prelude::*,
-    px, rgb, size,
+    App, Bounds, Context, MouseButton, Pixels, Render, Size, Window, WindowBounds, div, point,
+    prelude::*, px, rgb, size,
 };
 use native_gpui::sidebar::{NativeSidebar, SidebarOptions, sidebar_item};
 use native_gpui::window_chrome::{
@@ -20,8 +21,9 @@ use native_gpui::{MenuEntry, native_root, tokens, window_options};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSProgressIndicator, NSSegmentedControl, NSView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowOrderingMode, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSColor, NSCursor, NSEvent, NSProgressIndicator, NSScreen,
+    NSSegmentedControl, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowOrderingMode,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer,
@@ -43,7 +45,7 @@ macro_rules! wlog {
     ($($t:tt)*) => { log(&format!($($t)*)) };
 }
 
-fn bounds_of(r: [f32; 4]) -> Bounds<gpui::Pixels> {
+fn bounds_of(r: [f32; 4]) -> Bounds<Pixels> {
     Bounds {
         origin: point(px(r[0]), px(r[1])),
         size: size(px(r[2]), px(r[3])),
@@ -61,36 +63,35 @@ fn fmt(r: NSRect) -> String {
 extern "C" {
     fn CGWarpMouseCursorPosition(point: NSPoint) -> i32;
     fn CGEventCreateMouseEvent(
-        source: *mut std::ffi::c_void,
+        source: *mut c_void,
         kind: u32,
         position: NSPoint,
         button: u32,
-    ) -> *mut std::ffi::c_void;
-    fn CGEventPost(tap: u32, event: *mut std::ffi::c_void);
+    ) -> *mut c_void;
+    fn CGEventPost(tap: u32, event: *mut c_void);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
-    fn CFRelease(cf: *const std::ffi::c_void);
-}
-
-/// `CGWarpMouseCursorPosition` posts no event of its own, so the move has to be posted too.
-fn synth(kind: u32, x: f64, y: f64) {
-    let at = NSPoint::new(x, y);
-    DRIVER.with(|h| h.borrow_mut().warped = true);
-    unsafe {
-        CGWarpMouseCursorPosition(at);
-        let event = CGEventCreateMouseEvent(std::ptr::null_mut(), kind, at, 0);
-        if !event.is_null() {
-            CGEventPost(0, event);
-            CFRelease(event.cast_const());
-        }
-    }
+    fn CFRelease(cf: *const c_void);
 }
 
 const MOUSE_MOVED: u32 = 5;
 const LEFT_DOWN: u32 = 1;
 const LEFT_UP: u32 = 2;
+
+/// `CGWarpMouseCursorPosition` posts no event of its own, so the move has to be posted too.
+fn synth(kind: u32, at: NSPoint) {
+    DRIVER.with_borrow_mut(|h| h.warped = true);
+    unsafe {
+        CGWarpMouseCursorPosition(at);
+        let event = CGEventCreateMouseEvent(std::ptr::null_mut(), kind, at, 0);
+        if !event.is_null() {
+            CGEventPost(0, event);
+            CFRelease(event);
+        }
+    }
+}
 
 thread_local! {
     static DRIVER: RefCell<Driver> = RefCell::new(Driver::default());
@@ -103,17 +104,14 @@ struct Driver {
     overlay: Option<Retained<NSWindow>>,
     pointer_home: Option<NSPoint>,
     warped: bool,
-    sidebar: Option<NativeSidebar>,
 }
 
 fn restore_pointer() {
-    let home = DRIVER.with(|h| {
-        let h = h.borrow();
-        h.warped.then_some(h.pointer_home).flatten()
-    });
-    let Some(home) = home else { return };
-    synth(MOUSE_MOVED, home.x, home.y);
-    DRIVER.with(|h| h.borrow_mut().warped = false);
+    let Some(home) = DRIVER.with_borrow(|h| h.pointer_home.filter(|_| h.warped)) else {
+        return;
+    };
+    synth(MOUSE_MOVED, home);
+    DRIVER.with_borrow_mut(|h| h.warped = false);
     wlog!("POINTER restored to {:.1},{:.1}", home.x, home.y);
 }
 
@@ -141,12 +139,11 @@ fn geometry(window: &Window, tag: &str) {
 }
 
 fn corner_probe(window: &Window, tag: &str) {
-    let readback = corner_radius_readback(window)
-        .map(|r| format!("{:.3}", f32::from(r)))
-        .unwrap_or_else(|| "unsupported".into());
-    let written = corner_radius(window)
-        .map(|r| format!("{:.3}", f32::from(r)))
-        .unwrap_or_else(|| "system".into());
+    let radius = |r: Option<Pixels>, none: &str| {
+        r.map_or_else(|| none.to_string(), |r| format!("{:.3}", f32::from(r)))
+    };
+    let readback = radius(corner_radius_readback(window), "unsupported");
+    let written = radius(corner_radius(window), "system");
     wlog!(
         "CORNER[{tag}] supported={} system={:.3} written={written} readback={readback}",
         supports_corner_radius(window),
@@ -158,48 +155,45 @@ fn overlay(window: &Window, which: Option<[f32; 4]>) {
     let mtm = MainThreadMarker::new().unwrap();
     let parent = ns_window(window);
     let host = chrome_host(window);
-    DRIVER.with(|h| {
-        let mut h = h.borrow_mut();
-        if let Some(old) = h.overlay.take() {
-            parent.removeChildWindow(&old);
-            old.orderOut(None);
-        }
-        let Some(probe) = which else {
-            log("OVERLAY off");
-            return;
-        };
-        let bounds = bounds_of(probe);
-        let on_screen = native_screen_rect(&host, bounds);
-        wlog!(
-            "COORD gpui=({:.4},{:.4} {:.4}x{:.4}) host=({}) window=({}) screen=({})",
-            probe[0],
-            probe[1],
-            probe[2],
-            probe[3],
-            fmt(native_rect(bounds)),
-            fmt(native_window_rect(&host, bounds)),
-            fmt(on_screen),
-        );
-        let overlay = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                on_screen,
-                NSWindowStyleMask::Borderless,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
-        let magenta = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 1.0, 1.0);
-        overlay.setBackgroundColor(Some(&magenta));
-        overlay.setHasShadow(false);
-        overlay.setOpaque(true);
-        overlay.setIgnoresMouseEvents(true);
-        unsafe { parent.addChildWindow_ordered(&overlay, NSWindowOrderingMode::Above) };
-        // `initWithContentRect:` rounds the rect; `setFrame:` keeps it.
-        overlay.setFrame_display(on_screen, true);
-        wlog!("OVERLAY frame=({})", fmt(overlay.frame()));
-        h.overlay = Some(overlay);
-    });
+    if let Some(old) = DRIVER.with_borrow_mut(|h| h.overlay.take()) {
+        parent.removeChildWindow(&old);
+        old.orderOut(None);
+    }
+    let Some(probe) = which else {
+        log("OVERLAY off");
+        return;
+    };
+    let bounds = bounds_of(probe);
+    let on_screen = native_screen_rect(&host, bounds);
+    wlog!(
+        "COORD gpui=({:.4},{:.4} {:.4}x{:.4}) host=({}) window=({}) screen=({})",
+        probe[0],
+        probe[1],
+        probe[2],
+        probe[3],
+        fmt(native_rect(bounds)),
+        fmt(native_window_rect(&host, bounds)),
+        fmt(on_screen),
+    );
+    let overlay = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            on_screen,
+            NSWindowStyleMask::Borderless,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    let magenta = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.0, 1.0, 1.0);
+    overlay.setBackgroundColor(Some(&magenta));
+    overlay.setHasShadow(false);
+    overlay.setOpaque(true);
+    overlay.setIgnoresMouseEvents(true);
+    unsafe { parent.addChildWindow_ordered(&overlay, NSWindowOrderingMode::Above) };
+    // `initWithContentRect:` rounds the rect; `setFrame:` keeps it.
+    overlay.setFrame_display(on_screen, true);
+    wlog!("OVERLAY frame=({})", fmt(overlay.frame()));
+    DRIVER.with_borrow_mut(|h| h.overlay = Some(overlay));
 }
 
 fn flags_arm(window: &Window, name: &str, on: bool) {
@@ -245,10 +239,9 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
     let arg = parts.next().unwrap_or("");
     match head {
         "corner" => {
-            let radius = if arg == "default" || arg == "system" {
-                None
-            } else {
-                arg.parse::<f32>().ok().map(px)
+            let radius = match arg {
+                "default" | "system" => None,
+                _ => arg.parse().ok().map(px),
             };
             set_corner_radius(window, radius);
             corner_probe(window, arg);
@@ -270,7 +263,7 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
         }
         "mode" => {
             if let Ok(index) = arg.parse::<usize>() {
-                MODE.with(|slot| slot.set(index));
+                MODE.set(index);
                 set_toolbar(window, cx, Some(ToolbarStyle::Unified), &toolbar_items());
                 wlog!("MODE set {index}");
             }
@@ -293,13 +286,13 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
             }
         }
         "search" => {
-            set_toolbar_search_active(window, "ng.search", arg != "off");
-            wlog!("SEARCH active={}", arg != "off");
+            let active = arg != "off";
+            set_toolbar_search_active(window, "ng.search", active);
+            wlog!("SEARCH active={}", active);
         }
         "resize" => {
             if let Ok(width) = arg.parse::<f64>() {
-                let ns_window = chrome_host(window).window();
-                if let Some(ns_window) = ns_window {
+                if let Some(ns_window) = chrome_host(window).window() {
                     let mut frame = ns_window.frame();
                     frame.size.width = width;
                     ns_window.setFrame_display(frame, true);
@@ -314,7 +307,6 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 sidebar_item("there", "There").symbol("clock"),
             ]);
             sidebar.set_selected(Some("here"));
-            DRIVER.with(|h| h.borrow_mut().sidebar = Some(sidebar));
             let mut items = toolbar_items();
             items.insert(1, ToolbarItem::separator("ng.divider", 0));
             set_toolbar(window, cx, Some(ToolbarStyle::Unified), &items);
@@ -337,32 +329,31 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 flags_arm(window, arg, parts.next() == Some("on"));
             }
         }
-        "move" => {
+        "move" | "click" => {
             let x: f64 = arg.parse().unwrap_or(0.);
             let y: f64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0.);
-            synth(MOUSE_MOVED, x, y);
-            wlog!("MOVE warp+mouseMoved to {x:.1},{y:.1}");
-        }
-        "click" => {
-            let x: f64 = arg.parse().unwrap_or(0.);
-            let y: f64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0.);
-            synth(MOUSE_MOVED, x, y);
-            synth(LEFT_DOWN, x, y);
-            synth(LEFT_UP, x, y);
-            wlog!("CLICK warp+moved+down+up at {x:.1},{y:.1}");
+            let at = NSPoint::new(x, y);
+            synth(MOUSE_MOVED, at);
+            if head == "move" {
+                wlog!("MOVE warp+mouseMoved to {x:.1},{y:.1}");
+            } else {
+                synth(LEFT_DOWN, at);
+                synth(LEFT_UP, at);
+                wlog!("CLICK warp+moved+down+up at {x:.1},{y:.1}");
+            }
         }
         "pointer" => restore_pointer(),
         "cursor" => {
             let host = chrome_host(window);
             let want = native_screen_rect(&host, bounds_of(CLAIMED));
-            let mouse = objc2_app_kit::NSEvent::mouseLocation();
+            let mouse = NSEvent::mouseLocation();
             let inside = mouse.x >= want.origin.x
                 && mouse.x <= want.origin.x + want.size.width
                 && mouse.y >= want.origin.y
                 && mouse.y <= want.origin.y + want.size.height;
             // `currentCursor` is this process's own stack; `currentSystemCursor` is what shows.
             #[allow(deprecated)]
-            let system = objc2_app_kit::NSCursor::currentSystemCursor()
+            let system = NSCursor::currentSystemCursor()
                 .map(|c| {
                     format!(
                         "{} hotSpot={:.1},{:.1} imageSize={:.1}x{:.1}",
@@ -380,14 +371,15 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
                 in_window.origin.x + in_window.size.width / 2.,
                 in_window.origin.y + in_window.size.height / 2.,
             );
-            let hit = ns_window(window)
+            let w = ns_window(window);
+            let hit = w
                 .contentView()
                 .and_then(|c| c.hitTest(centre))
-                .map(|v| v.class().name().to_string_lossy().to_string())
+                .map(|v| v.class().name().to_string_lossy().into_owned())
                 .unwrap_or_else(|| "nil".into());
             wlog!(
                 "CURSOR hitTest@claimed_centre={hit} key={} current={} system={system} mouse={:.1},{:.1} claimed_screen=({}) inside={inside}",
-                ns_window(window).isKeyWindow(),
+                w.isKeyWindow(),
                 current_cursor_description(),
                 mouse.x,
                 mouse.y,
@@ -434,20 +426,17 @@ fn pump() {
         return;
     }
     let _ = fs::write(CMD, "");
-    let cx = DRIVER.with(|h| h.borrow().cx.clone());
-    let Some(mut cx) = cx else { return };
+    let Some(mut cx) = DRIVER.with_borrow(|h| h.cx.clone()) else {
+        return;
+    };
     let _ = cx.update(|window, app| {
         for line in body.lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                exec(line, window, app);
-            }
+            exec(line, window, app);
         }
     });
 }
 
 fn toolbar_items() -> Vec<ToolbarItem> {
-    let mode = MODE.with(|slot| slot.get());
     vec![
         ToolbarItem::symbol("ng.sidebar", "sidebar.left", "Sidebar")
             .on_click(|_, _| log("TOOLBAR clicked ng.sidebar")),
@@ -461,10 +450,10 @@ fn toolbar_items() -> Vec<ToolbarItem> {
                 ToolbarSegment::new("rectangle.split.3x1", "Columns"),
                 ToolbarSegment::new("squares.below.rectangle", "Gallery"),
             ],
-            mode,
+            MODE.get(),
         )
         .on_select(|index, _, _| {
-            MODE.with(|slot| slot.set(index));
+            MODE.set(index);
             wlog!("TOOLBAR group ng.view -> {index}");
         }),
         ToolbarItem::menu(
@@ -527,20 +516,20 @@ impl Render for Demo {
             let _ = fs::create_dir_all(DIR);
             let _ = fs::write(CMD, "");
             // Both spaces are anchored to the PRIMARY screen, so the flip uses screens()[0].
-            let mouse = objc2_app_kit::NSEvent::mouseLocation();
-            let height = objc2_app_kit::NSScreen::screens(MainThreadMarker::new().unwrap())
+            let mouse = NSEvent::mouseLocation();
+            let height = NSScreen::screens(MainThreadMarker::new().unwrap())
                 .firstObject()
                 .map_or(0., |s| s.frame().size.height);
-            DRIVER.with(|h| {
-                let mut h = h.borrow_mut();
+            DRIVER.with_borrow_mut(|h| {
                 h.cx = Some(window.to_async(cx));
                 h.pointer_home = Some(NSPoint::new(mouse.x, height - mouse.y));
             });
 
-            let block = block2::RcBlock::new(move |_: NonNull<NSTimer>| pump());
-            let timer = unsafe { NSTimer::timerWithTimeInterval_repeats_block(0.1, true, &block) };
-            unsafe { NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes) };
-            std::mem::forget(timer);
+            let block = block2::RcBlock::new(|_: NonNull<NSTimer>| pump());
+            unsafe {
+                let timer = NSTimer::timerWithTimeInterval_repeats_block(0.1, true, &block);
+                NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+            }
 
             wlog!("READY pid={} cmd={CMD}", std::process::id());
             geometry(window, "install");
@@ -570,6 +559,48 @@ impl Render for Demo {
                 .hover(|s| s.bg(rgb(0x3d444b)))
                 .child(text)
         };
+        let pt = |r: Option<Pixels>, none: &str| {
+            r.map_or_else(|| none.to_string(), |r| format!("{:.2}pt", f32::from(r)))
+        };
+        let row = |dy: f32| {
+            div()
+                .absolute()
+                .left(px(60.))
+                .top(band + px(dy))
+                .flex()
+                .gap_2()
+        };
+        let radii = [
+            ("r8", "8", Some(8.)),
+            ("r16", "16", Some(16.)),
+            ("r24", "24", Some(24.)),
+            ("r40", "40", Some(40.)),
+            ("rsys", "system", None),
+        ]
+        .map(|(id, text, radius)| {
+            button(id, text).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_, _, window, cx| {
+                    set_corner_radius(window, radius.map(px));
+                    cx.notify();
+                }),
+            )
+        });
+        let toolbars = [
+            ("tb-unified", "unified toolbar", Some(ToolbarStyle::Unified)),
+            ("tb-compact", "compact", Some(ToolbarStyle::UnifiedCompact)),
+            ("tb-off", "no toolbar", None),
+        ]
+        .map(|(id, text, style)| {
+            button(id, text).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_, _, window, cx| {
+                    let items = style.map_or_else(Vec::new, |_| toolbar_items());
+                    set_toolbar(window, cx, style, &items);
+                    cx.notify();
+                }),
+            )
+        });
 
         native_root(
             div()
@@ -597,20 +628,15 @@ impl Render for Demo {
                         .child(label(format!(
                             "titlebar band {:.2}pt   traffic lights {}",
                             f32::from(band),
-                            match inset {
-                                Some(p) =>
-                                    format!("inset {:.2},{:.2}", f32::from(p.x), f32::from(p.y)),
-                                None => "absent".into(),
-                            }
+                            inset.map_or_else(
+                                || "absent".into(),
+                                |p| format!("inset {:.2},{:.2}", f32::from(p.x), f32::from(p.y))
+                            )
                         )))
                         .child(label(format!(
                             "corner: written {}   readback {}   system default {:.2}pt",
-                            written
-                                .map(|r| format!("{:.2}pt", f32::from(r)))
-                                .unwrap_or_else(|| "system".into()),
-                            readback
-                                .map(|r| format!("{:.2}pt", f32::from(r)))
-                                .unwrap_or_else(|| "n/a".into()),
+                            pt(written, "system"),
+                            pt(readback, "n/a"),
                             f32::from(system_corner_radius(window)),
                         )))
                         .child(label(format!(
@@ -618,88 +644,8 @@ impl Render for Demo {
                             self.clicks, self.control_clicks
                         ))),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(60.))
-                        .top(band + px(78.))
-                        .flex()
-                        .gap_2()
-                        .child(button("r8", "8").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_corner_radius(window, Some(px(8.)));
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("r16", "16").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_corner_radius(window, Some(px(16.)));
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("r24", "24").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_corner_radius(window, Some(px(24.)));
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("r40", "40").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_corner_radius(window, Some(px(40.)));
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("rsys", "system").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_corner_radius(window, None);
-                                cx.notify();
-                            }),
-                        )),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(60.))
-                        .top(band + px(122.))
-                        .flex()
-                        .gap_2()
-                        .child(button("tb-unified", "unified toolbar").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_toolbar(
-                                    window,
-                                    cx,
-                                    Some(ToolbarStyle::Unified),
-                                    &toolbar_items(),
-                                );
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("tb-compact", "compact").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_toolbar(
-                                    window,
-                                    cx,
-                                    Some(ToolbarStyle::UnifiedCompact),
-                                    &toolbar_items(),
-                                );
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button("tb-off", "no toolbar").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, window, cx| {
-                                set_toolbar(window, cx, None, &[]);
-                                cx.notify();
-                            }),
-                        )),
-                )
+                .child(row(78.).children(radii))
+                .child(row(122.).children(toolbars))
                 .child(
                     div()
                         .absolute()
@@ -757,24 +703,15 @@ impl Render for Demo {
                         )
                         .child("unclaimed control"),
                 )
-                .child(
+                .children([ANCHOR, FRACT].map(|r| {
                     div()
                         .absolute()
-                        .left(px(ANCHOR[0]))
-                        .top(px(ANCHOR[1]))
-                        .w(px(ANCHOR[2]))
-                        .h(px(ANCHOR[3]))
-                        .bg(rgb(0xff8000)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(FRACT[0]))
-                        .top(px(FRACT[1]))
-                        .w(px(FRACT[2]))
-                        .h(px(FRACT[3]))
-                        .bg(rgb(0xff8000)),
-                ),
+                        .left(px(r[0]))
+                        .top(px(r[1]))
+                        .w(px(r[2]))
+                        .h(px(r[3]))
+                        .bg(rgb(0xff8000))
+                })),
         )
     }
 }

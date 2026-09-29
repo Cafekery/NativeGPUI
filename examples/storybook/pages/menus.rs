@@ -1,9 +1,10 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, App, Context, SharedString, WeakEntity, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, Context, WeakEntity, Window, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
-    MenuCommand, MenuSection, TrackingMode, add_menu, extend_menu, install_menus, native_segmented,
+    MenuCommand, MenuSection, NativeSegmented, TrackingMode, add_menu, extend_menu, install_menus,
+    native_segmented,
 };
 use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenuItem};
 use objc2_foundation::MainThreadMarker;
@@ -43,14 +44,22 @@ struct BarRow {
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
     if !d.menus.listening {
         d.menus.listening = true;
-        let entity = cx.entity().downgrade();
-        listen(entity, cx);
+        listen(cx.entity().downgrade(), cx);
     }
 
     let bar = read_bar();
+    let menus = bar.len();
     let rows: usize = bar.iter().map(|(_, rows)| rows.len()).sum();
-    let (added, file_row, app_row) = (d.menus.added, d.menus.file_row, d.menus.app_row);
-    let fired = (d.menus.ping, d.menus.export, d.menus.settings);
+    let State {
+        added,
+        file_row,
+        app_row,
+        ping,
+        export,
+        settings,
+        reinstalls,
+        ..
+    } = d.menus;
 
     stack(vec![
         note(
@@ -59,7 +68,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
              key equivalents and the selector each row sends.",
         ),
         section(
-            &format!("The live bar — {} menus, {rows} rows", bar.len()),
+            &format!("The live bar — {menus} menus, {rows} rows"),
             vec![
                 caption(
                     "Rows AppKit hides behind ⌥ are listed too, marked alt, so Close All appears \
@@ -68,16 +77,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      so open the Edit menu and re-read to watch the count grow. Inheriting all of \
                      that is the point of using the real selectors.",
                 ),
-                grid(
-                    bar.iter()
-                        .map(|(title, rows)| menu_card(title, rows))
-                        .collect(),
-                ),
+                grid(bar.into_iter().map(menu_card).collect()),
                 demo(
                     "re-read",
-                    native_segmented("reread", 0)
-                        .segments(["Re-read NSApp.mainMenu"])
-                        .tracking_mode(TrackingMode::Momentary)
+                    momentary("reread", "Re-read NSApp.mainMenu")
                         .on_change(cx.listener(|_: &mut Demo, _: &usize, _, cx| {
                             cx.notify();
                         }))
@@ -97,72 +100,68 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 row(
                     "add rows to the bar above",
                     vec![
-                        native_segmented("add-menu", 0)
-                            .segments([if added {
+                        momentary(
+                            "add-menu",
+                            if added {
                                 "Storybook menu added"
                             } else {
                                 "add_menu(\"Storybook\", …)"
-                            }])
-                            .tracking_mode(TrackingMode::Momentary)
-                            .enabled(!added)
-                            .on_change(cx.listener(|d: &mut Demo, _: &usize, _, cx| {
-                                add_menu(
-                                    "Storybook",
-                                    [
-                                        MenuCommand::new("Ping", MenuPing).key("cmd-ctrl-alt-p"),
-                                        MenuCommand::separator(),
-                                        MenuCommand::new("Ping, no chord", MenuPing),
-                                    ],
-                                );
-                                d.menus.added = true;
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                        native_segmented("add-file", 0)
-                            .segments([if file_row {
+                            },
+                        )
+                        .enabled(!added)
+                        .on_change(set(cx, |d, _: usize| {
+                            add_menu(
+                                "Storybook",
+                                [
+                                    MenuCommand::new("Ping", MenuPing).key("cmd-ctrl-alt-p"),
+                                    MenuCommand::separator(),
+                                    MenuCommand::new("Ping, no chord", MenuPing),
+                                ],
+                            );
+                            d.menus.added = true;
+                        }))
+                        .into_any_element(),
+                        momentary(
+                            "add-file",
+                            if file_row {
                                 "File row added"
                             } else {
                                 "extend_menu(File, …)"
-                            }])
-                            .tracking_mode(TrackingMode::Momentary)
-                            .enabled(!file_row)
-                            .on_change(cx.listener(|d: &mut Demo, _: &usize, _, cx| {
-                                extend_menu(
-                                    MenuSection::File,
-                                    [
-                                        MenuCommand::new("Export…", MenuExport)
-                                            .key("cmd-ctrl-alt-e"),
-                                    ],
-                                );
-                                d.menus.file_row = true;
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                        native_segmented("add-app", 0)
-                            .segments([if app_row {
+                            },
+                        )
+                        .enabled(!file_row)
+                        .on_change(set(cx, |d, _: usize| {
+                            extend_menu(
+                                MenuSection::File,
+                                [MenuCommand::new("Export…", MenuExport).key("cmd-ctrl-alt-e")],
+                            );
+                            d.menus.file_row = true;
+                        }))
+                        .into_any_element(),
+                        momentary(
+                            "add-app",
+                            if app_row {
                                 "App row added"
                             } else {
                                 "extend_menu(App, …)"
-                            }])
-                            .tracking_mode(TrackingMode::Momentary)
-                            .enabled(!app_row)
-                            .on_change(cx.listener(|d: &mut Demo, _: &usize, _, cx| {
-                                extend_menu(
-                                    MenuSection::App,
-                                    [MenuCommand::new("Storybook Settings…", MenuSettings)
-                                        .key("cmd-,")],
-                                );
-                                d.menus.app_row = true;
-                                cx.notify();
-                            }))
-                            .into_any_element(),
+                            },
+                        )
+                        .enabled(!app_row)
+                        .on_change(set(cx, |d, _: usize| {
+                            extend_menu(
+                                MenuSection::App,
+                                [MenuCommand::new("Storybook Settings…", MenuSettings)
+                                    .key("cmd-,")],
+                            );
+                            d.menus.app_row = true;
+                        }))
+                        .into_any_element(),
                     ],
                 ),
                 caption(format!(
-                    "rows fired: Ping {} · Export {} · Settings {}. Pick one from the bar above — \
+                    "rows fired: Ping {ping} · Export {export} · Settings {settings}. Pick one from the bar above — \
                      the count is the evidence, because a row that looks right and dispatches \
                      nothing looks identical.",
-                    fired.0, fired.1, fired.2
                 )),
             ],
         ),
@@ -180,16 +179,14 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 row(
                     "call it again",
                     vec![
-                        native_segmented("reinstall", 0)
-                            .segments(["install_menus(cx)"])
-                            .tracking_mode(TrackingMode::Momentary)
+                        momentary("reinstall", "install_menus(cx)")
                             .on_change(cx.listener(|d: &mut Demo, _: &usize, _, cx| {
                                 install_menus(cx);
                                 d.menus.reinstalls += 1;
                                 cx.notify();
                             }))
                             .into_any_element(),
-                        mono(format!("{} extra calls", d.menus.reinstalls)),
+                        mono(format!("{reinstalls} extra calls")),
                     ],
                 ),
                 caption(
@@ -221,10 +218,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
         props(&[
             (
                 "install_menus(cx)",
-                format!(
-                    "called once in main; {} further calls, all no-ops",
-                    d.menus.reinstalls
-                ),
+                format!("called once in main; {reinstalls} further calls, all no-ops"),
             ),
             (
                 "add_menu(title, [MenuCommand])",
@@ -254,15 +248,9 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ("MenuSection", "App, File, Edit, View, Window, Help".into()),
             (
                 "rows fired",
-                format!(
-                    "Ping {} · Export {} · Settings {}",
-                    fired.0, fired.1, fired.2
-                ),
+                format!("Ping {ping} · Export {export} · Settings {settings}"),
             ),
-            (
-                "NSApp.mainMenu",
-                format!("{} menus, {rows} rows", bar.len()),
-            ),
+            ("NSApp.mainMenu", format!("{menus} menus, {rows} rows")),
             (
                 "App::set_menus",
                 "never call it after install_menus — it replaces the whole bar".into(),
@@ -271,28 +259,27 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
     ])
 }
 
+fn momentary(id: &'static str, label: &'static str) -> NativeSegmented {
+    native_segmented(id, 0)
+        .segments([label])
+        .tracking_mode(TrackingMode::Momentary)
+}
+
 fn listen(entity: WeakEntity<Demo>, cx: &mut App) {
-    let ping = entity.clone();
-    cx.on_action(move |_: &MenuPing, cx: &mut App| {
-        ping.update(cx, |d: &mut Demo, cx| {
-            d.menus.ping += 1;
-            cx.notify();
-        })
-        .ok();
-    });
-    let export = entity.clone();
-    cx.on_action(move |_: &MenuExport, cx: &mut App| {
-        export
-            .update(cx, |d: &mut Demo, cx| {
-                d.menus.export += 1;
-                cx.notify();
-            })
-            .ok();
-    });
-    cx.on_action(move |_: &MenuSettings, cx: &mut App| {
+    count::<MenuPing>(entity.clone(), cx, |s| &mut s.ping);
+    count::<MenuExport>(entity.clone(), cx, |s| &mut s.export);
+    count::<MenuSettings>(entity, cx, |s| &mut s.settings);
+}
+
+fn count<A: gpui::Action>(
+    entity: WeakEntity<Demo>,
+    cx: &mut App,
+    counter: fn(&mut State) -> &mut usize,
+) {
+    cx.on_action(move |_: &A, cx: &mut App| {
         entity
             .update(cx, |d: &mut Demo, cx| {
-                d.menus.settings += 1;
+                *counter(&mut d.menus) += 1;
                 cx.notify();
             })
             .ok();
@@ -362,7 +349,7 @@ fn chord(item: &NSMenuItem) -> String {
     out
 }
 
-fn menu_card(title: &str, rows: &[BarRow]) -> AnyElement {
+fn menu_card((title, rows): (String, Vec<BarRow>)) -> AnyElement {
     div()
         .w(px(268.))
         .flex()
@@ -376,13 +363,13 @@ fn menu_card(title: &str, rows: &[BarRow]) -> AnyElement {
             div()
                 .text_sm()
                 .text_color(system_color(SystemColor::Label))
-                .child(SharedString::from(title.to_string())),
+                .child(title),
         )
-        .children(rows.iter().map(bar_row_line))
+        .children(rows.into_iter().map(bar_row_line))
         .into_any_element()
 }
 
-fn bar_row_line(row: &BarRow) -> AnyElement {
+fn bar_row_line(row: BarRow) -> AnyElement {
     if row.separator {
         return div()
             .my_1()
@@ -407,18 +394,18 @@ fn bar_row_line(row: &BarRow) -> AnyElement {
                         } else {
                             SystemColor::Label
                         }))
-                        .child(SharedString::from(if row.alternate {
+                        .child(if row.alternate {
                             format!("{} · alt", row.title)
                         } else {
-                            row.title.clone()
-                        })),
+                            row.title
+                        }),
                 )
                 .child(
                     div()
                         .font_family("SF Mono")
                         .text_xs()
                         .text_color(system_color(SystemColor::SecondaryLabel))
-                        .child(SharedString::from(row.chord.clone())),
+                        .child(row.chord),
                 ),
         )
         .child(
@@ -426,7 +413,7 @@ fn bar_row_line(row: &BarRow) -> AnyElement {
                 .font_family("SF Mono")
                 .text_xs()
                 .text_color(system_color(SystemColor::TertiaryLabel))
-                .child(SharedString::from(row.selector.clone())),
+                .child(row.selector),
         )
         .into_any_element()
 }

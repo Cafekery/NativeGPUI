@@ -11,16 +11,17 @@ use native_gpui::{install_menus, native_root, tokens, window_options};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-pub struct Page {
-    pub id: &'static str,
-    pub group: &'static str,
-    pub title: &'static str,
-    pub symbol: &'static str,
-    pub class: &'static str,
-    pub blurb: &'static str,
+struct Page {
+    id: &'static str,
+    group: &'static str,
+    title: &'static str,
+    symbol: &'static str,
+    class: &'static str,
+    blurb: &'static str,
+    render: fn(&mut Demo, &mut Window, &mut Context<Demo>) -> AnyElement,
 }
 
-pub const PAGES: &[Page] = &[
+const PAGES: &[Page] = &[
     Page {
         id: "switch",
         group: "Controls",
@@ -28,6 +29,7 @@ pub const PAGES: &[Page] = &[
         symbol: "switch.2",
         class: "NSSwitch",
         blurb: "The macOS toggle, with the 26 glass knob and its press capsule.",
+        render: pages::switch::render,
     },
     Page {
         id: "slider",
@@ -36,6 +38,7 @@ pub const PAGES: &[Page] = &[
         symbol: "slider.horizontal.3",
         class: "NSSlider",
         blurb: "Continuous, tick-snapping and vertical. Tracks while dragging.",
+        render: pages::slider::render,
     },
     Page {
         id: "segmented",
@@ -44,6 +47,7 @@ pub const PAGES: &[Page] = &[
         symbol: "square.split.2x1",
         class: "NSSegmentedControl",
         blurb: "Select-one or momentary. Restyled in macOS 26.",
+        render: pages::segmented::render,
     },
     Page {
         id: "buttons",
@@ -52,6 +56,7 @@ pub const PAGES: &[Page] = &[
         symbol: "capsule",
         class: "NSButton",
         blurb: "Push, default, bezel styles, checkbox with a mixed state, radios grouped in Rust.",
+        render: pages::buttons::render,
     },
     Page {
         id: "popup",
@@ -60,6 +65,7 @@ pub const PAGES: &[Page] = &[
         symbol: "chevron.up.chevron.down",
         class: "NSPopUpButton / NSMenu",
         blurb: "Real menus, so they get the current glass panel and metrics.",
+        render: pages::popup::render,
     },
     Page {
         id: "text",
@@ -68,6 +74,7 @@ pub const PAGES: &[Page] = &[
         symbol: "character.cursor.ibeam",
         class: "NSTextField",
         blurb: "Real IME, spell check, Writing Tools, and the system focus ring.",
+        render: pages::text::render,
     },
     Page {
         id: "label",
@@ -76,6 +83,7 @@ pub const PAGES: &[Page] = &[
         symbol: "textformat",
         class: "NSTextField (label)",
         blurb: "Static text AppKit draws, so it can be ordered above a material that blurs GPUI.",
+        render: pages::label::render,
     },
     Page {
         id: "indicators",
@@ -84,6 +92,7 @@ pub const PAGES: &[Page] = &[
         symbol: "progress.indicator",
         class: "NSProgressIndicator / NSLevelIndicator",
         blurb: "Determinate bars, the spinner, and level styles.",
+        render: pages::indicators::render,
     },
     Page {
         id: "small",
@@ -92,6 +101,7 @@ pub const PAGES: &[Page] = &[
         symbol: "calendar",
         class: "NSStepper / NSDatePicker / NSColorWell",
         blurb: "The small controls, each reading its value back through the host.",
+        render: pages::small::render,
     },
     Page {
         id: "material",
@@ -100,6 +110,7 @@ pub const PAGES: &[Page] = &[
         symbol: "square.stack.3d.down.right",
         class: "NSVisualEffectView",
         blurb: "The full catalogue, over a checkerboard so a collapse is visible.",
+        render: pages::material::render,
     },
     Page {
         id: "glass",
@@ -108,6 +119,7 @@ pub const PAGES: &[Page] = &[
         symbol: "drop",
         class: "NSGlassEffectView",
         blurb: "macOS 26 glass, and the container that batches many panels.",
+        render: pages::glass::render,
     },
     Page {
         id: "glass_variants",
@@ -116,6 +128,7 @@ pub const PAGES: &[Page] = &[
         symbol: "drop.halffull",
         class: "NSGlassEffectView (private)",
         blurb: "The 13 undocumented render classes, their subvariants and interaction states.",
+        render: pages::glass_variants::render,
     },
     Page {
         id: "custom_glass",
@@ -124,6 +137,7 @@ pub const PAGES: &[Page] = &[
         symbol: "slider.horizontal.below.square.filled.and.square",
         class: "CABackdropLayer + CASDFLayer",
         blurb: "Glass built from its parts, with every filter input on a dial.",
+        render: pages::custom_glass::render,
     },
     Page {
         id: "surfaces",
@@ -132,6 +146,7 @@ pub const PAGES: &[Page] = &[
         symbol: "rectangle.portrait.topthird.inset.filled",
         class: "NSPopover / NSAlert / NSSharingServicePicker",
         blurb: "Transient surfaces, anchored to a GPUI element.",
+        render: pages::surfaces::render,
     },
     Page {
         id: "tokens",
@@ -140,6 +155,7 @@ pub const PAGES: &[Page] = &[
         symbol: "paintpalette",
         class: "NSColor / NSFont",
         blurb: "Semantic colours, the system font, and SF Symbols, so GPUI-drawn parts match.",
+        render: pages::tokens::render,
     },
     Page {
         id: "menus",
@@ -148,6 +164,7 @@ pub const PAGES: &[Page] = &[
         symbol: "menubar.rectangle",
         class: "NSMenu / NSMenuItem",
         blurb: "The standard bar, read back out of NSApp. Where ⌘W, ⌘Q, ⌘M and ⌘H live.",
+        render: pages::menus::render,
     },
     Page {
         id: "background",
@@ -156,6 +173,7 @@ pub const PAGES: &[Page] = &[
         symbol: "rectangle.inset.filled",
         class: "NSColor.windowBackgroundColor",
         blurb: "One background colour per window, and what a second one looks like.",
+        render: pages::background::render,
     },
     Page {
         id: "sidebar",
@@ -164,6 +182,7 @@ pub const PAGES: &[Page] = &[
         symbol: "sidebar.left",
         class: "NSSplitViewItem.sidebar",
         blurb: "Pops out its own window: a sidebar has to own the window's content view.",
+        render: pages::sidebar_page::render,
     },
     Page {
         id: "chrome",
@@ -172,10 +191,11 @@ pub const PAGES: &[Page] = &[
         symbol: "macwindow",
         class: "NSWindow / NSToolbar",
         blurb: "Pops out its own window: corner radius, toolbar, traffic lights, level.",
+        render: pages::chrome::render,
     },
 ];
 
-pub fn page_of(id: &str) -> &'static Page {
+fn page_of(id: &str) -> &'static Page {
     PAGES.iter().find(|p| p.id == id).unwrap_or(&PAGES[0])
 }
 
@@ -296,30 +316,6 @@ impl Demo {
         sidebar.set_selected(Some(&self.selected));
         self.sidebar = Some(sidebar);
     }
-
-    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match self.selected.as_ref() {
-            "slider" => pages::slider::render(self, window, cx),
-            "segmented" => pages::segmented::render(self, window, cx),
-            "buttons" => pages::buttons::render(self, window, cx),
-            "popup" => pages::popup::render(self, window, cx),
-            "text" => pages::text::render(self, window, cx),
-            "label" => pages::label::render(self, window, cx),
-            "indicators" => pages::indicators::render(self, window, cx),
-            "small" => pages::small::render(self, window, cx),
-            "material" => pages::material::render(self, window, cx),
-            "glass" => pages::glass::render(self, window, cx),
-            "glass_variants" => pages::glass_variants::render(self, window, cx),
-            "custom_glass" => pages::custom_glass::render(self, window, cx),
-            "surfaces" => pages::surfaces::render(self, window, cx),
-            "tokens" => pages::tokens::render(self, window, cx),
-            "menus" => pages::menus::render(self, window, cx),
-            "sidebar" => pages::sidebar_page::render(self, window, cx),
-            "chrome" => pages::chrome::render(self, window, cx),
-            "background" => pages::background::render(self, window, cx),
-            _ => pages::switch::render(self, window, cx),
-        }
-    }
 }
 
 impl Render for Demo {
@@ -335,7 +331,7 @@ impl Render for Demo {
             .unwrap_or_default();
         let page = page_of(&self.selected);
         let stats = self.frame_stats();
-        let body = self.body(window, cx);
+        let body = (page.render)(self, window, cx);
 
         native_root(
             div().relative().size_full().child(
@@ -377,31 +373,16 @@ impl Render for Demo {
                                             .flex()
                                             .gap_2()
                                             .text_xs()
-                                            .child(
-                                                div()
-                                                    .px_2p5()
-                                                    .py_1()
-                                                    .rounded_md()
-                                                    .bg(system_color(SystemColor::ControlAccent))
-                                                    .text_color(system_color(
-                                                        SystemColor::AlternateSelectedControlText,
-                                                    ))
-                                                    .child(SharedString::from(format!(
-                                                        "drawn by macOS · {}",
-                                                        page.class
-                                                    ))),
-                                            )
-                                            .child(
-                                                div()
-                                                    .px_2p5()
-                                                    .py_1()
-                                                    .rounded_md()
-                                                    .bg(system_color(
-                                                        SystemColor::QuaternarySystemFill,
-                                                    ))
-                                                    .text_color(system_color(SystemColor::Label))
-                                                    .child(SharedString::from(stats)),
-                                            ),
+                                            .child(badge(
+                                                SystemColor::ControlAccent,
+                                                SystemColor::AlternateSelectedControlText,
+                                                format!("drawn by macOS · {}", page.class),
+                                            ))
+                                            .child(badge(
+                                                SystemColor::QuaternarySystemFill,
+                                                SystemColor::Label,
+                                                stats,
+                                            )),
                                     ),
                             )
                             .child(body),
@@ -409,6 +390,16 @@ impl Render for Demo {
             ),
         )
     }
+}
+
+fn badge(fill: SystemColor, text: SystemColor, label: String) -> impl IntoElement {
+    div()
+        .px_2p5()
+        .py_1()
+        .rounded_md()
+        .bg(system_color(fill))
+        .text_color(system_color(text))
+        .child(label)
 }
 
 fn main() {

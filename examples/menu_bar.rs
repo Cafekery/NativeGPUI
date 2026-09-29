@@ -1,7 +1,6 @@
 //! The standard menu bar, read back out of AppKit. Exits with the number of failed rows.
 
 use std::env;
-use std::process::ExitCode;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -118,7 +117,6 @@ const KEY_Q: u16 = 12;
 static FAIL: AtomicU32 = AtomicU32::new(0);
 static ROWS: AtomicU32 = AtomicU32::new(0);
 static GPUI_CLAIMED: AtomicU32 = AtomicU32::new(0);
-static MENU_CLAIMED: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = ng_probe)]
@@ -128,38 +126,28 @@ struct FromKeymap;
 #[action(namespace = ng_probe)]
 struct FromMenu;
 
-fn verdict(name: &str, ok: bool, detail: &str) {
+fn report(label: &str, name: &str, detail: &str) {
     ROWS.fetch_add(1, Ordering::Relaxed);
-    if !ok {
+    if label != "pass" {
         FAIL.fetch_add(1, Ordering::Relaxed);
     }
-    println!(
-        "{:<8} {:<40} {}",
-        if ok { "pass" } else { "FAIL" },
-        name,
-        detail
-    );
+    println!("{label:<8} {name:<40} {detail}");
+}
+
+fn verdict(name: &str, ok: bool, detail: &str) {
+    report(if ok { "pass" } else { "FAIL" }, name, detail);
 }
 
 fn blocked(name: &str, why: &str) {
-    ROWS.fetch_add(1, Ordering::Relaxed);
-    FAIL.fetch_add(1, Ordering::Relaxed);
-    println!("{:<8} {:<40} {}", "BLOCKED", name, why);
+    report("BLOCKED", name, why);
 }
 
-fn effect(name: &str, before: bool, after: bool, fired: bool) {
-    ROWS.fetch_add(1, Ordering::Relaxed);
-    let detail = format!("pre[{before}] post[{after}] want[true] performKeyEquivalent[{fired}]");
-    let label = if before {
-        FAIL.fetch_add(1, Ordering::Relaxed);
-        "VACUOUS"
-    } else if after && fired {
-        "pass"
-    } else {
-        FAIL.fetch_add(1, Ordering::Relaxed);
-        "FAIL"
-    };
-    println!("{label:<8} {name:<40} {detail}");
+fn effect(name: &str, after: bool, fired: bool) {
+    verdict(
+        name,
+        after && fired,
+        &format!("pre[false] post[{after}] want[true] performKeyEquivalent[{fired}]"),
+    );
 }
 
 fn mods_string(mask: NSEventModifierFlags) -> String {
@@ -201,11 +189,11 @@ fn class_name(object: &AnyObject) -> String {
 fn signature(item: &NSMenuItem) -> String {
     // `separatorItem` reports a Command mask whether or not anything asked for one.
     if item.isSeparatorItem() {
-        return "-|||".to_string();
+        return "-|||".into();
     }
-    let title = item.title().to_string();
     format!(
-        "{title}|{}|{}|{}",
+        "{}|{}|{}|{}",
+        item.title(),
         item.keyEquivalent(),
         mods_string(item.keyEquivalentModifierMask()),
         selector_name(item)
@@ -221,15 +209,13 @@ fn responder_for(window: &NSWindow, selector: Sel) -> Option<String> {
     let mut next = window.firstResponder();
     while let Some(responder) = next {
         if responder.respondsToSelector(selector) {
-            let object: &AnyObject = &responder;
-            return Some(class_name(object));
+            return Some(class_name(&responder));
         }
         next = unsafe { responder.nextResponder() };
     }
     if let Some(controller) = window.windowController() {
         if controller.respondsToSelector(selector) {
-            let object: &AnyObject = &controller;
-            return Some(class_name(object));
+            return Some(class_name(&controller));
         }
     }
     let app = NSApplication::sharedApplication(window.mtm());
@@ -244,17 +230,12 @@ fn responder_for(window: &NSWindow, selector: Sel) -> Option<String> {
     None
 }
 
-fn chord(
-    window: &NSWindow,
-    key: &str,
-    key_code: u16,
-    mask: NSEventModifierFlags,
-) -> Option<Retained<NSEvent>> {
+fn cmd_chord(window: &NSWindow, key: &str, key_code: u16) -> Option<Retained<NSEvent>> {
     let text = NSString::from_str(key);
     NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
         NSEventType::KeyDown,
         NSPoint::ZERO,
-        mask,
+        CMD,
         NSProcessInfo::processInfo().systemUptime(),
         window.windowNumber(),
         None,
@@ -265,18 +246,16 @@ fn chord(
     )
 }
 
-fn gpui_ns_window(window: &Window) -> Option<Retained<NSWindow>> {
-    let handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return None;
-    };
-    let view = unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?;
-    view.window()
-}
-
 fn ns_window(cx: &mut App, handle: &WindowHandle<Probe>) -> Option<Retained<NSWindow>> {
     handle
-        .update(cx, |_, window, _| gpui_ns_window(window))
+        .update(cx, |_, window, _| {
+            let handle = HasWindowHandle::window_handle(window).ok()?;
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                return None;
+            };
+            let view = unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?;
+            view.window()
+        })
         .ok()
         .flatten()
 }
@@ -330,6 +309,18 @@ fn print_row(menu: &str, item: &NSMenuItem) {
     );
 }
 
+fn printed_menu(bar: &NSMenu, title: &str, prefix: &str) -> Option<Vec<Retained<NSMenuItem>>> {
+    let Some(menu) = submenu(bar, title) else {
+        verdict(&format!("{prefix}{title}.present"), false, "no such menu");
+        return None;
+    };
+    let items = rows_of(&menu);
+    for item in &items {
+        print_row(title, item);
+    }
+    Some(items)
+}
+
 fn read_table(bar: &NSMenu, name: &str) {
     let want: Vec<String> = EXPECTED
         .iter()
@@ -345,14 +336,9 @@ fn read_table(bar: &NSMenu, name: &str) {
     print_header();
     for section in EXPECTED {
         let menu_title = section.menu.replace(APP, name);
-        let Some(menu) = submenu(bar, &menu_title) else {
-            verdict(&format!("{menu_title}.present"), false, "no such menu");
+        let Some(items) = printed_menu(bar, &menu_title, "") else {
             continue;
         };
-        let items = rows_of(&menu);
-        for item in &items {
-            print_row(&menu_title, item);
-        }
         for (index, row) in section.rows.iter().enumerate() {
             let want = expected_signature(row, name);
             let read = items
@@ -377,8 +363,9 @@ fn read_table(bar: &NSMenu, name: &str) {
                 &format!("{} rows, want {}", items.len(), section.rows.len()),
             );
         } else {
-            let shadow: Vec<String> = items[section.rows.len().min(items.len())..]
+            let shadow: Vec<String> = items
                 .iter()
+                .skip(section.rows.len())
                 .filter(|item| {
                     item.keyEquivalentModifierMask() == CMD
                         && matches!(
@@ -400,20 +387,13 @@ fn read_table(bar: &NSMenu, name: &str) {
 
 /// By identity: AppKit's tail appears only once there is something to put in it.
 fn registered_menus(bar: &NSMenu, name: &str) {
-    let mtm = bar.mtm();
-    let app = NSApplication::sharedApplication(mtm);
+    let app = NSApplication::sharedApplication(bar.mtm());
     for (label, ours, registered) in [
         ("windowsMenu", submenu(bar, "Window"), app.windowsMenu()),
         ("helpMenu", submenu(bar, "Help"), app.helpMenu()),
         (
             "servicesMenu",
-            submenu(bar, name).and_then(|app_menu| {
-                app_menu
-                    .itemArray()
-                    .iter()
-                    .find(|item| item.title().to_string() == "Services")
-                    .and_then(|item| item.submenu())
-            }),
+            submenu(bar, name).and_then(|app_menu| submenu(&app_menu, "Services")),
             app.servicesMenu(),
         ),
     ] {
@@ -433,11 +413,12 @@ fn registered_menus(bar: &NSMenu, name: &str) {
     }
 }
 
-fn controls(mtm: MainThreadMarker, bar: &NSMenu) {
+fn controls(bar: &NSMenu) {
     let Some(file) = submenu(bar, "File") else {
         verdict("control.file_menu", false, "no File menu to plant in");
         return;
     };
+    let mtm = bar.mtm();
     let nil_action = NSMenuItem::new(mtm);
     nil_action.setTitle(&NSString::from_str("NG control: nil action"));
     let unimplemented = unsafe {
@@ -451,27 +432,28 @@ fn controls(mtm: MainThreadMarker, bar: &NSMenu) {
     file.addItem(&nil_action);
     file.addItem(&unimplemented);
     file.update();
-    verdict(
-        "control.nil_action_disabled",
-        !nil_action.isEnabled(),
-        &format!("isEnabled[{}], must be false", nil_action.isEnabled()),
-    );
-    verdict(
-        "control.unimplemented_disabled",
-        !unimplemented.isEnabled(),
-        &format!("isEnabled[{}], must be false", unimplemented.isEnabled()),
-    );
+    for (name, item) in [
+        ("control.nil_action_disabled", &nil_action),
+        ("control.unimplemented_disabled", &unimplemented),
+    ] {
+        let enabled = item.isEnabled();
+        verdict(
+            name,
+            !enabled,
+            &format!("isEnabled[{enabled}], must be false"),
+        );
+    }
     file.removeItem(&nil_action);
     file.removeItem(&unimplemented);
 }
 
 /// `performKeyEquivalent:` declines a disabled row, so a fire with no effect reads against this.
-fn enabled_for(menu: &NSMenu, key: &str, mask: NSEventModifierFlags) -> Option<bool> {
+fn enabled_for(menu: &NSMenu, key: &str) -> Option<bool> {
     menu.update();
     menu.itemArray()
         .iter()
         .find(|item| {
-            item.keyEquivalent().to_string() == key && item.keyEquivalentModifierMask() == mask
+            item.keyEquivalent().to_string() == key && item.keyEquivalentModifierMask() == CMD
         })
         .map(|item| item.isEnabled())
 }
@@ -501,8 +483,7 @@ fn tags(bar: &NSMenu, name: &str) {
 
 /// `hide:`, `performMiniaturize:` and `deminiaturize` land a turn later, so each row settles.
 async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, resolvable: bool) {
-    let mtm = window.mtm();
-    let app = NSApplication::sharedApplication(mtm);
+    let app = NSApplication::sharedApplication(window.mtm());
 
     for (label, selector) in [
         ("cmd_h", sel!(hide:)),
@@ -541,8 +522,8 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
     };
 
     // ⌘M, ⌘W, ⌘H in that order: ⌘W destroys the window ⌘M needs, and `hide:` takes the key window.
-    if let Some(event) = chord(window, "m", KEY_M, CMD) {
-        let enabled = enabled_for(&window_menu, "m", CMD);
+    if let Some(event) = cmd_chord(window, "m", KEY_M) {
+        let enabled = enabled_for(&window_menu, "m");
         if window.isMiniaturized() {
             blocked("fire.cmd_m_miniaturizes", "window was already miniaturised");
         } else {
@@ -550,7 +531,7 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
             settle(cx).await;
             let after = window.isMiniaturized();
             println!("         (Minimize row enabled at fire time: {enabled:?})");
-            effect("fire.cmd_m_miniaturizes", false, after, fired);
+            effect("fire.cmd_m_miniaturizes", after, fired);
         }
         window.deminiaturize(None);
         // The deminiaturise has to land before ⌘W, or ⌘W reads an invisible window.
@@ -558,8 +539,8 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
         settle(cx).await;
     }
 
-    if let Some(event) = chord(window, "w", KEY_W, CMD) {
-        let enabled = enabled_for(&file, "w", CMD);
+    if let Some(event) = cmd_chord(window, "w", KEY_W) {
+        let enabled = enabled_for(&file, "w");
         println!("         (Close row enabled at fire time: {enabled:?})");
         if !window.isVisible() || window.isMiniaturized() {
             blocked(
@@ -569,24 +550,19 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
         } else {
             let fired = file.performKeyEquivalent(&event);
             settle(cx).await;
-            effect(
-                "fire.cmd_w_closes_window",
-                false,
-                !window.isVisible(),
-                fired,
-            );
+            effect("fire.cmd_w_closes_window", !window.isVisible(), fired);
         }
     }
 
-    if let Some(event) = chord(window, "h", KEY_H, CMD) {
-        let enabled = enabled_for(&app_menu, "h", CMD);
+    if let Some(event) = cmd_chord(window, "h", KEY_H) {
+        let enabled = enabled_for(&app_menu, "h");
         println!("         (Hide row enabled at fire time: {enabled:?})");
         if app.isHidden() {
             blocked("fire.cmd_h_hides_app", "app was already hidden");
         } else {
             let fired = app_menu.performKeyEquivalent(&event);
             settle(cx).await;
-            effect("fire.cmd_h_hides_app", false, app.isHidden(), fired);
+            effect("fire.cmd_h_hides_app", app.isHidden(), fired);
         }
         app.unhide(None);
         settle(cx).await;
@@ -596,15 +572,7 @@ async fn fire(cx: &mut AsyncApp, bar: &NSMenu, window: &NSWindow, name: &str, re
 /// A subsequence match: an inserted row is fine, a dropped or reordered one is not.
 fn extended(bar: &NSMenu, name: &str) {
     let read = menu_titles(bar);
-    let want = vec![
-        name.to_string(),
-        "File".into(),
-        "Edit".into(),
-        "View".into(),
-        "Probe".into(),
-        "Window".into(),
-        "Help".into(),
-    ];
+    let want = [name, "File", "Edit", "View", "Probe", "Window", "Help"];
     verdict(
         "extend.bar_menus",
         read == want,
@@ -614,33 +582,20 @@ fn extended(bar: &NSMenu, name: &str) {
     print_header();
     for section in EXPECTED {
         let menu_title = section.menu.replace(APP, name);
-        let Some(menu) = submenu(bar, &menu_title) else {
-            verdict(
-                &format!("extend.{menu_title}.present"),
-                false,
-                "no such menu",
-            );
+        let Some(items) = printed_menu(bar, &menu_title, "extend.") else {
             continue;
         };
-        let items = rows_of(&menu);
-        for item in &items {
-            print_row(&menu_title, item);
-        }
-        let read: Vec<String> = items.iter().map(|item| signature(item)).collect();
-        let want: Vec<String> = section
+        let mut read = items.iter().map(|item| signature(item));
+        let missing: Vec<String> = section
             .rows
             .iter()
             .map(|row| expected_signature(row, name))
-            .collect();
-        let mut cursor = read.iter();
-        let missing: Vec<&String> = want
-            .iter()
-            .filter(|row| !cursor.any(|read| read == *row))
+            .filter(|want| !read.any(|row| row == *want))
             .collect();
         verdict(
             &format!("extend.{menu_title}.standard_rows_intact"),
             missing.is_empty(),
-            &format!("{} standard rows, missing{missing:?}", want.len()),
+            &format!("{} standard rows, missing{missing:?}", section.rows.len()),
         );
     }
 
@@ -657,20 +612,21 @@ fn extended(bar: &NSMenu, name: &str) {
         verdict("extend.probe_menu", false, "no Probe menu");
         return;
     };
-    let rows: Vec<String> = rows_of(&probe).iter().map(|item| signature(item)).collect();
-    for item in rows_of(&probe) {
-        print_row("Probe", &item);
+    let items = rows_of(&probe);
+    for item in &items {
+        print_row("Probe", item);
     }
+    let rows: Vec<String> = items.iter().map(|item| signature(item)).collect();
     verdict(
         "extend.probe_rows",
-        rows == vec![
-            "Neutral|j|cmd-alt-ctrl-shift|ngMenuCommand:".to_string(),
-            "-|||".to_string(),
-            "Also Neutral|||ngMenuCommand:".to_string(),
+        rows == [
+            "Neutral|j|cmd-alt-ctrl-shift|ngMenuCommand:",
+            "-|||",
+            "Also Neutral|||ngMenuCommand:",
         ],
         &format!("{rows:?}"),
     );
-    let enabled = rows_of(&probe).first().map(|item| item.isEnabled());
+    let enabled = items.first().map(|item| item.isEnabled());
     verdict(
         "extend.probe_row_enabled",
         enabled == Some(true),
@@ -701,15 +657,12 @@ fn app_menus() {
     );
 }
 
-fn main() -> ExitCode {
+fn main() {
     let arm = env::var("NG_ARM").unwrap_or_else(|_| "table".into());
     gpui_platform::application().run(move |cx: &mut App| {
         if arm != "noquit" && env::var("NG_MENUS").as_deref() != Ok("0") {
             install_menus(cx);
         }
-        cx.on_action(|_: &FromMenu, _| {
-            MENU_CLAIMED.fetch_add(1, Ordering::Relaxed);
-        });
         // Without the stop the menu answers the chord too, and both order arms read the same.
         cx.on_action(|_: &FromKeymap, cx| {
             GPUI_CLAIMED.fetch_add(1, Ordering::Relaxed);
@@ -749,7 +702,6 @@ fn main() -> ExitCode {
         })
         .detach();
     });
-    ExitCode::SUCCESS
 }
 
 async fn settle(cx: &mut AsyncApp) {
@@ -767,10 +719,9 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     let process = NSProcessInfo::processInfo().processName().to_string();
     // The bundled run sets `NG_EXPECT_NAME` to a name the executable does not have.
     let expected = env::var("NG_EXPECT_NAME").ok();
-    let name = expected.clone().unwrap_or_else(|| process.clone());
+    let name = expected.as_deref().unwrap_or(&process);
 
-    let window = cx.update(|cx| ns_window(cx, handle));
-    let Some(window) = window else {
+    let Some(window) = cx.update(|cx| ns_window(cx, handle)) else {
         verdict("window", false, "no NSWindow behind the gpui window");
         return;
     };
@@ -802,7 +753,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
             ours.is_empty(),
             &format!("mainMenu present[{}] ours{ours:?}", bar.is_some()),
         );
-        if let Some(event) = chord(&window, "q", KEY_Q, CMD) {
+        if let Some(event) = cmd_chord(&window, "q", KEY_Q) {
             app.sendEvent(&event);
         }
         settle(cx).await;
@@ -825,7 +776,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
     if let Some(expected) = expected.as_deref() {
         // Count menus too: a bundle's system menu bears the app's name even without install_menus.
         let titles = menu_titles(&bar);
-        let first = titles.first().cloned().unwrap_or_default();
+        let first = titles.first().map_or("", String::as_str);
         verdict(
             "name.from_bundle_not_process",
             first == expected && expected != process && titles.len() >= EXPECTED.len(),
@@ -847,11 +798,11 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
 
     match arm {
         "quit" => {
-            let Some(app_menu) = submenu(&bar, &name) else {
+            let Some(app_menu) = submenu(&bar, name) else {
                 verdict("quit.app_menu", false, "no app menu to fire ⌘Q from");
                 return;
             };
-            let Some(event) = chord(&window, "q", KEY_Q, CMD) else {
+            let Some(event) = cmd_chord(&window, "q", KEY_Q) else {
                 return;
             };
             println!("quit: firing ⌘Q — the pass is this process printing nothing more");
@@ -877,7 +828,7 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
             );
             order(cx, &window, true).await;
         }
-        "extend" => extended(&bar, &name),
+        "extend" => extended(&bar, name),
         "hold" => {
             let seconds: u64 = env::var("NG_HOLD")
                 .ok()
@@ -889,21 +840,20 @@ async fn run(arm: &str, cx: &mut AsyncApp, handle: &WindowHandle<Probe>) {
             }
         }
         _ => {
-            read_table(&bar, &name);
-            registered_menus(&bar, &name);
-            tags(&bar, &name);
-            controls(mtm, &bar);
-            fire(cx, &bar, &window, &name, resolvable).await;
+            read_table(&bar, name);
+            registered_menus(&bar, name);
+            tags(&bar, name);
+            controls(&bar);
+            fire(cx, &bar, &window, name, resolvable).await;
         }
     }
 }
 
 /// Through `NSApp.sendEvent:`, so AppKit, not this probe, orders the layers.
 async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
-    let mtm = window.mtm();
-    let app = NSApplication::sharedApplication(mtm);
+    let app = NSApplication::sharedApplication(window.mtm());
     let label = if bound { "bound" } else { "unbound" };
-    let Some(event) = chord(window, "m", KEY_M, CMD) else {
+    let Some(event) = cmd_chord(window, "m", KEY_M) else {
         verdict(&format!("order.{label}.event"), false, "no event");
         return;
     };
@@ -921,7 +871,6 @@ async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
     }
 
     GPUI_CLAIMED.store(0, Ordering::Relaxed);
-    let before = window.isMiniaturized();
     app.sendEvent(&event);
     settle(cx).await;
     let miniaturized = window.isMiniaturized();
@@ -933,10 +882,10 @@ async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
         if bound {
             gpui == 1 && !miniaturized
         } else {
-            gpui == 0 && miniaturized && !before
+            gpui == 0 && miniaturized
         },
         &format!(
-            "pre[{before}] miniaturized[{miniaturized}] gpui_actions[{gpui}] — {}",
+            "pre[false] miniaturized[{miniaturized}] gpui_actions[{gpui}] — {}",
             if bound {
                 "a chord gpui binds must reach gpui and leave the menu item unfired"
             } else {
@@ -946,7 +895,7 @@ async fn order(cx: &mut AsyncApp, window: &NSWindow, bound: bool) {
     );
     verdict(
         &format!("order.{label}.exclusive"),
-        !(gpui > 0 && miniaturized && !before),
+        !(gpui > 0 && miniaturized),
         &format!("gpui_actions[{gpui}] miniaturized[{miniaturized}] — never both layers"),
     );
 }

@@ -1,12 +1,12 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use gpui::{RenderImage, px};
-
 use native_gpui::thumbnails;
 
-// Well cards are ~140pt; browse uses a larger poster. Icon-mode lands first.
 const WELL: f32 = 140.;
 const POSTER: f32 = 256.;
 
@@ -20,95 +20,81 @@ struct Key {
 static LANDED: Mutex<Vec<(Key, Option<Arc<RenderImage>>)>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static CACHE: std::cell::RefCell<HashMap<Key, Arc<RenderImage>>> =
-        std::cell::RefCell::new(HashMap::new());
-    static ASKED: std::cell::RefCell<HashSet<Key>> =
-        std::cell::RefCell::new(HashSet::new());
+    static CACHE: RefCell<HashMap<Key, Arc<RenderImage>>> = RefCell::new(HashMap::new());
+    static ASKED: RefCell<HashSet<Key>> = RefCell::new(HashSet::new());
 }
 
 fn scale_step(scale: f32) -> f32 {
     if scale >= 1.5 { 2.0 } else { 1.0 }
 }
 
-fn key(path: &Path, size: f32, scale: f32, is_icon: bool) -> Key {
+fn key(path: &Path, size: f32, step: f32, is_icon: bool) -> Key {
     Key {
         path: path.to_path_buf(),
-        pixels: (size * scale_step(scale)).round().max(1.0) as u32,
+        pixels: (size * step).round().max(1.0) as u32,
         is_icon,
     }
 }
 
-pub fn collect() -> bool {
+pub fn collect() {
     let landed = std::mem::take(&mut *LANDED.lock().unwrap());
     if landed.is_empty() {
-        return false;
+        return;
     }
-    CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        for (key, image) in landed {
-            if let Some(image) = image {
-                cache.insert(key, image);
-            }
-        }
+    CACHE.with_borrow_mut(|cache| {
+        cache.extend(
+            landed
+                .into_iter()
+                .filter_map(|(key, image)| Some((key, image?))),
+        )
     });
-    true
 }
 
 pub fn has_pending() -> bool {
     !LANDED.lock().unwrap().is_empty()
 }
 
+fn cached(key: &Key) -> Option<Arc<RenderImage>> {
+    CACHE.with_borrow(|cache| cache.get(key).cloned())
+}
+
 fn best(path: &Path) -> Option<Arc<RenderImage>> {
-    CACHE.with(|cache| {
-        let cache = cache.borrow();
-        let poster = cache
+    CACHE.with_borrow(|cache| {
+        cache
             .iter()
-            .filter(|(held, _)| held.path == path && !held.is_icon)
-            .max_by_key(|(held, _)| held.pixels)
-            .map(|(_, image)| image.clone());
-        poster.or_else(|| {
-            cache
-                .iter()
-                .filter(|(held, _)| held.path == path)
-                .max_by_key(|(held, _)| held.pixels)
-                .map(|(_, image)| image.clone())
-        })
+            .filter(|(held, _)| held.path == path)
+            .max_by_key(|(held, _)| (!held.is_icon, held.pixels))
+            .map(|(_, image)| image.clone())
     })
 }
 
 fn pick(path: &Path, size: f32, scale: f32) -> Option<Arc<RenderImage>> {
-    let poster = key(path, size, scale, false);
-    if let Some(hit) = CACHE.with(|c| c.borrow().get(&poster).cloned()) {
+    let step = scale_step(scale);
+    let poster = key(path, size, step, false);
+    if let Some(hit) = cached(&poster) {
         return Some(hit);
     }
-    let icon = key(path, size, scale, true);
-    if let Some(hit) = CACHE.with(|c| c.borrow().get(&icon).cloned()) {
-        ask(path, size, scale, false);
+    let icon = key(path, size, step, true);
+    if let Some(hit) = cached(&icon).or_else(|| best(path)) {
+        ask(path, poster, size, step);
         return Some(hit);
     }
-    if let Some(hit) = best(path) {
-        ask(path, size, scale, false);
+    let modified = modified(path);
+    if let Some(hit) = thumbnails::cached_thumbnail(path, modified, px(size), step, false) {
+        CACHE.with_borrow_mut(|cache| cache.insert(poster, hit.clone()));
         return Some(hit);
     }
-    if let Some(hit) =
-        thumbnails::cached_thumbnail(path, modified(path), px(size), scale_step(scale), false)
-    {
-        CACHE.with(|c| c.borrow_mut().insert(poster, hit.clone()));
+    if let Some(hit) = thumbnails::cached_thumbnail(path, modified, px(size), step, true) {
+        CACHE.with_borrow_mut(|cache| cache.insert(icon, hit.clone()));
+        ask(path, poster, size, step);
         return Some(hit);
     }
-    if let Some(hit) =
-        thumbnails::cached_thumbnail(path, modified(path), px(size), scale_step(scale), true)
-    {
-        CACHE.with(|c| c.borrow_mut().insert(icon, hit.clone()));
-        ask(path, size, scale, false);
-        return Some(hit);
-    }
-    ask(path, size, scale, true);
-    ask(path, size, scale, false);
+    ask(path, icon, size, step);
+    ask(path, poster, size, step);
     None
 }
 
-pub fn get(path: &Path, scale: f32) -> Option<Arc<RenderImage>> {
+pub fn poster(path: &Path, scale: f32) -> Option<Arc<RenderImage>> {
     pick(path, POSTER, scale)
 }
 
@@ -117,20 +103,19 @@ pub fn well(path: &Path, scale: f32) -> Option<Arc<RenderImage>> {
 }
 
 pub fn prefetch(path: &Path) {
-    let _ = well(path, 2.0);
+    well(path, 2.0);
 }
 
-fn ask(path: &Path, size: f32, scale: f32, is_icon: bool) {
-    let key = key(path, size, scale, is_icon);
-    if ASKED.with(|asked| !asked.borrow_mut().insert(key.clone())) {
+fn ask(path: &Path, key: Key, size: f32, step: f32) {
+    if !ASKED.with_borrow_mut(|asked| asked.insert(key.clone())) {
         return;
     }
-    let modified = modified(path);
+    let is_icon = key.is_icon;
     thumbnails::thumbnail(
         path,
-        modified,
+        modified(path),
         px(size),
-        scale_step(scale),
+        step,
         is_icon,
         move |image| {
             LANDED.lock().unwrap().push((key, image));
@@ -138,7 +123,7 @@ fn ask(path: &Path, size: f32, scale: f32, is_icon: bool) {
     );
 }
 
-fn modified(path: &Path) -> Option<std::time::SystemTime> {
+fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .ok()

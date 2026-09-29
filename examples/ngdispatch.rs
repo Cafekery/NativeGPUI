@@ -6,10 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyElement, App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px,
-    size,
-};
+use gpui::{App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, size};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{ClassType, msg_send};
@@ -37,6 +34,7 @@ struct Counters {
 
 struct Probe {
     armed: bool,
+    clears: bool,
     counters: Arc<Counters>,
     started: Instant,
 }
@@ -97,14 +95,11 @@ fn watchdog(counters: Arc<Counters>, started: Instant) {
 }
 
 impl Render for Probe {
-    #[allow(refining_impl_trait)]
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.request_animation_frame();
         let frame = self.counters.frame.fetch_add(1, Ordering::Relaxed) + 1;
 
-        let sabotage = std::env::var("NGD_SABOTAGE").unwrap_or_default();
-
-        if sabotage == "nohandler" || (frame == CLEAR && sabotage != "noclear") {
+        if frame == CLEAR && self.clears {
             self.armed = false;
         }
 
@@ -142,7 +137,6 @@ impl Render for Probe {
                 .p_4()
                 .child(switch),
         )
-        .into_any_element()
     }
 }
 
@@ -150,6 +144,7 @@ fn main() {
     let counters = Arc::new(Counters::default());
     let started = Instant::now();
     watchdog(counters.clone(), started);
+    let sabotage = std::env::var("NGD_SABOTAGE").unwrap_or_default();
     gpui_platform::application().run(move |cx: &mut App| {
         tokens::init(cx);
         cx.open_window(
@@ -162,8 +157,9 @@ fn main() {
             },
             |_, cx| {
                 cx.new(|_| Probe {
-                    armed: true,
-                    counters: counters.clone(),
+                    armed: sabotage != "nohandler",
+                    clears: sabotage != "noclear",
+                    counters,
                     started,
                 })
             },

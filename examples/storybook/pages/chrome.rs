@@ -1,7 +1,7 @@
 use crate::Demo;
 use crate::ui::*;
 use gpui::{
-    AnyElement, App, Context, Entity, MouseMoveEvent, Pixels, Render, SharedString, WeakEntity,
+    AnyElement, App, Context, MouseMoveEvent, Pixels, Point, Render, SharedString, WeakEntity,
     Window, WindowHandle, div, prelude::*, px,
 };
 use native_gpui::tokens::{Appearance, SystemColor, system_color};
@@ -68,61 +68,62 @@ impl Default for State {
     }
 }
 
-#[derive(Copy, Clone)]
-struct Settings {
-    radius: Option<Pixels>,
-    toolbar: Option<ToolbarStyle>,
-    level: WindowLevel,
-    appearance: Option<Appearance>,
-    shadow: bool,
-    movable_by_background: bool,
-    alpha: f32,
-    paint_band: bool,
-}
-
 impl State {
-    fn settings(&self) -> Settings {
-        Settings {
-            // A radius of 0 means "follow the system", not "square".
-            radius: (self.radius > 0.).then(|| px(self.radius as f32)),
-            toolbar: match self.toolbar {
-                1 => Some(ToolbarStyle::Unified),
-                2 => Some(ToolbarStyle::UnifiedCompact),
-                _ => None,
-            },
-            level: LEVELS[self.level.min(LEVELS.len() - 1)].1,
-            appearance: match self.appearance {
-                1 => Some(Appearance::Light),
-                2 => Some(Appearance::Dark),
-                _ => None,
-            },
-            shadow: self.shadow,
-            movable_by_background: self.movable_by_background,
-            alpha: self.alpha as f32,
-            paint_band: self.paint_band,
-        }
+    // A radius of 0 means "follow the system", not "square".
+    fn corner_radius(&self) -> Option<Pixels> {
+        (self.radius > 0.).then(|| px(self.radius as f32))
+    }
+
+    fn level(&self) -> (&'static str, WindowLevel) {
+        LEVELS[self.level.min(LEVELS.len() - 1)]
     }
 
     fn push(&self, cx: &mut Context<Demo>) {
         let Some(handle) = self.window else { return };
         let demo = cx.weak_entity();
-        let settings = self.settings();
         handle
             .update(cx, |popout: &mut Popout, window, cx| {
-                popout.settings = settings;
-                apply(&settings, &demo, window, cx);
+                popout.paint_band = self.paint_band;
+                self.apply(&demo, window, cx);
                 cx.notify();
             })
             .ok();
     }
 
-    fn close(&mut self, cx: &mut App) {
-        let Some(handle) = self.window.take() else {
-            return;
+    fn apply(&self, demo: &WeakEntity<Demo>, window: &mut Window, cx: &mut App) {
+        set_corner_radius(window, self.corner_radius());
+        let toolbar = match self.toolbar {
+            1 => Some(ToolbarStyle::Unified),
+            2 => Some(ToolbarStyle::UnifiedCompact),
+            _ => None,
         };
-        handle
-            .update(cx, |_, window, _| window.remove_window())
-            .ok();
+        set_toolbar(window, cx, toolbar, &toolbar_items(demo));
+
+        let current = window_flags(window);
+        let wanted = WindowFlags {
+            has_shadow: self.shadow,
+            movable_by_background: self.movable_by_background,
+            alpha: self.alpha as f32,
+            level: window_level(self.level().1),
+            appearance: match self.appearance {
+                1 => Some(Appearance::Light),
+                2 => Some(Appearance::Dark),
+                _ => None,
+            },
+            ..current
+        };
+        // `setAppearance:` with an equal-but-fresh NSAppearance re-announces the change every frame.
+        if wanted != current {
+            set_window_flags(window, wanted);
+        }
+    }
+
+    fn close(&mut self, cx: &mut App) {
+        if let Some(handle) = self.window.take() {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
     }
 
     // The knobs are re-read from the window, or the next `push` would undo the restore.
@@ -150,23 +151,15 @@ impl State {
     }
 }
 
-fn apply(settings: &Settings, demo: &WeakEntity<Demo>, window: &mut Window, cx: &mut App) {
-    set_corner_radius(window, settings.radius);
-    set_toolbar(window, cx, settings.toolbar, &toolbar_items(demo));
-
-    let current = window_flags(window);
-    let wanted = WindowFlags {
-        has_shadow: settings.shadow,
-        movable_by_background: settings.movable_by_background,
-        alpha: settings.alpha,
-        level: window_level(settings.level),
-        appearance: settings.appearance,
-        ..current
-    };
-    // `setAppearance:` with an equal-but-fresh NSAppearance re-announces the change every frame.
-    if wanted != current {
-        set_window_flags(window, wanted);
-    }
+fn change<'a, T: Copy + 'static>(
+    cx: &'a mut Context<Demo>,
+    apply: fn(&mut State, T),
+) -> impl Fn(&T, &mut Window, &mut App) + 'static + use<'a, T> {
+    cx.listener(move |d: &mut Demo, value: &T, _, cx| {
+        apply(&mut d.chrome, *value);
+        d.chrome.push(cx);
+        cx.notify();
+    })
 }
 
 fn toolbar_items(demo: &WeakEntity<Demo>) -> Vec<ToolbarItem> {
@@ -209,14 +202,13 @@ fn edit(demo: WeakEntity<Demo>, change: fn(&mut State)) -> impl Fn(&mut Window, 
     }
 }
 
-/// Copies the knobs: `open_window` draws while `Demo` is still leased.
+// Copies the knob: `open_window` draws while `Demo` is still leased.
 pub struct Popout {
-    settings: Settings,
+    paint_band: bool,
 }
 
 impl Popout {
-    fn new(demo: &Entity<Demo>, settings: Settings, cx: &mut Context<Self>) -> Self {
-        let demo = demo.downgrade();
+    fn new(demo: WeakEntity<Demo>, paint_band: bool, cx: &mut Context<Self>) -> Self {
         cx.on_release(move |_, cx| {
             demo.update(cx, |d: &mut Demo, cx| {
                 d.chrome.window = None;
@@ -225,18 +217,16 @@ impl Popout {
             .ok();
         })
         .detach();
-        Self { settings }
+        Self { paint_band }
     }
 }
 
 impl Render for Popout {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let settings = self.settings;
-
         let band = titlebar_band(window);
         let viewport = window.viewport_size();
         let flags = window_flags(window);
-        let rows = vec![
+        let rows = [
             line("corner_radius (intent)", fmt_radius(corner_radius(window))),
             line(
                 "_cornerRadius (readback)",
@@ -266,7 +256,7 @@ impl Render for Popout {
             line(
                 "traffic_light_inset",
                 traffic_light_inset(window)
-                    .map(|inset| format!("{:.1}, {:.1}", f32::from(inset.x), f32::from(inset.y)))
+                    .map(fmt_inset)
                     .unwrap_or_else(|| "none".into()),
             ),
             line("level", flags.level.to_string()),
@@ -291,7 +281,7 @@ impl Render for Popout {
                     None => "follows the system".into(),
                 },
             ),
-            line("titlebar band painted", settings.paint_band.to_string()),
+            line("titlebar band painted", self.paint_band.to_string()),
         ];
 
         div()
@@ -300,7 +290,7 @@ impl Render for Popout {
             .child(
                 div()
                     .absolute()
-                    .top(if settings.paint_band { px(0.) } else { band })
+                    .top(if self.paint_band { px(0.) } else { band })
                     .left_0()
                     .right_0()
                     .bottom_0()
@@ -339,6 +329,10 @@ fn fmt_pixels(value: Pixels) -> String {
     format!("{:.1}", f32::from(value))
 }
 
+fn fmt_inset(inset: Point<Pixels>) -> String {
+    format!("{:.1}, {:.1}", f32::from(inset.x), f32::from(inset.y))
+}
+
 fn fmt_radius(value: Option<Pixels>) -> String {
     value
         .map(fmt_pixels)
@@ -346,19 +340,18 @@ fn fmt_radius(value: Option<Pixels>) -> String {
 }
 
 pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
+    let State {
+        radius,
+        toolbar,
+        appearance,
+        shadow,
+        movable_by_background: movable,
+        alpha,
+        paint_band,
+        ..
+    } = d.chrome;
     let open = d.chrome.window.is_some();
-    let (radius, toolbar, level, appearance) = (
-        d.chrome.radius,
-        d.chrome.toolbar,
-        d.chrome.level,
-        d.chrome.appearance,
-    );
-    let (shadow, movable, paint_band, alpha) = (
-        d.chrome.shadow,
-        d.chrome.movable_by_background,
-        d.chrome.paint_band,
-        d.chrome.alpha,
-    );
+    let level = d.chrome.level();
 
     stack(vec![
         note(
@@ -371,18 +364,19 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 native_button("chrome.open", "Open")
                     .enabled(!open)
                     .on_click(cx.listener(|d: &mut Demo, _: &(), _, cx| {
-                        let demo = cx.entity();
-                        let settings = d.chrome.settings();
+                        let demo = cx.weak_entity();
+                        let paint_band = d.chrome.paint_band;
                         d.chrome.window = crate::popout(cx, ORIGIN, EXTENT, {
                             let demo = demo.clone();
-                            move |_, cx| Popout::new(&demo, settings, cx)
+                            move |_, cx| Popout::new(demo, paint_band, cx)
                         });
                         // AppKit reports the band and inset only once the window is laid out.
-                        cx.defer(move |cx: &mut App| {
+                        cx.defer(move |cx| {
                             demo.update(cx, |d: &mut Demo, cx| {
                                 d.chrome.push(cx);
                                 cx.notify();
-                            });
+                            })
+                            .ok();
                         });
                         cx.notify();
                     }))
@@ -405,8 +399,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     "open"
                 } else {
                     "closed — the knobs below have nothing to write"
-                })
-                .into_any_element(),
+                }),
             ],
         ),
         section(
@@ -423,11 +416,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                         .range(0., 40.)
                         .ticks(21)
                         .snap_to_ticks(true)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.chrome.radius = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.radius = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -448,11 +437,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     TOOLBARS[toolbar.min(2)],
                     native_segmented("chrome.toolbar", toolbar)
                         .segments(TOOLBARS)
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.chrome.toolbar = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.toolbar = value))
                         .into_any_element(),
                 ),
                 caption(format!(
@@ -471,14 +456,10 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 )),
                 knob(
                     "window level",
-                    LEVELS[level.min(LEVELS.len() - 1)].0,
-                    native_popup("chrome.level", level)
+                    level.0,
+                    native_popup("chrome.level", d.chrome.level)
                         .items(LEVELS.iter().map(|(name, _)| *name))
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.chrome.level = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.level = value))
                         .into_any_element(),
                 ),
                 knob(
@@ -486,11 +467,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     APPEARANCES[appearance.min(2)],
                     native_segmented("chrome.appearance", appearance)
                         .segments(APPEARANCES)
-                        .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                            d.chrome.appearance = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.appearance = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -502,21 +479,15 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     "has shadow",
                     if shadow { "on" } else { "off" },
                     native_switch("chrome.shadow", shadow)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.chrome.shadow = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.shadow = value))
                         .into_any_element(),
                 ),
                 knob(
                     "movable by background",
                     if movable { "on" } else { "off" },
                     native_switch("chrome.movable", movable)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.chrome.movable_by_background = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
+                        .on_change(change(cx, |state, value| {
+                            state.movable_by_background = value
                         }))
                         .into_any_element(),
                 ),
@@ -525,11 +496,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     format!("{alpha:.2}"),
                     native_slider("chrome.alpha", alpha)
                         .range(0.35, 1.)
-                        .on_change(cx.listener(|d: &mut Demo, value: &f64, _, cx| {
-                            d.chrome.alpha = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.alpha = value))
                         .into_any_element(),
                 ),
                 caption(
@@ -558,11 +525,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                     "paint the band",
                     if paint_band { "painted" } else { "unpainted" },
                     native_switch("chrome.band", paint_band)
-                        .on_change(cx.listener(|d: &mut Demo, value: &bool, _, cx| {
-                            d.chrome.paint_band = *value;
-                            d.chrome.push(cx);
-                            cx.notify();
-                        }))
+                        .on_change(change(cx, |state, value| state.paint_band = value))
                         .into_any_element(),
                 ),
                 note(
@@ -593,9 +556,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 line(
                     "this window's inset",
                     traffic_light_inset(window)
-                        .map(|inset| {
-                            format!("{:.1}, {:.1}", f32::from(inset.x), f32::from(inset.y))
-                        })
+                        .map(fmt_inset)
                         .unwrap_or_else(|| "none — no close button".into()),
                 ),
                 line("this window's band", fmt_pixels(titlebar_band(window))),
@@ -624,7 +585,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
         props(&[
             (
                 "set_corner_radius(&Window, Option<Pixels>)",
-                fmt_radius(d.chrome.settings().radius),
+                fmt_radius(d.chrome.corner_radius()),
             ),
             (
                 "corner_radius / corner_radius_readback",
@@ -653,7 +614,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "window_level(WindowLevel)",
-                window_level(LEVELS[level.min(LEVELS.len() - 1)].1).to_string(),
+                window_level(level.1).to_string(),
             ),
             (
                 "window_flags / set_window_flags / restore_window_flags",
@@ -682,9 +643,12 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
 }
 
 fn cursor_strip(cx: &mut Context<Demo>) -> AnyElement {
-    let swatches: Vec<AnyElement> = CURSORS
-        .iter()
-        .map(|(name, cursor)| {
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_2()
+        .on_mouse_move(cx.listener(|_: &mut Demo, _: &MouseMoveEvent, _, cx| cx.notify()))
+        .children(CURSORS.iter().map(|(name, cursor)| {
             cursor_region(
                 *name,
                 *cursor,
@@ -699,15 +663,6 @@ fn cursor_strip(cx: &mut Context<Demo>) -> AnyElement {
                     .text_color(system_color(SystemColor::SecondaryLabel))
                     .child(SharedString::from(*name)),
             )
-            .into_any_element()
-        })
-        .collect();
-
-    div()
-        .flex()
-        .flex_wrap()
-        .gap_2()
-        .on_mouse_move(cx.listener(|_: &mut Demo, _: &MouseMoveEvent, _, cx| cx.notify()))
-        .children(swatches)
+        }))
         .into_any_element()
 }

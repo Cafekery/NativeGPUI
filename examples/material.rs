@@ -1,7 +1,6 @@
 use gpui::{
-    App, AppContext, Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,
-    point, px, rgb, rgba, size,
+    App, Bounds, Context, Render, SharedString, Window, WindowBounds, WindowOptions, div, point,
+    prelude::*, px, rgb, rgba, size,
 };
 use native_gpui::{Material, RawMaterial, material, native_root, window_options};
 
@@ -83,10 +82,10 @@ impl Demo {
         label: &'static str,
         entry: Option<RawMaterial>,
     ) -> gpui::Div {
-        let mut cell = div().w(px(64.)).h(px(44.));
-        if let Some(entry) = entry {
-            cell = cell.child(material(id, entry).size_full());
-        }
+        let cell = div()
+            .w(px(64.))
+            .h(px(44.))
+            .children(entry.map(|entry| material(id, entry).size_full()));
         let ink = if entry.is_some_and(RawMaterial::is_deprecated) {
             rgb(0x8e8e93)
         } else {
@@ -229,7 +228,6 @@ fn main() {
     println!("{} materials: {}", catalogue.len(), catalogue.join(", "));
 
     gpui_platform::application().run(|cx: &mut App| {
-        // Backdrop first, so the demo window ends up in front of it.
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {

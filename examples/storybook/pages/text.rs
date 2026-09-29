@@ -27,88 +27,70 @@ impl Default for State {
 
 const FIELD_WIDTH: f32 = 280.;
 
+fn field(control: AnyElement, readout: String) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_4()
+        .child(sized(FIELD_WIDTH, control))
+        .child(mono(readout))
+        .into_any_element()
+}
+
+fn submit(d: &mut Demo, value: String) {
+    d.text.submitted = Some(value);
+    d.text.submits += 1;
+}
+
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let text = d.text.text.clone();
-    let secure = d.text.secure.clone();
-    let search = d.text.search.clone();
-    let bare = d.text.bare.clone();
-    let submitted = d.text.submitted.clone();
-    let submits = d.text.submits;
+    let State {
+        text,
+        secure,
+        search,
+        bare,
+        submitted,
+        submits,
+    } = &d.text;
 
     stack(vec![
         demo(
             "plain — mirrored into GPUI on every keystroke",
-            div()
-                .flex()
-                .items_center()
-                .gap_4()
-                .child(sized(
-                    FIELD_WIDTH,
-                    native_text_field("plain", &text)
-                        .placeholder("Project name")
-                        .on_change(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                            d.text.text = value.clone();
-                            cx.notify();
-                        }))
-                        .on_submit(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                            d.text.submitted = Some(value.clone());
-                            d.text.submits += 1;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ))
-                .child(mono(format!("{text:?}")))
-                .into_any_element(),
+            field(
+                native_text_field("plain", text)
+                    .placeholder("Project name")
+                    .on_change(set(cx, |d, value| d.text.text = value))
+                    .on_submit(set(cx, submit))
+                    .into_any_element(),
+                format!("{text:?}"),
+            ),
         ),
         demo(
             "on_submit — press Return in the field above",
-            match &submitted {
+            match submitted {
                 Some(value) => mono(format!("{value:?} · {submits} submit(s)")),
                 None => caption("nothing submitted yet"),
             },
         ),
         demo(
             "secure — bullets, and the system's secure input path",
-            div()
-                .flex()
-                .items_center()
-                .gap_4()
-                .child(sized(
-                    FIELD_WIDTH,
-                    native_secure_field("secure", &secure)
-                        .placeholder("Password")
-                        .on_change(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                            d.text.secure = value.clone();
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ))
-                .child(mono(format!("{} character(s)", secure.chars().count())))
-                .into_any_element(),
+            field(
+                native_secure_field("secure", secure)
+                    .placeholder("Password")
+                    .on_change(set(cx, |d, value| d.text.secure = value))
+                    .into_any_element(),
+                format!("{} character(s)", secure.chars().count()),
+            ),
         ),
         demo(
             "search — magnifier and cancel button included",
-            div()
-                .flex()
-                .items_center()
-                .gap_4()
-                .child(sized(
-                    FIELD_WIDTH,
-                    native_search_field("search", &search)
-                        .placeholder("Filter")
-                        .on_change(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                            d.text.search = value.clone();
-                            cx.notify();
-                        }))
-                        .on_submit(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                            d.text.submitted = Some(value.clone());
-                            d.text.submits += 1;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ))
-                .child(mono(format!("{search:?}")))
-                .into_any_element(),
+            field(
+                native_search_field("search", search)
+                    .placeholder("Filter")
+                    .on_change(set(cx, |d, value| d.text.search = value))
+                    .on_submit(set(cx, submit))
+                    .into_any_element(),
+                format!("{search:?}"),
+            ),
         ),
         section(
             "no placeholder, and disabled",
@@ -117,11 +99,8 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "placeholder omitted",
                     sized(
                         FIELD_WIDTH,
-                        native_text_field("bare", &bare)
-                            .on_change(cx.listener(|d: &mut Demo, value: &String, _, cx| {
-                                d.text.bare = value.clone();
-                                cx.notify();
-                            }))
+                        native_text_field("bare", bare)
+                            .on_change(set(cx, |d, value| d.text.bare = value))
                             .into_any_element(),
                     ),
                 ),
@@ -129,7 +108,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "enabled(false)",
                     sized(
                         FIELD_WIDTH,
-                        native_text_field("disabled", &text)
+                        native_text_field("disabled", text)
                             .placeholder("Project name")
                             .enabled(false)
                             .into_any_element(),
@@ -139,7 +118,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                     "enabled(false), search",
                     sized(
                         FIELD_WIDTH,
-                        native_search_field("disabled-search", &search)
+                        native_search_field("disabled-search", search)
                             .placeholder("Filter")
                             .enabled(false)
                             .into_any_element(),

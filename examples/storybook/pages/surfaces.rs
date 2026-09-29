@@ -48,7 +48,6 @@ fn share_items() -> Vec<ShareItem> {
 fn open_popover(d: &mut Demo, edge: SurfaceEdge, window: &mut Window, cx: &mut Context<Demo>) {
     close_popover(d);
 
-    let anchor = d.surfaces.anchor.clone();
     let spec = PopoverOptions {
         size: size(px(280.), px(132.)),
         edge,
@@ -58,7 +57,7 @@ fn open_popover(d: &mut Demo, edge: SurfaceEdge, window: &mut Window, cx: &mut C
     let entity = cx.weak_entity();
     let closed = entity.clone();
 
-    let popover = present_popover(window, cx, &anchor, spec, move |mtm, actions| {
+    let popover = present_popover(window, cx, &d.surfaces.anchor, spec, move |mtm, actions| {
         let view = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::ZERO, NSSize::new(280., 132.)),
@@ -187,7 +186,6 @@ fn open_sheet(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
 }
 
 fn open_share(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
-    let anchor = d.surfaces.share_anchor.clone();
     d.surfaces.shared = None;
     d.surfaces.blocked_ms = None;
     let entity = cx.weak_entity();
@@ -195,7 +193,7 @@ fn open_share(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) {
     present_share_picker(
         window,
         cx,
-        &anchor,
+        &d.surfaces.share_anchor,
         SharePicker {
             edge: SurfaceEdge::Below,
             ..Default::default()
@@ -249,20 +247,24 @@ fn target() -> AnyElement {
 }
 
 pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> AnyElement {
-    let anchor = d.surfaces.anchor.clone();
-    let share_anchor = d.surfaces.share_anchor.clone();
-    let showing = d.surfaces.showing;
-    let popover_says = d.surfaces.popover_says;
-    let behavior = d.surfaces.behavior.min(BEHAVIORS.len() - 1);
-    let sheet_ends = d.surfaces.sheet_ends;
-    let last_response = d.surfaces.last_response;
-    let services = d.surfaces.services;
-    let blocked_ms = d.surfaces.blocked_ms;
-    let shared = d.surfaces.shared.clone();
     let offered = *d
         .surfaces
         .offered
         .get_or_insert_with(|| share_service_count(&share_items()));
+    let State {
+        ref anchor,
+        ref share_anchor,
+        showing,
+        popover_says,
+        behavior,
+        sheet_ends,
+        last_response,
+        services,
+        blocked_ms,
+        ref shared,
+        ..
+    } = d.surfaces;
+    let behavior = behavior.min(BEHAVIORS.len() - 1);
 
     let bounds = anchor
         .bounds()
@@ -288,7 +290,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(native_anchor(&anchor, target()))
+                .child(native_anchor(anchor, target()))
                 .child(mono(format!("SurfaceAnchor::bounds() = {bounds}")))
                 .child(caption(
                     "written during paint, so this line reports the previous frame",
@@ -316,10 +318,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             BEHAVIORS[behavior].0,
             native_popup("popover-behavior", behavior)
                 .items(BEHAVIORS.iter().map(|(name, _)| *name))
-                .on_change(cx.listener(|d: &mut Demo, value: &usize, _, cx| {
-                    d.surfaces.behavior = *value;
-                    cx.notify();
-                }))
+                .on_change(set(cx, |d, value| d.surfaces.behavior = value))
                 .into_any_element(),
         ),
         note(
@@ -347,10 +346,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 .child(
                     native_button("popover-close", "Close from GPUI")
                         .enabled(showing.is_some())
-                        .on_click(cx.listener(|d: &mut Demo, _: &(), _, cx| {
-                            close_popover(d);
-                            cx.notify();
-                        }))
+                        .on_click(set(cx, |d, _: ()| close_popover(d)))
                         .into_any_element(),
                 )
                 .into_any_element(),
@@ -389,7 +385,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         .items_center()
                         .gap_4()
                         .child(native_anchor(
-                            &share_anchor,
+                            share_anchor,
                             native_button("share-open", "Share…").on_click(cx.listener(
                                 |d: &mut Demo, _: &(), window, cx| open_share(d, window, cx),
                             )),
@@ -454,7 +450,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             (
                 "present_share_picker(window, cx, anchor, SharePicker, items, on_event)",
-                shared.unwrap_or_else(|| "not opened".into()),
+                shared.clone().unwrap_or_else(|| "not opened".into()),
             ),
             ("share_service_count(&[ShareItem])", offered.to_string()),
             ("SharePicker { edge, watchdog }", "Below, 20s".into()),
