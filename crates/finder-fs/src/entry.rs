@@ -22,6 +22,8 @@ pub struct Entry {
     pub ext_hidden: bool,
     /// FinderInfo's alias flag.
     pub alias: bool,
+    /// FinderInfo's custom-icon flag.
+    pub custom_icon: bool,
     pub dataless: bool,
     pub readable: bool,
     pub file_id: u64,

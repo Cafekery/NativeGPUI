@@ -167,22 +167,35 @@ fn indexed_row(dir: &'static str, entry: &Entry, index: &Index) -> Row {
 }
 
 // `iconForFile:` badges a folder the user can't open with the no-entry sign.
-pub(crate) fn own_icon(entry: &Entry) -> bool {
-    entry.package || entry.kind == EntryKind::Symlink || entry.alias || !entry.readable
+fn own_icon(entry: &Entry) -> bool {
+    entry.package
+        || entry.kind == EntryKind::Symlink
+        || entry.alias
+        || entry.custom_icon
+        || !entry.readable
+}
+
+/// A row's art where its entry alone tells, before its kind is read: none for a plain folder.
+pub(crate) fn early_artwork(path: &str, entry: &Entry) -> Option<FileType<'static>> {
+    if own_icon(entry) {
+        return Some(FileType::Path(intern(path)));
+    }
+    if entry.kind == EntryKind::Directory {
+        return None;
+    }
+    let extension = entry.extension()?.to_ascii_lowercase();
+    Some(FileType::Extension(intern(&extension)))
 }
 
 fn artwork_of(entry: &Entry, path: &str, uti: &str, seen: Option<usize>) -> FileType<'static> {
-    if own_icon(entry) {
-        return FileType::Path(intern(path));
+    if let Some(art) = early_artwork(path, entry) {
+        return art;
     }
     if entry.kind == EntryKind::Directory {
         let full = entry.children.is_some_and(|held| held > 0) && seen.is_none_or(|seen| seen > 0);
         return folder_kind(intern(path), full);
     }
-    match entry.extension() {
-        Some(extension) => FileType::Extension(intern(&extension.to_ascii_lowercase())),
-        None => FileType::Uti(intern(uti)),
-    }
+    FileType::Uti(intern(uti))
 }
 
 pub(crate) fn is_trash(path: &str) -> bool {
