@@ -173,8 +173,11 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   and under Snap to Grid sets it in the chosen cell's top left corner (24 pt left, 4 pt up of its
   slot); the demo keeps dropped icons on their slots and cannot learn where another app's drag
   image was grabbed, so it centres the icon on the pointer.
-- [ ] Finder draws icon view's icons on beneath its preview pane's glass; the demo's stop at the
-  pane.
+- [x] Icon view runs on beneath the preview pane's glass, as Finder's: icons placed past the pane's
+  edge draw under it, the view scrolls only as far as that edge (886 pt of icons in a 639 pt view:
+  247 pt of travel in both) and its scroll bars span the view as Finder's (the horizontal one 641
+  wide from x 460 in both). The pane takes the pointer: a drag over a folder beneath it neither
+  springs it nor drops into it.
 - [x] Column view with an unreadable folder selected: as in Finder, its row has no chevron, nothing
   opens, the preview column shows the badged folder and the path bar ends at it. Finder's kind line
   reads “Folder - Zero bytes”, the demo's “Folder”.

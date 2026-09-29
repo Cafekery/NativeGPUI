@@ -1021,6 +1021,8 @@ impl FinderDemo {
             .id("ng.finder.icons")
             .flex_1()
             .relative()
+            // Runs on beneath the pane, but scrolls only as far as the pane's edge.
+            .pr(self.metrics().right)
             .overflow_x_scroll()
             .overflow_y_scroll()
             .track_scroll(&scroll)
