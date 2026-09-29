@@ -50,10 +50,13 @@ a context menu but not in the menu bar are listed as wiring, not as features.
   `com.apple.sharingd`, 12 pt off the bottom. No path bar, preview pane or status text. Setting the
   mode needs sharingd's private entitlement `com.apple.private.airdrop.settings`, so picking
   another opens System Settings' AirDrop & Handoff pane and the pop-up keeps the current mode
+- [x] At AirDrop the toolbar's view switcher (the control and each segment), Group and Action are
+  off, as Finder's, and on again anywhere else; a disabled Group or Action opens no menu
 - [ ] AirDrop: Finder's photo is the Contacts me-card's, the demo's the account picture (the user
-  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access; Finder turns the view
-  switcher, Group and Action off there, and the demo's toolbar has no way to grey a group or menu
-  item. Nearby people and devices are Sharing's private API
+  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access. Finder's greyed view
+  switcher shows icons chosen there, the demo's the window's view. In a window too narrow for them
+  the demo's Group and Action rows in the toolbar's overflow menu still open there; Finder's
+  overflow was not read. Nearby people and devices are Sharing's private API
 - [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
   “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
   Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each
