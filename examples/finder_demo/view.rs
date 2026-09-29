@@ -7,6 +7,7 @@ use crate::app::FinderDemo;
 use crate::icons::FIRST_ROWS;
 use crate::prefs;
 use crate::views::column::ICON as COLUMN_ICON;
+use crate::views::gallery::GalleryLook;
 use crate::views::header::{LAST_EXTRA, PANE_INSET};
 use crate::views::icon::Arrangement;
 use crate::views::list::{ICON_SIZE, ICON_SMALL, row_h};
@@ -77,6 +78,9 @@ impl FinderDemo {
         }
         self.view = view;
         self.preview = prefs::preview(view);
+        if view == GALLERY_VIEW {
+            self.gallery_look = GalleryLook::load(self.here());
+        }
         self.settle();
     }
 
@@ -116,7 +120,7 @@ impl FinderDemo {
     pub(crate) fn art_size(&self) -> f32 {
         match self.view {
             ICON_VIEW => self.icon_options().size,
-            GALLERY_VIEW => self.strip_icon,
+            GALLERY_VIEW => self.gallery_look.thumb,
             COLUMN_VIEW => COLUMN_ICON,
             _ => self.list_icon_now(),
         }
@@ -136,7 +140,7 @@ impl FinderDemo {
                 let tile = self.icon_options().cell();
                 (width / tile.width).floor().max(1.) * (height / tile.height).ceil()
             }
-            GALLERY_VIEW => width / self.strip_icon,
+            GALLERY_VIEW => width / self.gallery_look.thumb,
             _ => height / self.row_h(),
         };
         match fits >= 1. {
@@ -169,9 +173,8 @@ impl FinderDemo {
                 }
             }
             GALLERY_VIEW => {
-                if let Some(size) = step(&STRIP_STOPS, self.strip_icon, larger) {
-                    self.strip_icon = size;
-                    prefs::set_strip_icon(size);
+                if let Some(size) = step(&STRIP_STOPS, self.gallery_look.thumb, larger) {
+                    self.change_gallery_look(|look| look.thumb = size, cx);
                 }
             }
             _ => return,
