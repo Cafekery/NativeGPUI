@@ -23,6 +23,7 @@ pub(crate) enum Act {
     Swatch,
     NewFolderWith,
     Groups,
+    GroupBy(Option<Column>),
     ViewOptions,
     View(usize),
     GetInfo,
@@ -126,7 +127,8 @@ impl FinderDemo {
             },
             Act::NewFolder => self.new_folder(cx),
             Act::NewFolderWith => self.new_folder_with_selection(cx),
-            Act::Groups => self.grouped = !self.grouped,
+            Act::Groups => self.toggle_groups(cx),
+            Act::GroupBy(group) => self.set_group(group, cx),
             Act::ViewOptions => {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::options::open(&demo, cx));

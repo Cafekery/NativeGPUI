@@ -9,7 +9,7 @@ use gpui::SharedString;
 
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
-use crate::data::{Bands, Column, Folders, Line, Row, today};
+use crate::data::{Bands, Column, Folders, Line, Order, Row, today};
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::Rung;
 
@@ -36,9 +36,7 @@ pub(crate) struct Keys {
 #[derive(PartialEq)]
 struct Stamp {
     here: &'static str,
-    sort: Column,
-    ascending: bool,
-    grouped: bool,
+    order: Order,
     hidden: bool,
     query: String,
     filter: Option<String>,
@@ -322,10 +320,8 @@ impl FinderDemo {
     }
 
     fn banded(&self, lines: &Arc<Vec<Line>>) -> Option<(Arc<Vec<Slot>>, Arc<Vec<usize>>)> {
-        if !self.grouped {
-            return None;
-        }
-        let day = match self.sort.dated() {
+        let group = self.banded?;
+        let day = match group.dated() {
             true => today(),
             false => 0.,
         };
@@ -337,7 +333,7 @@ impl FinderDemo {
         {
             return Some((banded.slots.clone(), banded.at.clone()));
         }
-        let (slots, at) = self.build_slots(lines);
+        let (slots, at) = Self::build_slots(group, lines);
         listings.slots = Some(Banded {
             lines: lines.clone(),
             day,
@@ -347,8 +343,8 @@ impl FinderDemo {
         Some((slots, at))
     }
 
-    fn build_slots(&self, lines: &[Line]) -> (Arc<Vec<Slot>>, Arc<Vec<usize>>) {
-        let mut bands = Bands::new(self.sort);
+    fn build_slots(group: Column, lines: &[Line]) -> (Arc<Vec<Slot>>, Arc<Vec<usize>>) {
+        let mut bands = Bands::new(group);
         let mut band: Option<SharedString> = None;
         let mut out = Vec::with_capacity(lines.len() + 4);
         let mut at = Vec::with_capacity(lines.len());
@@ -436,12 +432,10 @@ impl FinderDemo {
         self.listings().store(built, true, true);
     }
 
-    fn stamp(&self, by: (Column, bool)) -> Stamp {
+    fn stamp(&self, order: Order) -> Stamp {
         Stamp {
             here: self.here(),
-            sort: by.0,
-            ascending: by.1,
-            grouped: self.grouped,
+            order,
             hidden: self.show_hidden,
             query: self.filtered.clone(),
             filter: self.type_filter.clone(),
@@ -450,13 +444,13 @@ impl FinderDemo {
     }
 
     fn shape(&self, tree: bool) -> Shape {
-        self.shape_sorted(tree, (self.sort, self.ascending))
+        self.shape_sorted(tree, self.order())
     }
 
-    pub(crate) fn shape_sorted(&self, tree: bool, by: (Column, bool)) -> Shape {
+    pub(crate) fn shape_sorted(&self, tree: bool, order: Order) -> Shape {
         let results = self.results();
         Shape {
-            stamp: self.stamp(by),
+            stamp: self.stamp(order),
             tree,
             tagged: self.tag_listing.is_some(),
             results,
@@ -479,7 +473,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn shaped(&self, shape: &Shape, walk: Walk) {
-        if shape.stamp != self.stamp((self.sort, self.ascending))
+        if shape.stamp != self.stamp(self.order())
             || shape.tree != (self.view == LIST_VIEW)
             || shape.expanded.rev() != self.expanded.rev()
         {
@@ -639,7 +633,7 @@ impl FinderDemo {
     }
 
     fn listings(&self) -> RefMut<'_, Listings> {
-        let stamp = self.stamp((self.sort, self.ascending));
+        let stamp = self.stamp(self.order());
         let folders = self.folders.changed();
         let expanded = self.expanded.rev();
         let mut listings = self.cache.borrow_mut();

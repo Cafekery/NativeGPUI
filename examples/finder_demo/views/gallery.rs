@@ -1,18 +1,45 @@
 use std::ops::Range;
+use std::sync::LazyLock;
 
-use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
+use gpui::{AnyElement, FontWeight, Pixels, Point, Window, div, point, prelude::*, px};
+use native_gpui::tokens;
 use native_gpui::{native_callout, native_scroll_bars};
 
 use crate::app::FinderDemo;
-use crate::art::{Poster, art_at, poster_art, row_art};
+use crate::art::{Poster, art_at, item_art, poster_art};
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
+use crate::prefs;
 use crate::ui::pick_on_click;
+use crate::view::GALLERY_VIEW;
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
 const HERO_INSET: f32 = 61.;
+const OPTIONS: &str = "GalleryViewOptions";
+
+static TITLE_H: LazyLock<f32> = LazyLock::new(|| {
+    let font = tokens::system_font_metrics(tokens::small_system_font_size(), FontWeight::NORMAL);
+    (font.ascent + font.descent.abs()).ceil()
+});
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct GalleryLook {
+    pub(crate) thumb: f32,
+    pub(crate) filename: bool,
+}
+
+impl GalleryLook {
+    pub(crate) fn load(folder: &str) -> Self {
+        let thumb = prefs::look_number(GALLERY_VIEW, folder, "iconSize")
+            .or_else(|| prefs::finder_look_number("GalleryViewSettings", "iconSize"));
+        Self {
+            thumb: thumb.map_or(48., |size| size as f32),
+            filename: prefs::view_option(OPTIONS, "ShowTitles").is_some_and(|on| on != 0.),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Strip {
@@ -20,20 +47,23 @@ struct Strip {
     cell: f32,
     gap: f32,
     margin: f32,
+    title: f32,
 }
 
 impl Strip {
-    fn at(icon: f32) -> Self {
+    fn at(look: GalleryLook) -> Self {
+        let icon = look.thumb;
         Self {
             icon,
             cell: icon + 6.,
             gap: icon / 8. - 1.,
             margin: icon / 16. + 3.,
+            title: if look.filename { *TITLE_H } else { 0. },
         }
     }
 
     fn height(self) -> f32 {
-        self.cell + 2. * self.margin
+        self.cell + 2. * self.margin + self.title
     }
 
     fn start(self, index: usize) -> f32 {
@@ -57,13 +87,14 @@ impl FinderDemo {
     ) -> AnyElement {
         let lines = self.lines(false);
         let chosen = self.chosen_in(&lines, 3);
-        let strip = Strip::at(self.strip_icon);
+        let strip = Strip::at(self.gallery_look);
         let room_w = self.list_room;
         let room_h = f32::from(window.viewport_size().height)
             - f32::from(self.metrics().top)
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
         let scale = self.scale;
+        let previews = self.previews.gallery;
         if chosen.len() <= 1 {
             self.ask_beside_cursor(size);
         }
@@ -94,6 +125,7 @@ impl FinderDemo {
             demo.lines(false).get(index as usize).cloned()
         };
         let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
+        let seen_titles = seen.clone();
         let strip_row = div()
             .id("ng.finder.filmstrip")
             .h(px(strip.height()))
@@ -121,14 +153,32 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(row_art(&line.row, strip.icon, scale, true))
+                    .child(item_art(&line.row, strip.icon, scale, previews))
                     .on_click(pick_on_click(line, this.clone()));
                 native_callout(
                     ("ng.finder.strip.tip", index),
                     line.row.display.clone(),
                     cell,
                 )
-            }));
+            }))
+            .when(strip.title > 0., |row| {
+                row.children(seen_titles.map(|index| {
+                    div()
+                        .absolute()
+                        .left(px(strip.start(index) - strip.gap / 2.) + shift)
+                        .top(px(strip.margin + strip.cell))
+                        .w(px(strip.cell + strip.gap))
+                        .h(px(strip.title))
+                        .font_family(tokens::system_font_family())
+                        .text_size(tokens::small_system_font_size())
+                        .text_color(palette.label)
+                        .text_center()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis_middle()
+                        .child(lines[index].row.display.clone())
+                }))
+            });
 
         div()
             .flex_1()
@@ -157,7 +207,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn strip_reveal(&self, index: usize) {
-        let strip = Strip::at(self.strip_icon);
+        let strip = Strip::at(self.gallery_look);
         let start = strip.start(index);
         let seen = -f32::from(self.strip.offset().x);
         let visible = f32::from(self.strip.bounds().size.width);
@@ -169,5 +219,26 @@ impl FinderDemo {
             return;
         };
         self.strip.set_offset(point(px(-next.max(0.)), px(0.)));
+    }
+
+    pub(crate) fn gallery_look(&self) -> GalleryLook {
+        self.gallery_look
+    }
+
+    pub(crate) fn change_gallery_look(
+        &mut self,
+        change: impl FnOnce(&mut GalleryLook),
+        cx: &mut Context<Self>,
+    ) {
+        let was = self.gallery_look;
+        change(&mut self.gallery_look);
+        let look = self.gallery_look;
+        if look.thumb != was.thumb {
+            prefs::set_look_number(GALLERY_VIEW, self.here(), "iconSize", f64::from(look.thumb));
+        }
+        if look.filename != was.filename {
+            prefs::set_view_option(OPTIONS, "ShowTitles", f64::from(u8::from(look.filename)));
+        }
+        cx.notify();
     }
 }

@@ -314,7 +314,7 @@ pub(crate) fn remember(demo: &FinderDemo, cx: &App) {
         sort: demo.sort,
         arranged: demo.arrangement().filter(|_| demo.view == ICON_VIEW),
         cleans_up: demo.cleans_up(),
-        grouped: demo.grouped,
+        grouped: demo.group().is_some(),
         in_trash: is_trash(demo.here()),
         location: crate::locations::is_location(demo.here()),
         info: !demo.results() && demo.here() != crate::locations::SHARED,
@@ -374,6 +374,7 @@ fn enabled(action: &dyn Action) -> bool {
                 mirror.cleans_up
             }
             _ if one_of(action, &[&ArrangeNone, &ArrangeGrid]) => mirror.arranged.is_some(),
+            _ if action.partial_eq(&UseGroups) => mirror.view != GALLERY_VIEW,
             _ if action.partial_eq(&ShowProgressWindow) => {
                 mirror.busy || crate::progress_window::shown()
             }
@@ -1101,9 +1102,8 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &ShowViewOptions, window, cx| {
                 this.run_menu(Act::ViewOptions, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &UseGroups, _, cx| {
-                this.grouped = !this.grouped;
-                cx.notify();
+            .on_action(cx.listener(|this, _: &UseGroups, window, cx| {
+                this.run_menu(Act::Groups, window, cx);
             }))
             .on_action(cx.listener(|this, _: &CleanUp, _, cx| {
                 this.clean_up(false, cx);

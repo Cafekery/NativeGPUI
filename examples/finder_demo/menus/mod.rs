@@ -11,8 +11,8 @@ use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
 pub(crate) use self::actions::Act;
 pub(crate) use self::bar::{
-    Back, CopyNames, Forward, NewTab, SelectAll, ShowClipboard, ShowProgressWindow,
-    ShowViewOptions, ZoomIn, ZoomOut, chosen_state, go_rows, install, remember,
+    Back, CopyNames, Forward, NewTab, SelectAll, ShowClipboard, ShowProgressWindow, ZoomIn,
+    ZoomOut, chosen_state, go_rows, install, remember,
 };
 pub(crate) use self::context::{background, header, item, sidebar};
 use crate::app::FinderDemo;
