@@ -369,7 +369,7 @@ fn claim_nearest(at: Point<Pixels>, taken: &mut HashSet<Slot>, options: Options)
 
 fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
     let mut rows: Vec<Arc<Row>> = lines.iter().map(|line| line.row.clone()).collect();
-    crate::read::sort_rows(&mut rows, (column, column.first_ascending()), true);
+    crate::read::sort_rows(&mut rows, (column, column.first_ascending()), true, true);
     let order: HashMap<*const Row, usize> = rows
         .iter()
         .enumerate()
