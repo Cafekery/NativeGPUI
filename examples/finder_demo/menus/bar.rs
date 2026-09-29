@@ -17,6 +17,7 @@ use objc2_app_kit::{NSHelpManager, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
 
 use super::actions::open_windows;
+use super::context::{swatch_row, unlistable_folder};
 use super::edit::PasteExactly;
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
@@ -225,8 +226,6 @@ thread_local! {
         ..Chosen::default()
     }));
     static LOCATIONS: RefCell<Option<Vec<(String, &'static str)>>> = const { RefCell::new(None) };
-    // The last pick in the File menu's tag row: a swatch, or None for its button.
-    static TAG_PICK: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
 
 /// (refuse to open, can be shared, all in iCloud Drive) for the chosen items.
@@ -249,14 +248,9 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
     }
     let lines = demo.chosen_lines();
     // Finder keeps the Open rows off while every chosen item is a folder the user can't list.
-    let refused = !lines.is_empty()
-        && lines
-            .iter()
-            .all(|line| line.row.opens.is_some() && !line.row.readable);
+    let refused = !lines.is_empty() && lines.iter().all(unlistable_folder);
     // Finder won't share a folder the user can't list, even beside readable items.
-    let shareable = lines
-        .iter()
-        .all(|line| line.row.opens.is_none() || line.row.readable);
+    let shareable = !lines.iter().any(unlistable_folder);
     let cloud = finder_fs::icloud::drive().is_some_and(|drive| {
         shareable
             && !lines.is_empty()
@@ -650,17 +644,7 @@ fn tag_row() -> native_gpui::MenuView {
         .iter()
         .map(|key| crate::tags::row_tags(key))
         .collect();
-    let picked = !carried.is_empty();
-    let button = match chosen.count == 1 && chosen.folders == 1 {
-        true => "Customize Folder…",
-        false => "Tags…",
-    };
-    native_gpui::MenuView::swatches_with_button(
-        super::context::tag_swatches(&carried),
-        picked,
-        ("tag", button, picked),
-        |hit| TAG_PICK.set(Some(hit)),
-    )
+    swatch_row(&carried, chosen.count == 1 && chosen.folders == 1)
 }
 
 fn open_with_rows(always: bool) -> Vec<MenuCommand> {
@@ -1251,12 +1235,8 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &Share, window, cx| {
                 this.share_selection(window, cx);
             }))
-            .on_action(
-                cx.listener(|this, _: &EditTags, window, cx| match TAG_PICK.take() {
-                    Some(Some(tag)) => this.tag_selection(tag, cx),
-                    Some(None) => this.run_menu(Act::Tags, window, cx),
-                    None => {}
-                }),
-            )
+            .on_action(cx.listener(|this, _: &EditTags, window, cx| {
+                this.run_menu(Act::Swatch, window, cx);
+            }))
     }
 }
