@@ -66,16 +66,21 @@ impl FinderDemo {
                 self.icons.reveal(&line.key, visible);
             }
             "home" | "end" if self.view == ICON_VIEW => self.icons.scroll_to_end(key == "end"),
-            "left" | "right" if self.view == GALLERY_VIEW => {
+            "left" | "right" | "up" | "down" if self.view == GALLERY_VIEW => {
+                let first = matches!(key, "left" | "up");
                 let next = match current {
-                    Some(at) if key == "left" => at.saturating_sub(1),
+                    _ if modifiers.alt => match first {
+                        true => 0,
+                        false => last,
+                    },
+                    _ if matches!(key, "up" | "down") => return,
+                    Some(at) if first => at.saturating_sub(1),
                     Some(at) => (at + 1).min(last),
                     None => 0,
                 };
                 self.pick(&lines[next], modifiers.shift, false);
                 self.strip_reveal(next);
             }
-            "up" | "down" if self.view == GALLERY_VIEW => {}
             "home" | "end" if self.view == GALLERY_VIEW => {
                 let x = if key == "end" {
                     -self.strip.max_offset().x
