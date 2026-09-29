@@ -13,7 +13,7 @@ use native_gpui::{
     replace_edit_rows, set_menu, set_toolbar_search_active,
 };
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSHelpManager, NSWorkspace};
+use objc2_app_kit::NSHelpManager;
 use objc2_foundation::{NSString, NSURL};
 
 use super::actions::open_windows;
@@ -519,12 +519,8 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(crate::clipboard_window::show);
     cx.on_action(crate::progress_window::toggle);
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
-    cx.on_action(|_: &MacUserGuide, _| open_mac_help());
-    cx.on_action(|_: &TipsForYourMac, _| {
-        if let Some(tips) = NSURL::URLWithString(&NSString::from_str(TIPS)) {
-            NSWorkspace::sharedWorkspace().openURL(&tips);
-        }
-    });
+    cx.on_action(|_: &MacUserGuide, _| open_mac_help("mh43558"));
+    cx.on_action(|_: &TipsForYourMac, cx| cx.open_url(TIPS));
     cx.bind_keys([KeyBinding::new("cmd-shift-.", ToggleHidden, None)]);
     on_menu_state(checked);
     on_menu_enabled(enabled);
@@ -561,12 +557,12 @@ pub(crate) fn install(cx: &mut App) {
 
 const TIPS: &str = "x-apple-tips://open?referrer=HelpMenu";
 
-fn open_mac_help() {
+pub(crate) fn open_mac_help(anchor: &str) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     NSHelpManager::sharedHelpManager(mtm).openHelpAnchor_inBook(
-        &NSString::from_str("mh43558"),
+        &NSString::from_str(anchor),
         Some(&NSString::from_str("com.apple.machelp")),
     );
 }

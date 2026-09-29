@@ -11,9 +11,9 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSButton, NSControlStateValueOn, NSModalResponseCancel,
     NSModalResponseOK, NSPopUpButton, NSTextAlignment, NSTextField, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWorkspace,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
 use crate::data::Face;
@@ -129,12 +129,7 @@ impl FinderDemo {
     pub(crate) fn run_quick(&mut self, act: QuickAct, cx: &mut Context<Self>) {
         let mut items = self.paths();
         let quick = match act {
-            QuickAct::Customize => {
-                if let Some(url) = NSURL::URLWithString(&NSString::from_str(EXTENSIONS)) {
-                    NSWorkspace::sharedWorkspace().openURL(&url);
-                }
-                return;
-            }
+            QuickAct::Customize => return cx.open_url(EXTENSIONS),
             _ if items.is_empty() => return,
             QuickAct::ConvertImage => return self.ask_convert(items, cx),
             QuickAct::Trim => return crate::trim::trim(items.swap_remove(0), cx),

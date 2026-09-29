@@ -11,6 +11,7 @@ use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL, ns_string};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, Row, byte_string, count, volume_at};
+use crate::openwith::url;
 use crate::trim::Time;
 
 #[link(name = "ImageIO", kind = "framework")]
@@ -129,10 +130,6 @@ fn read(fact: Fact, path: &Path) -> Option<SharedString> {
         }
     };
     Some(line.into())
-}
-
-fn url(path: &Path) -> Option<Retained<NSURL>> {
-    Some(NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)))
 }
 
 fn pixels(path: &Path) -> Option<(u64, u64)> {

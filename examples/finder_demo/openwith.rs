@@ -24,7 +24,7 @@ pub(crate) struct App {
     pub(crate) default: bool,
 }
 
-fn url(path: &Path) -> Option<Retained<NSURL>> {
+pub(crate) fn url(path: &Path) -> Option<Retained<NSURL>> {
     Some(NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)))
 }
 
