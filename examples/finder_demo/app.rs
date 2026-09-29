@@ -29,6 +29,7 @@ use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::column::{ColumnFit, ColumnLook};
+use crate::views::gallery::GalleryLook;
 use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
@@ -124,7 +125,7 @@ pub(crate) struct FinderDemo {
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
     pub(crate) list_icon: f32,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
-    pub(crate) strip_icon: f32,
+    pub(crate) gallery_look: GalleryLook,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -269,7 +270,7 @@ impl FinderDemo {
             ql_shown: None,
             list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
             list_zoom: None,
-            strip_icon: prefs::strip_icon().unwrap_or(48.),
+            gallery_look: GalleryLook::load(start),
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
