@@ -278,7 +278,7 @@ fn label_gap(icon: f32) -> f32 {
     LABEL_GAP + (icon - ICON_SMALL) / 8.
 }
 
-pub(crate) fn row_h(icon: f32, text: f32) -> f32 {
+pub(crate) fn line_h(text: f32) -> f32 {
     thread_local! {
         static LINE: Cell<(u32, f32)> = const { Cell::new((0, 0.)) };
     }
@@ -288,7 +288,11 @@ pub(crate) fn row_h(icon: f32, text: f32) -> f32 {
         line = (font.ascent + font.descent.abs()).ceil();
         LINE.set((text.to_bits(), line));
     }
-    icon.max(line) + 4.
+    line
+}
+
+pub(crate) fn row_h(icon: f32, text: f32) -> f32 {
+    icon.max(line_h(text)) + 4.
 }
 
 /// Blank rows, not `uniform_list` padding, whose visible-range arithmetic under-counts it.
@@ -315,7 +319,7 @@ impl FinderDemo {
         change: impl FnOnce(&mut ListLook),
         cx: &mut Context<Self>,
     ) {
-        let was = self.list_look();
+        let was = self.list_look;
         let mut look = was;
         change(&mut look);
         let look = look.clamped();

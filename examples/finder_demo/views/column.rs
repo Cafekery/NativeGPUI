@@ -15,11 +15,12 @@ use crate::data::{Line, Row, is_volume_root, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::fit;
-use crate::locations::COMPUTER;
+use crate::locations::{COMPUTER, place};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::{axis_locked, click_kind, menu_ring, rename_field};
+use crate::views::list::line_h;
 use crate::views::{chevron, folder_drop, run_pill};
 
 const ROW_PAD: f32 = 6.;
@@ -45,7 +46,7 @@ const WIDTHS_HELD: usize = 256;
 const AREA_ALPHA: f32 = 0.3;
 const AREA_EDGE: f32 = 2.;
 
-const OPTIONS: &str = "ColumnViewOptions";
+pub(crate) const OPTIONS: &str = "ColumnViewOptions";
 const AUTOSIZE: &str = "_FXEnableColumnAutoSizing";
 
 static STANDARD_W: LazyLock<f32> = LazyLock::new(|| {
@@ -70,9 +71,8 @@ impl ColumnLook {
     }
 
     fn row_h(self) -> f32 {
-        let font = tokens::system_font_metrics(px(self.text), FontWeight::NORMAL);
         let icon = if self.icons { ICON } else { 0. };
-        icon.max((font.ascent + font.descent.abs()).ceil()) + ROW_PAD
+        icon.max(line_h(self.text)) + ROW_PAD
     }
 }
 
@@ -164,7 +164,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn column_holder(&self, key: &str) -> Option<&'static str> {
-        let above = match crate::locations::place(key) {
+        let above = match place(key) {
             Some((_, above)) => above,
             None if is_volume_root(key) => Some(COMPUTER),
             None => None,
@@ -198,7 +198,6 @@ impl FinderDemo {
         index: usize,
         rung: &Rung,
         emphasized: bool,
-        row_h: f32,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -207,6 +206,7 @@ impl FinderDemo {
         let previews = self.previews.column;
         let scale = self.scale;
         let look = self.column_look;
+        let row_h = look.row_h();
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
         let this_menu = this.clone();
@@ -623,14 +623,12 @@ impl FinderDemo {
                 self.autosize_column(rung.folder, window, cx);
             }
         }
-        let row_h = self.column_look.row_h();
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
         let mut columns: Vec<AnyElement> = chain
             .iter()
             .enumerate()
             .map(|(index, rung)| {
-                let emphasized = Some(index) == focused;
-                let column = self.browser_column(index, rung, emphasized, row_h, palette, cx);
+                let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
                 self.ruled(column, false, Some((index, rung.folder)), cx)
             })
             .collect();
@@ -737,17 +735,14 @@ impl FinderDemo {
             .as_ref()
             .and_then(|key| lines.iter().position(|line| &line.key == key));
         match (key, at) {
-            ("up", Some(_)) if modifiers.alt => {
-                self.pick_in(&lines, &lines[0], modifiers.shift, false)
-            }
-            ("down", Some(_)) if modifiers.alt => {
-                self.pick_in(&lines, &lines[lines.len() - 1], modifiers.shift, false)
-            }
-            ("up", Some(at)) => {
-                self.pick_in(&lines, &lines[at.saturating_sub(1)], modifiers.shift, false)
-            }
-            ("down", Some(at)) => {
-                let next = (at + 1).min(lines.len() - 1);
+            ("up" | "down", Some(at)) => {
+                let last = lines.len() - 1;
+                let next = match (key, modifiers.alt) {
+                    ("up", true) => 0,
+                    ("up", false) => at.saturating_sub(1),
+                    (_, true) => last,
+                    (_, false) => (at + 1).min(last),
+                };
                 self.pick_in(&lines, &lines[next], modifiers.shift, false);
             }
             ("right", Some(at)) if self.selected.len() > 1 => {

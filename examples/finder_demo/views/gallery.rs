@@ -1,9 +1,8 @@
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use gpui::{AnyElement, FontWeight, Pixels, Point, Window, div, point, prelude::*, px};
-use native_gpui::tokens;
-use native_gpui::{native_callout, native_scroll_bars};
+use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
+use native_gpui::{native_callout, native_scroll_bars, tokens};
 
 use crate::app::FinderDemo;
 use crate::art::{Poster, art_at, item_art, poster_art};
@@ -13,18 +12,17 @@ use crate::palette::Palette;
 use crate::prefs;
 use crate::ui::pick_on_click;
 use crate::view::GALLERY_VIEW;
+use crate::views::list::line_h;
 
 const STRIP_INSET: f32 = 5.;
 const STRIP_RADIUS: f32 = 8.;
 const HERO_INSET: f32 = 61.;
 const OPTIONS: &str = "GalleryViewOptions";
 
-static TITLE_H: LazyLock<f32> = LazyLock::new(|| {
-    let font = tokens::system_font_metrics(tokens::small_system_font_size(), FontWeight::NORMAL);
-    (font.ascent + font.descent.abs()).ceil()
-});
+static TITLE_H: LazyLock<f32> =
+    LazyLock::new(|| line_h(f32::from(tokens::small_system_font_size())));
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub(crate) struct GalleryLook {
     pub(crate) thumb: f32,
     pub(crate) filename: bool,
@@ -125,7 +123,6 @@ impl FinderDemo {
             demo.lines(false).get(index as usize).cloned()
         };
         let seen = strip.seen(f32::from(self.strip.offset().x), room_w, lines.len());
-        let seen_titles = seen.clone();
         let strip_row = div()
             .id("ng.finder.filmstrip")
             .h(px(strip.height()))
@@ -138,7 +135,7 @@ impl FinderDemo {
                 cx,
             ))
             .child(div().w(px(strip.start(lines.len()))).h_full().flex_none())
-            .children(seen.map(|index| {
+            .children(seen.clone().map(|index| {
                 let line = &lines[index];
                 let is_selected = self.selected.contains(&line.key);
                 let cell = div()
@@ -162,7 +159,7 @@ impl FinderDemo {
                 )
             }))
             .when(strip.title > 0., |row| {
-                row.children(seen_titles.map(|index| {
+                row.children(seen.map(|index| {
                     div()
                         .absolute()
                         .left(px(strip.start(index) - strip.gap / 2.) + shift)
