@@ -13,7 +13,7 @@ use objc2_foundation::{
 
 use crate::chrome::scope_bar::{THIS_FOLDER, THIS_MAC};
 use crate::data::Column;
-use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 
 const VIEW: &str = "ng.finder.view";
 const SIDEBAR: &str = "sidebar.json";
@@ -603,21 +603,152 @@ fn icon_key(what: &str, folder: &str) -> Retained<NSString> {
     NSString::from_str(&format!("ng.finder.icons.{what}.{folder}"))
 }
 
-pub(crate) fn icon_options(folder: &str) -> IconOptions {
+fn look_key(view: usize, folder: Option<&str>) -> Retained<NSString> {
+    let name = match view {
+        ICON_VIEW => "icons",
+        LIST_VIEW => "list",
+        COLUMN_VIEW => "columns",
+        _ => "gallery",
+    };
+    NSString::from_str(&match folder {
+        Some(folder) => format!("ng.finder.{name}.view.{folder}"),
+        None => format!("ng.finder.{name}.view"),
+    })
+}
+
+fn look_entries(
+    view: usize,
+    folder: Option<&str>,
+) -> Vec<(Retained<NSString>, Retained<AnyObject>)> {
+    let Some(kept) = defaults().dictionaryForKey(&look_key(view, folder)) else {
+        return Vec::new();
+    };
+    kept.keys()
+        .filter_map(|key| Some((key.clone(), kept.objectForKey(&key)?)))
+        .collect()
+}
+
+fn keep_look(view: usize, folder: Option<&str>, keys: &[&NSString], values: &[&AnyObject]) {
+    let kept: &AnyObject = &NSDictionary::from_slices(keys, values);
+    unsafe { defaults().setObject_forKey(Some(kept), &look_key(view, folder)) };
+}
+
+/// A folder's own view setting, else the one Use as Defaults kept.
+pub(crate) fn look(view: usize, folder: &str, key: &str) -> Option<Retained<AnyObject>> {
+    let key = NSString::from_str(key);
+    [Some(folder), None].into_iter().find_map(|at| {
+        defaults()
+            .dictionaryForKey(&look_key(view, at))?
+            .objectForKey(&key)
+    })
+}
+
+pub(crate) fn look_number(view: usize, folder: &str, key: &str) -> Option<f64> {
+    Some(
+        look(view, folder, key)?
+            .downcast::<NSNumber>()
+            .ok()?
+            .doubleValue(),
+    )
+}
+
+pub(crate) fn look_on(view: usize, folder: &str, key: &str) -> Option<bool> {
+    look_number(view, folder, key).map(|on| on != 0.)
+}
+
+pub(crate) fn look_text(view: usize, folder: &str, key: &str) -> Option<String> {
+    Some(
+        look(view, folder, key)?
+            .downcast::<NSString>()
+            .ok()?
+            .to_string(),
+    )
+}
+
+fn set_look(view: usize, folder: &str, key: &str, value: &AnyObject) {
+    let own = look_entries(view, Some(folder));
+    let name = NSString::from_str(key);
+    let mut keys: Vec<&NSString> = vec![&name];
+    let mut values: Vec<&AnyObject> = vec![value];
+    for (at, kept) in own.iter().filter(|(at, _)| **at != *name) {
+        keys.push(at);
+        values.push(kept);
+    }
+    keep_look(view, Some(folder), &keys, &values);
+}
+
+pub(crate) fn set_look_number(view: usize, folder: &str, key: &str, value: f64) {
+    set_look(view, folder, key, &NSNumber::new_f64(value));
+}
+
+pub(crate) fn set_look_on(view: usize, folder: &str, key: &str, on: bool) {
+    set_look(view, folder, key, &NSNumber::new_bool(on));
+}
+
+pub(crate) fn set_look_text(view: usize, folder: &str, key: &str, text: &str) {
+    set_look(view, folder, key, &NSString::from_str(text));
+}
+
+fn columns_key(folder: Option<&str>) -> String {
+    match folder {
+        Some(folder) => format!("ng.finder.cols.{folder}"),
+        None => "ng.finder.cols".into(),
+    }
+}
+
+pub(crate) fn has_own_look(view: usize, folder: &str) -> bool {
+    let own = defaults().dictionaryForKey(&look_key(view, Some(folder)));
+    own.is_some_and(|own| own.count() > 0)
+        || view == LIST_VIEW && read_text(&columns_key(Some(folder))).is_some()
+}
+
+/// The folder's settings become those of every folder without its own.
+pub(crate) fn use_as_defaults(view: usize, folder: &str) {
+    let own = look_entries(view, Some(folder));
+    let kept = look_entries(view, None);
+    let mut keys: Vec<&NSString> = own.iter().map(|(key, _)| &**key).collect();
+    let mut values: Vec<&AnyObject> = own.iter().map(|(_, value)| &**value).collect();
+    for (key, value) in &kept {
+        if !keys.contains(&&**key) {
+            keys.push(key);
+            values.push(value);
+        }
+    }
+    keep_look(view, None, &keys, &values);
+    defaults().removeObjectForKey(&look_key(view, Some(folder)));
+    if view != LIST_VIEW {
+        return;
+    }
+    if let Some(ids) = read_text(&columns_key(Some(folder))) {
+        set_setting_text(&columns_key(None), &ids);
+        defaults().removeObjectForKey(&NSString::from_str(&columns_key(Some(folder))));
+    }
+}
+
+fn read_icon_options(folder: Option<&str>) -> IconOptions {
     defaults()
-        .objectForKey(&icon_key("view", folder))
+        .objectForKey(&look_key(ICON_VIEW, folder))
         .and_then(|options| options.downcast::<NSDictionary>().ok())
         .map_or_else(IconOptions::default, |options| IconOptions::read(&options))
 }
 
+pub(crate) fn icon_options(folder: &str) -> IconOptions {
+    read_icon_options(Some(folder))
+}
+
+/// What Use as Defaults kept, below a folder's own and Finder's per-folder options.
+pub(crate) fn icon_defaults() -> IconOptions {
+    read_icon_options(None)
+}
+
 pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
-    let ids = read_text(&format!("ng.finder.cols.{folder}"))?;
+    let ids = read_text(&columns_key(Some(folder))).or_else(|| read_text(&columns_key(None)))?;
     Some(ids.split(',').filter_map(Column::from_id).collect())
 }
 
 pub(crate) fn set_list_columns(folder: &str, columns: &[Column]) {
     let ids: Vec<&str> = columns.iter().map(|column| column.id()).collect();
-    set_setting_text(&format!("ng.finder.cols.{folder}"), &ids.join(","));
+    set_setting_text(&columns_key(Some(folder)), &ids.join(","));
 }
 
 pub(crate) fn arranged(view: usize) -> Option<Column> {
@@ -629,31 +760,22 @@ pub(crate) fn set_arranged(view: usize, column: Column) {
 }
 
 pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
-    let arrange = options.arrange_by.as_deref().map(NSString::from_str);
-    let numbers = [
-        ("iconSize", options.icon_size.map(NSNumber::new_f32)),
-        ("gridSpacing", options.grid_spacing.map(NSNumber::new_f32)),
-        ("textSize", options.text_size.map(NSNumber::new_f32)),
-        (
-            "labelOnBottom",
-            options.label_on_bottom.map(NSNumber::new_bool),
-        ),
-    ];
-    let mut keys = Vec::new();
-    let mut values: Vec<&AnyObject> = Vec::new();
-    if let Some(arrange) = &arrange {
-        keys.push(NSString::from_str("arrangeBy"));
-        values.push(arrange);
+    if let Some(arrange) = options.arrange_by.as_deref() {
+        set_look_text(ICON_VIEW, folder, "arrangeBy", arrange);
     }
-    for (key, number) in &numbers {
+    let numbers = [
+        ("iconSize", options.icon_size),
+        ("gridSpacing", options.grid_spacing),
+        ("textSize", options.text_size),
+    ];
+    for (key, number) in numbers {
         if let Some(number) = number {
-            keys.push(NSString::from_str(key));
-            values.push(number);
+            set_look_number(ICON_VIEW, folder, key, f64::from(number));
         }
     }
-    let keys: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
-    let value: &AnyObject = &NSDictionary::from_slices(&keys, &values);
-    unsafe { defaults().setObject_forKey(Some(value), &icon_key("view", folder)) };
+    if let Some(bottom) = options.label_on_bottom {
+        set_look_on(ICON_VIEW, folder, "labelOnBottom", bottom);
+    }
 }
 
 pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
