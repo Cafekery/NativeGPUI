@@ -489,9 +489,13 @@ Traffic lights, corner radius, window shadow and title type measure identical.
 - [x] View Options: a floating panel that does not activate (`AXSystemFloatingWindow`, as Finder's),
   titled with the folder, which ⌘J opens and closes from either window. In list view it lists
   Finder's twelve Show Columns in Finder's order.
-- [ ] Finder's list-view View Options panel is 236×646 and also holds Group By and text size among
-  other rows; the demo's is 268×341, with Sort By and Show Columns only. Read over AX (window
-  points, every view 236×646, title shown): Always open in <view> view (19,35) and Browse in
+- [x] View Options is Finder's 236×646 panel in every view and, as Finder's, never takes key. Every
+  control works and is kept per folder; Group By and Sort By are two settings, with bands by the
+  group key and rows sorted inside them. Always open in <view> view switches the window to that view
+  when the folder opens; Browse in makes it the window's style. Use as Defaults (none in column view)
+  gives the folder's settings to every folder without its own, and is off until the folder has some.
+  Column view's settings are global, as Finder's; Resize columns to fit filenames is Finder's
+  `_FXEnableColumnAutoSizing`. Read off Finder over AX: Always open in <view> view (19,35) and Browse in
   <view> view (29,57, off until the first is on; help "Select if you want to set the default style
   of this window to <view> view"); Group By (label 19,91, popup 81,88 136×22: None, rule, Name, Kind,
   Application, Date Last Opened, Date Added, Date Modified, Date Created, Size, Tags) and Sort By
@@ -504,8 +508,12 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   Defaults. Gallery: Thumbnail size (19,125) with Finder's `viewOptionsThumbnail32/48/64` images
   (19,173 34×28; 77,160 50×41; 151,147 66×54) over radios (28/94/176,207), Show preview column
   (238), Show icon preview (258), Show filename (278). Use as Defaults (56.5,605 123×22) was off in
-  every view for a folder with no settings of its own. The demo groups by its sort column, so Group
-  By and Sort By can't yet be two settings as Finder's are.
+  every view for a folder with no settings of its own.
+- [ ] View Options: the panel's controls are regular size where Finder's are small (11 pt); hosted
+  checkboxes and radios have no control size yet. Each hosted frame sits 1 pt outside its gpui
+  bounds, so AX frames read 1 pt up-left and 2 pt larger than Finder's. The list view's icon-size
+  images are AXImage where Finder's are AXButton, Browse in has no AXHelp, and icon and column views
+  draw no groups. Where Finder puts the colour and picture wells was not read.
 - Measured on the user's Mac (textSize 14, iconSize 16, "Show all filename extensions" on, so both
   apps show full names): rows 21 pt and stripes below the last row on the same 21 pt pitch, header
   labels within 0.5 pt, titles in the same glyph positions. Differences left:
