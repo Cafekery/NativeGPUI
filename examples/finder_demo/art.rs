@@ -14,13 +14,11 @@ use crate::data::{Face, Row};
 use crate::prefs;
 use crate::thumbs::thumb;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
+use crate::views::column::OPTIONS as COLUMN_OPTIONS;
 
 const PREVIEWS: &str = "showIconPreview";
-const COLUMN_OPTIONS: &str = "ColumnViewOptions";
 const COLUMN_PREVIEWS: &str = "ShowIconThumbnails";
 
-/// Whether list, column and gallery view draw thumbnails; icon view's rides its icon options.
-#[derive(Clone, Copy)]
 pub(crate) struct Previews {
     pub(crate) list: bool,
     pub(crate) column: bool,
@@ -30,9 +28,9 @@ pub(crate) struct Previews {
 impl Previews {
     pub(crate) fn of(folder: &str) -> Self {
         let look = |view, settings| {
-            prefs::look_on(view, folder, PREVIEWS)
-                .or_else(|| Some(prefs::finder_look_number(settings, PREVIEWS)? != 0.))
-                .unwrap_or(true)
+            prefs::look_number(view, folder, PREVIEWS)
+                .or_else(|| prefs::finder_look_number(settings, PREVIEWS))
+                .is_none_or(|on| on != 0.)
         };
         Self {
             list: look(LIST_VIEW, "ExtendedListViewSettingsV2"),
@@ -68,7 +66,6 @@ impl FinderDemo {
     }
 }
 
-/// The item as its view draws it: a thumbnail where the view shows icon previews, else its icon.
 pub(crate) fn item_art(row: &Row, size: f32, scale: f32, previews: bool) -> AnyElement {
     match previews {
         true => row_art(row, size, scale, true),

@@ -416,15 +416,15 @@ impl FinderDemo {
         let Some(column) = self.column_at(index) else {
             return;
         };
-        let (size, icon) = (self.list_look.text, self.list_look.icon);
+        let look = self.list_look;
         if column.dated() {
-            return self.fitted(index, column, date_fit(size, self.list_look.relative), cx);
+            return self.fitted(index, column, date_fit(look.text, look.relative), cx);
         }
         let rows = self.fit_rows(column);
         let here = self.here();
         fit::in_background(
             cx,
-            move |texts| fit_width(texts, column, &rows, size, icon),
+            move |texts| fit_width(texts, column, &rows, look.text, look.icon),
             move |this, width, cx| {
                 if this.here() == here && this.column_at(index) == Some(column) {
                     this.fitted(index, column, width, cx);
