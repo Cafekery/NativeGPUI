@@ -812,3 +812,24 @@ pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a 
     let value: &AnyObject = &NSDictionary::from_slices(&names, &places);
     unsafe { defaults().setObject_forKey(Some(value), &icon_key("at", folder)) };
 }
+
+fn finder_number(group: &str, view: &str, key: &str) -> Option<f64> {
+    let all = finder_pref(group)?.downcast::<NSDictionary>().ok()?;
+    let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
+    Some(
+        value(&view, key)?
+            .downcast::<NSNumber>()
+            .ok()?
+            .doubleValue(),
+    )
+}
+
+/// A view's global option as Finder keys it in `StandardViewOptions`: the demo's own, else Finder's.
+pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {
+    read(&format!("ng.finder.{options}.{key}"))
+        .or_else(|| finder_number("StandardViewOptions", options, key))
+}
+
+pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
+    write(&format!("ng.finder.{options}.{key}"), value);
+}
