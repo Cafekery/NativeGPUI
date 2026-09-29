@@ -367,7 +367,7 @@ impl Build<'_> {
     }
 
     fn list(&mut self) {
-        let look = self.state.list_look();
+        let look = self.state.list_look;
         self.label("ng.finder.options.icon.label", (172., 54.), "Icon size:");
         let change: Change<f32> =
             |this, icon, cx| this.change_list_look(|look| look.icon = icon, cx);
@@ -434,7 +434,7 @@ impl Build<'_> {
     }
 
     fn column(&mut self) {
-        let look = self.state.column_look();
+        let look = self.state.column_look;
         self.text_size(154., look.text, |this, text, cx| {
             this.change_column_look(|look| look.text = text, cx)
         });
@@ -458,7 +458,7 @@ impl Build<'_> {
 
     fn gallery(&mut self) {
         name_thumbnails();
-        let look = self.state.gallery_look();
+        let look = self.state.gallery_look;
         self.label(
             "ng.finder.options.thumb.label",
             (126., 87.),
@@ -580,7 +580,7 @@ impl Build<'_> {
             "Background:",
         );
         let chosen: Change<usize> = |this, kind, cx| {
-            let background = match (kind, this.icon_background()) {
+            let background = match (kind, this.icon_paint().background) {
                 (0, _) => Background::Default,
                 (1, kept @ Background::Color(_)) => kept,
                 (1, _) => Background::Color([1., 1., 1.]),
@@ -589,7 +589,7 @@ impl Build<'_> {
             };
             set_background(this, background, cx)
         };
-        let background = self.state.icon_background();
+        let background = self.state.icon_paint().background;
         let kind = match background {
             Background::Default => 0,
             Background::Color(_) => 1,

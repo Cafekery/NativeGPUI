@@ -867,6 +867,14 @@ pub(crate) fn set_view_option(options: &str, key: &str, value: f64) {
     write(&format!("ng.finder.{options}.{key}"), value);
 }
 
+pub(crate) fn view_option_on(options: &str, key: &str) -> Option<bool> {
+    view_option(options, key).map(|on| on != 0.)
+}
+
+pub(crate) fn set_view_option_on(options: &str, key: &str, on: bool) {
+    set_view_option(options, key, f64::from(u8::from(on)));
+}
+
 pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
     finder_number("StandardViewSettings", settings, key)
 }

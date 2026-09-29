@@ -310,10 +310,6 @@ fn slot_line(slots: &Option<Arc<Vec<Slot>>>, at: usize) -> Option<usize> {
 }
 
 impl FinderDemo {
-    pub(crate) fn list_look(&self) -> ListLook {
-        self.list_look
-    }
-
     pub(crate) fn change_list_look(
         &mut self,
         change: impl FnOnce(&mut ListLook),
