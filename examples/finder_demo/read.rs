@@ -903,6 +903,7 @@ impl FinderDemo {
         if dirs.is_empty() {
             return;
         }
+        data::unweigh(&dirs);
         for dir in &dirs {
             crate::tags::forget_tags_in(dir);
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
@@ -910,6 +911,13 @@ impl FinderDemo {
                     true => self.read_folder(id, cx),
                     false => self.folders.stale(id),
                 }
+            }
+            let holders: Vec<&'static str> = (dir.ancestors().skip(1))
+                .filter_map(|up| self.folders.known(&up.to_string_lossy()))
+                .filter(|&id| self.weighs(id))
+                .collect();
+            for id in holders {
+                self.read_folder(id, cx);
             }
         }
         cx.background_executor()

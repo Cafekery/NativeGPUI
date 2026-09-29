@@ -266,6 +266,12 @@ pub(crate) fn weigh(path: &SharedString, modified: f64) -> u64 {
     bytes
 }
 
+/// Forgets the weight of every folder holding one of `dirs`: a change deep inside keeps its date.
+pub(crate) fn unweigh(dirs: &[PathBuf]) {
+    let mut weights = WEIGHTS.lock().unwrap();
+    weights.retain(|(path, _), _| !dirs.iter().any(|dir| dir.starts_with(&**path)));
+}
+
 fn sized(row: &Row, bytes: u64) -> Arc<Row> {
     Arc::new(Row {
         size: byte_string(bytes).into(),
