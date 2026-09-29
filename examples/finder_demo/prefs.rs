@@ -31,6 +31,7 @@ pub(crate) struct Finder {
     pub(crate) text_size: f32,
     pub(crate) icon_size: f32,
     pub(crate) relative_dates: bool,
+    pub(crate) calculate_all_sizes: bool,
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
@@ -132,6 +133,7 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         text_size: number("textSize").unwrap_or(13.) as f32,
         icon_size: number("iconSize").unwrap_or(16.) as f32,
         relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
+        calculate_all_sizes: number("calculateAllSizes").is_some_and(|on| on != 0.),
         toolbar: toolbar.map_or_else(Vec::new, |ids| {
             ids.iter()
                 .filter_map(|id| Some(id.downcast_ref::<NSString>()?.to_string()))

@@ -218,7 +218,7 @@ impl FinderDemo {
         if id == NETWORK {
             follow_network(cx);
             let mut rows = network_rows();
-            crate::read::sort_rows(&mut rows, sorted_by, false);
+            crate::read::sort_rows(&mut rows, sorted_by, false, true);
             self.deliver(id, Some(rows), None, true, sorted_by, cx);
             return;
         }
@@ -227,7 +227,7 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     let mut rows = rows_of(id);
-                    crate::read::sort_rows(&mut rows, sorted_by, false);
+                    crate::read::sort_rows(&mut rows, sorted_by, false, true);
                     rows
                 })
                 .await;

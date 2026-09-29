@@ -14,7 +14,9 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{Column, Line, Row, date_style, enclosing_name, kind_text, list_date, today};
+use crate::data::{
+    Column, Line, Row, date_style, enclosing_name, intern, kind_text, list_date, today,
+};
 use crate::dragdrop::{DragGhost, RowDrag, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
@@ -64,17 +66,19 @@ pub(crate) struct ListLook {
     pub(crate) text: f32,
     pub(crate) icon: f32,
     pub(crate) relative: bool,
+    pub(crate) sizes: bool,
 }
 
 impl ListLook {
     pub(crate) fn of(folder: &str) -> Self {
         let finder = prefs::finder();
         let number = |key| prefs::look_number(LIST_VIEW, folder, key).map(|value| value as f32);
+        let on = |key| prefs::look_on(LIST_VIEW, folder, key);
         Self {
             text: number("textSize").unwrap_or(finder.text_size),
             icon: number("iconSize").unwrap_or(finder.icon_size),
-            relative: prefs::look_on(LIST_VIEW, folder, "useRelativeDates")
-                .unwrap_or(finder.relative_dates),
+            relative: on("useRelativeDates").unwrap_or(finder.relative_dates),
+            sizes: on("calculateAllSizes").unwrap_or(finder.calculate_all_sizes),
         }
         .clamped()
     }
@@ -100,8 +104,13 @@ impl ListLook {
                 prefs::set_look_number(LIST_VIEW, folder, key, f64::from(value));
             }
         }
-        if self.relative != was.relative {
-            prefs::set_look_on(LIST_VIEW, folder, "useRelativeDates", self.relative);
+        for (key, on, before) in [
+            ("useRelativeDates", self.relative, was.relative),
+            ("calculateAllSizes", self.sizes, was.sizes),
+        ] {
+            if on != before {
+                prefs::set_look_on(LIST_VIEW, folder, key, on);
+            }
         }
     }
 }
@@ -111,6 +120,7 @@ struct Look {
     icon: f32,
     text: f32,
     relative: bool,
+    sizes: bool,
     row_h: f32,
     name_w: f32,
     scale: f32,
@@ -317,6 +327,17 @@ impl FinderDemo {
         }
         self.list_look = look;
         self.name_w = self.name_w.max(self.name_min_w());
+        if look.sizes != was.sizes {
+            if self.sort == Column::Size {
+                self.sort_held((self.sort, self.ascending), cx);
+            }
+            let shown: Vec<&'static str> = (self.expanded.iter().map(|key| intern(key)))
+                .chain([self.here()])
+                .collect();
+            for id in shown {
+                self.weigh_folders(id, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -338,6 +359,7 @@ impl FinderDemo {
             icon,
             text: self.list_look.text,
             relative: self.list_look.relative,
+            sizes: self.list_look.sizes,
             row_h: row_h(icon, self.list_look.text),
             name_w: self.name_w,
             scale: self.scale,
@@ -621,7 +643,7 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
             .flex()
             .justify_end()
             .font(look.dates.clone())
-            .child(line.row.size.clone()),
+            .child(line.row.size_shown(look.sizes)),
         column => {
             let cell = cell.pl(px(CELL_PAD)).whitespace_nowrap().overflow_hidden();
             match column {
