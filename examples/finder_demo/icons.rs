@@ -277,7 +277,7 @@ fn start(demo: WeakEntity<FinderDemo>, cx: &mut App) {
         let list = finder.view == LIST_VIEW;
         // The size a list settles at, not the one its zoom is passing through.
         let size = match list {
-            true => finder.list_icon,
+            true => finder.list_look.icon,
             false => finder.art_size(),
         };
         let lines = finder.lines(list);

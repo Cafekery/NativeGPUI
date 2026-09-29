@@ -10,6 +10,8 @@ use crate::data::{Folder, Line, intern, intern_path, is_volume_root, split_key};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
+use crate::views::column::ColumnLook;
+use crate::views::gallery::GalleryLook;
 use crate::{home, open_finder_window};
 
 const HOLD: Duration = Duration::from_millis(100);
@@ -252,7 +254,8 @@ impl FinderDemo {
                 || self
                     .folders
                     .get(id)
-                    .is_some_and(|folder| folder.loading && folder.rows.is_empty()))
+                    .is_some_and(|folder| folder.loading && folder.rows.is_empty())
+                || self.order_for(id) != self.order())
     }
 
     pub(crate) fn headed_for(&self) -> Option<&'static str> {
@@ -458,9 +461,15 @@ impl FinderDemo {
         self.tag_listing = None;
         self.icons.forget();
         self.clear_type_filter();
+        self.list_look = crate::views::list::ListLook::of(self.here());
         self.load_columns();
         self.columns_from_computer = self.here() == crate::locations::COMPUTER;
+        self.column_look = ColumnLook::load();
+        self.gallery_look = GalleryLook::load(self.here());
+        self.load_sorting(cx);
         self.sidebar_follow();
+        self.previews = crate::art::Previews::of(self.here());
+        self.open_as_kept(cx);
         cx.notify();
     }
 

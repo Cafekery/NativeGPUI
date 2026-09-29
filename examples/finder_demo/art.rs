@@ -1,16 +1,80 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Div, FontWeight, ObjectFit, RenderImage, SharedString, div, hsla, img, prelude::*,
-    px,
+    AnyElement, Context, Div, FontWeight, ObjectFit, RenderImage, SharedString, div, hsla, img,
+    prelude::*, px,
 };
 use native_gpui::native_anchor;
 use native_gpui::tokens::{
     Appearance, FileType, Symbol, SymbolColor, SystemColor, current_appearance, sf_symbol_colored,
 };
 
+use crate::app::FinderDemo;
 use crate::data::{Face, Row};
+use crate::prefs;
 use crate::thumbs::thumb;
+use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
+
+const PREVIEWS: &str = "showIconPreview";
+const COLUMN_OPTIONS: &str = "ColumnViewOptions";
+const COLUMN_PREVIEWS: &str = "ShowIconThumbnails";
+
+/// Whether list, column and gallery view draw thumbnails; icon view's rides its icon options.
+#[derive(Clone, Copy)]
+pub(crate) struct Previews {
+    pub(crate) list: bool,
+    pub(crate) column: bool,
+    pub(crate) gallery: bool,
+}
+
+impl Previews {
+    pub(crate) fn of(folder: &str) -> Self {
+        let look = |view, settings| {
+            prefs::look_on(view, folder, PREVIEWS)
+                .or_else(|| Some(prefs::finder_look_number(settings, PREVIEWS)? != 0.))
+                .unwrap_or(true)
+        };
+        Self {
+            list: look(LIST_VIEW, "ExtendedListViewSettingsV2"),
+            column: prefs::view_option(COLUMN_OPTIONS, COLUMN_PREVIEWS).is_none_or(|on| on != 0.),
+            gallery: look(GALLERY_VIEW, "GalleryViewSettings"),
+        }
+    }
+}
+
+impl FinderDemo {
+    pub(crate) fn icon_previews(&self) -> bool {
+        match self.view {
+            ICON_VIEW => self.icon_paint().previews,
+            LIST_VIEW => self.previews.list,
+            COLUMN_VIEW => self.previews.column,
+            _ => self.previews.gallery,
+        }
+    }
+
+    pub(crate) fn set_icon_previews(&mut self, on: bool, cx: &mut Context<Self>) {
+        let here = self.here();
+        match self.view {
+            ICON_VIEW => {
+                return self.change_icon_options(|icon| icon.show_icon_preview = Some(on), cx);
+            }
+            COLUMN_VIEW => {
+                prefs::set_view_option(COLUMN_OPTIONS, COLUMN_PREVIEWS, f64::from(u8::from(on)))
+            }
+            view => prefs::set_look_on(view, here, PREVIEWS, on),
+        }
+        self.previews = Previews::of(here);
+        cx.notify();
+    }
+}
+
+/// The item as its view draws it: a thumbnail where the view shows icon previews, else its icon.
+pub(crate) fn item_art(row: &Row, size: f32, scale: f32, previews: bool) -> AnyElement {
+    match previews {
+        true => row_art(row, size, scale, true),
+        false => artwork(row, size),
+    }
+}
 
 pub(crate) fn row_art(row: &Row, size: f32, scale: f32, visible: bool) -> AnyElement {
     match thumb(row, size, scale, visible, true) {
@@ -47,8 +111,8 @@ impl Art {
     }
 }
 
-pub(crate) fn list_art(row: &Row, size: f32, scale: f32) -> Art {
-    let picture = matches!(row.face, Face::Image | Face::Movie)
+pub(crate) fn list_art(row: &Row, size: f32, scale: f32, previews: bool) -> Art {
+    let picture = (previews && matches!(row.face, Face::Image | Face::Movie))
         .then(|| thumb(row, size, scale, true, true))
         .flatten();
     match picture {

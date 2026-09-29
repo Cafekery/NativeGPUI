@@ -1,3 +1,4 @@
+mod apps;
 mod extra;
 mod face;
 mod folders;
@@ -6,6 +7,7 @@ mod paths;
 mod row;
 mod volumes;
 
+pub(crate) use self::apps::read_apps;
 pub(crate) use self::face::Face;
 pub(crate) use self::folders::{Folder, Folders, folder_of};
 pub(crate) use self::format::{
@@ -14,9 +16,10 @@ pub(crate) use self::format::{
 };
 pub(crate) use self::paths::{enclosing_name, intern, intern_path, join, split_key};
 pub(crate) use self::row::{
-    Column, Facts, Line, Row, SORT_KEYS, SORT_TITLES, bytes_of, early_artwork, facts_of,
-    folder_artwork, hit_row, icloud_rows, is_trash, kind_at, modified_at, path_line, read_extras,
-    recent_rows, rows_at, rows_of, tagged_rows, weigh_packages,
+    Column, Facts, GROUP_KEYS, Line, Order, Row, SORT_KEYS, SORT_TITLES, bytes_of, early_artwork,
+    facts_of, folder_artwork, hit_row, icloud_rows, is_trash, kind_at, modified_at, path_line,
+    read_extras, recent_rows, rows_at, rows_of, tagged_rows, unweigh, weigh, weigh_packages,
+    weighed_folders,
 };
 pub(crate) use self::volumes::{
     VolumeInfo, available_bytes, follow_volumes, is_volume_root, network_roots, refresh_volumes,

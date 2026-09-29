@@ -420,7 +420,7 @@ fn label_width(label: &'static str) -> f32 {
 
 const BY: &str = "\u{200a}\u{d7}\u{200a}";
 
-fn duration(seconds: f64) -> Option<SharedString> {
+pub(crate) fn duration(seconds: f64) -> Option<SharedString> {
     thread_local! {
         static FORMATTER: Retained<NSDateComponentsFormatter> = {
             let formatter = NSDateComponentsFormatter::new();

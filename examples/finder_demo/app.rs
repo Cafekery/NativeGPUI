@@ -18,19 +18,21 @@ use native_gpui::sidebar::NativeSidebar;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
 
-use crate::art::Anchor;
+use crate::art::{Anchor, Previews};
 use crate::chrome::sheet::GoPanel;
 use crate::chrome::sidebar;
-use crate::data::{Column, Folders, Row};
+use crate::data::{Column, Folders, Order, Row};
 use crate::dragdrop::Spring;
 use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
+use crate::views::column::{ColumnFit, ColumnLook};
+use crate::views::gallery::GalleryLook;
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for};
 use crate::views::icon::Grid;
-use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
+use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL, ListLook};
 use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
@@ -62,9 +64,10 @@ pub(crate) struct FinderDemo {
     /// The held rows' order: the shown view's, or the pending one's.
     pub(crate) sort: Column,
     pub(crate) ascending: bool,
-    pub(crate) list_sort: (Column, bool),
+    /// The held rows' group, as `sort` is their column.
+    pub(crate) banded: Option<Column>,
+    pub(crate) sorting: Sorting,
     pub(crate) column_sort: Column,
-    pub(crate) gallery_sort: Column,
     pub(crate) pending_view: Option<usize>,
     pub(crate) list_columns: Vec<ColumnSpec>,
     pub(crate) name_w: f32,
@@ -111,7 +114,8 @@ pub(crate) struct FinderDemo {
     pub(crate) crumb_drop: Option<usize>,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
-    pub(crate) grouped: bool,
+    /// The view this window browses in where a folder doesn't ask for its own.
+    pub(crate) style: usize,
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
@@ -122,9 +126,9 @@ pub(crate) struct FinderDemo {
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) customizer: Option<crate::customize::Customizer>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
-    pub(crate) list_icon: f32,
+    pub(crate) list_look: ListLook,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
-    pub(crate) strip_icon: f32,
+    pub(crate) gallery_look: GalleryLook,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -134,11 +138,14 @@ pub(crate) struct FinderDemo {
     /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
     pub(crate) columns_from_computer: bool,
-    pub(crate) column_widths: HashMap<&'static str, f32>,
+    pub(crate) column_widths: HashMap<&'static str, Option<f32>>,
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
+    pub(crate) column_look: ColumnLook,
+    pub(crate) column_fits: HashMap<&'static str, ColumnFit>,
     pub(crate) icons: Grid,
     pub(crate) bands: Bands,
+    pub(crate) previews: Previews,
     pub(crate) scale: f32,
     pub(crate) viewport: Size<Pixels>,
     pub(crate) window_min_w: f32,
@@ -161,6 +168,7 @@ pub(crate) struct FinderDemo {
     pub(crate) conflict: Option<conflicts::Sheet>,
     pub(crate) jobs: Vec<jobs::JobRow>,
     pub(crate) jobs_open: bool,
+    pub(crate) weighing: HashMap<&'static str, gpui::Task<()>>,
 }
 
 impl FinderDemo {
@@ -195,7 +203,12 @@ impl FinderDemo {
             queue_sink.lock().unwrap().push(event);
             read::EVENTS.ring();
         });
-        let view = prefs::view().unwrap_or(LIST_VIEW);
+        let style = prefs::view().unwrap_or(LIST_VIEW);
+        let view = prefs::opens_in(start).map_or(style, |(view, _)| view);
+        let style = match prefs::opens_in(start) {
+            Some((view, true)) => view,
+            _ => style,
+        };
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
@@ -211,12 +224,12 @@ impl FinderDemo {
             view,
             sort: finder.sort.0,
             ascending: finder.sort.1,
-            list_sort: finder.sort,
+            banded: None,
+            sorting: Sorting::of(start),
             column_sort: prefs::arranged(COLUMN_VIEW).unwrap_or(finder.arranged.0),
-            gallery_sort: prefs::arranged(GALLERY_VIEW).unwrap_or(finder.arranged.1),
             pending_view: None,
             list_columns: Vec::new(),
-            name_w: name_min_w(ICON_SMALL),
+            name_w: 0.,
             header_drag: None,
             header: None,
             header_press: None,
@@ -256,7 +269,7 @@ impl FinderDemo {
             crumb_drop: None,
             status_bar_shown: false,
             show_hidden: false,
-            grouped: false,
+            style,
             spring: None,
             pressed_at: gpui::Point::default(),
             recents: Vec::new(),
@@ -267,9 +280,9 @@ impl FinderDemo {
             tag_editor: None,
             customizer: None,
             ql_shown: None,
-            list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
+            list_look: ListLook::of(start),
             list_zoom: None,
-            strip_icon: prefs::strip_icon().unwrap_or(48.),
+            gallery_look: GalleryLook::load(start),
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
@@ -281,8 +294,11 @@ impl FinderDemo {
             column_widths: HashMap::new(),
             column_scrolls: Vec::new(),
             column_grab: None,
+            column_look: ColumnLook::load(),
+            column_fits: HashMap::new(),
             icons: Grid::default(),
             bands: Bands::default(),
+            previews: Previews::of(start),
             scale: 2.,
             viewport: Size::default(),
             window_min_w: f32::NAN,
@@ -308,8 +324,9 @@ impl FinderDemo {
             conflict: None,
             jobs: Vec::new(),
             jobs_open: false,
+            weighing: HashMap::new(),
         };
-        (this.sort, this.ascending) = this.view_sort(this.view);
+        this.set_order(this.view_sort(this.view));
         this.load_columns();
         this.read_folder(start, cx);
         cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
@@ -317,12 +334,66 @@ impl FinderDemo {
         this
     }
 
-    pub(crate) fn view_sort(&self, view: usize) -> (Column, bool) {
-        match view {
-            COLUMN_VIEW => (self.column_sort, self.column_sort.first_ascending()),
-            GALLERY_VIEW => (self.gallery_sort, self.gallery_sort.first_ascending()),
-            _ => self.list_sort,
+    pub(crate) fn order(&self) -> Order {
+        Order {
+            group: self.banded,
+            sort: self.sort,
+            ascending: self.ascending,
         }
+    }
+
+    pub(crate) fn set_order(&mut self, order: Order) {
+        (self.sort, self.ascending, self.banded) = (order.sort, order.ascending, order.group);
+    }
+
+    pub(crate) fn view_sort(&self, view: usize) -> Order {
+        self.sorting.order(view, self.column_sort)
+    }
+
+    /// The order `folder`'s rows take once it is entered.
+    pub(crate) fn order_for(&self, folder: &'static str) -> Order {
+        Sorting::of(folder).order(self.pending_view.unwrap_or(self.view), self.column_sort)
+    }
+
+    /// The entered folder's sorts; the held rows take its order at once.
+    pub(crate) fn load_sorting(&mut self, cx: &mut Context<Self>) {
+        self.sorting = Sorting::of(self.here());
+        let wanted = self.view_sort(self.view);
+        if self.pending_view.is_none() && wanted != self.order() {
+            self.set_order(wanted);
+            self.sort_held(wanted, cx);
+        }
+    }
+
+    /// The folder's group key; gallery view never groups.
+    pub(crate) fn group(&self) -> Option<Column> {
+        self.sorting.group.filter(|_| self.view != GALLERY_VIEW)
+    }
+
+    pub(crate) fn set_group(&mut self, group: Option<Column>, cx: &mut Context<Self>) {
+        let here = self.here();
+        prefs::set_look_text(LIST_VIEW, here, "groupBy", group.map_or("none", Column::id));
+        if let Some(group) = group {
+            prefs::set_look_text(LIST_VIEW, here, "lastGroupBy", group.id());
+        }
+        self.sorting.group = group;
+        let wanted = self.view_sort(self.pending_view.unwrap_or(self.view));
+        if wanted != self.order() {
+            self.sort_held(wanted, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_groups(&mut self, cx: &mut Context<Self>) {
+        let last = prefs::look_text(LIST_VIEW, self.here(), "lastGroupBy");
+        let group = match self.sorting.group {
+            Some(_) => None,
+            None => Some(
+                last.and_then(|id| Column::from_id(&id))
+                    .unwrap_or(prefs::finder().group),
+            ),
+        };
+        self.set_group(group, cx);
     }
 
     pub(crate) fn wants_extras(&self) -> bool {
@@ -351,13 +422,21 @@ impl FinderDemo {
     }
 
     pub(crate) fn resort(&mut self, by: (Column, bool), cx: &mut Context<Self>) {
+        let here = self.here();
         match self.view {
-            COLUMN_VIEW => self.column_sort = by.0,
-            GALLERY_VIEW => self.gallery_sort = by.0,
-            _ => self.list_sort = by,
-        }
-        if matches!(self.view, COLUMN_VIEW | GALLERY_VIEW) {
-            prefs::set_arranged(self.view, by.0);
+            COLUMN_VIEW => {
+                self.column_sort = by.0;
+                prefs::set_arranged(COLUMN_VIEW, by.0);
+            }
+            GALLERY_VIEW => {
+                self.sorting.gallery = by.0;
+                prefs::set_look_text(GALLERY_VIEW, here, "arrangeBy", by.0.id());
+            }
+            _ => {
+                self.sorting.list = by;
+                prefs::set_look_text(LIST_VIEW, here, "sortColumn", by.0.id());
+                prefs::set_look_on(LIST_VIEW, here, "ascending", by.1);
+            }
         }
         self.sort_held(self.view_sort(self.view), cx);
     }
@@ -368,6 +447,50 @@ impl FinderDemo {
             for size in [ICON_SIZE, PREVIEW_W - 1. - 2. * INSET] {
                 crate::icons::icon(kind, size);
             }
+        }
+    }
+}
+
+/// A folder's list sort and grouping and its gallery sort: its own, else what Use as Defaults
+/// kept, else Finder's.
+#[derive(Clone, Copy)]
+pub(crate) struct Sorting {
+    list: (Column, bool),
+    group: Option<Column>,
+    gallery: Column,
+}
+
+impl Sorting {
+    fn of(folder: &str) -> Self {
+        let finder = prefs::finder();
+        let key =
+            |view, name| prefs::look_text(view, folder, name).and_then(|id| Column::from_id(&id));
+        let list = match key(LIST_VIEW, "sortColumn") {
+            Some(sort) => {
+                let ascending = prefs::look_on(LIST_VIEW, folder, "ascending");
+                (sort, ascending.unwrap_or(sort.first_ascending()))
+            }
+            None => finder.sort,
+        };
+        Self {
+            list,
+            group: key(LIST_VIEW, "groupBy"),
+            gallery: key(GALLERY_VIEW, "arrangeBy")
+                .or_else(|| prefs::arranged(GALLERY_VIEW))
+                .unwrap_or(finder.arranged.1),
+        }
+    }
+
+    fn order(self, view: usize, column: Column) -> Order {
+        let (sort, ascending) = match view {
+            COLUMN_VIEW => (column, column.first_ascending()),
+            GALLERY_VIEW => (self.gallery, self.gallery.first_ascending()),
+            _ => self.list,
+        };
+        Order {
+            group: self.group.filter(|_| view == LIST_VIEW),
+            sort,
+            ascending,
         }
     }
 }

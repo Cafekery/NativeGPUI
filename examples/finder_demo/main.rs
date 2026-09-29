@@ -15,6 +15,7 @@ mod icons;
 mod info;
 mod input;
 mod inspector;
+mod item_info;
 mod keep;
 mod listing;
 mod locations;
@@ -60,7 +61,7 @@ use native_gpui::{install_menus, remember_frame, window_options};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::data::intern_path;
-use crate::menus::{Back, Forward, ShowViewOptions, ZoomIn, ZoomOut};
+use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
 
 /// Each save rewrites the whole snapshot; a launch replays the events since the last one.
 const SAVE_EVERY: Duration = Duration::from_secs(3600);
@@ -90,8 +91,6 @@ fn main() {
             KeyBinding::new("cmd-=", ZoomIn, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd-shift-=", ZoomIn, Some(LIST_CONTEXT)),
             KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
-            // The panel is never gpui's active window, so the menu row's ⌘J would not reach it.
-            KeyBinding::new("cmd-j", ShowViewOptions, Some(options::CONTEXT)),
         ]);
         navigate::arrive_on_keys(cx);
         cx.on_window_closed(|cx, _| {
