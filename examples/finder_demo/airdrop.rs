@@ -9,11 +9,11 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{AnyThread, msg_send};
 use objc2_app_kit::{
     NSBezierPath, NSBitmapFormat, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
-    NSGraphicsContext, NSImage, NSImageInterpolation, NSWorkspace,
+    NSGraphicsContext, NSImage, NSImageInterpolation,
 };
 use objc2_foundation::{
-    NSArray, NSData, NSFullUserName, NSPoint, NSRect, NSSize, NSString, NSURL, NSUserDefaults,
-    NSUserName,
+    NSArray, NSData, NSFullUserName, NSPoint, NSRect, NSSize, NSString, NSUserDefaults, NSUserName,
+    ns_string,
 };
 
 use crate::app::FinderDemo;
@@ -45,7 +45,7 @@ thread_local! {
     static PHOTO_SHOWN: OnceCell<Option<Retained<NSImage>>> = const { OnceCell::new() };
     static SHARINGD: Option<Retained<NSUserDefaults>> = NSUserDefaults::initWithSuiteName(
         NSUserDefaults::alloc(),
-        Some(&NSString::from_str("com.apple.sharingd")),
+        Some(ns_string!("com.apple.sharingd")),
     );
 }
 
@@ -62,7 +62,7 @@ fn account_photo() -> Option<Retained<NSImage>> {
         msg_send![
             AnyClass::get(c"ODNode")?,
             nodeWithSession: session,
-            name: &*NSString::from_str("/Local/Default"),
+            name: ns_string!("/Local/Default"),
             error: ptr::null_mut::<*mut AnyObject>()
         ]
     };
@@ -136,28 +136,24 @@ fn photo_named() -> bool {
         shown
             .get_or_init(|| {
                 let photo = round(&*account_photo()?)?;
-                photo
-                    .setName(Some(&NSString::from_str(PHOTO_NAME)))
-                    .then_some(photo)
+                photo.setName(Some(ns_string!(PHOTO_NAME))).then_some(photo)
             })
             .is_some()
     })
 }
 
 fn discoverable() -> usize {
-    let mode = SHARINGD.with(|defaults| {
-        defaults
-            .as_ref()?
-            .stringForKey(&NSString::from_str("DiscoverableMode"))
-    });
-    mode.and_then(|mode| MODES.iter().position(|(kept, _)| mode.to_string() == *kept))
+    SHARINGD
+        .with(|defaults| {
+            defaults
+                .as_ref()?
+                .stringForKey(ns_string!("DiscoverableMode"))
+        })
+        .and_then(|mode| {
+            let mode = mode.to_string();
+            MODES.iter().position(|(kept, _)| mode == *kept)
+        })
         .unwrap_or(1)
-}
-
-fn open_settings() {
-    if let Some(url) = NSURL::URLWithString(&NSString::from_str(SETTINGS)) {
-        NSWorkspace::sharedWorkspace().openURL(&url);
-    }
 }
 
 fn secondary(id: &'static str, text: &str, size: f32) -> NativeLabel {
@@ -186,7 +182,7 @@ impl FinderDemo {
             .width(px(POPUP_W))
             .on_change(move |picked, _, cx| {
                 if *picked != mode {
-                    open_settings();
+                    cx.open_url(SETTINGS);
                 }
                 this.update(cx, |_, cx| cx.notify()).ok();
             });
@@ -204,7 +200,7 @@ impl FinderDemo {
                     .items_center()
                     .gap(px(PHOTO_GAP))
                     .when(photo_named(), |row| {
-                        row.child(native_image("ng.finder.airdrop.photo", PHOTO_NAME))
+                        row.child(native_image(PHOTO_NAME, PHOTO_NAME))
                     })
                     .child(
                         div()

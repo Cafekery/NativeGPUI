@@ -9,7 +9,6 @@ use finder_fs::servers::Computer;
 use gpui::{App, Context, SharedString, Window};
 use native_gpui::tokens::FileType;
 use objc2::rc::Retained;
-use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
 
 use crate::app::FinderDemo;
@@ -341,10 +340,10 @@ impl FinderDemo {
         let Some(url) = server(key).and_then(|computer| computer.url()) else {
             return;
         };
-        if !url.starts_with("vnc:") {
+        if url.starts_with("vnc:") {
+            cx.open_url(&url);
+        } else {
             self.connect(url, window, cx);
-        } else if let Some(url) = NSURL::URLWithString(&NSString::from_str(&url)) {
-            NSWorkspace::sharedWorkspace().openURL(&url);
         }
     }
 
