@@ -231,6 +231,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] ⌘I with nothing chosen shows Info for the folder shown, and a selection opens one Info window
   per item however many there are, as in Finder. Get Summary Info (⌃⌘I) opens an item's own Info
   window for one item and one “Multiple Item Info” window, headed “N items”, for several.
+- [x] ⌘I with nothing chosen at Computer, Network and AirDrop opens “Jace’s MacBook Pro Info”,
+  “Network Info” and “AirDrop Info”, as Finder's: the computer's processor and memory, the others'
+  kind (Neighborhood, AirDrop). In Recents and Shared Finder turns Get Info and Get Summary Info off
+  until something is chosen, and so does the demo.
 - [x] ⌘N and ⌘T open what Settings' “New Finder windows show” names (`NewWindowTarget`,
   `NewWindowTargetPath`), not the folder shown.
 - [x] Make Alias and New Folder with Selection start renaming what they make, as Finder's do.
