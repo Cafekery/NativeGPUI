@@ -345,9 +345,11 @@ fn run(panel: &QLPreviewPanel, job: Job) {
                 }
                 if job == Job::Open {
                     unsafe { panel.updateController() };
-                    panel.makeKeyAndOrderFront(None);
+                    // Only a panel that went full screen from off screen closes when it leaves it.
                     if STATE.with_borrow(|state| state.full_screen) {
                         unsafe { panel.enterFullScreenMode_withOptions(None, None) };
+                    } else {
+                        panel.makeKeyAndOrderFront(None);
                     }
                 }
             }
