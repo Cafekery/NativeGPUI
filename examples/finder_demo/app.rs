@@ -28,9 +28,9 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
-use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
+use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for};
 use crate::views::icon::Grid;
-use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
+use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL, ListLook};
 use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
@@ -121,7 +121,7 @@ pub(crate) struct FinderDemo {
     pub(crate) faces: Rc<RefCell<Faces>>,
     pub(crate) tag_editor: Option<crate::tag_editor::TagEditor>,
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
-    pub(crate) list_icon: f32,
+    pub(crate) list_look: ListLook,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
     pub(crate) strip_icon: f32,
     pub(crate) scroll: UniformListScrollHandle,
@@ -214,7 +214,7 @@ impl FinderDemo {
             gallery_sort: prefs::arranged(GALLERY_VIEW).unwrap_or(finder.arranged.1),
             pending_view: None,
             list_columns: Vec::new(),
-            name_w: name_min_w(ICON_SMALL),
+            name_w: 0.,
             header_drag: None,
             header: None,
             header_press: None,
@@ -264,7 +264,7 @@ impl FinderDemo {
             faces: Rc::default(),
             tag_editor: None,
             ql_shown: None,
-            list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
+            list_look: ListLook::of(start),
             list_zoom: None,
             strip_icon: prefs::strip_icon().unwrap_or(48.),
             scroll: UniformListScrollHandle::new(),

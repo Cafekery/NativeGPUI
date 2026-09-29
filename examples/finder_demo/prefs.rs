@@ -20,7 +20,6 @@ const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
-const LIST_ICON: &str = "ng.finder.list.icon";
 const STRIP_ICON: &str = "ng.finder.strip.icon";
 
 fn defaults() -> Retained<NSUserDefaults> {
@@ -542,14 +541,6 @@ pub(crate) fn preview(view: usize) -> bool {
 
 pub(crate) fn set_preview(view: usize, shown: bool) {
     write(preview_key(view), f64::from(u8::from(shown)));
-}
-
-pub(crate) fn list_icon() -> Option<f32> {
-    read(LIST_ICON).map(|v| v as f32)
-}
-
-pub(crate) fn set_list_icon(size: f32) {
-    write(LIST_ICON, size as f64);
 }
 
 pub(crate) fn strip_icon() -> Option<f32> {
