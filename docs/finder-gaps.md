@@ -400,9 +400,11 @@ Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both wi
 1100x680 in list view on the same folder, sidebar 216 and preview pane 241 wide, nothing selected.
 Traffic lights, corner radius, window shadow and title type measure identical.
 
-- [ ] Rows: the demo now takes Finder's list text and icon sizes and Finder's own row rule,
-  max(icon, ceil(ascent + descent)) + 4 (20 at 13 pt text, 21 at 14, 36 at 32 pt icons); only 20
-  (mini) and 21 (this Mac) were read off Finder's windows.
+- [x] Rows: Finder's rule, max(icon, ceil(ascent + descent)) + 4, read off Finder over AX at text
+  10 to 16 with 16 and 32 pt icons: 20, 20, 20, 20, 21, 22, 23 and 36 throughout; each row as wide
+  as the list and flush with it, the first 5 pt under the header. The demo's rows match in all of
+  them. At 32 pt icons Finder sets the name 2 pt further from the icon (its field 6 pt off against
+  4 at 16 pt), as the demo now does.
 - [ ] Header rule, dark: Finder 1pt #414241 with 0.5pt #303030 beneath; the demo 1pt #3d3d3d.
 - [x] Kind column: Finder shortens a kind to the fullest of its names that fits 20 pt inside the
   drawn column (`KIND_FORMATTER_<n>_<m>` in Finder's strings: "Plain Text Document" → "Plain Text",
