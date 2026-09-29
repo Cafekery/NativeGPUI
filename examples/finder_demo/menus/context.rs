@@ -65,8 +65,12 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
     );
     menu.separator();
     menu.submenu("View", view_rows(demo));
+    let groups = MenuEntry::item("Use Groups").checked(demo.group().is_some());
     menu.item(
-        MenuEntry::item("Use Groups").checked(demo.grouped),
+        match demo.view == GALLERY_VIEW {
+            true => groups.disabled(),
+            false => groups,
+        },
         Act::Groups,
     );
     match demo.view == ICON_VIEW {

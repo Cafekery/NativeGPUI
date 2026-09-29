@@ -17,7 +17,7 @@ use objc2_app_kit::NSFont;
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, art_at, row_art};
-use crate::data::{Column, Line, Row};
+use crate::data::{Column, Line, Order, Row};
 use crate::dragdrop::{Grabbed, KeyDrag, Lit, drop_hover, drop_target};
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
@@ -332,7 +332,12 @@ fn claim_nearest(at: Point<Pixels>, taken: &mut HashSet<Slot>, options: Options)
 
 fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
     let mut rows: Vec<Arc<Row>> = lines.iter().map(|line| line.row.clone()).collect();
-    crate::read::sort_rows(&mut rows, (column, column.first_ascending()), true);
+    let by = Order {
+        group: None,
+        sort: column,
+        ascending: column.first_ascending(),
+    };
+    crate::read::sort_rows(&mut rows, by, true);
     let order: HashMap<*const Row, usize> = rows
         .iter()
         .enumerate()

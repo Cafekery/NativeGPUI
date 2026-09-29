@@ -18,23 +18,14 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Column, intern_path};
+use crate::data::{GROUP_KEYS, SORT_KEYS, intern_path};
 use crate::locations::computer_name;
 use crate::menus::{Act, Menu};
+use crate::view::{GALLERY_VIEW, ICON_VIEW};
+use crate::views::header::column_title;
+use crate::views::icon::Arrangement;
 
-pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, Column, bool);
-
-pub(crate) const GROUPINGS: &[(Option<Column>, &str)] = &[
-    (Some(Column::Name), "Name"),
-    (Some(Column::Kind), "Kind"),
-    (None, "Application"),
-    (Some(Column::Opened), "Date Last Opened"),
-    (Some(Column::Added), "Date Added"),
-    (Some(Column::Modified), "Date Modified"),
-    (Some(Column::Created), "Date Created"),
-    (Some(Column::Size), "Size"),
-    (None, "Tags"),
-];
+pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize);
 
 const AIRDROP_ART: f32 = 18.;
 const AIRDROP_BOX: f64 = 21.;
@@ -248,21 +239,6 @@ fn place_progress(window: &Window, shown: bool) {
     }
 }
 
-pub(crate) fn group_menu(sort: Column, grouped: bool) -> Vec<MenuEntry> {
-    let mut entries = vec![
-        MenuEntry::item("None").checked(!grouped),
-        MenuEntry::separator(),
-    ];
-    for (column, title) in GROUPINGS {
-        let row = MenuEntry::item(*title).checked(grouped && *column == Some(sort));
-        entries.push(match column {
-            Some(_) => row,
-            None => row.disabled(),
-        });
-    }
-    entries
-}
-
 fn click(
     this: &WeakEntity<FinderDemo>,
     run: impl Fn(&mut FinderDemo, &mut Window, &mut Context<FinderDemo>) + 'static,
@@ -341,9 +317,16 @@ impl FinderDemo {
                         this.go(id, window, cx);
                     }
                 })),
-            ToolbarItem::menu(GROUP_ID, "", "Group", group_menu(self.sort, self.grouped))
+            ToolbarItem::menu(GROUP_ID, "", "Group", self.group_menu())
                 .tool_tip("Change the item grouping (hold down Option to change the sort)")
-                .on_select(select(&this, |this, index, _, cx| this.group_by(index, cx))),
+                .entries_on_open(read(&this, Self::group_menu))
+                .on_select(select(&this, |this, index, window, cx| {
+                    let act = this
+                        .group_rows()
+                        .get(index)
+                        .map_or(Act::Nothing, |row| row.1);
+                    this.run_menu(act, window, cx);
+                })),
             ToolbarItem::group(
                 VIEW_ID,
                 "View",
@@ -435,8 +418,6 @@ impl FinderDemo {
             cloud,
             self.progress_shown(),
             self.view,
-            self.sort,
-            self.grouped,
         )
     }
 
@@ -475,17 +456,55 @@ impl FinderDemo {
         }
     }
 
-    fn group_by(&mut self, index: usize, cx: &mut Context<Self>) {
-        // Row 0 is "None", row 1 its separator.
-        match index.checked_sub(2).map(|at| GROUPINGS.get(at)) {
-            None => self.grouped = false,
-            Some(Some((Some(column), _))) => {
-                self.grouped = true;
-                self.resort((*column, self.ascending), cx);
-            }
-            Some(_) => return,
+    fn group_menu(&self) -> Vec<MenuEntry> {
+        self.group_rows()
+            .into_iter()
+            .map(|(entry, _)| entry)
+            .collect()
+    }
+
+    /// Each grouping row stands over the sort by the same key while Option is held.
+    fn group_rows(&self) -> Vec<(MenuEntry, Act)> {
+        let group = self.group();
+        let arranged = self.arrangement().filter(|_| self.view == ICON_VIEW);
+        let sorted = match arranged {
+            Some(Arrangement::By(column)) => Some(column),
+            Some(_) => None,
+            None => Some(self.sort),
+        };
+        let grouping = |entry: MenuEntry| match self.view == GALLERY_VIEW {
+            true => entry.disabled(),
+            false => entry,
+        };
+        let unsorted = MenuEntry::item("None")
+            .checked(arranged == Some(Arrangement::Free))
+            .option_alternate();
+        let mut rows = vec![
+            (
+                grouping(MenuEntry::item("None").checked(group.is_none())),
+                Act::GroupBy(None),
+            ),
+            match arranged {
+                Some(_) => (unsorted, Act::Arrange(Arrangement::Free)),
+                None => (unsorted.disabled(), Act::Nothing),
+            },
+            (MenuEntry::separator(), Act::Nothing),
+        ];
+        for column in GROUP_KEYS {
+            let title = column_title(column);
+            rows.push((
+                grouping(MenuEntry::item(title).checked(group == Some(column))),
+                Act::GroupBy(Some(column)),
+            ));
+            let sorts = MenuEntry::item(title)
+                .checked(sorted == Some(column))
+                .option_alternate();
+            rows.push(match SORT_KEYS.contains(&column) {
+                true => (sorts, Act::Sort(column)),
+                false => (sorts.disabled(), Act::Nothing),
+            });
         }
-        cx.notify();
+        rows
     }
 
     pub(crate) fn share_items(&self) -> Vec<String> {

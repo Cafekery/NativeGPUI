@@ -35,7 +35,7 @@ impl FinderDemo {
 
     pub(crate) fn set_view(&mut self, view: usize, cx: &mut Context<Self>) {
         let by = self.view_sort(view);
-        self.pending_view = (by != (self.sort, self.ascending)).then_some(view);
+        self.pending_view = (by != self.order()).then_some(view);
         match self.pending_view {
             Some(_) => self.sort_held(by, cx),
             None => self.show_view(view),
