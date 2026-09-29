@@ -4,6 +4,7 @@ mod art;
 mod chrome;
 mod clipboard_window;
 mod custom;
+mod customize;
 mod data;
 mod dock;
 mod dragdrop;
