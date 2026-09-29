@@ -71,6 +71,7 @@ struct Held {
 
 #[derive(Default)]
 struct Ahead {
+    folder: &'static str,
     lines: usize,
     size: u32,
     keys: Vec<Key>,
@@ -258,7 +259,7 @@ fn start(demo: WeakEntity<FinderDemo>, cx: &mut App) {
             false => finder.art_size(),
         };
         let lines = finder.lines(list);
-        STATE.with_borrow_mut(|state| state.ahead.follow(&lines, size));
+        STATE.with_borrow_mut(|state| state.ahead.follow(finder.here(), &lines, size));
     }
     while let Some(job) = STATE.with_borrow_mut(State::lane) {
         let demo = demo.clone();
@@ -529,10 +530,14 @@ impl State {
 }
 
 impl Ahead {
-    fn follow(&mut self, lines: &Arc<Vec<Line>>, size: f32) {
+    fn follow(&mut self, folder: &'static str, lines: &Arc<Vec<Line>>, size: f32) {
         let id = Arc::as_ptr(lines) as usize;
         if id == self.lines && size.to_bits() == self.size {
             return;
+        }
+        if folder != self.folder {
+            self.folder = folder;
+            self.center = 0;
         }
         self.lines = id;
         self.size = size.to_bits();

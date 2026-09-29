@@ -13,6 +13,7 @@ pub const KIND: u8 = 0b11;
 pub const HIDDEN: u8 = 1 << 2;
 pub const PACKAGE: u8 = 1 << 3;
 pub const DELETED: u8 = 1 << 4;
+pub const CUSTOM_ICON: u8 = 1 << 5;
 
 pub const LISTED: u8 = 1 << 0;
 pub const VISITED: u8 = 1 << 1;
@@ -474,7 +475,8 @@ impl Tree {
         let was_dir = node.is_dir();
         node.flags = kind_bits(entry.kind)
             | if entry.hidden { HIDDEN } else { 0 }
-            | if entry.package { PACKAGE } else { 0 };
+            | if entry.package { PACKAGE } else { 0 }
+            | if entry.custom_icon { CUSTOM_ICON } else { 0 };
         node.modified = secs(entry.modified);
         node.created = secs(entry.created);
         node.added = entry.added.map_or(NO_TIME, secs);
@@ -676,6 +678,7 @@ impl Tree {
             package: node.flags & PACKAGE != 0,
             ext_hidden: false,
             alias: false,
+            custom_icon: node.flags & CUSTOM_ICON != 0,
             dataless: false,
             readable: true,
             file_id: 0,
