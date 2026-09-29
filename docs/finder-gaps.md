@@ -301,12 +301,13 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   and the window's resize edge.
 - [ ] The quick actions' Rotate Left symbol sits 0.5 pt left of Finder's (x 897–911 against
   897.5–911.5); its row, Markup and More… match (626–641, 627–641).
-- [ ] The pane's quick action buttons have no tooltips; Finder's first button's help reads Rotate
-  Right while ⌥ is held. AppKit does show tooltips in a clear, non-key, key-capable child panel of
-  the active app, but only over pixels painted at an alpha of at least 1/255: the window server hands
-  the mouse through the rest to the window below. In the demo no tooltip appeared at all, not the
-  pane's (host rects, or a hosted view's `toolTip`, over a 30% fill) and not even an NSToolbarItem's
-  in the key main window, so something process-wide stops them.
+- [x] The pane's quick action buttons have Finder's tooltips: Rotate Left, Rotate Right while ⌥ is
+  held, Markup; More… has none, as in Finder
+- [ ] Pressing ⌥ over a shown quick action tooltip hides Finder's and shows nothing new; the demo's
+  comes back as Rotate Right a quarter second later
+- [ ] AppKit's tooltip entry can stop at an `NSCursor` check right after its window test, and gpui
+  hides the cursor until the mouse moves after each keystroke it acts on; a build with no tooltip
+  in the pane showed none after typing, not even the toolbar's; with the pane's, every trial did
 - [x] Column view's preview column has no glass under it, and Finder draws its text in plain label
   colours there (dark: name and values 221, kind, titles and action labels 154, rules 54 on the
   column's 32; light: 39, 128, 230 on 255); the card uses them in column view.
