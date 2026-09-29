@@ -18,7 +18,7 @@ use crate::views::header::{ColumnSpec, column_title};
 use crate::views::icon::Arrangement;
 
 thread_local! {
-    static SWATCH: Cell<Option<usize>> = const { Cell::new(None) };
+    static SWATCH: Cell<Option<Option<usize>>> = const { Cell::new(None) };
 }
 
 const COLUMNS: [(&str, Option<Column>); 11] = [
@@ -198,11 +198,19 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
             .collect(),
         false => vec![crate::tags::row_tags(&line.key)],
     };
+    let button = match !many && line.row.opens.is_some() {
+        true => "Customize Folder…",
+        false => "Tags…",
+    };
     menu.view(
-        MenuView::swatches_picking(tag_swatches(&carried), |index| SWATCH.set(Some(index))),
+        MenuView::swatches_with_button(
+            tag_swatches(&carried),
+            true,
+            ("tag", button, true),
+            |hit| SWATCH.set(Some(hit)),
+        ),
         Act::Swatch,
     );
-    menu.item(MenuEntry::item("Tags…"), Act::Tags);
     menu.separator();
     let options = match crate::preview::options::is_open() {
         true => "Hide Preview Options",
@@ -537,6 +545,7 @@ fn sort_rows(demo: &FinderDemo) -> Vec<(MenuEntry, Act)> {
         .collect()
 }
 
-pub(super) fn picked_swatch() -> Option<usize> {
+/// The dot hit in an item's tag row, or `Some(None)` for its button.
+pub(super) fn picked_swatch() -> Option<Option<usize>> {
     SWATCH.with(Cell::take)
 }

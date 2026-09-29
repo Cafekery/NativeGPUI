@@ -450,6 +450,11 @@ pub(crate) fn open(cx: &mut App) {
     cx.defer(show);
 }
 
+pub(crate) fn open_pane(pane: &str, cx: &mut App) {
+    prefs::set_setting_text(PANE, pane);
+    open(cx);
+}
+
 fn show(cx: &mut App) {
     let open = cx
         .windows()
