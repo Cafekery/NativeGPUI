@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -7,12 +6,8 @@ use std::process::Command;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2_core_foundation::{CFArray, CFBoolean, CFNumber, CFRetained, CFString};
-use objc2_core_services::{LSSharedFileList, LSSharedFileListItem};
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions,
-    NSPropertyListSerialization, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults,
+    NSArray, NSDictionary, NSNumber, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults, ns_string,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,191 +26,126 @@ const STANDARD: [(&str, u8); 7] = [
     ("Gray", 1),
 ];
 
+fn localized(english: &str, color: u8) -> String {
+    crate::words::finder(&format!("TG_COLOR_{color}"), english)
+}
+
 fn standard() -> Vec<Tag> {
     STANDARD
         .iter()
-        .map(|&(name, color)| Tag {
-            name: crate::words::finder(&format!("TG_COLOR_{color}"), name),
+        .map(|&(english, color)| Tag {
+            name: localized(english, color),
             color,
         })
         .collect()
 }
 
-/// Every tag Finder's sidebar lists, in its order. Their colours are in Finder's tag store, which
-/// an app opened from the Dock may not read; a standard colour's name still says its colour.
-pub fn all() -> Vec<Tag> {
-    let known = finder_tags().filter(|tags| !tags.is_empty());
-    let Some(names) = sidebar_tag_names().filter(|names| !names.is_empty()) else {
-        return known.unwrap_or_else(standard);
-    };
-    names
-        .into_iter()
-        .map(|name| Tag {
-            color: known
-                .iter()
-                .flatten()
-                .find(|tag| tag.name == name)
-                .map(|tag| tag.color)
-                .or_else(|| standard_color(&name))
-                .unwrap_or_default(),
-            name,
-        })
-        .collect()
-}
-
 fn standard_color(name: &str) -> Option<u8> {
-    let named = |&(english, color): &(&str, u8)| {
-        english == name || crate::words::finder(&format!("TG_COLOR_{color}"), english) == name
-    };
     STANDARD
         .iter()
-        .find(|standard| named(standard))
+        .find(|&&(english, color)| english == name || localized(english, color) == name)
         .map(|&(_, color)| color)
         .or((name == "Grey").then_some(1))
 }
 
-/// The tags Finder's Tags settings list as favourites, for its menus: `FavoriteTagNames`.
-pub fn favorites() -> Vec<Tag> {
-    let known = all();
-    let color = |name: &str| {
-        known
-            .iter()
-            .find(|tag| tag.name == name)
-            .map(|tag| tag.color)
-            .or_else(|| standard_color(name))
-            .unwrap_or_default()
+fn colored(known: &[Tag], name: String) -> Tag {
+    let color = known
+        .iter()
+        .find(|tag| tag.name == name)
+        .map(|tag| tag.color)
+        .or_else(|| standard_color(&name))
+        .unwrap_or_default();
+    Tag { name, color }
+}
+
+/// Every tag Finder's sidebar lists, in its order.
+pub fn all() -> Vec<Tag> {
+    let known = finder_tags().filter(|tags| !tags.is_empty());
+    let Some(listed) = crate::sidebar::tags().filter(|tags| !tags.is_empty()) else {
+        return known.unwrap_or_else(standard);
     };
-    let favorites: Vec<Tag> = favorite_tag_names()
-        .unwrap_or_default()
+    let known = known.unwrap_or_default();
+    listed
         .into_iter()
+        .map(|(name, _)| colored(&known, name))
+        .collect()
+}
+
+/// The tags Finder's Tags settings list as favourites, for its menus.
+pub fn favorites() -> Vec<Tag> {
+    let suite = Some(ns_string!("com.apple.finder"));
+    let finder = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), suite);
+    let names: Vec<String> = finder
+        .and_then(|finder| finder.stringArrayForKey(ns_string!("FavoriteTagNames")))
+        .iter()
+        .flat_map(|names| names.iter())
+        .map(|name| name.to_string())
         .filter(|name| !name.is_empty())
-        .map(|name| Tag {
-            color: color(&name),
-            name,
-        })
         .collect();
-    match favorites.is_empty() {
-        true => standard(),
-        false => favorites,
+    if names.is_empty() {
+        return standard();
     }
+    let known = all();
+    names
+        .into_iter()
+        .map(|name| colored(&known, name))
+        .collect()
 }
 
 /// The tags Finder's sidebar shows only because they were used lately, not pinned there.
 pub fn recent() -> Vec<String> {
-    sidebar_tags()
-        .unwrap_or_default()
+    let listed = crate::sidebar::tags().unwrap_or_default();
+    listed
         .into_iter()
-        .filter(|(_, pinned)| !pinned)
-        .map(|(name, _)| name)
+        .filter_map(|(name, pinned)| (!pinned).then_some(name))
         .collect()
 }
 
-fn sidebar_tag_names() -> Option<Vec<String>> {
-    Some(sidebar_tags()?.into_iter().map(|(name, _)| name).collect())
-}
-
-/// The tags Finder's sidebar lists, in its order, each with whether it is pinned there:
-/// `sharedfilelistd`'s projects list.
-#[allow(deprecated)]
-fn sidebar_tags() -> Option<Vec<(String, bool)>> {
-    let name = CFString::from_static_str("com.apple.LSSharedFileList.ProjectsItems");
-    let list = unsafe { LSSharedFileList::new(None, &name, None) }?;
-    let snapshot = unsafe { list.snapshot(std::ptr::null_mut()) }?;
-    let snapshot: CFRetained<CFArray<LSSharedFileListItem>> =
-        unsafe { CFRetained::cast_unchecked(snapshot) };
-    let hidden = CFString::from_static_str("com.apple.LSSharedFileList.ItemIsHidden");
-    let pinned = CFString::from_static_str("kLSSharedTagFileListItemPinned");
-    let on = |value: &objc2_core_foundation::CFType| match value.downcast_ref::<CFBoolean>() {
-        Some(on) => on.as_bool(),
-        None => value
-            .downcast_ref::<CFNumber>()
-            .and_then(|n| n.as_i64())
-            .is_some_and(|n| n != 0),
-    };
-    Some(
-        snapshot
-            .iter()
-            .filter(|item| !unsafe { item.property(&hidden) }.is_some_and(|value| on(&value)))
-            .map(|item| {
-                let pinned = unsafe { item.property(&pinned) }.is_none_or(|value| on(&value));
-                (unsafe { item.display_name() }.to_string(), pinned)
-            })
-            .filter(|(name, _)| !name.is_empty())
-            .collect(),
-    )
-}
-
-fn favorite_tag_names() -> Option<Vec<String>> {
-    let suite = NSString::from_str("com.apple.finder");
-    let defaults = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(&suite))?;
-    let names = defaults.stringArrayForKey(&NSString::from_str("FavoriteTagNames"))?;
-    Some(names.iter().map(|s| s.to_string()).collect())
-}
-
-pub(crate) fn plist(bytes: &[u8]) -> Option<Retained<AnyObject>> {
-    let data = NSData::with_bytes(bytes);
-    unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &data,
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    }
-    .ok()
-}
-
 fn finder_tags() -> Option<Vec<Tag>> {
-    let dict = plist(&tag_dict()?)?.downcast::<NSDictionary>().ok()?;
-    let dict: Retained<NSDictionary<NSString, AnyObject>> =
-        unsafe { Retained::cast_unchecked(dict) };
+    let dict = crate::plist_dict(&tag_dict()?)?;
     let entries = dict
-        .objectForKey(&NSString::from_str("FinderTags"))?
+        .objectForKey(ns_string!("FinderTags"))?
         .downcast::<NSArray>()
         .ok()?;
-    let entries: Retained<NSArray<NSDictionary<NSString, AnyObject>>> =
-        unsafe { Retained::cast_unchecked(entries) };
-    Some(
-        entries
-            .iter()
-            .filter_map(|entry| {
-                let name = entry
-                    .objectForKey(&NSString::from_str("n"))?
-                    .downcast::<NSString>()
-                    .ok()?;
-                let color = entry
-                    .objectForKey(&NSString::from_str("l"))
-                    .and_then(|value| value.downcast::<NSNumber>().ok())
-                    .map_or(0, |value| value.unsignedCharValue());
-                Some(Tag {
-                    name: name.to_string(),
-                    color,
-                })
-            })
-            .collect(),
-    )
+    let tags = entries.iter().filter_map(|entry| {
+        let entry = entry.downcast::<NSDictionary>().ok()?;
+        let name = entry
+            .objectForKey(ns_string!("n"))?
+            .downcast::<NSString>()
+            .ok()?;
+        let color = entry
+            .objectForKey(ns_string!("l"))
+            .and_then(|color| color.downcast::<NSNumber>().ok())
+            .map_or(0, |color| color.unsignedCharValue());
+        Some(Tag {
+            name: name.to_string(),
+            color,
+        })
+    });
+    Some(tags.collect())
 }
 
-/// The account's home, not `$HOME`: a fixture home moves an app's folders, never Finder's tags.
-fn home() -> Option<PathBuf> {
-    let passwd = unsafe { libc::getpwuid(libc::getuid()) };
-    let dir = unsafe { passwd.as_ref() }?.pw_dir;
-    if dir.is_null() {
+/// Not `$HOME`: a fixture home moves an app's folders, never Finder's tags.
+fn account_home() -> Option<PathBuf> {
+    let account = unsafe { libc::getpwuid(libc::getuid()).as_ref() }?;
+    if account.pw_dir.is_null() {
         return None;
     }
-    let dir = unsafe { CStr::from_ptr(dir) };
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+    let home = unsafe { CStr::from_ptr(account.pw_dir) };
+    Some(PathBuf::from(OsStr::from_bytes(home.to_bytes())))
 }
 
 /// macOS 26 keeps `FinderTagDict` in the iCloud key-value store, not in `SyncedPreferences`.
 fn tag_dict() -> Option<Vec<u8>> {
-    let stores = home()?.join("Library/Daemon Containers");
-    std::fs::read_dir(stores).ok()?.flatten().find_map(|store| {
-        let store = store
-            .path()
-            .join("Data/com.apple.kvs/com.apple.KeyValueService-Production.sqlite");
+    let stores = std::fs::read_dir(account_home()?.join("Library/Daemon Containers")).ok()?;
+    stores.flatten().find_map(|store| {
         let out = Command::new("/usr/bin/sqlite3")
             .arg("-readonly")
-            .arg(&store)
+            .arg(
+                store
+                    .path()
+                    .join("Data/com.apple.kvs/com.apple.KeyValueService-Production.sqlite"),
+            )
             .arg(
                 "select hex(ZPLISTDATAVALUE) from ZSYDMANAGEDKEYVALUE where ZKEY = 'FinderTagDict'",
             )
@@ -223,14 +153,13 @@ fn tag_dict() -> Option<Vec<u8>> {
             .ok()?;
         let hex = String::from_utf8(out.stdout).ok()?;
         let hex = hex.trim();
-        match hex.is_empty() {
-            true => None,
-            false => hex
-                .as_bytes()
-                .chunks(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-                .collect(),
+        if hex.is_empty() {
+            return None;
         }
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+            .collect()
     })
 }
 
@@ -239,118 +168,88 @@ fn url(path: &Path) -> Retained<NSURL> {
     NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), false)
 }
 
-fn read_xattr(path: &Path, name: &str) -> Option<Vec<u8>> {
+fn user_tags(path: &Path) -> Option<Retained<NSArray>> {
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let name = CString::new(name).ok()?;
+    let name = c"com.apple.metadata:_kMDItemUserTags";
     let size =
         unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
-    if size <= 0 {
-        return None;
-    }
-    let mut buf = vec![0u8; size as usize];
+    let size = usize::try_from(size).ok().filter(|&size| size > 0)?;
+    let mut bytes = vec![0u8; size];
     let read = unsafe {
         libc::getxattr(
             path.as_ptr(),
             name.as_ptr(),
-            buf.as_mut_ptr().cast(),
-            buf.len(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
             0,
             0,
         )
     };
-    if read < 0 {
-        return None;
-    }
-    buf.truncate(read as usize);
-    Some(buf)
+    bytes.truncate(usize::try_from(read).ok()?);
+    crate::plist(&bytes)?.downcast::<NSArray>().ok()
 }
 
-fn xattr_colors(path: &Path) -> HashMap<String, u8> {
-    let Some(entries) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags")
-        .and_then(|bytes| plist(&bytes)?.downcast::<NSArray>().ok())
-    else {
-        return HashMap::new();
-    };
-    let entries: Retained<NSArray<NSString>> = unsafe { Retained::cast_unchecked(entries) };
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let entry = entry.to_string();
-            let (name, color) = entry.split_once('\n')?;
-            Some((name.to_string(), color.parse().ok()?))
-        })
-        .collect()
-}
-
-/// The tags the item itself stores, in its order, from one read of its attribute.
+/// The tags the item stores, in its order, from one read of its attribute.
 pub fn stored(path: &Path) -> Vec<Tag> {
-    let Some(entries) = read_xattr(path, "com.apple.metadata:_kMDItemUserTags")
-        .and_then(|bytes| plist(&bytes)?.downcast::<NSArray>().ok())
-    else {
+    let Some(entries) = user_tags(path) else {
         return Vec::new();
     };
     entries
         .iter()
         .filter_map(|entry| entry.downcast::<NSString>().ok())
         .map(|entry| {
-            let entry = entry.to_string();
-            match entry.split_once('\n') {
-                Some((name, color)) => Tag {
-                    name: name.to_string(),
-                    color: color.parse().unwrap_or(0),
-                },
-                None => Tag {
-                    name: entry,
-                    color: 0,
-                },
+            let mut name = entry.to_string();
+            let mut color = 0;
+            if let Some(at) = name.find('\n') {
+                color = name[at + 1..].parse().unwrap_or(0);
+                name.truncate(at);
             }
+            Tag { name, color }
         })
         .collect()
 }
 
 pub fn of(path: &Path) -> Vec<Tag> {
     let key = unsafe { NSURLTagNamesKey };
-    let keys = NSArray::from_slice(&[key]);
     let Some(names) = url(path)
-        .resourceValuesForKeys_error(&keys)
+        .resourceValuesForKeys_error(&NSArray::from_slice(&[key]))
         .ok()
         .and_then(|values| values.objectForKey(key)?.downcast::<NSArray>().ok())
+        .filter(|names| !names.is_empty())
     else {
         return Vec::new();
     };
-    let names: Retained<NSArray<NSString>> = unsafe { Retained::cast_unchecked(names) };
-    if names.is_empty() {
-        return Vec::new();
-    }
-    let colors = xattr_colors(path);
+    let stored = stored(path);
     names
         .iter()
+        .filter_map(|name| name.downcast::<NSString>().ok())
         .map(|name| {
             let name = name.to_string();
-            let color = colors.get(&name).copied().unwrap_or(0);
+            let color = stored
+                .iter()
+                .rfind(|tag| tag.name == name)
+                .map_or(0, |tag| tag.color);
             Tag { name, color }
         })
         .collect()
 }
 
 pub fn set(path: &Path, tags: &[Tag]) -> io::Result<()> {
-    let key = unsafe { NSURLTagNamesKey };
-    let names: Vec<Retained<NSString>> = tags.iter().map(|t| NSString::from_str(&t.name)).collect();
-    let refs: Vec<&NSString> = names.iter().map(|n| &**n).collect();
-    let array = NSArray::from_slice(&refs);
-    let object: &AnyObject = array.as_ref();
-    unsafe { url(path).setResourceValue_forKey_error(Some(object), key) }
-        .map_err(|e| io::Error::other(e.localizedDescription().to_string()))
+    let names: Vec<_> = tags
+        .iter()
+        .map(|tag| NSString::from_str(&tag.name))
+        .collect();
+    let names = NSArray::from_retained_slice(&names);
+    unsafe { url(path).setResourceValue_forKey_error(Some(&names), NSURLTagNamesKey) }
+        .map_err(|error| io::Error::other(error.localizedDescription().to_string()))
 }
 
 pub fn toggle(paths: &[PathBuf], tag: &Tag) -> io::Result<()> {
+    let held = |tags: &[Tag]| tags.iter().any(|held| held.name == tag.name);
     let carried: Vec<Vec<Tag>> = paths.iter().map(|path| of(path)).collect();
-    let everywhere = carried
-        .iter()
-        .all(|tags| tags.iter().any(|held| held.name == tag.name));
+    let everywhere = carried.iter().all(|tags| held(tags));
     for (path, mut tags) in paths.iter().zip(carried) {
-        let held = tags.iter().any(|it| it.name == tag.name);
-        match (everywhere, held) {
+        match (everywhere, held(&tags)) {
             (true, _) => tags.retain(|it| it.name != tag.name),
             (false, false) => tags.push(tag.clone()),
             (false, true) => continue,
@@ -385,6 +284,26 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn tag(name: &str) -> Tag {
+        Tag {
+            name: name.into(),
+            color: 0,
+        }
+    }
+
+    fn names(path: &Path) -> Vec<String> {
+        of(path).into_iter().map(|tag| tag.name).collect()
+    }
+
+    fn scratch(test: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("finder-fs-{test}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            fs::write(dir.join(file), file).unwrap();
+        }
+        dir
+    }
+
     #[test]
     fn a_standard_colours_name_says_its_colour_in_either_spelling() {
         assert_eq!(standard_color("Red"), Some(6));
@@ -393,36 +312,18 @@ mod tests {
         assert_eq!(standard_color("Work"), None);
     }
 
-    fn names(path: &Path) -> Vec<String> {
-        of(path).into_iter().map(|tag| tag.name).collect()
-    }
-
     #[test]
     fn set_read_back_and_clear() {
-        let dir = std::env::temp_dir().join(format!("finder-fs-tags-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("tags", &["tagged.txt"]);
         let file = dir.join("tagged.txt");
-        fs::write(&file, "hi").unwrap();
-
-        let mine = vec![
-            Tag {
-                name: "Reviewed".into(),
-                color: 0,
-            },
-            Tag {
-                name: "Urgent".into(),
-                color: 0,
-            },
-        ];
-        set(&file, &mine).unwrap();
+        set(&file, &[tag("Reviewed"), tag("Urgent")]).unwrap();
         let mut read = names(&file);
         read.sort();
-        assert_eq!(read, vec!["Reviewed".to_string(), "Urgent".to_string()]);
+        assert_eq!(read, ["Reviewed", "Urgent"]);
 
         set(&file, &[]).unwrap();
         assert!(of(&file).is_empty());
-
-        let _ = fs::remove_dir_all(&dir);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -433,20 +334,13 @@ mod tests {
 
     #[test]
     fn a_swatch_adds_where_missing_and_clears_where_everywhere() {
-        let dir = std::env::temp_dir().join(format!("finder-fs-toggle-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("toggle", &["a.txt", "b.txt"]);
         let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
-        fs::write(&a, "a").unwrap();
-        fs::write(&b, "b").unwrap();
-        let kept = Tag {
-            name: "Reviewed".into(),
-            color: 0,
-        };
         let red = Tag {
-            name: "Red".into(),
             color: 6,
+            ..tag("Red")
         };
-        set(&a, &[kept.clone()]).unwrap();
+        set(&a, &[tag("Reviewed")]).unwrap();
         let both = [a.clone(), b.clone()];
 
         toggle(&both, &red).unwrap();
@@ -456,21 +350,13 @@ mod tests {
         toggle(&both, &red).unwrap();
         assert_eq!(names(&a), ["Reviewed"]);
         assert!(names(&b).is_empty());
-
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn an_edit_touches_only_the_tags_it_names() {
-        let dir = std::env::temp_dir().join(format!("finder-fs-apply-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("apply", &["a.txt", "b.txt"]);
         let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
-        fs::write(&a, "a").unwrap();
-        fs::write(&b, "b").unwrap();
-        let tag = |name: &str| Tag {
-            name: name.into(),
-            color: 0,
-        };
         set(&a, &[tag("Reviewed"), tag("Draft"), tag("Red")]).unwrap();
         set(&b, &[tag("Draft")]).unwrap();
         let both = [a.clone(), b.clone()];
@@ -478,7 +364,6 @@ mod tests {
         apply(&both, &[tag("Blue")], &["Draft".into()]).unwrap();
         assert_eq!(names(&a), ["Reviewed", "Red", "Blue"]);
         assert_eq!(names(&b), ["Blue"]);
-
         fs::remove_dir_all(&dir).ok();
     }
 }

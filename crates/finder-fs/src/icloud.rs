@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_foundation::{
-    NSData, NSDictionary, NSFileManager, NSNumber, NSPropertyListMutabilityOptions,
-    NSPropertyListSerialization, NSString, NSURL,
-};
+use objc2_foundation::{NSDictionary, NSFileManager, NSNumber, NSString, NSURL};
 
 const CLOUD_DOCS: &str = "com~apple~CloudDocs";
 
@@ -17,7 +14,7 @@ pub struct AppFolder {
 }
 
 fn containers() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Mobile Documents"))
+    Some(crate::home()?.join("Library/Mobile Documents"))
 }
 
 pub fn drive() -> Option<PathBuf> {
@@ -29,23 +26,25 @@ pub fn is_drive(dir: &Path) -> bool {
 }
 
 pub fn app_folders() -> Vec<AppFolder> {
-    let Some(containers) = containers() else {
-        return Vec::new();
-    };
-    let Ok(read) = std::fs::read_dir(&containers) else {
+    let Some(read) = containers().and_then(|containers| std::fs::read_dir(containers).ok()) else {
         return Vec::new();
     };
     let mut folders: Vec<AppFolder> = read
         .flatten()
         .filter_map(|entry| {
-            let id = entry.file_name().to_string_lossy().into_owned();
+            let id = entry.file_name();
+            let id = id.to_str()?;
             if id == CLOUD_DOCS || id.starts_with('.') {
                 return None;
             }
             let documents = entry.path().join("Documents");
-            published(&id)
-                .filter(|_| holds_anything(&documents))
-                .map(|name| AppFolder { name, documents })
+            if !holds_anything(&documents) {
+                return None;
+            }
+            Some(AppFolder {
+                name: published(id)?,
+                documents,
+            })
         })
         .collect();
     folders.sort_by(|a, b| crate::sort::name_cmp(&a.name, &b.name));
@@ -57,7 +56,7 @@ fn holds_anything(documents: &Path) -> bool {
 }
 
 fn published(id: &str) -> Option<String> {
-    let plist = PathBuf::from(std::env::var_os("HOME")?)
+    let plist = crate::home()?
         .join("Library/Application Support/CloudDocs/session/containers")
         .join(format!("{}.plist", id.replace('~', ".")));
     let dict = read_plist(&plist)?;
@@ -65,31 +64,23 @@ fn published(id: &str) -> Option<String> {
         .into_iter()
         .filter_map(|value| value.downcast::<NSDictionary>().ok())
         .find_map(|entry| {
+            // SAFETY: property-list dictionary keys are always strings.
             let entry: Retained<NSDictionary<NSString, AnyObject>> =
                 unsafe { Retained::cast_unchecked(entry) };
             let public = entry
-                .objectForKey(&NSString::from_str("BRContainerIsDocumentScopePublic"))
-                .and_then(|value| value.downcast::<NSNumber>().ok())?;
+                .objectForKey(&NSString::from_str("BRContainerIsDocumentScopePublic"))?
+                .downcast::<NSNumber>()
+                .ok()?;
             let name = entry
-                .objectForKey(&NSString::from_str("BRContainerName"))
-                .and_then(|value| value.downcast::<NSString>().ok())?;
+                .objectForKey(&NSString::from_str("BRContainerName"))?
+                .downcast::<NSString>()
+                .ok()?;
             public.boolValue().then(|| name.to_string())
         })
 }
 
 fn read_plist(path: &Path) -> Option<Retained<NSDictionary<NSString, AnyObject>>> {
-    let bytes = std::fs::read(path).ok()?;
-    let data = NSData::with_bytes(&bytes);
-    let plist = unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &data,
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    }
-    .ok()?;
-    let dict = plist.downcast::<NSDictionary>().ok()?;
-    Some(unsafe { Retained::cast_unchecked(dict) })
+    crate::plist_dict(&std::fs::read(path).ok()?)
 }
 
 pub fn placeholder_name(name: &str) -> Option<&str> {
@@ -97,10 +88,10 @@ pub fn placeholder_name(name: &str) -> Option<&str> {
 }
 
 pub fn placeholder_size(path: &Path) -> Option<u64> {
-    let dict = read_plist(path)?;
-    let size = dict
-        .objectForKey(&NSString::from_str("NSURLFileSizeKey"))
-        .and_then(|value| value.downcast::<NSNumber>().ok())?;
+    let size = read_plist(path)?
+        .objectForKey(&NSString::from_str("NSURLFileSizeKey"))?
+        .downcast::<NSNumber>()
+        .ok()?;
     Some(size.unsignedLongLongValue())
 }
 

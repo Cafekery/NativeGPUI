@@ -2,10 +2,10 @@ use std::collections::VecDeque;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Instant, SystemTime};
 
-use super::store::{NONE, VISITED};
+use super::store::{NO_TIME, NONE, VISITED, secs};
 use super::{Index, Progress};
 use crate::entry::{Entry, EntryKind};
 use crate::list::list_dir;
@@ -34,10 +34,9 @@ struct Work {
     roots: VecDeque<PathBuf>,
     busy: usize,
     waiting: usize,
-    done: bool,
 }
 
-pub struct Crawl {
+struct Crawl {
     index: Arc<Index>,
     work: Mutex<Work>,
     wake: Condvar,
@@ -82,7 +81,7 @@ pub fn spawn(index: &Arc<Index>, walk: Walk, report: impl Fn(Progress) + Send + 
         last_report: AtomicU64::new(0),
         finishing: AtomicBool::new(false),
         start: Instant::now(),
-        home: home(),
+        home: super::home(),
         walk,
     });
     for _ in 0..THREADS {
@@ -94,23 +93,17 @@ pub fn spawn(index: &Arc<Index>, walk: Walk, report: impl Fn(Progress) + Send + 
     }
 }
 
-static TRACE_START: OnceLock<Instant> = OnceLock::new();
-
-pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
-}
+static TRACE_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 impl Crawl {
-    fn run(self: &Arc<Self>) {
+    fn run(&self) {
         while let Some(task) = self.next() {
-            if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-                let ms = TRACE_START.get_or_init(Instant::now).elapsed().as_millis();
-                eprintln!(
-                    "crawl {ms} {} {}",
-                    if task.weigh { "W" } else { "L" },
-                    task.path.display()
-                );
-            }
+            trace!(
+                "crawl {} {} {}",
+                TRACE_START.elapsed().as_millis(),
+                if task.weigh { "W" } else { "L" },
+                task.path.display()
+            );
             match task.weigh {
                 true => self.weigh(task),
                 false => self.list(task),
@@ -151,7 +144,6 @@ impl Crawl {
                 work.tasks = std::mem::take(&mut work.later);
                 continue;
             }
-            work.done = true;
             self.wake.notify_all();
             return None;
         }
@@ -183,8 +175,8 @@ impl Crawl {
             NONE => self.index.write().ensure(&task.path),
             node => node,
         };
-        let ids = super::relist(&self.index, node, &entries, &sealed);
-        {
+        let ids = self.index.relist(node, &entries, &sealed);
+        if sealed.contains(&true) {
             let mut tree = self.index.write();
             for (i, _, class) in &dirs {
                 if *class != Class::Descend {
@@ -194,7 +186,6 @@ impl Crawl {
         }
         let mut tasks = Vec::with_capacity(dirs.len());
         for (i, path, class) in dirs {
-            // Another root of this walk is walked on its own; reaching it again doubles the work.
             if class == Class::Seal || self.walk.crawl.contains(&path) {
                 continue;
             }
@@ -234,7 +225,7 @@ impl Crawl {
             }
         }
         if bytes > 0 {
-            self.index.write().add_size(task.node, bytes);
+            self.index.write().nodes[task.node as usize].size += bytes;
             self.bytes.fetch_add(bytes, Ordering::Relaxed);
         }
         self.push(tasks);
@@ -312,7 +303,7 @@ impl Crawl {
 pub fn modified(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
-        .map_or(super::store::NO_TIME, super::store::secs)
+        .map_or(NO_TIME, secs)
 }
 
 fn class_of(path: &Path, entry: &Entry, home: &Path) -> Class {
@@ -333,8 +324,14 @@ pub fn off_limits(path: &Path, home: &Path) -> bool {
         || simulator(path)
 }
 
-pub fn sealed(path: &Path, entry: &Entry, home: &Path) -> bool {
-    entry.kind == EntryKind::Directory && class_of(path, entry, home) != Class::Descend
+/// Reading a TCC-gated folder again unasked puts its prompt back on screen.
+pub fn open_to_us(path: &Path, home: &Path) -> bool {
+    !path.ancestors().any(|part| off_limits(part, home))
+}
+
+pub fn sealed(dir: &Path, entry: &Entry, home: &Path) -> bool {
+    entry.kind == EntryKind::Directory
+        && class_of(&dir.join(&entry.name), entry, home) != Class::Descend
 }
 
 /// Opening a photo or media library's package puts a privacy prompt on the user's screen.
@@ -404,4 +401,35 @@ fn elsewhere(path: &Path) -> bool {
         return true;
     }
     path.parent() == Some(Path::new("/Volumes")) && !is_local(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sealed_path_is_never_reopened() {
+        let home = PathBuf::from("/Users/tester");
+        assert!(open_to_us(&home.join("Projects/thing"), &home));
+        assert!(!open_to_us(
+            &home.join("Pictures/Library.photoslibrary/db"),
+            &home
+        ));
+        assert!(!open_to_us(&home.join("Desktop/notes"), &home));
+        assert!(!open_to_us(&home.join("Library/Caches/x"), &home));
+        assert!(!open_to_us(Path::new("/System/Volumes/Data/Users"), &home));
+    }
+
+    #[test]
+    fn a_home_that_is_not_ours_is_never_opened() {
+        let home = PathBuf::from("/Users/tester");
+        assert!(!open_to_us(Path::new("/Users/other/Documents"), &home));
+        assert!(!open_to_us(
+            Path::new("/Users/other/Library/Containers"),
+            &home
+        ));
+        assert!(!open_to_us(Path::new("/Users/other/Music/iTunes"), &home));
+        assert!(open_to_us(Path::new("/Users/other/Projects/thing"), &home));
+        assert!(open_to_us(Path::new("/Users/other"), &home));
+    }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use super::crawl::{self, Walk};
 use super::store::Tree;
@@ -23,7 +23,6 @@ struct Batch {
     dirs: BTreeSet<PathBuf>,
     rescan: BTreeSet<PathBuf>,
     wrapped: bool,
-    /// Events arrive in id order, so the batch holds every change up to here.
     reached: u64,
 }
 
@@ -35,13 +34,10 @@ pub fn spawn(index: &Arc<Index>, roots: Vec<PathBuf>, report: impl Fn(Progress) 
         let mut roots: Vec<PathBuf> = roots.iter().map(|root| crawl::real(root)).collect();
         roots.dedup();
         let plan = plan(&index.read(), &roots, now);
-        if std::env::var_os("NG_CRAWL_TRACE").is_some() {
-            eprintln!(
-                "catchup warm {:?} cold {:?} since {}",
-                plan.warm, plan.cold, plan.since_when
-            );
-        }
-        // A reader refreshes what changed since its snapshot but walks no whole root.
+        trace!(
+            "catchup warm {:?} cold {:?} since {}",
+            plan.warm, plan.cold, plan.since_when
+        );
         let whole = match index.owner {
             true => roots,
             false => Vec::new(),
@@ -140,34 +136,34 @@ fn reconcile(
             since,
         };
     }
-    let home = crawl::home();
-    let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
-    let rescans: Vec<PathBuf>;
-    {
+    let home = super::home();
+    let (dirs, rescans) = {
         let tree = index.read();
-        for root in &plan.warm {
-            if tree.root_state(root).map(|state| state.modified) != Some(crawl::modified(root)) {
-                dirs.insert(root.clone());
-            }
-        }
-        rescans = batch
+        let dirs: BTreeSet<PathBuf> = plan
+            .warm
+            .iter()
+            .filter(|root| {
+                tree.root_state(root).map(|state| state.modified) != Some(crawl::modified(root))
+            })
+            .cloned()
+            .chain(
+                batch
+                    .dirs
+                    .iter()
+                    .filter_map(|path| target(&tree, path, &home)),
+            )
+            .collect();
+        let rescans: Vec<PathBuf> = batch
             .rescan
             .into_iter()
-            .filter(|path| tree.listed(path) && open_to_us(path, &home))
+            .filter(|path| tree.listed(path) && crawl::open_to_us(path, &home))
             .collect();
-        dirs.extend(
-            batch
-                .dirs
-                .iter()
-                .filter_map(|path| target(&tree, path, &home)),
-        );
-    }
+        (dirs, rescans)
+    };
     for dir in dirs {
         crawl.extend(index.refresh(&dir, &home));
     }
-    let saved = index
-        .saved
-        .map_or(std::time::UNIX_EPOCH, |at| at - super::SAVE_GAP);
+    let saved = index.saved.map_or(UNIX_EPOCH, |at| at - super::SAVE_GAP);
     crawl.extend(index.verify(&rescans, saved, &home));
     Walk {
         crawl,
@@ -177,7 +173,7 @@ fn reconcile(
 }
 
 fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
-    if !open_to_us(path, home) {
+    if !crawl::open_to_us(path, home) {
         return None;
     }
     if tree.listed(path) {
@@ -187,40 +183,9 @@ fn target(tree: &Tree, path: &Path, home: &Path) -> Option<PathBuf> {
     tree.listed(parent).then(|| parent.to_path_buf())
 }
 
-/// Reading a TCC-gated folder again unasked puts its prompt back on screen.
-pub(super) fn open_to_us(path: &Path, home: &Path) -> bool {
-    !path.ancestors().any(|part| crawl::off_limits(part, home))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_sealed_path_is_never_reopened() {
-        let home = PathBuf::from("/Users/tester");
-        assert!(open_to_us(&home.join("Projects/thing"), &home));
-        assert!(!open_to_us(
-            &home.join("Pictures/Library.photoslibrary/db"),
-            &home
-        ));
-        assert!(!open_to_us(&home.join("Desktop/notes"), &home));
-        assert!(!open_to_us(&home.join("Library/Caches/x"), &home));
-        assert!(!open_to_us(Path::new("/System/Volumes/Data/Users"), &home));
-    }
-
-    #[test]
-    fn a_home_that_is_not_ours_is_never_opened() {
-        let home = PathBuf::from("/Users/tester");
-        assert!(!open_to_us(Path::new("/Users/other/Documents"), &home));
-        assert!(!open_to_us(
-            Path::new("/Users/other/Library/Containers"),
-            &home
-        ));
-        assert!(!open_to_us(Path::new("/Users/other/Music/iTunes"), &home));
-        assert!(open_to_us(Path::new("/Users/other/Projects/thing"), &home));
-        assert!(open_to_us(Path::new("/Users/other"), &home));
-    }
 
     #[test]
     fn wrapped_ids_take_every_root() {

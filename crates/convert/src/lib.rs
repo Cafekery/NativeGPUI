@@ -1,5 +1,3 @@
-//! Probe a file, pick copy / remux / encode, then write a report. Nothing here knows GPUI.
-
 mod audio;
 mod font;
 mod format;
@@ -8,33 +6,43 @@ mod plan;
 mod probe;
 mod report;
 
-pub use format::{Format, Kind, Outline};
-pub use plan::{Intent, PathTaken, Planned};
-pub use probe::Probe;
+pub use audio::ffmpeg_available;
+pub use format::{Format, Kind, Outline, relevant_targets};
+pub use plan::{Intent, PathTaken, Planned, plan};
+pub use probe::{Probe, probe};
 pub use report::Report;
 
-use std::path::{Path, PathBuf};
+use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Debug)]
-pub struct Error {
-    message: String,
-}
+pub struct Error(String);
 
 impl Error {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
+    pub(crate) fn new(message: impl fmt::Display) -> Self {
+        Self(message.to_string())
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::new(e)
+    }
+}
+
+impl From<::image::ImageError> for Error {
+    fn from(e: ::image::ImageError) -> Self {
+        Self::new(e)
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -48,34 +56,14 @@ pub struct Job {
     pub keep_metadata: bool,
 }
 
-pub fn probe(path: &Path) -> Result<Probe> {
-    probe::probe(path)
-}
-
-pub fn plan(probe: &Probe, target: Format, intent: Intent) -> Result<Planned> {
-    plan::plan(probe, target, intent)
-}
-
-pub fn relevant_targets(format: Format) -> &'static [Format] {
-    format::relevant_targets(format)
-}
-
-pub fn ffmpeg_available() -> bool {
-    audio::ffmpeg_available()
-}
-
 pub fn convert(job: &Job) -> Result<Report> {
-    let probed = probe::probe(&job.source)?;
-    let planned = plan::plan(&probed, job.target, job.intent)?;
-    if probed.kind != job.target.kind() {
-        return Err(Error::new("source and target are different kinds of media"));
-    }
+    let probed = probe(&job.source)?;
+    let planned = plan(&probed, job.target, job.intent)?;
     let dest_parent = job
         .dest
         .parent()
         .ok_or_else(|| Error::new("destination has no parent"))?;
-    std::fs::create_dir_all(dest_parent).map_err(|e| Error::new(e.to_string()))?;
-
+    std::fs::create_dir_all(dest_parent)?;
     match probed.kind {
         Kind::Image => image::run(job, &probed, &planned),
         Kind::Audio => audio::run(job, &probed, &planned),
@@ -83,16 +71,14 @@ pub fn convert(job: &Job) -> Result<Report> {
     }
 }
 
-pub fn dest_name(source: &Path, target: Format) -> PathBuf {
-    let stem = source.file_stem().unwrap_or_default();
-    source
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!(
-            "{}.converted.{}",
-            stem.to_string_lossy(),
-            target.ext()
-        ))
+fn copy(job: &Job, probe: &Probe, planned: &Planned) -> Result<Report> {
+    let bytes_out = std::fs::copy(&job.source, &job.dest)?;
+    Ok(Report::new(
+        probe,
+        PathTaken::Copy,
+        bytes_out,
+        planned.notes.clone(),
+    ))
 }
 
 #[cfg(test)]
