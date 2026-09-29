@@ -5,14 +5,9 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 use std::ptr;
 
-const WHILE_FILLING: libc::mode_t = 0o700;
+use crate::check;
 
-fn check(status: libc::c_int) -> io::Result<()> {
-    match status {
-        0 => Ok(()),
-        _ => Err(io::Error::last_os_error()),
-    }
-}
+const WHILE_FILLING: libc::mode_t = 0o700;
 
 fn split(path: &Path) -> io::Result<(&Path, CString)> {
     let name = path

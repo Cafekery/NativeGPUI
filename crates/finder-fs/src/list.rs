@@ -14,7 +14,7 @@ const VLNK: u32 = 5;
 const HAS_BUNDLE: u16 = 0x2000;
 const EXT_HIDDEN: u16 = 0x0010;
 const IS_ALIAS: u16 = 0x8000;
-const HAS_CUSTOM_ICON: u16 = 0x0400;
+pub(crate) const HAS_CUSTOM_ICON: u16 = 0x0400;
 const SF_DATALESS: u32 = 0x4000_0000;
 
 const COMMON_ATTRS: libc::attrgroup_t = libc::ATTR_CMN_RETURNED_ATTRS
@@ -472,13 +472,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("custom")).unwrap();
         fs::create_dir(dir.join("plain")).unwrap();
-        let info = format!("{:0<64}", "00000000000000000400");
-        let status = std::process::Command::new("xattr")
-            .args(["-wx", "com.apple.FinderInfo", &info])
-            .arg(dir.join("custom"))
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let dog = crate::folder_icon::Decoration::Symbol("dog.fill".into());
+        crate::folder_icon::write(&dir.join("custom"), Some(&dog)).unwrap();
 
         let entries = list_dir(&dir).unwrap();
         let map = by_name(&entries);

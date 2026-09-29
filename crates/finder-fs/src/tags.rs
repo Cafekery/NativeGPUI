@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CStr, OsStr};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -169,23 +169,8 @@ fn url(path: &Path) -> Retained<NSURL> {
 }
 
 fn user_tags(path: &Path) -> Option<Retained<NSArray>> {
-    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
-    let name = c"com.apple.metadata:_kMDItemUserTags";
-    let size =
-        unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
-    let size = usize::try_from(size).ok().filter(|&size| size > 0)?;
-    let mut bytes = vec![0u8; size];
-    let read = unsafe {
-        libc::getxattr(
-            path.as_ptr(),
-            name.as_ptr(),
-            bytes.as_mut_ptr().cast(),
-            bytes.len(),
-            0,
-            0,
-        )
-    };
-    bytes.truncate(usize::try_from(read).ok()?);
+    let path = crate::c_path(path).ok()?;
+    let bytes = crate::xattr::get(&path, c"com.apple.metadata:_kMDItemUserTags")?;
     crate::plist(&bytes)?.downcast::<NSArray>().ok()
 }
 

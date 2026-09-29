@@ -18,10 +18,14 @@ pub mod tags;
 pub mod volumes;
 pub mod watch;
 pub mod words;
+mod xattr;
 
 pub use entry::{Entry, EntryKind};
 
-use std::path::PathBuf;
+use std::ffi::CString;
+use std::io;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -36,6 +40,17 @@ pub(crate) fn utility_qos() {
 
 pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+pub(crate) fn c_path(path: &Path) -> io::Result<CString> {
+    Ok(CString::new(path.as_os_str().as_bytes())?)
+}
+
+pub(crate) fn check(status: libc::c_int) -> io::Result<()> {
+    match status {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
 }
 
 #[cfg(test)]

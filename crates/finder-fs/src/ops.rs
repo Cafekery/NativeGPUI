@@ -1,8 +1,6 @@
 use std::borrow::Cow;
-use std::ffi::CString;
 use std::io;
 use std::os::macos::fs::MetadataExt as _;
-use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -350,7 +348,7 @@ fn unlock(path: &Path, deep: bool) -> io::Result<()> {
     let flags = meta.st_flags();
     // `chflags` follows a link, so the lock a link carries itself is left where it is.
     if flags & libc::UF_IMMUTABLE != 0 && !meta.is_symlink() {
-        let name = c_path(path)?;
+        let name = crate::c_path(path)?;
         if unsafe { libc::chflags(name.as_ptr(), flags & !libc::UF_IMMUTABLE) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -438,10 +436,6 @@ fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
     Some(first_free(dir_of(&items[0]), &stem, Some("zip")))
 }
 
-fn c_path(path: &Path) -> io::Result<CString> {
-    Ok(CString::new(path.as_os_str().as_bytes())?)
-}
-
 fn staging_path(dest: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = dest.parent().unwrap_or_else(|| Path::new("."));
@@ -453,7 +447,7 @@ fn staging_path(dest: &Path) -> PathBuf {
 }
 
 fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
-    let (from, to) = (c_path(staged)?, c_path(dest)?);
+    let (from, to) = (crate::c_path(staged)?, crate::c_path(dest)?);
     if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } == 0 {
         return Ok(());
     }
