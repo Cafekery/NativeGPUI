@@ -294,10 +294,9 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when(
-                !banded && self.view != ICON_VIEW && toolbar_rule(),
-                |column| column.border_t_1().border_color(palette.separator),
-            )
+            .when(!banded && !icons && toolbar_rule(), |column| {
+                column.border_t_1().border_color(palette.separator)
+            })
             .child(if banded {
                 scroll_sideways(
                     div().id("ng.finder.hscroll").size_full(),

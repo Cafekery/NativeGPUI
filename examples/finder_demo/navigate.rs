@@ -6,12 +6,14 @@ use std::time::Duration;
 use gpui::{App, Context, SharedString, Window};
 
 use crate::app::FinderDemo;
+use crate::art::Previews;
 use crate::data::{Folder, Line, intern, intern_path, is_volume_root, split_key};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::ColumnLook;
 use crate::views::gallery::GalleryLook;
+use crate::views::list::ListLook;
 use crate::{home, open_finder_window};
 
 const HOLD: Duration = Duration::from_millis(100);
@@ -461,14 +463,15 @@ impl FinderDemo {
         self.tag_listing = None;
         self.icons.forget();
         self.clear_type_filter();
-        self.list_look = crate::views::list::ListLook::of(self.here());
+        let here = self.here();
+        self.list_look = ListLook::of(here);
         self.load_columns();
-        self.columns_from_computer = self.here() == crate::locations::COMPUTER;
+        self.columns_from_computer = here == crate::locations::COMPUTER;
         self.column_look = ColumnLook::load();
-        self.gallery_look = GalleryLook::load(self.here());
+        self.gallery_look = GalleryLook::load(here);
         self.load_sorting(cx);
         self.sidebar_follow();
-        self.previews = crate::art::Previews::of(self.here());
+        self.previews = Previews::of(here);
         self.open_as_kept(cx);
         cx.notify();
     }

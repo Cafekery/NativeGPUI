@@ -20,7 +20,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, GROUP_KEYS, intern_path};
-use crate::locations::{COMPUTER, computer_name, place};
+use crate::locations::{COMPUTER, computer_name, is_location, place};
 use crate::menus::{Act, Menu};
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
 use crate::views::header::column_title;
@@ -436,7 +436,7 @@ impl FinderDemo {
 
     fn path_places(&self) -> Vec<(&'static str, &'static str)> {
         let here = self.here();
-        if place(here).is_some() {
+        if is_location(here) {
             return iter::successors(Some(here), |id| place(id)?.1)
                 .filter_map(|id| Some((place(id)?.0, id)))
                 .collect();
@@ -471,8 +471,8 @@ impl FinderDemo {
             .collect()
     }
 
-    /// Each grouping row stands over the sort by the same key while Option is held.
     fn group_rows(&self) -> Vec<(MenuEntry, Act)> {
+        let here = self.here();
         let group = self.group();
         let arranged = self.arrangement().filter(|_| self.view == ICON_VIEW);
         let sorted = match arranged {
@@ -498,10 +498,7 @@ impl FinderDemo {
             },
             (MenuEntry::separator(), Act::Nothing),
         ];
-        for column in GROUP_KEYS
-            .into_iter()
-            .filter(|key| key.offered_at(self.here()))
-        {
+        for column in GROUP_KEYS.into_iter().filter(|key| key.offered_at(here)) {
             let title = column_title(column);
             rows.push((
                 grouping(MenuEntry::item(title).checked(group == Some(column))),
