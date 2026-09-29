@@ -113,7 +113,7 @@ pub(crate) struct FinderDemo {
     pub(crate) crumb_drop: Option<usize>,
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
-    pub(crate) style: usize,
+    pub(crate) browse_view: usize,
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
@@ -202,11 +202,11 @@ impl FinderDemo {
             read::EVENTS.ring();
         });
         let kept = prefs::opens_in(start);
-        let style = match kept {
+        let browse_view = match kept {
             Some((view, true)) => view,
             _ => prefs::view().unwrap_or(LIST_VIEW),
         };
-        let view = kept.map_or(style, |(view, _)| view);
+        let view = kept.map_or(browse_view, |(view, _)| view);
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
@@ -267,7 +267,7 @@ impl FinderDemo {
             crumb_drop: None,
             status_bar_shown: false,
             show_hidden: false,
-            style,
+            browse_view,
             spring: None,
             pressed_at: gpui::Point::default(),
             recents: Vec::new(),

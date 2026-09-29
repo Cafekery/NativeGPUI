@@ -26,7 +26,7 @@ pub(crate) fn overflows(content: f32, room: f32) -> bool {
 
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.style = view;
+        self.browse_view = view;
         prefs::set_view(view);
         self.set_view(view, cx);
         self.install_toolbar(window, cx);
@@ -37,11 +37,11 @@ impl FinderDemo {
     pub(crate) fn open_as_kept(&mut self, cx: &mut Context<Self>) {
         let view = match prefs::opens_in(self.here()) {
             Some((view, true)) => {
-                self.style = view;
+                self.browse_view = view;
                 view
             }
             Some((view, false)) => view,
-            None => self.style,
+            None => self.browse_view,
         };
         if view != self.pending_view.unwrap_or(self.view) {
             self.set_view(view, cx);
@@ -55,7 +55,7 @@ impl FinderDemo {
     pub(crate) fn always_browse(&mut self, on: bool) {
         prefs::set_opens_in(self.here(), Some((self.view, on)));
         if on {
-            self.style = self.view;
+            self.browse_view = self.view;
         }
     }
 
