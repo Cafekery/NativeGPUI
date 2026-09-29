@@ -231,6 +231,10 @@ pub(crate) fn volume_roots() -> Vec<&'static str> {
     seen().iter().map(|volume| volume.mount).collect()
 }
 
+pub(crate) fn is_volume_root(id: &str) -> bool {
+    seen().iter().any(|volume| volume.mount == id)
+}
+
 pub(crate) fn network_roots() -> Vec<&'static str> {
     seen()
         .iter()

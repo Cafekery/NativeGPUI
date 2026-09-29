@@ -16,10 +16,12 @@ use objc2_app_kit::{NSAttributedStringNSStringDrawing, NSFont, NSFontAttributeNa
 use objc2_foundation::{NSAttributedString, NSDictionary, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Face, Line, folder_artwork, intern_path, split_key};
+use crate::data::{Face, Line, folder_artwork, intern_path, is_volume_root, split_key};
 use crate::dragdrop::{Grabbed, RowDrag};
+use crate::locations::{SHARED, is_location};
 use crate::menus;
 use crate::palette::Palette;
+use crate::search::RECENTS;
 use crate::view::COLUMN_VIEW;
 
 pub(crate) const PATH_H: f32 = 28.;
@@ -35,7 +37,7 @@ const CRUMB_ICON: f32 = 16.;
 const CRUMB_ART: f32 = 15.;
 
 // An NSTextField label draws its text 2pt inside its frame.
-const LABEL_INSET: f32 = 2.;
+pub(crate) const LABEL_INSET: f32 = 2.;
 
 const LABEL_LEAD: f32 = 1.;
 
@@ -146,7 +148,14 @@ impl FinderDemo {
             .as_ref()
             .and_then(|line| split_key(&line.key))
             .map_or(self.target(), |(dir, _)| dir);
-        let here = self.folders.get(holder);
+        let placed = match &lone {
+            Some(line) => !line
+                .row
+                .opens
+                .is_some_and(|id| is_volume_root(id) || is_location(id)),
+            None => self.here() != SHARED && self.tag_listing != Some(RECENTS),
+        };
+        let here = self.folders.get(holder).filter(|_| placed);
         let mut crumbs: Vec<SharedString> = here.map_or_else(Vec::new, |folder| {
             folder
                 .crumbs
@@ -182,9 +191,12 @@ impl FinderDemo {
                     line.row.artwork.unwrap_or(line.row.face.stand_in()),
                     line.row.face,
                 ),
-                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => {
-                    (FileType::Path("/"), Face::Volume)
-                }
+                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => (
+                    target
+                        .and_then(crate::locations::artwork)
+                        .unwrap_or(FileType::Path(target.unwrap_or("/"))),
+                    Face::Volume,
+                ),
                 _ => (
                     target.map_or(FileType::Folder, |path| {
                         crumb_artwork(path, !last || listed, landed)

@@ -72,7 +72,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn preview_shown(&self) -> bool {
-        self.preview && self.view != COLUMN_VIEW
+        self.preview && self.view != COLUMN_VIEW && !self.airdrop_shown()
     }
 
     pub(crate) fn list_icon_now(&self) -> f32 {
