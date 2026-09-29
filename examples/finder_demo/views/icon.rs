@@ -6,11 +6,11 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use finder_fs::ds_store::{self, IconOptions, IconView};
+use finder_fs::ds_store::{self, Background, IconOptions, IconView};
 use finder_fs::sort::name_cmp;
 use gpui::{
-    AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollHandle, SharedString, Size, TextAlign, Window, div, point, prelude::*, px, size,
+    AnyElement, App, Div, ExternalPaths, Hsla, MouseButton, MouseDownEvent, Pixels, Point, Rgba,
+    ScrollHandle, SharedString, Size, TextAlign, Window, div, img, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{SystemColor, system_color};
 use objc2_app_kit::NSFont;
@@ -314,6 +314,7 @@ fn standard_options() -> IconOptions {
 #[derive(Clone, Default)]
 pub(crate) struct Paint {
     pub(crate) previews: bool,
+    pub(crate) background: Background,
 }
 
 impl Paint {
@@ -324,6 +325,11 @@ impl Paint {
                 .show_icon_preview
                 .or(standard.show_icon_preview)
                 .unwrap_or(true),
+            background: chosen
+                .background
+                .clone()
+                .or(standard.background)
+                .unwrap_or_default(),
         }
     }
 }
@@ -1089,6 +1095,19 @@ impl FinderDemo {
                 |this| (&mut this.bands.icons, this.icons.scroll.clone()),
                 cx,
             ))
+            .map(|canvas| match paint.background {
+                Background::Color([r, g, b]) => canvas.bg(Rgba { r, g, b, a: 1. }),
+                _ => canvas,
+            })
+            .children(match &paint.background {
+                Background::Picture(path) if !path.is_empty() => Some(
+                    img(Path::new(path))
+                        .absolute()
+                        .left(shift.x)
+                        .top(shift.y),
+                ),
+                _ => None,
+            })
             // Tiles are absolute and add no scroll extent; this spacer does.
             .child(
                 div()
@@ -1317,6 +1336,10 @@ impl FinderDemo {
             Some((at, _)) if at == self.here() => self.icons.paint.clone(),
             _ => Paint::new(&prefs::icon_options(self.here())),
         }
+    }
+
+    pub(crate) fn icon_background(&self) -> Background {
+        self.icon_paint().background
     }
 
     pub(crate) fn change_icon_options(
