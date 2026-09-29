@@ -112,6 +112,8 @@ pub(crate) struct FinderDemo {
     pub(crate) status_bar_shown: bool,
     pub(crate) show_hidden: bool,
     pub(crate) grouped: bool,
+    /// The view this window browses in where a folder doesn't ask for its own.
+    pub(crate) style: usize,
     pub(crate) spring: Option<Spring>,
     pub(crate) pressed_at: gpui::Point<Pixels>,
     pub(crate) recents: Vec<(&'static str, String)>,
@@ -193,7 +195,12 @@ impl FinderDemo {
             queue_sink.lock().unwrap().push(event);
             read::EVENTS.ring();
         });
-        let view = prefs::view().unwrap_or(LIST_VIEW);
+        let style = prefs::view().unwrap_or(LIST_VIEW);
+        let view = prefs::opens_in(start).map_or(style, |(view, _)| view);
+        let style = match prefs::opens_in(start) {
+            Some((view, true)) => view,
+            _ => style,
+        };
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
@@ -255,6 +262,7 @@ impl FinderDemo {
             status_bar_shown: false,
             show_hidden: false,
             grouped: false,
+            style,
             spring: None,
             pressed_at: gpui::Point::default(),
             recents: Vec::new(),
