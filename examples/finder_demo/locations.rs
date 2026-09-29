@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::ffi::c_void;
+use std::ffi::{CStr, c_char, c_void};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::mpsc::{Receiver, channel};
@@ -13,13 +13,16 @@ use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
 
 use crate::app::FinderDemo;
-use crate::data::{self, Face, Row, intern};
+use crate::data::{self, Face, Line, Row, intern};
 use crate::signal::Signal;
 
 pub(crate) const COMPUTER: &str = "computer:";
 pub(crate) const NETWORK: &str = "network:";
 pub(crate) const AIRDROP: &str = "airdrop:";
 pub(crate) const SHARED: &str = "shared:";
+
+const AIRDROP_APP: &str =
+    "/System/Library/CoreServices/Finder.app/Contents/Applications/AirDrop.app";
 
 const HITS: usize = 200;
 
@@ -30,6 +33,101 @@ pub(crate) fn is_location(id: &str) -> bool {
 #[link(name = "SystemConfiguration", kind = "framework")]
 extern "C" {
     fn SCDynamicStoreCopyComputerName(store: *const c_void, encoding: *mut u32) -> *mut NSString;
+}
+
+extern "C" {
+    fn sysctlbyname(
+        name: *const c_char,
+        value: *mut c_void,
+        size: *mut usize,
+        new: *const c_void,
+        new_size: usize,
+    ) -> i32;
+}
+
+fn sysctl(name: &CStr) -> Option<Vec<u8>> {
+    let mut size = 0;
+    let asked = unsafe { sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut size, ptr::null(), 0) };
+    let mut value = vec![0; size];
+    let read = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            &mut size,
+            ptr::null(),
+            0,
+        )
+    };
+    (asked == 0 && read == 0).then(|| {
+        value.truncate(size);
+        value
+    })
+}
+
+fn sysctl_text(name: &CStr) -> String {
+    let value = sysctl(name).unwrap_or_default();
+    String::from_utf8_lossy(&value)
+        .trim_end_matches('\0')
+        .to_owned()
+}
+
+fn this_mac() -> FileType<'static> {
+    static TYPE: LazyLock<&'static str> = LazyLock::new(|| {
+        let model = sysctl_text(c"hw.model");
+        finder_fs::servers::model_type(Some(&model))
+            .map_or("com.apple.mac", |(uti, _)| intern(&uti))
+    });
+    FileType::Uti(*TYPE)
+}
+
+pub(crate) fn artwork(id: &str) -> Option<FileType<'static>> {
+    match id {
+        COMPUTER => Some(this_mac()),
+        NETWORK => Some(FileType::Named("NSNetwork")),
+        AIRDROP => Some(FileType::Path(AIRDROP_APP)),
+        _ => None,
+    }
+}
+
+/// The line an Info window describes for a location Finder gives one.
+pub(crate) fn info_line(id: &'static str) -> Option<Line> {
+    let (title, _) = place(id)?;
+    let kind = match id {
+        NETWORK => "Neighborhood",
+        AIRDROP => "AirDrop",
+        _ => "",
+    };
+    let row = location_row(
+        id,
+        title.into(),
+        finder_fs::words::say(kind).into_owned().into(),
+        "",
+        Some(id),
+        artwork(id)?,
+    );
+    Some(Line {
+        key: row.path.clone(),
+        row,
+        depth: 0,
+    })
+}
+
+/// Finder's Info window gives the computer its processor and memory, the others their kind.
+pub(crate) fn info_fields(row: &Row) -> Option<Vec<(&'static str, SharedString)>> {
+    static COMPUTER_FIELDS: LazyLock<[(&str, SharedString); 2]> = LazyLock::new(|| {
+        let memory = sysctl(c"hw.memsize")
+            .and_then(|bytes| Some(u64::from_ne_bytes(bytes.try_into().ok()?)))
+            .unwrap_or(0);
+        [
+            ("Processor", sysctl_text(c"machdep.cpu.brand_string").into()),
+            ("Memory", format!("{} GB", memory >> 30).into()),
+        ]
+    });
+    match &*row.path {
+        COMPUTER => Some(COMPUTER_FIELDS.to_vec()),
+        NETWORK | AIRDROP => Some(vec![("Kind", row.kind.clone())]),
+        _ => None,
+    }
 }
 
 pub(crate) fn computer_name() -> &'static str {

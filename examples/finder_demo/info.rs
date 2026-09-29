@@ -100,9 +100,12 @@ impl Render for Info {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let row = &self.line.row;
         let scale = window.scale_factor();
-        let fields = match volume_at(&row.path) {
-            Some(volume) => volume_fields(&volume, row),
-            None => vec![
+        let about = crate::locations::info_fields(row);
+        let place = about.is_some();
+        let fields = match (about, volume_at(&row.path)) {
+            (Some(about), _) => about,
+            (None, Some(volume)) => volume_fields(&volume, row),
+            (None, None) => vec![
                 ("Kind", row.kind.clone()),
                 ("Size", row.size.clone()),
                 ("Where", self.where_.clone()),
@@ -127,11 +130,20 @@ impl Render for Info {
                                     .flex()
                                     .justify_between()
                                     .child(heading(row.display.clone()))
-                                    .child(small(SystemColor::Label).child(row.size.clone())),
+                                    .when(!place, |head| {
+                                        head.child(
+                                            small(SystemColor::Label).child(row.size.clone()),
+                                        )
+                                    }),
                             )
-                            .child(small(SystemColor::SecondaryLabel).child(SharedString::from(
-                                format!("Modified: {}", day_string(row.modified_at)),
-                            ))),
+                            .when(!place, |head| {
+                                head.child(small(SystemColor::SecondaryLabel).child(
+                                    SharedString::from(format!(
+                                        "Modified: {}",
+                                        day_string(row.modified_at)
+                                    )),
+                                ))
+                            }),
                     ),
             )
             .child(small(SystemColor::TertiaryLabel).child("Add Tags…"))
@@ -154,7 +166,9 @@ impl Render for Info {
 const CRUMB_SEPARATOR: &str = " \u{203a} ";
 
 pub(crate) fn where_of(id: &str) -> Option<String> {
-    let parent = Path::new(id).parent()?;
+    let parent = Path::new(id)
+        .parent()
+        .filter(|parent| parent.is_absolute())?;
     Some(folder_of(intern_path(parent)).crumbs.join(CRUMB_SEPARATOR))
 }
 
@@ -170,9 +184,12 @@ pub(crate) fn open(
             Some(_) => Vec::new(),
             None => state.chosen_lines(),
         };
-        let at = at.or_else(|| chosen.is_empty().then(|| state.here()));
+        let at = at.or_else(|| (chosen.is_empty() && !state.results()).then(|| state.here()));
         let lines = match at {
-            Some(id) => crate::data::path_line(id).into_iter().collect(),
+            Some(id) => crate::locations::info_line(id)
+                .or_else(|| crate::data::path_line(id))
+                .into_iter()
+                .collect(),
             None => chosen,
         };
         let where_ = at.and_then(where_of).or_else(|| {
