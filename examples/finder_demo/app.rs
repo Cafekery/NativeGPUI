@@ -28,6 +28,8 @@ use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
+use crate::views::column::{ColumnFit, ColumnLook};
+use crate::views::gallery::GalleryLook;
 use crate::views::header::{ColumnSpec, HeaderBand, HeaderDrag, columns_for, name_min_w};
 use crate::views::icon::Grid;
 use crate::views::list::{Faces, ICON_SIZE, ICON_SMALL};
@@ -125,7 +127,7 @@ pub(crate) struct FinderDemo {
     pub(crate) ql_shown: Option<(SharedString, Option<Bounds<Pixels>>)>,
     pub(crate) list_icon: f32,
     pub(crate) list_zoom: Option<(f32, f32, Instant)>,
-    pub(crate) strip_icon: f32,
+    pub(crate) gallery_look: GalleryLook,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) hscroll: ScrollHandle,
     pub(crate) strip: ScrollHandle,
@@ -134,9 +136,11 @@ pub(crate) struct FinderDemo {
     pub(crate) column_reveal: Option<(f32, Instant)>,
     /// The selection the browser last laid its columns out for.
     pub(crate) column_cursor: Option<SharedString>,
-    pub(crate) column_widths: HashMap<&'static str, f32>,
+    pub(crate) column_widths: HashMap<&'static str, Option<f32>>,
     pub(crate) column_scrolls: Vec<UniformListScrollHandle>,
     pub(crate) column_grab: Option<(&'static str, f32)>,
+    pub(crate) column_look: ColumnLook,
+    pub(crate) column_fits: HashMap<&'static str, ColumnFit>,
     pub(crate) icons: Grid,
     pub(crate) bands: Bands,
     pub(crate) scale: f32,
@@ -274,7 +278,7 @@ impl FinderDemo {
             ql_shown: None,
             list_icon: prefs::list_icon().unwrap_or(finder.icon_size),
             list_zoom: None,
-            strip_icon: prefs::strip_icon().unwrap_or(48.),
+            gallery_look: GalleryLook::load(start),
             scroll: UniformListScrollHandle::new(),
             hscroll: ScrollHandle::new(),
             strip: ScrollHandle::new(),
@@ -285,6 +289,8 @@ impl FinderDemo {
             column_widths: HashMap::new(),
             column_scrolls: Vec::new(),
             column_grab: None,
+            column_look: ColumnLook::load(),
+            column_fits: HashMap::new(),
             icons: Grid::default(),
             bands: Bands::default(),
             scale: 2.,

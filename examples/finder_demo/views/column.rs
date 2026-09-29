@@ -1,3 +1,5 @@
+use std::sync::{Arc, LazyLock, Weak};
+
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
@@ -19,8 +21,10 @@ use crate::prefs;
 use crate::ui::{axis_locked, click_kind, menu_ring, rename_field};
 use crate::views::{chevron, folder_drop, run_pill};
 
-const ROW_H: f32 = 24.;
+const ROW_PAD: f32 = 6.;
 const COL_W: f32 = 164.;
+const FIT_MAX: f32 = 500.;
+const FIT_NOW: usize = 1024;
 const PREVIEW_W: f32 = 239.;
 const PREVIEW_INSET: f32 = 10.;
 const ICON_X: f32 = 13.;
@@ -39,6 +43,43 @@ const WIDTHS_HELD: usize = 256;
 
 const AREA_ALPHA: f32 = 0.3;
 const AREA_EDGE: f32 = 2.;
+
+const OPTIONS: &str = "ColumnViewOptions";
+const AUTOSIZE: &str = "_FXEnableColumnAutoSizing";
+
+static STANDARD_W: LazyLock<f32> = LazyLock::new(|| {
+    prefs::view_option(OPTIONS, "ColumnWidth").map_or(COL_W, |width| width as f32)
+});
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ColumnLook {
+    pub(crate) text: f32,
+    pub(crate) icons: bool,
+    pub(crate) fit: bool,
+}
+
+impl ColumnLook {
+    pub(crate) fn load() -> Self {
+        Self {
+            text: prefs::view_option(OPTIONS, "FontSize")
+                .map_or(f32::from(tokens::system_font_size()), |size| size as f32),
+            icons: prefs::view_option(OPTIONS, "ColumnShowIcons").is_none_or(|on| on != 0.),
+            fit: prefs::setting_on(AUTOSIZE, true),
+        }
+    }
+
+    fn row_h(self) -> f32 {
+        let font = tokens::system_font_metrics(px(self.text), FontWeight::NORMAL);
+        let icon = if self.icons { ICON } else { 0. };
+        icon.max((font.ascent + font.descent.abs()).ceil()) + ROW_PAD
+    }
+}
+
+pub(crate) struct ColumnFit {
+    lines: Weak<Vec<Line>>,
+    look: ColumnLook,
+    width: f32,
+}
 
 #[derive(Clone)]
 pub(crate) struct Rung {
@@ -140,12 +181,14 @@ impl FinderDemo {
         index: usize,
         rung: &Rung,
         emphasized: bool,
+        row_h: f32,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let folder = rung.folder;
         let rows = self.column_listing(folder);
         let scale = self.scale;
+        let look = self.column_look;
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
         let this_menu = this.clone();
@@ -154,7 +197,7 @@ impl FinderDemo {
         let stretch = self.bands.columns[index].shown().y;
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
             let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y + stretch);
-            let row = (f32::from(at.y) - top - TOP_GAP) / ROW_H;
+            let row = (f32::from(at.y) - top - TOP_GAP) / row_h;
             if row < 0. {
                 return None;
             }
@@ -208,14 +251,15 @@ impl FinderDemo {
                         let this = this.clone();
                         let clicked = line.clone();
                         let name = div()
-                            .ml(px(LABEL_X - ICON_X - ICON))
+                            .when(look.icons, |name| name.ml(px(LABEL_X - ICON_X - ICON)))
                             .flex_1()
                             .overflow_hidden();
                         let cell = div()
                             .id(("ng.finder.column.row", row))
                             .font_family(tokens::system_font_family())
+                            .text_size(px(look.text))
                             .w(px(content_w))
-                            .h(px(ROW_H))
+                            .h(px(row_h))
                             .relative()
                             .flex()
                             .items_center()
@@ -244,11 +288,13 @@ impl FinderDemo {
                                     over,
                                 ))
                             })
-                            .child(art_at(
-                                row_art(&line.row, ICON, scale, true),
-                                ICON,
-                                (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
-                            ))
+                            .when(look.icons, |cell| {
+                                cell.child(art_at(
+                                    row_art(&line.row, ICON, scale, true),
+                                    ICON,
+                                    (cursor.as_ref() == Some(&line.key)).then(|| ql_icon.clone()),
+                                ))
+                            })
                             .child(if renaming.as_ref() == Some(&line.key) {
                                 name.child(rename_field(line, row, this.clone()))
                             } else {
@@ -371,16 +417,19 @@ impl FinderDemo {
             return;
         };
         let width = (self.column_width(folder) + x - origin).max(COL_MIN);
-        self.column_widths.insert(folder, width);
+        self.column_widths.insert(folder, Some(width));
         self.column_grab = Some((folder, x));
         cx.notify();
     }
 
     pub(crate) fn column_width(&self, folder: &'static str) -> f32 {
-        self.column_widths
-            .get(folder)
-            .copied()
-            .unwrap_or_else(|| prefs::column_view_width(folder).unwrap_or(COL_W))
+        match self.column_widths.get(folder) {
+            Some(Some(width)) => *width,
+            _ if self.column_look.fit => {
+                self.column_fits.get(folder).map_or(COL_W, |fit| fit.width)
+            }
+            _ => *STANDARD_W,
+        }
     }
 
     fn fit_browser_column(&mut self, folder: &'static str, cx: &mut Context<Self>) {
@@ -389,16 +438,78 @@ impl FinderDemo {
             .iter()
             .map(|line| line.row.display.clone())
             .collect();
-        let size = tokens::system_font_size();
+        let look = self.column_look;
         fit::in_background(
             cx,
-            move |texts| browser_fit_width(texts, &names, size),
+            move |texts| browser_fit_width(texts, &names, look),
             move |this, width, cx| {
-                this.column_widths.insert(folder, width);
+                this.column_widths.insert(folder, Some(width));
                 prefs::set_column_view_width(folder, width);
                 cx.notify();
             },
         );
+    }
+
+    fn autosize_column(&mut self, folder: &'static str, window: &Window, cx: &mut Context<Self>) {
+        let lines = self.column_listing(folder);
+        let look = self.column_look;
+        let fresh = |fit: &ColumnFit| fit.look == look && fit.lines.as_ptr() == Arc::as_ptr(&lines);
+        if self.column_fits.get(folder).is_some_and(fresh) {
+            return;
+        }
+        if self.column_fits.len() >= WIDTHS_HELD {
+            self.column_fits.clear();
+        }
+        let names: Vec<SharedString> = lines.iter().map(|line| line.row.display.clone()).collect();
+        let listing = Arc::downgrade(&lines);
+        let width = match names.len() <= FIT_NOW {
+            true => browser_fit_width(window.text_system(), &names, look),
+            false => {
+                let listed = listing.clone();
+                fit::in_background(
+                    cx,
+                    move |texts| browser_fit_width(texts, &names, look),
+                    move |this, width, cx| {
+                        let fit = this.column_fits.get_mut(folder);
+                        if let Some(fit) = fit.filter(|fit| fit.lines.ptr_eq(&listed)) {
+                            fit.width = width;
+                            cx.notify();
+                        }
+                    },
+                );
+                self.column_fits.get(folder).map_or(COL_W, |fit| fit.width)
+            }
+        };
+        let fit = ColumnFit {
+            lines: listing,
+            look,
+            width,
+        };
+        self.column_fits.insert(folder, fit);
+    }
+
+    pub(crate) fn column_look(&self) -> ColumnLook {
+        self.column_look
+    }
+
+    pub(crate) fn change_column_look(
+        &mut self,
+        change: impl FnOnce(&mut ColumnLook),
+        cx: &mut Context<Self>,
+    ) {
+        let was = self.column_look;
+        change(&mut self.column_look);
+        let look = self.column_look;
+        if look.text != was.text {
+            prefs::set_view_option(OPTIONS, "FontSize", f64::from(look.text));
+        }
+        if look.icons != was.icons {
+            prefs::set_view_option(OPTIONS, "ColumnShowIcons", f64::from(u8::from(look.icons)));
+        }
+        if look.fit != was.fit {
+            prefs::set_setting_on(AUTOSIZE, look.fit);
+        }
+        cx.notify();
     }
 
     fn ruled(
@@ -487,16 +598,21 @@ impl FinderDemo {
                 if self.column_widths.len() >= WIDTHS_HELD && self.column_grab.is_none() {
                     self.column_widths.clear();
                 }
-                let width = prefs::column_view_width(rung.folder).unwrap_or(COL_W);
+                let width = prefs::column_view_width(rung.folder);
                 self.column_widths.insert(rung.folder, width);
             }
+            if self.column_look.fit && self.column_widths[rung.folder].is_none() {
+                self.autosize_column(rung.folder, window, cx);
+            }
         }
+        let row_h = self.column_look.row_h();
         let focused = chain.iter().rposition(|rung| rung.selected.is_some());
         let mut columns: Vec<AnyElement> = chain
             .iter()
             .enumerate()
             .map(|(index, rung)| {
-                let column = self.browser_column(index, rung, Some(index) == focused, palette, cx);
+                let emphasized = Some(index) == focused;
+                let column = self.browser_column(index, rung, emphasized, row_h, palette, cx);
                 self.ruled(column, false, Some((index, rung.folder)), cx)
             })
             .collect();
@@ -655,15 +771,18 @@ impl FinderDemo {
     }
 }
 
-fn browser_fit_width(texts: &WindowTextSystem, names: &[SharedString], size: Pixels) -> f32 {
+fn browser_fit_width(texts: &WindowTextSystem, names: &[SharedString], look: ColumnLook) -> f32 {
     let font = tokens::system_font(FontWeight::NORMAL);
     let widest = fit::widest(
         texts,
         &font,
-        size,
+        px(look.text),
         names,
         |name| name.clone(),
         |_, width| width,
     );
-    (widest + BROWSER_FIT).ceil().max(COL_W)
+    let iconless = if look.icons { 0. } else { LABEL_X - ICON_X };
+    (widest + BROWSER_FIT - iconless)
+        .ceil()
+        .clamp(COL_W, FIT_MAX)
 }
