@@ -109,7 +109,8 @@ which lists each alternate with its modifier mask; the demo's menus carry the sa
   ⌥⇧; no other menu offers it, and none has a ⌥ Move Item Here
 - [x] A folder or a sidebar item: Open in New Tab becomes Open in New Window
 - [x] Move to Trash has no alternate
-- [ ] Finder's item menu has Show Preview Options after the tags; the demo's has not
+- [x] Finder's item menu has Show Preview Options after the tags, Hide Preview Options while that
+  panel is open; so does the demo's
 
 ## Toolbar: where the search field shrinks and collapses
 
@@ -217,7 +218,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   dragged to 221 (`SidebarWidth2`) where the demo's always opened at 216, less the pane's 1 pt
   (241 against 240). Read over AX at 240,120 1100x680, both now put the sidebar's divider at 221
   and the list at 221..860, 639 wide, its rows 639 wide from 221.
-- [ ] The context menu's Open on an unreadable folder does nothing; Finder's was not measured.
+- [x] On a folder the user can't list, Finder's context menu has Open in New Tab and ⌥ Open in New
+  Window off (read with a fixture folder at mode 000); so does the demo's.
+- [ ] On that folder Finder's context menu also leaves out Compress and Share… and reads Quick Look
+  “<name>”; the demo's keeps Compress and Share… and reads Quick Look.
 - [x] A window opens with its preview pane already at full width; only Show/Hide Preview (⇧⌘P)
   slides it, over about 230 ms each way.
 - [x] Move to Trash (⌘⌫) and Delete Immediately… select the row just below the cursor (the row
@@ -242,17 +246,23 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
   `NewWindowTargetPath`), not the folder shown.
 - [x] Make Alias and New Folder with Selection start renaming what they make, as Finder's do.
 - [x] ⌥↑ and ⌥↓ select the first and last item in list view, as in Finder.
-- [ ] In column view ⌥↓ still moves one row; Finder's ⌥↑ and ⌥↓ were not read in column, icon or
-  gallery view.
+- [x] ⌥↑ and ⌥↓ select the first and last item of the focused column in column view; in gallery
+  view ⌥↑ and ⌥← select the first item, ⌥↓ and ⌥→ the last, and plain ↑ ↓ do nothing; in icon view
+  ⌥ changes nothing, the arrows move one icon. All as read off Finder 27.
+- [x] Tab and ⇧Tab select the next and previous item by name whatever the sort, wrapping at either
+  end; with nothing selected, even after ⌥⌘A, they select the first and the last. Column view
+  ignores both. Finder takes ⇧Tab's Shift from the keyboard's state: a Tab posted to it with only
+  the Shift flag reads as Tab, so read it with the Shift key itself held.
 - [x] Go ▸ Utilities (⇧⌘U) opens /Applications/Utilities.
-- [ ] Finder shows /System/Applications' apps inside /Applications and its Utilities; the demo lists
-  each folder as it is on disk.
+- [x] /Applications and /Applications/Utilities list /System/Applications' apps (and its
+  Utilities') merged in, each name once, as Finder shows them. The first screen still lands with
+  the listing's first read: 8 ms for /Applications, as before the merge.
 - [x] Quick Look (⌘Y or Space) with nothing selected previews the folder shown, and follows the
   selection once there is one; File reads Quick Look “<folder>” and Slideshow “<folder>”, then
   Close Quick Look and Slideshow while the panel is up.
-- [ ] Escape out of the ⌥⌘Y slideshow leaves the demo's Quick Look panel up in a window, where
-  Finder's closes; while that panel is key the Window menu's tab rows read on, where Finder's
-  stay off.
+- [x] Escape out of the ⌥⌘Y slideshow closes the Quick Look panel, as Finder's does: the panel
+  goes full screen without first showing in a window. While that panel is key the Window menu's
+  tab rows follow the window behind it, off until it has tabs, as Finder's do.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.
@@ -430,14 +440,25 @@ Traffic lights, corner radius, window shadow and title type measure identical.
   Deselect All, Back and Forward without history, Clean Up in list view and Show Progress Window
   with no operation running; so does the demo. Clean Up and Clean Up By need icon view without a
   sort, and the Window menu's tab rows stay off until the window has tabs.
-- [ ] Sort By's None and Snap to Grid: Finder's menu has them only in icon view, the demo's shows
-  them greyed in the other views. AppKit's Remove Window from Set sits above Cycle Through Windows,
-  where Finder's order needs AppKit's private `_cycleWindows:`.
+- [x] Sort By's None and Snap to Grid are rows only in icon view, as in Finder; the submenu is
+  filled as it opens, and its ⌃⌥⌘ keys still reach it in every view.
+- [ ] AppKit's Remove Window from Set sits above Cycle Through Windows, where Finder's order needs
+  AppKit's private `_cycleWindows:`.
 - [x] Menu titles name their target: Quick Look “Fixture”, Slideshow “Fixture”, Copy “Fixture” as
   Pathname, New Folder with “Notes.txt”, Copy “Notes.txt”, Paste Item; Show turns to Hide on
   Preview, Path Bar, Status Bar, Inspector, View Options, Preview Options and Progress Window.
-- [ ] With a folder chosen Finder's tag row ends in Customize Folder…; the demo's stays Tags…, having
-  no folder customisation.
+- [ ] With exactly one folder chosen (an unlistable one too; not two folders, not a folder and a
+  file) Finder's tag row ends in Customize Folder… where Tags… stood; the demo's stays Tags…. It
+  opens a popover (320×670 content) at the folder's icon: the folder's name, a tag row (Remove all
+  tags, the seven colours, an Add menu), a grid of 113 SF Symbols in four groups (People 41,
+  Animals & Nature 45, Food & Drinks 13, Activity 14, 44 pt cells, seven across), then Clear and
+  Emoji. Emoji opens a second popover (320×444) holding the system emoji picker: a search field and
+  the emoji grid, frequently used first; it has no public API, `orderFrontCharacterPalette:` being
+  the public stand-in. A pick leaves the popover up and writes `com.apple.icon.folder#S` as
+  `{"sym":"person.fill"}` or `{"emoji":"…"}` plus FinderInfo's kHasCustomIcon (00…04 00 at byte
+  8); Clear removes both. With both set, `iconForFile:` draws the decoration and follows each
+  change at once, so the demo already shows Finder's customised folders through its custom-icon
+  path; what it lacks is the popover.
 - [x] File menu, in Finder's order with its alternates: New Finder Window, New Folder, New Folder
   with Selection, New Smart Folder, New Tab, Open (⌃ Open in New Tab, ⌥ Open and Close Window ⌥⌘O),
   Open With (⌥ Always Open With), Close Window (⌥ Close All), Get Info (⌥ Show Inspector, ⌃ Get

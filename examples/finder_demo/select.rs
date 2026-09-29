@@ -215,6 +215,7 @@ impl FinderDemo {
         let at = self
             .cursor
             .as_ref()
+            .filter(|key| self.selected.contains(*key))
             .and_then(|key| self.line_at(&lines, key))
             .and_then(|index| by_name.iter().position(|&i| i == index));
         let next = match (at, backwards) {

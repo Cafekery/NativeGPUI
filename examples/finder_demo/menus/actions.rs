@@ -51,6 +51,7 @@ pub(crate) enum Act {
     Compress,
     Share,
     Tags,
+    PreviewOptions,
     Copy,
     Paste(&'static str, Pasting),
     OpenTerminal(&'static str),
@@ -162,6 +163,7 @@ impl FinderDemo {
             Act::Compress => self.with_selection(Op::Compress, After::Select, cx),
             Act::Share => self.share_selection(window, cx),
             Act::Tags => self.edit_tags(window, cx),
+            Act::PreviewOptions => crate::preview::options::toggle(self, cx),
             Act::QuickLook => self.toggle_quick_look(window, cx),
             Act::OpenWith(app) => crate::openwith::open_with(&self.paths(), Path::new(app)),
             Act::AlwaysOpenWith(app) => {

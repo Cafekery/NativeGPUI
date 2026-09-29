@@ -96,9 +96,20 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
                 true => (Act::OpenTabs, Act::OpenWindow),
                 false => (Act::OpenTab(folder), Act::OpenWindowAt(folder)),
             };
-            menu.item(MenuEntry::item(plural("Open in New Tab", many)), tab);
+            let refused = match many {
+                true => selected
+                    .iter()
+                    .filter_map(|key| crate::data::path_line(intern(key)))
+                    .all(|line| refuses(&line)),
+                false => refuses(line),
+            };
+            let open = |title| match refused {
+                true => MenuEntry::item(title).disabled(),
+                false => MenuEntry::item(title),
+            };
+            menu.item(open(plural("Open in New Tab", many)), tab);
             menu.item(
-                MenuEntry::item(plural("Open in New Window", many)).option_alternate(),
+                open(plural("Open in New Window", many)).option_alternate(),
                 window,
             );
         }
@@ -193,6 +204,12 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     );
     menu.item(MenuEntry::item("Tags…"), Act::Tags);
     menu.separator();
+    let options = match crate::preview::options::is_open() {
+        true => "Hide Preview Options",
+        false => "Show Preview Options",
+    };
+    menu.item(MenuEntry::item(options), Act::PreviewOptions);
+    menu.separator();
     let faces: Vec<_> = match selected.contains(&line.key) {
         true => demo_faces(selected),
         false => vec![line.row.face],
@@ -275,6 +292,10 @@ fn folder_behind(line: &Line) -> Option<&'static str> {
         .file_name()
         .is_some_and(|name| is_package_name(&name.to_string_lossy()));
     (original.is_dir() && !package).then(|| intern_path(&original))
+}
+
+fn refuses(line: &Line) -> bool {
+    line.row.opens.is_some() && !line.row.readable
 }
 
 pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
