@@ -6,7 +6,7 @@ use std::time::Duration;
 use gpui::{App, Context, SharedString, Window};
 
 use crate::app::FinderDemo;
-use crate::data::{Folder, Line, intern, intern_path, split_key, volume_at};
+use crate::data::{Folder, Line, intern, intern_path, is_volume_root, split_key};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
@@ -76,15 +76,12 @@ pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
 }
 
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
-    match Path::new(id).parent() {
-        Some(parent) => Some((intern_path(parent), SharedString::from(id))),
-        None => volume_at(id).map(|volume| {
-            (
-                intern("/Volumes"),
-                SharedString::from(format!("/Volumes/{}", volume.name)),
-            )
-        }),
-    }
+    let above = match crate::locations::place(id) {
+        Some((_, above)) => above?,
+        None if is_volume_root(id) => crate::locations::COMPUTER,
+        None => intern_path(Path::new(id).parent()?),
+    };
+    Some((above, SharedString::from(id)))
 }
 
 fn refusal(id: &str, error: &std::io::Error) -> String {
@@ -115,21 +112,22 @@ impl FinderDemo {
 
     pub(crate) fn target(&self) -> &'static str {
         let here = self.here();
-        let Some((holder, name)) = self.cursor.as_ref().and_then(|key| split_key(key)) else {
+        let Some(key) = self.cursor.as_ref() else {
             return here;
         };
         if self.results() {
-            return holder;
+            return split_key(key).map_or(here, |(holder, _)| holder);
         }
         if self.view != COLUMN_VIEW {
             return here;
         }
+        let Some(holder) = self.column_holder(key) else {
+            return here;
+        };
         if self.selected.len() > 1 {
             return holder;
         }
-        self.folders
-            .get(holder)
-            .and_then(|folder| folder.rows.iter().find(|row| row.name == name))
+        self.column_row(holder, key)
             .filter(|row| row.readable)
             .and_then(|row| row.opens)
             .unwrap_or(holder)
@@ -461,6 +459,7 @@ impl FinderDemo {
         self.icons.forget();
         self.clear_type_filter();
         self.load_columns();
+        self.columns_from_computer = self.here() == crate::locations::COMPUTER;
         self.sidebar_follow();
         cx.notify();
     }
@@ -542,9 +541,12 @@ impl FinderDemo {
             return;
         }
         let listing = self.lines(self.view == LIST_VIEW);
-        if let Some(line) = listing.iter().find(|line| line.row.opens == Some(from)) {
-            self.pick(line, false, false);
-            self.reveal(&line.key);
+        match listing.iter().find(|line| line.row.opens == Some(from)) {
+            Some(line) => {
+                self.pick(line, false, false);
+                self.reveal(&line.key);
+            }
+            None => self.choose([SharedString::from(from)]),
         }
     }
 

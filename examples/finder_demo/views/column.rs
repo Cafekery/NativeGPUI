@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
@@ -9,10 +11,11 @@ use native_gpui::tokens::{self, SystemColor, system_color};
 
 use crate::app::FinderDemo;
 use crate::art::{art_at, row_art};
-use crate::data::{Line, split_key};
+use crate::data::{Line, Row, is_volume_root, split_key};
 use crate::dragdrop::{DragGhost, Lit, RowDrag, drop_lands, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::fit;
+use crate::locations::COMPUTER;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
@@ -58,20 +61,15 @@ impl FinderDemo {
             )
         };
         let Some((cursor, holder, row)) = self.cursor.clone().and_then(|cursor| {
-            let (holder, name) = split_key(&cursor)?;
-            let folder = self.folders.get(holder)?;
-            let row = folder.rows.iter().find(|row| row.name == name)?.clone();
+            let holder = self.column_holder(&cursor)?;
+            let row = self.column_row(holder, &cursor)?;
             Some((cursor, holder, row))
         }) else {
             return root();
         };
 
         let mut up = vec![holder];
-        while let Some(parent) = self
-            .folders
-            .get(up[up.len() - 1])
-            .and_then(|folder| folder.parent)
-        {
+        while let Some(parent) = self.column_parent(up[up.len() - 1]) {
             if up.len() > self.folders.len() {
                 return root();
             }
@@ -120,10 +118,31 @@ impl FinderDemo {
 
     pub(crate) fn column_seed(&mut self) {
         let here = self.here();
-        let Some(parent) = self.folders.get(here).and_then(|folder| folder.parent) else {
+        let Some(parent) = self.column_parent(here) else {
             return;
         };
         self.column_pick(parent, |line| line.row.opens == Some(here));
+    }
+
+    pub(crate) fn column_holder(&self, key: &str) -> Option<&'static str> {
+        let above = match crate::locations::place(key) {
+            Some((_, above)) => above,
+            None if is_volume_root(key) => Some(COMPUTER),
+            None => None,
+        };
+        above
+            .filter(|_| self.columns_from_computer)
+            .or_else(|| split_key(key).map(|(holder, _)| holder))
+    }
+
+    pub(crate) fn column_row(&self, holder: &'static str, key: &str) -> Option<Arc<Row>> {
+        let folder = self.folders.get(holder)?;
+        folder.rows.iter().find(|row| *row.path == *key).cloned()
+    }
+
+    fn column_parent(&self, folder: &'static str) -> Option<&'static str> {
+        let parent = self.folders.get(folder)?.parent?;
+        (parent != COMPUTER || self.columns_from_computer).then_some(parent)
     }
 
     fn column_pick(&mut self, folder: &'static str, hit: impl Fn(&Line) -> bool) -> bool {
@@ -358,7 +377,7 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((holder, _)) = split_key(key) else {
+        let Some(holder) = self.column_holder(key) else {
             return;
         };
         if self.column_pick(holder, |line| &line.key == key) {

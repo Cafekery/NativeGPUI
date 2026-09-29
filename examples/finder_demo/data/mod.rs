@@ -19,6 +19,6 @@ pub(crate) use self::row::{
     recent_rows, rows_at, rows_of, tagged_rows, weigh_packages,
 };
 pub(crate) use self::volumes::{
-    VolumeInfo, available_bytes, follow_volumes, network_roots, refresh_volumes, server_symbol,
-    volume_at, volume_roots,
+    VolumeInfo, available_bytes, follow_volumes, is_volume_root, network_roots, refresh_volumes,
+    server_symbol, volume_at, volume_roots,
 };

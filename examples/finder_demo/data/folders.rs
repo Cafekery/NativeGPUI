@@ -7,7 +7,7 @@ use finder_fs::volumes::{Standard, standard};
 
 use super::paths::{intern, intern_path};
 use super::row::Row;
-use super::volumes::volume_of;
+use super::volumes::{is_volume_root, volume_of};
 use crate::listing::next_rev;
 
 const CACHED: usize = 64;
@@ -29,7 +29,11 @@ pub(crate) fn folder_of(id: &'static str) -> Folder {
         None => {
             let crumbs = crumbs_of(id);
             let title = crumbs[crumbs.len() - 1];
-            (title, Path::new(id).parent().map(intern_path), crumbs)
+            let parent = match is_volume_root(id) {
+                true => Some(crate::locations::COMPUTER),
+                false => Path::new(id).parent().map(intern_path),
+            };
+            (title, parent, crumbs)
         }
     };
     Folder {

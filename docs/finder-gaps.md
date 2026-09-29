@@ -43,21 +43,39 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Go ▸ Connect to Server… (⌘K)
 - [x] Go ▸ AirDrop (⇧⌘R) opens an AirDrop location in the window, titled AirDrop as Finder's;
   items dropped on it, and the toolbar's AirDrop button, send through AppKit's AirDrop sheet
-- [ ] The AirDrop location lists nothing. Finder's shows the `airdrop` symbol, “AirDrop lets you
-  share instantly with people nearby.”, “Allow me to be discovered by:” with a popover of No One,
-  Contacts Only and Everyone (`DiscoverableMode` in `com.apple.sharingd`), “Don’t see who you’re
-  looking for?”, and the people nearby, which have no public API; setting the mode takes a
-  private call
+- [x] The AirDrop location is Finder 27's view: top left, 16 pt in, the account picture (48 pt,
+  round) beside “Use AirDrop as” (13 pt) over the user's full name (15 pt semibold); bottom left,
+  “AirDrop lets you share instantly with people nearby.” (12 pt) over “Allow me to be discovered
+  by: ” and a 114×20 pop-up of No One, Contacts Only and Everyone showing `DiscoverableMode` from
+  `com.apple.sharingd`, 12 pt off the bottom. No path bar, preview pane or status text. Setting the
+  mode needs sharingd's private entitlement `com.apple.private.airdrop.settings`, so picking
+  another opens System Settings' AirDrop & Handoff pane and the pop-up keeps the current mode
+- [ ] AirDrop: Finder's photo is the Contacts me-card's, the demo's the account picture (the user
+  record's `JPEGPhoto`, else its `Picture`), which needs no Contacts access; Finder turns the view
+  switcher, Group and Action off there, and the demo's toolbar has no way to grey a group or menu
+  item. Nearby people and devices are Sharing's private API
 - [x] Go ▸ Computer (⇧⌘C) and Network (⇧⌘K) open in the window, titled by the computer's name and
   “Network” as Finder's, nothing selected on arrival. Computer lists the mounted volumes and a
   Network row; Network lists the computers sharingd's browser finds (the list Finder shows), each
   with its model's icon, and opening one connects over SMB, else AFP, else screen sharing
-- [ ] Enclosing Folder (⌘↑) and ⌃⌘↑ from a volume's root, and Select Startup Disk, open /Volumes
-  where Finder shows Computer; column view rooted at Computer can lose that column two levels
-  down; the path bar, the toolbar's path menu and the first crumb don't know the locations
+- [x] Enclosing Folder (⌘↑) from a volume's root opens Computer with the volume selected, and
+  ⌃⌘↑ opens it in a new window, as Finder's do; Select Startup Disk shows Computer with the
+  startup disk selected
+- [x] Column view rooted at Computer keeps Computer's column first however deep the selection
+  goes; a folder reached any other way starts its columns at its volume
+- [x] The path bar and the toolbar's Path menu know the locations, as Finder's: a folder's path
+  starts at its volume (“Macintosh HD › Users › …”, no computer crumb); at Computer the lone crumb
+  is the computer's name with its icon, at Network “Network”, in Shared and Recents nothing until
+  an item is chosen, and AirDrop has no path bar. A chosen volume shows alone. The Path menu lists a
+  location's own chain (Network, then the computer) and its computer row opens Computer
 - [x] Go ▸ Shared (⇧⌘S), after iCloud Drive as in Finder's menu: the items Spotlight marks as shared
   (`kMDItemIsShared == 1`)
-- [ ] Shared lists its items without Finder's Shared By column and grouping
+- [ ] Shared lists its items without Finder's Shared By column and grouping. Finder's Shared By
+  (`shareOwner`, 200 pt, after Date Last Opened) shows the owner's name (“William Jones” from the
+  share's name components, else `kMDItemOwnerName`: “Guillaume C.”); Group By Shared By heads each
+  group “Shared By <owner>” (“Shared By Me” for the owner, `kMDItemSharedItemCurrentUserRole`),
+  groups by name ascending. With neither on, the name cell carries “Shared by WJ” (the abbreviated
+  name). Its View Options and Sort By list Shared By and Last Modified By
 - [x] File ▸ New Smart Folder, and saved searches with it: Save in a search's scope bar writes a .savedSearch in Finder's own format to ~/Library/Saved Searches and adds it to the sidebar, and opening one, the demo's or Finder's, runs its query through Spotlight. The Save sheet asks only for the name, without Finder's tags, Where and Add To Sidebar controls
 - [x] File ▸ Print (⌘P)
 - [x] File ▸ Slideshow (⌥⌘Y)
@@ -242,6 +260,10 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] ⌘I with nothing chosen shows Info for the folder shown, and a selection opens one Info window
   per item however many there are, as in Finder. Get Summary Info (⌃⌘I) opens an item's own Info
   window for one item and one “Multiple Item Info” window, headed “N items”, for several.
+- [x] ⌘I with nothing chosen at Computer, Network and AirDrop opens “Jace’s MacBook Pro Info”,
+  “Network Info” and “AirDrop Info”, as Finder's: the computer's processor and memory, the others'
+  kind (Neighborhood, AirDrop). In Recents and Shared Finder turns Get Info and Get Summary Info off
+  until something is chosen, and so does the demo.
 - [x] ⌘N and ⌘T open what Settings' “New Finder windows show” names (`NewWindowTarget`,
   `NewWindowTargetPath`), not the folder shown.
 - [x] Make Alias and New Folder with Selection start renaming what they make, as Finder's do.
