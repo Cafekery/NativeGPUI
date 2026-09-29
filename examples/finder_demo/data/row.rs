@@ -38,6 +38,8 @@ pub(crate) enum Column {
     Tags,
     Version,
     Comments,
+    /// The app that opens an item: a group key only.
+    Application,
 }
 
 pub(crate) const SORT_KEYS: [Column; 8] = [
@@ -62,9 +64,10 @@ pub(crate) const SORT_TITLES: [&str; 8] = [
     "Tags",
 ];
 
-pub(crate) const GROUP_KEYS: [Column; 8] = [
+pub(crate) const GROUP_KEYS: [Column; 9] = [
     Column::Name,
     Column::Kind,
+    Column::Application,
     Column::Opened,
     Column::Added,
     Column::Modified,
@@ -94,19 +97,25 @@ impl Column {
             Column::Tags => "label",
             Column::Version => "version",
             Column::Comments => "comments",
+            Column::Application => "application",
         }
     }
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
         (SORT_KEYS.into_iter())
-            .chain([Column::Version, Column::Comments])
+            .chain([Column::Version, Column::Comments, Column::Application])
             .find(|column| column.id() == id)
     }
 
     pub(crate) fn first_ascending(self) -> bool {
         matches!(
             self,
-            Column::Name | Column::Kind | Column::Tags | Column::Version | Column::Comments
+            Column::Name
+                | Column::Kind
+                | Column::Tags
+                | Column::Version
+                | Column::Comments
+                | Column::Application
         )
     }
 
@@ -147,6 +156,7 @@ pub(crate) struct Row {
     pub(crate) package: bool,
     pub(crate) artwork: Option<FileType<'static>>,
     pub(crate) extra: Option<Arc<Extra>>,
+    pub(crate) app: Option<SharedString>,
 }
 
 impl Row {
@@ -167,6 +177,7 @@ impl Row {
             Column::Tags => extra?.tags.first().map(|(name, _)| &**name),
             Column::Version => extra?.version.as_deref(),
             Column::Comments => Some(&extra?.comment),
+            Column::Application => self.app.as_deref(),
             _ => None,
         }
     }
@@ -340,6 +351,7 @@ fn row_of(dir: &'static str, entry: &Entry, (size, seen): Facts) -> Row {
         package: entry.package,
         artwork: Some(artwork_of(entry, &path, &kind.uti, seen)),
         extra: None,
+        app: None,
         path: path.into(),
     }
 }
@@ -474,6 +486,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
         package: false,
         artwork: Some(FileType::Path(id)),
         extra: None,
+        app: None,
     })
 }
 

@@ -103,6 +103,7 @@ fn location_row(
         package: false,
         artwork: Some(artwork),
         extra: None,
+        app: None,
     })
 }
 

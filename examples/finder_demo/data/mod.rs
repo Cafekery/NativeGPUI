@@ -1,3 +1,4 @@
+mod apps;
 mod extra;
 mod face;
 mod folders;
@@ -6,6 +7,7 @@ mod paths;
 mod row;
 mod volumes;
 
+pub(crate) use self::apps::read_apps;
 pub(crate) use self::face::Face;
 pub(crate) use self::folders::{Folder, Folders, folder_of};
 pub(crate) use self::format::{
