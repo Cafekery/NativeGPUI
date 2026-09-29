@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use finder_fs::ds_store::IconOptions;
+use finder_fs::ds_store::{Background, IconOptions};
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -781,6 +781,25 @@ pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
     }
     if let Some(on) = options.show_item_info {
         set_look_on(ICON_VIEW, folder, "showItemInfo", on);
+    }
+    match &options.background {
+        Some(Background::Default) => set_look_number(ICON_VIEW, folder, "backgroundType", 0.),
+        Some(Background::Color(parts)) => {
+            set_look_number(ICON_VIEW, folder, "backgroundType", 1.);
+            let keys = [
+                "backgroundColorRed",
+                "backgroundColorGreen",
+                "backgroundColorBlue",
+            ];
+            for (key, part) in keys.into_iter().zip(parts) {
+                set_look_number(ICON_VIEW, folder, key, f64::from(*part));
+            }
+        }
+        Some(Background::Picture(path)) => {
+            set_look_number(ICON_VIEW, folder, "backgroundType", 2.);
+            set_look_text(ICON_VIEW, folder, "backgroundImagePath", path);
+        }
+        None => {}
     }
 }
 
