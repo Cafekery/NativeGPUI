@@ -316,10 +316,10 @@ impl Listings {
 
 impl FinderDemo {
     pub(crate) fn slots(&self, lines: &Arc<Vec<Line>>) -> Option<Arc<Vec<Slot>>> {
-        self.banded(lines).map(|(slots, _)| slots)
+        self.slotted(lines).map(|(slots, _)| slots)
     }
 
-    fn banded(&self, lines: &Arc<Vec<Line>>) -> Option<(Arc<Vec<Slot>>, Arc<Vec<usize>>)> {
+    fn slotted(&self, lines: &Arc<Vec<Line>>) -> Option<(Arc<Vec<Slot>>, Arc<Vec<usize>>)> {
         let group = self.banded?;
         let day = match group.dated() {
             true => today(),
@@ -360,7 +360,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn slot_of(&self, lines: &Arc<Vec<Line>>, index: usize) -> usize {
-        self.banded(lines)
+        self.slotted(lines)
             .and_then(|(_, at)| at.get(index).copied())
             .unwrap_or(index)
     }
