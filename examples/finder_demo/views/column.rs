@@ -19,6 +19,7 @@ use crate::locations::{COMPUTER, place};
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
+use crate::tags::{column_tag_dots, row_tags};
 use crate::ui::{axis_locked, click_kind, menu_ring, rename_field};
 use crate::views::list::line_h;
 use crate::views::{chevron, folder_drop, run_pill};
@@ -34,6 +35,9 @@ pub(crate) const ICON: f32 = 18.;
 const LABEL_X: f32 = 35.5;
 const CHEVRON_TRAIL: f32 = 14.5;
 const CHEVRON: f32 = 6.5;
+const TRAIL: f32 = CHEVRON_TRAIL - (CHEVRON - 3.5) / 2.;
+const DOTS_RIGHT: f32 = 19.5;
+const DOTS_GAP: f32 = 4.;
 const PILL_INSET: f32 = 7.25;
 const PILL_RADIUS: f32 = 7.;
 const TOP_GAP: f32 = 6.;
@@ -268,8 +272,12 @@ impl FinderDemo {
                         });
                         let this = this.clone();
                         let clicked = line.clone();
+                        let dots = column_tag_dots(&row_tags(&line.key));
                         let name = div()
                             .when(look.icons, |name| name.ml(px(LABEL_X - ICON_X - ICON)))
+                            .when_some(dots.as_ref(), |name, (dots_w, _)| {
+                                name.mr(px(dots_w + DOTS_GAP + DOTS_RIGHT - TRAIL))
+                            })
                             .flex_1()
                             .overflow_hidden();
                         let cell = div()
@@ -282,7 +290,7 @@ impl FinderDemo {
                             .flex()
                             .items_center()
                             .pl(px(ICON_X))
-                            .pr(px(CHEVRON_TRAIL - (CHEVRON - 3.5) / 2.))
+                            .pr(px(TRAIL))
                             .text_color(match (dropping, is_selected) {
                                 (true, _) => highlight_text,
                                 (false, true) => selection_text,
@@ -320,6 +328,16 @@ impl FinderDemo {
                                     .whitespace_nowrap()
                                     .child(line.row.display.clone())
                             })
+                            .children(dots.map(|(_, dots)| {
+                                div()
+                                    .absolute()
+                                    .right(px(DOTS_RIGHT))
+                                    .top_0()
+                                    .bottom_0()
+                                    .flex()
+                                    .items_center()
+                                    .child(dots)
+                            }))
                             .when(line.row.opens.is_some() && line.row.readable, |cell| {
                                 let lit = dropping || (is_selected && emphasized);
                                 cell.children(
