@@ -34,7 +34,8 @@ const ICON_LEAD: f32 = 5.;
 
 const CRUMB_ICON: f32 = 16.;
 
-const CRUMB_ART: f32 = 15.;
+// A small NSPathControl, as Finder's is, draws every component's image in a 14pt square.
+const CRUMB_ART: f32 = 14.;
 
 // An NSTextField label draws its text 2pt inside its frame.
 pub(crate) const LABEL_INSET: f32 = 2.;
