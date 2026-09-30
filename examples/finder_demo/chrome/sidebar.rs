@@ -24,7 +24,6 @@ pub(crate) const LOCATIONS: &str = "g-locations";
 
 pub(crate) enum Glyph {
     Symbol(&'static str),
-    Artwork(&'static str),
     SymbolOr(&'static str, &'static str),
     Tag(u8),
     AllTags,
@@ -34,7 +33,6 @@ impl Glyph {
     fn icon(&self) -> SidebarIcon {
         match *self {
             Glyph::Symbol(name) => SidebarIcon::Symbol(name.into()),
-            Glyph::Artwork(name) => SidebarIcon::SystemResource(name.into()),
             Glyph::SymbolOr(name, art) => SidebarIcon::SymbolOrResource(name.into(), art.into()),
             Glyph::Tag(color) => SidebarIcon::Dot(finder_color_rgb(color)),
             Glyph::AllTags => SidebarIcon::Dots,
@@ -87,7 +85,7 @@ fn glyph_of(path: &Path) -> Glyph {
         (Downloads, Glyph::Symbol("arrow.down.circle")),
         (Home, Glyph::Symbol("house")),
         (Movies, Glyph::Symbol("film")),
-        (Music, Glyph::Artwork("SidebarMusicFolder")),
+        (Music, Glyph::SymbolOr("music", "SidebarMusicFolder")),
         (Pictures, Glyph::Symbol("photo")),
     ];
     for (which, glyph) in standard {
