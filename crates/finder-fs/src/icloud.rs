@@ -51,7 +51,6 @@ pub fn app_folders() -> Vec<AppFolder> {
     folders
 }
 
-/// The app folder iCloud Drive shows `path` in, if `path` is inside an app's Documents.
 pub fn app_folder_of(path: &Path) -> Option<AppFolder> {
     let containers = containers()?;
     let mut parts = path.strip_prefix(&containers).ok()?.components();
