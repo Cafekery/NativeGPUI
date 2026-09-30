@@ -67,10 +67,11 @@ pub(crate) fn summarize<'a>(
             }
         }
     }
+    let listed = all();
     stats.tags.sort_by_key(|tag| {
-        all()
+        listed
             .iter()
-            .position(|listed| *listed.name == *tag.name)
+            .position(|it| *it.name == *tag.name)
             .unwrap_or(usize::MAX)
     });
     Some(stats)

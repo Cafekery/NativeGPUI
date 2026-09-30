@@ -760,10 +760,10 @@ impl FinderDemo {
     }
 
     fn tag_dropped(&mut self, tag: &str, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let Some(tag) = crate::tags::all().iter().find(|it| it.name == tag) else {
+        let Some(tag) = crate::tags::all().iter().find(|it| it.name == tag).cloned() else {
             return;
         };
-        let add = [tag.clone()];
+        let add = [tag];
         crate::tags::retag(
             paths.to_vec(),
             move |paths| {

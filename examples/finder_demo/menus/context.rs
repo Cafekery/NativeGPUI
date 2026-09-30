@@ -244,18 +244,21 @@ pub(super) fn swatch_row(carried: &[Vec<RowTag>], lone_folder: bool) -> MenuView
     )
 }
 
-fn tag_swatches(carried: &[Vec<RowTag>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
-    tags().iter().map(|tag| {
-        let removes = !carried.is_empty()
-            && carried
-                .iter()
-                .all(|held| held.iter().any(|it| *it.name == *tag.name));
-        let verb = if removes { "Remove" } else { "Add" };
-        (
-            finder_color(tag.color),
-            format!("{verb} \u{201c}{}\u{201d} label", tag.name),
-        )
-    })
+fn tag_swatches(carried: &[Vec<RowTag>]) -> Vec<(Hsla, String)> {
+    tags()
+        .iter()
+        .map(|tag| {
+            let removes = !carried.is_empty()
+                && carried
+                    .iter()
+                    .all(|held| held.iter().any(|it| *it.name == *tag.name));
+            let verb = if removes { "Remove" } else { "Add" };
+            (
+                finder_color(tag.color),
+                format!("{verb} \u{201c}{}\u{201d} label", tag.name),
+            )
+        })
+        .collect()
 }
 
 fn paste_rows(menu: &mut Menu, into: &'static str) {
