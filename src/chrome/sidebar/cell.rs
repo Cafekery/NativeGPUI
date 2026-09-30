@@ -7,11 +7,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition, NSColor, NSFont,
+    NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition, NSColor, NSEvent, NSFont,
     NSFontTextStyleBody, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
     NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSLineBreakMode, NSOutlineView,
-    NSTableCellView, NSTextAlignment, NSTextField, NSUserInterfaceItemIdentification, NSView,
-    NSWindingRule,
+    NSTableCellView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
+    NSUserInterfaceItemIdentification, NSView, NSWindingRule,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -23,7 +23,7 @@ use super::{BADGE_GAP, CORE_TYPES_BUNDLE, Shared, SidebarIcon, SidebarRowSize};
 pub(super) struct CellIvars {
     group: bool,
     pub(super) badge: Retained<NSTextField>,
-    eject: Retained<NSButton>,
+    eject: Retained<EjectButton>,
     tint: RefCell<Option<Retained<NSColor>>>,
     muted: Cell<bool>,
 }
@@ -96,6 +96,90 @@ define_class!(
     }
 );
 
+struct EjectIvars {
+    rest: RefCell<Option<Retained<NSColor>>>,
+}
+
+define_class!(
+    #[unsafe(super(NSButton))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarEjectButton"]
+    #[ivars = EjectIvars]
+    struct EjectButton;
+
+    impl EjectButton {
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.retint();
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.retint();
+        }
+    }
+);
+
+impl EjectButton {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(EjectIvars {
+            rest: RefCell::new(None),
+        });
+        let eject: Retained<Self> = unsafe { msg_send![super(this), init] };
+        eject.setBordered(false);
+        eject.setImagePosition(NSCellImagePosition::ImageOnly);
+        eject.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str("eject.fill"),
+                Some(&NSString::from_str("Eject")),
+            )
+            .and_then(|image| {
+                image.imageWithSymbolConfiguration(
+                    &NSImageSymbolConfiguration::configurationWithTextStyle_scale(
+                        unsafe { NSFontTextStyleBody },
+                        NSImageSymbolScale::Small,
+                    ),
+                )
+            })
+            .as_deref(),
+        );
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                NSRect::ZERO,
+                NSTrackingAreaOptions::InVisibleRect
+                    | NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::ActiveInKeyWindow,
+                Some(eject.as_ref()),
+                None,
+            )
+        };
+        eject.addTrackingArea(&area);
+        eject
+    }
+
+    fn rest(&self, ink: Retained<NSColor>) {
+        *self.ivars().rest.borrow_mut() = Some(ink);
+        self.retint();
+    }
+
+    fn retint(&self) {
+        let hovered = self.window().is_some_and(|window| {
+            window.isKeyWindow()
+                && self.mouse_inRect(
+                    self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None),
+                    self.bounds(),
+                )
+        });
+        let ink = if hovered {
+            Some(NSColor::secondaryLabelColor())
+        } else {
+            self.ivars().rest.borrow().clone()
+        };
+        self.setContentTintColor(ink.as_deref());
+    }
+}
+
 // One identifier per row shape: a recycled cell keeps its subviews and `group`.
 const ID_GROUP: &str = "NGSidebarGroupRow";
 const ID_ICON: &str = "NGSidebarIconRow";
@@ -133,24 +217,7 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
     badge.setTextColor(Some(&NSColor::secondaryLabelColor()));
     badge.setHidden(true);
 
-    let eject = NSButton::new(mtm);
-    eject.setBordered(false);
-    eject.setImagePosition(NSCellImagePosition::ImageOnly);
-    eject.setImage(
-        NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("eject.fill"),
-            Some(&NSString::from_str("Eject")),
-        )
-        .and_then(|image| {
-            image.imageWithSymbolConfiguration(
-                &NSImageSymbolConfiguration::configurationWithTextStyle_scale(
-                    unsafe { NSFontTextStyleBody },
-                    NSImageSymbolScale::Small,
-                ),
-            )
-        })
-        .as_deref(),
-    );
+    let eject = EjectButton::new(mtm);
     eject.setHidden(true);
     unsafe {
         eject.setTarget(Some(target));
@@ -334,7 +401,7 @@ fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
     if let Some(icon) = unsafe { cell.imageView() } {
         icon.setContentTintColor(icon_ink.filter(|_| ivars.muted.get()).as_deref());
     }
-    ivars.eject.setContentTintColor(Some(&eject_ink));
+    ivars.eject.rest(eject_ink);
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
