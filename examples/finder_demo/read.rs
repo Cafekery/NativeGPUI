@@ -959,7 +959,7 @@ impl FinderDemo {
         let mut wanted: HashSet<&'static str> = HashSet::from([self.here(), self.target()]);
         wanted.extend(self.expanded.iter().map(|key| intern(key)));
         if self.view == COLUMN_VIEW {
-            wanted.extend(self.crumb_ids());
+            wanted.extend(self.column_ids());
             if self.columns_from_computer {
                 wanted.insert(crate::locations::COMPUTER);
             }

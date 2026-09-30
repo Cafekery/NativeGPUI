@@ -1,7 +1,5 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::iter;
-use std::path::Path;
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, DragMoveEvent, ElementId, ExternalPaths, FontWeight,
@@ -12,11 +10,13 @@ use native_gpui::{native_label, native_raster, native_rule, native_symbol};
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSAttributedStringNSStringDrawing, NSFont, NSFontAttributeName};
-use objc2_foundation::{NSAttributedString, NSDictionary, NSString};
+use objc2_app_kit::{
+    NSAttributedStringNSStringDrawing, NSBundleImageExtension, NSFont, NSFontAttributeName,
+};
+use objc2_foundation::{NSAttributedString, NSBundle, NSDictionary, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Face, Line, folder_artwork, intern_path, is_volume_root, split_key};
+use crate::data::{Face, Line, folder_artwork, icloud_drive, is_volume_root, split_key};
 use crate::dragdrop::{Grabbed, RowDrag};
 use crate::locations::{SHARED, is_location};
 use crate::menus;
@@ -103,6 +103,32 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
     })
 }
 
+const ICLOUD_ART: &str = "iCloudDriveNode";
+
+/// Finder's own iCloud Drive art, named in this process for the icon lanes to draw.
+fn icloud_art() -> FileType<'static> {
+    thread_local! {
+        static NAMED: Cell<bool> = const { Cell::new(false) };
+    }
+    if !NAMED.replace(true) {
+        let finder = NSBundle::bundleWithPath(&NSString::from_str(
+            "/System/Library/CoreServices/Finder.app",
+        ));
+        let name = NSString::from_str(ICLOUD_ART);
+        if let Some(art) = finder.and_then(|finder| finder.imageForResource(&name)) {
+            art.setName(Some(&name));
+        }
+    }
+    FileType::Named(ICLOUD_ART)
+}
+
+fn root_art(root: &'static str) -> FileType<'static> {
+    if icloud_drive() == Some(root) {
+        return icloud_art();
+    }
+    crate::locations::artwork(root).unwrap_or(FileType::Path(root))
+}
+
 fn takes_drop<D: Grabbed + 'static>(
     crumb: Stateful<Div>,
     index: usize,
@@ -166,25 +192,12 @@ impl FinderDemo {
             None => self.here() != SHARED && self.tag_listing != Some(RECENTS),
         };
         let here = self.folders.get(holder).filter(|_| placed);
-        let mut crumbs: Vec<SharedString> = here.map_or_else(Vec::new, |folder| {
-            folder
-                .crumbs
-                .iter()
-                .copied()
-                .map(SharedString::new_static)
-                .collect()
-        });
+        let (mut crumbs, mut targets): (Vec<SharedString>, Vec<Option<&'static str>>) = here
+            .map_or(&[][..], |folder| folder.crumbs.as_slice())
+            .iter()
+            .map(|&(name, path)| (SharedString::new_static(name), Some(path)))
+            .unzip();
         let listed = here.is_some_and(|folder| !folder.rows.is_empty());
-        let mut chain: Vec<&'static str> = Path::new(holder)
-            .ancestors()
-            .take(crumbs.len())
-            .map(intern_path)
-            .collect();
-        chain.reverse();
-        let mut targets: Vec<Option<&'static str>> =
-            iter::repeat_n(None, crumbs.len() - chain.len())
-                .chain(chain.into_iter().map(Some))
-                .collect();
         if let Some(line) = &lone {
             crumbs.push(line.row.display.clone());
             targets.push(line.row.opens);
@@ -201,12 +214,9 @@ impl FinderDemo {
                     plain(line.row.artwork.unwrap_or(line.row.face.stand_in())),
                     line.row.face,
                 ),
-                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => (
-                    target
-                        .and_then(crate::locations::artwork)
-                        .unwrap_or(FileType::Path(target.unwrap_or("/"))),
-                    Face::Volume,
-                ),
+                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => {
+                    (target.map_or(FileType::Path("/"), root_art), Face::Volume)
+                }
                 _ => (
                     target.map_or(FileType::Folder, |path| {
                         crumb_artwork(path, !last || listed, landed)
