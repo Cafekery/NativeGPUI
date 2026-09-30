@@ -157,7 +157,6 @@ impl FinderDemo {
         window.set_window_title(&self.title());
     }
 
-    /// The folders column view shows, from the target's volume down to it.
     pub(crate) fn column_ids(&self) -> Vec<&'static str> {
         let mut chain: Vec<&'static str> = iter::successors(Some(self.target()), |id| {
             parent_of(id).filter(|&up| up != crate::locations::COMPUTER)
