@@ -31,7 +31,7 @@ use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, sta
 use crate::menus::Act;
 use crate::palette::Palette;
 use crate::quick_actions::{QuickAct, menu_rows, offered};
-use crate::tags::{tag_dot, tag_pill};
+use crate::tags::{RowTag, row_tags, tag_dot, tag_pill};
 use crate::ui::rename_field;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
@@ -90,7 +90,7 @@ struct Card {
     subtitle: SharedString,
     rows: Vec<(&'static str, SharedString)>,
     show_more: bool,
-    tags: Vec<usize>,
+    tags: Vec<RowTag>,
     show_tags: bool,
     many: bool,
     actions: Vec<QuickAct>,
@@ -335,7 +335,7 @@ pub(super) struct CardKey {
     view: usize,
     stats: ((u64, usize), Option<(u64, usize)>),
     line: Option<(SharedString, usize)>,
-    tags: Option<Vec<usize>>,
+    tags: Option<Vec<RowTag>>,
     meta: usize,
     custom: bool,
     thumbs: Vec<usize>,
@@ -522,7 +522,7 @@ impl FinderDemo {
                 subtitle: kind_line(row, self.weighed()),
                 rows,
                 show_more,
-                tags: self.tags.get(&line.key).cloned().unwrap_or_default(),
+                tags: row_tags(&line.key),
                 show_tags: options::shows(kind, options::TAGS),
                 many: false,
                 actions: match options::shows(kind, options::QUICK_ACTIONS) {
@@ -572,9 +572,7 @@ impl FinderDemo {
         CardKey {
             view: self.view,
             stats: (self.stats_key(), self.stats.as_ref().map(|stats| stats.key)),
-            tags: line
-                .as_ref()
-                .and_then(|line| self.tags.get(&line.key).cloned()),
+            tags: line.as_ref().map(|line| row_tags(&line.key)),
             meta: row
                 .and_then(|row| crate::meta::meta(&row.path))
                 .map_or(0, |meta| Arc::as_ptr(&meta) as usize),
@@ -939,14 +937,12 @@ impl Shown {
             .line_height(px(LINE_H))
             .text_size(body);
         let tags = match (card.many, card.tags.first()) {
-            (false, Some(tag)) => tags.child(tag_dot(*tag)).child(
-                div()
-                    .text_color(palette.label)
-                    .child(crate::tags::tags()[*tag].name.clone()),
-            ),
+            (false, Some(tag)) => tags
+                .child(tag_dot(tag.color))
+                .child(div().text_color(palette.label).child(tag.name.clone())),
             (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
             (true, _) => tags
-                .children(card.tags.iter().map(|tag| tag_pill(*tag, palette.label)))
+                .children(card.tags.iter().map(|tag| tag_pill(tag, palette.label)))
                 .child(
                     div()
                         .ml(px(3.))

@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 
 use block2::StackBlock;
-use gpui::{App, Context, SharedString, Window};
+use gpui::{App, Context, Window};
 use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
 use objc2_foundation::{NSNotification, NSNotificationCenter};
 
@@ -192,25 +192,17 @@ impl FinderDemo {
             let found = cx
                 .background_executor()
                 .spawn(async move {
-                    let rows = match (id == RECENTS, crate::smart::file_of(id)) {
+                    match (id == RECENTS, crate::smart::file_of(id)) {
                         (true, _) => data::recent_rows(&crate::home(), index(), HITS),
                         (_, Some(file)) => crate::smart::rows(file, index(), HITS),
                         _ => data::tagged_rows(tag, index(), HITS),
-                    };
-                    let marks: Vec<(SharedString, Vec<usize>)> = rows
-                        .iter()
-                        .map(|row| (row.path.clone(), crate::tags::read_row_tags(&row.path)))
-                        .filter(|(_, carried)| !carried.is_empty())
-                        .collect();
-                    (rows, marks)
+                    }
                 })
                 .await;
             this.update(cx, |this, cx| {
                 if this.tag_listing == Some(id) {
-                    let (rows, marks) = found;
-                    this.hits = rows;
+                    this.hits = found;
                     this.hits_rev = next_rev();
-                    this.tags.extend(marks);
                     cx.notify();
                 }
             })

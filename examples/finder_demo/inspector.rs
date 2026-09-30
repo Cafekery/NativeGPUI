@@ -93,7 +93,7 @@ fn show(lines: Vec<Line>, cx: &mut App) {
     let shown: AnyView = match lines.len() {
         1 => {
             let line = first.clone();
-            cx.new(|_| Info { line, where_ }).into()
+            cx.new(|_| Info::new(line, where_)).into()
         }
         _ => cx.new(|_| Combined { lines, where_ }).into(),
     };

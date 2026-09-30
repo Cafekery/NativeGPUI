@@ -60,6 +60,7 @@ pub(crate) enum Act {
     AddToDock(&'static str),
     Enclosing(&'static str),
     RemoveFromSidebar(&'static str),
+    TagColor(&'static str, u8),
     RenameAt(&'static str),
     Eject(&'static str),
     CopyPathname(&'static str),
@@ -186,6 +187,7 @@ impl FinderDemo {
             }
             Act::Enclosing(id) => self.show_enclosing(id, window, cx),
             Act::RemoveFromSidebar(id) => self.remove_from_sidebar(id, cx),
+            Act::TagColor(name, color) => self.recolor_tag(name, color, cx),
             Act::RenameAt(id) => {
                 self.show_enclosing(id, window, cx);
                 self.renaming = Some(id.into());

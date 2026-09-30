@@ -97,7 +97,6 @@ pub(crate) struct FinderDemo {
     pub(crate) typed_at: Option<Instant>,
     pub(crate) type_filter: Option<String>,
     pub(crate) type_filter_seen_match: bool,
-    pub(crate) tags: crate::tags::Tags,
     pub(crate) preview: bool,
     pub(crate) preview_w: f32,
     /// Whether `preview_w` is gallery view's width.
@@ -252,7 +251,6 @@ impl FinderDemo {
             typed_at: None,
             type_filter: None,
             type_filter_seen_match: false,
-            tags: Default::default(),
             preview: prefs::preview(view),
             preview_w: prefs::pane_width(view == GALLERY_VIEW).unwrap_or(PREVIEW_W),
             preview_gallery: view == GALLERY_VIEW,

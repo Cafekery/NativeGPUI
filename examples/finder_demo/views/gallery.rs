@@ -10,6 +10,7 @@ use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::prefs;
+use crate::tags::{row_tags, tag_dots};
 use crate::ui::pick_on_click;
 use crate::view::GALLERY_VIEW;
 use crate::views::list::line_h;
@@ -166,14 +167,22 @@ impl FinderDemo {
                         .top(px(strip.margin + strip.cell))
                         .w(px(strip.cell + strip.gap))
                         .h(px(strip.title))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(4.))
                         .font_family(tokens::system_font_family())
                         .text_size(tokens::small_system_font_size())
                         .text_color(palette.label)
-                        .text_center()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis_middle()
-                        .child(lines[index].row.display.clone())
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_middle()
+                                .child(lines[index].row.display.clone()),
+                        )
+                        .children(tag_dots(&row_tags(&lines[index].key)))
                 }))
             });
 

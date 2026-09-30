@@ -1,12 +1,14 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::ops::Deref;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
-use gpui::{AnyElement, Context, Hsla, SharedString, div, prelude::*, px};
+use finder_fs::tags::Tag;
+use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
 use objc2_core_foundation::CGFloat;
@@ -16,49 +18,60 @@ use crate::app::FinderDemo;
 const TAG_DOT: f32 = 10.;
 const TAG_DOT_PITCH: f32 = 5.;
 const TAG_DOTS_MAX: usize = 3;
+const COLUMN_DOT: f32 = 12.;
+const COLUMN_DOTS_MAX: usize = 4;
+const COLUMN_DOTS_W: f32 = 26.;
 const TAG_LIGHTEN: f32 = 0.2;
 const TAG_PILL_ALPHA: f32 = 0.85;
 const KNOWN_MAX: usize = 20_000;
 
-#[derive(Clone, Default)]
-pub(crate) struct Tags(Arc<HashMap<SharedString, Vec<usize>>>);
-
-impl Tags {
-    pub(crate) fn insert(&mut self, key: SharedString, tags: Vec<usize>) -> Option<Vec<usize>> {
-        Arc::make_mut(&mut self.0).insert(key, tags)
-    }
-
-    pub(crate) fn remove(&mut self, key: &SharedString) -> Option<Vec<usize>> {
-        Arc::make_mut(&mut self.0).remove(key)
-    }
-
-    pub(crate) fn entry(&mut self, key: SharedString) -> Entry<'_, SharedString, Vec<usize>> {
-        Arc::make_mut(&mut self.0).entry(key)
-    }
+#[derive(Clone, PartialEq)]
+pub(crate) struct RowTag {
+    pub(crate) name: SharedString,
+    pub(crate) color: u8,
 }
 
-impl Deref for Tags {
-    type Target = HashMap<SharedString, Vec<usize>>;
+static FAVORITES: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
+static LISTED: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+/// Replaced, never freed: callers keep `&'static` borrows of every list they read.
+fn listed(slot: &AtomicPtr<Vec<Tag>>, read: fn() -> Vec<Tag>) -> &'static [Tag] {
+    let mut at = slot.load(Ordering::Acquire);
+    if at.is_null() {
+        let fresh = Box::into_raw(Box::new(read()));
+        at = match slot.compare_exchange(
+            ptr::null_mut(),
+            fresh,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => fresh,
+            Err(first) => {
+                drop(unsafe { Box::from_raw(fresh) });
+                first
+            }
+        };
     }
+    unsafe { &*at }
 }
 
-impl Extend<(SharedString, Vec<usize>)> for Tags {
-    fn extend<I: IntoIterator<Item = (SharedString, Vec<usize>)>>(&mut self, marks: I) {
-        Arc::make_mut(&mut self.0).extend(marks);
-    }
+pub(crate) fn tags() -> &'static [Tag] {
+    listed(&FAVORITES, finder_fs::tags::favorites)
 }
 
-pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
-    static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
-    TAGS.get_or_init(finder_fs::tags::favorites)
+pub(crate) fn all() -> &'static [Tag] {
+    listed(&LISTED, finder_fs::tags::all)
 }
 
-pub(crate) fn all() -> &'static [finder_fs::tags::Tag] {
-    static ALL: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
-    ALL.get_or_init(finder_fs::tags::all)
+fn reread_lists() {
+    LISTED.store(
+        Box::into_raw(Box::new(finder_fs::tags::all())),
+        Ordering::Release,
+    );
+    FAVORITES.store(
+        Box::into_raw(Box::new(finder_fs::tags::favorites())),
+        Ordering::Release,
+    );
 }
 
 fn tag_system_color(color: u8) -> Option<SystemColor> {
@@ -110,8 +123,7 @@ pub(crate) fn finder_color_rgb(color: u8) -> Option<(u8, u8, u8)> {
     Some((byte(rgba.r), byte(rgba.g), byte(rgba.b)))
 }
 
-pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
-    let tag = &tags()[index];
+pub(crate) fn tag_pill(tag: &RowTag, text: Hsla) -> AnyElement {
     let mut wash = finder_edge(tag.color);
     wash.a = TAG_PILL_ALPHA;
     div()
@@ -123,45 +135,82 @@ pub(crate) fn tag_pill(index: usize, text: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn tag_dot(index: usize) -> AnyElement {
-    let color = tags()[index].color;
-    div()
-        .w(px(TAG_DOT))
-        .h(px(TAG_DOT))
+fn sized_dot(color: u8, size: f32) -> AnyElement {
+    let dot = div()
+        .w(px(size))
+        .h(px(size))
         .rounded_full()
         .flex_none()
-        .border(px(1.))
-        .border_color(finder_edge(color))
-        .bg(finder_color(color))
-        .into_any_element()
+        .border(px(1.));
+    match tag_system_color(color) {
+        Some(_) => dot.border_color(finder_edge(color)).bg(finder_color(color)),
+        None => dot.border_color(system_color(SystemColor::SecondaryLabel)),
+    }
+    .into_any_element()
 }
 
-pub(crate) fn tag_dots_w(count: usize) -> f32 {
-    match count.min(TAG_DOTS_MAX) {
+pub(crate) fn tag_dot(color: u8) -> AnyElement {
+    sized_dot(color, TAG_DOT)
+}
+
+fn dot_colors(tags: &[RowTag]) -> impl Iterator<Item = u8> + '_ {
+    tags.iter()
+        .map(|tag| tag.color)
+        .filter(|&color| tag_system_color(color).is_some())
+}
+
+fn dots_w(shown: usize, dot: f32, pitch: f32) -> f32 {
+    match shown {
         0 => 0.,
-        shown => TAG_DOT + TAG_DOT_PITCH * (shown - 1) as f32,
+        shown => dot + pitch * (shown - 1) as f32,
     }
 }
 
-pub(crate) fn tag_dots(tags: &[usize]) -> Option<AnyElement> {
-    let shown = &tags[tags.len().saturating_sub(TAG_DOTS_MAX)..];
-    if shown.is_empty() {
-        return None;
-    }
-    Some(
+pub(crate) fn tag_dots_w(tags: &[RowTag]) -> f32 {
+    dots_w(
+        dot_colors(tags).count().min(TAG_DOTS_MAX),
+        TAG_DOT,
+        TAG_DOT_PITCH,
+    )
+}
+
+fn dots(tags: &[RowTag], dot: f32, pitch: f32, max: usize) -> Option<AnyElement> {
+    let colored = dot_colors(tags).count();
+    let shown = colored.min(max);
+    (shown > 0).then(|| {
         div()
             .relative()
             .flex_none()
-            .w(px(tag_dots_w(shown.len())))
-            .h(px(TAG_DOT))
-            .children(shown.iter().enumerate().map(|(at, tag)| {
-                div()
-                    .absolute()
-                    .left(px((shown.len() - 1 - at) as f32 * TAG_DOT_PITCH))
-                    .child(tag_dot(*tag))
-            }))
-            .into_any_element(),
-    )
+            .w(px(dots_w(shown, dot, pitch)))
+            .h(px(dot))
+            .children(
+                dot_colors(tags)
+                    .skip(colored - shown)
+                    .enumerate()
+                    .map(|(at, color)| {
+                        div()
+                            .absolute()
+                            .left(px((shown - 1 - at) as f32 * pitch))
+                            .child(sized_dot(color, dot))
+                    }),
+            )
+            .into_any_element()
+    })
+}
+
+pub(crate) fn tag_dots(tags: &[RowTag]) -> Option<AnyElement> {
+    dots(tags, TAG_DOT, TAG_DOT_PITCH, TAG_DOTS_MAX)
+}
+
+/// Column view's larger dots, up to four, shrunk as a whole to fit their box; and their width.
+pub(crate) fn column_tag_dots(tags: &[RowTag]) -> Option<(f32, AnyElement)> {
+    let shown = dot_colors(tags).count().min(COLUMN_DOTS_MAX);
+    let scale = (COLUMN_DOTS_W / dots_w(shown, COLUMN_DOT, TAG_DOT_PITCH)).min(1.);
+    let (dot, pitch) = (COLUMN_DOT * scale, TAG_DOT_PITCH * scale);
+    Some((
+        dots_w(shown, dot, pitch),
+        dots(tags, dot, pitch, COLUMN_DOTS_MAX)?,
+    ))
 }
 
 pub(crate) fn tag_title(id: &str) -> String {
@@ -178,18 +227,34 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-/// Reads the disk: background work only.
-pub(crate) fn read_row_tags(path: &str) -> Vec<usize> {
+/// Reads the disk: background work only. A listed tag wears Finder's colour, not the file's.
+fn read_row_tags(path: &str) -> Vec<RowTag> {
     finder_fs::tags::of(Path::new(path))
-        .iter()
-        .filter_map(|tag| tags().iter().position(|known| known.name == tag.name))
+        .into_iter()
+        .map(
+            |tag| match all().iter().find(|listed| listed.name == tag.name) {
+                Some(listed) => RowTag {
+                    name: SharedString::new_static(listed.name.as_str()),
+                    color: listed.color,
+                },
+                None => RowTag {
+                    name: tag.name.into(),
+                    color: tag.color,
+                },
+            },
+        )
         .collect()
 }
 
-/// Each path's tags once read, by folder; `None` while its read is queued.
+struct Held {
+    tags: Vec<RowTag>,
+    stale: bool,
+}
+
+/// Each path's tags by folder; a change marks them stale, still shown until the next read lands.
 #[derive(Default)]
 struct Known {
-    dirs: HashMap<PathBuf, HashMap<String, Option<Vec<usize>>>>,
+    dirs: HashMap<PathBuf, HashMap<String, Held>>,
     order: VecDeque<PathBuf>,
     held: usize,
 }
@@ -203,12 +268,12 @@ fn split(path: &str) -> (&Path, &str) {
 }
 
 impl Known {
-    fn get(&self, path: &str) -> Option<&Option<Vec<usize>>> {
+    fn get_mut(&mut self, path: &str) -> Option<&mut Held> {
         let (dir, name) = split(path);
-        self.dirs.get(dir)?.get(name)
+        self.dirs.get_mut(dir)?.get_mut(name)
     }
 
-    fn insert(&mut self, path: String, tags: Option<Vec<usize>>) {
+    fn insert(&mut self, path: String, tags: Vec<RowTag>) {
         let (dir, name) = split(&path);
         let names = match self.dirs.entry(dir.to_path_buf()) {
             Entry::Occupied(names) => names.into_mut(),
@@ -217,7 +282,10 @@ impl Known {
                 room.insert(HashMap::new())
             }
         };
-        if names.insert(name.to_owned(), tags).is_none() {
+        if names
+            .insert(name.to_owned(), Held { tags, stale: false })
+            .is_none()
+        {
             self.held += 1;
         }
         for _ in 0..self.order.len() {
@@ -235,10 +303,20 @@ impl Known {
         }
     }
 
-    fn forget(&mut self, dir: &Path) {
-        if let Some(names) = self.dirs.remove(dir) {
-            self.held -= names.len();
-            self.order.retain(|held| held != dir);
+    fn stale_all(&mut self) {
+        for held in self.dirs.values_mut().flat_map(HashMap::values_mut) {
+            held.stale = true;
+        }
+    }
+
+    fn stale(&mut self, dir: &Path) {
+        for held in self
+            .dirs
+            .get_mut(dir)
+            .into_iter()
+            .flat_map(HashMap::values_mut)
+        {
+            held.stale = true;
         }
     }
 }
@@ -250,7 +328,7 @@ static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
     std::thread::spawn(move || {
         for path in paths {
             let tags = read_row_tags(&path);
-            KNOWN.lock().unwrap().insert(path, Some(tags));
+            KNOWN.lock().unwrap().insert(path, tags);
             LANDED.fetch_add(1, Ordering::Release);
             crate::read::EVENTS.ring();
         }
@@ -259,25 +337,73 @@ static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
 });
 
 /// Never reads the disk, which a stalled share would hang; an unread row is untagged till it lands.
-pub(crate) fn row_tags(path: &str) -> Vec<usize> {
+pub(crate) fn row_tags(path: &str) -> Vec<RowTag> {
     let mut known = KNOWN.lock().unwrap();
-    if let Some(tags) = known.get(path) {
-        return tags.clone().unwrap_or_default();
-    }
-    known.insert(path.to_owned(), None);
+    let tags = match known.get_mut(path) {
+        Some(held) if !held.stale => return held.tags.clone(),
+        Some(held) => {
+            held.stale = false;
+            held.tags.clone()
+        }
+        None => {
+            known.insert(path.to_owned(), Vec::new());
+            Vec::new()
+        }
+    };
     let _ = READER.lock().unwrap().send(path.to_owned());
-    Vec::new()
+    tags
 }
 
 pub(crate) fn tags_landed() -> u64 {
     LANDED.load(Ordering::Acquire)
 }
 
-pub(crate) fn forget_tags_in(dir: &Path) {
-    KNOWN.lock().unwrap().forget(dir);
+pub(crate) fn tags_changed_in(dir: &Path) {
+    KNOWN.lock().unwrap().stale(dir);
+}
+
+pub(crate) fn retag(
+    paths: Vec<PathBuf>,
+    write: impl FnOnce(&[PathBuf]) + Send + 'static,
+    cx: &App,
+) {
+    cx.background_executor()
+        .spawn(async move {
+            write(&paths);
+            for path in paths {
+                let key = path.to_string_lossy().into_owned();
+                let tags = read_row_tags(&key);
+                KNOWN.lock().unwrap().insert(key, tags);
+            }
+            LANDED.fetch_add(1, Ordering::Release);
+            crate::read::EVENTS.ring();
+        })
+        .detach();
 }
 
 impl FinderDemo {
+    pub(crate) fn recolor_tag(&self, name: &'static str, color: u8, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let written = cx
+                .background_executor()
+                .spawn(async move {
+                    finder_fs::tags::recolor(name, color)?;
+                    reread_lists();
+                    KNOWN.lock().unwrap().stale_all();
+                    Ok::<(), io::Error>(())
+                })
+                .await;
+            match written {
+                Ok(()) => cx.update(crate::chrome::sidebar::reload_sidebars),
+                Err(error) => {
+                    this.update(cx, |this, _| this.complain(&error.to_string()))
+                        .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self
             .selected
@@ -286,48 +412,12 @@ impl FinderDemo {
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();
         let wanted = tags()[tag].clone();
-        self.retag(
+        retag(
             paths,
             move |paths| {
                 finder_fs::tags::toggle(paths, &wanted).ok();
             },
             cx,
         );
-    }
-
-    pub(crate) fn retag(
-        &self,
-        paths: Vec<PathBuf>,
-        write: impl FnOnce(&[PathBuf]) + Send + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        cx.spawn(async move |this, cx| {
-            let carried = cx
-                .background_executor()
-                .spawn(async move {
-                    write(&paths);
-                    paths
-                        .iter()
-                        .map(|path| {
-                            let key = path.to_string_lossy().into_owned();
-                            let tags = read_row_tags(&key);
-                            KNOWN
-                                .lock()
-                                .unwrap()
-                                .insert(key.clone(), Some(tags.clone()));
-                            (key, tags)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                for (key, tags) in carried {
-                    this.tags.insert(key.into(), tags);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 }
