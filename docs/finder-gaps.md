@@ -415,8 +415,12 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
   (secondary 94, tertiary 32). The non-key eject reads 72.8 against Finder's 70.5.
 - Favorites, Locations and Tags come from Finder's lists through `sharedfilelistd`: macOS refuses
   an app (not a shell) the list files themselves, which left the demo on its built-in rows. Tags
-  are the ones Finder's sidebar lists, in its order, pinned and recent alike; the menus' swatches
-  are Finder's favourite tags (`FavoriteTagNames`), the 7 standard ones when it has none.
+  are the ones Finder's sidebar lists, in its order, pinned and recent alike, each in the colour
+  the list keeps for it (`kLSSharedTagFileListItemLabel`; the key-value store holding
+  `FinderTagDict` is closed to an app without Full Disk Access). The menus' swatches are Finder's
+  favourite tags (`FavoriteTagNames`), the 7 standard ones when it has none.
+- A row shows a dot for each of its last three coloured tags, in Finder's colour for a tag its
+  list holds, else the colour the file stored; an uncoloured tag leaves no mark, as in Finder.
 - A mounted server is one row named by its host, as in Finder, with CoreTypes' `SidebarDisplay`;
   Finder 27 draws a flat box with a rule and a dot, not yet compared glyph for glyph. The row opens the
   first share mounted from that host, where Finder shows the host's shares, and its eject unmounts that
