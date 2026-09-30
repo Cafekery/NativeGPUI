@@ -352,6 +352,10 @@ fn tag_row(id: &SharedString, name: &str) -> Menu {
     let mut menu = Menu::default();
     let at = intern(id);
     menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(at));
+    menu.item(
+        MenuEntry::item("Open in New Window").option_alternate(),
+        Act::OpenWindowAt(at),
+    );
     if name.is_empty() {
         return menu;
     }
@@ -370,15 +374,19 @@ fn tag_row(id: &SharedString, name: &str) -> Menu {
         Act::Nothing,
     );
     menu.separator();
-    menu.item(MenuEntry::item("No Color").disabled(), Act::Nothing);
-    for tag in tags() {
-        let entry = MenuEntry::item(tag.name.clone()).disabled();
+    let name = intern(name);
+    menu.item(
+        MenuEntry::item("No Color").symbol("circle"),
+        Act::TagColor(name, 0),
+    );
+    for tag in finder_fs::tags::standard() {
+        let entry = MenuEntry::item(tag.name);
         menu.item(
             match finder_color_rgb(tag.color) {
                 Some(color) => entry.dot(color),
                 None => entry,
             },
-            Act::Nothing,
+            Act::TagColor(name, tag.color),
         );
     }
     menu

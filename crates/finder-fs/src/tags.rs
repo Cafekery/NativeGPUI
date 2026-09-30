@@ -25,7 +25,8 @@ fn localized(english: &str, color: u8) -> String {
     crate::words::finder(&format!("TG_COLOR_{color}"), english)
 }
 
-fn standard() -> Vec<Tag> {
+/// The seven colours' own tags, in Finder's menu order.
+pub fn standard() -> Vec<Tag> {
     STANDARD
         .iter()
         .map(|&(english, color)| Tag {
@@ -89,6 +90,11 @@ pub fn recent() -> Vec<String> {
         .into_iter()
         .filter_map(|(tag, pinned)| (!pinned).then_some(tag.name))
         .collect()
+}
+
+/// Gives a tag the colour Finder's sidebar lists it in; `0` takes its colour away.
+pub fn recolor(name: &str, color: u8) -> io::Result<()> {
+    crate::sidebar::recolor_tag(name, color)
 }
 
 /// `fileURLWithPath:` alone stats the path to learn whether it is a folder.

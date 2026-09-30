@@ -1,3 +1,4 @@
+use std::io;
 use std::path::PathBuf;
 
 use objc2::AnyThread;
@@ -327,6 +328,23 @@ pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
             .filter(|(tag, _)| !tag.name.is_empty())
             .collect(),
     )
+}
+
+#[allow(deprecated)]
+pub(crate) fn recolor_tag(name: &str, color: u8) -> io::Result<()> {
+    let (_list, items) = snapshot("com.apple.LSSharedFileList.ProjectsItems")
+        .ok_or_else(|| io::Error::other("no tag list"))?;
+    let item = items
+        .iter()
+        .find(|item| unsafe { item.display_name() }.to_string() == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name))?;
+    let label = CFString::from_static_str("kLSSharedTagFileListItemLabel");
+    match unsafe { item.set_property(&label, &CFNumber::new_i32(color.into())) } {
+        0 => Ok(()),
+        status => Err(io::Error::other(format!(
+            "tag list refused the colour: {status}"
+        ))),
+    }
 }
 
 /// Whether Finder's sidebar shows Recents and Shared, the rows above Favorites.

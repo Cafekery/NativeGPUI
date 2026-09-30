@@ -1,10 +1,13 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
+use finder_fs::tags::Tag;
 use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
@@ -28,14 +31,47 @@ pub(crate) struct RowTag {
     pub(crate) color: u8,
 }
 
-pub(crate) fn tags() -> &'static [finder_fs::tags::Tag] {
-    static TAGS: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
-    TAGS.get_or_init(finder_fs::tags::favorites)
+static FAVORITES: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
+static LISTED: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
+
+/// Replaced, never freed: callers keep `&'static` borrows of every list they read.
+fn listed(slot: &AtomicPtr<Vec<Tag>>, read: fn() -> Vec<Tag>) -> &'static [Tag] {
+    let mut at = slot.load(Ordering::Acquire);
+    if at.is_null() {
+        let fresh = Box::into_raw(Box::new(read()));
+        at = match slot.compare_exchange(
+            ptr::null_mut(),
+            fresh,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => fresh,
+            Err(first) => {
+                drop(unsafe { Box::from_raw(fresh) });
+                first
+            }
+        };
+    }
+    unsafe { &*at }
 }
 
-pub(crate) fn all() -> &'static [finder_fs::tags::Tag] {
-    static ALL: OnceLock<Vec<finder_fs::tags::Tag>> = OnceLock::new();
-    ALL.get_or_init(finder_fs::tags::all)
+pub(crate) fn tags() -> &'static [Tag] {
+    listed(&FAVORITES, finder_fs::tags::favorites)
+}
+
+pub(crate) fn all() -> &'static [Tag] {
+    listed(&LISTED, finder_fs::tags::all)
+}
+
+fn reread_lists() {
+    LISTED.store(
+        Box::into_raw(Box::new(finder_fs::tags::all())),
+        Ordering::Release,
+    );
+    FAVORITES.store(
+        Box::into_raw(Box::new(finder_fs::tags::favorites())),
+        Ordering::Release,
+    );
 }
 
 fn tag_system_color(color: u8) -> Option<SystemColor> {
@@ -267,6 +303,12 @@ impl Known {
         }
     }
 
+    fn stale_all(&mut self) {
+        for held in self.dirs.values_mut().flat_map(HashMap::values_mut) {
+            held.stale = true;
+        }
+    }
+
     fn stale(&mut self, dir: &Path) {
         for held in self
             .dirs
@@ -340,6 +382,28 @@ pub(crate) fn retag(
 }
 
 impl FinderDemo {
+    pub(crate) fn recolor_tag(&self, name: &'static str, color: u8, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let written = cx
+                .background_executor()
+                .spawn(async move {
+                    finder_fs::tags::recolor(name, color)?;
+                    reread_lists();
+                    KNOWN.lock().unwrap().stale_all();
+                    Ok::<(), io::Error>(())
+                })
+                .await;
+            match written {
+                Ok(()) => cx.update(crate::chrome::sidebar::reload_sidebars),
+                Err(error) => {
+                    this.update(cx, |this, _| this.complain(&error.to_string()))
+                        .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self
             .selected
