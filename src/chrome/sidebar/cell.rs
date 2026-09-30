@@ -4,14 +4,14 @@ use std::sync::OnceLock;
 
 use gpui::{Pixels, SharedString};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
+use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition, NSColor, NSEvent, NSFont,
-    NSFontTextStyleBody, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSLineBreakMode, NSOutlineView,
-    NSTableCellView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
-    NSUserInterfaceItemIdentification, NSView, NSWindingRule,
+    NSBezierPath, NSBundleImageExtension, NSButton, NSButtonCell, NSCellImagePosition, NSColor,
+    NSEvent, NSFont, NSFontTextStyleBody, NSGraphicsContext, NSImage, NSImageAlignment,
+    NSImageScaling, NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSLineBreakMode,
+    NSOutlineView, NSTableCellView, NSTextAlignment, NSTextField, NSTrackingArea,
+    NSTrackingAreaOptions, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -98,7 +98,27 @@ define_class!(
 
 struct EjectIvars {
     rest: RefCell<Option<Retained<NSColor>>>,
+    pressed: Cell<bool>,
 }
+
+define_class!(
+    #[unsafe(super(NSButtonCell))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarEjectCell"]
+    struct EjectCell;
+
+    impl EjectCell {
+        #[unsafe(method(highlight:withFrame:inView:))]
+        fn highlight(&self, lit: bool, frame: NSRect, view: &NSView) {
+            let _: () =
+                unsafe { msg_send![super(self), highlight: lit, withFrame: frame, inView: view] };
+            // Finder's press ends at the first drag out; dragging back in does not restore it.
+            if let (false, Some(eject)) = (lit, view.downcast_ref::<EjectButton>()) {
+                eject.press(false);
+            }
+        }
+    }
+);
 
 define_class!(
     #[unsafe(super(NSButton))]
@@ -108,6 +128,18 @@ define_class!(
     struct EjectButton;
 
     impl EjectButton {
+        #[unsafe(method(cellClass))]
+        fn cell_class() -> &'static AnyClass {
+            EjectCell::class()
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.press(true);
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            self.press(false);
+        }
+
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, _event: &NSEvent) {
             self.retint();
@@ -124,6 +156,7 @@ impl EjectButton {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(EjectIvars {
             rest: RefCell::new(None),
+            pressed: Cell::new(false),
         });
         let eject: Retained<Self> = unsafe { msg_send![super(this), init] };
         eject.setBordered(false);
@@ -163,6 +196,11 @@ impl EjectButton {
         self.retint();
     }
 
+    fn press(&self, pressed: bool) {
+        self.ivars().pressed.set(pressed);
+        self.retint();
+    }
+
     fn retint(&self) {
         let hovered = self.window().is_some_and(|window| {
             window.isKeyWindow()
@@ -171,7 +209,9 @@ impl EjectButton {
                     self.bounds(),
                 )
         });
-        let ink = if hovered {
+        let ink = if self.ivars().pressed.get() {
+            Some(NSColor::labelColor())
+        } else if hovered {
             Some(NSColor::secondaryLabelColor())
         } else {
             self.ivars().rest.borrow().clone()
