@@ -15,7 +15,6 @@ const CACHED: usize = 64;
 pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,
-    /// From the root down: each crumb's name and the folder it opens.
     pub(crate) crumbs: Vec<(&'static str, &'static str)>,
     pub(crate) rows: Arc<Vec<Arc<Row>>>,
     staged: Option<Vec<Arc<Row>>>,
@@ -55,7 +54,6 @@ pub(crate) fn icloud_drive() -> Option<&'static str> {
     *DRIVE
 }
 
-/// Finder starts the Trash and iCloud Drive at themselves, an app's iCloud folder at iCloud Drive.
 fn roots_of(id: &'static str) -> Vec<(&'static str, &'static str)> {
     let path = Path::new(id);
     let say = |english: &str| intern(&finder_fs::words::say(english));

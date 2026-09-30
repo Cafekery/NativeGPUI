@@ -699,9 +699,10 @@ impl FinderDemo {
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
         let screen = ((self.on_screen(), self.art_size()), extras);
-        let arts = match headed {
-            true => self.crumb_arts(id),
-            false => Vec::new(),
+        let arts = if headed {
+            self.crumb_arts(id)
+        } else {
+            Vec::new()
         };
         let executor = cx.background_executor().clone();
         let listed = cx.background_executor().spawn(async move {

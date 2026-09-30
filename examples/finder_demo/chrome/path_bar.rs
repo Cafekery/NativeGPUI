@@ -34,7 +34,7 @@ const ICON_LEAD: f32 = 5.;
 
 const CRUMB_ICON: f32 = 16.;
 
-// A small NSPathControl, as Finder's is, draws every component's image in a 14pt square.
+// Finder's small NSPathControl draws each component's image in a 14pt square.
 pub(crate) const CRUMB_ART: f32 = 14.;
 
 // An NSTextField label draws its text 2pt inside its frame.
@@ -105,7 +105,7 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
 
 const ICLOUD_ART: &str = "iCloudDriveNode";
 
-/// Finder's own iCloud Drive art, named in this process for the icon lanes to draw.
+/// Names Finder's iCloud Drive art in this process, for `FileType::Named` to find.
 fn icloud_art() -> FileType<'static> {
     thread_local! {
         static NAMED: Cell<bool> = const { Cell::new(false) };
@@ -122,17 +122,13 @@ fn icloud_art() -> FileType<'static> {
     FileType::Named(ICLOUD_ART)
 }
 
-fn root_art(root: &'static str) -> FileType<'static> {
-    if icloud_drive() == Some(root) {
-        return icloud_art();
-    }
-    crate::locations::artwork(root).unwrap_or(FileType::Path(root))
-}
-
 fn crumb_kind(index: usize, path: &'static str, holds: bool, landed: u64) -> FileType<'static> {
-    match index == 0 && !crate::data::is_trash(path) {
-        true => root_art(path),
-        false => crumb_artwork(path, holds, landed),
+    if index > 0 || crate::data::is_trash(path) {
+        crumb_artwork(path, holds, landed)
+    } else if icloud_drive() == Some(path) {
+        icloud_art()
+    } else {
+        crate::locations::artwork(path).unwrap_or(FileType::Path(path))
     }
 }
 
@@ -185,24 +181,24 @@ fn label_width(text: &str) -> f32 {
 }
 
 impl FinderDemo {
-    /// Every art `id`'s crumbs can draw before its rows land: the Trash's full and empty both.
+    /// Every art `id`'s crumbs may draw: the Trash's full and empty both.
     pub(crate) fn crumb_arts(&self, id: &'static str) -> Vec<FileType<'static>> {
         let landed = self.folders.changed();
         let crumbs = self
             .folders
             .get(id)
             .map_or(&[][..], |folder| folder.crumbs.as_slice());
-        let mut arts = Vec::with_capacity(crumbs.len() + 1);
-        for (index, &(_, path)) in crumbs.iter().enumerate() {
-            arts.push(crumb_kind(index, path, true, landed));
-            if index + 1 == crumbs.len() {
-                arts.push(crumb_kind(index, path, false, landed));
-            }
+        let mut arts: Vec<_> = crumbs
+            .iter()
+            .enumerate()
+            .map(|(index, &(_, path))| crumb_kind(index, path, true, landed))
+            .collect();
+        if let Some(&(_, path)) = crumbs.last() {
+            arts.push(crumb_kind(crumbs.len() - 1, path, false, landed));
         }
         arts
     }
 
-    /// Draws `id`'s crumb art off the main thread from now, so the first frame may have it.
     pub(crate) fn draw_crumbs(&self, id: &'static str, cx: &mut Context<Self>) {
         let arts = self.crumb_arts(id);
         let drawn = cx
@@ -253,7 +249,7 @@ impl FinderDemo {
                 Some(line) if last => {
                     Some(plain(line.row.artwork.unwrap_or(line.row.face.stand_in())))
                 }
-                _ => target.map_or(Some(FileType::Folder), |path| {
+                _ => target.and_then(|path| {
                     let kind = crumb_kind(index, path, !last || listed, landed);
                     // The Trash's can follows what it holds: none until its first rows say which.
                     (settled || kind == crumb_kind(index, path, true, landed)).then_some(kind)
