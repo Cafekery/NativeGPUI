@@ -5,7 +5,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use objc2::rc::{Allocated, Retained, autoreleasepool};
-use objc2::runtime::{AnyClass, AnyObject};
+use objc2::runtime::{AnyClass, AnyObject, Sel};
 use objc2::{msg_send, sel};
 use objc2_foundation::{NSArray, NSString, NSURL, ns_string};
 use objc2_uniform_type_identifiers::UTType;
@@ -244,28 +244,43 @@ pub fn symbol(model: Option<&str>) -> String {
     })
 }
 
-/// IconServices' symbol for a type is the one Finder draws.
-fn type_symbol(kind: &UTType) -> Option<String> {
+fn icon_class(name: &CStr, init: Sel) -> Option<&'static AnyClass> {
     unsafe {
         libc::dlopen(
             c"/System/Library/PrivateFrameworks/IconServices.framework/IconServices".as_ptr(),
             libc::RTLD_LAZY,
         )
     };
-    let class = AnyClass::get(c"ISTypeIcon").filter(|class| {
-        class.responds_to(sel!(initWithType:)) && class.responds_to(sel!(symbol))
-    })?;
-    let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
-    let icon: Option<Retained<AnyObject>> =
-        unsafe { msg_send![icon, initWithType: &*kind.identifier()] };
-    let symbol: Option<Retained<AnyObject>> = unsafe { msg_send![&*icon?, symbol] };
+    AnyClass::get(name).filter(|class| class.responds_to(init) && class.responds_to(sel!(symbol)))
+}
+
+fn symbol_name(icon: &AnyObject) -> Option<String> {
+    let symbol: Option<Retained<AnyObject>> = unsafe { msg_send![icon, symbol] };
     let name: Option<Retained<NSString>> = match symbol {
         Some(symbol) if symbol.class().responds_to(sel!(name)) => unsafe {
             msg_send![&symbol, name]
         },
         _ => None,
     };
-    Some(name.map_or_else(|| "doc".into(), |name| name.to_string()))
+    name.map(|name| name.to_string())
+}
+
+/// IconServices' symbol for a type is the one Finder draws.
+fn type_symbol(kind: &UTType) -> Option<String> {
+    let class = icon_class(c"ISTypeIcon", sel!(initWithType:))?;
+    let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
+    let icon: Option<Retained<AnyObject>> =
+        unsafe { msg_send![icon, initWithType: &*kind.identifier()] };
+    Some(symbol_name(&*icon?).unwrap_or_else(|| "doc".into()))
+}
+
+/// The symbol a bundle names for itself (`CFBundleSymbolName`), as IconServices reads it.
+pub(crate) fn bundle_symbol(identifier: &str) -> Option<String> {
+    let class = icon_class(c"ISBundleIdentifierIcon", sel!(initWithBundleIdentifier:))?;
+    let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
+    let icon: Option<Retained<AnyObject>> =
+        unsafe { msg_send![icon, initWithBundleIdentifier: &*NSString::from_str(identifier)] };
+    symbol_name(&*icon?)
 }
 
 #[repr(C)]
