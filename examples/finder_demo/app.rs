@@ -327,6 +327,7 @@ impl FinderDemo {
         this.set_order(this.view_sort(this.view));
         this.load_columns();
         this.read_folder(start, cx);
+        this.draw_crumbs(start, cx);
         cx.observe_self(|this, cx| this.faces.borrow_mut().touch(&this.selected, cx))
             .detach();
         this
