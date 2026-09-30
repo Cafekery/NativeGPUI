@@ -755,29 +755,16 @@ impl FinderDemo {
         let Some(tag) = crate::tags::all().iter().find(|it| it.name == tag) else {
             return;
         };
-        let favourite = crate::tags::tags()
-            .iter()
-            .position(|it| it.name == tag.name);
-        for path in paths {
-            if let Some(index) = favourite {
-                let carried = self.tags.entry(intern_path(path).into()).or_default();
-                if !carried.contains(&index) {
-                    carried.push(index);
+        let add = [tag.clone()];
+        self.retag(
+            paths.to_vec(),
+            move |paths| {
+                for path in paths {
+                    finder_fs::tags::apply(std::slice::from_ref(path), &add, &[]).ok();
                 }
-            }
-            let path = path.clone();
-            let tag = tag.clone();
-            cx.background_executor()
-                .spawn(async move {
-                    let mut carried = finder_fs::tags::of(&path);
-                    if carried.iter().any(|it| it.name == tag.name) {
-                        return;
-                    }
-                    carried.push(tag);
-                    finder_fs::tags::set(&path, &carried).ok();
-                })
-                .detach();
-        }
+            },
+            cx,
+        );
     }
 
     fn pin(&mut self, dropped: &SidebarDrop, cx: &mut Context<Self>) {

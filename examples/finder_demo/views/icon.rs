@@ -24,7 +24,7 @@ use crate::item_info::item_info;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::tags::{tag_dots, tag_dots_w};
+use crate::tags::{RowTag, row_tags, tag_dots, tag_dots_w};
 use crate::ui::{pick_on_click, pick_on_press, rename_field};
 use crate::view::ICON_VIEW;
 
@@ -893,7 +893,7 @@ struct Ghost {
     scale: f32,
     previews: bool,
     look: Look,
-    tags: Vec<usize>,
+    tags: Vec<RowTag>,
     info: Option<SharedString>,
 }
 
@@ -923,7 +923,7 @@ fn tile(
     art: AnyElement,
     look: Look,
     selected: bool,
-    tags: &[usize],
+    tags: &[RowTag],
     editor: Option<AnyElement>,
     anchor: Option<Anchor>,
     drop: Option<Hsla>,
@@ -955,7 +955,7 @@ fn tile(
     }
     let icon = icon.child(art_at(art, size, anchor));
 
-    let dots = tag_dots_w(tags.len());
+    let dots = tag_dots_w(tags);
     let room = match options.bottom {
         true => cell.width - 2. * LABEL_INSET,
         false => cell.width - frame - LABEL_GAP,
@@ -1121,7 +1121,7 @@ impl FinderDemo {
             let line = &lines[index];
             let at = layout.tiles[index].1;
             let is_selected = self.selected.contains(&line.key);
-            let carried = self.tags.get(&line.key).cloned().unwrap_or_default();
+            let carried = row_tags(&line.key);
             let held = dragging.as_ref() == Some(&line.key);
             let editor = (self.renaming.as_ref() == Some(&line.key))
                 .then(|| rename_field(line, index, this.clone()).into_any_element());
