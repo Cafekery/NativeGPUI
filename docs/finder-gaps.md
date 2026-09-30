@@ -377,6 +377,12 @@ chevron (Δ 0.0) match; what is left:
   `iCloudDriveNode` art (a cloud, 14 × 9.5 pt of ink, where `iconForFile:` gives a plain folder),
   then the folders below it; an app's iCloud folder follows it under the app's name (“iCloud Drive ›
   Sketch”), as Finder's. The Path menu and Get Info's Where take the same chain.
+- [x] A crumb shows its own icon or none, never another kind's stand-in: a navigation that holds the
+  old folder also waits, within the same 100 ms, for the new crumbs' art, drawn beside the listing; a
+  window asks for its crumbs' art before its first frame; the Trash's can waits for its first rows.
+  Opening Computer, Network or an 11-crumb chain draws each crumb's exact 14 pt art on the first
+  frame, and the Trash stays blank 19 ms before its full can; Computer and Network reached by Go,
+  which don't hold, show a blank or their own art at 16 pt scaled for 15–22 ms.
 - [ ] Not read off Finder: the icon of an app's iCloud folder crumb (the demo's is the plain folder
   `iconForFile:` gives), its Path menu for an iCloud folder (no Path item in its toolbar here), and
   the chain of a File Provider root under ~/Library/CloudStorage (none is in its sidebar here, and

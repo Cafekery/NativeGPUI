@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, DragMoveEvent, ElementId, ExternalPaths, FontWeight,
-    Hsla, SharedString, Stateful, Window, div, hsla, prelude::*, px,
+    Hsla, Priority, SharedString, Stateful, Window, div, hsla, prelude::*, px,
 };
 use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{native_label, native_raster, native_rule, native_symbol};
@@ -16,7 +16,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSAttributedString, NSBundle, NSDictionary, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Face, Line, folder_artwork, icloud_drive, is_volume_root, split_key};
+use crate::data::{Line, folder_artwork, icloud_drive, is_volume_root, split_key};
 use crate::dragdrop::{Grabbed, RowDrag};
 use crate::locations::{SHARED, is_location};
 use crate::menus;
@@ -35,7 +35,7 @@ const ICON_LEAD: f32 = 5.;
 const CRUMB_ICON: f32 = 16.;
 
 // A small NSPathControl, as Finder's is, draws every component's image in a 14pt square.
-const CRUMB_ART: f32 = 14.;
+pub(crate) const CRUMB_ART: f32 = 14.;
 
 // An NSTextField label draws its text 2pt inside its frame.
 pub(crate) const LABEL_INSET: f32 = 2.;
@@ -56,9 +56,9 @@ fn is_alt_click(event: &ClickEvent) -> bool {
     matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
 }
 
-fn crumb_art(id: impl Into<ElementId>, kind: FileType<'static>, face: Face) -> AnyElement {
-    let raster = crate::icons::icon(kind, CRUMB_ART)
-        .or_else(|| crate::icons::icon(face.stand_in(), CRUMB_ART));
+// No stand-in: Finder's first frame already has each crumb's own icon, never another kind's.
+fn crumb_art(id: impl Into<ElementId>, kind: Option<FileType<'static>>) -> AnyElement {
+    let raster = kind.and_then(|kind| crate::icons::icon(kind, CRUMB_ART));
     div()
         .size(px(CRUMB_ICON))
         .flex_none()
@@ -129,6 +129,13 @@ fn root_art(root: &'static str) -> FileType<'static> {
     crate::locations::artwork(root).unwrap_or(FileType::Path(root))
 }
 
+fn crumb_kind(index: usize, path: &'static str, holds: bool, landed: u64) -> FileType<'static> {
+    match index == 0 && !crate::data::is_trash(path) {
+        true => root_art(path),
+        false => crumb_artwork(path, holds, landed),
+    }
+}
+
 fn takes_drop<D: Grabbed + 'static>(
     crumb: Stateful<Div>,
     index: usize,
@@ -178,6 +185,38 @@ fn label_width(text: &str) -> f32 {
 }
 
 impl FinderDemo {
+    /// Every art `id`'s crumbs can draw before its rows land: the Trash's full and empty both.
+    pub(crate) fn crumb_arts(&self, id: &'static str) -> Vec<FileType<'static>> {
+        let landed = self.folders.changed();
+        let crumbs = self
+            .folders
+            .get(id)
+            .map_or(&[][..], |folder| folder.crumbs.as_slice());
+        let mut arts = Vec::with_capacity(crumbs.len() + 1);
+        for (index, &(_, path)) in crumbs.iter().enumerate() {
+            arts.push(crumb_kind(index, path, true, landed));
+            if index + 1 == crumbs.len() {
+                arts.push(crumb_kind(index, path, false, landed));
+            }
+        }
+        arts
+    }
+
+    /// Draws `id`'s crumb art off the main thread from now, so the first frame may have it.
+    pub(crate) fn draw_crumbs(&self, id: &'static str, cx: &mut Context<Self>) {
+        let arts = self.crumb_arts(id);
+        let drawn = cx
+            .background_executor()
+            .spawn_with_priority(Priority::High, async move {
+                crate::icons::begin(arts, CRUMB_ART).finish();
+            });
+        cx.spawn(async move |this, cx| {
+            drawn.await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
     pub(crate) fn path_bar(&self, palette: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let lone = self.lone_pick();
         let holder = lone
@@ -198,6 +237,7 @@ impl FinderDemo {
             .map(|&(name, path)| (SharedString::new_static(name), Some(path)))
             .unzip();
         let listed = here.is_some_and(|folder| !folder.rows.is_empty());
+        let settled = listed || here.is_some_and(|folder| !folder.loading);
         if let Some(line) = &lone {
             crumbs.push(line.row.display.clone());
             targets.push(line.row.opens);
@@ -209,20 +249,15 @@ impl FinderDemo {
 
         for (index, (crumb, target)) in crumbs.iter().zip(targets).enumerate() {
             let last = index + 1 == crumbs.len();
-            let (kind, face) = match &lone {
-                Some(line) if last => (
-                    plain(line.row.artwork.unwrap_or(line.row.face.stand_in())),
-                    line.row.face,
-                ),
-                _ if index == 0 && !target.is_some_and(crate::data::is_trash) => {
-                    (target.map_or(FileType::Path("/"), root_art), Face::Volume)
+            let kind = match &lone {
+                Some(line) if last => {
+                    Some(plain(line.row.artwork.unwrap_or(line.row.face.stand_in())))
                 }
-                _ => (
-                    target.map_or(FileType::Folder, |path| {
-                        crumb_artwork(path, !last || listed, landed)
-                    }),
-                    Face::Folder,
-                ),
+                _ => target.map_or(Some(FileType::Folder), |path| {
+                    let kind = crumb_kind(index, path, !last || listed, landed);
+                    // The Trash's can follows what it holds: none until its first rows say which.
+                    (settled || kind == crumb_kind(index, path, true, landed)).then_some(kind)
+                }),
             };
             let mut segment = div()
                 .id(("ng.finder.crumb", index))
@@ -230,7 +265,7 @@ impl FinderDemo {
                 .flex()
                 .items_center()
                 .pl(px(ICON_LEAD))
-                .child(crumb_art(("ng.finder.crumb.art", index), kind, face));
+                .child(crumb_art(("ng.finder.crumb.art", index), kind));
             if let Some(width) = widths[index] {
                 let dropping = lit == Some(index);
                 segment = segment.child(
