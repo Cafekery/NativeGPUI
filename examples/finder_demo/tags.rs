@@ -15,6 +15,9 @@ use crate::app::FinderDemo;
 const TAG_DOT: f32 = 10.;
 const TAG_DOT_PITCH: f32 = 5.;
 const TAG_DOTS_MAX: usize = 3;
+const COLUMN_DOT: f32 = 12.;
+const COLUMN_DOTS_MAX: usize = 4;
+const COLUMN_DOTS_W: f32 = 26.;
 const TAG_LIGHTEN: f32 = 0.2;
 const TAG_PILL_ALPHA: f32 = 0.85;
 const KNOWN_MAX: usize = 20_000;
@@ -96,10 +99,10 @@ pub(crate) fn tag_pill(tag: &RowTag, text: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn tag_dot(color: u8) -> AnyElement {
+fn sized_dot(color: u8, size: f32) -> AnyElement {
     let dot = div()
-        .w(px(TAG_DOT))
-        .h(px(TAG_DOT))
+        .w(px(size))
+        .h(px(size))
         .rounded_full()
         .flex_none()
         .border(px(1.));
@@ -110,32 +113,40 @@ pub(crate) fn tag_dot(color: u8) -> AnyElement {
     .into_any_element()
 }
 
+pub(crate) fn tag_dot(color: u8) -> AnyElement {
+    sized_dot(color, TAG_DOT)
+}
+
 fn dot_colors(tags: &[RowTag]) -> impl Iterator<Item = u8> + '_ {
     tags.iter()
         .map(|tag| tag.color)
         .filter(|&color| tag_system_color(color).is_some())
 }
 
-fn dots_w(shown: usize) -> f32 {
+fn dots_w(shown: usize, dot: f32, pitch: f32) -> f32 {
     match shown {
         0 => 0.,
-        shown => TAG_DOT + TAG_DOT_PITCH * (shown - 1) as f32,
+        shown => dot + pitch * (shown - 1) as f32,
     }
 }
 
 pub(crate) fn tag_dots_w(tags: &[RowTag]) -> f32 {
-    dots_w(dot_colors(tags).count().min(TAG_DOTS_MAX))
+    dots_w(
+        dot_colors(tags).count().min(TAG_DOTS_MAX),
+        TAG_DOT,
+        TAG_DOT_PITCH,
+    )
 }
 
-pub(crate) fn tag_dots(tags: &[RowTag]) -> Option<AnyElement> {
+fn dots(tags: &[RowTag], dot: f32, pitch: f32, max: usize) -> Option<AnyElement> {
     let colored = dot_colors(tags).count();
-    let shown = colored.min(TAG_DOTS_MAX);
+    let shown = colored.min(max);
     (shown > 0).then(|| {
         div()
             .relative()
             .flex_none()
-            .w(px(dots_w(shown)))
-            .h(px(TAG_DOT))
+            .w(px(dots_w(shown, dot, pitch)))
+            .h(px(dot))
             .children(
                 dot_colors(tags)
                     .skip(colored - shown)
@@ -143,12 +154,27 @@ pub(crate) fn tag_dots(tags: &[RowTag]) -> Option<AnyElement> {
                     .map(|(at, color)| {
                         div()
                             .absolute()
-                            .left(px((shown - 1 - at) as f32 * TAG_DOT_PITCH))
-                            .child(tag_dot(color))
+                            .left(px((shown - 1 - at) as f32 * pitch))
+                            .child(sized_dot(color, dot))
                     }),
             )
             .into_any_element()
     })
+}
+
+pub(crate) fn tag_dots(tags: &[RowTag]) -> Option<AnyElement> {
+    dots(tags, TAG_DOT, TAG_DOT_PITCH, TAG_DOTS_MAX)
+}
+
+/// Column view's larger dots, up to four, shrunk as a whole to fit their box; and their width.
+pub(crate) fn column_tag_dots(tags: &[RowTag]) -> Option<(f32, AnyElement)> {
+    let shown = dot_colors(tags).count().min(COLUMN_DOTS_MAX);
+    let scale = (COLUMN_DOTS_W / dots_w(shown, COLUMN_DOT, TAG_DOT_PITCH)).min(1.);
+    let (dot, pitch) = (COLUMN_DOT * scale, TAG_DOT_PITCH * scale);
+    Some((
+        dots_w(shown, dot, pitch),
+        dots(tags, dot, pitch, COLUMN_DOTS_MAX)?,
+    ))
 }
 
 pub(crate) fn tag_title(id: &str) -> String {
