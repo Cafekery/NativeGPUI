@@ -417,13 +417,15 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
   an app (not a shell) the list files themselves, which left the demo on its built-in rows. Tags
   are the ones Finder's sidebar lists, in its order, pinned and recent alike; the menus' swatches
   are Finder's favourite tags (`FavoriteTagNames`), the 7 standard ones when it has none.
-- A mounted server is one row named by its host, as in Finder, with CoreTypes' `SidebarDisplay`;
-  Finder 27 draws a flat box with a rule and a dot, not yet compared glyph for glyph. The row opens the
-  first share mounted from that host, where Finder shows the host's shares, and its eject unmounts that
-  share only.
-- A cloud storage row (a File Provider domain) shows `externaldrive.badge.icloud` and the folder's
-  name (S3Mount-NoahBucket); Finder shows the provider's own icon and name (Noah Bucket), which no
-  public API gives.
+- A mounted server is one row named by its host, as in Finder, with its model's symbol, `display`
+  while sharingd has none. For 100.109.9.62, which sharingd never listed, Finder drew
+  `airport.extreme` (its model family's symbol): Finder learns a model the demo does not. The row opens
+  the first share mounted from that host, where Finder shows the host's shares, and its eject unmounts
+  that share only.
+- A cloud storage row (a File Provider domain) shows the symbol its extension names
+  (`CFBundleSymbolName`, `leaf.fill` for S3Mount), as Finder does, or `externaldrive.badge.icloud`
+  when it names none the system catalogs hold. The row is named by its folder (S3Mount-NoahBucket)
+  where Finder's is named by the domain (Noah Bucket), which no public API gives.
 - Finder's Computer and Remote Disc rows are not shown; Network is, unless Settings turns off
   Bonjour computers.
 - Remove from Sidebar and reordering of a Favorites or Locations row last across launches in the

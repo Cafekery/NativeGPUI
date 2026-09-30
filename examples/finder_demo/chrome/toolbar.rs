@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use block2::RcBlock;
 use gpui::{App, Context, WeakEntity, Window, px};
-use native_gpui::sidebar::system_template;
+use native_gpui::sidebar::{system_symbol, system_template};
 use native_gpui::{
     MenuEntry, ToolbarCustomization, ToolbarGroupWidth, ToolbarItem, ToolbarSegment,
     ToolbarSelection, ToolbarStyle, chrome_host, set_customizable_toolbar,
@@ -139,6 +139,10 @@ const VIEWS: [(&str, &str, &str); 4] = [
 const SEARCH_W: f32 = 240.;
 
 fn airdrop_glyph() -> Option<Retained<NSImage>> {
+    system_symbol("airdrop").or_else(airdrop_art)
+}
+
+fn airdrop_art() -> Option<Retained<NSImage>> {
     let art = system_template("SidebarAirDrop", px(AIRDROP_ART))?;
     // `RcBlock`, never `StackBlock`: the image re-runs the handler on every appearance change.
     let handler = RcBlock::new(move |_: NSRect| -> Bool {

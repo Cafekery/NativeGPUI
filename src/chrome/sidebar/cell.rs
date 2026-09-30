@@ -4,13 +4,14 @@ use std::sync::OnceLock;
 
 use gpui::{Pixels, SharedString};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
+use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition, NSColor, NSFont,
-    NSFontWeightRegular, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSOutlineView, NSTableCellView,
-    NSTextAlignment, NSTextField, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
+    NSBezierPath, NSBundleImageExtension, NSButton, NSButtonCell, NSCellImagePosition, NSColor,
+    NSEvent, NSFont, NSFontTextStyleBody, NSGraphicsContext, NSImage, NSImageAlignment,
+    NSImageScaling, NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSLineBreakMode,
+    NSOutlineView, NSTableCellView, NSTextAlignment, NSTextField, NSTrackingArea,
+    NSTrackingAreaOptions, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -22,7 +23,7 @@ use super::{BADGE_GAP, CORE_TYPES_BUNDLE, Shared, SidebarIcon, SidebarRowSize};
 pub(super) struct CellIvars {
     group: bool,
     pub(super) badge: Retained<NSTextField>,
-    eject: Retained<NSButton>,
+    eject: Retained<EjectButton>,
     tint: RefCell<Option<Retained<NSColor>>>,
     muted: Cell<bool>,
 }
@@ -64,17 +65,28 @@ define_class!(
             };
             let bounds = self.bounds();
             let size = trailing.fittingSize();
+            let (x, reserved) = if self.ivars().eject.isHidden() {
+                (bounds.size.width - size.width, size.width + BADGE_GAP)
+            } else {
+                // Finder's title yields the eject's slot and one point more, at 2x only.
+                let gap = match self.window() {
+                    Some(window) if window.backingScaleFactor() == 2. => 1.,
+                    _ => 0.,
+                };
+                let reserved = EJECT_SLOT + gap;
+                (
+                    bounds.size.width - reserved + ((EJECT_SLOT - size.width) / 2.).floor(),
+                    reserved,
+                )
+            };
             trailing.setFrame(NSRect::new(
-                NSPoint::new(
-                    bounds.size.width - size.width,
-                    ((bounds.size.height - size.height) / 2.).round(),
-                ),
+                NSPoint::new(x, ((bounds.size.height - size.height) / 2.).round()),
                 size,
             ));
 
             if let Some(title) = unsafe { self.textField() } {
                 let frame = title.frame();
-                let width = bounds.size.width - size.width - BADGE_GAP - frame.origin.x;
+                let width = bounds.size.width - reserved - frame.origin.x;
                 title.setFrame(NSRect::new(
                     frame.origin,
                     NSSize::new(width.max(0.), frame.size.height),
@@ -84,12 +96,136 @@ define_class!(
     }
 );
 
+struct EjectIvars {
+    rest: RefCell<Option<Retained<NSColor>>>,
+    pressed: Cell<bool>,
+}
+
+define_class!(
+    #[unsafe(super(NSButtonCell))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarEjectCell"]
+    struct EjectCell;
+
+    impl EjectCell {
+        #[unsafe(method(highlight:withFrame:inView:))]
+        fn highlight(&self, lit: bool, frame: NSRect, view: &NSView) {
+            let _: () =
+                unsafe { msg_send![super(self), highlight: lit, withFrame: frame, inView: view] };
+            // Finder's press ends at the first drag out; dragging back in does not restore it.
+            if let (false, Some(eject)) = (lit, view.downcast_ref::<EjectButton>()) {
+                eject.press(false);
+            }
+        }
+    }
+);
+
+define_class!(
+    #[unsafe(super(NSButton))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarEjectButton"]
+    #[ivars = EjectIvars]
+    struct EjectButton;
+
+    impl EjectButton {
+        #[unsafe(method(cellClass))]
+        fn cell_class() -> &'static AnyClass {
+            EjectCell::class()
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.press(true);
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            self.press(false);
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.retint();
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.retint();
+        }
+    }
+);
+
+impl EjectButton {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(EjectIvars {
+            rest: RefCell::new(None),
+            pressed: Cell::new(false),
+        });
+        let eject: Retained<Self> = unsafe { msg_send![super(this), init] };
+        eject.setBordered(false);
+        eject.setImagePosition(NSCellImagePosition::ImageOnly);
+        eject.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str("eject.fill"),
+                Some(&NSString::from_str("Eject")),
+            )
+            .and_then(|image| {
+                image.imageWithSymbolConfiguration(
+                    &NSImageSymbolConfiguration::configurationWithTextStyle_scale(
+                        unsafe { NSFontTextStyleBody },
+                        NSImageSymbolScale::Small,
+                    ),
+                )
+            })
+            .as_deref(),
+        );
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                NSRect::ZERO,
+                NSTrackingAreaOptions::InVisibleRect
+                    | NSTrackingAreaOptions::MouseEnteredAndExited
+                    | NSTrackingAreaOptions::ActiveInKeyWindow,
+                Some(eject.as_ref()),
+                None,
+            )
+        };
+        eject.addTrackingArea(&area);
+        eject
+    }
+
+    fn rest(&self, ink: Retained<NSColor>) {
+        *self.ivars().rest.borrow_mut() = Some(ink);
+        self.retint();
+    }
+
+    fn press(&self, pressed: bool) {
+        self.ivars().pressed.set(pressed);
+        self.retint();
+    }
+
+    fn retint(&self) {
+        let hovered = self.window().is_some_and(|window| {
+            window.isKeyWindow()
+                && self.mouse_inRect(
+                    self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None),
+                    self.bounds(),
+                )
+        });
+        let ink = if self.ivars().pressed.get() {
+            Some(NSColor::labelColor())
+        } else if hovered {
+            Some(NSColor::secondaryLabelColor())
+        } else {
+            self.ivars().rest.borrow().clone()
+        };
+        self.setContentTintColor(ink.as_deref());
+    }
+}
+
 // One identifier per row shape: a recycled cell keeps its subviews and `group`.
 const ID_GROUP: &str = "NGSidebarGroupRow";
 const ID_ICON: &str = "NGSidebarIconRow";
 const ID_PLAIN: &str = "NGSidebarPlainRow";
 
-const EJECT_POINTS: f64 = 10.0;
+const EJECT_SLOT: f64 = 18.0;
 const TAG_DOT_DIAMETER: f64 = 12.5;
 const TAG_DOT_LINE: f64 = 1.0;
 const TAG_DOTS_OVERLAP: f64 = 4.5;
@@ -121,24 +257,7 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
     badge.setTextColor(Some(&NSColor::secondaryLabelColor()));
     badge.setHidden(true);
 
-    let eject = NSButton::new(mtm);
-    eject.setBordered(false);
-    eject.setImagePosition(NSCellImagePosition::ImageOnly);
-    eject.setImage(
-        NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("eject.fill"),
-            Some(&NSString::from_str("Eject")),
-        )
-        .and_then(|image| {
-            image.imageWithSymbolConfiguration(
-                &NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                    EJECT_POINTS,
-                    unsafe { NSFontWeightRegular },
-                ),
-            )
-        })
-        .as_deref(),
-    );
+    let eject = EjectButton::new(mtm);
     eject.setHidden(true);
     unsafe {
         eject.setTarget(Some(target));
@@ -195,6 +314,18 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
             .abs()
             .total_cmp(&(b - wanted).abs())
             .then(b.total_cmp(a))
+    })
+}
+
+const PRIVATE_SYMBOLS: &str =
+    "/System/Library/PrivateFrameworks/SFSymbols.framework/Resources/CoreGlyphsPrivate.bundle";
+
+/// A symbol from the public catalog, else from the private one some of Finder's glyphs come from.
+pub fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
+    let name = NSString::from_str(name);
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None).or_else(|| {
+        let catalog = NSBundle::bundleWithPath(&NSString::from_str(PRIVATE_SYMBOLS))?;
+        NSImage::imageWithSymbolName_bundle_variableValue(&name, Some(&catalog), 1.)
     })
 }
 
@@ -310,7 +441,7 @@ fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
     if let Some(icon) = unsafe { cell.imageView() } {
         icon.setContentTintColor(icon_ink.filter(|_| ivars.muted.get()).as_deref());
     }
-    ivars.eject.setContentTintColor(Some(&eject_ink));
+    ivars.eject.rest(eject_ink);
     let Some(title) = (unsafe { cell.textField() }) else {
         return;
     };
@@ -351,6 +482,17 @@ fn key_window(view: &NSOutlineView) -> bool {
     view.window().is_some_and(|window| window.isKeyWindow())
 }
 
+fn icon_image(icon: &SidebarIcon, points: f64) -> Option<Retained<NSImage>> {
+    match icon {
+        SidebarIcon::Symbol(name) => system_symbol(name),
+        SidebarIcon::SymbolOrResource(name, resource) => {
+            system_symbol(name).or_else(|| core_types_template(resource, points))
+        }
+        SidebarIcon::SystemResource(name) => core_types_template(name, points),
+        SidebarIcon::Dot(_) | SidebarIcon::Dots => tag_dot_image(icon),
+    }
+}
+
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     if let Some(title) = unsafe { cell.textField() } {
         let wanted = NSString::from_str(&node.title);
@@ -366,17 +508,10 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     cell.ivars().muted.set(node.muted);
 
     if let Some(view) = unsafe { cell.imageView() } {
-        let image = match &node.icon {
-            Some(SidebarIcon::Symbol(name)) => {
-                NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(name),
-                    None,
-                )
-            }
-            Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
-            Some(icon @ (SidebarIcon::Dot(_) | SidebarIcon::Dots)) => tag_dot_image(icon),
-            None => None,
-        };
+        let image = node
+            .icon
+            .as_ref()
+            .and_then(|icon| icon_image(icon, icon_points));
         view.setImage(image.as_deref());
     }
 
@@ -474,5 +609,24 @@ mod tests {
         let sized = super::system_template("SidebarAirDrop", gpui::px(17.)).expect("the same art");
         assert_eq!(sized.size(), NSSize::new(17., 17.));
         assert!(build_core_types_template("SidebarNoSuchThing", 17.).is_none());
+    }
+
+    #[test]
+    fn finders_own_glyphs_load_as_symbols_by_name() {
+        for name in ["airdrop", "appstore", "music"] {
+            assert!(system_symbol(name).is_some(), "{name}");
+        }
+        assert!(system_symbol("not.a.real.sf.symbol").is_none());
+    }
+
+    #[test]
+    fn a_symbol_no_catalog_has_falls_back_to_its_art() {
+        let icon = |symbol: &str| {
+            SidebarIcon::SymbolOrResource(symbol.to_owned().into(), "SidebarMusicFolder".into())
+        };
+        let art = icon_image(&icon("not.a.real.sf.symbol"), 17.).expect("the art, not no icon");
+        assert_eq!(art.size(), NSSize::new(18., 18.));
+        let symbol = icon_image(&icon("music"), 17.).expect("the symbol");
+        assert_ne!(symbol.size(), art.size());
     }
 }
