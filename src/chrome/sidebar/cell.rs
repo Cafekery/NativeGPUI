@@ -8,9 +8,10 @@ use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
 use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezierPath, NSBundleImageExtension, NSButton, NSCellImagePosition, NSColor, NSFont,
-    NSFontWeightRegular, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSOutlineView, NSTableCellView,
-    NSTextAlignment, NSTextField, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
+    NSFontTextStyleBody, NSGraphicsContext, NSImage, NSImageAlignment, NSImageScaling,
+    NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSLineBreakMode, NSOutlineView,
+    NSTableCellView, NSTextAlignment, NSTextField, NSUserInterfaceItemIdentification, NSView,
+    NSWindingRule,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
@@ -64,17 +65,28 @@ define_class!(
             };
             let bounds = self.bounds();
             let size = trailing.fittingSize();
+            let (x, reserved) = if self.ivars().eject.isHidden() {
+                (bounds.size.width - size.width, size.width + BADGE_GAP)
+            } else {
+                // Finder's title yields the eject's slot and one point more, at 2x only.
+                let gap = match self.window() {
+                    Some(window) if window.backingScaleFactor() == 2. => 1.,
+                    _ => 0.,
+                };
+                let reserved = EJECT_SLOT + gap;
+                (
+                    bounds.size.width - reserved + ((EJECT_SLOT - size.width) / 2.).floor(),
+                    reserved,
+                )
+            };
             trailing.setFrame(NSRect::new(
-                NSPoint::new(
-                    bounds.size.width - size.width,
-                    ((bounds.size.height - size.height) / 2.).round(),
-                ),
+                NSPoint::new(x, ((bounds.size.height - size.height) / 2.).round()),
                 size,
             ));
 
             if let Some(title) = unsafe { self.textField() } {
                 let frame = title.frame();
-                let width = bounds.size.width - size.width - BADGE_GAP - frame.origin.x;
+                let width = bounds.size.width - reserved - frame.origin.x;
                 title.setFrame(NSRect::new(
                     frame.origin,
                     NSSize::new(width.max(0.), frame.size.height),
@@ -89,7 +101,7 @@ const ID_GROUP: &str = "NGSidebarGroupRow";
 const ID_ICON: &str = "NGSidebarIconRow";
 const ID_PLAIN: &str = "NGSidebarPlainRow";
 
-const EJECT_POINTS: f64 = 10.0;
+const EJECT_SLOT: f64 = 18.0;
 const TAG_DOT_DIAMETER: f64 = 12.5;
 const TAG_DOT_LINE: f64 = 1.0;
 const TAG_DOTS_OVERLAP: f64 = 4.5;
@@ -131,9 +143,9 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
         )
         .and_then(|image| {
             image.imageWithSymbolConfiguration(
-                &NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                    EJECT_POINTS,
-                    unsafe { NSFontWeightRegular },
+                &NSImageSymbolConfiguration::configurationWithTextStyle_scale(
+                    unsafe { NSFontTextStyleBody },
+                    NSImageSymbolScale::Small,
                 ),
             )
         })
