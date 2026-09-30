@@ -39,8 +39,8 @@ use crate::controls::MenuEntry;
 use crate::materials::RawMaterial;
 use crate::tokens;
 
-pub use self::cell::system_template;
 use self::cell::{SidebarCell, row_view, tint_rows};
+pub use self::cell::{system_symbol, system_template};
 use self::diff::{SavedState, apply_diff, expand_groups, plan_diff, reveal};
 pub use self::dragdrop::drag_files;
 use self::dragdrop::{
@@ -55,6 +55,8 @@ pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bund
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SidebarIcon {
     Symbol(SharedString),
+    /// A symbol, else this CoreTypes resource when neither catalog has the symbol.
+    SymbolOrResource(SharedString, SharedString),
     SystemResource(SharedString),
     Dot(Option<(u8, u8, u8)>),
     Dots,
