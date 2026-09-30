@@ -15,6 +15,7 @@ use objc2_foundation::{
     ns_string,
 };
 
+use crate::tags::Tag;
 use crate::volumes::{self, Standard, Volume};
 use crate::{icloud, sort};
 
@@ -300,12 +301,13 @@ fn truthy(value: &CFType) -> Option<bool> {
     }
 }
 
-/// The tags Finder's sidebar lists, in its order, each with whether it is pinned there.
+/// The tags Finder's sidebar lists, in its order and colours, each with whether it is pinned there.
 #[allow(deprecated)]
-pub(crate) fn tags() -> Option<Vec<(String, bool)>> {
+pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
     let (_list, items) = snapshot("com.apple.LSSharedFileList.ProjectsItems")?;
     let hidden = CFString::from_static_str(HIDDEN);
     let pinned = CFString::from_static_str("kLSSharedTagFileListItemPinned");
+    let label = CFString::from_static_str("kLSSharedTagFileListItemLabel");
     Some(
         items
             .iter()
@@ -315,9 +317,14 @@ pub(crate) fn tags() -> Option<Vec<(String, bool)>> {
             .map(|item| {
                 let pinned = unsafe { item.property(&pinned) }
                     .is_none_or(|value| truthy(&value) == Some(true));
-                (unsafe { item.display_name() }.to_string(), pinned)
+                let color = unsafe { item.property(&label) }
+                    .and_then(|value| value.downcast_ref::<CFNumber>()?.as_i64())
+                    .and_then(|color| u8::try_from(color).ok())
+                    .unwrap_or_default();
+                let name = unsafe { item.display_name() }.to_string();
+                (Tag { name, color }, pinned)
             })
-            .filter(|(name, _)| !name.is_empty())
+            .filter(|(tag, _)| !tag.name.is_empty())
             .collect(),
     )
 }

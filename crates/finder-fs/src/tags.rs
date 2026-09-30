@@ -1,14 +1,9 @@
-use std::ffi::{CStr, OsStr};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2_foundation::{
-    NSArray, NSDictionary, NSNumber, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults, ns_string,
-};
+use objc2_foundation::{NSArray, NSString, NSURL, NSURLTagNamesKey, NSUserDefaults, ns_string};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag {
@@ -58,17 +53,12 @@ fn colored(known: &[Tag], name: String) -> Tag {
     Tag { name, color }
 }
 
-/// Every tag Finder's sidebar lists, in its order.
+/// Every tag Finder's sidebar lists, in its order and colours.
 pub fn all() -> Vec<Tag> {
-    let known = finder_tags().filter(|tags| !tags.is_empty());
-    let Some(listed) = crate::sidebar::tags().filter(|tags| !tags.is_empty()) else {
-        return known.unwrap_or_else(standard);
-    };
-    let known = known.unwrap_or_default();
-    listed
-        .into_iter()
-        .map(|(name, _)| colored(&known, name))
-        .collect()
+    match crate::sidebar::tags().filter(|tags| !tags.is_empty()) {
+        Some(listed) => listed.into_iter().map(|(tag, _)| tag).collect(),
+        None => standard(),
+    }
 }
 
 /// The tags Finder's Tags settings list as favourites, for its menus.
@@ -97,70 +87,8 @@ pub fn recent() -> Vec<String> {
     let listed = crate::sidebar::tags().unwrap_or_default();
     listed
         .into_iter()
-        .filter_map(|(name, pinned)| (!pinned).then_some(name))
+        .filter_map(|(tag, pinned)| (!pinned).then_some(tag.name))
         .collect()
-}
-
-fn finder_tags() -> Option<Vec<Tag>> {
-    let dict = crate::plist_dict(&tag_dict()?)?;
-    let entries = dict
-        .objectForKey(ns_string!("FinderTags"))?
-        .downcast::<NSArray>()
-        .ok()?;
-    let tags = entries.iter().filter_map(|entry| {
-        let entry = entry.downcast::<NSDictionary>().ok()?;
-        let name = entry
-            .objectForKey(ns_string!("n"))?
-            .downcast::<NSString>()
-            .ok()?;
-        let color = entry
-            .objectForKey(ns_string!("l"))
-            .and_then(|color| color.downcast::<NSNumber>().ok())
-            .map_or(0, |color| color.unsignedCharValue());
-        Some(Tag {
-            name: name.to_string(),
-            color,
-        })
-    });
-    Some(tags.collect())
-}
-
-/// Not `$HOME`: a fixture home moves an app's folders, never Finder's tags.
-fn account_home() -> Option<PathBuf> {
-    let account = unsafe { libc::getpwuid(libc::getuid()).as_ref() }?;
-    if account.pw_dir.is_null() {
-        return None;
-    }
-    let home = unsafe { CStr::from_ptr(account.pw_dir) };
-    Some(PathBuf::from(OsStr::from_bytes(home.to_bytes())))
-}
-
-/// macOS 26 keeps `FinderTagDict` in the iCloud key-value store, not in `SyncedPreferences`.
-fn tag_dict() -> Option<Vec<u8>> {
-    let stores = std::fs::read_dir(account_home()?.join("Library/Daemon Containers")).ok()?;
-    stores.flatten().find_map(|store| {
-        let out = Command::new("/usr/bin/sqlite3")
-            .arg("-readonly")
-            .arg(
-                store
-                    .path()
-                    .join("Data/com.apple.kvs/com.apple.KeyValueService-Production.sqlite"),
-            )
-            .arg(
-                "select hex(ZPLISTDATAVALUE) from ZSYDMANAGEDKEYVALUE where ZKEY = 'FinderTagDict'",
-            )
-            .output()
-            .ok()?;
-        let hex = String::from_utf8(out.stdout).ok()?;
-        let hex = hex.trim();
-        if hex.is_empty() {
-            return None;
-        }
-        hex.as_bytes()
-            .chunks(2)
-            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
-            .collect()
-    })
 }
 
 /// `fileURLWithPath:` alone stats the path to learn whether it is a folder.
