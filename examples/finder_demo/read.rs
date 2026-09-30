@@ -635,20 +635,19 @@ impl FinderDemo {
                 .all(|line| preview::sized_by_index(&line.row).is_none())
             {
                 self.stats_pending = None;
-                self.stats = preview::summarize(key, &chosen, &self.tags, &self.stats_stale);
+                self.stats = preview::summarize(key, &chosen, &self.stats_stale);
                 return;
             }
         }
         self.stats_pending = Some(key);
         let stale = self.stats_stale.clone();
         let chosen = self.selected.snapshot();
-        let tags = self.tags.clone();
         cx.spawn(async move |this, cx| {
             let summary = cx
                 .background_executor()
                 .spawn(async move {
                     let picked = lines.iter().filter(|line| chosen.contains(&line.key));
-                    preview::summarize(key, picked, &tags, &stale)
+                    preview::summarize(key, picked, &stale)
                 })
                 .await;
             let Some(stats) = summary else {
@@ -1012,7 +1011,7 @@ impl FinderDemo {
         }
         data::unweigh(&dirs);
         for dir in &dirs {
-            crate::tags::forget_tags_in(dir);
+            crate::tags::tags_changed_in(dir);
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
                 match self.folders.shown(id) {
                     true => self.read_folder(id, cx),

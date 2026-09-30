@@ -302,7 +302,7 @@ impl FinderDemo {
                     None => customizer.held.push(tag.name.clone()),
                 }
                 let tag = *tag;
-                self.retag(
+                crate::tags::retag(
                     vec![folder],
                     move |paths| _ = finder_fs::tags::toggle(paths, tag),
                     cx,
@@ -310,7 +310,7 @@ impl FinderDemo {
             }
             Change::Untag => {
                 customizer.held.clear();
-                self.retag(
+                crate::tags::retag(
                     vec![folder],
                     |paths| _ = finder_fs::tags::set(&paths[0], &[]),
                     cx,

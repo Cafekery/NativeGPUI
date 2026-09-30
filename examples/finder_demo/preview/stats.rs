@@ -6,6 +6,7 @@ use gpui::SharedString;
 
 use super::card::STACK_LAYERS;
 use crate::data::{Face, Line, Row, day_string};
+use crate::tags::{RowTag, all, row_tags};
 
 pub(super) const CALCULATING: &str = "Calculating\u{2026}";
 
@@ -19,14 +20,13 @@ pub(crate) struct Stats {
     pub(crate) flat_bytes: u64,
     pub(crate) created: (f64, f64),
     pub(crate) modified: (f64, f64),
-    pub(crate) tags: Vec<usize>,
+    pub(crate) tags: Vec<RowTag>,
     pub(crate) head: Vec<Line>,
 }
 
 pub(crate) fn summarize<'a>(
     key: (u64, usize),
     picked: impl IntoIterator<Item = &'a Line>,
-    tags: &HashMap<SharedString, Vec<usize>>,
     stale: &AtomicBool,
 ) -> Option<Stats> {
     let mut stats = Stats {
@@ -61,13 +61,18 @@ pub(crate) fn summarize<'a>(
         if stats.head.len() < STACK_LAYERS.len() {
             stats.head.push(line.clone());
         }
-        for tag in tags.get(&line.key).map(Vec::as_slice).unwrap_or_default() {
-            if !stats.tags.contains(tag) {
-                stats.tags.push(*tag);
+        for tag in row_tags(&line.key) {
+            if !stats.tags.iter().any(|held| held.name == tag.name) {
+                stats.tags.push(tag);
             }
         }
     }
-    stats.tags.sort_unstable();
+    stats.tags.sort_by_key(|tag| {
+        all()
+            .iter()
+            .position(|listed| *listed.name == *tag.name)
+            .unwrap_or(usize::MAX)
+    });
     Some(stats)
 }
 
