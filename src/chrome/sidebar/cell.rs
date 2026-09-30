@@ -280,8 +280,8 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
 const PRIVATE_SYMBOLS: &str =
     "/System/Library/PrivateFrameworks/SFSymbols.framework/Resources/CoreGlyphsPrivate.bundle";
 
-/// Finder's AirDrop and Applications glyphs are symbols Apple keeps out of the public catalog.
-fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
+/// A symbol from the public catalog, else from the private one some of Finder's glyphs come from.
+pub fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
     let name = NSString::from_str(name);
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None).or_else(|| {
         let catalog = NSBundle::bundleWithPath(&NSString::from_str(PRIVATE_SYMBOLS))?;
@@ -442,6 +442,17 @@ fn key_window(view: &NSOutlineView) -> bool {
     view.window().is_some_and(|window| window.isKeyWindow())
 }
 
+fn icon_image(icon: &SidebarIcon, points: f64) -> Option<Retained<NSImage>> {
+    match icon {
+        SidebarIcon::Symbol(name) => system_symbol(name),
+        SidebarIcon::SymbolOrResource(name, resource) => {
+            system_symbol(name).or_else(|| core_types_template(resource, points))
+        }
+        SidebarIcon::SystemResource(name) => core_types_template(name, points),
+        SidebarIcon::Dot(_) | SidebarIcon::Dots => tag_dot_image(icon),
+    }
+}
+
 fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     if let Some(title) = unsafe { cell.textField() } {
         let wanted = NSString::from_str(&node.title);
@@ -457,12 +468,10 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
     cell.ivars().muted.set(node.muted);
 
     if let Some(view) = unsafe { cell.imageView() } {
-        let image = match &node.icon {
-            Some(SidebarIcon::Symbol(name)) => system_symbol(name),
-            Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
-            Some(icon @ (SidebarIcon::Dot(_) | SidebarIcon::Dots)) => tag_dot_image(icon),
-            None => None,
-        };
+        let image = node
+            .icon
+            .as_ref()
+            .and_then(|icon| icon_image(icon, icon_points));
         view.setImage(image.as_deref());
     }
 
@@ -564,9 +573,20 @@ mod tests {
 
     #[test]
     fn finders_own_glyphs_load_as_symbols_by_name() {
-        for name in ["airdrop", "appstore"] {
+        for name in ["airdrop", "appstore", "music"] {
             assert!(system_symbol(name).is_some(), "{name}");
         }
         assert!(system_symbol("not.a.real.sf.symbol").is_none());
+    }
+
+    #[test]
+    fn a_symbol_no_catalog_has_falls_back_to_its_art() {
+        let icon = |symbol: &str| {
+            SidebarIcon::SymbolOrResource(symbol.to_owned().into(), "SidebarMusicFolder".into())
+        };
+        let art = icon_image(&icon("not.a.real.sf.symbol"), 17.).expect("the art, not no icon");
+        assert_eq!(art.size(), NSSize::new(18., 18.));
+        let symbol = icon_image(&icon("music"), 17.).expect("the symbol");
+        assert_ne!(symbol.size(), art.size());
     }
 }
