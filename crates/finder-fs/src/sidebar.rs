@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
@@ -25,6 +25,8 @@ const SUFFIXES: [&str; 3] = ["sfl4", "sfl3", "sfl2"];
 const FAVORITES: &str = "com.apple.LSSharedFileList.FavoriteItems";
 const VOLUMES: &str = "com.apple.LSSharedFileList.FavoriteVolumes";
 const HIDDEN: &str = "com.apple.LSSharedFileList.ItemIsHidden";
+const TAGS: &str = "com.apple.LSSharedFileList.ProjectsItems";
+const TAG_LABEL: &str = "kLSSharedTagFileListItemLabel";
 const SHOWN: [&str; 3] = [
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrives",
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumes",
@@ -153,8 +155,7 @@ pub fn volume_kinds_shown() -> [bool; 3] {
     read(VOLUMES).map_or([true; 3], |(_, shown)| shown)
 }
 
-/// The symbol Finder draws for a File Provider domain: the one its extension names.
-pub fn provider_symbol(root: &std::path::Path) -> Option<String> {
+pub fn provider_symbol(root: &Path) -> Option<String> {
     let domain = crate::xattr::get(
         &crate::c_path(root).ok()?,
         c"com.apple.file-provider-domain-id",
@@ -312,13 +313,13 @@ fn truthy(value: &CFType) -> Option<bool> {
     }
 }
 
-/// The tags Finder's sidebar lists, in its order and colours, each with whether it is pinned there.
+/// The tags Finder's sidebar lists, in its order, each with whether it is pinned there.
 #[allow(deprecated)]
 pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
-    let (_list, items) = snapshot("com.apple.LSSharedFileList.ProjectsItems")?;
+    let (_list, items) = snapshot(TAGS)?;
     let hidden = CFString::from_static_str(HIDDEN);
     let pinned = CFString::from_static_str("kLSSharedTagFileListItemPinned");
-    let label = CFString::from_static_str("kLSSharedTagFileListItemLabel");
+    let label = CFString::from_static_str(TAG_LABEL);
     Some(
         items
             .iter()
@@ -341,14 +342,13 @@ pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
 }
 
 #[allow(deprecated)]
-pub(crate) fn recolor_tag(name: &str, color: u8) -> io::Result<()> {
-    let (_list, items) = snapshot("com.apple.LSSharedFileList.ProjectsItems")
-        .ok_or_else(|| io::Error::other("no tag list"))?;
+pub fn recolor_tag(name: &str, color: u8) -> io::Result<()> {
+    let (_list, items) = snapshot(TAGS).ok_or_else(|| io::Error::other("no tag list"))?;
     let item = items
         .iter()
         .find(|item| unsafe { item.display_name() }.to_string() == name)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, name))?;
-    let label = CFString::from_static_str("kLSSharedTagFileListItemLabel");
+    let label = CFString::from_static_str(TAG_LABEL);
     match unsafe { item.set_property(&label, &CFNumber::new_i32(color.into())) } {
         0 => Ok(()),
         status => Err(io::Error::other(format!(

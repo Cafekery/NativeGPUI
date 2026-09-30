@@ -274,7 +274,6 @@ fn type_symbol(kind: &UTType) -> Option<String> {
     Some(symbol_name(&*icon?).unwrap_or_else(|| "doc".into()))
 }
 
-/// The symbol a bundle names for itself (`CFBundleSymbolName`), as IconServices reads it.
 pub(crate) fn bundle_symbol(identifier: &str) -> Option<String> {
     let class = icon_class(c"ISBundleIdentifierIcon", sel!(initWithBundleIdentifier:))?;
     let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };

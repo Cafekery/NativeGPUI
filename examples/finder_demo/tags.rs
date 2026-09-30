@@ -361,7 +361,7 @@ impl FinderDemo {
             let written = cx
                 .background_executor()
                 .spawn(async move {
-                    finder_fs::tags::recolor(name, color)?;
+                    finder_fs::sidebar::recolor_tag(name, color)?;
                     reread_lists();
                     KNOWN.lock().unwrap().stale_all();
                     Ok::<(), io::Error>(())
