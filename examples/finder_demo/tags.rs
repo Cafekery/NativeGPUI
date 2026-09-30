@@ -177,7 +177,6 @@ pub(crate) fn tag_dots(tags: &[RowTag]) -> Option<AnyElement> {
     dots(tags, TAG_DOT, TAG_DOT_PITCH, TAG_DOTS_MAX)
 }
 
-/// Column view's larger dots, up to four, shrunk as a whole to fit their box; and their width.
 pub(crate) fn column_tag_dots(tags: &[RowTag]) -> Option<(f32, AnyElement)> {
     let shown = dot_colors(tags).count().min(COLUMN_DOTS_MAX);
     let scale = (COLUMN_DOTS_W / dots_w(shown, COLUMN_DOT, TAG_DOT_PITCH)).min(1.);
@@ -202,20 +201,24 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-/// Reads the disk: background work only. A listed tag wears Finder's colour, not the file's.
-fn read_row_tags(path: &str) -> Vec<RowTag> {
+/// Reads the disk. A listed tag wears Finder's colour, not the file's.
+pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
     let listed = all();
-    finder_fs::tags::of(Path::new(path))
+    let mut tags = finder_fs::tags::of(path);
+    for tag in &mut tags {
+        if let Some(it) = listed.iter().find(|it| it.name == tag.name) {
+            tag.color = it.color;
+        }
+    }
+    tags
+}
+
+fn read_row_tags(path: &str) -> Vec<RowTag> {
+    held_tags(Path::new(path))
         .into_iter()
-        .map(|tag| {
-            let color = listed
-                .iter()
-                .find(|it| it.name == tag.name)
-                .map_or(tag.color, |it| it.color);
-            RowTag {
-                name: tag.name.into(),
-                color,
-            }
+        .map(|tag| RowTag {
+            name: tag.name.into(),
+            color: tag.color,
         })
         .collect()
 }

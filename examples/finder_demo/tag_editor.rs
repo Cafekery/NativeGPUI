@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use block2::RcBlock;
@@ -25,7 +25,7 @@ use objc2_foundation::{
 };
 
 use crate::app::FinderDemo;
-use crate::tags::{all, retag, tag_ns_color};
+use crate::tags::{all, held_tags, retag, tag_ns_color};
 
 const WIDTH: f64 = 252.;
 const ROW: f64 = 22.;
@@ -181,9 +181,10 @@ impl Token {
                 .setFill();
             path.fill();
         }
-        let text = match self.selected(view) {
-            true => NSColor::alternateSelectedControlTextColor(),
-            false => NSColor::controlTextColor(),
+        let text = if self.selected(view) {
+            NSColor::alternateSelectedControlTextColor()
+        } else {
+            NSColor::controlTextColor()
         };
         let lower = if flipped { 1. } else { -1. };
         let rect = NSRect::new(
@@ -255,7 +256,6 @@ fn editor(field: &NSTextField) -> Option<Retained<NSTextView>> {
     field.currentEditor()?.downcast::<NSTextView>().ok()
 }
 
-/// The field's tokens, and the text typed between them.
 fn read(field: &NSTextField) -> (Vec<Tag>, Vec<String>) {
     let text = match editor(field).and_then(|editor| unsafe { editor.textStorage() }) {
         Some(storage) => Retained::into_super(Retained::into_super(storage)),
@@ -293,10 +293,10 @@ fn typed(runs: &[String]) -> impl Iterator<Item = &str> {
         .filter(|name| !name.is_empty())
 }
 
-/// The field's tags: its tokens, then each typed name, as the tag of that name if one is listed.
 pub(crate) fn tags_in(field: &NSTextField) -> Vec<Tag> {
     let (tokens, runs) = read(field);
-    let typed = typed(&runs).map(tag_named);
+    let listed = all();
+    let typed = typed(&runs).map(|name| tag_named(&listed, name));
     let mut tags: Vec<Tag> = Vec::new();
     for tag in tokens.into_iter().chain(typed) {
         if !tags.iter().any(|held| held.name == tag.name) {
@@ -340,7 +340,6 @@ fn show(field: &NSTextField, tags: &[Tag]) {
     editor.setSelectedRange(NSRange::new(text.length(), 0));
 }
 
-/// Finder's tag field: a token per tag, in its colour; a comma or Return turns typing into tokens.
 pub(crate) fn tag_field(
     mtm: MainThreadMarker,
     frame: NSRect,
@@ -359,31 +358,16 @@ pub(crate) fn tag_field(
     field
 }
 
-fn tag_named(name: &str) -> Tag {
+fn tag_named(listed: &[Tag], name: &str) -> Tag {
     let lower = name.to_lowercase();
-    all()
+    listed
         .iter()
         .find(|tag| tag.name.to_lowercase() == lower)
         .cloned()
-        .unwrap_or(Tag {
+        .unwrap_or_else(|| Tag {
             name: name.to_string(),
             color: 0,
         })
-}
-
-/// The item's tags, each listed one in the sidebar's colour.
-pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
-    let listed = all();
-    finder_fs::tags::of(path)
-        .into_iter()
-        .map(|tag| Tag {
-            color: listed
-                .iter()
-                .find(|it| it.name == tag.name)
-                .map_or(tag.color, |it| it.color),
-            name: tag.name,
-        })
-        .collect()
 }
 
 impl FinderDemo {
@@ -518,15 +502,15 @@ impl FinderDemo {
             return;
         };
         let now = tags_in(&editor.field);
-        let names: Vec<String> = now.iter().map(|tag| tag.name.clone()).collect();
-        let before = std::mem::replace(&mut editor.shared, names.clone());
+        let names = now.iter().map(|tag| tag.name.clone()).collect();
+        let before = std::mem::replace(&mut editor.shared, names);
         let add: Vec<Tag> = now
             .into_iter()
             .filter(|tag| !before.contains(&tag.name))
             .collect();
         let remove: Vec<String> = before
             .into_iter()
-            .filter(|name| !names.contains(name))
+            .filter(|name| !editor.shared.contains(name))
             .collect();
         if add.is_empty() && remove.is_empty() {
             return;
