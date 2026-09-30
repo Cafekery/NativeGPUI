@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-use gpui::{AnyElement, Context, Hsla, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
 use objc2_app_kit::{NSColor, NSColorSpace};
 use objc2_core_foundation::CGFloat;
@@ -294,6 +294,25 @@ pub(crate) fn tags_changed_in(dir: &Path) {
     KNOWN.lock().unwrap().stale(dir);
 }
 
+pub(crate) fn retag(
+    paths: Vec<PathBuf>,
+    write: impl FnOnce(&[PathBuf]) + Send + 'static,
+    cx: &App,
+) {
+    cx.background_executor()
+        .spawn(async move {
+            write(&paths);
+            for path in paths {
+                let key = path.to_string_lossy().into_owned();
+                let tags = read_row_tags(&key);
+                KNOWN.lock().unwrap().insert(key, tags);
+            }
+            LANDED.fetch_add(1, Ordering::Release);
+            crate::read::EVENTS.ring();
+        })
+        .detach();
+}
+
 impl FinderDemo {
     pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = self
@@ -303,32 +322,12 @@ impl FinderDemo {
             .map(|key| PathBuf::from(key.as_ref()))
             .collect();
         let wanted = tags()[tag].clone();
-        self.retag(
+        retag(
             paths,
             move |paths| {
                 finder_fs::tags::toggle(paths, &wanted).ok();
             },
             cx,
         );
-    }
-
-    pub(crate) fn retag(
-        &self,
-        paths: Vec<PathBuf>,
-        write: impl FnOnce(&[PathBuf]) + Send + 'static,
-        cx: &mut Context<Self>,
-    ) {
-        cx.background_executor()
-            .spawn(async move {
-                write(&paths);
-                for path in paths {
-                    let key = path.to_string_lossy().into_owned();
-                    let tags = read_row_tags(&key);
-                    KNOWN.lock().unwrap().insert(key, tags);
-                }
-                LANDED.fetch_add(1, Ordering::Release);
-                crate::read::EVENTS.ring();
-            })
-            .detach();
     }
 }
