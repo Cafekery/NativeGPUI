@@ -373,13 +373,14 @@ fn tag_named(name: &str) -> Tag {
 
 /// The item's tags, each listed one in the sidebar's colour.
 pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
+    let listed = all();
     finder_fs::tags::of(path)
         .into_iter()
         .map(|tag| Tag {
-            color: all()
+            color: listed
                 .iter()
-                .find(|listed| listed.name == tag.name)
-                .map_or(tag.color, |listed| listed.color),
+                .find(|it| it.name == tag.name)
+                .map_or(tag.color, |it| it.color),
             name: tag.name,
         })
         .collect()
@@ -411,8 +412,8 @@ impl FinderDemo {
             ),
             count => format!("Assign tags to {count} items"),
         };
-        let listed = all().len().min(ROWS);
-        let height = HEAD + listed as f64 * ROW + 10.;
+        let listed = all();
+        let height = HEAD + listed.len().min(ROWS) as f64 * ROW + 10.;
         let spec = PopoverOptions {
             size: size(px(WIDTH as f32), px(height as f32)),
             edge: SurfaceEdge::Below,
@@ -453,7 +454,7 @@ impl FinderDemo {
                     .ok();
             });
 
-            for (at, tag) in all().iter().take(ROWS).enumerate() {
+            for (at, tag) in listed.iter().take(ROWS).enumerate() {
                 let y = height - HEAD - (at as f64 + 1.) * ROW;
                 let button = NSButton::initWithFrame(
                     NSButton::alloc(mtm),

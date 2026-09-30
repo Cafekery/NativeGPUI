@@ -2,10 +2,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use finder_fs::tags::Tag;
 use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
@@ -31,47 +30,23 @@ pub(crate) struct RowTag {
     pub(crate) color: u8,
 }
 
-static FAVORITES: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
-static LISTED: AtomicPtr<Vec<Tag>> = AtomicPtr::new(ptr::null_mut());
+static FAVORITES: LazyLock<RwLock<Arc<[Tag]>>> =
+    LazyLock::new(|| RwLock::new(finder_fs::tags::favorites().into()));
+static LISTED: LazyLock<RwLock<Arc<[Tag]>>> =
+    LazyLock::new(|| RwLock::new(finder_fs::tags::all().into()));
 
-/// Replaced, never freed: callers keep `&'static` borrows of every list they read.
-fn listed(slot: &AtomicPtr<Vec<Tag>>, read: fn() -> Vec<Tag>) -> &'static [Tag] {
-    let mut at = slot.load(Ordering::Acquire);
-    if at.is_null() {
-        let fresh = Box::into_raw(Box::new(read()));
-        at = match slot.compare_exchange(
-            ptr::null_mut(),
-            fresh,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => fresh,
-            Err(first) => {
-                drop(unsafe { Box::from_raw(fresh) });
-                first
-            }
-        };
-    }
-    unsafe { &*at }
+pub(crate) fn tags() -> Arc<[Tag]> {
+    FAVORITES.read().unwrap().clone()
 }
 
-pub(crate) fn tags() -> &'static [Tag] {
-    listed(&FAVORITES, finder_fs::tags::favorites)
-}
-
-pub(crate) fn all() -> &'static [Tag] {
-    listed(&LISTED, finder_fs::tags::all)
+pub(crate) fn all() -> Arc<[Tag]> {
+    LISTED.read().unwrap().clone()
 }
 
 fn reread_lists() {
-    LISTED.store(
-        Box::into_raw(Box::new(finder_fs::tags::all())),
-        Ordering::Release,
-    );
-    FAVORITES.store(
-        Box::into_raw(Box::new(finder_fs::tags::favorites())),
-        Ordering::Release,
-    );
+    let (listed, favorites) = (finder_fs::tags::all(), finder_fs::tags::favorites());
+    *LISTED.write().unwrap() = listed.into();
+    *FAVORITES.write().unwrap() = favorites.into();
 }
 
 fn tag_system_color(color: u8) -> Option<SystemColor> {
@@ -229,20 +204,19 @@ pub(crate) fn tag_title(id: &str) -> String {
 
 /// Reads the disk: background work only. A listed tag wears Finder's colour, not the file's.
 fn read_row_tags(path: &str) -> Vec<RowTag> {
+    let listed = all();
     finder_fs::tags::of(Path::new(path))
         .into_iter()
-        .map(
-            |tag| match all().iter().find(|listed| listed.name == tag.name) {
-                Some(listed) => RowTag {
-                    name: SharedString::new_static(listed.name.as_str()),
-                    color: listed.color,
-                },
-                None => RowTag {
-                    name: tag.name.into(),
-                    color: tag.color,
-                },
-            },
-        )
+        .map(|tag| {
+            let color = listed
+                .iter()
+                .find(|it| it.name == tag.name)
+                .map_or(tag.color, |it| it.color);
+            RowTag {
+                name: tag.name.into(),
+                color,
+            }
+        })
         .collect()
 }
 

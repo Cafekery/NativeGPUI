@@ -92,9 +92,9 @@ pub(crate) struct Customizer {
 struct Parts {
     icon: Retained<NSImageView>,
     symbols: Vec<(&'static str, Retained<NSButton>)>,
-    swatches: Vec<(&'static Tag, Retained<NSButton>)>,
+    swatches: Vec<(Tag, Retained<NSButton>)>,
     more: Retained<NSPopUpButton>,
-    more_tags: Vec<&'static Tag>,
+    more_tags: Vec<Tag>,
     field: Retained<NSTextField>,
     typing: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
@@ -107,7 +107,7 @@ impl Drop for Parts {
 
 enum Change {
     Decorate(Option<Decoration>),
-    Toggle(&'static Tag),
+    Toggle(Tag),
     Untag,
     More,
     Emoji,
@@ -301,10 +301,10 @@ impl FinderDemo {
                     Some(at) => _ = customizer.held.remove(at),
                     None => customizer.held.push(tag.name.clone()),
                 }
-                let tag = *tag;
+                let tag = tag.clone();
                 crate::tags::retag(
                     vec![folder],
-                    move |paths| _ = finder_fs::tags::toggle(paths, tag),
+                    move |paths| _ = finder_fs::tags::toggle(paths, &tag),
                     cx,
                 );
             }
@@ -321,7 +321,7 @@ impl FinderDemo {
                 let listed = parts.more_tags.len() as isize;
                 let tag = usize::try_from(at - 1)
                     .ok()
-                    .and_then(|at| parts.more_tags.get(at).copied());
+                    .and_then(|at| parts.more_tags.get(at).cloned());
                 match tag {
                     Some(tag) => self.change_folder(&Change::Toggle(tag), window, cx),
                     None if at == listed + 2 => {
@@ -443,15 +443,16 @@ fn build<Handler: Fn(&mut Window, &mut App) + 'static>(
             let swatch = image_button(mtm, at(41. + 34. * index as f64, 144., 26., 26.));
             swatch.setAccessibilityLabel(Some(&ns(&tag.name)));
             identify(&swatch, &format!("tag-{}", tag.name));
-            actions.on_action(&swatch, change(Change::Toggle(tag)));
+            actions.on_action(&swatch, change(Change::Toggle(tag.clone())));
             view.addSubview(&swatch);
-            (tag, swatch)
+            (tag.clone(), swatch)
         })
         .collect();
 
     let more_tags: Vec<_> = crate::tags::all()
         .iter()
         .filter(|tag| !swatches.iter().any(|(shown, _)| shown.name == tag.name))
+        .cloned()
         .collect();
     let more = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(mtm),
