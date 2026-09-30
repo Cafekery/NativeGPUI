@@ -320,7 +320,7 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
 const PRIVATE_SYMBOLS: &str =
     "/System/Library/PrivateFrameworks/SFSymbols.framework/Resources/CoreGlyphsPrivate.bundle";
 
-/// A symbol from the public catalog, else from the private one some of Finder's glyphs come from.
+/// A symbol from the public catalog, else from the private one.
 pub fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
     let name = NSString::from_str(name);
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None).or_else(|| {
