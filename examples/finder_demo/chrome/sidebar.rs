@@ -6,7 +6,7 @@ use finder_fs::volumes::Standard;
 use gpui::{App, SharedString, Window, prelude::*, px};
 use native_gpui::sidebar::{
     NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
-    sidebar_group, sidebar_item,
+    sidebar_group, sidebar_item, system_symbol,
 };
 use native_gpui::{CheckState, Material};
 use objc2_app_kit::NSWorkspace;
@@ -135,6 +135,14 @@ fn trash_path() -> Option<PathBuf> {
     finder_fs::volumes::standard(Standard::Trash)
 }
 
+fn provider_glyph(root: Option<&Path>) -> Glyph {
+    // A provider may name a symbol of its own bundle's, which only it can load.
+    let named = root
+        .and_then(finder_fs::sidebar::provider_symbol)
+        .filter(|name| system_symbol(name).is_some());
+    Glyph::Symbol(named.map_or("externaldrive.badge.icloud", |name| intern(&name)))
+}
+
 fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row> {
     use finder_fs::sidebar::Special::*;
     let id = match (&listed.path, listed.special) {
@@ -145,7 +153,7 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
     };
     let glyph = match listed.special {
         Some(ICloudDrive) => Glyph::Symbol("icloud"),
-        Some(FileProvider) => Glyph::Symbol("externaldrive.badge.icloud"),
+        Some(FileProvider) => provider_glyph(listed.path.as_deref()),
         Some(AirDrop) => Glyph::SymbolOr("airdrop", "SidebarAirDrop"),
         Some(Network) => Glyph::Symbol("network"),
         Some(Trash) => Glyph::Symbol("trash"),
