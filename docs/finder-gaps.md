@@ -368,8 +368,9 @@ chevron (Δ 0.0) match; what is left:
 - [ ] A crumb name cut to the shared width fades out over its last ~9 pt in Finder (140 → 32 across
   x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x, so
   three capped names end 0.5 pt later.
-- [ ] The startup-disk crumb's icon ink is 12 × 13.5 pt against Finder's 11 × 12.5 pt, on the same
-  centre. Folder crumb icons match in dark and run 0.5 pt wider a side in light.
+- [x] Every crumb icon sits in the 14 pt square a small NSPathControl draws its component images in
+  (Finder's crumb widths are that control's, to the point), so each kind's ink is Finder's: the
+  startup disk 11 × 13 pt, a folder 13 × 11.5, a special folder 13 × 12.
 - [x] Like Finder, the demo paints the next alternating row into the 10 pt between the last row and
   the path bar (y 642–652, 42,42,42 in dark), including right after a scroll that ran past the end.
 - [x] In column view the trail ends at a lone selected item that opens no column (an app, a symlink
