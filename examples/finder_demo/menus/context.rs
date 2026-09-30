@@ -12,7 +12,7 @@ use super::{Act, Menu};
 use crate::app::FinderDemo;
 use crate::data::{Column, Line, SORT_KEYS, SORT_TITLES, intern, intern_path, is_trash};
 use crate::ops::clipboard::{Pasting, can_paste};
-use crate::tags::{finder_color, finder_color_rgb, tags};
+use crate::tags::{RowTag, finder_color, finder_color_rgb, tags};
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::header::{ColumnSpec, column_title};
 use crate::views::icon::Arrangement;
@@ -201,7 +201,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Share…"), Act::Share);
         menu.separator();
     }
-    let carried: Vec<Vec<usize>> = match selected.contains(&line.key) {
+    let carried: Vec<Vec<RowTag>> = match selected.contains(&line.key) {
         true => selected
             .iter()
             .map(|key| crate::tags::row_tags(key))
@@ -230,7 +230,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu
 }
 
-pub(super) fn swatch_row(carried: &[Vec<usize>], lone_folder: bool) -> MenuView {
+pub(super) fn swatch_row(carried: &[Vec<RowTag>], lone_folder: bool) -> MenuView {
     let picked = !carried.is_empty();
     let button = match lone_folder {
         true => "Customize Folder…",
@@ -244,9 +244,12 @@ pub(super) fn swatch_row(carried: &[Vec<usize>], lone_folder: bool) -> MenuView 
     )
 }
 
-fn tag_swatches(carried: &[Vec<usize>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
-    tags().iter().enumerate().map(|(index, tag)| {
-        let removes = !carried.is_empty() && carried.iter().all(|tags| tags.contains(&index));
+fn tag_swatches(carried: &[Vec<RowTag>]) -> impl Iterator<Item = (Hsla, String)> + '_ {
+    tags().iter().map(|tag| {
+        let removes = !carried.is_empty()
+            && carried
+                .iter()
+                .all(|held| held.iter().any(|it| *it.name == *tag.name));
         let verb = if removes { "Remove" } else { "Add" };
         (
             finder_color(tag.color),

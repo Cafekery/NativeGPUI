@@ -23,7 +23,7 @@ use crate::listing::Slot;
 use crate::menus::rows_menu;
 use crate::palette::Palette;
 use crate::prefs;
-use crate::tags::{Tags, tag_dots};
+use crate::tags::{RowTag, row_tags, tag_dots};
 use crate::ui::{axis_locked, menu_ring, pick_on_click, pick_on_press, rename_field, text_width};
 use crate::view::LIST_VIEW;
 use crate::views::header::{ColumnSpec, HEADER_H, PANE_INSET};
@@ -143,7 +143,6 @@ struct Look {
 struct Marks {
     selected: Arc<HashSet<SharedString>>,
     expanded: Arc<HashSet<SharedString>>,
-    tags: Tags,
     renaming: Option<SharedString>,
     menu_row: Option<SharedString>,
     cursor: Option<SharedString>,
@@ -169,7 +168,7 @@ struct Drawn {
     selected: bool,
     ring: bool,
     dropping: Option<Hsla>,
-    tags: Option<Vec<usize>>,
+    tags: Vec<RowTag>,
     art: Art,
     anchor: Option<Anchor>,
     open: bool,
@@ -386,7 +385,6 @@ impl FinderDemo {
         let marks = Marks {
             selected: self.selected.snapshot(),
             expanded: self.expanded.snapshot(),
-            tags: self.tags.clone(),
             renaming: self.renaming.clone(),
             menu_row: self.menu_row.clone(),
             cursor: self.cursor.clone(),
@@ -601,13 +599,7 @@ fn name_cell(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
                 .text_ellipsis_middle()
                 .child(line.row.display.clone()),
         })
-        .children(
-            drawn
-                .tags
-                .as_deref()
-                .and_then(tag_dots)
-                .map(|dots| div().ml(px(TAG_DOTS_GAP)).child(dots)),
-        )
+        .children(tag_dots(&drawn.tags).map(|dots| div().ml(px(TAG_DOTS_GAP)).child(dots)))
         .when(line.row.dataless, |name| {
             name.child(div().flex_1()).children(
                 small_glyph(
@@ -777,7 +769,7 @@ fn row(
         selected,
         ring,
         dropping,
-        tags: marks.tags.get(&line.key).cloned(),
+        tags: row_tags(&line.key),
         art: list_art(&line.row, look.icon, look.scale, look.previews),
         anchor: cursor.then(|| marks.ql_icon.clone()),
         open: marks.expanded.contains(&line.key),
