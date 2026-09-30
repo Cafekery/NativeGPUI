@@ -370,7 +370,9 @@ chevron (Δ 0.0) match; what is left:
   three capped names end 0.5 pt later.
 - [x] Every crumb icon sits in the 14 pt square a small NSPathControl draws its component images in
   (Finder's crumb widths are that control's, to the point), so each kind's ink is Finder's: the
-  startup disk 11 × 13 pt, a folder 13 × 11.5, a special folder 13 × 12.
+  startup disk 11 × 13 pt, a folder 13 × 11.5, a special folder 13 × 12. A folder crumb is plain
+  whatever the folder holds: `iconForFile:` on a folder with contents gives the plain folder to the
+  byte, so the path bar has none of the list's sheet.
 - [x] Like Finder, the demo paints the next alternating row into the 10 pt between the last row and
   the path bar (y 642–652, 42,42,42 in dark), including right after a scroll that ran past the end.
 - [x] In column view the trail ends at a lone selected item that opens no column (an app, a symlink

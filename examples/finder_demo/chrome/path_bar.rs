@@ -81,6 +81,15 @@ thread_local! {
     static ART: RefCell<(u64, Art)> = RefCell::default();
 }
 
+// Finder's path bar draws a folder as `iconForFile:` gives it: plain, whatever it holds.
+fn plain(kind: FileType<'static>) -> FileType<'static> {
+    match kind {
+        FileType::FullFolder => FileType::Folder,
+        FileType::FullPath(path) => FileType::Path(path),
+        kind => kind,
+    }
+}
+
 fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'static> {
     let custom = crate::custom::custom_icon(&SharedString::new_static(path));
     ART.with_borrow_mut(|(at, kept)| {
@@ -90,7 +99,7 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
         }
         *kept
             .entry((path, holds, custom))
-            .or_insert_with(|| folder_artwork(path, holds))
+            .or_insert_with(|| plain(folder_artwork(path, holds)))
     })
 }
 
@@ -189,7 +198,7 @@ impl FinderDemo {
             let last = index + 1 == crumbs.len();
             let (kind, face) = match &lone {
                 Some(line) if last => (
-                    line.row.artwork.unwrap_or(line.row.face.stand_in()),
+                    plain(line.row.artwork.unwrap_or(line.row.face.stand_in())),
                     line.row.face,
                 ),
                 _ if index == 0 && !target.is_some_and(crate::data::is_trash) => (
