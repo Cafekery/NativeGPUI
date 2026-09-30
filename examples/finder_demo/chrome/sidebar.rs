@@ -77,7 +77,7 @@ impl Row {
 fn glyph_of(path: &Path) -> Glyph {
     use finder_fs::volumes::Standard::*;
     let standard = [
-        (Applications, Glyph::Artwork("SidebarApplicationsFolder")),
+        (Applications, Glyph::Symbol("appstore")),
         (Desktop, Glyph::Symbol("menubar.dock.rectangle")),
         (Documents, Glyph::Symbol("doc")),
         (Downloads, Glyph::Symbol("arrow.down.circle")),
@@ -94,14 +94,14 @@ fn glyph_of(path: &Path) -> Glyph {
     let home = finder_fs::volumes::standard(Home).unwrap_or_default();
     let in_home = |leaf: &str| path == home.join(leaf);
     match path.to_string_lossy().as_ref() {
-        "/Applications" => Glyph::Artwork("SidebarApplicationsFolder"),
+        "/Applications" => Glyph::Symbol("appstore"),
         "/Applications/Utilities" => Glyph::Symbol("wrench.and.screwdriver.fill"),
         "/Library" | "/System/Library" => Glyph::Symbol("building.classical.columns"),
         "/Users" => Glyph::Symbol("person.crop.circle"),
         _ if in_home("Developer") => Glyph::Symbol("hammer"),
         _ if in_home("Public") => Glyph::Symbol("figure.walk.diamond"),
         _ if in_home("Library") => Glyph::Symbol("building.classical.columns"),
-        _ if in_home("Applications") => Glyph::Artwork("SidebarApplicationsFolder"),
+        _ if in_home("Applications") => Glyph::Symbol("appstore"),
         _ => pinned_glyph(path),
     }
 }
@@ -122,9 +122,7 @@ fn pinned_title(path: &Path) -> String {
 fn pinned_glyph(path: &Path) -> Glyph {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     match name.rsplit_once('.') {
-        Some((_, ext)) if ext.eq_ignore_ascii_case("app") => {
-            Glyph::Artwork("SidebarApplicationsFolder")
-        }
+        Some((_, ext)) if ext.eq_ignore_ascii_case("app") => Glyph::Symbol("appstore"),
         Some((_, "savedSearch")) => Glyph::Symbol("folder.badge.gearshape"),
         Some(_) if finder_fs::kind::is_package_name(&name) => Glyph::Symbol("questionmark.square"),
         _ => Glyph::Symbol("folder"),
@@ -146,7 +144,7 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
     let glyph = match listed.special {
         Some(ICloudDrive) => Glyph::Symbol("icloud"),
         Some(FileProvider) => Glyph::Symbol("externaldrive.badge.icloud"),
-        Some(AirDrop) => Glyph::Artwork("SidebarAirDrop"),
+        Some(AirDrop) => Glyph::Symbol("airdrop"),
         Some(Network) => Glyph::Symbol("network"),
         Some(Trash) => Glyph::Symbol("trash"),
         _ if listed.network => Glyph::Symbol(server_symbol(

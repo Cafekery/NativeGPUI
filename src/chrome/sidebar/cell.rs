@@ -198,6 +198,18 @@ fn nearest_rep_points(available: impl IntoIterator<Item = f64>, wanted: f64) -> 
     })
 }
 
+const PRIVATE_SYMBOLS: &str =
+    "/System/Library/PrivateFrameworks/SFSymbols.framework/Resources/CoreGlyphsPrivate.bundle";
+
+/// Finder's AirDrop and Applications glyphs are symbols Apple keeps out of the public catalog.
+fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
+    let name = NSString::from_str(name);
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None).or_else(|| {
+        let catalog = NSBundle::bundleWithPath(&NSString::from_str(PRIVATE_SYMBOLS))?;
+        NSImage::imageWithSymbolName_bundle_variableValue(&name, Some(&catalog), 1.)
+    })
+}
+
 pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImage>> {
     let image = build_core_types_template(resource, points.to_f64())?;
     image.setSize(NSSize::new(points.to_f64(), points.to_f64()));
@@ -367,12 +379,7 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
 
     if let Some(view) = unsafe { cell.imageView() } {
         let image = match &node.icon {
-            Some(SidebarIcon::Symbol(name)) => {
-                NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(name),
-                    None,
-                )
-            }
+            Some(SidebarIcon::Symbol(name)) => system_symbol(name),
             Some(SidebarIcon::SystemResource(name)) => core_types_template(name, icon_points),
             Some(icon @ (SidebarIcon::Dot(_) | SidebarIcon::Dots)) => tag_dot_image(icon),
             None => None,
@@ -474,5 +481,13 @@ mod tests {
         let sized = super::system_template("SidebarAirDrop", gpui::px(17.)).expect("the same art");
         assert_eq!(sized.size(), NSSize::new(17., 17.));
         assert!(build_core_types_template("SidebarNoSuchThing", 17.).is_none());
+    }
+
+    #[test]
+    fn finders_own_glyphs_load_as_symbols_by_name() {
+        for name in ["airdrop", "appstore"] {
+            assert!(system_symbol(name).is_some(), "{name}");
+        }
+        assert!(system_symbol("not.a.real.sf.symbol").is_none());
     }
 }
