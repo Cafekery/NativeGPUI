@@ -9,14 +9,15 @@ use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::tokens::Appearance;
 use native_gpui::{NativePopover, PopoverBehavior, PopoverOptions, present_popover};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject};
-use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAttachmentAttributeName, NSAttributedStringAttachmentConveniences,
-    NSBezierPath, NSButton, NSCell, NSCellImagePosition, NSColor, NSControlTextEditingDelegate,
-    NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSStringDrawing, NSTextAlignment, NSTextAttachment,
-    NSTextAttachmentCell, NSTextField, NSTextFieldDelegate, NSTextView, NSView,
+    NSBezierPath, NSButton, NSCell, NSCellImagePosition, NSColor, NSControl,
+    NSControlTextEditingDelegate, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSImage, NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing,
+    NSTextAlignment, NSTextAttachment, NSTextAttachmentCell, NSTextField, NSTextFieldDelegate,
+    NSTextView, NSView,
 };
 use objc2_foundation::{
     NSAttributedString, NSAttributedStringKey, NSDictionary, NSMutableAttributedString,
@@ -213,9 +214,26 @@ define_class!(
             let Some(field) = object.downcast_ref::<NSTextField>() else {
                 return;
             };
-            if read(field).1.iter().any(|typed| typed.contains(',')) {
+            if read(field).1.iter().any(|run| run.contains(',')) {
                 show(field, &tags_in(field));
             }
+        }
+
+        /// A field that applies as editing ends lets Return end it too; the popover's stays open.
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, control: &NSControl, _: &NSTextView, selector: Sel) -> Bool {
+            let Some(field) = control.downcast_ref::<NSTextField>() else {
+                return Bool::NO;
+            };
+            if selector != sel!(insertNewline:) || typed(&read(field).1).next().is_none() {
+                return Bool::NO;
+            }
+            show(field, &tags_in(field));
+            Bool::new(
+                !field
+                    .cell()
+                    .is_some_and(|cell| cell.sendsActionOnEndEditing()),
+            )
         }
     }
 
@@ -268,15 +286,17 @@ fn read(field: &NSTextField) -> (Vec<Tag>, Vec<String>) {
     (tokens, typed)
 }
 
-/// The field's tags: its tokens, then each typed name, as the tag of that name if one is listed.
-pub(crate) fn tags_in(field: &NSTextField) -> Vec<Tag> {
-    let (tokens, typed) = read(field);
-    let typed = typed
-        .iter()
+fn typed(runs: &[String]) -> impl Iterator<Item = &str> {
+    runs.iter()
         .flat_map(|run| run.split(','))
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map(tag_named);
+}
+
+/// The field's tags: its tokens, then each typed name, as the tag of that name if one is listed.
+pub(crate) fn tags_in(field: &NSTextField) -> Vec<Tag> {
+    let (tokens, runs) = read(field);
+    let typed = typed(&runs).map(tag_named);
     let mut tags: Vec<Tag> = Vec::new();
     for tag in tokens.into_iter().chain(typed) {
         if !tags.iter().any(|held| held.name == tag.name) {
@@ -320,7 +340,7 @@ fn show(field: &NSTextField, tags: &[Tag]) {
     editor.setSelectedRange(NSRange::new(text.length(), 0));
 }
 
-/// Finder's tag field: each tag a token in its colour; typed names become tokens at a comma.
+/// Finder's tag field: a token per tag, in its colour; a comma or Return turns typing into tokens.
 pub(crate) fn tag_field(
     mtm: MainThreadMarker,
     frame: NSRect,
@@ -368,10 +388,7 @@ pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
 impl FinderDemo {
     pub(crate) fn edit_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tag_editor.is_some() {
-            self.commit_tags(cx);
-            if let Some(editor) = self.tag_editor.take() {
-                editor.popover.close();
-            }
+            self.close_tag_editor(cx);
             return;
         }
         let paths = self.paths();
@@ -431,7 +448,9 @@ impl FinderDemo {
 
             let on_return = demo.clone();
             actions.on_action(&field, move |_, app| {
-                on_return.update(app, |this, cx| this.commit_tags(cx)).ok();
+                on_return
+                    .update(app, |this, cx| this.close_tag_editor(cx))
+                    .ok();
             });
 
             for (at, tag) in all().iter().take(ROWS).enumerate() {
@@ -483,6 +502,13 @@ impl FinderDemo {
             shared,
             paths,
         });
+    }
+
+    fn close_tag_editor(&mut self, cx: &mut Context<Self>) {
+        self.commit_tags(cx);
+        if let Some(editor) = self.tag_editor.take() {
+            editor.popover.close();
+        }
     }
 
     /// Writes only the change since the last write, so a tag not every item shares stays put.
