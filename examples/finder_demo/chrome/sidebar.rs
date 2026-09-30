@@ -756,7 +756,7 @@ impl FinderDemo {
             return;
         };
         let add = [tag.clone()];
-        self.retag(
+        crate::tags::retag(
             paths.to_vec(),
             move |paths| {
                 for path in paths {

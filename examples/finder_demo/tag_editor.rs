@@ -24,7 +24,7 @@ use objc2_foundation::{
 };
 
 use crate::app::FinderDemo;
-use crate::tags::{all, tag_ns_color};
+use crate::tags::{all, retag, tag_ns_color};
 
 const WIDTH: f64 = 252.;
 const ROW: f64 = 22.;
@@ -504,9 +504,8 @@ impl FinderDemo {
         if add.is_empty() && remove.is_empty() {
             return;
         }
-        let paths = editor.paths.clone();
-        self.retag(
-            paths,
+        retag(
+            editor.paths.clone(),
             move |paths| {
                 finder_fs::tags::apply(paths, &add, &remove).ok();
             },
