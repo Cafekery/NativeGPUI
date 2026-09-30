@@ -18,8 +18,8 @@ use crate::art::row_art;
 use crate::data::{
     Folder, Line, Row, VolumeInfo, byte_string, day_string, folder_of, intern_path, volume_at,
 };
-use crate::tag_editor::{held_tags, tag_field, tags_in};
-use crate::tags::retag;
+use crate::tag_editor::{tag_field, tags_in};
+use crate::tags::{held_tags, retag};
 
 pub(crate) const WIDTH: f32 = 265.;
 pub(crate) const HEIGHT: f32 = 541.;
@@ -53,16 +53,13 @@ fn heading(text: SharedString) -> Div {
 pub(crate) struct Info {
     line: Line,
     where_: SharedString,
-    tags: Vec<Tag>,
+    tags: Option<Rc<[Tag]>>,
 }
 
 impl Info {
     pub(crate) fn new(line: Line, where_: SharedString) -> Self {
         let path = Path::new(line.row.path.as_ref());
-        let tags = match path.is_absolute() {
-            true => held_tags(path),
-            false => Vec::new(),
-        };
+        let tags = path.is_absolute().then(|| held_tags(path).into());
         Info { line, where_, tags }
     }
 
@@ -116,7 +113,7 @@ fn volume_fields(volume: &VolumeInfo, row: &Row) -> Vec<(&'static str, SharedStr
     ]
 }
 
-fn tags_field(path: SharedString, tags: Vec<Tag>) -> impl IntoElement {
+fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
     let mut hasher = DefaultHasher::new();
     ("ng.finder.info.tags", path.as_ref()).hash(&mut hasher);
     let key = hasher.finish();
@@ -193,7 +190,6 @@ impl Render for Info {
                 ("Modified", day_string(row.modified_at).into()),
             ],
         };
-        let tagged = Path::new(row.path.as_ref()).is_absolute();
         native_root(
             body()
                 .child(
@@ -228,8 +224,8 @@ impl Render for Info {
                                 }),
                         ),
                 )
-                .when(tagged, |body| {
-                    body.child(tags_field(row.path.clone(), self.tags.clone()))
+                .when_some(self.tags.clone(), |body, tags| {
+                    body.child(tags_field(row.path.clone(), tags))
                 })
                 .child(Self::section("General", true))
                 .child(
