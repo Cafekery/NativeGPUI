@@ -151,6 +151,16 @@ pub fn volume_kinds_shown() -> [bool; 3] {
     read(VOLUMES).map_or([true; 3], |(_, shown)| shown)
 }
 
+/// The symbol Finder draws for a File Provider domain: the one its extension names.
+pub fn provider_symbol(root: &std::path::Path) -> Option<String> {
+    let domain = crate::xattr::get(
+        &crate::c_path(root).ok()?,
+        c"com.apple.file-provider-domain-id",
+    )?;
+    let extension = std::str::from_utf8(&domain).ok()?.split('/').next()?;
+    crate::servers::bundle_symbol(extension)
+}
+
 /// Finder's sections in its own order, whatever order its list keeps.
 fn arrange(
     items: &[Item],
