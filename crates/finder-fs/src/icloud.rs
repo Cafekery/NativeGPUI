@@ -51,6 +51,20 @@ pub fn app_folders() -> Vec<AppFolder> {
     folders
 }
 
+/// The app folder iCloud Drive shows `path` in, if `path` is inside an app's Documents.
+pub fn app_folder_of(path: &Path) -> Option<AppFolder> {
+    let containers = containers()?;
+    let mut parts = path.strip_prefix(&containers).ok()?.components();
+    let id = parts.next()?.as_os_str().to_str()?;
+    if id == CLOUD_DOCS || parts.next()?.as_os_str() != "Documents" {
+        return None;
+    }
+    Some(AppFolder {
+        name: published(id)?,
+        documents: containers.join(id).join("Documents"),
+    })
+}
+
 fn holds_anything(documents: &Path) -> bool {
     std::fs::read_dir(documents).is_ok_and(|mut read| read.next().is_some())
 }

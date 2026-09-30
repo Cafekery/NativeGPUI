@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use finder_fs::volumes::{Standard, standard};
 
@@ -15,7 +15,8 @@ const CACHED: usize = 64;
 pub(crate) struct Folder {
     pub(crate) title: &'static str,
     pub(crate) parent: Option<&'static str>,
-    pub(crate) crumbs: Vec<&'static str>,
+    /// From the root down: each crumb's name and the folder it opens.
+    pub(crate) crumbs: Vec<(&'static str, &'static str)>,
     pub(crate) rows: Arc<Vec<Arc<Row>>>,
     staged: Option<Vec<Arc<Row>>>,
     pub(crate) loading: bool,
@@ -25,11 +26,11 @@ pub(crate) struct Folder {
 
 pub(crate) fn folder_of(id: &'static str) -> Folder {
     let crumbs = match crate::locations::place(id) {
-        Some((title, _)) => vec![title],
+        Some((title, _)) => vec![(title, id)],
         None => crumbs_of(id),
     };
     Folder {
-        title: crumbs[crumbs.len() - 1],
+        title: crumbs[crumbs.len() - 1].0,
         parent: parent_of(id),
         crumbs,
         rows: Arc::default(),
@@ -48,20 +49,43 @@ pub(crate) fn parent_of(id: &str) -> Option<&'static str> {
     }
 }
 
-fn crumbs_of(id: &'static str) -> Vec<&'static str> {
-    let trash = standard(Standard::Trash).filter(|trash| Path::new(id).starts_with(trash));
-    let (mount, volume) = match trash {
-        Some(trash) => (intern_path(&trash), intern(&finder_fs::words::say("Trash"))),
-        None => volume_of(id),
-    };
-    let mount = mount.trim_end_matches('/');
-    let mut at = mount.to_string();
-    let mut crumbs = vec![volume];
-    let rest = id.strip_prefix(mount).unwrap_or("");
+pub(crate) fn icloud_drive() -> Option<&'static str> {
+    static DRIVE: LazyLock<Option<&'static str>> =
+        LazyLock::new(|| finder_fs::icloud::drive().map(|drive| intern_path(&drive)));
+    *DRIVE
+}
+
+/// Finder starts the Trash and iCloud Drive at themselves, an app's iCloud folder at iCloud Drive.
+fn roots_of(id: &'static str) -> Vec<(&'static str, &'static str)> {
+    let path = Path::new(id);
+    let say = |english: &str| intern(&finder_fs::words::say(english));
+    if let Some(trash) = standard(Standard::Trash).filter(|trash| path.starts_with(trash)) {
+        return vec![(say("Trash"), intern_path(&trash))];
+    }
+    let drive = icloud_drive().map(|drive| (say("iCloud Drive"), drive));
+    if let Some(drive) = drive.filter(|(_, drive)| path.starts_with(drive)) {
+        return vec![drive];
+    }
+    if let Some(app) = finder_fs::icloud::app_folder_of(path) {
+        let folder = (intern(&app.name), intern_path(&app.documents));
+        return drive.into_iter().chain([folder]).collect();
+    }
+    let (mount, volume) = volume_of(id);
+    vec![(volume, mount)]
+}
+
+fn crumbs_of(id: &'static str) -> Vec<(&'static str, &'static str)> {
+    let mut crumbs = roots_of(id);
+    let root = crumbs[crumbs.len() - 1].1.trim_end_matches('/');
+    let mut at = root.to_string();
+    let rest = id.strip_prefix(root).unwrap_or("");
     crumbs.extend(rest.split('/').filter(|part| !part.is_empty()).map(|part| {
         at.push('/');
         at.push_str(part);
-        intern(&finder_fs::name::of_path(Path::new(&at)))
+        (
+            intern(&finder_fs::name::of_path(Path::new(&at))),
+            intern(&at),
+        )
     }));
     crumbs
 }

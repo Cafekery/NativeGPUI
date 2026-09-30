@@ -373,6 +373,14 @@ chevron (Δ 0.0) match; what is left:
   startup disk 11 × 13 pt, a folder 13 × 11.5, a special folder 13 × 12. A folder crumb is plain
   whatever the folder holds: `iconForFile:` on a folder with contents gives the plain folder to the
   byte, so the path bar has none of the list's sheet.
+- [x] A path in iCloud Drive starts at one “iCloud Drive” crumb drawn with Finder's own
+  `iCloudDriveNode` art (a cloud, 14 × 9.5 pt of ink, where `iconForFile:` gives a plain folder),
+  then the folders below it; an app's iCloud folder follows it under the app's name (“iCloud Drive ›
+  Sketch”), as Finder's. The Path menu and Get Info's Where take the same chain.
+- [ ] Not read off Finder: the icon of an app's iCloud folder crumb (the demo's is the plain folder
+  `iconForFile:` gives), its Path menu for an iCloud folder (no Path item in its toolbar here), and
+  the chain of a File Provider root under ~/Library/CloudStorage (none is in its sidebar here, and
+  opening one makes the provider list it). Those roots keep their volume's chain.
 - [x] Like Finder, the demo paints the next alternating row into the 10 pt between the last row and
   the path bar (y 642–652, 42,42,42 in dark), including right after a scroll that ran past the end.
 - [x] In column view the trail ends at a lone selected item that opens no column (an app, a symlink
