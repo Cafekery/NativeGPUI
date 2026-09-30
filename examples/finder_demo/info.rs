@@ -9,7 +9,7 @@ use native_gpui::window_options;
 
 use crate::art::row_art;
 use crate::data::{
-    Line, Row, VolumeInfo, byte_string, day_string, folder_of, intern_path, volume_at,
+    Folder, Line, Row, VolumeInfo, byte_string, day_string, folder_of, intern_path, volume_at,
 };
 
 pub(crate) const WIDTH: f32 = 265.;
@@ -165,11 +165,16 @@ impl Render for Info {
 
 const CRUMB_SEPARATOR: &str = " \u{203a} ";
 
+fn crumb_text(folder: &Folder) -> String {
+    let names: Vec<&str> = folder.crumbs.iter().map(|&(name, _)| name).collect();
+    names.join(CRUMB_SEPARATOR)
+}
+
 pub(crate) fn where_of(id: &str) -> Option<String> {
     let parent = Path::new(id)
         .parent()
         .filter(|parent| parent.is_absolute())?;
-    Some(folder_of(intern_path(parent)).crumbs.join(CRUMB_SEPARATOR))
+    Some(crumb_text(&folder_of(intern_path(parent))))
 }
 
 pub(crate) fn open(
@@ -192,11 +197,9 @@ pub(crate) fn open(
                 .collect(),
             None => chosen,
         };
-        let where_ = at.and_then(where_of).or_else(|| {
-            state
-                .folder()
-                .map(|folder| folder.crumbs.join(CRUMB_SEPARATOR))
-        });
+        let where_ = at
+            .and_then(where_of)
+            .or_else(|| state.folder().map(crumb_text));
         (lines, SharedString::from(where_.unwrap_or_default()))
     };
     if summary && lines.len() > 1 {

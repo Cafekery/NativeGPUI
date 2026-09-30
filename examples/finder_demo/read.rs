@@ -11,6 +11,7 @@ use finder_fs::list::Identity;
 use gpui::{App, BackgroundExecutor, Context, SharedString, Task, Window};
 
 use crate::app::FinderDemo;
+use crate::chrome::path_bar::CRUMB_ART;
 use crate::data::{self, Bands, Column, Face, Facts, Line, Order, Row, intern, intern_path};
 use crate::listing::{Shape, Walk};
 use crate::signal::Signal;
@@ -599,7 +600,6 @@ impl FinderDemo {
         for id in self.folders.take_wanted() {
             self.read_folder(id, cx);
         }
-        crate::icons::draw_wanted(&cx.entity(), cx);
         crate::meta::fetch_wanted(&cx.entity(), cx);
         crate::custom::fetch_wanted(&cx.entity(), cx);
         crate::item_info::fetch_wanted(&cx.entity(), cx);
@@ -700,10 +700,17 @@ impl FinderDemo {
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
         let screen = ((self.on_screen(), self.art_size()), extras);
+        let arts = match headed {
+            true => self.crumb_arts(id),
+            false => Vec::new(),
+        };
         let executor = cx.background_executor().clone();
-        let listed = cx
-            .background_executor()
-            .spawn(async move { list(id, (order, sizes), (first, plain), screen, executor) });
+        let listed = cx.background_executor().spawn(async move {
+            let crumbs = icons::begin(arts, CRUMB_ART);
+            let listed = list(id, (order, sizes), (first, plain), screen, executor);
+            crumbs.finish();
+            listed
+        });
         cx.spawn(async move |this, cx| {
             let rest = match listed.await {
                 Ok(Listed { first, rest }) => {
@@ -959,7 +966,7 @@ impl FinderDemo {
         let mut wanted: HashSet<&'static str> = HashSet::from([self.here(), self.target()]);
         wanted.extend(self.expanded.iter().map(|key| intern(key)));
         if self.view == COLUMN_VIEW {
-            wanted.extend(self.crumb_ids());
+            wanted.extend(self.column_ids());
             if self.columns_from_computer {
                 wanted.insert(crate::locations::COMPUTER);
             }

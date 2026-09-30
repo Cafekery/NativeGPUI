@@ -368,8 +368,25 @@ chevron (Δ 0.0) match; what is left:
 - [ ] A crumb name cut to the shared width fades out over its last ~9 pt in Finder (140 → 32 across
   x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x, so
   three capped names end 0.5 pt later.
-- [ ] The startup-disk crumb's icon ink is 12 × 13.5 pt against Finder's 11 × 12.5 pt, on the same
-  centre. Folder crumb icons match in dark and run 0.5 pt wider a side in light.
+- [x] Every crumb icon sits in the 14 pt square a small NSPathControl draws its component images in
+  (Finder's crumb widths are that control's, to the point), so each kind's ink is Finder's: the
+  startup disk 11 × 13 pt, a folder 13 × 11.5, a special folder 13 × 12. A folder crumb is plain
+  whatever the folder holds: `iconForFile:` on a folder with contents gives the plain folder to the
+  byte, so the path bar has none of the list's sheet.
+- [x] A path in iCloud Drive starts at one “iCloud Drive” crumb drawn with Finder's own
+  `iCloudDriveNode` art (a cloud, 14 × 9.5 pt of ink, where `iconForFile:` gives a plain folder),
+  then the folders below it; an app's iCloud folder follows it under the app's name (“iCloud Drive ›
+  Sketch”), as Finder's. The Path menu and Get Info's Where take the same chain.
+- [x] A crumb shows its own icon or none, never another kind's stand-in: a navigation that holds the
+  old folder also waits, within the same 100 ms, for the new crumbs' art, drawn beside the listing; a
+  window asks for its crumbs' art before its first frame; the Trash's can waits for its first rows.
+  Opening Computer, Network or an 11-crumb chain draws each crumb's exact 14 pt art on the first
+  frame, and the Trash stays blank 19 ms before its full can; Computer and Network reached by Go,
+  which don't hold, show a blank or their own art at 16 pt scaled for 15–22 ms.
+- [ ] Not read off Finder: the icon of an app's iCloud folder crumb (the demo's is the plain folder
+  `iconForFile:` gives), its Path menu for an iCloud folder (no Path item in its toolbar here), and
+  the chain of a File Provider root under ~/Library/CloudStorage (none is in its sidebar here, and
+  opening one makes the provider list it). Those roots keep their volume's chain.
 - [x] Like Finder, the demo paints the next alternating row into the 10 pt between the last row and
   the path bar (y 642–652, 42,42,42 in dark), including right after a scroll that ran past the end.
 - [x] In column view the trail ends at a lone selected item that opens no column (an app, a symlink

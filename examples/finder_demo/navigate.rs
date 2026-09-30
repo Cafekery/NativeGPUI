@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -156,18 +157,12 @@ impl FinderDemo {
         window.set_window_title(&self.title());
     }
 
-    pub(crate) fn crumb_ids(&self) -> Vec<&'static str> {
-        let target = self.target();
-        let deep = self
-            .folders
-            .get(target)
-            .map_or(1, |folder| folder.crumbs.len());
-        let mut chain = Vec::with_capacity(deep);
-        let mut at = Some(Path::new(target));
-        while let Some(path) = at.filter(|_| chain.len() < deep) {
-            chain.push(intern_path(path));
-            at = path.parent();
-        }
+    /// The folders column view shows, from the target's volume down to it.
+    pub(crate) fn column_ids(&self) -> Vec<&'static str> {
+        let mut chain: Vec<&'static str> = iter::successors(Some(self.target()), |id| {
+            parent_of(id).filter(|&up| up != crate::locations::COMPUTER)
+        })
+        .collect();
         chain.reverse();
         chain
     }

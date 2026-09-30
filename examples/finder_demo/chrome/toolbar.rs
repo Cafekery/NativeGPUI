@@ -19,7 +19,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::app::FinderDemo;
-use crate::data::{Column, GROUP_KEYS, intern_path};
+use crate::data::{Column, GROUP_KEYS};
 use crate::locations::{COMPUTER, computer_name, is_location, place};
 use crate::menus::{Act, Menu};
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
@@ -445,14 +445,12 @@ impl FinderDemo {
                 .filter_map(|id| Some((place(id)?.0, id)))
                 .collect();
         }
-        let crumbs = self
+        let mut places: Vec<(&'static str, &'static str)> = self
             .folder()
-            .map_or(&[][..], |folder| folder.crumbs.as_slice());
-        let mut places: Vec<(&'static str, &'static str)> = crumbs
+            .map_or(&[][..], |folder| folder.crumbs.as_slice())
             .iter()
             .rev()
             .copied()
-            .zip(Path::new(here).ancestors().map(intern_path))
             .collect();
         places.push((computer_name(), COMPUTER));
         places
