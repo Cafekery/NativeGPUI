@@ -64,7 +64,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn search_bars_h(&self) -> f32 {
-        scope_bar::SCOPE_H + criteria_bar::CRITERIA_H * self.criteria.len() as f32
+        scope_bar::SCOPE_H + criteria_bar::row_height() * self.criteria.len() as f32
     }
 
     pub(crate) fn results(&self) -> bool {
@@ -182,6 +182,7 @@ impl FinderDemo {
         self.arriving = None;
         self.deselect();
         self.query.clear();
+        self.criteria.clear();
         self.hits.clear();
         self.hits_rev = next_rev();
         self.tag_listing = Some(id);

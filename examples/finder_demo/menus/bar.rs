@@ -996,6 +996,12 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &FindHere, window, cx| {
                 set_toolbar_search_active(window, SEARCH_ID, true);
                 this.search_editing = true;
+                if this.criteria.is_empty() {
+                    this.criteria.push(Criterion::default());
+                    if this.in_search() {
+                        this.run_search(cx);
+                    }
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|_, _: &NewSmartFolder, window, _| {

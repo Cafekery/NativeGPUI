@@ -340,7 +340,7 @@ impl FinderDemo {
                     .flex()
                     .flex_col()
                     .child(scope)
-                    .child(criteria)
+                    .children(criteria)
             }))
             .children(path_bar.map(|bar| {
                 div()
