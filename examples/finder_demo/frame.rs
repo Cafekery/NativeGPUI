@@ -336,7 +336,7 @@ impl FinderDemo {
                     .left_0()
                     .right_0()
                     .h(px(scope_h))
-                    .pl(metrics.left)
+                    .when(banded, |bars| bars.pl(metrics.left))
                     .flex()
                     .flex_col()
                     .child(scope)
