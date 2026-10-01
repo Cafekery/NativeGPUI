@@ -72,6 +72,7 @@ const QUIT_WAIT: Duration = Duration::from_millis(150);
 pub(crate) const WINDOW_W: f32 = 1200.;
 
 fn main() {
+    prefs::share_folder_looks();
     settings::apply_names();
     app::EARLY_SIDEBAR.set(Some(app::ask_sidebar()));
     std::thread::spawn(|| finder_fs::words::say(""));

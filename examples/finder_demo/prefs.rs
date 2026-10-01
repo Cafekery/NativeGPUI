@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions,
-    NSKeyedUnarchiver, NSMutableDictionary, NSNumber, NSString, NSURL, NSUserDefaults,
+    NSKeyedUnarchiver, NSMutableDictionary, NSNumber, NSObject, NSString, NSURL, NSUserDefaults,
 };
 
 use crate::chrome::scope_bar::{THIS_FOLDER, THIS_MAC};
@@ -18,6 +18,7 @@ use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 const VIEW: &str = "ng.finder.view";
 const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
+const LOOKS_SHARED: &str = "ng.finder.looks.shared";
 const SORT_KEYS: [&str; 5] = [
     "arrangeBy",
     "sortColumn",
@@ -763,6 +764,100 @@ pub(crate) fn use_as_defaults(view: usize, folder: &str) {
         set_setting_text(&columns_key(None), &ids);
         defaults().removeObjectForKey(&NSString::from_str(&columns_key(Some(folder))));
     }
+}
+
+fn most_common<T: PartialEq>(values: Vec<T>, rank: impl Fn(&T) -> f64) -> Option<T> {
+    let mut tally: Vec<(T, usize)> = Vec::new();
+    for value in values {
+        match tally.iter_mut().find(|(seen, _)| *seen == value) {
+            Some((_, count)) => *count += 1,
+            None => tally.push((value, 1)),
+        }
+    }
+    tally
+        .into_iter()
+        .max_by(|(a, x), (b, y)| x.cmp(y).then(rank(a).total_cmp(&rank(b))))
+        .map(|(value, _)| value)
+}
+
+pub(crate) fn share_folder_looks() {
+    let defaults = defaults();
+    let marker = NSString::from_str(LOOKS_SHARED);
+    if defaults.objectForKey(&marker).is_some() {
+        return;
+    }
+    let mut keys: Vec<String> = defaults
+        .dictionaryRepresentation()
+        .keys()
+        .map(|key| key.to_string())
+        .collect();
+    keys.sort();
+    for view in [ICON_VIEW, LIST_VIEW, GALLERY_VIEW] {
+        let prefix = format!("{}.", look_key(view, None));
+        let mut looks: BTreeMap<String, Vec<Retained<NSObject>>> = BTreeMap::new();
+        for folder in keys.iter().filter_map(|key| key.strip_prefix(&prefix)) {
+            let Some(own) = saved_look(view, Some(folder)) else {
+                continue;
+            };
+            let sort = NSMutableDictionary::new();
+            for key in own.keys() {
+                let Some(value) = own.objectForKey(&key) else {
+                    continue;
+                };
+                let name = key.to_string();
+                match SORT_KEYS.contains(&name.as_str()) {
+                    true => sort.insert(&*key, &*value),
+                    false => looks
+                        .entry(name)
+                        .or_default()
+                        .extend(value.downcast::<NSObject>().ok()),
+                }
+            }
+            let at = look_key(view, Some(folder));
+            match sort.count() {
+                0 => defaults.removeObjectForKey(&at),
+                _ => {
+                    let sort: &AnyObject = &sort;
+                    unsafe { defaults.setObject_forKey(Some(sort), &at) }
+                }
+            }
+        }
+        if looks.is_empty() {
+            continue;
+        }
+        let number = |value: &Retained<NSObject>| {
+            value
+                .downcast_ref::<NSNumber>()
+                .map_or(f64::MIN, |number| number.doubleValue())
+        };
+        edit_look(view, None, |shared| {
+            for (key, values) in looks {
+                let key = NSString::from_str(&key);
+                if shared.objectForKey(&key).is_some() {
+                    continue;
+                }
+                if let Some(value) = most_common(values, number) {
+                    let value: &AnyObject = &value;
+                    shared.insert(&*key, value);
+                }
+            }
+        });
+    }
+    let prefix = format!("{}.", columns_key(None));
+    let sets: Vec<String> = keys
+        .iter()
+        .filter(|key| key.starts_with(&prefix))
+        .filter_map(|key| {
+            let ids = read_text(key);
+            defaults.removeObjectForKey(&NSString::from_str(key));
+            ids
+        })
+        .collect();
+    let columns = most_common(sets, |ids| ids.split(',').count() as f64);
+    if let Some(ids) = columns.filter(|_| read_text(&columns_key(None)).is_none()) {
+        set_setting_text(&columns_key(None), &ids);
+    }
+    defaults.setBool_forKey(true, &marker);
 }
 
 fn read_icon_options(folder: Option<&str>) -> IconOptions {
