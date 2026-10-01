@@ -294,6 +294,17 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] Escape out of the ⌥⌘Y slideshow closes the Quick Look panel, as Finder's does: the panel
   goes full screen without first showing in a window. While that panel is key the Window menu's
   tab rows follow the window behind it, off until it has tabs, as Finder's do.
+- [x] A search's bars are Finder's: a 32 pt scope bar with a bold 12 pt “Search:”, recessed
+  push-on-push-off scope buttons that draw a border only under the pointer (Network only while a
+  network volume is mounted), Save and a −/+ toggle for the criteria, which are a stock
+  NSRuleEditor in 32 pt rows whose − on the last row removes it and hides them. Typing starts a
+  search with the criteria hidden, ⌘F shows one Kind is Any row, and leaving the folder drops them.
+  In list and icon view every control's accessibility frame is Finder's, but “Desktop” and Save
+  are 0.5 pt wider: buttons fit to whole points where Finder's take half points.
+- [ ] Finder's criteria also offer dates, Contents and Other… fields and the Name tests matches and
+  is not; the demo has Kind and Name with four tests. ⌘F with nothing typed shows Finder's bars
+  over every file; the demo's index has nothing to list for an empty query, so its bars wait for
+  the first letter. Finder's scope buttons read as radio buttons and its −/+ as a toggle.
 ## Preview pane, measured against Finder on macOS 27
 
 Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list view.
