@@ -1,24 +1,25 @@
 use std::ptr;
 use std::rc::Rc;
 
-use gpui::{App, ElementId, Length, Style, Window, px, size};
+use gpui::{App, ElementId, FontWeight, Length, Pixels, Style, Window, px, size};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSCellImagePosition, NSControlStateValue, NSControlStateValueMixed,
-    NSControlStateValueOff, NSControlStateValueOn, NSSegmentStyle, NSSegmentSwitchTracking,
-    NSSegmentedControl,
+    NSBezelStyle, NSButton, NSButtonCell, NSButtonType, NSCellImagePosition, NSCellStyleMask,
+    NSControlStateValue, NSControlStateValueMixed, NSControlStateValueOff, NSControlStateValueOn,
+    NSFont, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
 
 use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
+    ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, ValueKind,
+    hosted_element, wire,
 };
 use crate::controls::{
     bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_control_size,
     sync_enabled, with_width,
 };
-use crate::system::tokens::SystemColor;
+use crate::system::tokens::{SystemColor, ns_font_weight, system_font_size_for};
 
 type Titled =
     unsafe fn(&NSString, Option<&AnyObject>, Option<Sel>, MainThreadMarker) -> Retained<NSButton>;
@@ -321,6 +322,23 @@ fn is_default_button(button: &NSButton) -> bool {
     }
 }
 
+/// AppKit flips a push-on-push-off button before its action; the caller's next paint sets it.
+fn unflip() -> NativeRead {
+    thread_local! {
+        static READ: NativeRead = Rc::new(|sender| {
+            if let Some(button) = sender.downcast_ref::<NSButton>() {
+                button.setState(if button.state() == NSControlStateValueOff {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+            }
+            Box::new(NativeValue::None)
+        });
+    }
+    READ.with(Rc::clone)
+}
+
 pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> NativeButton {
     NativeButton {
         id: id.into(),
@@ -329,6 +347,10 @@ pub fn native_button(id: impl Into<ElementId>, title: impl Into<String>) -> Nati
         symbol_only: true,
         bezel: ButtonBezel::Automatic,
         control_size: ControlSize::default(),
+        font_size: None,
+        weight: None,
+        on: None,
+        border_on_hover: false,
         square: None,
         width: None,
         default_button: false,
@@ -344,6 +366,10 @@ pub struct NativeButton {
     symbol_only: bool,
     bezel: ButtonBezel,
     control_size: ControlSize,
+    font_size: Option<Pixels>,
+    weight: Option<FontWeight>,
+    on: Option<bool>,
+    border_on_hover: bool,
     square: Option<f32>,
     width: Option<Length>,
     default_button: bool,
@@ -375,6 +401,27 @@ impl NativeButton {
         self
     }
 
+    pub fn font_size(mut self, font_size: Pixels) -> Self {
+        self.font_size = Some(font_size);
+        self
+    }
+
+    pub fn weight(mut self, weight: FontWeight) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    /// Push-on-push-off, drawn in this state; a click leaves the state to the next paint.
+    pub fn on(mut self, on: bool) -> Self {
+        self.on = Some(on);
+        self
+    }
+
+    pub fn border_on_hover(mut self, border_on_hover: bool) -> Self {
+        self.border_on_hover = border_on_hover;
+        self
+    }
+
     pub fn square(mut self, side: f32) -> Self {
         self.square = Some(side);
         self
@@ -401,6 +448,20 @@ impl NativeButton {
         self
     }
 
+    fn font(&self) -> Option<Retained<NSFont>> {
+        if self.font_size.is_none() && self.weight.is_none() {
+            return None;
+        }
+        let size = self
+            .font_size
+            .unwrap_or_else(|| system_font_size_for(self.control_size));
+        let weight = ns_font_weight(self.weight.unwrap_or(FontWeight::NORMAL));
+        Some(NSFont::systemFontOfSize_weight(
+            f32::from(size) as f64,
+            weight,
+        ))
+    }
+
     fn layout(&self) -> Style {
         if let Some(side) = self.square {
             return Style {
@@ -414,11 +475,16 @@ impl NativeButton {
             self.symbol_only,
             self.bezel,
             self.control_size,
+            self.font_size.map(|size| f32::from(size).to_bits()),
+            self.weight.map(|weight| weight.0.to_bits()),
         );
         let fitted = measured("NSButton.push", inputs, |mtm| {
             let make = NSButton::buttonWithTitle_target_action;
             let button = titled(mtm, make, &self.title, self.control_size);
             button.setBezelStyle(self.bezel.to_native());
+            if let Some(font) = self.font() {
+                button.setFont(Some(&font));
+            }
             sync_symbol(
                 &button,
                 self.symbol.as_deref(),
@@ -447,12 +513,42 @@ impl NativeButton {
             &self.title,
             self.symbol_only,
         );
+        if let Some(font) = self.font() {
+            if button.font().as_ref() != Some(&font) {
+                button.setFont(Some(&font));
+            }
+        }
+        if let Some(on) = self.on {
+            let shows =
+                NSCellStyleMask::ChangeGrayCellMask | NSCellStyleMask::ChangeBackgroundCellMask;
+            let cell = button
+                .cell()
+                .and_then(|cell| cell.downcast::<NSButtonCell>().ok());
+            if cell.is_some_and(|cell| cell.showsStateBy() != shows) {
+                button.setButtonType(NSButtonType::PushOnPushOff);
+            }
+            let wanted = CheckState::from(on).to_native();
+            if button.state() != wanted {
+                button.setState(wanted);
+            }
+        }
+        if button.showsBorderOnlyWhileMouseInside() != self.border_on_hover {
+            button.setShowsBorderOnlyWhileMouseInside(self.border_on_hover);
+        }
         if is_default_button(&button) != self.default_button {
             let wanted = if self.default_button { "\r" } else { "" };
             button.setKeyEquivalent(&NSString::from_str(wanted));
         }
         sync_enabled(&button, self.enabled);
-        slot.on_change(ValueKind::None, self.on_click.take());
+        match self.on {
+            Some(_) => {
+                let clicked = self.on_click.take().map(|handler| -> NativeDispatch {
+                    Rc::new(move |_, window, cx| handler(NativeValue::None, window, cx))
+                });
+                slot.on_event(unflip(), clicked);
+            }
+            None => slot.on_change(ValueKind::None, self.on_click.take()),
+        }
     }
 }
 
