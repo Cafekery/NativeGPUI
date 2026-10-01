@@ -18,6 +18,13 @@ use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 const VIEW: &str = "ng.finder.view";
 const SIDEBAR: &str = "sidebar.json";
 const SCOPE: &str = "ng.finder.search.scope";
+const SORT_KEYS: [&str; 5] = [
+    "arrangeBy",
+    "sortColumn",
+    "ascending",
+    "groupBy",
+    "lastGroupBy",
+];
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
 
@@ -687,22 +694,31 @@ pub(crate) fn look_text(view: usize, folder: &str, key: &str) -> Option<String> 
     Some(text.downcast_ref::<NSString>()?.to_string())
 }
 
-fn set_look(view: usize, folder: &str, key: &str, value: &AnyObject) {
-    edit_look(view, Some(folder), |look| {
+fn put_look(view: usize, home: Option<&str>, key: &str, value: &AnyObject) {
+    edit_look(view, home, |look| {
         look.insert(&*NSString::from_str(key), value)
     });
 }
 
 pub(crate) fn set_look_number(view: usize, folder: &str, key: &str, value: f64) {
-    set_look(view, folder, key, &NSNumber::new_f64(value));
+    put_look(
+        view,
+        look_home(view, folder),
+        key,
+        &NSNumber::new_f64(value),
+    );
 }
 
 pub(crate) fn set_look_on(view: usize, folder: &str, key: &str, on: bool) {
-    set_look(view, folder, key, &NSNumber::new_bool(on));
+    put_look(view, look_home(view, folder), key, &NSNumber::new_bool(on));
 }
 
-pub(crate) fn set_look_text(view: usize, folder: &str, key: &str, text: &str) {
-    set_look(view, folder, key, &NSString::from_str(text));
+pub(crate) fn set_sort_text(view: usize, folder: &str, key: &str, text: &str) {
+    put_look(view, Some(folder), key, &NSString::from_str(text));
+}
+
+pub(crate) fn set_sort_on(view: usize, folder: &str, key: &str, on: bool) {
+    put_look(view, Some(folder), key, &NSNumber::new_bool(on));
 }
 
 fn columns_key(folder: Option<&str>) -> String {
@@ -712,9 +728,24 @@ fn columns_key(folder: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn has_own_look(view: usize, folder: &str) -> bool {
+fn has_own_columns(view: usize, folder: &str) -> bool {
+    view == LIST_VIEW && read_text(&columns_key(Some(folder))).is_some()
+}
+
+fn has_own_look(view: usize, folder: &str) -> bool {
+    saved_look(view, Some(folder)).is_some_and(|own| {
+        own.keys()
+            .any(|key| !SORT_KEYS.contains(&&*key.to_string()))
+    }) || has_own_columns(view, folder)
+}
+
+pub(crate) fn look_home(view: usize, folder: &str) -> Option<&str> {
+    has_own_look(view, folder).then_some(folder)
+}
+
+pub(crate) fn has_own_settings(view: usize, folder: &str) -> bool {
     saved_look(view, Some(folder)).is_some_and(|own| own.count() > 0)
-        || view == LIST_VIEW && read_text(&columns_key(Some(folder))).is_some()
+        || has_own_columns(view, folder)
 }
 
 pub(crate) fn use_as_defaults(view: usize, folder: &str) {
@@ -756,7 +787,7 @@ pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
 
 pub(crate) fn set_list_columns(folder: &str, columns: &[Column]) {
     let ids: Vec<&str> = columns.iter().map(|column| column.id()).collect();
-    set_setting_text(&columns_key(Some(folder)), &ids.join(","));
+    set_setting_text(&columns_key(look_home(LIST_VIEW, folder)), &ids.join(","));
 }
 
 pub(crate) fn arranged(view: usize) -> Option<Column> {
@@ -767,13 +798,10 @@ pub(crate) fn set_arranged(view: usize, column: Column) {
     set_setting_text(&format!("ng.finder.arranged.{view}"), column.id());
 }
 
-pub(crate) fn set_icon_options(folder: &str, options: &IconOptions) {
-    edit_look(ICON_VIEW, Some(folder), |look| {
+pub(crate) fn set_icon_options(home: Option<&str>, options: &IconOptions) {
+    edit_look(ICON_VIEW, home, |look| {
         let put = |key: &str, value: &AnyObject| look.insert(&*NSString::from_str(key), value);
         let number = |key, value: f32| put(key, &NSNumber::new_f64(f64::from(value)));
-        if let Some(arrange) = &options.arrange_by {
-            put("arrangeBy", &NSString::from_str(arrange));
-        }
         let numbers = [
             ("iconSize", options.icon_size),
             ("gridSpacing", options.grid_spacing),

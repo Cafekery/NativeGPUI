@@ -366,9 +366,9 @@ impl FinderDemo {
 
     pub(crate) fn set_group(&mut self, group: Option<Column>, cx: &mut Context<Self>) {
         let here = self.here();
-        prefs::set_look_text(LIST_VIEW, here, "groupBy", group.map_or("none", Column::id));
+        prefs::set_sort_text(LIST_VIEW, here, "groupBy", group.map_or("none", Column::id));
         if let Some(group) = group {
-            prefs::set_look_text(LIST_VIEW, here, "lastGroupBy", group.id());
+            prefs::set_sort_text(LIST_VIEW, here, "lastGroupBy", group.id());
         }
         self.sorting.group = group;
         let wanted = self.view_sort(self.pending_view.unwrap_or(self.view));
@@ -419,12 +419,12 @@ impl FinderDemo {
             }
             GALLERY_VIEW => {
                 self.sorting.gallery = by.0;
-                prefs::set_look_text(GALLERY_VIEW, here, "arrangeBy", by.0.id());
+                prefs::set_sort_text(GALLERY_VIEW, here, "arrangeBy", by.0.id());
             }
             _ => {
                 self.sorting.list = by;
-                prefs::set_look_text(LIST_VIEW, here, "sortColumn", by.0.id());
-                prefs::set_look_on(LIST_VIEW, here, "ascending", by.1);
+                prefs::set_sort_text(LIST_VIEW, here, "sortColumn", by.0.id());
+                prefs::set_sort_on(LIST_VIEW, here, "ascending", by.1);
             }
         }
         self.sort_held(self.view_sort(self.view), cx);

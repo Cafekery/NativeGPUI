@@ -689,9 +689,7 @@ impl Grid {
         if was == arrangement {
             return;
         }
-        let mut chosen = prefs::icon_options(places.folder);
-        chosen.arrange_by = Some(arrangement.id().to_owned());
-        prefs::set_icon_options(places.folder, &chosen);
+        prefs::set_sort_text(ICON_VIEW, places.folder, "arrangeBy", arrangement.id());
         self.moved += 1;
         let Some((layout, _)) = self.standing() else {
             return;
@@ -1342,7 +1340,6 @@ impl FinderDemo {
         let here = self.here();
         let mut chosen = prefs::icon_options(here);
         change(&mut chosen);
-        prefs::set_icon_options(here, &chosen);
         let was = self.icon_options();
         let places = self
             .icons
@@ -1353,6 +1350,14 @@ impl FinderDemo {
             .as_ref()
             .map(|places| places.recorded.clone())
             .unwrap_or_default();
+        let recorded_look = IconOptions {
+            arrange_by: None,
+            ..recorded.clone()
+        } != IconOptions::default();
+        let home = recorded_look
+            .then_some(here)
+            .or_else(|| prefs::look_home(ICON_VIEW, here));
+        prefs::set_icon_options(home, &chosen);
         let chosen = chosen.or(recorded);
         let options = Options::new(&chosen);
         if let Some(places) = places {
