@@ -1,25 +1,30 @@
+use std::cell::{Cell, RefCell};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::rc::Rc;
+
 use finder_fs::kind::Category;
-use gpui::{AnyElement, Context, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor};
-use native_gpui::{
-    ButtonBezel, ControlSize, native_button, native_label, native_popup, native_text_field,
+use gpui::{AnyElement, Context, canvas, prelude::*, px};
+use native_gpui::{Layer, NativeDispatch, NativeHost, NativeRead, wire};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
+use objc2_app_kit::{
+    NSControl, NSControlTextEditingDelegate, NSFont, NSResponder, NSRuleEditor,
+    NSRuleEditorDelegate, NSRuleEditorNestingMode, NSRuleEditorRowType, NSTextField,
+    NSTextFieldDelegate, NSView,
+};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString,
 };
 
 use crate::app::FinderDemo;
 use crate::data::Row;
 
-pub(crate) const CRITERIA_H: f32 = 34.;
-const INSET: f32 = 8.;
-const GAP: f32 = 6.;
-const IS_W: f32 = 14.;
-const BUTTON_W: f32 = 33.;
-const OTHER_W: f32 = 127.;
-
-const FIELDS: [&str; 2] = ["Kind", "Name"];
 const NAME_FIELD: usize = 1;
 const TESTS: [&str; 4] = ["contains", "begins with", "ends with", "is"];
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct Criterion {
     pub(crate) field: usize,
     pub(crate) kind: Category,
@@ -84,121 +89,297 @@ impl Criterion {
                 .map(|uti| format!("(kMDItemContentTypeTree == \"{uti}\")")),
         }
     }
+
+    fn path(&self) -> Vec<Node> {
+        if self.names() {
+            let test = self.test.min(TESTS.len() - 1);
+            return vec![Node::Name, Node::Test(test), Node::Text];
+        }
+        let kind = Category::ALL.iter().position(|it| *it == self.kind);
+        let mut path = vec![Node::Kind, Node::Is, Node::Category(kind.unwrap_or(0))];
+        if self.kind == Category::Other {
+            path.push(Node::Text);
+        }
+        path
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Node {
+    Root,
+    Kind,
+    Name,
+    Is,
+    Category(usize),
+    Test(usize),
+    Text,
+}
+
+impl Node {
+    fn of(criterion: Option<&AnyObject>) -> Self {
+        let Some(name) = criterion.and_then(|it| it.downcast_ref::<NSString>()) else {
+            return Node::Root;
+        };
+        let name = name.to_string();
+        let at = |prefix: &str| name.strip_prefix(prefix)?.parse().ok();
+        match name.as_str() {
+            "kind" => Node::Kind,
+            "name" => Node::Name,
+            "is" => Node::Is,
+            _ => (at("kind:").map(Node::Category))
+                .or_else(|| at("test:").map(Node::Test))
+                .unwrap_or(Node::Text),
+        }
+    }
+
+    fn name(self) -> Retained<NSString> {
+        NSString::from_str(&match self {
+            Node::Kind => "kind".to_string(),
+            Node::Name => "name".to_string(),
+            Node::Is => "is".to_string(),
+            Node::Category(at) => format!("kind:{at}"),
+            Node::Test(at) => format!("test:{at}"),
+            Node::Root | Node::Text => "text".to_string(),
+        })
+    }
+
+    fn children(self) -> Vec<Node> {
+        match self {
+            Node::Root => vec![Node::Kind, Node::Name],
+            Node::Kind => vec![Node::Is],
+            Node::Is => (0..Category::ALL.len()).map(Node::Category).collect(),
+            Node::Category(at) if Category::ALL[at] == Category::Other => vec![Node::Text],
+            Node::Name => (0..TESTS.len()).map(Node::Test).collect(),
+            Node::Test(_) => vec![Node::Text],
+            _ => Vec::new(),
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Node::Kind => "Kind",
+            Node::Name => "Name",
+            Node::Is => "is",
+            Node::Category(at) => Category::ALL[at].label(),
+            Node::Test(at) => TESTS[at],
+            Node::Root | Node::Text => "",
+        }
+    }
+}
+
+#[derive(Default)]
+struct EditorIvars {
+    pending: Cell<usize>,
+    written: RefCell<Vec<Criterion>>,
+}
+
+define_class!(
+    #[unsafe(super(NSRuleEditor, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGCriteriaEditor"]
+    #[ivars = EditorIvars]
+    struct Editor;
+
+    unsafe impl NSObjectProtocol for Editor {}
+
+    unsafe impl NSRuleEditorDelegate for Editor {
+        #[unsafe(method(ruleEditor:numberOfChildrenForCriterion:withRowType:))]
+        fn child_count(
+            &self,
+            _: &NSRuleEditor,
+            criterion: Option<&AnyObject>,
+            _: NSRuleEditorRowType,
+        ) -> NSInteger {
+            Node::of(criterion).children().len() as NSInteger
+        }
+
+        #[unsafe(method_id(ruleEditor:child:forCriterion:withRowType:))]
+        fn child(
+            &self,
+            _: &NSRuleEditor,
+            index: NSInteger,
+            criterion: Option<&AnyObject>,
+            _: NSRuleEditorRowType,
+        ) -> Retained<AnyObject> {
+            Node::of(criterion).children()[index as usize].name().into()
+        }
+
+        #[unsafe(method_id(ruleEditor:displayValueForCriterion:inRow:))]
+        fn display_value(
+            &self,
+            _: &NSRuleEditor,
+            criterion: &AnyObject,
+            row: NSInteger,
+        ) -> Retained<AnyObject> {
+            self.value(Node::of(Some(criterion)), row)
+        }
+    }
+
+    unsafe impl NSControlTextEditingDelegate for Editor {
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, _: &NSNotification) {
+            unsafe { self.sendAction_to(self.action(), self.target().as_deref()) };
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for Editor {}
+);
+
+impl Editor {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(EditorIvars::default());
+        let editor: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        editor.setDelegate(Some(ProtocolObject::from_ref(&*editor)));
+        editor.setNestingMode(NSRuleEditorNestingMode::List);
+        editor.setCanRemoveAllRows(true);
+        editor
+    }
+
+    fn field(&self, row: NSInteger) -> Option<Retained<NSTextField>> {
+        (row < self.numberOfRows())
+            .then(|| self.displayValuesForRow(row))?
+            .iter()
+            .find_map(|value| value.downcast::<NSTextField>().ok())
+    }
+
+    /// A row keeps its field, and so its text, across a change of operator.
+    fn value(&self, node: Node, row: NSInteger) -> Retained<AnyObject> {
+        if !matches!(node, Node::Text) {
+            return NSString::from_str(node.title()).into();
+        }
+        let field = self.field(row).unwrap_or_else(|| {
+            let frame = NSRect::new(NSPoint::ZERO, NSSize::new(250., 19.));
+            let field = NSTextField::initWithFrame(NSTextField::alloc(self.mtm()), frame);
+            field.setFont(Some(&NSFont::controlContentFontOfSize(11.)));
+            unsafe { field.setDelegate(Some(ProtocolObject::from_ref(self))) };
+            field
+        });
+        field.into()
+    }
+
+    fn criterion(&self, row: NSInteger) -> Criterion {
+        let mut criterion = Criterion {
+            text: (self.field(row))
+                .map(|field| field.stringValue().to_string())
+                .unwrap_or_default(),
+            ..Criterion::default()
+        };
+        for node in self.criteriaForRow(row).iter() {
+            match Node::of(Some(&node)) {
+                Node::Name => criterion.field = NAME_FIELD,
+                Node::Category(at) => criterion.kind = Category::ALL[at],
+                Node::Test(at) => criterion.test = at,
+                _ => {}
+            }
+        }
+        criterion
+    }
+
+    fn write(&self, rows: &[Criterion]) {
+        let count = rows.len() as NSInteger;
+        while self.numberOfRows() > count {
+            self.removeRowAtIndex(self.numberOfRows() - 1);
+        }
+        while self.numberOfRows() < count {
+            let row = self.numberOfRows();
+            self.insertRowAtIndex_withType_asSubrowOfRow_animate(
+                row,
+                NSRuleEditorRowType::Simple,
+                -1,
+                false,
+            );
+        }
+        for (row, criterion) in (0..).zip(rows) {
+            let path = criterion.path();
+            let criteria: Vec<Retained<AnyObject>> =
+                path.iter().map(|node| node.name().into()).collect();
+            let values: Vec<Retained<AnyObject>> =
+                path.iter().map(|node| self.value(*node, row)).collect();
+            if let Some(field) = values
+                .iter()
+                .find_map(|it| it.downcast_ref::<NSTextField>())
+            {
+                field.setStringValue(&NSString::from_str(&criterion.text));
+            }
+            unsafe {
+                self.setCriteria_andDisplayValues_forRowAtIndex(
+                    &NSArray::from_retained_slice(&criteria),
+                    &NSArray::from_retained_slice(&values),
+                    row,
+                )
+            };
+        }
+        self.ivars().written.replace(rows.to_vec());
+    }
+}
+
+/// Bumps `pending` until the deferred handler lands: a paint in between must not rewrite the rows.
+fn read() -> NativeRead {
+    thread_local! {
+        static READ: NativeRead = Rc::new(|sender| {
+            let Some(editor) = sender.downcast_ref::<Editor>() else {
+                return Box::new(());
+            };
+            let rows: Vec<Criterion> = (0..editor.numberOfRows())
+                .map(|row| editor.criterion(row))
+                .collect();
+            let ivars = editor.ivars();
+            ivars.pending.set(ivars.pending.get() + 1);
+            ivars.written.replace(rows.clone());
+            Box::new((rows, editor.retain()))
+        });
+    }
+    READ.with(Rc::clone)
+}
+
+pub(crate) fn row_height() -> f32 {
+    native_gpui::fitting_size("NSRuleEditor.rowHeight", |mtm| {
+        NSSize::new(0., NSRuleEditor::new(mtm).rowHeight())
+    })
+    .height as f32
 }
 
 impl FinderDemo {
-    pub(crate) fn criteria_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .w_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .children((0..self.criteria.len()).map(|row| self.criteria_row(row, cx)))
-            .into_any_element()
-    }
-
-    fn criteria_row(&self, row: usize, cx: &mut Context<Self>) -> AnyElement {
-        let criterion = &self.criteria[row];
-        let value = Category::ALL
-            .iter()
-            .position(|it| *it == criterion.kind)
-            .unwrap_or(0);
-        let names = criterion.names();
-        div()
-            .h(px(CRITERIA_H))
-            .w_full()
-            .flex_none()
-            .flex()
-            .items_center()
-            .pl(px(INSET))
-            .pr(px(INSET))
-            .child(
-                native_popup(("ng.finder.criteria.field", row), criterion.field)
-                    .items(FIELDS)
-                    .control_size(ControlSize::Small)
-                    .on_change(cx.listener(move |this, index: &usize, _, cx| {
-                        this.edit_criterion(row, cx, |it| it.field = *index)
-                    })),
-            )
-            .children((!names).then(|| {
-                div().flex_none().w(px(IS_W)).ml(px(GAP)).child(
-                    native_label(("ng.finder.criteria.is", row), "is")
-                        .font_size(tokens::small_system_font_size())
-                        .color(SystemColor::SecondaryLabel),
-                )
-            }))
-            .children(names.then(|| {
-                div().flex_none().ml(px(GAP)).child(
-                    native_popup(("ng.finder.criteria.test", row), criterion.test)
-                        .items(TESTS)
-                        .control_size(ControlSize::Small)
-                        .on_change(cx.listener(move |this, index: &usize, _, cx| {
-                            this.edit_criterion(row, cx, |it| it.test = *index)
-                        })),
-                )
-            }))
-            .children((!names).then(|| {
-                div().flex_none().ml(px(GAP)).child(
-                    native_popup(("ng.finder.criteria.kind", row), value)
-                        .items(Category::ALL.map(|kind| kind.label()))
-                        .control_size(ControlSize::Small)
-                        .on_change(cx.listener(move |this, index: &usize, _, cx| {
-                            let kind = Category::ALL[(*index).min(Category::ALL.len() - 1)];
-                            this.edit_criterion(row, cx, |it| it.kind = kind)
-                        })),
-                )
-            }))
-            .children((names || criterion.kind == Category::Other).then(|| {
-                div().flex_none().w(px(OTHER_W)).ml(px(GAP)).child(
-                    native_text_field(("ng.finder.criteria.other", row), &criterion.text)
-                        .control_size(ControlSize::Small)
-                        .on_change(cx.listener(move |this, text: &String, _, cx| {
-                            this.edit_criterion(row, cx, |it| it.text.clone_from(text))
-                        })),
-                )
-            }))
-            .child(div().flex_1())
-            .child(
-                div().flex_none().w(px(BUTTON_W)).child(
-                    native_button(("ng.finder.criteria.remove", row), "\u{2212}")
-                        .bezel_style(ButtonBezel::AccessoryBarAction)
-                        .control_size(ControlSize::Small)
-                        .enabled(self.criteria.len() > 1)
-                        .on_click(cx.listener(move |this, _, _, cx| this.drop_criterion(row, cx))),
-                ),
-            )
-            .child(
-                div().flex_none().w(px(BUTTON_W)).child(
-                    native_button(("ng.finder.criteria.add", row), "+")
-                        .bezel_style(ButtonBezel::AccessoryBarAction)
-                        .control_size(ControlSize::Small)
-                        .on_click(cx.listener(|this, _, _, cx| this.add_criterion(cx))),
-                ),
-            )
-            .into_any_element()
-    }
-
-    fn edit_criterion(
-        &mut self,
-        row: usize,
-        cx: &mut Context<Self>,
-        edit: impl FnOnce(&mut Criterion),
-    ) {
-        if let Some(criterion) = self.criteria.get_mut(row) {
-            edit(criterion);
+    pub(crate) fn criteria_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.criteria.is_empty() {
+            return None;
         }
-        self.run_search(cx);
-    }
-
-    fn add_criterion(&mut self, cx: &mut Context<Self>) {
-        self.criteria.push(Criterion::default());
-        self.run_search(cx);
-    }
-
-    fn drop_criterion(&mut self, row: usize, cx: &mut Context<Self>) {
-        if row < self.criteria.len() && self.criteria.len() > 1 {
-            self.criteria.remove(row);
-        }
-        self.run_search(cx);
+        let rows = self.criteria.clone();
+        let height = row_height() * rows.len() as f32;
+        let demo = cx.entity().downgrade();
+        let dispatch: NativeDispatch = Rc::new(move |value, _, cx| {
+            let Ok(value) = value.downcast::<(Vec<Criterion>, Retained<Editor>)>() else {
+                return;
+            };
+            let (rows, editor) = *value;
+            let pending = &editor.ivars().pending;
+            pending.set(pending.get().saturating_sub(1));
+            demo.update(cx, |this, cx| {
+                this.criteria = rows;
+                this.run_search(cx);
+            })
+            .ok();
+        });
+        let paint = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, cx| {
+                let mut hasher = DefaultHasher::new();
+                "ng.finder.criteria".hash(&mut hasher);
+                let key = hasher.finish();
+                let host = NativeHost::get(window, cx);
+                let mask = window.content_mask().bounds;
+                let editor = host.place(key, Layer::Above, bounds, mask, |mtm, target| {
+                    let editor = Editor::new(mtm);
+                    wire(&editor, target, key);
+                    editor
+                });
+                let ivars = editor.ivars();
+                if ivars.pending.get() == 0 && *ivars.written.borrow() != rows {
+                    editor.write(&rows);
+                }
+                host.on_event(key, read(), Some(dispatch));
+            },
+        );
+        Some(paint.w_full().h(px(height)).into_any_element())
     }
 }

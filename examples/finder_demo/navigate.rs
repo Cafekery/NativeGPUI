@@ -447,6 +447,7 @@ impl FinderDemo {
     fn enter(&mut self, cx: &mut Context<Self>) {
         self.deselect();
         self.query.clear();
+        self.criteria.clear();
         self.filtered.clear();
         self.hits.clear();
         self.tag_listing = None;

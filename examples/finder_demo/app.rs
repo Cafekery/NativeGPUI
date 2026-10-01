@@ -209,7 +209,7 @@ impl FinderDemo {
         let finder = prefs::finder();
         let mut this = Self {
             titled: String::new(),
-            criteria: vec![Default::default()],
+            criteria: Vec::new(),
             folders: Folders::default(),
             sidebar: None,
             sidebar_rows: sidebar::stored_rows(&groups),
