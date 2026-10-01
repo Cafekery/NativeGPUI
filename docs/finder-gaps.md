@@ -557,9 +557,14 @@ Traffic lights, corner radius, window shadow and title type measure identical.
 - [x] Go to Folder: a sheet hung 102 pt below the window's top, as Finder's, between 434×183 and
   854×345, reopened at its last size under Finder's own autosave name (`NSWindow Frame
   GoToSheet`, Finder's size until the demo has saved one) and holding the last path gone to.
-  AppKit on macOS 27 centres every sheet unless the sheet answers the private `sheetBehavior` with
-  3 and the window places it through `window:willPositionSheet:usingRect:`; both have to go on the
-  class the window reports, not its KVO subclass, or AppKit never asks.
+  Finder keeps AppKit's centred sheet and moves its frame 50 pt below the toolbar through the
+  private `_centerSheetFrame:forParent:inParentFrame:`; so does the demo. Only a centred sheet
+  fades in sliding 32 pt down over 250 ms, rises as it fades out, and dims its window:
+  `sheetBehavior` 3 slides it up and dims nothing, and `window:willPositionSheet:usingRect:`
+  never moves a centred sheet. Finder begins the sheet once its first rows are in; the demo
+  draws them before AppKit orders it in.
+- [ ] Go to Folder: the preview pane's card is a child window, which AppKit's dimming of the
+  window under a sheet does not reach; Finder's pane dims with the window.
 - [x] Go to Folder: a path longer than the field stays on one line and scrolls, as Finder's (the
   last of 161 characters sits on the first glyph's line in both), and a folder the user can't list
   is never offered: typed with or without its slash, Finder and the demo list nothing under the
