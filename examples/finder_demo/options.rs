@@ -731,7 +731,7 @@ impl Render for ViewOptions {
                 native_button("ng.finder.options.defaults", "Use as Defaults")
                     .control_size(SMALL)
                     .width(px(121.))
-                    .enabled(prefs::has_own_look(view, here))
+                    .enabled(prefs::has_own_settings(view, here))
                     .on_click(move |_, _, cx| run((), cx)),
             ));
         }
