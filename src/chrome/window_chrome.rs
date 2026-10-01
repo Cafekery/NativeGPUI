@@ -8,9 +8,9 @@ use std::rc::Rc;
 
 use block2::RcBlock;
 use gpui::{
-    AnyElement, App, AsyncWindowContext, Bounds, CursorStyle, Element, ElementId, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Point, SharedString, Size, Window, px,
+    AnyElement, AnyWindowHandle, App, AppContext, AsyncApp, AsyncWindowContext, Bounds,
+    CursorStyle, Element, ElementId, FontWeight, GlobalElementId, Hitbox, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Size, Window, px,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -36,8 +36,9 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
     NSString, NSUserDefaults,
 };
+use objc2_quartz_core::CATransaction;
 
-use crate::bridge::appkit::{Container, gpui_view, to_rect};
+use crate::bridge::appkit::{Container, draw_now, gpui_view, to_rect};
 use crate::bridge::host::element_key;
 use crate::controls::menu::{MenuEntry, sync_menu};
 use crate::system::wording::worded;
@@ -1961,6 +1962,27 @@ pub fn remember_frame(window: &Window, name: &str) {
     let name = NSString::from_str(name);
     ns_window.setFrameUsingName(&name);
     ns_window.setFrameAutosaveName(&name);
+}
+
+/// `sheet` should open hidden: gpui draws only a window AppKit reports visible, so it is drawn
+/// here, before AppKit slides it in.
+pub fn begin_sheet(window: AnyWindowHandle, sheet: AnyWindowHandle, cx: &mut App) {
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        let host = cx.update_window(window, |_, window, _| ns_window_of(window));
+        let (Ok(host), Ok(view)) = (
+            host,
+            cx.update_window(sheet, |_, sheet, _| gpui_view(sheet)),
+        ) else {
+            return;
+        };
+        let Some(sheet) = view.window() else {
+            return;
+        };
+        draw_now(&view);
+        CATransaction::flush();
+        host.beginSheet_completionHandler(&sheet, None);
+    })
+    .detach();
 }
 
 pub fn window_flags(window: &Window) -> WindowFlags {

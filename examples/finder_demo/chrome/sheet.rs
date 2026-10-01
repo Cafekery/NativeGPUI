@@ -9,8 +9,8 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor};
 use native_gpui::{
-    Blending, Layer, Material, material, native_label, native_path_control, native_root,
-    native_rule, native_symbol, system_corner_radius, window_options,
+    Blending, Layer, Material, begin_sheet, material, native_label, native_path_control,
+    native_root, native_rule, native_symbol, system_corner_radius, window_options,
 };
 use objc2::encode::Encode;
 use objc2::runtime::{AnyClass, Imp, Sel};
@@ -32,7 +32,6 @@ const PANEL_H: f32 = 183.;
 const MIN_W: f32 = 434.;
 const MAX_W: f64 = 854.;
 const MAX_H: f64 = 345.;
-const HANG_FROM_TOOLBAR: isize = 3;
 const BELOW_TOOLBAR: f64 = 50.;
 const FIELD_X: f32 = 15.;
 const FIELD_Y: f32 = 7.;
@@ -79,6 +78,7 @@ pub(crate) struct GoPanel {
     lines: Vec<GoLine>,
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
+    unshown: Option<AnyWindowHandle>,
 }
 
 impl GoPanel {
@@ -287,9 +287,6 @@ impl FinderDemo {
         if self.go_sheet.is_some() {
             return;
         }
-        let Some(host) = ns_window(window) else {
-            return;
-        };
         let (width, height) = prefs::go_sheet_size().unwrap_or((PANEL_W, PANEL_H));
         let (demo, handle, here) = (cx.entity().downgrade(), window.window_handle(), self.here());
         let typed = prefs::go_field().unwrap_or_default();
@@ -304,7 +301,8 @@ impl FinderDemo {
                 window_min_size: Some(size(px(MIN_W), px(PANEL_H))),
                 ..window_options()
             },
-            |_, cx| {
+            |window, cx| {
+                let unshown = Some(window.window_handle());
                 cx.new(|cx| {
                     let mut panel = GoPanel {
                         demo,
@@ -314,6 +312,7 @@ impl FinderDemo {
                         lines: Vec::new(),
                         selected: None,
                         scroll: UniformListScrollHandle::new(),
+                        unshown,
                     };
                     panel.typing(typed, cx);
                     panel
@@ -328,68 +327,55 @@ impl FinderDemo {
         };
         sheet.setContentMaxSize(NSSize::new(MAX_W, MAX_H));
         sheet.setFrameAutosaveName(&NSString::from_str(prefs::GO_SHEET));
-        hang_below_toolbar(&sheet, &host);
+        hang_below_toolbar(&sheet);
         self.go_sheet = Some(opened);
-        // AppKit re-enters gpui while it attaches a sheet, so not inside this update.
-        cx.spawn(async move |_, _| host.beginSheet_completionHandler(&sheet, None))
-            .detach();
     }
 }
 
-/// AppKit centres a sheet unless it answers the private `sheetBehavior` with 3: hang from the toolbar.
-fn hang_below_toolbar(sheet: &NSWindow, host: &NSWindow) {
-    type Behave = extern "C" fn(&NSWindow, Sel) -> isize;
-    let behave: Behave = sheet_behavior;
-    let types = CString::new(format!("{}@:", isize::ENCODING)).expect("no NUL");
-    unsafe {
-        objc2::ffi::class_addMethod(
-            reported_class(sheet) as *const AnyClass as *mut AnyClass,
-            sel!(sheetBehavior),
-            std::mem::transmute::<Behave, Imp>(behave),
-            types.as_ptr(),
-        );
-    }
-    type Place = extern "C" fn(&NSWindow, Sel, &NSWindow, &NSWindow, NSRect) -> NSRect;
+/// AppKit slides a sheet down and dims its window only when it centres it; Finder moves that frame.
+fn hang_below_toolbar(sheet: &NSWindow) {
+    type Place = extern "C" fn(&NSWindow, Sel, NSRect, &NSWindow, NSRect) -> NSRect;
     let place: Place = place_sheet;
-    let types =
-        CString::new(format!("{}@:@@{}", NSRect::ENCODING, NSRect::ENCODING)).expect("no NUL");
+    let types = CString::new(format!(
+        "{}@:{}@{}",
+        NSRect::ENCODING,
+        NSRect::ENCODING,
+        NSRect::ENCODING
+    ))
+    .expect("no NUL");
     unsafe {
         objc2::ffi::class_addMethod(
-            reported_class(host) as *const AnyClass as *mut AnyClass,
-            sel!(window:willPositionSheet:usingRect:),
+            sheet.class() as *const AnyClass as *mut AnyClass,
+            sel!(_centerSheetFrame:forParent:inParentFrame:),
             std::mem::transmute::<Place, Imp>(place),
             types.as_ptr(),
         );
     }
 }
 
-/// AppKit's `respondsToSelector:` looks up the class a window reports, not the KVO subclass under it.
-fn reported_class(window: &NSWindow) -> &'static AnyClass {
-    unsafe { msg_send![window, class] }
-}
-
 extern "C" fn place_sheet(
-    _: &NSWindow,
+    this: &NSWindow,
     _: Sel,
-    _: &NSWindow,
-    sheet: &NSWindow,
-    rect: NSRect,
+    frame: NSRect,
+    parent: &NSWindow,
+    below_toolbar: NSRect,
 ) -> NSRect {
-    if sheet.frameAutosaveName().to_string() != prefs::GO_SHEET {
-        return rect;
+    let centred: NSRect = unsafe {
+        msg_send![
+            super(this, NSWindow::class()),
+            _centerSheetFrame: frame,
+            forParent: parent,
+            inParentFrame: below_toolbar
+        ]
+    };
+    if this.frameAutosaveName().to_string() != prefs::GO_SHEET {
+        return centred;
     }
+    let top = below_toolbar.origin.y + below_toolbar.size.height - BELOW_TOOLBAR;
     NSRect::new(
-        NSPoint::new(rect.origin.x, rect.origin.y - BELOW_TOOLBAR),
-        rect.size,
+        NSPoint::new(centred.origin.x, top - centred.size.height),
+        centred.size,
     )
-}
-
-extern "C" fn sheet_behavior(this: &NSWindow, _: Sel) -> isize {
-    if this.frameAutosaveName().to_string() == prefs::GO_SHEET {
-        HANG_FROM_TOOLBAR
-    } else {
-        unsafe { msg_send![super(this, NSWindow::class()), sheetBehavior] }
-    }
 }
 
 impl GoPanel {
@@ -399,6 +385,7 @@ impl GoPanel {
         if text.is_empty() {
             self.lines = section("Recents", prefs::go_history());
             self.selected = None;
+            self.show(cx);
             return;
         }
         let here = self.here;
@@ -418,10 +405,18 @@ impl GoPanel {
                 this.lines = lines;
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 cx.notify();
+                this.show(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Finder slides its sheet in once the rows it opens with are in.
+    fn show(&mut self, cx: &mut Context<Self>) {
+        if let Some(sheet) = self.unshown.take() {
+            begin_sheet(self.host, sheet, cx);
+        }
     }
 
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
