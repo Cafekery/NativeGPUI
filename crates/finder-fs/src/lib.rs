@@ -2,6 +2,7 @@ pub mod comment;
 pub mod complete;
 pub mod ds_store;
 pub mod entry;
+pub mod flags;
 pub mod folder_icon;
 pub mod icloud;
 pub mod index;
