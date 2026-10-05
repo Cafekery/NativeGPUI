@@ -2,14 +2,14 @@ use std::cell::OnceCell;
 use std::ptr;
 
 use gpui::{AnyElement, Context, Div, FontWeight, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{ControlSize, native_image, native_label, native_popup};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{AnyThread, msg_send};
 use objc2_app_kit::{
     NSBezierPath, NSBitmapFormat, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
-    NSGraphicsContext, NSImage, NSImageInterpolation,
+    NSFont, NSGraphicsContext, NSImage, NSImageInterpolation, NSTextField,
 };
 use objc2_foundation::{
     NSArray, NSData, NSFullUserName, NSPoint, NSRect, NSSize, NSString, NSUserDefaults, NSUserName,
@@ -26,11 +26,15 @@ const PHOTO_SCALE: f64 = 2.;
 const PHOTO_GAP: f32 = 8.;
 const LINE_GAP: f32 = 2.;
 const POPUP_W: f32 = 114.;
+const POPUP_FONT: f32 = 11.;
+const FOOT_FONT: f32 = 12.;
+const BASELINE_DROP: f32 = 2.;
 const FLOOR: f32 = 12.;
 const RULE_Y: f32 = 2. * INSET + PHOTO as f32;
 const FOOTER_RULE: f32 = 61.;
 const HAIRLINE: f32 = 0.5;
 const PHOTO_NAME: &str = "ng.finder.airdrop.photo";
+const ALLOW: &str = "Allow me to be discovered by: ";
 const SETTINGS: &str = "x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension";
 const MODES: [(&str, &str); 3] = [
     ("Off", "No One"),
@@ -164,14 +168,14 @@ fn rule() -> Div {
     div().absolute().bg(system_color(SystemColor::Separator))
 }
 
-fn label_width(text: &str, size: f32) -> f32 {
-    let width = tokens::appkit_string_width(
-        tokens::system_font_family(),
-        px(size),
-        FontWeight::NORMAL,
-        text,
-    );
-    width.unwrap_or_default().ceil() + 2. * LABEL_INSET
+fn allow_width() -> f32 {
+    native_gpui::fitting_size("NSTextField.airdrop_allow", |mtm| {
+        let label = NSTextField::labelWithString(&NSString::from_str(ALLOW), mtm);
+        label.setFont(Some(&NSFont::systemFontOfSize(FOOT_FONT.into())));
+        label.sizeToFit();
+        label.frame().size
+    })
+    .width as f32
 }
 
 impl FinderDemo {
@@ -181,6 +185,8 @@ impl FinderDemo {
         let popup = native_popup("ng.finder.airdrop.mode", mode)
             .items(MODES.map(|(_, title)| title))
             .control_size(ControlSize::Small)
+            .font_size(px(POPUP_FONT))
+            .tinted(true)
             .width(px(POPUP_W))
             .on_change(move |picked, _, cx| {
                 if *picked != mode {
@@ -188,7 +194,6 @@ impl FinderDemo {
                 }
                 this.update(cx, |_, cx| cx.notify()).ok();
             });
-        let allow = "Allow me to be discovered by: ";
         div()
             .size_full()
             .relative()
@@ -250,16 +255,16 @@ impl FinderDemo {
                             "ng.finder.airdrop.about",
                             "AirDrop lets you share instantly with people nearby.",
                         )
-                        .font_size(px(12.)),
+                        .font_size(px(FOOT_FONT)),
                     )
                     .child(
                         div()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .child(
-                                div().w(px(label_width(allow, 12.))).child(
-                                    native_label("ng.finder.airdrop.allow", allow)
-                                        .font_size(px(12.))
+                                div().w(px(allow_width())).mt(px(BASELINE_DROP)).child(
+                                    native_label("ng.finder.airdrop.allow", ALLOW)
+                                        .font_size(px(FOOT_FONT))
                                         .color(SystemColor::ControlAccent),
                                 ),
                             )
