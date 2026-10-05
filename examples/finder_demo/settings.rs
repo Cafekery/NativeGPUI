@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Div, ElementId, FontWeight, IntoElement,
-    ParentElement, Render, SharedString, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, point, px, size,
+    ParentElement, Render, Styled, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, point, px, size,
 };
-use native_gpui::tokens::{self, FileType, SystemColor, system_color};
+use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
     CheckState, ControlSize, MenuEntry, NativeLabel, RawMaterial, ToolbarItem, ToolbarStyle,
     material, native_checkbox, native_image, native_label, native_popup, native_root,
@@ -21,7 +21,8 @@ use objc2_foundation::{
 use crate::app::FinderDemo;
 use crate::chrome::sidebar::{self, Shown};
 use crate::prefs::{self, WindowTarget};
-use crate::tags::finder_color_rgb;
+
+mod tags_pane;
 
 const WIDTH: f32 = 377.;
 /// The frames below are Finder's, from its window's top: the content starts under the toolbar.
@@ -86,6 +87,11 @@ const SCOPES: [(&str, &str); 3] = [
 
 pub(crate) struct Settings {
     pane: usize,
+    tag_picked: Option<String>,
+    /// The name being typed for a tag just added.
+    tag_draft: Option<String>,
+    tag_fresh: bool,
+    tag_scroll: UniformListScrollHandle,
 }
 
 enum Icon {
@@ -209,13 +215,6 @@ fn syncs_desktop() -> bool {
     synced
         .and_then(|synced| synced.downcast::<NSNumber>().ok())
         .is_some_and(|synced| synced.boolValue())
-}
-
-fn heading(text: &'static str) -> impl IntoElement {
-    div()
-        .text_size(tokens::system_font_size())
-        .text_color(system_color(SystemColor::Label))
-        .child(text)
 }
 
 fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
@@ -367,77 +366,6 @@ impl Settings {
             .into_any_element()
     }
 
-    fn tags(&self) -> AnyElement {
-        let favourites = crate::tags::tags();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .child(heading("Show these tags in the sidebar:"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(system_color(SystemColor::Separator))
-                    .p(px(4.))
-                    .children(crate::tags::all().iter().map(|tag| {
-                        let id = crate::data::intern(&format!("tag:{}", tag.name));
-                        let state = sidebar::tag_shown(id);
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(20.))
-                            .gap(px(6.))
-                            .px(px(6.))
-                            .child(tag_dot(tag.color))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(tokens::system_font_size())
-                                    .text_color(system_color(SystemColor::Label))
-                                    .child(SharedString::from(tag.name.clone())),
-                            )
-                            .child(
-                                native_checkbox(
-                                    ElementId::Name(format!("ng.finder.settings.{id}").into()),
-                                    false,
-                                )
-                                .state(state)
-                                .on_change(
-                                    move |state: &CheckState, _, cx| {
-                                        sidebar::show_tag_row(id, *state == CheckState::On);
-                                        sidebar::reload_sidebars(cx);
-                                    },
-                                ),
-                            )
-                    })),
-            )
-            .child(div().h(px(8.)))
-            .child(
-                div()
-                    .text_size(tokens::small_system_font_size())
-                    .text_color(system_color(SystemColor::SecondaryLabel))
-                    .child(
-                        "Drag your favorite tags to the area below to make them available for \
-                         quick use in Finder menus.",
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .gap(px(6.))
-                    .p(px(10.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(system_color(SystemColor::Separator))
-                    .children(favourites.iter().map(|tag| tag_dot(tag.color))),
-            )
-            .into_any_element()
-    }
-
     fn sidebar(&self) -> AnyElement {
         let mut pane = div().child(
             at(26., 108.)
@@ -575,16 +503,6 @@ fn row_icon(shown: Shown) -> AnyElement {
     }
 }
 
-fn tag_dot(color: u8) -> impl IntoElement {
-    let dot = div().size(px(12.)).rounded_full();
-    match finder_color_rgb(color) {
-        Some((r, g, b)) => dot.bg(gpui::rgb(u32::from_be_bytes([0, r, g, b]))),
-        None => dot
-            .border_1()
-            .border_color(system_color(SystemColor::SecondaryLabel)),
-    }
-}
-
 fn store_target_path(path: &Path) {
     let url =
         NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), true);
@@ -618,7 +536,7 @@ impl Render for Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = match self.pane {
             0 => self.general(cx),
-            1 => unplaced(self.tags()),
+            1 => self.tags(cx),
             2 => self.sidebar(),
             _ => self.advanced(),
         };
@@ -637,10 +555,6 @@ impl Render for Settings {
                 .child(pane),
         )
     }
-}
-
-fn unplaced(pane: AnyElement) -> AnyElement {
-    div().pt(px(20.)).px(px(27.)).child(pane).into_any_element()
 }
 
 fn install_toolbar(pane: usize, settings: WeakEntity<Settings>, window: &mut Window, cx: &mut App) {
@@ -730,7 +644,13 @@ fn show(cx: &mut App) {
                 ..window_options()
             },
             |window, cx| {
-                let entity = cx.new(|_| Settings { pane });
+                let entity = cx.new(|_| Settings {
+                    pane,
+                    tag_picked: None,
+                    tag_draft: None,
+                    tag_fresh: false,
+                    tag_scroll: UniformListScrollHandle::new(),
+                });
                 install_toolbar(pane, entity.downgrade(), window, cx);
                 entity
             },
