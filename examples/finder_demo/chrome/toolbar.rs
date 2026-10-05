@@ -142,34 +142,26 @@ const VIEWS: [(&str, &str, &str); 4] = [
 const SEARCH_W: f32 = 240.;
 /// The toolbar capsules' 18 pt radius plus their 8 pt inset from the window's edges.
 const WINDOW_RADIUS: f64 = 26.;
+/// AppKit 27's own radius for every titled window, panel and sheet but alerts.
+pub(crate) const SYSTEM_RADIUS: f64 = 16.;
+pub(crate) const ALERT_RADIUS: f32 = 26.;
 
 /// AppKit's corner radius for all titled windows but utility panels, read once as the first opens.
 pub(crate) fn concentric_corners() {
     let key = NSString::from_str("NSConvolutionOverride1");
     let radius = NSNumber::new_f64(WINDOW_RADIUS);
-    let defaults = NSUserDefaults::standardUserDefaults();
-    unsafe {
-        defaults.registerDefaults(&NSDictionary::from_slices(
-            &[&*key],
-            &[&*radius as &AnyObject],
-        ))
-    };
+    let defaults = NSDictionary::from_slices(&[&*key], &[&*radius as &AnyObject]);
+    unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
 }
 
-/// AppKit 27's radius for every titled window, panel and sheet but alerts, which the browser's
-/// override would replace.
-pub(crate) const SYSTEM_RADIUS: f64 = 16.;
-/// An alert's, sheet or window.
-pub(crate) const ALERT_RADIUS: f32 = 26.;
-
 /// Only the browser windows take the override; every other window keeps AppKit's own radius.
-pub(crate) fn system_corners(window: &gpui::Window) {
+pub(crate) fn system_corners(window: &Window) {
     if let Some(window) = crate::frame::ns_window(window) {
         system_corners_of(&window);
     }
 }
 
-pub(crate) fn system_corners_of(window: &objc2_app_kit::NSWindow) {
+pub(crate) fn system_corners_of(window: &NSWindow) {
     #[cfg(feature = "private-api")]
     if objc2::runtime::NSObjectProtocol::respondsToSelector(window, objc2::sel!(_setCornerRadius:))
     {
@@ -181,11 +173,9 @@ pub(crate) fn system_corners_of(window: &objc2_app_kit::NSWindow) {
 
 pub(crate) fn titled_height(content: f32, mtm: MainThreadMarker) -> Pixels {
     let content = NSRect::new(NSPoint::ZERO, NSSize::new(1., content.into()));
-    px(
-        NSWindow::frameRectForContentRect_styleMask(content, NSWindowStyleMask::Titled, mtm)
-            .size
-            .height as f32,
-    )
+    let frame =
+        NSWindow::frameRectForContentRect_styleMask(content, NSWindowStyleMask::Titled, mtm);
+    px(frame.size.height as f32)
 }
 
 fn airdrop_glyph() -> Option<Retained<NSImage>> {
@@ -495,15 +485,13 @@ impl FinderDemo {
                 .filter_map(|id| Some((place(id)?.0, id)))
                 .collect();
         }
-        let mut places: Vec<(&'static str, &'static str)> = self
-            .folder()
+        self.folder()
             .map_or(&[][..], |folder| folder.crumbs.as_slice())
             .iter()
             .rev()
             .copied()
-            .collect();
-        places.push((computer_name(), COMPUTER));
-        places
+            .chain([(computer_name(), COMPUTER)])
+            .collect()
     }
 
     fn action_rows(&self) -> Menu {

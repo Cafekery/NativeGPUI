@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
 use finder_fs::kind::Category;
@@ -15,33 +14,33 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString,
+    NSRect, NSSize, NSString, ns_string,
 };
 
 use crate::app::FinderDemo;
 use crate::data::Row;
 
-const NAME_FIELD: usize = 1;
 const TESTS: [&str; 4] = ["contains", "begins with", "ends with", "is"];
+const KEY: u64 = u64::from_be_bytes(*b"criteria");
 
 #[derive(Clone, Default, PartialEq)]
 pub(crate) struct Criterion {
-    pub(crate) field: usize,
-    pub(crate) kind: Category,
-    pub(crate) test: usize,
-    pub(crate) text: String,
+    by_name: bool,
+    kind: Category,
+    test: usize,
+    text: String,
 }
 
 impl Criterion {
     pub(crate) fn name() -> Self {
         Self {
-            field: NAME_FIELD,
+            by_name: true,
             ..Self::default()
         }
     }
 
     pub(crate) fn holds(&self, row: &Row) -> bool {
-        if !self.names() {
+        if !self.by_name {
             return match self.kind {
                 Category::Other => row.kind.to_lowercase().contains(&self.text.to_lowercase()),
                 kind => finder_fs::kind::conforms(&row.uti, kind),
@@ -57,16 +56,12 @@ impl Criterion {
         }
     }
 
-    fn names(&self) -> bool {
-        self.field == NAME_FIELD
-    }
-
     fn test(&self) -> &'static str {
-        TESTS[self.test.min(TESTS.len() - 1)]
+        TESTS[self.test]
     }
 
     pub(crate) fn raw_query(&self) -> Option<String> {
-        if self.names() {
+        if self.by_name {
             let (before, after) = match self.test() {
                 "begins with" => ("", "*"),
                 "ends with" => ("*", ""),
@@ -91,9 +86,8 @@ impl Criterion {
     }
 
     fn path(&self) -> Vec<Node> {
-        if self.names() {
-            let test = self.test.min(TESTS.len() - 1);
-            return vec![Node::Name, Node::Test(test), Node::Text];
+        if self.by_name {
+            return vec![Node::Name, Node::Test(self.test), Node::Text];
         }
         let kind = Category::ALL.iter().position(|it| *it == self.kind);
         let mut path = vec![Node::Kind, Node::Is, Node::Category(kind.unwrap_or(0))];
@@ -133,14 +127,14 @@ impl Node {
     }
 
     fn name(self) -> Retained<NSString> {
-        NSString::from_str(&match self {
-            Node::Kind => "kind".to_string(),
-            Node::Name => "name".to_string(),
-            Node::Is => "is".to_string(),
-            Node::Category(at) => format!("kind:{at}"),
-            Node::Test(at) => format!("test:{at}"),
-            Node::Root | Node::Text => "text".to_string(),
-        })
+        match self {
+            Node::Kind => ns_string!("kind").retain(),
+            Node::Name => ns_string!("name").retain(),
+            Node::Is => ns_string!("is").retain(),
+            Node::Category(at) => NSString::from_str(&format!("kind:{at}")),
+            Node::Test(at) => NSString::from_str(&format!("test:{at}")),
+            Node::Root | Node::Text => ns_string!("text").retain(),
+        }
     }
 
     fn children(self) -> Vec<Node> {
@@ -258,30 +252,27 @@ impl Editor {
     }
 
     fn criterion(&self, row: NSInteger) -> Criterion {
-        let mut criterion = Criterion {
-            text: (self.field(row))
-                .map(|field| field.stringValue().to_string())
-                .unwrap_or_default(),
-            ..Criterion::default()
-        };
+        let mut criterion = Criterion::default();
         for node in self.criteriaForRow(row).iter() {
             match Node::of(Some(&node)) {
-                Node::Name => criterion.field = NAME_FIELD,
+                Node::Name => criterion.by_name = true,
                 Node::Category(at) => criterion.kind = Category::ALL[at],
                 Node::Test(at) => criterion.test = at,
                 _ => {}
             }
         }
+        if let Some(field) = self.field(row) {
+            criterion.text = field.stringValue().to_string();
+        }
         criterion
     }
 
     fn write(&self, rows: &[Criterion]) {
-        let count = rows.len() as NSInteger;
-        while self.numberOfRows() > count {
-            self.removeRowAtIndex(self.numberOfRows() - 1);
+        let (have, want) = (self.numberOfRows(), rows.len() as NSInteger);
+        for row in (want..have).rev() {
+            self.removeRowAtIndex(row);
         }
-        while self.numberOfRows() < count {
-            let row = self.numberOfRows();
+        for row in have..want {
             self.insertRowAtIndex_withType_asSubrowOfRow_animate(
                 row,
                 NSRuleEditorRowType::Simple,
@@ -363,21 +354,18 @@ impl FinderDemo {
         let paint = canvas(
             |_, _, _| (),
             move |bounds, _, window, cx| {
-                let mut hasher = DefaultHasher::new();
-                "ng.finder.criteria".hash(&mut hasher);
-                let key = hasher.finish();
                 let host = NativeHost::get(window, cx);
                 let mask = window.content_mask().bounds;
-                let editor = host.place(key, Layer::Above, bounds, mask, |mtm, target| {
+                let editor = host.place(KEY, Layer::Above, bounds, mask, |mtm, target| {
                     let editor = Editor::new(mtm);
-                    wire(&editor, target, key);
+                    wire(&editor, target, KEY);
                     editor
                 });
                 let ivars = editor.ivars();
                 if ivars.pending.get() == 0 && *ivars.written.borrow() != rows {
                     editor.write(&rows);
                 }
-                host.on_event(key, read(), Some(dispatch));
+                host.on_event(KEY, read(), Some(dispatch));
             },
         );
         Some(paint.w_full().h(px(height)).into_any_element())

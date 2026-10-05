@@ -104,7 +104,7 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
     let Ok(opened) = opened else {
         return;
     };
-    OPEN.with_borrow_mut(|open| *open = Some(opened));
+    OPEN.set(Some(opened));
     let Ok(Some(ns)) = opened.update(cx, |_, window, _| ns_window(window)) else {
         return;
     };

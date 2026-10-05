@@ -56,7 +56,7 @@ fn is_alt_click(event: &ClickEvent) -> bool {
     matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
 }
 
-// No stand-in: Finder's first frame already has each crumb's own icon, never another kind's.
+// No stand-in: Finder's first frame already has each crumb's own icon.
 fn crumb_art(id: impl Into<ElementId>, kind: Option<FileType<'static>>) -> AnyElement {
     let raster = kind.and_then(|kind| crate::icons::icon(kind, CRUMB_ART));
     div()
@@ -105,7 +105,6 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
 
 const ICLOUD_ART: &str = "iCloudDriveNode";
 
-/// Names Finder's iCloud Drive art in this process, for `FileType::Named` to find.
 pub(crate) fn icloud_art() -> FileType<'static> {
     thread_local! {
         static NAMED: Cell<bool> = const { Cell::new(false) };

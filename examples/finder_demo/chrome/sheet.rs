@@ -303,7 +303,6 @@ impl FinderDemo {
             },
             |window, cx| {
                 super::toolbar::system_corners(window);
-                let unshown = Some(window.window_handle());
                 cx.new(|cx| {
                     let mut panel = GoPanel {
                         demo,
@@ -313,7 +312,7 @@ impl FinderDemo {
                         lines: Vec::new(),
                         selected: None,
                         scroll: UniformListScrollHandle::new(),
-                        unshown,
+                        unshown: Some(window.window_handle()),
                     };
                     panel.typing(typed, cx);
                     panel
@@ -337,13 +336,7 @@ impl FinderDemo {
 fn hang_below_toolbar(sheet: &NSWindow) {
     type Place = extern "C" fn(&NSWindow, Sel, NSRect, &NSWindow, NSRect) -> NSRect;
     let place: Place = place_sheet;
-    let types = CString::new(format!(
-        "{}@:{}@{}",
-        NSRect::ENCODING,
-        NSRect::ENCODING,
-        NSRect::ENCODING
-    ))
-    .expect("no NUL");
+    let types = CString::new(format!("{0}@:{0}@{0}", NSRect::ENCODING)).expect("no NUL");
     unsafe {
         objc2::ffi::class_addMethod(
             sheet.class() as *const AnyClass as *mut AnyClass,

@@ -4,15 +4,14 @@ use gpui::{AnyElement, Pixels, div, prelude::*};
 use native_gpui::scroll_edge_effect;
 use objc2_foundation::NSProcessInfo;
 
-static MACOS_27: LazyLock<bool> = LazyLock::new(|| {
-    NSProcessInfo::processInfo()
-        .operatingSystemVersion()
-        .majorVersion
-        >= 27
-});
-
 pub(crate) fn toolbar_rule() -> bool {
-    !*MACOS_27
+    static BEFORE_27: LazyLock<bool> = LazyLock::new(|| {
+        NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            < 27
+    });
+    *BEFORE_27
 }
 
 pub(crate) fn band_edge(band: Pixels, header: Pixels, scrolled: Pixels) -> AnyElement {

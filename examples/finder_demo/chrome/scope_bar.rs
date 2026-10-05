@@ -44,9 +44,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn scope_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let folder_name = self.folder().map_or("this Mac".to_string(), |folder| {
-            format!("\u{201c}{}\u{201d}", folder.title)
-        });
+        let folder_name = self.folder().map_or_else(
+            || "this Mac".to_string(),
+            |folder| format!("\u{201c}{}\u{201d}", folder.title),
+        );
         let mut scopes = vec![
             (THIS_MAC, finder_fs::words::say("This Mac").into_owned()),
             (THIS_FOLDER, folder_name),
@@ -54,7 +55,11 @@ impl FinderDemo {
         if !data::network_roots().is_empty() {
             scopes.push((NETWORK, finder_fs::words::say("Network").into_owned()));
         }
-        let shown = !self.criteria.is_empty();
+        let (toggle, symbol) = if self.criteria.is_empty() {
+            ("show search criteria", "plus")
+        } else {
+            ("hide search criteria", "minus")
+        };
         div()
             .h(px(SCOPE_H))
             .w_full()
@@ -107,18 +112,11 @@ impl FinderDemo {
                     .ml(px(BUTTON_GAP))
                     .mr(px(TRAILING_INSET))
                     .child(
-                        native_button(
-                            "ng.finder.scope.criteria",
-                            if shown {
-                                "hide search criteria"
-                            } else {
-                                "show search criteria"
-                            },
-                        )
-                        .symbol(if shown { "minus" } else { "plus" })
-                        .bezel_style(ButtonBezel::AccessoryBarAction)
-                        .control_size(ControlSize::Small)
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_criteria(cx))),
+                        native_button("ng.finder.scope.criteria", toggle)
+                            .symbol(symbol)
+                            .bezel_style(ButtonBezel::AccessoryBarAction)
+                            .control_size(ControlSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_criteria(cx))),
                     ),
             )
             .into_any_element()

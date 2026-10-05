@@ -139,7 +139,7 @@ fn trash_path() -> Option<PathBuf> {
 }
 
 fn provider_glyph(root: Option<&Path>) -> Glyph {
-    // A provider may name a symbol of its own bundle's, which only it can load.
+    // A provider may name a symbol from its own bundle, which only it can load.
     let named = root
         .and_then(finder_fs::sidebar::provider_symbol)
         .filter(|name| system_symbol(name).is_some());
