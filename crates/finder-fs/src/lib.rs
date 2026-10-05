@@ -11,6 +11,7 @@ pub mod list;
 pub mod meta;
 pub mod name;
 pub mod ops;
+pub mod permissions;
 pub mod put_back;
 pub mod queue;
 pub mod servers;

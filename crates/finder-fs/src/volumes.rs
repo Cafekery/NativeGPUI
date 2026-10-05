@@ -103,6 +103,11 @@ pub(crate) fn is_local(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
+/// Get Info's "Ignore ownership on this volume".
+pub fn ignores_ownership(path: &Path) -> bool {
+    statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0)
+}
+
 fn mount_path(stats: &libc::statfs) -> PathBuf {
     // SAFETY: the kernel NUL-terminates the mount name.
     let mount = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
