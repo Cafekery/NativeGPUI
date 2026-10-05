@@ -18,7 +18,6 @@ pub enum Decoration {
 }
 
 const DECORATION: &CStr = c"com.apple.icon.folder#S";
-const FINDER_INFO: &CStr = c"com.apple.FinderInfo";
 
 pub fn read(path: &Path) -> Option<Decoration> {
     let bytes = xattr::get(&crate::c_path(path).ok()?, DECORATION)?;
@@ -54,28 +53,18 @@ fn json(decoration: &Decoration) -> io::Result<Retained<NSData>> {
 }
 
 pub fn write(path: &Path, decoration: Option<&Decoration>) -> io::Result<()> {
-    let path = crate::c_path(path)?;
+    let named = crate::c_path(path)?;
     match decoration {
-        Some(decoration) => xattr::set(&path, DECORATION, &json(decoration)?.to_vec())?,
-        None => xattr::remove(&path, DECORATION)?,
+        Some(decoration) => xattr::set(&named, DECORATION, &json(decoration)?.to_vec())?,
+        None => xattr::remove(&named, DECORATION)?,
     }
-    let mut info = xattr::get(&path, FINDER_INFO).unwrap_or_default();
-    info.resize(32, 0);
-    let flags = u16::from_be_bytes([info[8], info[9]]);
-    let flags = match decoration {
-        Some(_) => flags | HAS_CUSTOM_ICON,
-        None => flags & !HAS_CUSTOM_ICON,
-    };
-    info[8..10].copy_from_slice(&flags.to_be_bytes());
-    match info.iter().all(|byte| *byte == 0) {
-        true => xattr::remove(&path, FINDER_INFO),
-        false => xattr::set(&path, FINDER_INFO, &info),
-    }
+    crate::flags::set(path, HAS_CUSTOM_ICON, decoration.is_some())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flags::FINDER_INFO;
 
     #[test]
     fn clearing_keeps_the_other_finder_flags() {

@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use block2::DynBlock;
 use gpui::Context;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
@@ -12,8 +13,8 @@ use objc2_app_kit::{
     NSWorkspaceLaunchOptions, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
-    NSArray, NSBundle, NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
-    NSURL, NSURLBookmarkResolutionOptions,
+    NSArray, NSBundle, NSDictionary, NSError, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSURL, NSURLBookmarkResolutionOptions, NSURLContentTypeKey,
 };
 
 use crate::app::FinderDemo;
@@ -159,6 +160,43 @@ pub(crate) fn set_default(files: &[PathBuf], app: &Path) {
     for file in files.iter().filter_map(|file| url(file)) {
         workspace.setDefaultApplicationAtURL_toOpenFileAtURL_completionHandler(&app, &file, None);
     }
+}
+
+/// The app `file` opens with: its own choice where it has one, else its type's.
+pub(crate) fn opener(file: &Path) -> Option<PathBuf> {
+    let file = url(file)?;
+    let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&file)?;
+    Some(PathBuf::from(app.path()?.to_string()))
+}
+
+fn content_type(file: &Path) -> Option<Retained<AnyObject>> {
+    let mut kind = None;
+    unsafe { url(file)?.getResourceValue_forKey_error(&mut kind, NSURLContentTypeKey) }.ok()?;
+    kind
+}
+
+/// The app every document of `file`'s type opens with.
+pub(crate) fn type_default(file: &Path) -> Option<PathBuf> {
+    let kind = content_type(file)?;
+    let app: Option<Retained<NSURL>> = unsafe {
+        msg_send![&*NSWorkspace::sharedWorkspace(), URLForApplicationToOpenContentType: &*kind]
+    };
+    Some(PathBuf::from(app?.path()?.to_string()))
+}
+
+pub(crate) fn set_type_default(file: &Path, app: &Path) {
+    let (Some(kind), Some(app)) = (content_type(file), url(app)) else {
+        return;
+    };
+    let done: Option<&DynBlock<dyn Fn(*mut NSError)>> = None;
+    let _: () = unsafe {
+        msg_send![
+            &*NSWorkspace::sharedWorkspace(),
+            setDefaultApplicationAtURL: &*app,
+            toOpenContentType: &*kind,
+            completionHandler: done,
+        ]
+    };
 }
 
 pub(crate) fn app_store(files: &[PathBuf]) {

@@ -590,6 +590,10 @@ pub(crate) fn notify_windows(cx: &mut App) {
     for window in cx.windows() {
         if let Some(demo) = window.downcast::<FinderDemo>() {
             demo.update(cx, |_, _, cx| cx.notify()).ok();
+        } else if let Some(info) = window.downcast::<crate::info::Info>() {
+            info.update(cx, |_, _, cx| cx.notify()).ok();
+        } else if let Some(panel) = window.downcast::<crate::inspector::Inspector>() {
+            panel.update(cx, |_, _, cx| cx.notify()).ok();
         }
     }
 }

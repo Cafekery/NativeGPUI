@@ -226,6 +226,40 @@ pub(crate) fn set_setting_text(key: &str, value: &str) {
     unsafe { defaults().setObject_forKey(Some(&value), &NSString::from_str(key)) };
 }
 
+pub(crate) fn setting_number(key: &str) -> Option<f64> {
+    Some(setting(key)?.downcast::<NSNumber>().ok()?.doubleValue())
+}
+
+pub(crate) fn set_setting_number(key: &str, value: f64) {
+    write(key, value);
+}
+
+/// One flag of a dictionary of flags, such as Finder's `FXInfoPanesExpanded`.
+pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
+    let flags = setting(key)?.downcast::<NSDictionary>().ok()?;
+    Some(
+        value(&flags, flag)?
+            .downcast::<NSNumber>()
+            .ok()?
+            .boolValue(),
+    )
+}
+
+pub(crate) fn set_setting_flags(key: &str, flags: &[(&str, bool)]) {
+    let names: Vec<Retained<NSString>> = flags
+        .iter()
+        .map(|(name, _)| NSString::from_str(name))
+        .collect();
+    let values: Vec<Retained<NSNumber>> = flags
+        .iter()
+        .map(|(_, on)| NSNumber::new_bool(*on))
+        .collect();
+    let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
+    let values: Vec<&NSNumber> = values.iter().map(|value| &**value).collect();
+    let value: &AnyObject = &NSDictionary::from_slices(&names, &values);
+    unsafe { defaults().setObject_forKey(Some(value), &NSString::from_str(key)) };
+}
+
 pub(crate) fn opens_folders_in_tabs() -> bool {
     setting_on("FinderSpawnTab", true)
 }
