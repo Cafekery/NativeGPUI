@@ -12,11 +12,11 @@ use native_gpui::{
     ToolbarSelection, ToolbarStyle, chrome_host, set_customizable_toolbar,
 };
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
+use objc2::runtime::{AnyObject, Bool};
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSToolbarItem, NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, GROUP_KEYS};
@@ -137,6 +137,21 @@ const VIEWS: [(&str, &str, &str); 4] = [
     ("squares.below.rectangle", "as Gallery", "gallery view"),
 ];
 const SEARCH_W: f32 = 240.;
+/// The toolbar capsules' 18 pt radius plus their 8 pt inset from the window's edges.
+const WINDOW_RADIUS: f64 = 26.;
+
+/// AppKit's corner radius for all titled windows but utility panels, read once as the first opens.
+pub(crate) fn concentric_corners() {
+    let key = NSString::from_str("NSConvolutionOverride1");
+    let radius = NSNumber::new_f64(WINDOW_RADIUS);
+    let defaults = NSUserDefaults::standardUserDefaults();
+    unsafe {
+        defaults.registerDefaults(&NSDictionary::from_slices(
+            &[&*key],
+            &[&*radius as &AnyObject],
+        ))
+    };
+}
 
 fn airdrop_glyph() -> Option<Retained<NSImage>> {
     system_symbol("airdrop").or_else(airdrop_art)
