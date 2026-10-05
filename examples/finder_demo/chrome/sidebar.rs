@@ -649,6 +649,7 @@ impl FinderDemo {
                 content_min_thickness: px(crate::preview::LIST_MIN_W),
                 reorderable: true,
                 backdrop: Some(Material::Card),
+                edge_rule: true,
                 ..SidebarOptions::default()
             },
         );

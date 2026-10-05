@@ -16,16 +16,17 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSControl, NSControlTextEditingDelegate,
-    NSDragOperation, NSDraggingInfo, NSMenu, NSMenuDelegate, NSOutlineView,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardTypeFileURL, NSPasteboardWriting,
-    NSResponder, NSScreen, NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableColumn,
-    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle,
-    NSTableViewRowSizeStyle, NSTableViewStyle, NSTintConfiguration, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController,
-    NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowOrderingMode,
-    NSWindowStyleMask, NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBezierPath, NSBox, NSBoxType, NSColor, NSControl,
+    NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSMenu, NSMenuDelegate,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardTypeFileURL,
+    NSPasteboardWriting, NSResponder, NSScreen, NSScrollView, NSSplitViewController,
+    NSSplitViewItem, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
+    NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle,
+    NSTintConfiguration, NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
+    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
@@ -196,6 +197,8 @@ pub struct SidebarOptions {
     pub reorderable: bool,
     pub content_min_thickness: Pixels,
     pub backdrop: Option<Material>,
+    /// A separator-coloured line down the sidebar's trailing edge.
+    pub edge_rule: bool,
 }
 
 impl Default for SidebarOptions {
@@ -213,6 +216,7 @@ impl Default for SidebarOptions {
             reorderable: false,
             content_min_thickness: px(0.),
             backdrop: Some(Material::Card),
+            edge_rule: false,
         }
     }
 }
@@ -1391,6 +1395,25 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     scroll.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
+
+    if options.edge_rule {
+        let rule = NSBox::initWithFrame(
+            NSBox::alloc(mtm),
+            NSRect::new(
+                NSPoint::new(strip.size.width - 1., 0.),
+                NSSize::new(1., strip.size.height),
+            ),
+        );
+        rule.setBoxType(NSBoxType::Custom);
+        rule.setBorderWidth(0.);
+        rule.setTitlePosition(NSTitlePosition::NoTitle);
+        rule.setFillColor(&NSColor::separatorColor());
+        rule.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewMinXMargin
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        scroll.addSubview(&rule);
+    }
 
     let sidebar_vc = NSViewController::init(NSViewController::alloc(mtm));
     sidebar_vc.setView(&scroll);

@@ -8,7 +8,7 @@ use gpui::{
 };
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
-use native_gpui::{NativeScrollBars, native_root, native_rule, native_scroll_bars};
+use native_gpui::{NativeScrollBars, native_root, native_scroll_bars};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -185,18 +185,7 @@ impl Render for FinderDemo {
                             .children(save_sheet)
                             .children(conflict_sheet)
                             .children(jobs_popover),
-                    )
-                    .when(metrics.left > px(0.), |root| {
-                        root.child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left(metrics.left)
-                                .w(px(1.))
-                                .child(native_rule("ng.finder.sidebar.border")),
-                        )
-                    }),
+                    ),
             );
         trace_frame(self, began);
         root
