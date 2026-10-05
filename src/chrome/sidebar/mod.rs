@@ -16,17 +16,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSBox, NSBoxType, NSColor, NSControl,
-    NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo, NSMenu, NSMenuDelegate,
-    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardTypeFileURL,
-    NSPasteboardWriting, NSResponder, NSScreen, NSScrollView, NSSplitViewController,
-    NSSplitViewItem, NSTableColumn, NSTableColumnResizingOptions, NSTableView,
-    NSTableViewColumnAutoresizingStyle, NSTableViewRowSizeStyle, NSTableViewStyle,
-    NSTintConfiguration, NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSAutoresizingMaskOptions, NSBezierPath, NSColor, NSControl, NSControlTextEditingDelegate,
+    NSDragOperation, NSDraggingInfo, NSMenu, NSMenuDelegate, NSOutlineView,
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardTypeFileURL, NSPasteboardWriting,
+    NSResponder, NSScreen, NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableColumn,
+    NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle,
+    NSTableViewRowSizeStyle, NSTableViewStyle, NSTintConfiguration, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController,
+    NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
@@ -1397,17 +1396,13 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     );
 
     if options.edge_rule {
-        let rule = NSBox::initWithFrame(
-            NSBox::alloc(mtm),
+        let rule = EdgeRule::new(
+            mtm,
             NSRect::new(
                 NSPoint::new(strip.size.width - 1., 0.),
                 NSSize::new(1., strip.size.height),
             ),
         );
-        rule.setBoxType(NSBoxType::Custom);
-        rule.setBorderWidth(0.);
-        rule.setTitlePosition(NSTitlePosition::NoTitle);
-        rule.setFillColor(&NSColor::separatorColor());
         rule.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewMinXMargin
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -1563,4 +1558,35 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         observers,
     };
     NativeSidebar(Rc::new(state))
+}
+
+define_class!(
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarEdgeRule"]
+    struct EdgeRule;
+
+    impl EdgeRule {
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let bounds = self.bounds();
+            let pixel = self.convertSizeFromBacking(NSSize::new(1., 1.)).width;
+            NSColor::separatorColor().setFill();
+            NSBezierPath::fillRect(NSRect::new(
+                NSPoint::new(bounds.size.width - pixel, 0.),
+                NSSize::new(pixel, bounds.size.height),
+            ));
+        }
+
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+impl EdgeRule {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        unsafe { msg_send![Self::alloc(mtm), initWithFrame: frame] }
+    }
 }

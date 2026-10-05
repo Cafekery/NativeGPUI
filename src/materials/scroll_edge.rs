@@ -155,9 +155,24 @@ define_class!(
     }
 );
 
+define_class!(
+    #[unsafe(super(NSTableHeaderView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGScrollEdgeHeader"]
+    struct Header;
+
+    impl Header {
+        /// The edge's own separator rules the header off; AppKit's 1 pt rule would double it.
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {}
+    }
+);
+
 impl Edge {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let header = NSTableHeaderView::initWithFrame(NSTableHeaderView::alloc(mtm), NSRect::ZERO);
+        let header: Retained<Header> =
+            unsafe { msg_send![Header::alloc(mtm), initWithFrame: NSRect::ZERO] };
+        let header = Retained::into_super(header);
         let document = Document::alloc(mtm).set_ivars(Cell::new(0.));
         let document: Retained<Document> =
             unsafe { msg_send![super(document), initWithFrame: NSRect::ZERO] };
