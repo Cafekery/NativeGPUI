@@ -37,8 +37,7 @@ use crate::Material;
 use crate::bridge::appkit::{Container, draw_now, gpui_view, rects_equal};
 use crate::controls::MenuEntry;
 use crate::materials::RawMaterial;
-use crate::tokens;
-use crate::tokens::SystemColor;
+use crate::tokens::{self, SystemColor};
 
 use self::cell::{SidebarCell, row_view, tint_rows};
 pub use self::cell::{system_symbol, system_template};
@@ -56,12 +55,12 @@ pub const CORE_TYPES_BUNDLE: &str = "/System/Library/CoreServices/CoreTypes.bund
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SidebarIcon {
     Symbol(SharedString),
-    /// A symbol, else this CoreTypes resource when neither catalog has the symbol.
+    /// A symbol, else this CoreTypes resource.
     SymbolOrResource(SharedString, SharedString),
     SystemResource(SharedString),
     Dot(Option<(u8, u8, u8)>),
     Dots,
-    /// A template symbol in this colour wherever AppKit tints the row, as Finder's tag rows are.
+    /// A template symbol in this colour wherever AppKit tints the row.
     TintedSymbol(SharedString, SystemColor),
 }
 
@@ -1396,13 +1395,12 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     );
 
     if options.edge_rule {
-        let rule = EdgeRule::new(
-            mtm,
-            NSRect::new(
-                NSPoint::new(strip.size.width - 1., 0.),
-                NSSize::new(1., strip.size.height),
-            ),
+        let frame = NSRect::new(
+            NSPoint::new(strip.size.width - 1., 0.),
+            NSSize::new(1., strip.size.height),
         );
+        let rule: Retained<EdgeRule> =
+            unsafe { msg_send![EdgeRule::alloc(mtm), initWithFrame: frame] };
         rule.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewMinXMargin
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -1584,9 +1582,3 @@ define_class!(
         }
     }
 );
-
-impl EdgeRule {
-    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        unsafe { msg_send![Self::alloc(mtm), initWithFrame: frame] }
-    }
-}

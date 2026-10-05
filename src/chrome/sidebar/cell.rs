@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSTrackingAreaOptions, NSUserInterfaceItemIdentification, NSView, NSWindingRule,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+    MainThreadMarker, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString, ns_string,
 };
 
 use super::model::Node;
@@ -69,15 +69,12 @@ define_class!(
                 (bounds.size.width - size.width, size.width + BADGE_GAP)
             } else {
                 // Finder's title yields the eject's slot and one point more, at 2x only.
-                let gap = match self.window() {
-                    Some(window) if window.backingScaleFactor() == 2. => 1.,
-                    _ => 0.,
+                let reserved = match self.window() {
+                    Some(window) if window.backingScaleFactor() == 2. => EJECT_SLOT + 1.,
+                    _ => EJECT_SLOT,
                 };
-                let reserved = EJECT_SLOT + gap;
-                (
-                    bounds.size.width - reserved + ((EJECT_SLOT - size.width) / 2.).floor(),
-                    reserved,
-                )
+                let inset = ((EJECT_SLOT - size.width) / 2.).floor();
+                (bounds.size.width - reserved + inset, reserved)
             };
             trailing.setFrame(NSRect::new(
                 NSPoint::new(x, ((bounds.size.height - size.height) / 2.).round()),
@@ -96,6 +93,7 @@ define_class!(
     }
 );
 
+#[derive(Default)]
 struct EjectIvars {
     rest: RefCell<Option<Retained<NSColor>>>,
     pressed: Cell<bool>,
@@ -154,17 +152,14 @@ define_class!(
 
 impl EjectButton {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(EjectIvars {
-            rest: RefCell::new(None),
-            pressed: Cell::new(false),
-        });
+        let this = Self::alloc(mtm).set_ivars(EjectIvars::default());
         let eject: Retained<Self> = unsafe { msg_send![super(this), init] };
         eject.setBordered(false);
         eject.setImagePosition(NSCellImagePosition::ImageOnly);
         eject.setImage(
             NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str("eject.fill"),
-                Some(&NSString::from_str("Eject")),
+                ns_string!("eject.fill"),
+                Some(ns_string!("Eject")),
             )
             .and_then(|image| {
                 image.imageWithSymbolConfiguration(
