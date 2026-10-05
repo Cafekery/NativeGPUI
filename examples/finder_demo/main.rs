@@ -1,3 +1,4 @@
+mod about;
 mod airdrop;
 mod app;
 mod art;
