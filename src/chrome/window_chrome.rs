@@ -627,6 +627,8 @@ pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
 pub enum ToolbarStyle {
     Unified,
     UnifiedCompact,
+    /// A settings window's: labelled icons, centred, the selected pane highlighted.
+    Preference,
 }
 
 impl From<ToolbarStyle> for NSWindowToolbarStyle {
@@ -634,6 +636,7 @@ impl From<ToolbarStyle> for NSWindowToolbarStyle {
         match style {
             ToolbarStyle::Unified => NSWindowToolbarStyle::Unified,
             ToolbarStyle::UnifiedCompact => NSWindowToolbarStyle::UnifiedCompact,
+            ToolbarStyle::Preference => NSWindowToolbarStyle::Preference,
         }
     }
 }
@@ -720,6 +723,8 @@ pub enum ToolbarItem {
         tool_tip: Option<String>,
         on_click: Option<ToolbarHandler>,
         enabled: bool,
+        /// `Some` makes the item one of the toolbar's selectable panes; `true` is the selected one.
+        selected: Option<bool>,
     },
     Group {
         id: String,
@@ -787,6 +792,7 @@ impl ToolbarItem {
             tool_tip: None,
             on_click: None,
             enabled: true,
+            selected: None,
         }
     }
 
@@ -886,6 +892,14 @@ impl ToolbarItem {
     pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         if let ToolbarItem::Symbol { on_click, .. } = &mut self {
             *on_click = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    /// One of the toolbar's panes: AppKit highlights it while `selected` and on click.
+    pub fn selectable(mut self, selected: bool) -> Self {
+        if let ToolbarItem::Symbol { selected: slot, .. } = &mut self {
+            *slot = Some(selected);
         }
         self
     }
@@ -1056,6 +1070,18 @@ define_class!(
                 Some(customization) => ns_strings(&customization.defaults),
                 None => self.identifiers(),
             }
+        }
+
+        #[unsafe(method_id(toolbarSelectableItemIdentifiers:))]
+        fn selectable(&self, _: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+            ns_strings(self.ivars().items.borrow().iter().filter_map(|item| match item {
+                ToolbarItem::Symbol {
+                    id,
+                    selected: Some(_),
+                    ..
+                } => Some(id.as_str()),
+                _ => None,
+            }))
         }
 
         #[unsafe(method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:))]
@@ -1370,11 +1396,13 @@ impl ToolbarDelegate {
                 symbol,
                 label,
                 on_click,
+                selected,
                 ..
             } => {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
                 item.setLabel(&worded(&label));
-                item.setBordered(true);
+                // A selectable pane shows its selection by AppKit's highlight, never a bezel.
+                item.setBordered(selected.is_none());
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));
                 }
@@ -1681,6 +1709,27 @@ impl ToolbarDelegate {
                 _ => {}
             }
         }
+        let chosen = items.iter().find_map(|spec| match spec {
+            ToolbarItem::Symbol {
+                id,
+                selected: Some(true),
+                ..
+            } => Some(id.as_str()),
+            _ => None,
+        });
+        let toolbar = self
+            .ivars()
+            .window
+            .load()
+            .and_then(|window| window.toolbar());
+        if let (Some(id), Some(toolbar)) = (chosen, toolbar) {
+            if toolbar
+                .selectedItemIdentifier()
+                .is_none_or(|current| current.to_string() != id)
+            {
+                toolbar.setSelectedItemIdentifier(Some(&NSString::from_str(id)));
+            }
+        }
     }
 
     fn split_view(&self) -> Option<Retained<NSSplitView>> {
@@ -1770,7 +1819,10 @@ fn install_toolbar(
             let toolbar =
                 NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str(name));
             toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-            toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
+            toolbar.setDisplayMode(match style {
+                ToolbarStyle::Preference => NSToolbarDisplayMode::IconAndLabel,
+                _ => NSToolbarDisplayMode::IconOnly,
+            });
             toolbar.setAllowsUserCustomization(customization.is_some());
             if let Some(customization) = customization {
                 // AppKit's autosave key; the first window of a first run finds nothing there.

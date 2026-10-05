@@ -38,7 +38,7 @@ use crate::controls::{
     with_width,
 };
 use crate::system::color::to_nscolor;
-use crate::system::tokens::SystemColor;
+use crate::system::tokens::{FileType, SystemColor, ns_file_icon};
 use crate::system::wording::worded;
 
 /// A native menu row; a separator takes an index as in `NSMenu`, and view rows never report.
@@ -49,6 +49,8 @@ pub enum MenuEntry {
         symbol: Option<String>,
         /// A filled disc in this sRGB colour, drawn where the symbol would go.
         dot: Option<(u8, u8, u8)>,
+        /// A file's icon, drawn where the symbol would go; set by [`MenuEntry::file_icon`].
+        file_icon: Option<String>,
         enabled: bool,
         checked: bool,
         /// Drawn at the trailing edge only; a transient menu is not listening.
@@ -67,6 +69,7 @@ impl MenuEntry {
             title: title.into(),
             symbol: None,
             dot: None,
+            file_icon: None,
             enabled: true,
             checked: false,
             key: None,
@@ -93,6 +96,14 @@ impl MenuEntry {
     pub fn dot(mut self, color: (u8, u8, u8)) -> Self {
         if let Self::Item { dot, .. } = &mut self {
             *dot = Some(color);
+        }
+        self
+    }
+
+    /// The icon Finder shows for this file, type or named image.
+    pub fn file_icon(mut self, kind: FileType<'_>) -> Self {
+        if let Self::Item { file_icon, .. } = &mut self {
+            *file_icon = Some(kind.tag());
         }
         self
     }
@@ -539,19 +550,35 @@ fn entries_from_titles(titles: impl IntoIterator<Item = impl Into<String>>) -> V
     titles.into_iter().map(MenuEntry::item).collect()
 }
 
-fn image_key(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<Cow<'_, str>> {
-    match (symbol, dot) {
-        (Some(name), _) => Some(Cow::Borrowed(name)),
-        (None, Some((r, g, b))) => Some(Cow::Owned(format!("dot {r} {g} {b}"))),
-        (None, None) => None,
+fn image_key<'a>(
+    symbol: Option<&'a str>,
+    dot: Option<(u8, u8, u8)>,
+    file_icon: Option<&str>,
+) -> Option<Cow<'a, str>> {
+    match (symbol, dot, file_icon) {
+        (Some(name), _, _) => Some(Cow::Borrowed(name)),
+        (None, Some((r, g, b)), _) => Some(Cow::Owned(format!("dot {r} {g} {b}"))),
+        (None, None, Some(tag)) => Some(Cow::Owned(format!("file {tag}"))),
+        (None, None, None) => None,
     }
 }
 
-fn menu_image(symbol: Option<&str>, dot: Option<(u8, u8, u8)>) -> Option<Retained<NSImage>> {
-    match (symbol, dot) {
-        (Some(name), _) => symbol_image(name, None),
-        (None, Some(color)) => Some(dot_image(color)),
-        (None, None) => None,
+fn menu_image(
+    symbol: Option<&str>,
+    dot: Option<(u8, u8, u8)>,
+    file_icon: Option<&str>,
+) -> Option<Retained<NSImage>> {
+    match (symbol, dot, file_icon) {
+        (Some(name), _, _) => symbol_image(name, None),
+        (None, Some(color), _) => Some(dot_image(color)),
+        (None, None, Some(tag)) => {
+            // A named image is shared: size a copy.
+            let icon: Retained<NSImage> =
+                unsafe { msg_send![&*ns_file_icon(FileType::from_tag(tag)?)?, copy] };
+            icon.setSize(NSSize::new(16., 16.));
+            Some(icon)
+        }
+        (None, None, None) => None,
     }
 }
 
@@ -630,6 +657,7 @@ fn sync_level(
             title,
             symbol,
             dot,
+            file_icon,
             enabled,
             checked,
             key,
@@ -680,14 +708,14 @@ fn sync_level(
         let current = item
             .representedObject()
             .and_then(|object| object.downcast::<NSString>().ok());
-        let want = image_key(symbol.as_deref(), *dot);
+        let want = image_key(symbol.as_deref(), *dot, file_icon.as_deref());
         let matches = match (&current, &want) {
             (Some(have), Some(want)) => nsstring_is(have, want),
             (None, None) => true,
             _ => false,
         };
         if !matches {
-            item.setImage(menu_image(symbol.as_deref(), *dot).as_deref());
+            item.setImage(menu_image(symbol.as_deref(), *dot, file_icon.as_deref()).as_deref());
             let key = want.map(|key| NSString::from_str(&key));
             let key: Option<&AnyObject> = key.as_deref().map(|key| key.as_ref());
             unsafe { item.setRepresentedObject(key) };

@@ -1,24 +1,33 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, ElementId, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, WindowBounds, WindowHandle, WindowOptions, div, point, px, size,
+    AnyElement, App, AppContext, Bounds, Context, Div, ElementId, FontWeight, IntoElement,
+    ParentElement, Render, Styled, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
+    WindowBounds, WindowHandle, WindowOptions, div, point, px, size,
 };
-use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
-    CheckState, MenuEntry, ToolbarItem, ToolbarSegment, ToolbarStyle, native_checkbox,
-    native_popup, native_root, set_toolbar, window_options,
+    CheckState, ControlSize, MenuEntry, NativeLabel, RawMaterial, ToolbarItem, ToolbarStyle,
+    material, native_checkbox, native_image, native_label, native_popup, native_root,
+    native_symbol, set_toolbar, system_template, window_options,
 };
-use objc2_foundation::{NSString, NSURL};
+use objc2::msg_send;
+use objc2::rc::Retained;
+use objc2_app_kit::{NSImage, NSWindow};
+use objc2_foundation::{
+    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLIsUbiquitousItemKey, NSUserDefaults,
+};
 
 use crate::app::FinderDemo;
-use crate::chrome::sidebar;
+use crate::chrome::sidebar::{self, Shown};
 use crate::prefs::{self, WindowTarget};
-use crate::tags::finder_color_rgb;
+
+mod tags_pane;
 
 const WIDTH: f32 = 377.;
-/// Finder's window height on each pane, title bar and toolbar included.
-const HEIGHTS: [f32; 4] = [497., 591., 828., 392.];
+/// The frames below are Finder's, from its window's top: the content starts under the toolbar.
+const CHROME: f32 = 88.;
+const CONTENT: [f32; 4] = [407., 503., 740., 304.];
 const PANES: [(&str, &str); 4] = [
     ("General", "gearshape"),
     ("Tags", "tag"),
@@ -26,7 +35,9 @@ const PANES: [(&str, &str); 4] = [
     ("Advanced", "gearshape.2"),
 ];
 const PANE: &str = "ng.finder.settings.pane";
-const TOOLBAR: &str = "ng.finder.settings.panes";
+const ICLOUD_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings?iCloud";
+const RECENTS_ICON: &str = "/System/Library/CoreServices/Finder.app/Contents/Resources/MyLibraries/myDocuments.cannedSearch";
 
 const DESKTOP: [(&str, &str, bool); 4] = [
     ("Hard disks", "ShowHardDrivesOnDesktop", false),
@@ -76,38 +87,72 @@ const SCOPES: [(&str, &str); 3] = [
 
 pub(crate) struct Settings {
     pane: usize,
+    tag_picked: Option<String>,
+    /// The name being typed for a tag just added.
+    tag_draft: Option<String>,
+    tag_fresh: bool,
+    tag_scroll: UniformListScrollHandle,
+}
+
+enum Icon {
+    Path(PathBuf),
+    Art(FileType<'static>),
 }
 
 /// One row of the New Finder windows show menu: its title and the `NewWindowTarget` it stores.
 struct Place {
     title: String,
+    icon: Option<Icon>,
     code: Option<&'static str>,
     path: Option<PathBuf>,
+}
+
+impl Place {
+    fn entry(&self) -> MenuEntry {
+        let entry = MenuEntry::item(self.title.clone());
+        match &self.icon {
+            Some(Icon::Path(path)) => entry.file_icon(FileType::Path(&path.to_string_lossy())),
+            Some(Icon::Art(art)) => entry.file_icon(*art),
+            None => entry,
+        }
+    }
 }
 
 fn places() -> (Vec<Place>, usize) {
     use finder_fs::volumes::{Standard, standard};
     let home = standard(Standard::Home).unwrap_or_else(|| PathBuf::from("/"));
-    let place = |title: String, code| Place {
+    let place = |title: String, icon, code| Place {
         title,
+        icon,
         code: Some(code),
         path: None,
     };
     let separator = || Place {
         title: String::new(),
+        icon: None,
         code: None,
         path: None,
     };
     let name = |path: &Path| finder_fs::name::of_path(path);
+    let folder = |which| Some(Icon::Path(standard(which).unwrap_or_else(|| home.clone())));
+    let computer = crate::locations::artwork(crate::locations::COMPUTER).map(Icon::Art);
     let mut rows = vec![
-        place(crate::locations::computer_name().into(), "PfCm"),
-        place(name(Path::new("/")), "PfVo"),
+        place(crate::locations::computer_name().into(), computer, "PfCm"),
+        place(name(Path::new("/")), Some(Icon::Path("/".into())), "PfVo"),
         separator(),
-        place(name(&home), "PfHm"),
-        place("Desktop".into(), "PfDe"),
-        place("Documents".into(), "PfDo"),
-        place("Recents".into(), "PfAF"),
-        place("iCloud Drive".into(), "PfID"),
+        place(name(&home), folder(Standard::Home), "PfHm"),
+        place("Desktop".into(), folder(Standard::Desktop), "PfDe"),
+        place("Documents".into(), folder(Standard::Documents), "PfDo"),
+        place(
+            "Recents".into(),
+            Some(Icon::Path(RECENTS_ICON.into())),
+            "PfAF",
+        ),
+        place(
+            "iCloud Drive".into(),
+            Some(Icon::Art(crate::chrome::path_bar::icloud_art())),
+            "PfID",
+        ),
         separator(),
     ];
     let code = prefs::setting_text("NewWindowTarget");
@@ -118,20 +163,58 @@ fn places() -> (Vec<Place>, usize) {
         chosen = Some(rows.len());
         rows.push(Place {
             title: name(&path),
+            icon: Some(Icon::Path(path.clone())),
             code: Some("PfLo"),
             path: Some(path),
         });
         rows.push(separator());
     }
-    rows.push(place("Other…".into(), "PfLo"));
+    rows.push(place("Other…".into(), None, "PfLo"));
     (rows, chosen.unwrap_or(6))
 }
 
-fn heading(text: &'static str) -> impl IntoElement {
-    div()
-        .text_size(tokens::system_font_size())
-        .text_color(system_color(SystemColor::Label))
-        .child(text)
+fn at(x: f32, y: f32) -> Div {
+    div().absolute().left(px(x)).top(px(y - CHROME))
+}
+
+fn label(text: &str) -> NativeLabel {
+    native_label(
+        ElementId::Name(format!("ng.finder.settings.{text}").into()),
+        text,
+    )
+}
+
+fn footnote(text: &str) -> NativeLabel {
+    label(text)
+        .font_size(px(10.))
+        .color(SystemColor::SecondaryLabel)
+}
+
+fn lines(x: f32, y: f32, pitch: f32, texts: &[&str], make: fn(&str) -> NativeLabel) -> Div {
+    texts.iter().zip(0..).fold(div(), |lines, (text, line)| {
+        lines.child(
+            at(x, y + pitch * line as f32)
+                .w(px(WIDTH - x))
+                .child(make(text)),
+        )
+    })
+}
+
+fn global_on(key: &str) -> bool {
+    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(key))
+}
+
+fn syncs_desktop() -> bool {
+    let Some(desktop) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Desktop) else {
+        return false;
+    };
+    let url =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&desktop.to_string_lossy()), true);
+    let mut synced = None;
+    let _ = unsafe { url.getResourceValue_forKey_error(&mut synced, NSURLIsUbiquitousItemKey) };
+    synced
+        .and_then(|synced| synced.downcast::<NSNumber>().ok())
+        .is_some_and(|synced| synced.boolValue())
 }
 
 fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
@@ -192,7 +275,7 @@ impl Settings {
             .iter()
             .map(|place| match place.code {
                 None => MenuEntry::separator(),
-                Some(_) => MenuEntry::item(place.title.clone()),
+                Some(_) => place.entry(),
             })
             .collect();
         let picked = cx.listener(move |_, index: &usize, window, cx| {
@@ -213,132 +296,122 @@ impl Settings {
             cx.notify();
         });
         div()
-            .flex()
-            .flex_col()
-            .gap(px(7.))
-            .child(heading("Show these items on the desktop:"))
-            .children(
-                DESKTOP.iter().map(|(label, key, default)| {
-                    div().pl(px(18.)).child(toggle(key, label, *default))
-                }),
-            )
-            .child(div().h(px(14.)))
-            .child(heading("New Finder windows show:"))
             .child(
-                div().pl(px(18.)).child(
+                at(28., 104.)
+                    .w(px(300.))
+                    .child(label("Show these items on the desktop:")),
+            )
+            .children(DESKTOP.iter().zip(0..).map(|((label, key, default), row)| {
+                at(48., 128. + 22. * row as f32).child(toggle(key, label, *default))
+            }))
+            .child(
+                at(28., 234.)
+                    .w(px(300.))
+                    .child(label("New Finder windows show:")),
+            )
+            .child(
+                at(48., 258.).child(
                     native_popup("ng.finder.settings.target", chosen)
                         .entries(entries)
                         .width(px(284.))
                         .on_change(picked),
                 ),
             )
-            .child(div().h(px(14.)))
-            .child(toggle(
+            .child(
+                at(30., 311.).child(
+                    native_checkbox("ng.finder.settings.sync", syncs_desktop())
+                        .title("Sync Desktop & Documents folders")
+                        .on_change(|_, window, cx| {
+                            cx.open_url(ICLOUD_SETTINGS);
+                            window.refresh();
+                        }),
+                ),
+            )
+            .child(lines(
+                50.5,
+                340.,
+                13.,
+                &[
+                    "Store your Desktop & Documents folders in iCloud Drive",
+                    "and access them from your other devices.",
+                ],
+                footnote,
+            ))
+            .child(at(30., 387.).child(toggle(
                 "FinderSpawnTab",
                 "Open folders in tabs instead of new windows",
                 true,
+            )))
+            .child(
+                at(30., 422.).child(
+                    native_checkbox(
+                        "ng.finder.settings.names",
+                        !global_on("NSSmartNamingDisabled"),
+                    )
+                    .title("Suggest file names")
+                    .enabled(false),
+                ),
+            )
+            .child(lines(
+                48.5,
+                440.,
+                13.,
+                &[
+                    "Suggested names when renaming, saving, and editing files",
+                    "are based on file content and the names of other files in the",
+                    "folder.",
+                ],
+                footnote,
             ))
             .into_any_element()
     }
 
-    fn tags(&self) -> AnyElement {
-        let favourites = crate::tags::tags();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .child(heading("Show these tags in the sidebar:"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(system_color(SystemColor::Separator))
-                    .p(px(4.))
-                    .children(crate::tags::all().iter().map(|tag| {
-                        let id = crate::data::intern(&format!("tag:{}", tag.name));
-                        let state = sidebar::tag_shown(id);
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(20.))
-                            .gap(px(6.))
-                            .px(px(6.))
-                            .child(tag_dot(tag.color))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(tokens::system_font_size())
-                                    .text_color(system_color(SystemColor::Label))
-                                    .child(SharedString::from(tag.name.clone())),
-                            )
-                            .child(
-                                native_checkbox(
-                                    ElementId::Name(format!("ng.finder.settings.{id}").into()),
-                                    false,
-                                )
-                                .state(state)
-                                .on_change(
-                                    move |state: &CheckState, _, cx| {
-                                        sidebar::show_tag_row(id, *state == CheckState::On);
-                                        sidebar::reload_sidebars(cx);
-                                    },
-                                ),
-                            )
-                    })),
-            )
-            .child(div().h(px(8.)))
-            .child(
-                div()
-                    .text_size(tokens::small_system_font_size())
-                    .text_color(system_color(SystemColor::SecondaryLabel))
-                    .child(
-                        "Drag your favorite tags to the area below to make them available for \
-                         quick use in Finder menus.",
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .gap(px(6.))
-                    .p(px(10.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(system_color(SystemColor::Separator))
-                    .children(favourites.iter().map(|tag| tag_dot(tag.color))),
-            )
-            .into_any_element()
-    }
-
     fn sidebar(&self) -> AnyElement {
-        let mut pane = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(heading("Show these items in the sidebar:"));
+        let mut pane = div().child(
+            at(26., 108.)
+                .w(px(300.))
+                .child(label("Show these items in the sidebar:")),
+        );
+        let mut y = 139.;
         for (section, rows) in sidebar::shown_sections() {
             if !section.is_empty() {
                 pane = pane.child(
-                    div()
-                        .pt(px(4.))
-                        .text_size(tokens::small_system_font_size())
-                        .text_color(system_color(SystemColor::SecondaryLabel))
-                        .child(section),
-                );
-            }
-            for (shown, label, on) in rows {
-                pane = pane.child(
-                    div().pl(px(14.)).child(
-                        native_checkbox(("ng.finder.settings.row", shown as usize), on)
-                            .title(label)
-                            .on_change(move |state: &CheckState, _, cx| {
-                                sidebar::set_row_shown(shown, *state == CheckState::On);
-                                sidebar::reload_sidebars(cx);
-                            }),
+                    at(38., y + 4.5).w(px(200.)).child(
+                        label(section)
+                            .font_size(tokens::small_system_font_size())
+                            .weight(FontWeight::BOLD)
+                            .color(SystemColor::SecondaryLabel),
                     ),
                 );
+                y += 27.;
+            }
+            for (shown, title, on) in rows {
+                pane = pane
+                    .child(
+                        at(41., y + 1.).child(
+                            native_checkbox(("ng.finder.settings.row", shown as usize), on)
+                                .control_size(ControlSize::Small)
+                                .on_change(move |state: &CheckState, _, cx| {
+                                    sidebar::set_row_shown(shown, *state == CheckState::On);
+                                    sidebar::reload_sidebars(cx);
+                                }),
+                        ),
+                    )
+                    .child(
+                        at(58., y - 1.)
+                            .w(px(20.))
+                            .h(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(row_icon(shown)),
+                    )
+                    .child(
+                        at(79., y - 1.)
+                            .w(px(260.))
+                            .child(label(&title).color(SystemColor::SecondaryLabel)),
+                    );
+                y += 28.;
             }
         }
         pane.into_any_element()
@@ -351,27 +424,32 @@ impl Settings {
             .position(|(_, code)| Some(*code) == scope.as_deref())
             .unwrap_or(0);
         div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
             .children(
                 ADVANCED
                     .iter()
-                    .map(|(label, key, default)| toggle(key, label, *default)),
+                    .zip(0..)
+                    .map(|((label, key, default), row)| {
+                        at(28., 108. + 26. * row as f32).child(toggle(key, label, *default))
+                    }),
             )
-            .child(heading("Keep folders on top:"))
-            .children(
-                FOLDERS_ON_TOP
-                    .iter()
-                    .map(|(label, key)| div().pl(px(22.)).child(toggle(key, label, false))),
-            )
-            .child(div().h(px(4.)))
-            .child(heading("When performing a search:"))
             .child(
-                div().pl(px(22.)).child(
+                at(26., 238.)
+                    .w(px(300.))
+                    .child(label("Keep folders on top:")),
+            )
+            .children(FOLDERS_ON_TOP.iter().zip(0..).map(|((label, key), row)| {
+                at(50., 264. + 26. * row as f32).child(toggle(key, label, false))
+            }))
+            .child(
+                at(26., 324.)
+                    .w(px(300.))
+                    .child(label("When performing a search:")),
+            )
+            .child(
+                at(50., 348.).child(
                     native_popup("ng.finder.settings.scope", scope)
                         .items(SCOPES.iter().map(|(label, _)| *label))
-                        .width(px(239.))
+                        .width(px(238.))
                         .on_change(|index: &usize, _, _| {
                             prefs::set_setting_text("FXDefaultSearchScope", SCOPES[*index].1);
                         }),
@@ -381,13 +459,47 @@ impl Settings {
     }
 }
 
-fn tag_dot(color: u8) -> impl IntoElement {
-    let dot = div().size(px(12.)).rounded_full();
-    match finder_color_rgb(color) {
-        Some((r, g, b)) => dot.bg(gpui::rgb(u32::from_be_bytes([0, r, g, b]))),
-        None => dot
-            .border_1()
-            .border_color(system_color(SystemColor::SecondaryLabel)),
+fn row_icon(shown: Shown) -> AnyElement {
+    let id = ("ng.finder.settings.icon", shown as usize);
+    let symbol = |name: &str| {
+        native_symbol(id, name, 13., FontWeight::NORMAL)
+            .tint(SystemColor::SecondaryLabel)
+            .into_any_element()
+    };
+    // Finder's art for the rows SF Symbols has no glyph for, named for `native_image` to find.
+    let art = |resource: &str| {
+        let name = format!("ng.finder.settings.{resource}");
+        let named = NSString::from_str(&name);
+        if NSImage::imageNamed(&named).is_none() {
+            if let Some(image) = system_template(resource, px(14.)) {
+                image.setName(Some(&named));
+            }
+        }
+        native_image(id, &name)
+            .tint(SystemColor::SecondaryLabel)
+            .into_any_element()
+    };
+    match shown {
+        Shown::Recents => symbol("clock"),
+        Shown::Shared => symbol("person.2"),
+        Shown::Applications => art("SidebarApplicationsFolder"),
+        Shown::Desktop => symbol("menubar.dock.rectangle"),
+        Shown::Documents => symbol("doc"),
+        Shown::Downloads => symbol("arrow.down.circle"),
+        Shown::Movies => symbol("film"),
+        Shown::Music => art("SidebarMusicFolder"),
+        Shown::Pictures => symbol("photo"),
+        Shown::ICloudDrive | Shown::CloudStorage => symbol("icloud"),
+        Shown::Home => symbol("house"),
+        Shown::Computer => symbol(&crate::locations::computer_symbol()),
+        Shown::HardDisks => symbol("internaldrive"),
+        Shown::ExternalDisks => symbol("externaldrive"),
+        Shown::Removable => symbol("opticaldisc"),
+        Shown::AirDrop => art("SidebarAirDrop"),
+        Shown::Bonjour => symbol("bonjour"),
+        Shown::Servers => symbol("display"),
+        Shown::Trash => symbol("trash"),
+        Shown::RecentTags => symbol("circlebadge.2"),
     }
 }
 
@@ -424,26 +536,71 @@ impl Render for Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = match self.pane {
             0 => self.general(cx),
-            1 => self.tags(),
+            1 => self.tags(cx),
             2 => self.sidebar(),
             _ => self.advanced(),
         };
         native_root(
             div()
                 .size_full()
-                .pt(px(20.))
-                .px(px(27.))
-                .bg(system_color(SystemColor::WindowBackground))
+                .relative()
+                .child(
+                    material(
+                        "ng.finder.settings.background",
+                        RawMaterial::WindowBackground,
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
                 .child(pane),
         )
     }
 }
 
+fn install_toolbar(pane: usize, settings: WeakEntity<Settings>, window: &mut Window, cx: &mut App) {
+    let items: Vec<ToolbarItem> = PANES
+        .iter()
+        .enumerate()
+        .map(|(index, (name, symbol))| {
+            let settings = settings.clone();
+            ToolbarItem::symbol(format!("ng.finder.settings.{name}"), *symbol, *name)
+                .selectable(index == pane)
+                .on_click(move |window, cx| {
+                    settings
+                        .update(cx, |this, cx| show_pane(this, index, window, cx))
+                        .ok();
+                })
+        })
+        .collect();
+    set_toolbar(window, cx, Some(ToolbarStyle::Preference), &items);
+}
+
 fn show_pane(this: &mut Settings, pane: usize, window: &mut Window, cx: &mut Context<Settings>) {
+    if this.pane == pane {
+        return;
+    }
     this.pane = pane;
     prefs::set_setting_text(PANE, PANES[pane].0);
-    window.resize(size(px(WIDTH), px(HEIGHTS[pane])));
+    install_toolbar(pane, cx.entity().downgrade(), window, cx);
+    fit(window, pane);
     cx.notify();
+}
+
+/// Resizes to the pane's content, keeping the top edge where it is.
+fn fit(window: &Window, pane: usize) {
+    let Some(ns_window) = crate::frame::ns_window(window) else {
+        return;
+    };
+    let frame = ns_window.frame();
+    let chrome = frame.size.height - ns_window.contentRectForFrameRect(frame).size.height;
+    let height = chrome + f64::from(CONTENT[pane]);
+    let fitted = NSRect::new(
+        NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height - height),
+        NSSize::new(frame.size.width, height),
+    );
+    // The animator returns at once: a blocking resize would reach gpui while it holds the app.
+    let animator: Retained<NSWindow> = unsafe { msg_send![&*ns_window, animator] };
+    animator.setFrame_display(fitted, true);
 }
 
 pub(crate) fn open(cx: &mut App) {
@@ -474,36 +631,27 @@ fn show(cx: &mut App) {
     let opened: Option<WindowHandle<Settings>> = cx
         .open_window(
             WindowOptions {
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Found’er Settings".into()),
+                    ..Default::default()
+                }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(969.), px(350.)),
-                    size: size(px(WIDTH), px(HEIGHTS[pane])),
+                    size: size(px(WIDTH), px(CONTENT[pane])),
                 })),
                 is_resizable: false,
                 is_minimizable: false,
                 ..window_options()
             },
             |window, cx| {
-                window.set_window_title("Found’er Settings");
-                let entity = cx.new(|_| Settings { pane });
-                let weak = entity.downgrade();
-                let segments = PANES
-                    .iter()
-                    .map(|(name, symbol)| ToolbarSegment::new(*symbol, *name));
-                set_toolbar(
-                    window,
-                    cx,
-                    Some(ToolbarStyle::Unified),
-                    &[
-                        ToolbarItem::flexible_space(),
-                        ToolbarItem::group(TOOLBAR, "Settings", segments, pane).on_select(
-                            move |index, window, cx| {
-                                weak.update(cx, |this, cx| show_pane(this, index, window, cx))
-                                    .ok();
-                            },
-                        ),
-                        ToolbarItem::flexible_space(),
-                    ],
-                );
+                let entity = cx.new(|_| Settings {
+                    pane,
+                    tag_picked: None,
+                    tag_draft: None,
+                    tag_fresh: false,
+                    tag_scroll: UniformListScrollHandle::new(),
+                });
+                install_toolbar(pane, entity.downgrade(), window, cx);
                 entity
             },
         )

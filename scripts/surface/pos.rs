@@ -48,4 +48,8 @@ use native_gpui::tokens::{
 
 fn main() {
     let _ = MenuCommand::checked;
+    let _ = MenuEntry::file_icon;
+    let _ = native_gpui::NativeSegmented::segment_enabled;
+    let _ = ToolbarItem::selectable;
+    let _ = ToolbarStyle::Preference;
 }

@@ -612,6 +612,7 @@ pub fn native_segmented(id: impl Into<ElementId>, selected: usize) -> NativeSegm
         control_size: ControlSize::default(),
         selected_bezel: None,
         enabled: true,
+        segments_enabled: Vec::new(),
         on_change: None,
     }
 }
@@ -626,6 +627,7 @@ pub struct NativeSegmented {
     control_size: ControlSize,
     selected_bezel: Option<SystemColor>,
     enabled: bool,
+    segments_enabled: Vec<bool>,
     on_change: Option<NativeHandler>,
 }
 
@@ -663,6 +665,14 @@ impl NativeSegmented {
 
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    pub fn segment_enabled(mut self, segment: usize, enabled: bool) -> Self {
+        if self.segments_enabled.len() <= segment {
+            self.segments_enabled.resize(segment + 1, true);
+        }
+        self.segments_enabled[segment] = enabled;
         self
     }
 
@@ -722,6 +732,16 @@ impl NativeSegmented {
             }
         }
         sync_enabled(&control, self.enabled);
+        for segment in 0..control.segmentCount() {
+            let wanted = self
+                .segments_enabled
+                .get(segment as usize)
+                .copied()
+                .unwrap_or(true);
+            if control.isEnabledForSegment(segment) != wanted {
+                control.setEnabled_forSegment(wanted, segment);
+            }
+        }
         slot.on_change(ValueKind::Int, self.on_change.take());
     }
 }

@@ -786,7 +786,7 @@ pub enum FileType<'a> {
 }
 
 impl FileType<'_> {
-    fn tag(self) -> String {
+    pub(crate) fn tag(self) -> String {
         match self {
             FileType::Folder => "uti:public.folder".into(),
             FileType::FullFolder => "uti:public.folder+full".into(),
@@ -796,6 +796,24 @@ impl FileType<'_> {
             FileType::FullPath(path) => format!("path:{path}+full"),
             FileType::Named(name) => format!("named:{name}"),
         }
+    }
+
+    pub(crate) fn from_tag(tag: &str) -> Option<FileType<'_>> {
+        let (scheme, value) = tag.split_once(':')?;
+        Some(match scheme {
+            "uti" => match value {
+                "public.folder" => FileType::Folder,
+                "public.folder+full" => FileType::FullFolder,
+                uti => FileType::Uti(uti),
+            },
+            "ext" => FileType::Extension(value),
+            "path" => match value.strip_suffix("+full") {
+                Some(path) => FileType::FullPath(path),
+                None => FileType::Path(value),
+            },
+            "named" => FileType::Named(value),
+            _ => return None,
+        })
     }
 }
 
@@ -902,17 +920,12 @@ fn ut_type(extension: bool, text: &str) -> Option<Retained<AnyObject>> {
     unsafe { msg_send![class, typeWithFilenameExtension: &*text] }
 }
 
-fn rasterize_file_icon(
-    kind: FileType<'_>,
-    size: Pixels,
-    scale: f32,
-    appearance: Appearance,
-) -> Option<Symbol> {
+pub(crate) fn ns_file_icon(kind: FileType<'_>) -> Option<Retained<NSImage>> {
     let workspace = NSWorkspace::sharedWorkspace();
     let icon_for = |content: Retained<AnyObject>| -> Option<Retained<NSImage>> {
         unsafe { msg_send![&*workspace, iconForContentType: &*content] }
     };
-    let image = match kind {
+    match kind {
         FileType::Path(path) | FileType::FullPath(path) => {
             let path = NSString::from_str(path);
             unsafe { msg_send![&*workspace, iconForFile: &*path] }
@@ -921,8 +934,16 @@ fn rasterize_file_icon(
         FileType::Uti(uti) => icon_for(ut_type(false, uti)?),
         FileType::Extension(extension) => icon_for(ut_type(true, extension)?),
         FileType::Named(name) => NSImage::imageNamed(&NSString::from_str(name)),
-    };
-    let image = image?;
+    }
+}
+
+fn rasterize_file_icon(
+    kind: FileType<'_>,
+    size: Pixels,
+    scale: f32,
+    appearance: Appearance,
+) -> Option<Symbol> {
+    let image = ns_file_icon(kind)?;
 
     // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
     let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);

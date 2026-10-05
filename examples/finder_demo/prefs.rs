@@ -371,6 +371,15 @@ pub(crate) fn set_removed(group: &str, ids: &[&str]) {
     write_list(&format!("removed.{group}"), ids);
 }
 
+/// The demo's own tag lists: `favourites`, and the tags `added` or `deleted` in its settings.
+pub(crate) fn tag_list(list: &str) -> Option<Vec<String>> {
+    sidebar_file().remove(&format!("tags.{list}"))
+}
+
+pub(crate) fn set_tag_list(list: &str, names: &[&str]) {
+    write_list(&format!("tags.{list}"), names);
+}
+
 fn finder_pref(key: &str) -> Option<Retained<AnyObject>> {
     finder_domain()?.objectForKey(&NSString::from_str(key))
 }
