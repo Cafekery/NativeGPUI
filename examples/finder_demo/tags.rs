@@ -49,7 +49,7 @@ fn reread_lists() {
     *FAVORITES.write().unwrap() = favorites.into();
 }
 
-fn tag_system_color(color: u8) -> Option<SystemColor> {
+pub(crate) fn tag_system_color(color: u8) -> Option<SystemColor> {
     Some(match color {
         1 => SystemColor::SystemGray,
         2 => SystemColor::SystemGreen,
