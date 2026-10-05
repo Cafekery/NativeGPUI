@@ -68,6 +68,11 @@ pub(crate) fn read_isize<T: Message>(object: &T, selector: Sel) -> Option<isize>
         .then(|| unsafe { object.send_message(selector, ()) })
 }
 
+pub(crate) fn read_bool<T: Message>(object: &T, selector: Sel) -> Option<bool> {
+    gate(object, selector, Shape::ReturnsInteger)
+        .then(|| unsafe { object.send_message::<_, Bool>(selector, ()) }.as_bool())
+}
+
 pub(crate) fn read_string<T: Message>(object: &T, selector: Sel) -> Option<Retained<NSString>> {
     if !gate(object, selector, Shape::ReturnsObject) {
         return None;
