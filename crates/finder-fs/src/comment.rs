@@ -8,19 +8,10 @@ use crate::{ds_store, xattr};
 
 const COMMENT: &CStr = c"com.apple.metadata:kMDItemFinderComment";
 
-/// The comment Finder shows for the item: its folder's `.DS_Store` record, else the item's `kMDItemFinderComment` attribute.
+/// The comment Finder shows for the item: its folder's `.DS_Store` record; Finder shows the attribute alone as blank.
 pub fn of(path: &Path) -> String {
     let recorded = || ds_store::comments(path.parent()?).remove(path.file_name()?.to_str()?);
-    let attribute = || {
-        let bytes = xattr::get(&crate::c_path(path).ok()?, COMMENT)?;
-        Some(
-            crate::plist(&bytes)?
-                .downcast::<NSString>()
-                .ok()?
-                .to_string(),
-        )
-    };
-    recorded().or_else(attribute).unwrap_or_default()
+    recorded().unwrap_or_default()
 }
 
 /// Writes the comment where Finder does: the item's `com.apple.metadata:kMDItemFinderComment` attribute (a binary plist string; removed when empty) and the `cmmt` record in the parent's `.DS_Store`.
@@ -79,12 +70,12 @@ mod tests {
         );
         set(&path, "a note ✓").unwrap();
         std::fs::remove_file(dir.join(".DS_Store")).unwrap();
-        let from_attribute = of(&path);
+        let attribute_alone = of(&path);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(read, "a note ✓");
         assert_eq!(attribute.as_deref(), Some("a note ✓"));
         assert_eq!(stored.get("Note.txt").map(String::as_str), Some("a note ✓"));
-        assert_eq!(from_attribute, "a note ✓");
+        assert_eq!(attribute_alone, "");
         assert_eq!(cleared, (String::new(), None, HashMap::new()));
     }
 }
