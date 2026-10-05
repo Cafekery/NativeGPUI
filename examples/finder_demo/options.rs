@@ -664,6 +664,7 @@ fn choose_picture(cx: &mut Context<FinderDemo>) {
             return;
         };
         let panel = NSOpenPanel::openPanel(mtm);
+        crate::chrome::toolbar::system_corners_of(&panel);
         if panel.runModal() != NSModalResponseOK {
             return;
         }
@@ -792,6 +793,7 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
                         | NSWindowStyleMask::NonactivatingPanel,
                 );
                 panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
+                crate::chrome::toolbar::system_corners_of(&panel);
             }
             cx.new(|cx| {
                 cx.observe_in(&watched, window, |_, _, _, cx| cx.notify())

@@ -284,7 +284,7 @@ fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool
         )
     };
     unsafe { window.setReleasedWhenClosed(false) };
-    crate::chrome::toolbar::titlebar_corners_of(&window);
+    crate::chrome::toolbar::system_corners_of(&window);
     window.setTitle(&NSString::from_str("Convert Image"));
     let view = window.contentView()?;
     let formats: Vec<&str> = ImageFormat::ALL

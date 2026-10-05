@@ -241,10 +241,11 @@ impl FinderDemo {
                 div()
                     .relative()
                     .w(px(SHEET_W))
-                    .rounded(px(12.))
+                    .rounded(px(crate::chrome::toolbar::ALERT_RADIUS))
                     .overflow_hidden()
                     .child(
                         material("ng.finder.conflict.glass", Material::Popover)
+                            .corner_radius(px(crate::chrome::toolbar::ALERT_RADIUS))
                             .absolute()
                             .inset_0(),
                     )

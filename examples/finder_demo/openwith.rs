@@ -318,6 +318,7 @@ pub(crate) fn choose_app(files: Vec<PathBuf>, always: bool, cx: &mut Context<Fin
         });
         let filter: Retained<Filter> = unsafe { msg_send![super(filter), init] };
         let panel = NSOpenPanel::openPanel(mtm);
+        crate::chrome::toolbar::system_corners_of(&panel);
         *filter.ivars().panel.borrow_mut() = Some(Weak::new(&panel));
         panel.setTitle(Some(&NSString::from_str("Choose Application")));
         panel.setMessage(Some(&NSString::from_str(&choose_message(&files))));

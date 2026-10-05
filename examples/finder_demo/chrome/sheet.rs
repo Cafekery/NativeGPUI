@@ -302,6 +302,7 @@ impl FinderDemo {
                 ..window_options()
             },
             |window, cx| {
+                super::toolbar::system_corners(window);
                 let unshown = Some(window.window_handle());
                 cx.new(|cx| {
                     let mut panel = GoPanel {
@@ -671,12 +672,7 @@ impl Render for GoPanel {
 }
 
 impl FinderDemo {
-    pub(crate) fn save_sheet(
-        &self,
-        name: &str,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(crate) fn save_sheet(&self, name: &str, cx: &mut Context<Self>) -> AnyElement {
         let field = native_text_field("ng.finder.save", name)
             .stretch()
             .editing(0..name.chars().count())
@@ -688,7 +684,7 @@ impl FinderDemo {
                 }
             }))
             .on_cancel(cx.listener(|demo, _: &String, window, cx| demo.end_save_sheet(window, cx)));
-        let corner = system_corner_radius(window);
+        let corner = px(super::toolbar::SYSTEM_RADIUS as f32);
         div()
             .absolute()
             .top(self.metrics().top)

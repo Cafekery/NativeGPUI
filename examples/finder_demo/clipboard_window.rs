@@ -9,7 +9,7 @@ use native_gpui::{native_label, native_root, titlebar_band, window_options};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSWindowTitleVisibility};
 
-use crate::chrome::toolbar::{titlebar_corners, titled_height};
+use crate::chrome::toolbar::{system_corners, titled_height};
 use crate::frame::ns_window;
 use crate::menus::ShowClipboard;
 use crate::ops::clipboard::read_pasteboard;
@@ -48,7 +48,7 @@ pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
         },
         |window, cx| {
             window.set_window_title("Clipboard");
-            titlebar_corners(window);
+            system_corners(window);
             if let Some(ns) = ns_window(window) {
                 ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
             }

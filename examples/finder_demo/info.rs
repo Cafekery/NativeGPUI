@@ -2202,6 +2202,7 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
             return;
         };
         let panel = NSOpenPanel::openPanel(mtm);
+        crate::chrome::toolbar::system_corners_of(&panel);
         panel.setCanChooseDirectories(false);
         panel.setAllowsMultipleSelection(false);
         panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(ns_string!("/Applications"))));
@@ -2440,7 +2441,7 @@ fn open_window<V: Render>(
             if let Some(title) = title {
                 window.set_window_title(title);
             }
-            crate::chrome::toolbar::titlebar_corners(window);
+            crate::chrome::toolbar::system_corners(window);
             if let Some(ns) = ns_window(window) {
                 ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
             }

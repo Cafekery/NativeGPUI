@@ -131,6 +131,7 @@ fn show(lines: Vec<Line>, demo: WeakEntity<FinderDemo>, cx: &mut App) {
                 }
                 panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::UtilityWindow);
                 panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
+                crate::chrome::toolbar::system_corners_of(&panel);
             }
             let id = window.window_handle().window_id();
             cx.new(|cx| {

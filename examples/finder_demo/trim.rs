@@ -143,7 +143,7 @@ impl Trimmer {
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
-        crate::chrome::toolbar::titlebar_corners_of(&window);
+        crate::chrome::toolbar::system_corners_of(&window);
         window.setTitle(&NSString::from_str(&item.file_name()?.to_string_lossy()));
         window.setContentView(Some(&view));
         let trimmer = Trimmer::alloc(mtm).set_ivars(Ivars {
@@ -253,6 +253,7 @@ impl Trimmer {
 
     fn ask_where(&self, start: f64, end: f64) {
         let panel = NSSavePanel::savePanel(self.mtm());
+        crate::chrome::toolbar::system_corners_of(&panel);
         panel.setNameFieldStringValue(&NSString::from_str(&self.name()));
         panel.setShowsTagField(true);
         if let Some(kind) = self.content_type() {

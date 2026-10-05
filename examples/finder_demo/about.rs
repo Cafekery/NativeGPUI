@@ -11,7 +11,7 @@ use native_gpui::{
 use objc2::MainThreadMarker;
 use objc2_foundation::{NSBundle, NSString};
 
-use crate::chrome::toolbar::{titlebar_corners, titled_height};
+use crate::chrome::toolbar::{system_corners, titled_height};
 
 const WIDTH: f32 = 301.;
 const HEIGHT: f32 = 300.;
@@ -46,7 +46,7 @@ pub(crate) fn show(cx: &mut App) {
         },
         |window, cx| {
             window.set_window_title("");
-            titlebar_corners(window);
+            system_corners(window);
             cx.new(|cx| {
                 cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
                     .detach();

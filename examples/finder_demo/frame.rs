@@ -116,7 +116,7 @@ impl Render for FinderDemo {
         let save_sheet = self
             .save_sheet
             .as_deref()
-            .map(|name| self.save_sheet(name, window, cx));
+            .map(|name| self.save_sheet(name, cx));
         let conflict_sheet = self
             .conflict
             .is_some()

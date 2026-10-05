@@ -501,6 +501,7 @@ fn show(kind: &'static Kind, cx: &mut App) {
             if let Some(panel) = ns_window(window) {
                 panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::UtilityWindow);
                 panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
+                crate::chrome::toolbar::system_corners_of(&panel);
             }
             let id = window.window_handle().window_id();
             cx.new(|cx| {

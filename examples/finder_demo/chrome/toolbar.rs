@@ -156,26 +156,24 @@ pub(crate) fn concentric_corners() {
     };
 }
 
-/// What macOS 26 gave a window with only a titlebar: half its 32 pt band.
-#[cfg(feature = "private-api")]
-const TITLEBAR_RADIUS: f64 = 16.;
+/// AppKit 27's radius for every titled window, panel and sheet but alerts, which the browser's
+/// override would replace.
+pub(crate) const SYSTEM_RADIUS: f64 = 16.;
+/// An alert's, sheet or window.
+pub(crate) const ALERT_RADIUS: f32 = 26.;
 
-/// A window without a toolbar keeps macOS 26's titlebar radius, not the toolbar windows' one.
-pub(crate) fn titlebar_corners(window: &gpui::Window) {
+/// Only the browser windows take the override; every other window keeps AppKit's own radius.
+pub(crate) fn system_corners(window: &gpui::Window) {
     if let Some(window) = crate::frame::ns_window(window) {
-        titlebar_corners_of(&window);
+        system_corners_of(&window);
     }
 }
 
-pub(crate) fn titlebar_corners_of(window: &objc2_app_kit::NSWindow) {
+pub(crate) fn system_corners_of(window: &objc2_app_kit::NSWindow) {
     #[cfg(feature = "private-api")]
-    if window.toolbar().is_none()
-        && objc2::runtime::NSObjectProtocol::respondsToSelector(
-            window,
-            objc2::sel!(_setCornerRadius:),
-        )
+    if objc2::runtime::NSObjectProtocol::respondsToSelector(window, objc2::sel!(_setCornerRadius:))
     {
-        unsafe { objc2::msg_send![window, _setCornerRadius: TITLEBAR_RADIUS] }
+        unsafe { objc2::msg_send![window, _setCornerRadius: SYSTEM_RADIUS] }
     }
     #[cfg(not(feature = "private-api"))]
     let _ = window;

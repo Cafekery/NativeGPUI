@@ -11,7 +11,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::NSWindowStyleMask;
 
 use crate::app::FinderDemo;
-use crate::chrome::toolbar::{titlebar_corners, titled_height};
+use crate::chrome::toolbar::{system_corners, titled_height};
 use crate::frame::ns_window;
 use crate::menus::ShowProgressWindow;
 use crate::ops::jobs::{ROW_H, progress_row};
@@ -47,7 +47,7 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
             },
             |window, cx| {
                 window.set_window_title("");
-                titlebar_corners(window);
+                system_corners(window);
                 if let Some(ns) = ns_window(window) {
                     ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Closable);
                 }

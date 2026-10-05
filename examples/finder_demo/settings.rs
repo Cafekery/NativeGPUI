@@ -630,6 +630,7 @@ fn show(cx: &mut App) {
                     tag_fresh: false,
                     tag_scroll: UniformListScrollHandle::new(),
                 });
+                crate::chrome::toolbar::system_corners(window);
                 install_toolbar(pane, entity.downgrade(), window, cx);
                 entity
             },
