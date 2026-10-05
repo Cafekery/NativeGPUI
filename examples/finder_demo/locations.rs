@@ -128,6 +128,10 @@ pub(crate) fn computer_name() -> &'static str {
     *NAME
 }
 
+pub(crate) fn computer_symbol() -> String {
+    finder_fs::servers::symbol(Some(&sysctl_text(c"hw.model")))
+}
+
 /// A location's title, and the location Enclosing Folder goes up to.
 pub(crate) fn place(id: &str) -> Option<(&'static str, Option<&'static str>)> {
     let say = |english: &str| intern(&finder_fs::words::say(english));
