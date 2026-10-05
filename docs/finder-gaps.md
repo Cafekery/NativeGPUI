@@ -92,9 +92,11 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] Quick Actions, in the item menu and the preview pane, as Finder offers them: Rotate Left (⌥
   Rotate Right) for pictures and movies, Markup for one picture or PDF, Trim for one movie, Create
   PDF for one picture or several pictures and PDFs, Convert Image and Remove Background for
-  pictures, then Customize…. The pane shows the first two and More…, its first button reading
-  Rotate Right while ⌥ is held. Create PDF, Convert Image and Remove Background start a rename of
-  what they make, as Finder's do; Rotate only selects
+  pictures, then Customize…. The pane shows the first two, its first reading Rotate Right while ⌥
+  is held, then More… with the rest and Customize…. While Show Quick Actions is on, More… is there
+  even alone: for a folder, a text file, or a folder and a file chosen together. Create PDF,
+  Convert Image and Remove Background start a rename of what they make, as Finder's do; Rotate
+  only selects
 - [x] Trim opens a trimmer, then Finder's question, “Do you want to save the changes made to the
   document “X”?”, with New Clip, Replace and Cancel in Finder's order. Replace wrote the same file
   as Finder's (a 2 s clip cut to 1.5 s, 13,140 bytes); New Clip saves a new file through a save
@@ -354,6 +356,9 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   and the window's resize edge.
 - [ ] The quick actions' Rotate Left symbol sits 0.5 pt left of Finder's (x 897–911 against
   897.5–911.5); its row, Markup and More… match (626–641, 627–641).
+- [ ] More… alone (a folder, a text file) draws where Finder's does (symbol x 972.5–986.5,
+  y 627–641; label x 962–996 against 962–996.5, y 654–662.5), but takes clicks across its 76 pt
+  slot, where Finder's button is 42x41 at x 958.5, y 625.
 - [x] The pane's quick action buttons have Finder's tooltips: Rotate Left, Rotate Right while ⌥ is
   held, Markup; More… has none, as in Finder
 - [ ] Pressing ⌥ over a shown quick action tooltip hides Finder's and shows nothing new; the demo's

@@ -93,7 +93,7 @@ struct Card {
     tags: Vec<RowTag>,
     show_tags: bool,
     many: bool,
-    actions: Vec<QuickAct>,
+    actions: Option<Vec<QuickAct>>,
 }
 
 /// A snapshot: a pane reading its window's state would make that window redraw.
@@ -468,9 +468,12 @@ fn kilohertz(hertz: f64) -> Option<SharedString> {
 const ACTION_BUTTONS: usize = 2;
 
 fn action_slots(
-    acts: &[QuickAct],
+    acts: Option<&[QuickAct]>,
     option: bool,
 ) -> Vec<(Option<QuickAct>, &'static str, &'static str)> {
+    let Some(acts) = acts else {
+        return Vec::new();
+    };
     acts.iter()
         .take(ACTION_BUTTONS)
         .map(|act| {
@@ -521,10 +524,7 @@ impl FinderDemo {
                 tags: row_tags(&line.key),
                 show_tags: options::shows(kind, options::TAGS),
                 many: false,
-                actions: match options::shows(kind, options::QUICK_ACTIONS) {
-                    true => offered(&[row.face]),
-                    false => Vec::new(),
-                },
+                actions: options::shows(kind, options::QUICK_ACTIONS).then(|| offered(&[row.face])),
             }
         };
         let renaming = (self.view == GALLERY_VIEW && !card.many)
@@ -644,7 +644,7 @@ impl FinderDemo {
             Some(stats) => Hero::Stack(stats.head.clone()),
             None => Hero::Blank,
         };
-        let actions = offered(&self.chosen_faces());
+        let actions = Some(offered(&self.chosen_faces()));
         let Some(stats) = self.fresh_stats() else {
             return Card {
                 hero,
@@ -964,7 +964,7 @@ impl Shown {
             .flex()
             .justify_center()
             .children(
-                action_slots(&card.actions, self.option)
+                action_slots(card.actions.as_deref(), self.option)
                     .into_iter()
                     .enumerate()
                     .map(|(at, (act, symbol, label))| {
@@ -1011,7 +1011,10 @@ impl Shown {
                             .into_any_element(),
                             None => {
                                 let rows = menu_rows(
-                                    &card.actions[card.actions.len().min(ACTION_BUTTONS)..],
+                                    card.actions
+                                        .as_deref()
+                                        .and_then(|acts| acts.get(ACTION_BUTTONS..))
+                                        .unwrap_or_default(),
                                 );
                                 let (entries, acts): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
                                 native_context_menu(label, slot)
@@ -1049,9 +1052,9 @@ impl Shown {
                 0.
             }
             + BOTTOM_PAD;
-        let band = match card.actions.is_empty() {
-            true => RESIZE_EDGE,
-            false => ACTIONS_H,
+        let band = match card.actions {
+            Some(_) => ACTIONS_H,
+            None => RESIZE_EDGE,
         };
         if self.view == COLUMN_VIEW {
             return div()
