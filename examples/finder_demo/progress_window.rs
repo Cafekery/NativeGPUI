@@ -2,19 +2,21 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, EntityId, Subscription, Window, WindowBounds, WindowHandle,
-    WindowOptions, div, point, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Entity, EntityId, Pixels, Subscription, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
-use native_gpui::{native_root, window_options};
+use native_gpui::{LabelAlign, native_label, native_root, titlebar_band, window_options};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSWindowStyleMask;
 
 use crate::app::FinderDemo;
+use crate::chrome::toolbar::{titlebar_corners, titled_height};
+use crate::frame::ns_window;
 use crate::menus::ShowProgressWindow;
-use crate::ops::jobs::job_row;
-use crate::palette::Palette;
+use crate::ops::jobs::{ROW_H, progress_row};
 
-const WIDTH: f32 = 420.;
-const HEIGHT: f32 = 300.;
+const WIDTH: f32 = 399.;
 
 thread_local! {
     static OPEN: RefCell<Option<WindowHandle<Progress>>> = const { RefCell::new(None) };
@@ -31,23 +33,31 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
     }
     // Deferred: the first draw reads every Finder window, and the menu fires inside one's update.
     cx.defer(|cx| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let rows = rows_shown(&demos(cx), cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(160.), px(160.)),
-                    size: size(px(WIDTH), px(HEIGHT)),
+                    size: size(px(WIDTH), height(rows, mtm)),
                 })),
                 ..window_options()
             },
             |window, cx| {
-                window.set_window_title("Progress");
-                crate::chrome::toolbar::titlebar_corners(window);
+                window.set_window_title("");
+                titlebar_corners(window);
+                if let Some(ns) = ns_window(window) {
+                    ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Closable);
+                }
                 cx.new(|cx| {
                     cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
                         .detach();
                     Progress {
                         watched: HashSet::new(),
                         watching: Vec::new(),
+                        rows,
                     }
                 })
             },
@@ -58,30 +68,54 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
     });
 }
 
+fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
+    cx.windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<FinderDemo>()?.entity(cx).ok())
+        .collect()
+}
+
+/// One row each, and one for the line saying nothing runs.
+fn rows_shown(demos: &[Entity<FinderDemo>], cx: &App) -> usize {
+    demos
+        .iter()
+        .map(|demo| demo.read(cx).jobs.len())
+        .sum::<usize>()
+        .max(1)
+}
+
+fn height(rows: usize, mtm: MainThreadMarker) -> Pixels {
+    titled_height(rows as f32 * ROW_H, mtm)
+}
+
 struct Progress {
     watched: HashSet<EntityId>,
     watching: Vec<Subscription>,
+    rows: usize,
 }
 
 impl Render for Progress {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let demos: Vec<_> = cx
-            .windows()
-            .into_iter()
-            .filter_map(|window| window.downcast::<FinderDemo>()?.entity(cx).ok())
-            .collect();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let demos = demos(cx);
         for demo in &demos {
             if self.watched.insert(demo.entity_id()) {
                 self.watching.push(cx.observe(demo, |_, _, cx| cx.notify()));
             }
         }
-        let palette = Palette::new(false);
-        let rows: Vec<AnyElement> = demos
+        let rows = rows_shown(&demos, cx);
+        if let Some(mtm) = MainThreadMarker::new().filter(|_| rows != self.rows) {
+            self.rows = rows;
+            let tall = height(rows, mtm);
+            cx.defer_in(window, move |_, window, _| {
+                window.resize(size(window.bounds().size.width, tall));
+            });
+        }
+        let jobs: Vec<AnyElement> = demos
             .iter()
             .flat_map(|demo| {
                 demo.read(cx).jobs.iter().map(|job| {
                     let (demo, id) = (demo.clone(), job.id);
-                    job_row(job, move |cx| {
+                    progress_row(job, move |cx| {
                         demo.update(cx, |this, cx| {
                             this.queue.cancel(id);
                             cx.notify();
@@ -95,23 +129,20 @@ impl Render for Progress {
             div()
                 .size_full()
                 .bg(system_color(SystemColor::WindowBackground))
-                .pt(px(34.))
-                .px(px(12.))
-                .pb(px(12.))
+                .pt(titlebar_band(window))
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .font_family(tokens::system_font_family())
-                .text_color(palette.label)
-                .when(rows.is_empty(), |body| {
+                .when(jobs.is_empty(), |body| {
                     body.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(palette.secondary)
-                            .child("No operations in progress"),
+                        div().h(px(ROW_H)).flex().items_center().child(
+                            native_label("ng.finder.progress.none", "No operations in progress")
+                                .font_size(tokens::small_system_font_size())
+                                .color(SystemColor::SecondaryLabel)
+                                .align(LabelAlign::Center),
+                        ),
                     )
                 })
-                .children(rows),
+                .children(jobs),
         )
     }
 }
