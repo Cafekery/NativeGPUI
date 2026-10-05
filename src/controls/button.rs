@@ -327,11 +327,8 @@ fn unflip() -> NativeRead {
     thread_local! {
         static READ: NativeRead = Rc::new(|sender| {
             if let Some(button) = sender.downcast_ref::<NSButton>() {
-                button.setState(if button.state() == NSControlStateValueOff {
-                    NSControlStateValueOn
-                } else {
-                    NSControlStateValueOff
-                });
+                let was_off = button.state() == NSControlStateValueOff;
+                button.setState(CheckState::from(was_off).to_native());
             }
             Box::new(NativeValue::None)
         });
@@ -456,10 +453,7 @@ impl NativeButton {
             .font_size
             .unwrap_or_else(|| system_font_size_for(self.control_size));
         let weight = ns_font_weight(self.weight.unwrap_or(FontWeight::NORMAL));
-        Some(NSFont::systemFontOfSize_weight(
-            f32::from(size) as f64,
-            weight,
-        ))
+        Some(NSFont::systemFontOfSize_weight(size.to_f64(), weight))
     }
 
     fn layout(&self) -> Style {
@@ -475,8 +469,8 @@ impl NativeButton {
             self.symbol_only,
             self.bezel,
             self.control_size,
-            self.font_size.map(|size| f32::from(size).to_bits()),
-            self.weight.map(|weight| weight.0.to_bits()),
+            self.font_size,
+            self.weight,
         );
         let fitted = measured("NSButton.push", inputs, |mtm| {
             let make = NSButton::buttonWithTitle_target_action;
@@ -733,11 +727,7 @@ impl NativeSegmented {
         }
         sync_enabled(&control, self.enabled);
         for segment in 0..control.segmentCount() {
-            let wanted = self
-                .segments_enabled
-                .get(segment as usize)
-                .copied()
-                .unwrap_or(true);
+            let wanted = self.segments_enabled.get(segment as usize) != Some(&false);
             if control.isEnabledForSegment(segment) != wanted {
                 control.setEnabled_forSegment(wanted, segment);
             }

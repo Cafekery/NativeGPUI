@@ -23,8 +23,8 @@ use objc2_app_kit::{
     NSResponder, NSStringDrawing, NSTextAlignment, NSTintProminence, NSTitlePosition, NSView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedStringKey, NSDictionary, NSNumber, NSObject, NSPoint,
-    NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSAttributedStringKey, NSCopying, NSDictionary, NSNumber, NSObject,
+    NSPoint, NSRect, NSSize, NSString,
 };
 
 use crate::bridge::appkit::Container;
@@ -572,8 +572,7 @@ fn menu_image(
         (None, Some(color), _) => Some(dot_image(color)),
         (None, None, Some(tag)) => {
             // A named image is shared: size a copy.
-            let icon: Retained<NSImage> =
-                unsafe { msg_send![&*ns_file_icon(FileType::from_tag(tag)?)?, copy] };
+            let icon = ns_file_icon(FileType::from_tag(tag)?)?.copy();
             icon.setSize(NSSize::new(16., 16.));
             Some(icon)
         }
@@ -980,13 +979,7 @@ impl NativePopup {
         if popup.isTransparent() != self.tinted {
             popup.setTransparent(self.tinted);
         }
-        sync_face(
-            &popup,
-            self.tinted,
-            self.control_size,
-            self.enabled,
-            window.is_window_active(),
-        );
+        self.sync_face(&popup, window.is_window_active());
 
         // `integerValue` is the cell state, the same for every row; the selection is this.
         slot.on_event(
@@ -997,22 +990,55 @@ impl NativePopup {
             self.on_change.take(),
         );
     }
+
+    fn sync_face(&self, popup: &NSPopUpButton, active: bool) {
+        let found = popup
+            .subviews()
+            .iter()
+            .find_map(|view| view.downcast::<PopupFace>().ok());
+        if !self.tinted {
+            if let Some(face) = found {
+                face.removeFromSuperview();
+            }
+            return;
+        }
+        let Some(face) = found.or_else(|| PopupFace::new(popup)) else {
+            return;
+        };
+        sync_control_size(&face, self.control_size);
+        sync_enabled(&face, self.enabled);
+        let font = popup.font();
+        if face.font() != font {
+            face.setFont(font.as_deref());
+        }
+        let title = popup.titleOfSelectedItem().unwrap_or_else(NSString::new);
+        if face.title() != title {
+            face.setTitle(&title);
+        }
+        // The button's own tint follows its window's key state; the chevron is told it.
+        let tint = match (self.enabled, active) {
+            (false, _) => SystemColor::TertiaryLabel,
+            (true, true) => SystemColor::ControlAccent,
+            (true, false) => SystemColor::Label,
+        }
+        .ns_color();
+        let chevron = face.ivars();
+        if chevron.contentTintColor().as_ref() != Some(&tint) {
+            chevron.setContentTintColor(Some(&tint));
+        }
+    }
 }
 
 hosted_element!(NativePopup);
 
 const CHEVRON_TRAIL: f64 = 6.5;
 
-struct FaceIvars {
-    chevron: Retained<NSImageView>,
-}
-
 define_class!(
     /// `NSPopUpButton` ignores `tintProminence`, so a button draws over the transparent pop-up.
     #[unsafe(super(NSButton, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGPopupFace"]
-    #[ivars = FaceIvars]
+    #[ivars = Retained<NSImageView>]
     struct PopupFace;
 
     impl PopupFace {
@@ -1050,9 +1076,7 @@ impl PopupFace {
                 | NSAutoresizingMaskOptions::ViewMaxYMargin,
         );
         chevron.setAccessibilityElement(false);
-        let this = Self::alloc(mtm).set_ivars(FaceIvars {
-            chevron: chevron.clone(),
-        });
+        let this = Self::alloc(mtm).set_ivars(chevron);
         let face: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: bounds] };
         face.setBezelStyle(NSBezelStyle::Push);
         face.setTintProminence(NSTintProminence::Secondary);
@@ -1062,46 +1086,9 @@ impl PopupFace {
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
         face.setAccessibilityElement(false);
-        face.addSubview(&chevron);
+        face.addSubview(face.ivars());
         popup.addSubview(&face);
         Some(face)
-    }
-}
-
-fn sync_face(popup: &NSPopUpButton, tinted: bool, size: ControlSize, enabled: bool, active: bool) {
-    let found = popup
-        .subviews()
-        .iter()
-        .find_map(|view| view.downcast::<PopupFace>().ok());
-    let face = match found {
-        Some(face) if !tinted => return face.removeFromSuperview(),
-        Some(face) => face,
-        None if !tinted => return,
-        None => match PopupFace::new(popup) {
-            Some(face) => face,
-            None => return,
-        },
-    };
-    sync_control_size(&face, size);
-    sync_enabled(&face, enabled);
-    let font = popup.font();
-    if face.font() != font {
-        face.setFont(font.as_deref());
-    }
-    let title = popup.titleOfSelectedItem().unwrap_or_else(NSString::new);
-    if face.title() != title {
-        face.setTitle(&title);
-    }
-    // The button's own tint follows its window's key state; the chevron is told it.
-    let tint = match (enabled, active) {
-        (false, _) => SystemColor::TertiaryLabel,
-        (true, true) => SystemColor::ControlAccent,
-        (true, false) => SystemColor::Label,
-    }
-    .ns_color();
-    let chevron = &face.ivars().chevron;
-    if chevron.contentTintColor().as_ref() != Some(&tint) {
-        chevron.setContentTintColor(Some(&tint));
     }
 }
 

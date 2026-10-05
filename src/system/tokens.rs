@@ -946,7 +946,7 @@ fn rasterize_file_icon(
     let image = ns_file_icon(kind)?;
 
     // `iconForContentType:` always reports 32x32 points; `drawInRect:` picks by destination pixels.
-    let points = NSSize::new(f32::from(size) as f64, f32::from(size) as f64);
+    let points = NSSize::new(size.to_f64(), size.to_f64());
     let parts = match kind {
         FileType::FullFolder | FileType::FullPath(_) => Some(folder_parts(points.width)?),
         _ => None,

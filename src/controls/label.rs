@@ -114,19 +114,16 @@ impl NativeLabel {
     }
 
     fn layout(&self) -> Style {
-        let key = hash_of((
-            f32::from(self.point_size()).to_bits(),
-            self.weight.0.to_bits(),
-            self.tabular,
-        ));
-        let fitting = fitting_size_keyed("NSTextField(label)", key, |mtm| {
-            let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
-            probe.setFont(Some(&self.font()));
-            probe.fittingSize()
-        });
-        let height = match self.wraps {
-            true => relative(1.).into(),
-            false => px(fitting.height as f32).into(),
+        let height = if self.wraps {
+            relative(1.).into()
+        } else {
+            let key = hash_of((self.point_size(), self.weight, self.tabular));
+            let fitting = fitting_size_keyed("NSTextField(label)", key, |mtm| {
+                let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
+                probe.setFont(Some(&self.font()));
+                probe.fittingSize()
+            });
+            px(fitting.height as f32).into()
         };
         Style {
             size: size(relative(1.).into(), height),
