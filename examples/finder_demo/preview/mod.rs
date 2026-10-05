@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 
 use block2::{RcBlock, StackBlock};
 use gpui::{
-    App, Bounds, Context, DispatchPhase, Entity, EntityId, MouseDownEvent, Render, RenderImage,
-    WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas, div, point,
-    prelude::*, px, size,
+    App, Bounds, Context, DispatchPhase, Entity, EntityId, MouseDownEvent, Pixels, Render,
+    RenderImage, WeakEntity, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas,
+    div, point, prelude::*, px, size,
 };
+use native_gpui::sidebar::{NativeSidebar, SidebarMetrics};
 use native_gpui::tokens;
-use native_gpui::{chrome_host, native_root, native_screen_rect, window_options};
+use native_gpui::{native_root, window_options};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, msg_send};
@@ -49,7 +50,6 @@ const DIVIDER_GRAB: f32 = 3.;
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
-    anchor: Rc<Cell<Anchor>>,
     follow: Retained<ProtocolObject<dyn NSObjectProtocol>>,
     pane: EntityId,
     handed: Rc<Handed>,
@@ -79,32 +79,27 @@ impl Drop for PreviewWindow {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Anchor {
-    right: f64,
-    top: f64,
-    bottom: f64,
-    width: f64,
+/// From AppKit's layout: gpui's viewport catches up with a window's resize only at its next draw.
+fn pane_frame(parent: &NSWindow, metrics: SidebarMetrics) -> NSRect {
+    let pt = |value: Pixels| f64::from(f32::from(value));
+    let content = parent.contentRectForFrameRect(parent.frame());
+    // Clear of the divider's grab and the parent's resize edges, which a child window takes.
+    let width = pt(metrics.right) - f64::from(DIVIDER_GRAB + RESIZE_EDGE);
+    let bottom = pt(metrics.bottom) + f64::from(RESIZE_EDGE);
+    NSRect::new(
+        NSPoint::new(
+            content.origin.x + content.size.width - f64::from(RESIZE_EDGE) - width,
+            content.origin.y + bottom,
+        ),
+        NSSize::new(width, content.size.height - pt(metrics.top) - bottom),
+    )
 }
 
-impl Anchor {
-    fn new(parent: NSRect, pane: NSRect) -> Self {
-        Self {
-            right: parent.origin.x + parent.size.width - pane.origin.x - pane.size.width,
-            top: parent.origin.y + parent.size.height - pane.origin.y - pane.size.height,
-            bottom: pane.origin.y - parent.origin.y,
-            width: pane.size.width,
-        }
-    }
-
-    fn place(self, parent: NSRect) -> NSRect {
-        NSRect::new(
-            NSPoint::new(
-                parent.origin.x + parent.size.width - self.right - self.width,
-                parent.origin.y + self.bottom,
-            ),
-            NSSize::new(self.width, parent.size.height - self.top - self.bottom),
-        )
+/// Read when applied: a window manager moves the window between a draw and a deferred placement.
+fn place(parent: &NSWindow, pane: &NSWindow, sidebar: &NativeSidebar) {
+    let frame = pane_frame(parent, sidebar.metrics());
+    if !near(pane.frame(), frame) {
+        pane.setFrame_display(frame, true);
     }
 }
 
@@ -112,16 +107,12 @@ impl Anchor {
 fn follow_parent(
     parent: &NSWindow,
     pane: &Retained<NSWindow>,
-    anchor: &Rc<Cell<Anchor>>,
+    sidebar: &NativeSidebar,
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
-    let (host, pane, anchor) = (Weak::new(parent), pane.clone(), anchor.clone());
+    let (host, pane, sidebar) = (Weak::new(parent), pane.clone(), sidebar.clone());
     let block = StackBlock::new(move |_: NonNull<NSNotification>| {
-        let Some(host) = host.load() else {
-            return;
-        };
-        let frame = anchor.get().place(host.frame());
-        if !near(pane.frame(), frame) {
-            pane.setFrame_display(frame, true);
+        if let Some(host) = host.load() {
+            place(&host, &pane, &sidebar);
         }
     })
     .copy();
@@ -248,12 +239,13 @@ pub(crate) fn close_with_finder(cx: &mut Context<FinderDemo>) {
 fn open_preview_window(
     finder: Entity<FinderDemo>,
     parent: Option<Retained<NSWindow>>,
-    frame: NSRect,
     cx: &mut App,
 ) {
     let pane_finder = finder.downgrade();
     let handed = Rc::new(Handed::default());
-    let opened = parent.and_then(|parent| {
+    let sidebar = finder.read(cx).sidebar.clone();
+    let opened = parent.zip(sidebar).and_then(|(parent, sidebar)| {
+        let opening = pane_frame(&parent, sidebar.metrics()).size;
         let handle = cx
             .open_window(
                 WindowOptions {
@@ -265,7 +257,7 @@ fn open_preview_window(
                     is_minimizable: false,
                     window_bounds: Some(WindowBounds::Windowed(Bounds {
                         origin: point(px(0.), px(0.)),
-                        size: size(px(frame.size.width as f32), px(frame.size.height as f32)),
+                        size: size(px(opening.width as f32), px(opening.height as f32)),
                     })),
                     ..window_options()
                 },
@@ -292,15 +284,13 @@ fn open_preview_window(
         unsafe {
             let _: () = msg_send![&*window, setBecomesKeyOnlyIfNeeded: true];
         }
-        window.setFrame_display(frame, true);
+        place(&parent, &window, &sidebar);
         unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
         window.setLevel(parent.level());
-        let anchor = Rc::new(Cell::new(Anchor::new(parent.frame(), frame)));
-        let follow = follow_parent(&parent, &window, &anchor);
+        let follow = follow_parent(&parent, &window, &sidebar);
         Some(PreviewWindow {
             handle,
             window,
-            anchor,
             follow,
             pane,
             handed,
@@ -373,28 +363,16 @@ impl FinderDemo {
             return;
         }
 
-        // Clear of the divider's grab and the parent's resize edges, which a child window takes.
-        let bounds = Bounds {
-            origin: point(
-                viewport.width - metrics.right + px(DIVIDER_GRAB),
-                metrics.top,
-            ),
-            size: size(
-                metrics.right - px(DIVIDER_GRAB + RESIZE_EDGE),
-                px(self.pane_h),
-            ),
-        };
-        let frame = native_screen_rect(&chrome_host(window), bounds);
         match &self.preview_window {
             Some(pane) => {
-                if let Some(parent) = &self.host {
-                    pane.anchor.set(Anchor::new(parent.frame(), frame));
-                }
-                if !near(pane.window.frame(), frame) {
-                    // Off this draw: resizing from inside the parent's frame loses the size change.
-                    let pane_window = pane.window.clone();
-                    cx.spawn(async move |_, _| pane_window.setFrame_display(frame, true))
-                        .detach();
+                if let (Some(parent), Some(sidebar)) = (&self.host, &self.sidebar) {
+                    if !near(pane.window.frame(), pane_frame(parent, metrics)) {
+                        // Off this draw: resizing from inside the parent's frame loses the size change.
+                        let (parent, window, sidebar) =
+                            (parent.clone(), pane.window.clone(), sidebar.clone());
+                        cx.spawn(async move |_, _| place(&parent, &window, &sidebar))
+                            .detach();
+                    }
                 }
             }
             None if self.preview_opening => {}
@@ -402,7 +380,7 @@ impl FinderDemo {
                 self.preview_opening = true;
                 let finder = cx.entity();
                 let parent = ns_window(window);
-                cx.defer(move |cx| open_preview_window(finder, parent, frame, cx));
+                cx.defer(move |cx| open_preview_window(finder, parent, cx));
             }
         }
         let Some(pane) = &self.preview_window else {
