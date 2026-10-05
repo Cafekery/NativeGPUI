@@ -6,6 +6,7 @@ mod glass_private;
 mod material;
 #[cfg(feature = "private-api")]
 pub(crate) mod private_api;
+mod scroll_edge;
 
 #[cfg(feature = "private-api")]
 pub use custom_glass::{
@@ -15,3 +16,4 @@ pub use glass::{Glass, GlassContainer, glass, glass_container};
 #[cfg(feature = "private-api")]
 pub use glass_private::{GlassInteractionState, GlassSubvariant, GlassVariant};
 pub use material::{Blending, Material, NativeMaterial, RawMaterial, material};
+pub use scroll_edge::{ScrollEdgeEffect, scroll_edge_effect};

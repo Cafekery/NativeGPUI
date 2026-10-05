@@ -18,7 +18,10 @@ use native_gpui::{
     native_spinner, native_stepper, native_switch, native_text_field,
 };
 
-use native_gpui::{Blending, Material, RawMaterial, glass, glass_container, material};
+use native_gpui::{
+    Blending, Material, RawMaterial, ScrollEdgeEffect, glass, glass_container, material,
+    scroll_edge_effect,
+};
 
 use native_gpui::sidebar::SidebarRowSize;
 use native_gpui::{
