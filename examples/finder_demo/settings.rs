@@ -476,27 +476,32 @@ impl Settings {
             .position(|(_, code)| Some(*code) == scope.as_deref())
             .unwrap_or(0);
         div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
             .children(
                 ADVANCED
                     .iter()
-                    .map(|(label, key, default)| toggle(key, label, *default)),
+                    .zip(0..)
+                    .map(|((label, key, default), row)| {
+                        at(28., 108. + 26. * row as f32).child(toggle(key, label, *default))
+                    }),
             )
-            .child(heading("Keep folders on top:"))
-            .children(
-                FOLDERS_ON_TOP
-                    .iter()
-                    .map(|(label, key)| div().pl(px(22.)).child(toggle(key, label, false))),
-            )
-            .child(div().h(px(4.)))
-            .child(heading("When performing a search:"))
             .child(
-                div().pl(px(22.)).child(
+                at(26., 238.)
+                    .w(px(300.))
+                    .child(label("Keep folders on top:")),
+            )
+            .children(FOLDERS_ON_TOP.iter().zip(0..).map(|((label, key), row)| {
+                at(50., 264. + 26. * row as f32).child(toggle(key, label, false))
+            }))
+            .child(
+                at(26., 324.)
+                    .w(px(300.))
+                    .child(label("When performing a search:")),
+            )
+            .child(
+                at(50., 348.).child(
                     native_popup("ng.finder.settings.scope", scope)
                         .items(SCOPES.iter().map(|(label, _)| *label))
-                        .width(px(239.))
+                        .width(px(238.))
                         .on_change(|index: &usize, _, _| {
                             prefs::set_setting_text("FXDefaultSearchScope", SCOPES[*index].1);
                         }),
@@ -551,7 +556,7 @@ impl Render for Settings {
             0 => self.general(cx),
             1 => unplaced(self.tags()),
             2 => unplaced(self.sidebar()),
-            _ => unplaced(self.advanced()),
+            _ => self.advanced(),
         };
         native_root(
             div()
