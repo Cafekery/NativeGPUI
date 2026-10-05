@@ -8,13 +8,12 @@ use crate::{ds_store, xattr};
 
 const COMMENT: &CStr = c"com.apple.metadata:kMDItemFinderComment";
 
-/// The comment Finder shows for the item: its folder's `.DS_Store` record; Finder shows the attribute alone as blank.
+/// Finder shows only the `.DS_Store` record; the attribute alone reads as blank.
 pub fn of(path: &Path) -> String {
     let recorded = || ds_store::comments(path.parent()?).remove(path.file_name()?.to_str()?);
     recorded().unwrap_or_default()
 }
 
-/// Writes the comment where Finder does: the item's `com.apple.metadata:kMDItemFinderComment` attribute (a binary plist string; removed when empty) and the `cmmt` record in the parent's `.DS_Store`.
 pub fn set(path: &Path, comment: &str) -> io::Result<()> {
     let (Some(folder), Some(name)) = (
         path.parent(),

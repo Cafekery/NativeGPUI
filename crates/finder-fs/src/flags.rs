@@ -6,10 +6,8 @@ use crate::xattr;
 
 pub(crate) const FINDER_INFO: &CStr = c"com.apple.FinderInfo";
 
-/// Get Info's "Stationery pad".
 pub const IS_STATIONERY: u16 = 0x0800;
 
-/// The flags word of the item's `com.apple.FinderInfo`.
 pub fn of(path: &Path) -> u16 {
     let info = crate::c_path(path)
         .ok()
@@ -21,7 +19,6 @@ pub fn of(path: &Path) -> u16 {
     }
 }
 
-/// Sets or clears `flag`, keeping the others; an attribute left all zeros is removed.
 pub fn set(path: &Path, flag: u16, on: bool) -> io::Result<()> {
     let path = crate::c_path(path)?;
     let mut info = xattr::get(&path, FINDER_INFO).unwrap_or_default();

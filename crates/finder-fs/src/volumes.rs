@@ -103,7 +103,6 @@ pub(crate) fn is_local(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_LOCAL as u32 != 0)
 }
 
-/// Get Info's "Ignore ownership on this volume".
 pub fn ignores_ownership(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0)
 }

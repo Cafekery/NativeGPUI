@@ -23,8 +23,7 @@ unsafe extern "C" {
     fn mbr_uuid_to_id(uuid: *const u8, id: *mut libc::id_t, kind: *mut c_int) -> c_int;
 }
 
-/// A row's choice in Get Info's Sharing & Permissions.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Privilege {
     ReadWrite,
     ReadOnly,
@@ -44,7 +43,7 @@ impl Privilege {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Class {
     Owner,
     Group,
@@ -61,8 +60,8 @@ impl Class {
     }
 }
 
-/// One row: the item's owner, an ACL entry, its group, or everyone. ACL entries have no class.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `class` is `None` for an ACL entry.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Grant {
     pub name: String,
     pub group: bool,
@@ -71,7 +70,6 @@ pub struct Grant {
     pub class: Option<Class>,
 }
 
-/// The rows in Finder's order: owner, the ACL's allow entries, group, everyone.
 pub fn grants(path: &Path) -> io::Result<Vec<Grant>> {
     let meta = std::fs::metadata(path)?;
     let me = unsafe { libc::getuid() };
@@ -92,7 +90,7 @@ pub fn grants(path: &Path) -> io::Result<Vec<Grant>> {
     Ok(grants)
 }
 
-/// What you may do with the item yourself. Finder calls access to a SIP-restricted item custom.
+/// Finder reports access to a SIP-restricted item as custom.
 pub fn yours(path: &Path) -> Privilege {
     use std::os::macos::fs::MetadataExt as _;
     if std::fs::metadata(path).is_ok_and(|meta| meta.st_flags() & SF_RESTRICTED != 0) {
@@ -113,13 +111,12 @@ pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
-/// Gives `class` the privilege, which only the owner (or root) may do.
 pub fn set(path: &Path, class: Class, privilege: Privilege) -> io::Result<()> {
     let meta = std::fs::metadata(path)?;
     set_mode(path, with(meta.mode(), meta.is_dir(), class, privilege))
 }
 
-/// A folder's search bit follows read or write, as Finder sets it; a file keeps its own.
+/// A folder's search bit follows read or write; a file keeps its own.
 fn with(mode: u32, folder: bool, class: Class, privilege: Privilege) -> u32 {
     let (read, write) = match privilege {
         Privilege::ReadWrite => (true, true),
@@ -137,9 +134,7 @@ fn with(mode: u32, folder: bool, class: Class, privilege: Privilege) -> u32 {
     mode & 0o7777 & !(7 << shift) | bits << shift
 }
 
-/// "Apply to enclosed items…" without root: every enclosed item you own takes the folder's
-/// privileges, deepest first so a folder losing your access is still walked. Returns how many
-/// changed.
+/// Deepest first, so a folder losing your access is still walked; returns how many changed.
 pub fn apply_to_enclosed(folder: &Path) -> io::Result<usize> {
     let from = std::fs::metadata(folder)?.mode();
     let me = unsafe { libc::getuid() };
@@ -174,7 +169,6 @@ pub fn apply_to_enclosed(folder: &Path) -> io::Result<usize> {
     Ok(changed)
 }
 
-/// Finder calls root "system".
 fn user_name(uid: libc::uid_t) -> String {
     if uid == 0 {
         return "system".to_owned();
@@ -203,7 +197,7 @@ fn name_or_unknown(name: *const c_char) -> String {
     }
 }
 
-/// Deny entries, such as the home folder's "everyone deny delete", grant nothing and get no row.
+/// Deny entries grant nothing and get no row.
 fn acl_grants(path: &Path, me: libc::uid_t) -> Vec<Grant> {
     let Ok(path) = crate::c_path(path) else {
         return Vec::new();

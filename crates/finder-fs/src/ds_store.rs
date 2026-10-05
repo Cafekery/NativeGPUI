@@ -168,7 +168,6 @@ pub fn comments(folder: &Path) -> HashMap<String, String> {
         .collect()
 }
 
-/// Sets the Finder comment Finder keeps for `name` in `folder`'s `.DS_Store`; an empty comment removes it.
 pub fn set_comment(folder: &Path, name: &str, comment: &str) -> io::Result<()> {
     let path = folder.join(".DS_Store");
     let bytes = match std::fs::read(&path) {
@@ -328,13 +327,11 @@ const PAGE: usize = 0x1000;
 const FRESH_TAIL: [u8; 16] = [0, 0, 1, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 fn order(name: &str, code: &[u8; 4], other: &str, other_code: &[u8; 4]) -> Ordering {
-    let fold = |name: &str| {
-        name.chars()
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-    };
+    fn fold(name: &str) -> impl Iterator<Item = char> + '_ {
+        name.chars().flat_map(char::to_lowercase)
+    }
     fold(name)
-        .cmp(&fold(other))
+        .cmp(fold(other))
         .then_with(|| code.cmp(other_code))
 }
 
