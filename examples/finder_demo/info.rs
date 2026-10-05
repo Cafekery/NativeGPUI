@@ -23,13 +23,14 @@ use gpui::{
 };
 use native_gpui::tokens::{FileType, SystemColor, system_color};
 use native_gpui::{
-    ButtonBezel, CheckState, ControlSize, LabelAlign, Layer, NativeHost, NativeLabel, NativeRead,
-    Target, native_button, native_checkbox, native_label, native_root, native_rule, window_options,
-    wire,
+    ButtonBezel, CheckState, ControlSize, LabelAlign, Layer, NativeHost, NativeLabel, Target,
+    native_button, native_checkbox, native_label, native_root, native_rule, window_options, wire,
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
-use objc2::{AnyThread, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{
+    AnyThread, DefinedClass, DowncastTarget, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSActionCell, NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBorderType,
     NSCell, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType,
@@ -43,9 +44,11 @@ use objc2_app_kit::{
     NSTextFieldCell, NSTextView, NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary,
-    NSMutableAttributedString, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect,
-    NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
+    MainThreadMarker, NSBundle, NSBundleExecutableArchitectureARM64,
+    NSBundleExecutableArchitectureX86_64, NSDate, NSDateFormatter, NSDateFormatterStyle,
+    NSDictionary, NSMutableAttributedString, NSNumber, NSObject, NSObjectProtocol, NSPoint,
+    NSRange, NSRect, NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey,
+    ns_string,
 };
 
 use crate::app::FinderDemo;
@@ -147,6 +150,16 @@ fn panes_open() -> [bool; 7] {
     })
 }
 
+fn save_panes(open: [bool; 7]) {
+    prefs::set_setting_flags(
+        EXPANDED_KEY,
+        PANES
+            .iter()
+            .zip(open)
+            .map(|(pane, open)| (pane.key(), open)),
+    );
+}
+
 fn info_width() -> f32 {
     prefs::setting_number(WIDTH_KEY)
         .map_or(WIDTH, |width| width as f32)
@@ -193,7 +206,7 @@ impl Subject {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 struct Weight {
     bytes: u64,
     on_disk: u64,
@@ -210,32 +223,10 @@ impl Weight {
     }
 }
 
-enum Shown {
-    Icon,
-    Picture(Arc<RenderImage>),
-    Page(Arc<RenderImage>),
-}
-
-impl Shown {
-    fn height(&self, width: f32) -> f32 {
-        match self {
-            Shown::Icon => PREVIEW_ICON,
-            Shown::Page(_) => PREVIEW_MOST,
-            Shown::Picture(image) => (width * aspect(image)).round().min(PREVIEW_MOST),
-        }
-    }
-}
-
-fn aspect(image: &RenderImage) -> f32 {
-    let size = image.size(0);
-    u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32
-}
-
 fn weigh_tree(path: &Path, counted: bool) -> Weight {
     let mut weight = Weight {
-        bytes: 0,
-        on_disk: 0,
         items: counted.then_some(0),
+        ..Weight::default()
     };
     let mut linked = HashSet::new();
     let mut pending = vec![path.to_path_buf()];
@@ -263,22 +254,74 @@ fn weigh_tree(path: &Path, counted: bool) -> Weight {
     weight
 }
 
-fn exact_bytes(bytes: u64) -> String {
-    match bytes < 1000 {
-        true => byte_string(bytes),
-        false => format!("{} bytes", count(bytes as usize)),
+fn weigh_all(paths: &[PathBuf]) -> Weight {
+    let mut total = Weight::default();
+    let mut items = paths.len() as u64;
+    for path in paths {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            continue;
+        };
+        let inner = match meta.is_dir() {
+            true => weigh_tree(path, true),
+            false => Weight::file(&meta),
+        };
+        total.bytes += inner.bytes;
+        total.on_disk += inner.on_disk;
+        items += inner.items.unwrap_or(0);
+    }
+    Weight {
+        items: Some(items),
+        ..total
     }
 }
 
-fn items_text(items: u64) -> String {
-    match items {
-        1 => "1 item".to_owned(),
-        _ => format!("{} items", count(items as usize)),
+fn size_text(weight: Option<Weight>) -> String {
+    weight.map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes))
+}
+
+fn weight_text(weight: Option<Weight>) -> SharedString {
+    let Some(weight) = weight else {
+        return "Calculating\u{2026}".into();
+    };
+    let text = bytes_text(weight.bytes, weight.on_disk);
+    match weight.items {
+        Some(1) => format!("{text} for 1 item").into(),
+        Some(items) => format!("{text} for {} items", count(items as usize)).into(),
+        None => text.into(),
     }
+}
+
+fn bytes_text(bytes: u64, on_disk: u64) -> String {
+    let exact = match bytes < 1000 {
+        true => byte_string(bytes),
+        false => format!("{} bytes", count(bytes as usize)),
+    };
+    format!("{exact} ({} on disk)", byte_string(on_disk))
 }
 
 fn by(width: impl std::fmt::Display, height: impl std::fmt::Display) -> SharedString {
     format!("{width}\u{200a}\u{d7}\u{200a}{height}").into()
+}
+
+enum Shown {
+    Icon,
+    Picture(Arc<RenderImage>),
+    Page(Arc<RenderImage>),
+}
+
+impl Shown {
+    fn height(&self, width: f32) -> f32 {
+        match self {
+            Shown::Icon => PREVIEW_ICON,
+            Shown::Page(_) => PREVIEW_MOST,
+            Shown::Picture(image) => (width * aspect(image)).round().min(PREVIEW_MOST),
+        }
+    }
+}
+
+fn aspect(image: &RenderImage) -> f32 {
+    let size = image.size(0);
+    u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32
 }
 
 fn remembered<V: Copy>(
@@ -299,18 +342,14 @@ fn remembered<V: Copy>(
     value
 }
 
-fn field_width(text: &str, size: f32, bold: bool) -> f32 {
+fn field_width(text: &str, size: f32) -> f32 {
     thread_local! {
         static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
     }
-    remembered(&SEEN, key_of((text, size.to_bits(), bold)), || {
+    remembered(&SEEN, key_of((text, size.to_bits())), || {
         let mtm = MainThreadMarker::new().expect("laid out on the main thread");
         let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-        let font = match bold {
-            true => NSFont::boldSystemFontOfSize(size.into()),
-            false => NSFont::systemFontOfSize(size.into()),
-        };
-        field.setFont(Some(&font));
+        field.setFont(Some(&NSFont::systemFontOfSize(size.into())));
         field.fittingSize().width as f32
     })
 }
@@ -344,7 +383,6 @@ fn format_date(formatter: &NSDateFormatter, seconds: f64) -> String {
         .to_string()
 }
 
-/// "Today, 9:54 PM" near now, else "Sep 24, 2026 at 9:10 AM".
 fn header_date(seconds: f64) -> String {
     use NSDateFormatterStyle as Style;
     thread_local! {
@@ -383,21 +421,18 @@ fn long_date(seconds: f64, room: f32) -> String {
 }
 
 fn app_kind(path: &Path, kind: &str) -> String {
-    const ARM64: isize = 0x0100_000c;
-    const X86_64: isize = 0x0100_0007;
     let architectures = path
         .to_str()
         .and_then(|path| NSBundle::bundleWithPath(&NSString::from_str(path)))
-        .and_then(|bundle| bundle.executableArchitectures())
-        .map(|all| {
-            all.iter()
-                .map(|arch| arch.integerValue())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        .and_then(|bundle| bundle.executableArchitectures());
+    let has = |wanted: u32| {
+        architectures
+            .as_ref()
+            .is_some_and(|all| all.iter().any(|arch| arch.unsignedIntValue() == wanted))
+    };
     let named = match (
-        architectures.contains(&ARM64),
-        architectures.contains(&X86_64),
+        has(NSBundleExecutableArchitectureARM64),
+        has(NSBundleExecutableArchitectureX86_64),
     ) {
         (true, true) => "Universal",
         (true, false) => "Apple silicon",
@@ -445,10 +480,6 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
-fn titlebar_height(window: &NSWindow) -> f32 {
-    (window.frame().size.height - window.contentLayoutRect().size.height) as f32
-}
-
 fn fit_window(window: &NSWindow, height: f32) {
     let frame = window.frame();
     let mut height = f64::from(height);
@@ -462,10 +493,7 @@ fn fit_window(window: &NSWindow, height: f32) {
     }
     let top = frame.origin.y + frame.size.height;
     window.setFrame_display(
-        NSRect::new(
-            NSPoint::new(frame.origin.x, top - height),
-            NSSize::new(frame.size.width, height),
-        ),
+        rect(frame.origin.x, top - height, frame.size.width, height),
         true,
     );
 }
@@ -498,6 +526,44 @@ fn hosted<V: Message + AsRef<NSView> + 'static>(
     .size_full()
 }
 
+fn on_action<V: DowncastTarget, T: 'static>(
+    host: &NativeHost,
+    owner: u64,
+    tag: u64,
+    read: impl Fn(&V) -> T + 'static,
+    handle: impl Fn(T, &mut Window, &mut App) + 'static,
+) {
+    host.on_event_channel(
+        owner,
+        tag,
+        Rc::new(move |sender: &AnyObject| -> Box<dyn Any> {
+            Box::new(sender.downcast_ref::<V>().map(&read))
+        }),
+        Some(Rc::new(
+            move |value: Box<dyn Any>, window: &mut Window, cx: &mut App| {
+                if let Some(value) = value.downcast::<Option<T>>().ok().and_then(|value| *value) {
+                    handle(value, window, cx);
+                }
+            },
+        )),
+    );
+}
+
+fn in_background<V: 'static, R: Send + 'static>(
+    cx: &mut Context<V>,
+    work: impl FnOnce() -> R + Send + 'static,
+    done: impl FnOnce(&mut V, R) + 'static,
+) {
+    cx.spawn(async move |this, cx| {
+        let result = cx.background_executor().spawn(async move { work() }).await;
+        this.update(cx, |view, cx| {
+            done(view, result);
+            cx.notify();
+        })
+    })
+    .detach();
+}
+
 fn icon_of(path: &str) -> Option<Retained<NSImage>> {
     let workspace = NSWorkspace::sharedWorkspace();
     if Path::new(path).is_absolute() {
@@ -516,7 +582,6 @@ fn icon_of(path: &str) -> Option<Retained<NSImage>> {
     }
 }
 
-/// The item's icon, never its preview: Finder heads an image's info with its icon.
 fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
     let Some(icon) = icon_of(&row.path) else {
         return div()
@@ -527,17 +592,29 @@ fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
             .child(row_art(row, side, scale, true))
             .into_any_element();
     };
+    image_view(key_of((name, &row.path)), move || Some(icon.clone())).into_any_element()
+}
+
+fn icon_file(path: &'static str) -> impl IntoElement {
+    image_view(key_of(("ng.finder.info.icon_file", path)), move || {
+        NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))
+    })
+}
+
+fn image_view(
+    key: u64,
+    image: impl Fn() -> Option<Retained<NSImage>> + 'static,
+) -> impl IntoElement {
     hosted(
-        key_of((name, &row.path)),
+        key,
         move |mtm, _| {
             let view = NSImageView::new(mtm);
-            view.setImage(Some(&icon));
+            view.setImage(image().as_deref());
             view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             view
         },
         |_, _| {},
     )
-    .into_any_element()
 }
 
 fn small(id: impl Into<gpui::ElementId>, text: &str) -> NativeLabel {
@@ -599,7 +676,7 @@ impl Sheet {
     fn title(&mut self, icon: impl IntoElement, name: &str, size: Option<&str>) {
         let width = self.width;
         self.put((11., 11.), (32., 32.), icon);
-        let size_w = size.map_or(0., |size| field_width(size, 13., false));
+        let size_w = size.map_or(0., |size| field_width(size, 13.));
         if let Some(size) = size {
             self.put(
                 (width - 6. - size_w, 9.),
@@ -627,7 +704,24 @@ impl Sheet {
         self.y = head;
     }
 
-    fn page(self, titlebar: f32) -> impl IntoElement {
+    fn finish<V: 'static>(
+        self,
+        asked: &mut f32,
+        window: &Window,
+        cx: &mut Context<V>,
+    ) -> impl IntoElement {
+        let ns = ns_window(window);
+        let titlebar = ns.as_ref().map_or(TITLEBAR, |ns| {
+            (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
+        });
+        let height = titlebar + self.y;
+        if (height - *asked).abs() >= 0.25 {
+            *asked = height;
+            // Outside gpui's borrow of the window: AppKit reports the resize back synchronously.
+            if let Some(ns) = ns {
+                cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
+            }
+        }
         native_root(
             div()
                 .size_full()
@@ -657,6 +751,47 @@ impl Sheet {
     }
 }
 
+fn pane_chrome(
+    sheet: &mut Sheet,
+    pane: Pane,
+    open: bool,
+    rule: Option<f32>,
+    flip: Rc<dyn Fn(&mut App)>,
+) {
+    let at = pane as usize;
+    let width = sheet.width;
+    let click = flip.clone();
+    sheet.put(
+        (0., 0.),
+        (width, 16.),
+        div()
+            .id(("ng.finder.info.pane", at))
+            .size_full()
+            .on_click(move |_, _, cx| click(cx)),
+    );
+    sheet.put(
+        (7., 3.5),
+        (13., 13.),
+        native_button(("ng.finder.info.disclose", at), "")
+            .bezel_style(ButtonBezel::Disclosure)
+            .on(open)
+            .square(13.)
+            .on_click(move |_, _, cx| flip(cx)),
+    );
+    sheet.put(
+        (20., 3.5),
+        (width - 40., LINE),
+        small(("ng.finder.info.pane.title", at), pane.title()),
+    );
+    if let Some(bottom) = rule {
+        sheet.put(
+            (0., bottom - 1.),
+            (width, 1.),
+            native_rule(("ng.finder.info.pane.rule", at)),
+        );
+    }
+}
+
 struct Opener {
     apps: Vec<PathBuf>,
     chosen: Option<PathBuf>,
@@ -675,8 +810,7 @@ impl Opener {
             .as_ref()
             .and_then(|default| apps.iter().position(|app| app == default))
         {
-            let default = apps.remove(at);
-            apps.insert(0, default);
+            apps[..=at].rotate_right(1);
         }
         Opener {
             chosen: crate::openwith::opener(path),
@@ -686,26 +820,25 @@ impl Opener {
         }
     }
 
-    /// `None` is a separator.
-    fn rows(&self) -> Vec<Option<Pick>> {
+    fn rows(&self) -> Vec<Pick> {
         let mut rows = Vec::new();
         for (at, app) in self.apps.iter().enumerate() {
             if at == 1 && self.default.is_some() {
-                rows.push(None);
+                rows.push(Pick::Separator);
             }
-            rows.push(Some(Pick::App(app.clone())));
+            rows.push(Pick::App(app.clone()));
         }
         if !rows.is_empty() {
-            rows.push(None);
+            rows.push(Pick::Separator);
         }
-        rows.extend([Some(Pick::Store), Some(Pick::Other)]);
+        rows.extend([Pick::Store, Pick::Other]);
         rows
     }
 }
 
-#[derive(Clone, PartialEq)]
 enum Pick {
     App(PathBuf),
+    Separator,
     Store,
     Other,
 }
@@ -733,7 +866,7 @@ pub(crate) struct Info {
     renamable: bool,
     hidden_extension: bool,
     following: Option<Task<()>>,
-    titled: String,
+    titled: Option<SharedString>,
     opener: Option<Opener>,
     panel: bool,
     width: f32,
@@ -748,40 +881,37 @@ impl Info {
         let path = Path::new(line.row.path.as_ref());
         let subject = Subject::of(&line.row);
         let meta = std::fs::symlink_metadata(path).ok();
-        let weight = match (subject, &meta) {
-            (Subject::File, Some(meta)) if !meta.is_dir() => Some(Weight::file(meta)),
-            _ => None,
-        };
         let real = meta.is_some();
-        let locked = real && finder_fs::ops::locked(path);
-        let first_mode = real.then(|| permissions::mode(path).ok()).flatten();
         Info {
+            weight: match (subject, &meta) {
+                (Subject::File, Some(meta)) if !meta.is_dir() => Some(Weight::file(meta)),
+                _ => None,
+            },
             tags: (real && subject != Subject::Place).then(|| held_tags(path).into()),
             owned: meta.is_some_and(|meta| meta.uid() == unsafe { getuid() }),
-            locked,
+            locked: real && finder_fs::ops::locked(path),
             stationery: subject == Subject::File && finder_fs::flags::of(path) & IS_STATIONERY != 0,
             renamable: real
                 && matches!(subject, Subject::File | Subject::Folder | Subject::App)
                 && path.parent().is_some_and(writable),
             hidden_extension: real && resource(path, unsafe { NSURLHasHiddenExtensionKey }),
-            following: None,
-            titled: String::new(),
-            opener: None,
+            first_mode: real.then(|| permissions::mode(path).ok()).flatten(),
             line,
             where_,
             subject,
             demo,
             open: panes_open(),
-            weight,
             weighing: false,
             metadata: None,
             fetching: false,
+            following: None,
+            titled: None,
+            opener: None,
             panel: false,
             width: info_width(),
             asked: 0.,
             preview: Shown::Icon,
             access: None,
-            first_mode,
         }
     }
 
@@ -804,39 +934,25 @@ impl Info {
         self.weighing = true;
         let path = self.path().to_path_buf();
         let counted = self.subject == Subject::Folder;
-        cx.spawn(async move |this, cx| {
-            let weight = cx
-                .background_executor()
-                .spawn(async move { weigh_tree(&path, counted) })
-                .await;
-            this.update(cx, |info, cx| {
-                info.weight = Some(weight);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        in_background(
+            cx,
+            move || weigh_tree(&path, counted),
+            |info, weight| info.weight = Some(weight),
+        );
     }
 
     fn fetch_metadata(&mut self, cx: &mut Context<Self>) {
         let shown = self.open[Pane::MetaData as usize] && self.subject != Subject::Place;
-        if !shown || self.metadata.is_some() || self.fetching {
+        if !shown || self.fetching {
             return;
         }
         self.fetching = true;
         let path = self.path().to_path_buf();
-        cx.spawn(async move |this, cx| {
-            let metadata = cx
-                .background_executor()
-                .spawn(async move { finder_fs::meta::meta(&path) })
-                .await;
-            this.update(cx, |info, cx| {
-                info.metadata = Some(metadata);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        in_background(
+            cx,
+            move || finder_fs::meta::meta(&path),
+            |info, metadata| info.metadata = Some(metadata),
+        );
     }
 
     fn toggle(&mut self, pane: Pane, cx: &mut Context<Self>) {
@@ -862,23 +978,17 @@ impl Info {
         cx.notify();
     }
 
-    fn reload(&mut self) {
-        if let Some(line) = crate::data::path_line(intern_path(self.path())) {
-            self.line = line;
-        }
-    }
-
     fn title(&mut self, window: &mut Window) {
-        let title = format!("{} Info", self.line.row.display);
-        if self.titled == title {
+        let display = &self.line.row.display;
+        if self.titled.as_ref() == Some(display) {
             return;
         }
-        window.set_window_title(&title);
+        window.set_window_title(&format!("{display} Info"));
         if let Some(ns) = ns_window(window).filter(|_| !self.panel) {
             let shown = crate::openwith::url(self.path()).filter(|_| self.path().is_absolute());
             ns.setRepresentedURL(shown.as_deref());
         }
-        self.titled = title;
+        self.titled = Some(display.clone());
     }
 
     fn rename(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -896,18 +1006,16 @@ impl Info {
         self.following = Some(cx.spawn(async move |this, cx| {
             for _ in 0..FOLLOW_TRIES {
                 cx.background_executor().timer(FOLLOW_EVERY).await;
-                if std::fs::symlink_metadata(&to).ok().map(|meta| meta.ino()) != inode {
-                    continue;
-                }
-                let Some(line) = crate::data::path_line(intern_path(&to)) else {
+                if std::fs::symlink_metadata(&to).ok().map(|meta| meta.ino()) == inode {
+                    if let Some(line) = crate::data::path_line(intern_path(&to)) {
+                        this.update(cx, |info, cx| {
+                            info.line = line;
+                            cx.notify();
+                        })
+                        .ok();
+                    }
                     return;
-                };
-                this.update(cx, |info, cx| {
-                    info.line = line;
-                    cx.notify();
-                })
-                .ok();
-                return;
+                }
             }
         }));
     }
@@ -915,7 +1023,9 @@ impl Info {
     fn hide_extension(&mut self, on: bool, cx: &mut Context<Self>) {
         if set_resource(self.path(), unsafe { NSURLHasHiddenExtensionKey }, on) {
             self.hidden_extension = on;
-            self.reload();
+            if let Some(line) = crate::data::path_line(intern_path(self.path())) {
+                self.line = line;
+            }
         }
         cx.notify();
     }
@@ -929,16 +1039,9 @@ impl Info {
                 .is_some_and(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
     }
 
-    fn head_size(&self) -> Option<String> {
-        match self.subject {
-            Subject::Volume | Subject::Place => None,
-            _ => Some(size_text(self.weight)),
-        }
-    }
-
-    fn general_rows(&self, room: f32) -> Vec<(&'static str, SharedString)> {
+    fn general_rows(&self, width: f32) -> Vec<(&'static str, SharedString)> {
         let row = &self.line.row;
-        let date = |seconds: f64| SharedString::from(long_date(seconds, room));
+        let date = |seconds: f64| SharedString::from(long_date(seconds, width - 86.));
         match self.subject {
             Subject::Place => {
                 let mut rows = crate::locations::info_fields(row).unwrap_or_default();
@@ -966,10 +1069,7 @@ impl Info {
                     ("Format", volume.format.into()),
                     ("Capacity", byte_string(volume.capacity).into()),
                     ("Available", byte_string(volume.available).into()),
-                    (
-                        "Used",
-                        format!("{} ({} on disk)", exact_bytes(used), byte_string(used)).into(),
-                    ),
+                    ("Used", bytes_text(used, used).into()),
                 ]);
                 rows
             }
@@ -1015,20 +1115,6 @@ impl Info {
         }
     }
 
-    fn general_height(&self, width: f32) -> f32 {
-        let value_w = width - 82.;
-        let rows: f32 = self
-            .general_rows(value_w - 4.)
-            .iter()
-            .map(|(_, value)| line_count(value, value_w) as f32 * LINE)
-            .sum();
-        let checks = match self.checks().len() {
-            0 => 0.,
-            checks => 8. + checks as f32 * CHECK_ROW,
-        };
-        BODY + rows + checks + FOOT
-    }
-
     fn more_rows(&self, width: f32) -> (f32, Vec<(&'static str, SharedString)>) {
         let Some(metadata) = &self.metadata else {
             return (0., Vec::new());
@@ -1038,7 +1124,7 @@ impl Info {
                 .values
                 .iter()
                 .find(|(key, _)| key == name)
-                .map(|(_, value)| value.clone())
+                .map(|(_, value)| value)
         };
         let mut rows = Vec::new();
         if let Some((w, h)) = metadata.pixels {
@@ -1057,7 +1143,7 @@ impl Info {
             .iter()
             .map(|(label, _)| *label)
             .chain(opened.map(|_| "Last opened"))
-            .map(|label| field_width(&format!("{label}:"), SMALL, false))
+            .map(|label| field_width(&format!("{label}:"), SMALL))
             .fold(0., f32::max);
         if let Some(at) = opened {
             rows.push(("Last opened", long_date(at, width - 24. - label_w).into()));
@@ -1070,7 +1156,19 @@ impl Info {
             return SHUT;
         }
         match pane {
-            Pane::General => self.general_height(width),
+            Pane::General => {
+                let value_w = width - 82.;
+                let rows: f32 = self
+                    .general_rows(width)
+                    .iter()
+                    .map(|(_, value)| line_count(value, value_w) as f32 * LINE)
+                    .sum();
+                let checks = match self.checks().len() {
+                    0 => 0.,
+                    checks => 8. + checks as f32 * CHECK_ROW,
+                };
+                BODY + rows + checks + FOOT
+            }
             Pane::MetaData => BODY + self.more_rows(width).1.len().max(1) as f32 * LINE + FOOT,
             Pane::Name => 80.,
             Pane::Comments => 75.,
@@ -1103,13 +1201,17 @@ impl Info {
     fn head(&self, sheet: &mut Sheet, scale: f32) {
         let row = &self.line.row;
         let width = sheet.width;
+        let size = match self.subject {
+            Subject::Volume | Subject::Place => None,
+            _ => Some(size_text(self.weight)),
+        };
         sheet.title(
             icon_view(row, "ng.finder.info.icon", 32., scale),
             &row.display,
-            self.head_size().as_deref(),
+            size.as_deref(),
         );
         if self.subject != Subject::Place {
-            let label_w = field_width("Modified:", SMALL, false);
+            let label_w = field_width("Modified:", SMALL);
             sheet.put(
                 (47., 28.),
                 (label_w, LINE),
@@ -1121,7 +1223,7 @@ impl Info {
                 secondary("ng.finder.info.date", &header_date(row.modified_at)),
             );
         }
-        if let Some(tags) = self.tags.clone() {
+        if let Some(tags) = &self.tags {
             sheet.put(
                 (4., 51.),
                 (width - 8., 33.),
@@ -1133,29 +1235,15 @@ impl Info {
             sheet.put(
                 (3., 52.),
                 (width - 8., 31.),
-                tags_field(row.path.clone(), tags),
+                tags_field(row.path.clone(), tags.clone()),
             );
         }
         sheet.end_head(self.head_height());
     }
 
-    fn pane_chrome(&self, sheet: &mut Sheet, pane: Pane, height: f32, this: &WeakEntity<Self>) {
-        let this = this.clone();
-        pane_chrome(
-            sheet,
-            pane,
-            self.open[pane as usize],
-            height,
-            self.subject.panes().last() != Some(&pane),
-            Rc::new(move |cx: &mut App| {
-                this.update(cx, |info, cx| info.toggle(pane, cx)).ok();
-            }),
-        );
-    }
-
     fn general(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
         let width = sheet.width;
-        let mut y = sheet.rows(&self.general_rows(width - 86.)) + 8.;
+        let top = sheet.rows(&self.general_rows(width)) + 14.;
         for (at, (title, on, check)) in self.checks().into_iter().enumerate() {
             let mut box_ = native_checkbox(("ng.finder.info.check", at), on)
                 .title(title)
@@ -1170,23 +1258,19 @@ impl Info {
                     .ok();
                 });
             }
-            sheet.put((55., y + 6.), (width - 65., 16.), box_);
-            y += CHECK_ROW;
+            sheet.put((55., top + at as f32 * CHECK_ROW), (width - 65., 16.), box_);
         }
     }
 
     fn more_info(&self, sheet: &mut Sheet) {
         let width = sheet.width;
         let (label_w, rows) = self.more_rows(width);
-        if rows.is_empty() {
-            if self.metadata.is_some() {
-                sheet.put(
-                    (10., BODY),
-                    (30., LINE),
-                    secondary("ng.finder.info.more.none", "--"),
-                );
-            }
-            return;
+        if rows.is_empty() && self.metadata.is_some() {
+            sheet.put(
+                (10., BODY),
+                (30., LINE),
+                secondary("ng.finder.info.more.none", "--"),
+            );
         }
         for (at, (label, value)) in rows.iter().enumerate() {
             let y = BODY + at as f32 * LINE;
@@ -1205,11 +1289,10 @@ impl Info {
     }
 
     fn name_pane(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
-        let width = sheet.width;
         let renamable = self.renamable && !self.locked;
         sheet.put(
             (11., BODY - 1.),
-            (width - 22., 26.),
+            (sheet.width - 22., 26.),
             name_field(self.line.row.path.clone(), renamable, this.clone()),
         );
         let this = this.clone();
@@ -1292,7 +1375,7 @@ impl Info {
             return;
         };
         let width = sheet.width;
-        let path = self.line.row.path.clone();
+        let path = &self.line.row.path;
         let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
         sheet.put(
             (12., BODY),
@@ -1302,13 +1385,7 @@ impl Info {
         sheet.put(
             (14., 46.5),
             (width - 29., 113.),
-            grants_table(
-                path.clone(),
-                &access.grants,
-                self.owned,
-                folder,
-                this.clone(),
-            ),
+            grants_table(path, &access.grants, self.owned, folder, this.clone()),
         );
         let changed = access.mode.is_some() && access.mode != self.first_mode;
         sheet.put(
@@ -1316,7 +1393,6 @@ impl Info {
             (tools_width(), 22.),
             grant_tools(path, self.owned, folder, changed, this.clone()),
         );
-        let bottom = self.pane_height(Pane::Privileges, width);
         if let Some(ignores) = access.ownership {
             sheet.put(
                 (14., GRANTS_PANE - 7.),
@@ -1327,6 +1403,7 @@ impl Info {
                     .enabled(false),
             );
         }
+        let bottom = self.pane_height(Pane::Privileges, width);
         sheet.put(
             (width - 32., bottom - 27.),
             (18., 18.),
@@ -1400,7 +1477,7 @@ impl Info {
         sheet.put(
             (15., 23.5),
             (width - 30., 22.),
-            apps_popup(self.line.row.path.clone(), opener, this.clone()),
+            apps_popup(&self.line.row.path, opener, this.clone()),
         );
         sheet.put(
             (13., 48.5),
@@ -1431,19 +1508,19 @@ impl Info {
         let Some(opener) = &mut self.opener else {
             return;
         };
-        match opener.rows().into_iter().nth(row).flatten() {
+        match opener.rows().into_iter().nth(row) {
             Some(Pick::App(app)) => {
                 crate::openwith::set_default(&[path], &app);
                 opener.chosen = Some(app);
             }
             Some(Pick::Store) => crate::openwith::app_store(&[path]),
             Some(Pick::Other) => choose_other(path, cx),
-            None => {}
+            Some(Pick::Separator) | None => {}
         }
         cx.notify();
     }
 
-    fn change_all(&mut self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
+    fn change_all(&self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
         let app = self
             .opener
             .as_ref()
@@ -1465,7 +1542,7 @@ impl Info {
                 self.line.row.kind
             ),
         };
-        let this = cx.entity().downgrade();
+        let this = cx.weak_entity();
         let async_cx = cx.to_async();
         confirm(
             &window,
@@ -1492,6 +1569,55 @@ impl Info {
     }
 }
 
+impl Render for Info {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let width = f32::from(window.viewport_size().width);
+        let scale = window.scale_factor();
+        if !self.panel && (width - self.width).abs() >= 0.5 {
+            prefs::set_setting_number(WIDTH_KEY, width.into());
+        }
+        self.width = width;
+        self.weigh(cx);
+        self.fetch_metadata(cx);
+        self.ensure_opener();
+        self.preview = self.shown(scale);
+        self.ensure_access();
+        cx.defer(|_| crate::thumbs::collect_thumbnails());
+        self.title(window);
+        let this = cx.weak_entity();
+        let mut sheet = Sheet::new(width);
+        self.head(&mut sheet, scale);
+        let panes = self.subject.panes();
+        for &pane in panes {
+            let open = self.open[pane as usize];
+            let height = self.pane_height(pane, width);
+            let info = this.clone();
+            pane_chrome(
+                &mut sheet,
+                pane,
+                open,
+                (panes.last() != Some(&pane)).then_some(height),
+                Rc::new(move |cx: &mut App| {
+                    info.update(cx, |info, cx| info.toggle(pane, cx)).ok();
+                }),
+            );
+            if open {
+                match pane {
+                    Pane::General => self.general(&mut sheet, &this),
+                    Pane::MetaData => self.more_info(&mut sheet),
+                    Pane::Name => self.name_pane(&mut sheet, &this),
+                    Pane::Comments => self.comments(&mut sheet),
+                    Pane::OpenWith => self.open_with(&mut sheet, &this),
+                    Pane::Preview => self.preview_pane(&mut sheet, scale),
+                    Pane::Privileges => self.privileges(&mut sheet, &this),
+                }
+            }
+            sheet.y += height;
+        }
+        sheet.finish(&mut self.asked, window, cx)
+    }
+}
+
 fn confirm(
     window: &NSWindow,
     message: &NSString,
@@ -1499,15 +1625,11 @@ fn confirm(
     ok: &NSString,
     on_ok: impl Fn() + 'static,
 ) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let alert = NSAlert::new(mtm);
+    let alert = NSAlert::new(window.mtm());
     alert.setMessageText(message);
     alert.setInformativeText(detail);
     alert.addButtonWithTitle(ok);
     alert.addButtonWithTitle(ns_string!("Cancel"));
-    // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
     let handler = RcBlock::new(move |response: NSModalResponse| {
         if response == NSAlertFirstButtonReturn {
             on_ok();
@@ -1535,38 +1657,23 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
             field
         },
         move |_, host| {
-            let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
-                Box::new(
-                    sender
-                        .downcast_ref::<NSTextField>()
-                        .map(tags_in)
-                        .unwrap_or_default(),
-                )
-            });
             let path = path.clone();
-            host.on_event(
-                key,
-                read,
-                Some(Rc::new(move |value, _, cx| {
-                    let Ok(tags) = value.downcast::<Vec<Tag>>() else {
-                        return;
-                    };
-                    retag(
-                        vec![PathBuf::from(path.as_ref())],
-                        move |paths| {
-                            let held = finder_fs::tags::of(&paths[0]);
-                            if !held
-                                .iter()
-                                .map(|tag| &tag.name)
-                                .eq(tags.iter().map(|tag| &tag.name))
-                            {
-                                finder_fs::tags::set(&paths[0], &tags).ok();
-                            }
-                        },
-                        cx,
-                    );
-                })),
-            );
+            on_action(host, key, key, tags_in, move |tags, _, cx| {
+                retag(
+                    vec![PathBuf::from(path.as_ref())],
+                    move |paths| {
+                        let held = finder_fs::tags::of(&paths[0]);
+                        if !held
+                            .iter()
+                            .map(|tag| &tag.name)
+                            .eq(tags.iter().map(|tag| &tag.name))
+                        {
+                            finder_fs::tags::set(&paths[0], &tags).ok();
+                        }
+                    },
+                    cx,
+                );
+            });
         },
     )
 }
@@ -1574,10 +1681,6 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
 /// Its bezel draws a point outside its frame, so it sits inset in a holder the host can clip.
 fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl IntoElement {
     let key = key_of(("ng.finder.info.name.field", &path));
-    let name = Path::new(path.as_ref())
-        .file_name()
-        .map(|name| finder_fs::name::display(&name.to_string_lossy()).into_owned())
-        .unwrap_or_default();
     hosted(
         key,
         move |mtm, target| {
@@ -1588,7 +1691,10 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
                     | NSAutoresizingMaskOptions::ViewHeightSizable,
             );
             field.setFont(Some(&NSFont::systemFontOfSize(13.)));
-            field.setStringValue(&NSString::from_str(&name));
+            if let Some(name) = Path::new(path.as_ref()).file_name() {
+                let name = finder_fs::name::display(&name.to_string_lossy()).into_owned();
+                field.setStringValue(&NSString::from_str(&name));
+            }
             if let Some(cell) = field.cell() {
                 cell.setSendsActionOnEndEditing(true);
                 cell.setScrollable(true);
@@ -1604,23 +1710,15 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
                     field.setEnabled(enabled);
                 }
             }
-            let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
-                Box::new(
-                    sender
-                        .downcast_ref::<NSTextField>()
-                        .map(|field| field.stringValue().to_string())
-                        .unwrap_or_default(),
-                )
-            });
             let this = this.clone();
-            host.on_event(
+            on_action(
+                host,
                 key,
-                read,
-                Some(Rc::new(move |value, _, cx| {
-                    if let Ok(name) = value.downcast::<String>() {
-                        this.update(cx, |info, cx| info.rename(&name, cx)).ok();
-                    }
-                })),
+                key,
+                |field: &NSTextField| field.stringValue().to_string(),
+                move |name, _, cx| {
+                    this.update(cx, |info, cx| info.rename(&name, cx)).ok();
+                },
             );
         },
     )
@@ -1634,7 +1732,6 @@ struct Access {
 }
 
 impl Access {
-    /// The startup disk shows no "Ignore ownership" row.
     fn of(path: &Path, subject: Subject) -> Self {
         Access {
             grants: permissions::grants(path).unwrap_or_default(),
@@ -1681,8 +1778,8 @@ fn privilege_tag(privilege: Privilege) -> isize {
         .unwrap_or(0) as isize
 }
 
-fn row_tag(path: &str, row: usize) -> u64 {
-    key_of(("ng.finder.info.grant", path, row))
+fn row_tag(table: u64, row: usize) -> u64 {
+    key_of((table, row))
 }
 
 struct GrantsIvars {
@@ -1789,10 +1886,10 @@ fn name_cell(mtm: MainThreadMarker, grant: &Grant) -> Retained<NSView> {
         unsafe { cell.setImageView(Some(&icon)) };
     }
     let title = match grant.me {
-        true => format!("{} (Me)", grant.name),
-        false => grant.name.clone(),
+        true => NSString::from_str(&format!("{} (Me)", grant.name)),
+        false => NSString::from_str(&grant.name),
     };
-    let label = NSTextField::labelWithString(&NSString::from_str(&title), mtm);
+    let label = NSTextField::labelWithString(&title, mtm);
     label.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
     label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     label.setFrame(rect(28., 0., 85., 14.));
@@ -1802,23 +1899,28 @@ fn name_cell(mtm: MainThreadMarker, grant: &Grant) -> Retained<NSView> {
     Retained::into_super(cell)
 }
 
+fn small_popup(mtm: MainThreadMarker) -> Retained<NSPopUpButton> {
+    let popup =
+        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+    popup.setControlSize(NSControlSize::Small);
+    popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+    popup
+}
+
 fn privilege_popup(
     mtm: MainThreadMarker,
     privilege: Privilege,
     folder: bool,
 ) -> Retained<NSPopUpButton> {
-    let popup =
-        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+    let popup = small_popup(mtm);
     popup.setBordered(false);
-    popup.setControlSize(NSControlSize::Small);
-    popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
     if let Some(cell) = popup
         .cell()
         .and_then(|cell| cell.downcast::<NSPopUpButtonCell>().ok())
     {
         cell.setArrowPosition(NSPopUpArrowPosition::ArrowAtBottom);
     }
-    for choice in PRIVILEGES {
+    for (tag, choice) in PRIVILEGES.into_iter().enumerate() {
         let listed = match choice {
             Privilege::WriteOnly => folder,
             Privilege::Custom => false,
@@ -1829,40 +1931,40 @@ fn privilege_popup(
         }
         popup.addItemWithTitle(&NSString::from_str(privilege_title(choice)));
         if let Some(item) = popup.lastItem() {
-            item.setTag(privilege_tag(choice));
+            item.setTag(tag as isize);
         }
     }
     popup
 }
 
+fn bezel_scroll(mtm: MainThreadMarker, width: f64, height: f64) -> Retained<NSScrollView> {
+    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., width, height));
+    scroll.setBorderType(NSBorderType::BezelBorder);
+    scroll.setHasVerticalScroller(true);
+    scroll.setAutohidesScrollers(true);
+    scroll
+}
+
 fn grants_table(
-    path: SharedString,
+    path: &str,
     grants: &[Grant],
     editable: bool,
     folder: bool,
     this: WeakEntity<Info>,
 ) -> impl IntoElement {
-    let key = key_of(("ng.finder.info.grants", &path, folder, grants));
-    let made = grants.to_vec();
-    let states: Vec<(isize, bool)> = grants
-        .iter()
-        .map(|grant| (privilege_tag(grant.privilege), grant.class.is_some()))
-        .collect();
-    let tags_path = path.clone();
+    let key = key_of(("ng.finder.info.grants", path, folder, grants));
+    let grants: Rc<[Grant]> = grants.into();
+    let made = grants.clone();
     hosted(
         key,
         move |mtm, target| {
-            let scroll =
-                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., 236., 113.));
-            scroll.setBorderType(NSBorderType::BezelBorder);
-            scroll.setHasVerticalScroller(true);
-            scroll.setAutohidesScrollers(true);
+            let scroll = bezel_scroll(mtm, 236., 113.);
             let cells = made
                 .iter()
                 .enumerate()
                 .map(|(row, grant)| {
                     let popup = privilege_popup(mtm, grant.privilege, folder);
-                    wire(&popup, target, row_tag(&path, row));
+                    wire(&popup, target, row_tag(key, row));
                     popup.setFrame(rect(-1., 0., 111., 14.));
                     let holder = NSTableCellView::initWithFrame(
                         NSTableCellView::alloc(mtm),
@@ -1917,53 +2019,52 @@ fn grants_table(
                 table.setEnabled(editable);
             }
             let inner = scroll.contentSize().width;
-            if table.ivars().fitted.get() != inner {
-                table.ivars().fitted.set(inner);
+            if table.ivars().fitted.replace(inner) != inner {
                 let columns = table.tableColumns();
                 let half = ((inner - 6.) / 2.).round();
                 for (column, width) in columns.iter().zip([half, inner - 6. - half]) {
                     column.setWidth(width);
                 }
             }
-            for (row, (cells, &(tag, posix))) in table.ivars().cells.iter().zip(&states).enumerate()
-            {
+            for (row, (cells, grant)) in table.ivars().cells.iter().zip(grants.iter()).enumerate() {
                 let popup = cells[1].subviews().firstObject();
                 let Some(popup) = popup.and_then(|popup| popup.downcast::<NSPopUpButton>().ok())
                 else {
                     continue;
                 };
+                let tag = privilege_tag(grant.privilege);
                 if popup.selectedTag() != tag {
                     popup.selectItemWithTag(tag);
                 }
+                let posix = grant.class.is_some();
                 if popup.isEnabled() != posix {
                     popup.setEnabled(posix);
                 }
-                let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
-                    Box::new(
-                        sender
-                            .downcast_ref::<NSPopUpButton>()
-                            .map_or(-1, |popup| popup.selectedTag()),
-                    )
-                });
                 let this = this.clone();
-                host.on_event_channel(
+                on_action(
+                    host,
                     key,
-                    row_tag(&tags_path, row),
-                    read,
-                    Some(Rc::new(move |value, _, cx| {
-                        let chosen = value
-                            .downcast::<isize>()
+                    row_tag(key, row),
+                    |popup: &NSPopUpButton| popup.selectedTag(),
+                    move |tag, _, cx| {
+                        let chosen = usize::try_from(tag)
                             .ok()
-                            .and_then(|tag| PRIVILEGES.get(usize::try_from(*tag).ok()?).copied());
-                        if let Some(privilege) = chosen {
+                            .and_then(|tag| PRIVILEGES.get(tag));
+                        if let Some(&privilege) = chosen {
                             this.update(cx, |info, cx| info.grant(row, privilege, cx))
                                 .ok();
                         }
-                    })),
+                    },
                 );
             }
         },
     )
+}
+
+fn menu_item(mtm: MainThreadMarker, title: &NSString) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(title);
+    item
 }
 
 fn action_item(
@@ -1972,8 +2073,7 @@ fn action_item(
     title: &str,
     tag: u64,
 ) -> Retained<NSMenuItem> {
-    let item = NSMenuItem::new(mtm);
-    item.setTitle(&NSString::from_str(title));
+    let item = menu_item(mtm, &NSString::from_str(title));
     item.setTag(tag as isize);
     unsafe {
         item.setTarget(Some(target.as_ref()));
@@ -1989,23 +2089,20 @@ fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
     control.setTrackingMode(NSSegmentSwitchTracking::Momentary);
     control.setControlSize(NSControlSize::Small);
     control.setSegmentCount(3);
-    for (at, (symbol, tip)) in [
+    let config =
+        NSImageSymbolConfiguration::configurationWithPointSize_weight(SMALL.into(), unsafe {
+            NSFontWeightRegular
+        });
+    for (at, (symbol, tip)) in (0..).zip([
         (ns_string!("plus"), ns_string!("Add")),
         (ns_string!("minus"), ns_string!("Remove")),
         (ns_string!("ellipsis.circle"), ns_string!("Action")),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let config =
-            NSImageSymbolConfiguration::configurationWithPointSize_weight(SMALL.into(), unsafe {
-                NSFontWeightRegular
-            });
+    ]) {
         let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(symbol, Some(tip))
             .and_then(|image| image.imageWithSymbolConfiguration(&config));
-        control.setImage_forSegment(image.as_deref(), at as isize);
-        control.setToolTip_forSegment(Some(tip), at as isize);
-        control.setEnabled_forSegment(false, at as isize);
+        control.setImage_forSegment(image.as_deref(), at);
+        control.setToolTip_forSegment(Some(tip), at);
+        control.setEnabled_forSegment(false, at);
     }
     control.setMenu_forSegment(Some(&NSMenu::new(mtm)), 2);
     control.setShowsMenuIndicator_forSegment(true, 2);
@@ -2013,23 +2110,22 @@ fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
 }
 
 fn tools_width() -> f32 {
-    thread_local! {
-        static WIDTH: f32 = MainThreadMarker::new()
-            .map_or(78.5, |mtm| tools_control(mtm).intrinsicContentSize().width as f32);
-    }
-    WIDTH.with(|width| *width)
+    native_gpui::fitting_size("NSSegmentedControl.info_tools", |mtm| {
+        tools_control(mtm).intrinsicContentSize()
+    })
+    .width as f32
 }
 
 fn grant_tools(
-    path: SharedString,
+    path: &str,
     editable: bool,
     folder: bool,
     changed: bool,
     this: WeakEntity<Info>,
 ) -> impl IntoElement {
-    let key = key_of(("ng.finder.info.grants.tools", &path, folder));
-    let apply = key_of(("ng.finder.info.grants.apply", &path));
-    let revert = key_of(("ng.finder.info.grants.revert", &path));
+    let key = key_of(("ng.finder.info.grants.tools", path, folder));
+    let apply = key_of(("ng.finder.info.grants.apply", path));
+    let revert = key_of(("ng.finder.info.grants.revert", path));
     hosted(
         key,
         move |mtm, target| {
@@ -2060,44 +2156,30 @@ fn grant_tools(
                     revert_item.setEnabled(changed);
                 }
             }
-            let read: NativeRead = Rc::new(|_: &AnyObject| -> Box<dyn Any> { Box::new(()) });
             let to_revert = this.clone();
-            host.on_event_channel(
+            on_action(
+                host,
                 key,
                 revert,
-                read.clone(),
-                Some(Rc::new(move |_, _, cx| {
+                |_: &NSObject| (),
+                move |_, _, cx| {
                     to_revert.update(cx, |info, cx| info.revert(cx)).ok();
-                })),
+                },
             );
             let to_apply = this.clone();
-            host.on_event_channel(
+            on_action(
+                host,
                 key,
                 apply,
-                read,
-                Some(Rc::new(move |_, window, cx| {
+                |_: &NSObject| (),
+                move |_, window, cx| {
                     let ns = ns_window(window);
                     to_apply
                         .update(cx, |info, cx| info.confirm_apply(ns, cx))
                         .ok();
-                })),
+                },
             );
         },
-    )
-}
-
-fn icon_file(path: &'static str) -> impl IntoElement {
-    hosted(
-        key_of(("ng.finder.info.icon_file", path)),
-        move |mtm, _| {
-            let view = NSImageView::new(mtm);
-            let image =
-                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path));
-            view.setImage(image.as_deref());
-            view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
-            view
-        },
-        |_, _| {},
     )
 }
 
@@ -2135,13 +2217,14 @@ define_class!(
 
 impl Comment {
     fn new(mtm: MainThreadMarker, path: PathBuf, frame: NSRect) -> Retained<Self> {
-        let comment = finder_fs::comment::of(&path);
+        let saved = finder_fs::comment::of(&path);
+        let shown = NSString::from_str(&saved);
         let this = Self::alloc(mtm).set_ivars(CommentIvars {
             path,
-            saved: RefCell::new(comment.clone()),
+            saved: RefCell::new(saved),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
-        this.setString(&NSString::from_str(&comment));
+        this.setString(&shown);
         this
     }
 
@@ -2158,16 +2241,12 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
     hosted(
         key_of(("ng.finder.info.comment", &path)),
         move |mtm, _| {
-            let scroll =
-                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., 100., 46.));
-            scroll.setBorderType(NSBorderType::BezelBorder);
-            scroll.setHasVerticalScroller(true);
-            scroll.setAutohidesScrollers(true);
+            let scroll = bezel_scroll(mtm, 100., 46.);
             let size = scroll.contentSize();
             let text = Comment::new(
                 mtm,
                 PathBuf::from(path.as_ref()),
-                rect(0., 0., size.width, size.height),
+                NSRect::new(NSPoint::ZERO, size),
             );
             text.setMinSize(NSSize::new(0., size.height));
             text.setMaxSize(NSSize::new(f64::MAX, f64::MAX));
@@ -2229,26 +2308,20 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
     .detach();
 }
 
-fn apps_popup(path: SharedString, opener: &Opener, this: WeakEntity<Info>) -> impl IntoElement {
-    let key = key_of(("ng.finder.info.openwith", &path, opener.rev));
+fn apps_popup(path: &str, opener: &Opener, this: WeakEntity<Info>) -> impl IntoElement {
+    let key = key_of(("ng.finder.info.openwith", path, opener.rev));
     let rows = opener.rows();
     let chosen = rows
         .iter()
-        .position(|row| matches!(row, Some(Pick::App(app)) if opener.chosen.as_ref() == Some(app)));
+        .position(|row| matches!(row, Pick::App(app) if opener.chosen.as_ref() == Some(app)));
     let default = opener.default.clone();
     hosted(
         key,
         move |mtm, target| {
-            let popup = NSPopUpButton::initWithFrame_pullsDown(
-                NSPopUpButton::alloc(mtm),
-                NSRect::ZERO,
-                false,
-            );
-            popup.setControlSize(NSControlSize::Small);
-            popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+            let popup = small_popup(mtm);
             if let Some(menu) = popup.menu() {
                 for row in &rows {
-                    menu.addItem(&menu_row(mtm, row.as_ref(), default.as_deref()));
+                    menu.addItem(&menu_row(mtm, row, default.as_deref()));
                 }
             }
             wire(&popup, target, key);
@@ -2260,64 +2333,49 @@ fn apps_popup(path: SharedString, opener: &Opener, this: WeakEntity<Info>) -> im
                     popup.selectItemAtIndex(chosen as isize);
                 }
             }
-            let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
-                Box::new(
-                    sender
-                        .downcast_ref::<NSPopUpButton>()
-                        .map_or(-1, |popup| popup.indexOfSelectedItem()),
-                )
-            });
             let this = this.clone();
-            host.on_event(
+            on_action(
+                host,
                 key,
-                read,
-                Some(Rc::new(move |value, _, cx| {
-                    let row = value.downcast::<isize>().ok().map(|row| *row);
-                    if let Some(row) = row.and_then(|row| usize::try_from(row).ok()) {
+                key,
+                |popup: &NSPopUpButton| popup.indexOfSelectedItem(),
+                move |row, _, cx| {
+                    if let Ok(row) = usize::try_from(row) {
                         this.update(cx, |info, cx| info.pick(row, cx)).ok();
                     }
-                })),
+                },
             );
         },
     )
 }
 
-fn menu_row(
-    mtm: MainThreadMarker,
-    row: Option<&Pick>,
-    default: Option<&Path>,
-) -> Retained<NSMenuItem> {
-    let Some(pick) = row else {
-        return NSMenuItem::separatorItem(mtm);
-    };
-    let item = NSMenuItem::new(mtm);
-    let app = match pick {
+fn menu_row(mtm: MainThreadMarker, row: &Pick, default: Option<&Path>) -> Retained<NSMenuItem> {
+    let app = match row {
         Pick::App(app) => app,
-        Pick::Store => {
-            item.setTitle(ns_string!("App Store\u{2026}"));
-            return item;
-        }
-        Pick::Other => {
-            item.setTitle(ns_string!("Other\u{2026}"));
-            return item;
-        }
+        Pick::Separator => return NSMenuItem::separatorItem(mtm),
+        Pick::Store => return menu_item(mtm, ns_string!("App Store\u{2026}")),
+        Pick::Other => return menu_item(mtm, ns_string!("Other\u{2026}")),
     };
     let name = app.file_name().unwrap_or_default().to_string_lossy();
     let suffix = match Some(app.as_path()) == default {
         true => " (default)",
         false => "",
     };
-    item.setTitle(&NSString::from_str(&name));
+    let item = menu_item(mtm, &NSString::from_str(&name));
     let text =
         NSMutableAttributedString::from_nsstring(&NSString::from_str(&format!("{name}{suffix}")));
-    let font = NSFont::systemFontOfSize(SMALL.into());
+    let whole = NSRange::new(0, text.length());
     let tail = NSRange::new(name.encode_utf16().count(), suffix.encode_utf16().count());
     unsafe {
-        text.addAttribute_value_range(NSFontAttributeName, &font, NSRange::new(0, text.length()));
+        text.addAttribute_value_range(
+            NSFontAttributeName,
+            &NSFont::systemFontOfSize(SMALL.into()),
+            whole,
+        );
         text.addAttribute_value_range(
             NSForegroundColorAttributeName,
             &NSColor::labelColor(),
-            NSRange::new(0, text.length()),
+            whole,
         );
         text.addAttribute_value_range(
             NSForegroundColorAttributeName,
@@ -2333,45 +2391,6 @@ fn menu_row(
     item
 }
 
-impl Render for Info {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = f32::from(window.viewport_size().width);
-        if !self.panel && (width - self.width).abs() >= 0.5 {
-            prefs::set_setting_number(WIDTH_KEY, width.into());
-        }
-        self.width = width;
-        self.weigh(cx);
-        self.fetch_metadata(cx);
-        self.ensure_opener();
-        self.preview = self.shown(window.scale_factor());
-        self.ensure_access();
-        cx.defer(|_| crate::thumbs::collect_thumbnails());
-        self.title(window);
-        let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
-        let this = cx.entity().downgrade();
-        let mut sheet = Sheet::new(width);
-        self.head(&mut sheet, window.scale_factor());
-        for &pane in self.subject.panes() {
-            let height = self.pane_height(pane, width);
-            self.pane_chrome(&mut sheet, pane, height, &this);
-            if self.open[pane as usize] {
-                match pane {
-                    Pane::General => self.general(&mut sheet, &this),
-                    Pane::MetaData => self.more_info(&mut sheet),
-                    Pane::Name => self.name_pane(&mut sheet, &this),
-                    Pane::Comments => self.comments(&mut sheet),
-                    Pane::OpenWith => self.open_with(&mut sheet, &this),
-                    Pane::Preview => self.preview_pane(&mut sheet, window.scale_factor()),
-                    Pane::Privileges => self.privileges(&mut sheet, &this),
-                }
-            }
-            sheet.y += height;
-        }
-        fit(&mut self.asked, window, titlebar + sheet.y, cx);
-        sheet.page(titlebar)
-    }
-}
-
 fn crumb_text(folder: &Folder) -> String {
     let names: Vec<&str> = folder.crumbs.iter().map(|&(name, _)| name).collect();
     names.join(CRUMB_SEPARATOR)
@@ -2385,7 +2404,7 @@ pub(crate) fn where_of(id: &str) -> Option<String> {
 }
 
 pub(crate) fn open(
-    demo: &Entity<crate::app::FinderDemo>,
+    demo: &Entity<FinderDemo>,
     at: Option<&'static str>,
     summary: bool,
     cx: &mut App,
@@ -2410,9 +2429,14 @@ pub(crate) fn open(
         (lines, SharedString::from(where_.unwrap_or_default()))
     };
     if summary && lines.len() > 1 {
-        let combined = Combined::new(lines, where_);
         let shape = (info_width(), HEIGHT);
-        open_window(combined, 0., shape, Some("Multiple Item Info"), cx);
+        open_window(
+            Combined::new(lines, where_),
+            0.,
+            shape,
+            Some("Multiple Item Info"),
+            cx,
+        );
         return;
     }
     for (step, line) in lines.into_iter().enumerate() {
@@ -2472,7 +2496,7 @@ impl Combined {
     }
 
     fn weigh(&mut self, cx: &mut Context<Self>) {
-        if self.weight.is_some() || self.weighing {
+        if self.weighing {
             return;
         }
         self.weighing = true;
@@ -2481,37 +2505,11 @@ impl Combined {
             .iter()
             .map(|line| PathBuf::from(line.row.path.as_ref()))
             .collect();
-        cx.spawn(async move |this, cx| {
-            let weight = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut total = Weight {
-                        bytes: 0,
-                        on_disk: 0,
-                        items: Some(paths.len() as u64),
-                    };
-                    for path in &paths {
-                        let Ok(meta) = std::fs::symlink_metadata(path) else {
-                            continue;
-                        };
-                        let inner = match meta.is_dir() {
-                            true => weigh_tree(path, true),
-                            false => Weight::file(&meta),
-                        };
-                        total.bytes += inner.bytes;
-                        total.on_disk += inner.on_disk;
-                        total.items = total.items.map(|items| items + inner.items.unwrap_or(0));
-                    }
-                    total
-                })
-                .await;
-            this.update(cx, |combined, cx| {
-                combined.weight = Some(weight);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        in_background(
+            cx,
+            move || weigh_all(&paths),
+            |combined, weight| combined.weight = Some(weight),
+        );
     }
 
     fn toggle(&mut self, cx: &mut Context<Self>) {
@@ -2543,128 +2541,29 @@ impl Combined {
 
 impl Render for Combined {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let width = f32::from(window.viewport_size().width);
         self.weigh(cx);
-        let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
-        let mut sheet = Sheet::new(width);
-        let size = size_text(self.weight);
+        let mut sheet = Sheet::new(f32::from(window.viewport_size().width));
         sheet.title(
             icon_file(MANY_ICON),
             &format!("{} items", count(self.lines.len())),
-            Some(&size),
+            Some(&size_text(self.weight)),
         );
         sheet.end_head(SIMPLE_HEAD);
-        let rows = self.rows();
-        let height = match self.open {
-            true => {
-                let value_w = width - 82.;
-                let lines: f32 = rows
-                    .iter()
-                    .map(|(_, value)| line_count(value, value_w) as f32 * LINE)
-                    .sum();
-                BODY + lines + FOOT
-            }
-            false => SHUT,
-        };
-        let this = cx.entity().downgrade();
+        let this = cx.weak_entity();
         pane_chrome(
             &mut sheet,
             Pane::General,
             self.open,
-            height,
-            false,
+            None,
             Rc::new(move |cx: &mut App| {
                 this.update(cx, |combined, cx| combined.toggle(cx)).ok();
             }),
         );
-        if self.open {
-            sheet.rows(&rows);
-        }
+        let height = match self.open {
+            true => sheet.rows(&self.rows()) + FOOT,
+            false => SHUT,
+        };
         sheet.y += height;
-        fit(&mut self.asked, window, titlebar + sheet.y, cx);
-        sheet.page(titlebar)
-    }
-}
-
-fn save_panes(open: [bool; 7]) {
-    prefs::set_setting_flags(
-        EXPANDED_KEY,
-        PANES
-            .iter()
-            .zip(open)
-            .map(|(pane, open)| (pane.key(), open)),
-    );
-}
-
-fn size_text(weight: Option<Weight>) -> String {
-    weight.map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes))
-}
-
-fn weight_text(weight: Option<Weight>) -> SharedString {
-    let Some(weight) = weight else {
-        return "Calculating\u{2026}".into();
-    };
-    let text = format!(
-        "{} ({} on disk)",
-        exact_bytes(weight.bytes),
-        byte_string(weight.on_disk)
-    );
-    match weight.items {
-        Some(items) => format!("{text} for {}", items_text(items)).into(),
-        None => text.into(),
-    }
-}
-
-fn fit<T: 'static>(asked: &mut f32, window: &Window, height: f32, cx: &mut Context<T>) {
-    if (height - *asked).abs() < 0.25 {
-        return;
-    }
-    *asked = height;
-    let Some(ns) = ns_window(window) else {
-        return;
-    };
-    // Outside gpui's borrow of the window: AppKit reports the resize back synchronously.
-    cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
-}
-
-fn pane_chrome(
-    sheet: &mut Sheet,
-    pane: Pane,
-    open: bool,
-    height: f32,
-    rule: bool,
-    flip: Rc<dyn Fn(&mut App)>,
-) {
-    let at = pane as usize;
-    let width = sheet.width;
-    let click = flip.clone();
-    sheet.put(
-        (0., 0.),
-        (width, 16.),
-        div()
-            .id(("ng.finder.info.pane", at))
-            .size_full()
-            .on_click(move |_, _, cx| click(cx)),
-    );
-    sheet.put(
-        (7., 3.5),
-        (13., 13.),
-        native_button(("ng.finder.info.disclose", at), "")
-            .bezel_style(ButtonBezel::Disclosure)
-            .on(open)
-            .square(13.)
-            .on_click(move |_, _, cx| flip(cx)),
-    );
-    sheet.put(
-        (20., 3.5),
-        (width - 40., LINE),
-        small(("ng.finder.info.pane.title", at), pane.title()),
-    );
-    if rule {
-        sheet.put(
-            (0., height - 1.),
-            (width, 1.),
-            native_rule(("ng.finder.info.pane.rule", at)),
-        );
+        sheet.finish(&mut self.asked, window, cx)
     }
 }
