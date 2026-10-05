@@ -24,14 +24,15 @@ use native_gpui::{
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{MainThreadOnly, Message, msg_send};
+use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSFocusRingType, NSFont, NSImage, NSImageScaling, NSImageView,
-    NSTextField, NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
+    NSAutoresizingMaskOptions, NSBorderType, NSColor, NSFocusRingType, NSFont, NSImage,
+    NSImageScaling, NSImageView, NSResponder, NSScrollView, NSText, NSTextField, NSTextView,
+    NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary,
-    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURLHasHiddenExtensionKey,
+    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURLHasHiddenExtensionKey,
     NSURLIsUserImmutableKey, ns_string,
 };
 
@@ -1173,6 +1174,15 @@ impl Info {
                 }),
         );
     }
+
+    fn comments(&self, sheet: &mut Sheet) {
+        let editable = self.renamable && !self.locked && writable(self.path());
+        sheet.put(
+            (4., BODY),
+            (sheet.width - 8., 46.),
+            comment_box(self.line.row.path.clone(), editable),
+        );
+    }
 }
 
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
@@ -1286,6 +1296,101 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
     )
 }
 
+struct CommentIvars {
+    path: PathBuf,
+    saved: RefCell<String>,
+}
+
+define_class!(
+    /// Saves the comment where Finder keeps it when editing ends or the view leaves its window.
+    #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGInfoComment"]
+    #[ivars = CommentIvars]
+    struct Comment;
+
+    impl Comment {
+        #[unsafe(method(resignFirstResponder))]
+        fn resign_first_responder(&self) -> bool {
+            let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if resigned {
+                self.save();
+            }
+            resigned
+        }
+
+        #[unsafe(method(viewWillMoveToWindow:))]
+        fn view_will_move_to_window(&self, window: Option<&NSWindow>) {
+            if window.is_none() {
+                self.save();
+            }
+            unsafe { msg_send![super(self), viewWillMoveToWindow: window] }
+        }
+    }
+);
+
+impl Comment {
+    fn new(mtm: MainThreadMarker, path: PathBuf, frame: NSRect) -> Retained<Self> {
+        let comment = finder_fs::comment::of(&path);
+        let this = Self::alloc(mtm).set_ivars(CommentIvars {
+            path,
+            saved: RefCell::new(comment.clone()),
+        });
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        this.setString(&NSString::from_str(&comment));
+        this
+    }
+
+    fn save(&self) {
+        let text = self.string().to_string();
+        let ivars = self.ivars();
+        if *ivars.saved.borrow() != text && finder_fs::comment::set(&ivars.path, &text).is_ok() {
+            *ivars.saved.borrow_mut() = text;
+        }
+    }
+}
+
+fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
+    hosted(
+        key_of("ng.finder.info.comment", &path),
+        move |mtm, _| {
+            let scroll =
+                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., 100., 46.));
+            scroll.setBorderType(NSBorderType::BezelBorder);
+            scroll.setHasVerticalScroller(true);
+            scroll.setAutohidesScrollers(true);
+            let size = scroll.contentSize();
+            let text = Comment::new(
+                mtm,
+                PathBuf::from(path.as_ref()),
+                rect(0., 0., size.width, size.height),
+            );
+            text.setMinSize(NSSize::new(0., size.height));
+            text.setMaxSize(NSSize::new(f64::MAX, f64::MAX));
+            text.setVerticallyResizable(true);
+            text.setHorizontallyResizable(false);
+            text.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+            if let Some(container) = unsafe { text.textContainer() } {
+                container.setWidthTracksTextView(true);
+            }
+            text.setRichText(false);
+            text.setAllowsUndo(true);
+            text.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+            text.setTextColor(Some(&NSColor::labelColor()));
+            scroll.setDocumentView(Some(&text));
+            scroll
+        },
+        move |scroll, _| {
+            let text = scroll.documentView();
+            if let Some(text) = text.and_then(|text| text.downcast::<NSTextView>().ok()) {
+                if text.isEditable() != editable {
+                    text.setEditable(editable);
+                }
+            }
+        },
+    )
+}
+
 impl Render for Info {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = f32::from(window.viewport_size().width);
@@ -1309,6 +1414,7 @@ impl Render for Info {
                     Pane::General => self.general(&mut sheet, &this),
                     Pane::MetaData => self.more_info(&mut sheet),
                     Pane::Name => self.name_pane(&mut sheet, &this),
+                    Pane::Comments => self.comments(&mut sheet),
                     _ => {}
                 }
             }
