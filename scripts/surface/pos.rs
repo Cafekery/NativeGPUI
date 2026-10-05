@@ -8,7 +8,10 @@ use native_gpui::{
 
 use native_gpui::{NativeRoot, focus_gpui, native_root, window_options};
 
-use native_gpui::{MenuCommand, MenuSection, add_menu, extend_menu, install_menus, on_menu_state};
+use native_gpui::{
+    MenuCommand, MenuSection, add_menu, extend_menu, install_menus, on_menu_state,
+    replace_about_row,
+};
 
 use native_gpui::{
     ButtonBezel, CheckState, LabelAlign, MenuEntry, MenuOrigin, MenuView, native_button,
