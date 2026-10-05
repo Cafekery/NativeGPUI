@@ -1,11 +1,11 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
-use objc2_app_kit::{NSMenu, NSView};
+use objc2_app_kit::{NSMenu, NSTintConfiguration, NSView};
 use objc2_foundation::{MainThreadMarker, NSInteger};
 
-use super::Shared;
 use super::cell::tint_rows;
+use super::{Shared, SidebarIcon};
 
 pub(super) fn children(shared: &Shared, item: Option<&AnyObject>) -> NSInteger {
     shared
@@ -39,6 +39,15 @@ pub(super) fn is_group(shared: &Shared, item: &AnyObject) -> bool {
 
 pub(super) fn selectable(shared: &Shared, item: &AnyObject) -> bool {
     shared.node_is(Shared::key_of_item(item), |node| !node.group)
+}
+
+pub(super) fn tint(shared: &Shared, item: &AnyObject) -> Option<Retained<NSTintConfiguration>> {
+    match shared.model.borrow().node(Shared::key_of_item(item))?.icon {
+        Some(SidebarIcon::TintedSymbol(_, color)) => Some(
+            NSTintConfiguration::tintConfigurationWithFixedColor(&color.ns_color()),
+        ),
+        _ => None,
+    }
 }
 
 pub(super) fn selection_changed(shared: &Shared) {

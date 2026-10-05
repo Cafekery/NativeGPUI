@@ -21,11 +21,11 @@ use objc2_app_kit::{
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardTypeFileURL, NSPasteboardWriting,
     NSResponder, NSScreen, NSScrollView, NSSplitViewController, NSSplitViewItem, NSTableColumn,
     NSTableColumnResizingOptions, NSTableView, NSTableViewColumnAutoresizingStyle,
-    NSTableViewRowSizeStyle, NSTableViewStyle, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController, NSVisualEffectBlendingMode,
-    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSTableViewRowSizeStyle, NSTableViewStyle, NSTintConfiguration, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarToggleSidebarItemIdentifier, NSView, NSViewController,
+    NSVisualEffectBlendingMode, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
@@ -38,6 +38,7 @@ use crate::bridge::appkit::{Container, draw_now, gpui_view, rects_equal};
 use crate::controls::MenuEntry;
 use crate::materials::RawMaterial;
 use crate::tokens;
+use crate::tokens::SystemColor;
 
 use self::cell::{SidebarCell, row_view, tint_rows};
 pub use self::cell::{system_symbol, system_template};
@@ -60,6 +61,8 @@ pub enum SidebarIcon {
     SystemResource(SharedString),
     Dot(Option<(u8, u8, u8)>),
     Dots,
+    /// A template symbol in this colour wherever AppKit tints the row, as Finder's tag rows are.
+    TintedSymbol(SharedString, SystemColor),
 }
 
 #[derive(Clone, Debug)]
@@ -1235,6 +1238,15 @@ define_class!(
                 item: &AnyObject,
             ) -> Option<Retained<NSView>> {
                 row_view(self.ivars(), outline, item, self.as_ref())
+            }
+
+            #[unsafe(method_id(outlineView:tintConfigurationForItem:))]
+            fn tint_configuration(
+                &self,
+                _: &NSOutlineView,
+                item: &AnyObject,
+            ) -> Option<Retained<NSTintConfiguration>> {
+                source::tint(self.ivars(), item)
             }
 
             #[unsafe(method(outlineViewSelectionDidChange:))]
