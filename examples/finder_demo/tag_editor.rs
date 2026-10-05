@@ -1,8 +1,6 @@
-use std::cell::RefCell;
+use std::cell::OnceCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 
-use block2::RcBlock;
 use finder_fs::tags::Tag;
 use gpui::{Context, Window, px, size};
 use native_gpui::surfaces::SurfaceEdge;
@@ -14,7 +12,7 @@ use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, s
 use objc2_app_kit::{
     NSAppearance, NSAttachmentAttributeName, NSAttributedStringAttachmentConveniences,
     NSBezierPath, NSButton, NSCell, NSColor, NSControl, NSControlTextEditingDelegate, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSImageScaling, NSImageView,
     NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSScrollView, NSStringDrawing,
     NSTextAlignment, NSTextAttachment, NSTextAttachmentCell, NSTextField, NSTextFieldDelegate,
     NSTextView, NSView,
@@ -25,7 +23,7 @@ use objc2_foundation::{
 };
 
 use crate::app::FinderDemo;
-use crate::tags::{all, held_tags, retag, tag_ns_color};
+use crate::tags::{all, held_tags, retag, tag_disc, tag_ns_color};
 
 const WIDTH: f64 = 238.;
 const HEIGHT: f64 = 165.;
@@ -48,26 +46,8 @@ pub(crate) struct TagEditor {
     paths: Vec<PathBuf>,
 }
 
-fn dot(color: Option<Retained<NSColor>>) -> Retained<NSImage> {
-    let handler = RcBlock::new(move |_: NSRect| -> Bool {
-        let circle = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-            NSPoint::new(1.5, 1.5),
-            NSSize::new(9., 9.),
-        ));
-        match &color {
-            Some(color) => {
-                color.setFill();
-                circle.fill();
-            }
-            None => {
-                NSColor::secondaryLabelColor().setStroke();
-                circle.setLineWidth(1.);
-                circle.stroke();
-            }
-        }
-        Bool::YES
-    });
-    NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(12., 12.), true, &handler)
+fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+    NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
 fn token_attributes(color: &NSColor) -> Retained<NSDictionary<NSAttributedStringKey, AnyObject>> {
@@ -133,32 +113,18 @@ impl Token {
 
     /// TextKit 2 draws attachments in its own views, inside the text view holding the selection.
     fn selected(&self, view: Option<&NSView>) -> bool {
-        let mut view = view.map(|view| view.retain());
-        while let Some(at) = view {
-            if let Some(text) = at.downcast_ref::<NSTextView>() {
-                let Some(storage) = (unsafe { text.textStorage() }) else {
-                    return false;
-                };
-                let range = text.selectedRange();
-                return (range.location..range.location + range.length).any(|index| {
-                    unsafe {
-                        storage.attribute_atIndex_effectiveRange(
-                            NSAttachmentAttributeName,
-                            index,
-                            std::ptr::null_mut(),
-                        )
-                    }
-                    .and_then(|found| found.downcast::<NSTextAttachment>().ok())
-                    .and_then(|attachment| attachment.attachmentCell())
-                    .is_some_and(|cell| {
-                        let cell: &AnyObject = cell.as_ref();
-                        std::ptr::addr_eq(cell, self)
-                    })
-                });
-            }
-            view = unsafe { at.superview() };
-        }
-        false
+        let first = view.map(|view| view.retain());
+        let mut views = std::iter::successors(first, |at| unsafe { at.superview() });
+        let Some(text) = views.find_map(|at| at.downcast::<NSTextView>().ok()) else {
+            return false;
+        };
+        let Some(storage) = (unsafe { text.textStorage() }) else {
+            return false;
+        };
+        let range = text.selectedRange();
+        (range.location..range.location + range.length).any(|index| {
+            token_at(&storage, index, None).is_some_and(|token| std::ptr::eq(&*token, self))
+        })
     }
 
     fn draw(&self, frame: NSRect, view: Option<&NSView>) {
@@ -201,6 +167,22 @@ impl Token {
                 .drawInRect_withAttributes(rect, Some(&token_attributes(&text)))
         };
     }
+}
+
+fn token_at(
+    text: &NSAttributedString,
+    at: usize,
+    run: Option<&mut NSRange>,
+) -> Option<Retained<Token>> {
+    let run = run.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+    let found =
+        unsafe { text.attribute_atIndex_effectiveRange(NSAttachmentAttributeName, at, run) }?;
+    let cell = found
+        .downcast::<NSTextAttachment>()
+        .ok()?
+        .attachmentCell()?;
+    let cell: &AnyObject = cell.as_ref();
+    Some(cell.downcast_ref::<Token>()?.retain())
 }
 
 define_class!(
@@ -248,11 +230,11 @@ define_class!(
 
 fn tokeniser(mtm: MainThreadMarker) -> Retained<Tokeniser> {
     thread_local! {
-        static DELEGATE: RefCell<Option<Retained<Tokeniser>>> = const { RefCell::new(None) };
+        static DELEGATE: OnceCell<Retained<Tokeniser>> = const { OnceCell::new() };
     }
-    DELEGATE.with(|slot| {
-        slot.borrow_mut()
-            .get_or_insert_with(|| unsafe { msg_send![Tokeniser::alloc(mtm), init] })
+    DELEGATE.with(|delegate| {
+        delegate
+            .get_or_init(|| unsafe { msg_send![Tokeniser::alloc(mtm), init] })
             .clone()
     })
 }
@@ -271,19 +253,8 @@ fn read(field: &NSTextField) -> (Vec<Tag>, Vec<String>) {
     let mut at = 0;
     while at < string.length() {
         let mut run = NSRange::new(at, 1);
-        let found = unsafe {
-            text.attribute_atIndex_effectiveRange(NSAttachmentAttributeName, at, &mut run)
-        };
-        let token = found
-            .as_deref()
-            .and_then(|found| found.downcast_ref::<NSTextAttachment>())
-            .and_then(|attachment| attachment.attachmentCell())
-            .and_then(|cell| {
-                let cell: &AnyObject = cell.as_ref();
-                cell.downcast_ref::<Token>().map(Token::tag)
-            });
-        match token {
-            Some(token) => tokens.push(token),
+        match token_at(&text, at, Some(&mut run)) {
+            Some(token) => tokens.push(token.tag()),
             None => typed.push(string.substringWithRange(run).to_string()),
         }
         at = run.location + run.length.max(1);
@@ -378,8 +349,7 @@ fn tag_named(listed: &[Tag], name: &str) -> Tag {
 impl FinderDemo {
     pub(crate) fn edit_tags(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tag_editor.is_some() {
-            self.close_tag_editor(cx);
-            return;
+            return self.close_tag_editor(cx);
         }
         let paths = self.paths();
         let Some(first) = paths.first() else {
@@ -394,10 +364,7 @@ impl FinderDemo {
         let title = match paths.len() {
             1 => format!(
                 "Assign tags to \u{201c}{}\u{201d}",
-                first
-                    .file_name()
-                    .map(|name| name.to_string_lossy())
-                    .unwrap_or_default()
+                first.file_name().unwrap_or_default().to_string_lossy()
             ),
             count => format!("Assign tags to {count} items"),
         };
@@ -409,31 +376,20 @@ impl FinderDemo {
             animates: true,
         };
         let demo = cx.entity().downgrade();
-        let built: Rc<RefCell<Option<Retained<NSTextField>>>> = Rc::default();
-        let slot = built.clone();
-        let popover = present_popover(window, cx, &self.ql_icon, spec, move |mtm, actions| {
-            let view = NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, HEIGHT)),
-            );
+        let mut built = None;
+        let popover = present_popover(window, cx, &self.ql_icon, spec, |mtm, actions| {
+            let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., WIDTH, HEIGHT));
             let label = NSTextField::labelWithString(&NSString::from_str(&title), mtm);
-            label.setFrame(NSRect::new(
-                NSPoint::new(12., 146.),
-                NSSize::new(WIDTH - 24., 14.),
-            ));
+            label.setFrame(rect(12., 146., WIDTH - 24., 14.));
             label.setFont(Some(&NSFont::systemFontOfSize(
                 NSFont::smallSystemFontSize(),
             )));
             label.setAlignment(NSTextAlignment::Center);
             view.addSubview(&label);
 
-            let field = tag_field(
-                mtm,
-                NSRect::new(NSPoint::new(5., 118.), NSSize::new(WIDTH - 10., 22.)),
-                &held,
-            );
+            let field = tag_field(mtm, rect(5., 118., WIDTH - 10., 22.), &held);
             view.addSubview(&field);
-            slot.replace(Some(field.clone()));
+            built = Some(field.clone());
 
             let on_return = demo.clone();
             actions.on_action(&field, move |_, app| {
@@ -443,29 +399,19 @@ impl FinderDemo {
             });
 
             let tall = (listed.len() as f64 * ROW).max(LIST_H);
-            let rows = NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, tall)),
-            );
+            let rows = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., WIDTH, tall));
             for (at, tag) in listed.iter().enumerate() {
                 let y = tall - (at as f64 + 1.) * ROW;
-                let swatch = NSImageView::imageViewWithImage(&dot(tag_ns_color(tag.color)), mtm);
+                let swatch =
+                    NSImageView::imageViewWithImage(&tag_disc(tag.color, 12., 1.5, false), mtm);
                 swatch.setImageScaling(NSImageScaling::ScaleNone);
-                swatch.setFrame(NSRect::new(
-                    NSPoint::new(ROW_X, y + 2.),
-                    NSSize::new(SWATCH, SWATCH),
-                ));
+                swatch.setFrame(rect(ROW_X, y + 2., SWATCH, SWATCH));
                 rows.addSubview(&swatch);
                 let name = NSTextField::labelWithString(&NSString::from_str(&tag.name), mtm);
-                name.setFrame(NSRect::new(
-                    NSPoint::new(ROW_X + NAME_X, y + 3.),
-                    NSSize::new(ROW_W - NAME_X, 16.),
-                ));
+                name.setFrame(rect(ROW_X + NAME_X, y + 3., ROW_W - NAME_X, 16.));
                 rows.addSubview(&name);
-                let button = NSButton::initWithFrame(
-                    NSButton::alloc(mtm),
-                    NSRect::new(NSPoint::new(ROW_X, y), NSSize::new(ROW_W, ROW)),
-                );
+                let button =
+                    NSButton::initWithFrame(NSButton::alloc(mtm), rect(ROW_X, y, ROW_W, ROW));
                 button.setTitle(&NSString::from_str(&tag.name));
                 button.setTransparent(true);
                 let (field, tag, pick) = (field.clone(), tag.clone(), demo.clone());
@@ -481,7 +427,7 @@ impl FinderDemo {
             }
             let list = NSScrollView::initWithFrame(
                 NSScrollView::alloc(mtm),
-                NSRect::new(NSPoint::new(0., LIST_Y), NSSize::new(WIDTH, LIST_H)),
+                rect(0., LIST_Y, WIDTH, LIST_H),
             );
             list.setDrawsBackground(false);
             list.setHasVerticalScroller(true);
@@ -493,7 +439,7 @@ impl FinderDemo {
             view.addSubview(&list);
             view
         });
-        let (Some(popover), Some(field)) = (popover, built.take()) else {
+        let (Some(popover), Some(field)) = (popover, built) else {
             return;
         };
         if let Some(window) = field.window() {
@@ -502,15 +448,13 @@ impl FinderDemo {
                 editor.setSelectedRange(NSRange::new(editor.string().length(), 0));
             }
         }
-        let closed = cx.entity().downgrade();
         let popover = popover.on_close(window, cx, move |_, app| {
-            closed
-                .update(app, |this, cx| {
-                    this.commit_tags(cx);
-                    this.tag_editor = None;
-                    cx.notify();
-                })
-                .ok();
+            demo.update(app, |this, cx| {
+                this.commit_tags(cx);
+                this.tag_editor = None;
+                cx.notify();
+            })
+            .ok();
         });
         self.tag_editor = Some(TagEditor {
             popover,
@@ -548,9 +492,7 @@ impl FinderDemo {
         }
         retag(
             editor.paths.clone(),
-            move |paths| {
-                finder_fs::tags::apply(paths, &add, &remove).ok();
-            },
+            move |paths| _ = finder_fs::tags::apply(paths, &add, &remove),
             cx,
         );
     }

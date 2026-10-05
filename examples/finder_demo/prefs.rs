@@ -236,16 +236,12 @@ pub(crate) fn set_setting_number(key: &str, value: f64) {
 
 pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
     let flags = setting(key)?.downcast::<NSDictionary>().ok()?;
-    Some(
-        value(&flags, flag)?
-            .downcast::<NSNumber>()
-            .ok()?
-            .boolValue(),
-    )
+    let on = value(&flags, flag)?;
+    Some(on.downcast_ref::<NSNumber>()?.boolValue())
 }
 
 pub(crate) fn set_setting_flags<'a>(key: &str, flags: impl IntoIterator<Item = (&'a str, bool)>) {
-    let (names, values): (Vec<Retained<NSString>>, Vec<Retained<NSNumber>>) = flags
+    let (names, values): (Vec<_>, Vec<_>) = flags
         .into_iter()
         .map(|(name, on)| (NSString::from_str(name), NSNumber::new_bool(on)))
         .unzip();
@@ -775,7 +771,7 @@ fn has_own_columns(view: usize, folder: &str) -> bool {
 fn has_own_look(view: usize, folder: &str) -> bool {
     saved_look(view, Some(folder)).is_some_and(|own| {
         own.keys()
-            .any(|key| !SORT_KEYS.contains(&&*key.to_string()))
+            .any(|key| !SORT_KEYS.contains(&key.to_string().as_str()))
     }) || has_own_columns(view, folder)
 }
 

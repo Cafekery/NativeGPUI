@@ -12,14 +12,13 @@ use native_gpui::{
 };
 use objc2::MainThreadOnly;
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{Bool, ProtocolObject};
+use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityHeadingRole, NSAccessibilityMenuButtonRole, NSApplication,
-    NSBezelStyle, NSBezierPath, NSButton, NSCellImagePosition, NSColor,
-    NSControlTextDidChangeNotification, NSFocusRingType, NSFont, NSImage, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSMenuItem, NSPopUpArrowPosition,
-    NSPopUpButton, NSPopUpButtonCell, NSScrollView, NSTextAlignment, NSTextField, NSView,
-    NSWorkspace,
+    NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControlTextDidChangeNotification,
+    NSFocusRingType, NSFont, NSImage, NSImageScaling, NSImageSymbolConfiguration, NSImageView,
+    NSLineBreakMode, NSMenuItem, NSPopUpArrowPosition, NSPopUpButton, NSPopUpButtonCell,
+    NSScrollView, NSTextAlignment, NSTextField, NSView, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect,
@@ -29,7 +28,7 @@ use objc2_foundation::{
 use crate::app::FinderDemo;
 use crate::art::Anchor;
 use crate::data::Line;
-use crate::tags::{tag_ns_color, tags};
+use crate::tags::{tag_disc, tag_ns_color, tags};
 
 const WIDTH: f64 = 320.;
 const HEIGHT: f64 = 670.;
@@ -134,36 +133,6 @@ fn symbol(name: &str, points: f64, color: Option<&NSColor>) -> Option<Retained<N
         );
     }
     image.imageWithSymbolConfiguration(&look)
-}
-
-fn disc(color: Option<Retained<NSColor>>, on: bool) -> Retained<NSImage> {
-    let draw = RcBlock::new(move |_: NSRect| -> Bool {
-        let circle = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-            NSPoint::new(4., 4.),
-            NSSize::new(18., 18.),
-        ));
-        match &color {
-            Some(color) => {
-                color.setFill();
-                circle.fill();
-            }
-            None => {
-                NSColor::secondaryLabelColor().setStroke();
-                circle.stroke();
-            }
-        }
-        if on {
-            let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
-                NSPoint::new(1.5, 1.5),
-                NSSize::new(23., 23.),
-            ));
-            ring.setLineWidth(1.5);
-            NSColor::labelColor().setStroke();
-            ring.stroke();
-        }
-        Bool::YES
-    });
-    NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(26., 26.), true, &draw)
 }
 
 fn identify(view: &NSView, id: &str) {
@@ -389,7 +358,7 @@ impl Customizer {
         let held = |tag: &Tag| self.held.contains(&tag.name);
         for (tag, button) in &parts.swatches {
             let on = held(tag);
-            button.setImage(Some(&disc(tag_ns_color(tag.color), on)));
+            button.setImage(Some(&tag_disc(tag.color, 26., 4., on)));
             button.setToolTip(Some(&ns(&match on {
                 true => said("Remove tag from folder", "Remove tag from folder"),
                 false => said("Add tag to folder", "Add tag to folder"),

@@ -1,16 +1,19 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
+use block2::RcBlock;
 use finder_fs::tags::Tag;
-use gpui::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, App, Hsla, SharedString, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
-use objc2_app_kit::{NSColor, NSColorSpace};
+use objc2::rc::Retained;
+use objc2::runtime::Bool;
+use objc2_app_kit::{NSBezierPath, NSColor, NSColorSpace, NSImage};
 use objc2_core_foundation::CGFloat;
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::app::FinderDemo;
 use crate::prefs;
@@ -31,12 +34,12 @@ pub(crate) struct RowTag {
     pub(crate) color: u8,
 }
 
-static FAVORITES: LazyLock<RwLock<Arc<[Tag]>>> =
+static FAVOURITES: LazyLock<RwLock<Arc<[Tag]>>> =
     LazyLock::new(|| RwLock::new(favourites(&all()).into()));
 static LISTED: LazyLock<RwLock<Arc<[Tag]>>> = LazyLock::new(|| RwLock::new(listed().into()));
 
 pub(crate) fn tags() -> Arc<[Tag]> {
-    FAVORITES.read().unwrap().clone()
+    FAVOURITES.read().unwrap().clone()
 }
 
 pub(crate) fn all() -> Arc<[Tag]> {
@@ -72,18 +75,15 @@ fn favourites(listed: &[Tag]) -> Vec<Tag> {
             let color = listed
                 .iter()
                 .find(|tag| tag.name == name)
-                .map(|tag| tag.color);
-            Tag {
-                name,
-                color: color.unwrap_or_default(),
-            }
+                .map_or(0, |tag| tag.color);
+            Tag { name, color }
         })
         .collect()
 }
 
 fn reread_lists() {
     let listed = listed();
-    *FAVORITES.write().unwrap() = favourites(&listed).into();
+    *FAVOURITES.write().unwrap() = favourites(&listed).into();
     *LISTED.write().unwrap() = listed.into();
 }
 
@@ -159,8 +159,39 @@ pub(crate) fn tag_system_color(color: u8) -> Option<SystemColor> {
     })
 }
 
-pub(crate) fn tag_ns_color(color: u8) -> Option<objc2::rc::Retained<NSColor>> {
-    tag_system_color(color).map(|system| system.ns_color())
+pub(crate) fn tag_ns_color(color: u8) -> Option<Retained<NSColor>> {
+    tag_system_color(color).map(SystemColor::ns_color)
+}
+
+pub(crate) fn tag_disc(color: u8, side: f64, inset: f64, ringed: bool) -> Retained<NSImage> {
+    let color = tag_ns_color(color);
+    let draw = RcBlock::new(move |_: NSRect| -> Bool {
+        let circle = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+            NSPoint::new(inset, inset),
+            NSSize::new(side - 2. * inset, side - 2. * inset),
+        ));
+        match &color {
+            Some(color) => {
+                color.setFill();
+                circle.fill();
+            }
+            None => {
+                NSColor::secondaryLabelColor().setStroke();
+                circle.stroke();
+            }
+        }
+        if ringed {
+            let ring = NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                NSPoint::new(1.5, 1.5),
+                NSSize::new(side - 3., side - 3.),
+            ));
+            ring.setLineWidth(1.5);
+            NSColor::labelColor().setStroke();
+            ring.stroke();
+        }
+        Bool::YES
+    });
+    NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(side, side), true, &draw)
 }
 
 fn finder_edge(color: u8) -> Hsla {
@@ -209,8 +240,7 @@ pub(crate) fn tag_pill(tag: &RowTag, text: Hsla) -> AnyElement {
 
 fn sized_dot(color: u8, size: f32) -> AnyElement {
     let dot = div()
-        .w(px(size))
-        .h(px(size))
+        .size(px(size))
         .rounded_full()
         .flex_none()
         .border(px(1.));
@@ -298,7 +328,7 @@ pub(crate) fn tag_title(id: &str) -> String {
     }
 }
 
-/// Reads the disk. A listed tag wears Finder's colour, not the file's.
+/// A listed tag wears Finder's colour, not the file's.
 pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
     let listed = all();
     let mut tags = finder_fs::tags::of(path);
@@ -325,7 +355,6 @@ struct Held {
     stale: bool,
 }
 
-/// Each path's tags by folder; a change marks them stale, still shown until the next read lands.
 #[derive(Default)]
 struct Known {
     dirs: HashMap<PathBuf, HashMap<String, Held>>,
@@ -347,8 +376,8 @@ impl Known {
         self.dirs.get_mut(dir)?.get_mut(name)
     }
 
-    fn insert(&mut self, path: String, tags: Vec<RowTag>) {
-        let (dir, name) = split(&path);
+    fn insert(&mut self, path: &str, tags: Vec<RowTag>) {
+        let (dir, name) = split(path);
         let names = match self.dirs.entry(dir.to_path_buf()) {
             Entry::Occupied(names) => names.into_mut(),
             Entry::Vacant(room) => {
@@ -397,20 +426,20 @@ impl Known {
 
 static KNOWN: LazyLock<Mutex<Known>> = LazyLock::new(Mutex::default);
 static LANDED: AtomicU64 = AtomicU64::new(0);
-static READER: LazyLock<Mutex<Sender<String>>> = LazyLock::new(|| {
+static READER: LazyLock<Sender<String>> = LazyLock::new(|| {
     let (send, paths) = channel::<String>();
     std::thread::spawn(move || {
         for path in paths {
             let tags = read_row_tags(&path);
-            KNOWN.lock().unwrap().insert(path, tags);
+            KNOWN.lock().unwrap().insert(&path, tags);
             LANDED.fetch_add(1, Ordering::Release);
             crate::read::EVENTS.ring();
         }
     });
-    Mutex::new(send)
+    send
 });
 
-/// Never reads the disk, which a stalled share would hang; an unread row is untagged till it lands.
+/// Never reads the disk, which a stalled share would hang.
 pub(crate) fn row_tags(path: &str) -> Vec<RowTag> {
     let mut known = KNOWN.lock().unwrap();
     let tags = match known.get_mut(path) {
@@ -420,11 +449,11 @@ pub(crate) fn row_tags(path: &str) -> Vec<RowTag> {
             held.tags.clone()
         }
         None => {
-            known.insert(path.to_owned(), Vec::new());
+            known.insert(path, Vec::new());
             Vec::new()
         }
     };
-    let _ = READER.lock().unwrap().send(path.to_owned());
+    let _ = READER.send(path.to_owned());
     tags
 }
 
@@ -444,10 +473,10 @@ pub(crate) fn retag(
     cx.background_executor()
         .spawn(async move {
             write(&paths);
-            for path in paths {
-                let key = path.to_string_lossy().into_owned();
+            for path in &paths {
+                let key = path.to_string_lossy();
                 let tags = read_row_tags(&key);
-                KNOWN.lock().unwrap().insert(key, tags);
+                KNOWN.lock().unwrap().insert(&key, tags);
             }
             LANDED.fetch_add(1, Ordering::Release);
             crate::read::EVENTS.ring();
@@ -461,10 +490,10 @@ impl FinderDemo {
             let written = cx
                 .background_executor()
                 .spawn(async move {
-                    finder_fs::sidebar::recolor_tag(name, color)?;
-                    reread_lists();
-                    KNOWN.lock().unwrap().stale_all();
-                    Ok::<(), io::Error>(())
+                    finder_fs::sidebar::recolor_tag(name, color).map(|()| {
+                        reread_lists();
+                        KNOWN.lock().unwrap().stale_all();
+                    })
                 })
                 .await;
             match written {
@@ -478,8 +507,8 @@ impl FinderDemo {
         .detach();
     }
 
-    pub(crate) fn tag_selection(&mut self, tag: usize, cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = self
+    pub(crate) fn tag_selection(&self, tag: usize, cx: &mut Context<Self>) {
+        let paths = self
             .selected
             .snapshot()
             .iter()
@@ -488,9 +517,7 @@ impl FinderDemo {
         let wanted = tags()[tag].clone();
         retag(
             paths,
-            move |paths| {
-                finder_fs::tags::toggle(paths, &wanted).ok();
-            },
+            move |paths| _ = finder_fs::tags::toggle(paths, &wanted),
             cx,
         );
     }

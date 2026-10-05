@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, Div, ElementId, FontWeight, IntoElement,
-    ParentElement, Render, Styled, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
-    WindowBounds, WindowOptions, div, point, px, size,
+    AnyElement, App, AppContext, Bounds, Context, Div, FontWeight, IntoElement, ParentElement,
+    Render, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, point,
+    px, size,
 };
 use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
@@ -73,9 +73,13 @@ const ADVANCED: [(&str, &str, bool); 5] = [
     ),
 ];
 
-const FOLDERS_ON_TOP: [(&str, &str); 2] = [
-    ("In windows when sorting by name", "_FXSortFoldersFirst"),
-    ("On Desktop", "_FXSortFoldersFirstOnDesktop"),
+const FOLDERS_ON_TOP: [(&str, &str, bool); 2] = [
+    (
+        "In windows when sorting by name",
+        "_FXSortFoldersFirst",
+        false,
+    ),
+    ("On Desktop", "_FXSortFoldersFirstOnDesktop", false),
 ];
 
 const SCOPES: [(&str, &str); 3] = [
@@ -86,10 +90,7 @@ const SCOPES: [(&str, &str); 3] = [
 
 pub(crate) struct Settings {
     pane: usize,
-    tag_picked: Option<String>,
-    tag_draft: Option<String>,
-    tag_fresh: bool,
-    tag_scroll: UniformListScrollHandle,
+    tag_list: tags_pane::TagList,
 }
 
 enum Icon {
@@ -97,6 +98,7 @@ enum Icon {
     Art(FileType<'static>),
 }
 
+#[derive(Default)]
 struct Place {
     title: String,
     icon: Option<Icon>,
@@ -127,13 +129,8 @@ fn places() -> (Vec<Place>, usize) {
         code: Some(code),
         path: None,
     };
-    let separator = || Place {
-        title: String::new(),
-        icon: None,
-        code: None,
-        path: None,
-    };
-    let name = |path: &Path| finder_fs::name::of_path(path);
+    let separator = Place::default;
+    let name = finder_fs::name::of_path;
     let folder = |which| Some(Icon::Path(standard(which).unwrap_or_else(|| home.clone())));
     let computer = crate::locations::artwork(crate::locations::COMPUTER).map(Icon::Art);
     let mut rows = vec![
@@ -173,15 +170,20 @@ fn places() -> (Vec<Place>, usize) {
     (rows, chosen.unwrap_or(6))
 }
 
+fn placed(x: f32, y: f32) -> Div {
+    div().absolute().left(px(x)).top(px(y))
+}
+
 fn at(x: f32, y: f32) -> Div {
-    div().absolute().left(px(x)).top(px(y - CHROME))
+    placed(x, y - CHROME)
 }
 
 fn label(text: &str) -> NativeLabel {
-    native_label(
-        ElementId::Name(format!("ng.finder.settings.{text}").into()),
-        text,
-    )
+    native_label(format!("ng.finder.settings.{text}"), text)
+}
+
+fn small(text: &str) -> NativeLabel {
+    label(text).font_size(tokens::small_system_font_size())
 }
 
 fn footnote(text: &str) -> NativeLabel {
@@ -190,14 +192,35 @@ fn footnote(text: &str) -> NativeLabel {
         .color(SystemColor::SecondaryLabel)
 }
 
-fn lines(x: f32, y: f32, pitch: f32, texts: &[&str], make: fn(&str) -> NativeLabel) -> Div {
-    texts.iter().zip(0..).fold(div(), |lines, (text, line)| {
-        lines.child(
-            at(x, y + pitch * line as f32)
-                .w(px(WIDTH - x))
-                .child(make(text)),
-        )
+fn heading(x: f32, y: f32, text: &str) -> Div {
+    at(x, y).w(px(300.)).child(label(text))
+}
+
+fn lines(
+    x: f32,
+    y: f32,
+    pitch: f32,
+    texts: &'static [&'static str],
+    make: fn(&str) -> NativeLabel,
+) -> impl Iterator<Item = Div> {
+    texts.iter().zip(0..).map(move |(text, line)| {
+        at(x, y + pitch * line as f32)
+            .w(px(WIDTH - x))
+            .child(make(text))
     })
+}
+
+fn toggles(
+    x: f32,
+    y: f32,
+    pitch: f32,
+    rows: &'static [(&'static str, &'static str, bool)],
+) -> impl Iterator<Item = Div> {
+    rows.iter()
+        .zip(0..)
+        .map(move |((label, key, default), row)| {
+            at(x, y + pitch * row as f32).child(toggle(key, label, *default))
+        })
 }
 
 fn global_on(key: &str) -> bool {
@@ -211,7 +234,7 @@ fn syncs_desktop() -> bool {
 
 fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
     native_checkbox(
-        ElementId::Name(format!("ng.finder.settings.{key}").into()),
+        format!("ng.finder.settings.{key}"),
         prefs::setting_on(key, default),
     )
     .title(label)
@@ -265,8 +288,7 @@ impl Settings {
         let (rows, chosen) = places();
         let entries: Vec<MenuEntry> = rows.iter().map(Place::entry).collect();
         let picked = cx.listener(move |_, index: &usize, window, cx| {
-            let (places, _) = places();
-            let Some(place) = places.get(*index) else {
+            let Some(place) = rows.get(*index) else {
                 return;
             };
             match (place.code, &place.path) {
@@ -282,19 +304,9 @@ impl Settings {
             cx.notify();
         });
         div()
-            .child(
-                at(28., 104.)
-                    .w(px(300.))
-                    .child(label("Show these items on the desktop:")),
-            )
-            .children(DESKTOP.iter().zip(0..).map(|((label, key, default), row)| {
-                at(48., 128. + 22. * row as f32).child(toggle(key, label, *default))
-            }))
-            .child(
-                at(28., 234.)
-                    .w(px(300.))
-                    .child(label("New Finder windows show:")),
-            )
+            .child(heading(28., 104., "Show these items on the desktop:"))
+            .children(toggles(48., 128., 22., &DESKTOP))
+            .child(heading(28., 234., "New Finder windows show:"))
             .child(
                 at(48., 258.).child(
                     native_popup("ng.finder.settings.target", chosen)
@@ -313,7 +325,7 @@ impl Settings {
                         }),
                 ),
             )
-            .child(lines(
+            .children(lines(
                 50.5,
                 340.,
                 13.,
@@ -338,7 +350,7 @@ impl Settings {
                     .enabled(false),
                 ),
             )
-            .child(lines(
+            .children(lines(
                 48.5,
                 440.,
                 13.,
@@ -353,18 +365,13 @@ impl Settings {
     }
 
     fn sidebar(&self) -> AnyElement {
-        let mut pane = div().child(
-            at(26., 108.)
-                .w(px(300.))
-                .child(label("Show these items in the sidebar:")),
-        );
+        let mut pane = div().child(heading(26., 108., "Show these items in the sidebar:"));
         let mut y = 139.;
         for (section, rows) in sidebar::shown_sections() {
             if !section.is_empty() {
                 pane = pane.child(
                     at(38., y + 4.5).w(px(200.)).child(
-                        label(section)
-                            .font_size(tokens::small_system_font_size())
+                        small(section)
                             .weight(FontWeight::BOLD)
                             .color(SystemColor::SecondaryLabel),
                     ),
@@ -410,27 +417,10 @@ impl Settings {
             .position(|(_, code)| Some(*code) == scope.as_deref())
             .unwrap_or(0);
         div()
-            .children(
-                ADVANCED
-                    .iter()
-                    .zip(0..)
-                    .map(|((label, key, default), row)| {
-                        at(28., 108. + 26. * row as f32).child(toggle(key, label, *default))
-                    }),
-            )
-            .child(
-                at(26., 238.)
-                    .w(px(300.))
-                    .child(label("Keep folders on top:")),
-            )
-            .children(FOLDERS_ON_TOP.iter().zip(0..).map(|((label, key), row)| {
-                at(50., 264. + 26. * row as f32).child(toggle(key, label, false))
-            }))
-            .child(
-                at(26., 324.)
-                    .w(px(300.))
-                    .child(label("When performing a search:")),
-            )
+            .children(toggles(28., 108., 26., &ADVANCED))
+            .child(heading(26., 238., "Keep folders on top:"))
+            .children(toggles(50., 264., 26., &FOLDERS_ON_TOP))
+            .child(heading(26., 324., "When performing a search:"))
             .child(
                 at(50., 348.).child(
                     native_popup("ng.finder.settings.scope", scope)
@@ -452,7 +442,6 @@ fn row_icon(shown: Shown) -> AnyElement {
             .tint(SystemColor::SecondaryLabel)
             .into_any_element()
     };
-    // Named so `native_image` can find it.
     let art = |resource: &str| {
         let name = format!("ng.finder.settings.{resource}");
         let named = NSString::from_str(&name);
@@ -625,10 +614,7 @@ fn show(cx: &mut App) {
             |window, cx| {
                 let entity = cx.new(|_| Settings {
                     pane,
-                    tag_picked: None,
-                    tag_draft: None,
-                    tag_fresh: false,
-                    tag_scroll: UniformListScrollHandle::new(),
+                    tag_list: Default::default(),
                 });
                 crate::chrome::toolbar::system_corners(window);
                 install_toolbar(pane, entity.downgrade(), window, cx);
