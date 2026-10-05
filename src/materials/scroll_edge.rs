@@ -18,7 +18,7 @@ use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSPoint, NSRect, NSS
 use super::private_api;
 use crate::bridge::host::{Layer, Slot, hosted_element};
 
-/// AppKit's scroll edge effect over GPUI content scrolled beneath the titlebar; size it to that area.
+/// AppKit's scroll edge effect over GPUI content scrolled under the titlebar; size it to that area.
 pub fn scroll_edge_effect(id: impl Into<ElementId>) -> ScrollEdgeEffect {
     ScrollEdgeEffect {
         id: id.into(),
@@ -40,7 +40,7 @@ impl ScrollEdgeEffect {
         self
     }
 
-    /// How far the content beneath has scrolled up past the edge: AppKit's separator shows once it has.
+    /// How far the content has scrolled up past the edge: AppKit's separator shows once it has.
     pub fn scrolled(mut self, distance: Pixels) -> Self {
         self.scrolled = distance;
         self
@@ -64,9 +64,9 @@ impl ScrollEdgeEffect {
 hosted_element!(ScrollEdgeEffect);
 
 struct Ivars {
-    header: Retained<NSTableHeaderView>,
+    header: Retained<Header>,
     document: Retained<Document>,
-    written: Cell<NSSize>,
+    header_size: Cell<NSSize>,
     rest: Cell<Option<(f64, f64)>>,
 }
 
@@ -96,8 +96,7 @@ define_class!(
 
     #[cfg(feature = "private-api")]
     impl Edge {
-        /// Under a transparent titlebar AppKit hides a pocket's blur outside semantic context 7,
-        /// and may decide that before layout ties the pocket to the titlebar, so it is asked again.
+        /// Once layout ties a pocket to a transparent titlebar it hides outside semantic context 7.
         #[unsafe(method(layout))]
         fn layout_pocket(&self) {
             let _: () = unsafe { msg_send![super(self), layout] };
@@ -105,22 +104,20 @@ define_class!(
                 return;
             };
             for view in self.subviews().iter() {
-                if !view.isKindOfClass(pocket)
-                    || private_api::read_bool(&*view, sel!(_hidesTitlebarElements)) != Some(true)
+                if view.isKindOfClass(pocket)
+                    && private_api::read_bool(&*view, sel!(_hidesTitlebarElements)) == Some(true)
                 {
-                    continue;
+                    private_api::send_isize(&*view, sel!(_setSemanticContext:), 7);
+                    private_api::send_string(
+                        &*view,
+                        sel!(_invalidateDependenciesOnValueForKey:),
+                        Some(ns_string!("_titlebarBackgroundStyle")),
+                    );
                 }
-                private_api::send_isize(&*view, sel!(_setSemanticContext:), 7);
-                private_api::send_string(
-                    &*view,
-                    sel!(_invalidateDependenciesOnValueForKey:),
-                    Some(ns_string!("_titlebarBackgroundStyle")),
-                );
             }
         }
 
-        /// The window's sections give a scroll view under a transparent titlebar style 1, which
-        /// empties its pocket whatever the semantic context.
+        /// A transparent titlebar's sections set style 1, which empties the pocket in any context.
         #[unsafe(method(setTitlebarBackgroundStyle:))]
         fn set_titlebar_background_style(&self, _style: isize) {
             let _: () = unsafe { msg_send![super(self), setTitlebarBackgroundStyle: 0isize] };
@@ -146,7 +143,7 @@ define_class!(
         #[unsafe(method(drawBackgroundInClipRect:))]
         fn draw_background(&self, _clip: NSRect) {}
 
-        /// A table sizes itself to its rows; this keeps it tall enough for the clip to rest scrolled.
+        /// A table fits its rows; this keeps it tall enough for the clip to rest scrolled.
         #[unsafe(method(setFrameSize:))]
         fn set_frame_size(&self, size: NSSize) {
             let size = NSSize::new(size.width, size.height.max(self.ivars().get()));
@@ -172,7 +169,6 @@ impl Edge {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let header: Retained<Header> =
             unsafe { msg_send![Header::alloc(mtm), initWithFrame: NSRect::ZERO] };
-        let header = Retained::into_super(header);
         let document = Document::alloc(mtm).set_ivars(Cell::new(0.));
         let document: Retained<Document> =
             unsafe { msg_send![super(document), initWithFrame: NSRect::ZERO] };
@@ -181,21 +177,20 @@ impl Edge {
         document.setHeaderView(Some(&header));
         let this = Self::alloc(mtm).set_ivars(Ivars {
             header,
-            document: document.clone(),
-            written: Cell::new(NSSize::new(-1., -1.)),
+            document,
+            header_size: Cell::new(NSSize::new(-1., -1.)),
             rest: Cell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setDrawsBackground(false);
-        this.setDocumentView(Some(&document));
+        this.setDocumentView(Some(&this.ivars().document));
         this
     }
 
     fn set_header(&self, size: NSSize) {
-        if self.ivars().written.get() == size {
+        if self.ivars().header_size.replace(size) == size {
             return;
         }
-        self.ivars().written.set(size);
         let document = &self.ivars().document;
         document.setFrameSize(NSSize::new(size.width, document.frame().size.height));
         self.ivars().header.setFrameSize(size);
@@ -203,20 +198,16 @@ impl Edge {
     }
 
     fn set_scrolled(&self, distance: f64) {
-        let written = self.ivars().rest.get();
-        if written.is_none() && distance == 0. {
+        let rest = &self.ivars().rest;
+        if distance == 0. && rest.get().is_none() {
             return;
         }
         let clip = self.contentView();
-        let rest = (
-            distance - self.contentInsets().top,
-            clip.frame().size.height + distance,
-        );
-        if written == Some(rest) {
+        let origin = distance - self.contentInsets().top;
+        let reach = clip.frame().size.height + distance;
+        if rest.replace(Some((origin, reach))) == Some((origin, reach)) {
             return;
         }
-        self.ivars().rest.set(Some(rest));
-        let (origin, reach) = rest;
         let document = &self.ivars().document;
         document.ivars().set(reach);
         document.setFrameSize(document.frame().size);

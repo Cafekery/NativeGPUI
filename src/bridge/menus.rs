@@ -470,12 +470,8 @@ pub fn replace_about_row(action: impl Action) {
     };
     let at = menu.indexOfItem(&row);
     menu.removeItem(&row);
-    add_command(
-        mtm,
-        &menu,
-        at,
-        MenuCommand::new(row.title().to_string(), action),
-    );
+    let command = MenuCommand::new(row.title().to_string(), action);
+    add_command(mtm, &menu, at, command);
 }
 
 fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>, first: bool) {

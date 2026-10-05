@@ -1720,11 +1720,9 @@ impl ToolbarDelegate {
             .load()
             .and_then(|window| window.toolbar());
         if let (Some(id), Some(toolbar)) = (chosen, toolbar) {
-            if toolbar
-                .selectedItemIdentifier()
-                .is_none_or(|current| current.to_string() != id)
-            {
-                toolbar.setSelectedItemIdentifier(Some(&NSString::from_str(id)));
+            let id = NSString::from_str(id);
+            if toolbar.selectedItemIdentifier().as_deref() != Some(&*id) {
+                toolbar.setSelectedItemIdentifier(Some(&id));
             }
         }
     }
@@ -2013,15 +2011,13 @@ pub fn remember_frame(window: &Window, name: &str) {
     ns_window.setFrameAutosaveName(&name);
 }
 
-/// `sheet` should open hidden: gpui draws only a window AppKit reports visible, so it is drawn
-/// here, before AppKit slides it in.
+/// Open `sheet` hidden: gpui draws only a window AppKit reports visible, so this draws it first.
 pub fn begin_sheet(window: AnyWindowHandle, sheet: AnyWindowHandle, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let host = cx.update_window(window, |_, window, _| ns_window_of(window));
-        let (Ok(host), Ok(view)) = (
-            host,
-            cx.update_window(sheet, |_, sheet, _| gpui_view(sheet)),
-        ) else {
+        let Ok(host) = cx.update_window(window, |_, window, _| ns_window_of(window)) else {
+            return;
+        };
+        let Ok(view) = cx.update_window(sheet, |_, sheet, _| gpui_view(sheet)) else {
             return;
         };
         let Some(sheet) = view.window() else {
