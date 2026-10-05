@@ -3,7 +3,7 @@ use std::ptr;
 
 use gpui::{AnyElement, Context, Div, FontWeight, div, prelude::*, px};
 use native_gpui::tokens::{self, SystemColor, system_color};
-use native_gpui::{ControlSize, NativeLabel, native_image, native_label, native_popup};
+use native_gpui::{ControlSize, native_image, native_label, native_popup};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{AnyThread, msg_send};
@@ -164,12 +164,6 @@ fn rule() -> Div {
     div().absolute().bg(system_color(SystemColor::Separator))
 }
 
-fn secondary(id: &'static str, text: &str, size: f32) -> NativeLabel {
-    native_label(id, text)
-        .font_size(px(size))
-        .color(SystemColor::SecondaryLabel)
-}
-
 fn label_width(text: &str, size: f32) -> f32 {
     let width = tokens::appkit_string_width(
         tokens::system_font_family(),
@@ -219,7 +213,11 @@ impl FinderDemo {
                             .ml(px(-LABEL_INSET))
                             .flex()
                             .flex_col()
-                            .child(secondary("ng.finder.airdrop.as", "Use AirDrop as", 13.))
+                            .child(
+                                native_label("ng.finder.airdrop.as", "Use AirDrop as")
+                                    .font_size(px(13.))
+                                    .color(SystemColor::SecondaryLabel),
+                            )
                             .child(
                                 native_label(
                                     "ng.finder.airdrop.name",
@@ -247,20 +245,24 @@ impl FinderDemo {
                     .flex()
                     .flex_col()
                     .gap(px(LINE_GAP))
-                    .child(secondary(
-                        "ng.finder.airdrop.about",
-                        "AirDrop lets you share instantly with people nearby.",
-                        12.,
-                    ))
+                    .child(
+                        native_label(
+                            "ng.finder.airdrop.about",
+                            "AirDrop lets you share instantly with people nearby.",
+                        )
+                        .font_size(px(12.)),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .child(div().w(px(label_width(allow, 12.))).child(secondary(
-                                "ng.finder.airdrop.allow",
-                                allow,
-                                12.,
-                            )))
+                            .child(
+                                div().w(px(label_width(allow, 12.))).child(
+                                    native_label("ng.finder.airdrop.allow", allow)
+                                        .font_size(px(12.))
+                                        .color(SystemColor::ControlAccent),
+                                ),
+                            )
                             .child(popup),
                     ),
             )
