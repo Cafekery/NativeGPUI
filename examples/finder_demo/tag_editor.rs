@@ -13,9 +13,9 @@ use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAttachmentAttributeName, NSAttributedStringAttachmentConveniences,
-    NSBezierPath, NSButton, NSCell, NSCellImagePosition, NSColor, NSControl,
-    NSControlTextEditingDelegate, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImage, NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing,
+    NSBezierPath, NSButton, NSCell, NSColor, NSControl, NSControlTextEditingDelegate, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSScrollView, NSStringDrawing,
     NSTextAlignment, NSTextAttachment, NSTextAttachmentCell, NSTextField, NSTextFieldDelegate,
     NSTextView, NSView,
 };
@@ -27,10 +27,15 @@ use objc2_foundation::{
 use crate::app::FinderDemo;
 use crate::tags::{all, held_tags, retag, tag_ns_color};
 
-const WIDTH: f64 = 252.;
-const ROW: f64 = 22.;
-const ROWS: usize = 12;
-const HEAD: f64 = 74.;
+const WIDTH: f64 = 238.;
+const HEIGHT: f64 = 165.;
+const LIST_Y: f64 = 6.;
+const LIST_H: f64 = 105.;
+const ROW: f64 = 19.;
+const ROW_X: f64 = 11.;
+const ROW_W: f64 = WIDTH - ROW_X - 12.;
+const SWATCH: f64 = 16.;
+const NAME_X: f64 = 15.;
 const TOKEN_H: f64 = 15.;
 const TOKEN_PAD: f64 = 10.;
 const TOKEN_TEXT: f64 = 11.;
@@ -397,9 +402,8 @@ impl FinderDemo {
             count => format!("Assign tags to {count} items"),
         };
         let listed = all();
-        let height = HEAD + listed.len().min(ROWS) as f64 * ROW + 10.;
         let spec = PopoverOptions {
-            size: size(px(WIDTH as f32), px(height as f32)),
+            size: size(px(WIDTH as f32), px(HEIGHT as f32)),
             edge: SurfaceEdge::Below,
             behavior: PopoverBehavior::Transient,
             animates: true,
@@ -410,22 +414,22 @@ impl FinderDemo {
         let popover = present_popover(window, cx, &self.ql_icon, spec, move |mtm, actions| {
             let view = NSView::initWithFrame(
                 NSView::alloc(mtm),
-                NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, height)),
+                NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, HEIGHT)),
             );
             let label = NSTextField::labelWithString(&NSString::from_str(&title), mtm);
             label.setFrame(NSRect::new(
-                NSPoint::new(12., height - 30.),
-                NSSize::new(WIDTH - 24., 18.),
+                NSPoint::new(12., 146.),
+                NSSize::new(WIDTH - 24., 14.),
             ));
+            label.setFont(Some(&NSFont::systemFontOfSize(
+                NSFont::smallSystemFontSize(),
+            )));
             label.setAlignment(NSTextAlignment::Center);
             view.addSubview(&label);
 
             let field = tag_field(
                 mtm,
-                NSRect::new(
-                    NSPoint::new(10., height - 64.),
-                    NSSize::new(WIDTH - 20., 26.),
-                ),
+                NSRect::new(NSPoint::new(5., 118.), NSSize::new(WIDTH - 10., 22.)),
                 &held,
             );
             view.addSubview(&field);
@@ -438,17 +442,32 @@ impl FinderDemo {
                     .ok();
             });
 
-            for (at, tag) in listed.iter().take(ROWS).enumerate() {
-                let y = height - HEAD - (at as f64 + 1.) * ROW;
+            let tall = (listed.len() as f64 * ROW).max(LIST_H);
+            let rows = NSView::initWithFrame(
+                NSView::alloc(mtm),
+                NSRect::new(NSPoint::ZERO, NSSize::new(WIDTH, tall)),
+            );
+            for (at, tag) in listed.iter().enumerate() {
+                let y = tall - (at as f64 + 1.) * ROW;
+                let swatch = NSImageView::imageViewWithImage(&dot(tag_ns_color(tag.color)), mtm);
+                swatch.setImageScaling(NSImageScaling::ScaleNone);
+                swatch.setFrame(NSRect::new(
+                    NSPoint::new(ROW_X, y + 2.),
+                    NSSize::new(SWATCH, SWATCH),
+                ));
+                rows.addSubview(&swatch);
+                let name = NSTextField::labelWithString(&NSString::from_str(&tag.name), mtm);
+                name.setFrame(NSRect::new(
+                    NSPoint::new(ROW_X + NAME_X, y + 3.),
+                    NSSize::new(ROW_W - NAME_X, 16.),
+                ));
+                rows.addSubview(&name);
                 let button = NSButton::initWithFrame(
                     NSButton::alloc(mtm),
-                    NSRect::new(NSPoint::new(12., y), NSSize::new(WIDTH - 24., ROW)),
+                    NSRect::new(NSPoint::new(ROW_X, y), NSSize::new(ROW_W, ROW)),
                 );
                 button.setTitle(&NSString::from_str(&tag.name));
-                button.setBordered(false);
-                button.setImage(Some(&dot(tag_ns_color(tag.color))));
-                button.setImagePosition(NSCellImagePosition::ImageLeft);
-                button.setAlignment(NSTextAlignment::Left);
+                button.setTransparent(true);
                 let (field, tag, pick) = (field.clone(), tag.clone(), demo.clone());
                 actions.on_action(&button, move |_, app| {
                     let mut now = tags_in(&field);
@@ -458,8 +477,20 @@ impl FinderDemo {
                     }
                     pick.update(app, |this, cx| this.commit_tags(cx)).ok();
                 });
-                view.addSubview(&button);
+                rows.addSubview(&button);
             }
+            let list = NSScrollView::initWithFrame(
+                NSScrollView::alloc(mtm),
+                NSRect::new(NSPoint::new(0., LIST_Y), NSSize::new(WIDTH, LIST_H)),
+            );
+            list.setDrawsBackground(false);
+            list.setHasVerticalScroller(true);
+            list.setAutohidesScrollers(true);
+            list.setDocumentView(Some(&rows));
+            let clip = list.contentView();
+            clip.scrollToPoint(NSPoint::new(0., tall - LIST_H));
+            list.reflectScrolledClipView(&clip);
+            view.addSubview(&list);
             view
         });
         let (Some(popover), Some(field)) = (popover, built.take()) else {
