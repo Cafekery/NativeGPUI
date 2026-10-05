@@ -48,4 +48,6 @@ use native_gpui::tokens::{
 
 fn main() {
     let _ = MenuCommand::checked;
+    let _ = ToolbarItem::selectable;
+    let _ = ToolbarStyle::Preference;
 }
