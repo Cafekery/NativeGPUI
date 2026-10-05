@@ -15,11 +15,15 @@ pub(crate) fn toolbar_rule() -> bool {
     !*MACOS_27
 }
 
-pub(crate) fn band_edge(band: Pixels, header: Pixels) -> AnyElement {
+pub(crate) fn band_edge(band: Pixels, header: Pixels, scrolled: Pixels) -> AnyElement {
     div()
         .absolute()
         .inset_0()
-        .child(scroll_edge_effect("ng.finder.band").header(header))
+        .child(
+            scroll_edge_effect("ng.finder.band")
+                .header(header)
+                .scrolled(scrolled),
+        )
         .child(
             div()
                 .absolute()

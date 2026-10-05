@@ -61,7 +61,7 @@ impl FinderDemo {
                 }
                 let visible = gpui::size(
                     self.list_room,
-                    f32::from(self.icons.scroll.bounds().size.height),
+                    f32::from(self.icons.scroll.bounds().size.height - self.under_bars()),
                 );
                 self.icons.reveal(&line.key, visible);
             }

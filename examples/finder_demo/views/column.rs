@@ -217,9 +217,10 @@ impl FinderDemo {
         let this_drop = this.clone();
         let hit_scroll = handle.clone();
         let stretch = self.bands.columns[index].shown().y;
+        let inset = self.under_bars() + px(TOP_GAP);
         let hit = move |demo: &FinderDemo, at: Point<Pixels>| {
-            let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y + stretch);
-            let row = (f32::from(at.y) - top - TOP_GAP) / row_h;
+            let top = f32::from(hit_scroll.0.borrow().base_handle.offset().y + stretch + inset);
+            let row = (f32::from(at.y) - top) / row_h;
             if row < 0. {
                 return None;
             }
@@ -378,6 +379,7 @@ impl FinderDemo {
             },
         )
         .flex_1()
+        .pt(inset)
         .track_scroll(&handle)
         .on_scroll_wheel(stretching(
             move |this| {
@@ -419,13 +421,12 @@ impl FinderDemo {
             .relative()
             .flex()
             .flex_col()
-            .pt(px(TOP_GAP))
             .child(area)
             .child(list)
             .child(
                 div()
                     .absolute()
-                    .top(px(TOP_GAP))
+                    .top(inset)
                     .bottom_0()
                     .left_0()
                     .right_0()
@@ -599,6 +600,7 @@ impl FinderDemo {
             .flex()
             .flex_col()
             .items_center()
+            .pt(self.under_bars())
             .child(
                 div()
                     .w(px(PREVIEW_W))

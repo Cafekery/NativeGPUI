@@ -1084,7 +1084,8 @@ impl FinderDemo {
             .is_some_and(|folder| !folder.loading);
         let layout = self.icons.layout(&lines, lanes, room, options, settled);
         let (width, height) = (layout.width, layout.height);
-        let shift = self.bands.icons.shown();
+        let inset = self.under_bars();
+        let shift = self.icon_shift();
         let mut canvas = div()
             .id("ng.finder.icons")
             .flex_1()
@@ -1109,11 +1110,11 @@ impl FinderDemo {
             .child(
                 div()
                     .w(px(width))
-                    .h(px(height))
+                    .h(px(height) + inset)
                     .flex_none(),
             );
 
-        let top = -f32::from(self.icons.scroll.offset().y);
+        let top = -f32::from(self.icons.scroll.offset().y + inset);
         let tall = f32::from(window.viewport_size().height);
         for index in layout.visible(top, tall) {
             let line = &lines[index];
@@ -1381,8 +1382,12 @@ impl FinderDemo {
 
     pub(crate) fn land_icons(&mut self, keys: &[SharedString], at: Point<Pixels>) {
         let scroll = &self.icons.scroll;
-        let at = at - scroll.bounds().origin - scroll.offset() - self.bands.icons.shown();
+        let at = at - scroll.bounds().origin - scroll.offset() - self.icon_shift();
         self.icons.land(keys.iter().filter_map(named).collect(), at);
+    }
+
+    fn icon_shift(&self) -> Point<Pixels> {
+        self.bands.icons.shown() + point(px(0.), self.under_bars())
     }
 
     pub(crate) fn arrangement(&self) -> Option<Arrangement> {

@@ -3,7 +3,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, Context, Div, MouseButton, Render, Stateful, Window, div, prelude::*, px, relative,
+    AnyElement, Context, Div, MouseButton, Pixels, Render, Stateful, Window, div, prelude::*, px,
+    relative,
 };
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
@@ -244,6 +245,25 @@ impl FinderDemo {
         }
     }
 
+    /// Icon and column view run on under the bars, beneath a soft scroll edge only private-api shows.
+    pub(crate) fn soft_edge(&self) -> bool {
+        cfg!(feature = "private-api")
+            && matches!(self.view, ICON_VIEW | COLUMN_VIEW)
+            && !self.airdrop_shown()
+    }
+
+    pub(crate) fn under_bars(&self) -> Pixels {
+        if !self.soft_edge() {
+            return px(0.);
+        }
+        let scope_h = if self.in_search() {
+            self.search_bars_h()
+        } else {
+            0.
+        };
+        self.metrics().top + px(scope_h)
+    }
+
     fn list_column(
         &self,
         rows: AnyElement,
@@ -286,16 +306,17 @@ impl FinderDemo {
             )
         };
         let icons = self.view == ICON_VIEW;
+        let soft = self.soft_edge();
         let surface = div()
             .absolute()
             .left_0()
             .right(if icons { -metrics.right } else { px(0.) })
             .bottom(px(bar))
-            .top(if banded { px(0.) } else { top })
+            .top(if banded || soft { px(0.) } else { top })
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when(!banded && !icons && toolbar_rule(), |column| {
+            .when(!banded && !icons && !soft && toolbar_rule(), |column| {
                 column.border_t_1().border_color(palette.separator)
             })
             .child(if banded {
@@ -326,8 +347,12 @@ impl FinderDemo {
                 )
             })
             // A Layer::Above view blurs only what is painted before it: the rows and the header.
-            .when(banded || scope_h > 0., |column| {
-                column.child(band_edge(top + header_h, px(scope_h) + header_h))
+            .when(banded || soft || scope_h > 0., |column| {
+                let scrolled = match soft && icons {
+                    true => -self.icons.scroll.offset().y,
+                    false => px(0.),
+                };
+                column.child(band_edge(top + header_h, px(scope_h) + header_h, scrolled))
             })
             .children(search_bars.map(|(scope, criteria)| {
                 div()

@@ -191,7 +191,7 @@ impl FinderDemo {
             true => self.preview_w,
             false => 0.,
         };
-        let height = f32::from(self.icons.scroll.bounds().size.height);
+        let height = f32::from(self.icons.scroll.bounds().size.height - self.under_bars());
         size(
             width - f32::from(self.metrics().left) - pane - 4.,
             match height > 0. {
