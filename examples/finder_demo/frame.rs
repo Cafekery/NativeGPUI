@@ -16,7 +16,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use crate::app::FinderDemo;
 use crate::app::LIST_CONTEXT;
 use crate::chrome::path_bar::PATH_H;
-use crate::chrome::surface::{band_glass, toolbar_rule};
+use crate::chrome::surface::{band_edge, toolbar_rule};
 use crate::dragdrop::RowDrag;
 use crate::elastic::stretching;
 use crate::menus;
@@ -325,9 +325,9 @@ impl FinderDemo {
                         .occlude(),
                 )
             })
-            // A Layer::Above material blurs only what is painted before it: the rows and the header.
+            // A Layer::Above view blurs only what is painted before it: the rows and the header.
             .when(banded || scope_h > 0., |column| {
-                column.child(band_glass(top + header_h))
+                column.child(band_edge(top + header_h, px(scope_h) + header_h))
             })
             .children(search_bars.map(|(scope, criteria)| {
                 div()

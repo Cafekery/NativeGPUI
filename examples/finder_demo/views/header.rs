@@ -473,7 +473,7 @@ pub(crate) struct HeaderBand {
 impl Render for HeaderBand {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let (look, demo) = (&self.look, &self.demo);
-        // No fill: the band's material has only the rows behind it left to sample.
+        // No fill: the band's edge effect has only the rows behind it left to sample.
         let mut row = div()
             .w_full()
             .h(px(HEADER_H))
@@ -523,15 +523,7 @@ impl Render for HeaderBand {
             );
         }
 
-        row.child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(1.))
-                .child(native_rule("ng.finder.header.hairline")),
-        )
+        row
     }
 }
 

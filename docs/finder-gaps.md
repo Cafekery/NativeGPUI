@@ -428,6 +428,11 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
 - The "Favorites" header's accessibility frame is 198x21 at y=51 in Finder and 198x16 at y=55 in the
   demo. The glyphs land on the same pixels (x 16.5..65.5, y 58..67.5).
 - Dark, the toolbar band over the list (x=600 pt, y 2..50): Finder 39 40 39, the demo 40 40 40.
+- The band under the toolbar and list header is AppKit's top scroll edge (an `NSScrollPocket`: one
+  blur under an 82.5% `controlBackgroundColor` tint, the header's rule, a 0.5 pt separator), which
+  the demo now hosts over its rows. Dark, key, a 60-row list scrolled to its end: the right edge of
+  a white name run spreads 30 px (10–90%, 2x) under the band in both apps (99 px with the old
+  `HeaderView` material), and the rule and separator read 77 77 58 in both (72 72 43 before).
 - Light mode shows no lift in either app, in any view: behind the traffic lights, across the header band
   and down the rows both read 236.8..237.0 key and 242.0 non-key.
 - The sidebar's tint comes from where the window sits on the desktop picture, one tint for the whole
