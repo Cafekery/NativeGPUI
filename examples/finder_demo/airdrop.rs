@@ -1,8 +1,8 @@
 use std::cell::OnceCell;
 use std::ptr;
 
-use gpui::{AnyElement, Context, FontWeight, div, prelude::*, px};
-use native_gpui::tokens::{self, SystemColor};
+use gpui::{AnyElement, Context, Div, FontWeight, div, prelude::*, px};
+use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{ControlSize, NativeLabel, native_image, native_label, native_popup};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
@@ -18,6 +18,7 @@ use objc2_foundation::{
 
 use crate::app::FinderDemo;
 use crate::chrome::path_bar::LABEL_INSET;
+use crate::chrome::surface::toolbar_rule;
 
 const INSET: f32 = 16.;
 const PHOTO: f64 = 48.;
@@ -26,6 +27,9 @@ const PHOTO_GAP: f32 = 8.;
 const LINE_GAP: f32 = 2.;
 const POPUP_W: f32 = 114.;
 const FLOOR: f32 = 12.;
+const RULE_Y: f32 = 2. * INSET + PHOTO as f32;
+const FOOTER_RULE: f32 = 61.;
+const HAIRLINE: f32 = 0.5;
 const PHOTO_NAME: &str = "ng.finder.airdrop.photo";
 const SETTINGS: &str = "x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension";
 const MODES: [(&str, &str); 3] = [
@@ -156,6 +160,10 @@ fn discoverable() -> usize {
         .unwrap_or(1)
 }
 
+fn rule() -> Div {
+    div().absolute().bg(system_color(SystemColor::Separator))
+}
+
 fn secondary(id: &'static str, text: &str, size: f32) -> NativeLabel {
     native_label(id, text)
         .font_size(px(size))
@@ -190,6 +198,9 @@ impl FinderDemo {
         div()
             .size_full()
             .relative()
+            .when(!toolbar_rule(), |body| {
+                body.child(rule().top_0().left_0().right_0().h(px(HAIRLINE)))
+            })
             .child(
                 div()
                     .absolute()
@@ -219,6 +230,14 @@ impl FinderDemo {
                             ),
                     ),
             )
+            .child(
+                rule()
+                    .top(px(RULE_Y))
+                    .left(px(INSET))
+                    .right(px(INSET))
+                    .h(px(1.)),
+            )
+            .child(rule().bottom(px(FOOTER_RULE)).left_0().right_0().h(px(1.)))
             .child(
                 div()
                     .absolute()
