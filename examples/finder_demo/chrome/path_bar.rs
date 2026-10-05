@@ -106,7 +106,7 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
 const ICLOUD_ART: &str = "iCloudDriveNode";
 
 /// Names Finder's iCloud Drive art in this process, for `FileType::Named` to find.
-fn icloud_art() -> FileType<'static> {
+pub(crate) fn icloud_art() -> FileType<'static> {
     thread_local! {
         static NAMED: Cell<bool> = const { Cell::new(false) };
     }

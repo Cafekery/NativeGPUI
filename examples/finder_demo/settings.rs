@@ -1,15 +1,21 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, Context, ElementId, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, WindowBounds, WindowHandle, WindowOptions, div, point, px, size,
+    AnyElement, App, AppContext, Bounds, Context, Div, ElementId, IntoElement, ParentElement,
+    Render, SharedString, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowHandle,
+    WindowOptions, div, point, px, size,
 };
-use native_gpui::tokens::{self, SystemColor, system_color};
+use native_gpui::tokens::{self, FileType, SystemColor, system_color};
 use native_gpui::{
-    CheckState, MenuEntry, ToolbarItem, ToolbarSegment, ToolbarStyle, native_checkbox,
-    native_popup, native_root, set_toolbar, window_options,
+    CheckState, MenuEntry, NativeLabel, RawMaterial, ToolbarItem, ToolbarStyle, material,
+    native_checkbox, native_label, native_popup, native_root, set_toolbar, window_options,
 };
-use objc2_foundation::{NSString, NSURL};
+use objc2::msg_send;
+use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
+use objc2_foundation::{
+    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLIsUbiquitousItemKey, NSUserDefaults,
+};
 
 use crate::app::FinderDemo;
 use crate::chrome::sidebar;
@@ -17,8 +23,9 @@ use crate::prefs::{self, WindowTarget};
 use crate::tags::finder_color_rgb;
 
 const WIDTH: f32 = 377.;
-/// Finder's window height on each pane, title bar and toolbar included.
-const HEIGHTS: [f32; 4] = [497., 591., 828., 392.];
+/// The frames below are Finder's, from its window's top: the content starts under the toolbar.
+const CHROME: f32 = 88.;
+const CONTENT: [f32; 4] = [407., 503., 740., 304.];
 const PANES: [(&str, &str); 4] = [
     ("General", "gearshape"),
     ("Tags", "tag"),
@@ -26,7 +33,9 @@ const PANES: [(&str, &str); 4] = [
     ("Advanced", "gearshape.2"),
 ];
 const PANE: &str = "ng.finder.settings.pane";
-const TOOLBAR: &str = "ng.finder.settings.panes";
+const ICLOUD_SETTINGS: &str =
+    "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings?iCloud";
+const RECENTS_ICON: &str = "/System/Library/CoreServices/Finder.app/Contents/Resources/MyLibraries/myDocuments.cannedSearch";
 
 const DESKTOP: [(&str, &str, bool); 4] = [
     ("Hard disks", "ShowHardDrivesOnDesktop", false),
@@ -78,36 +87,65 @@ pub(crate) struct Settings {
     pane: usize,
 }
 
+enum Icon {
+    Path(PathBuf),
+    Art(FileType<'static>),
+}
+
 /// One row of the New Finder windows show menu: its title and the `NewWindowTarget` it stores.
 struct Place {
     title: String,
+    icon: Option<Icon>,
     code: Option<&'static str>,
     path: Option<PathBuf>,
+}
+
+impl Place {
+    fn entry(&self) -> MenuEntry {
+        let entry = MenuEntry::item(self.title.clone());
+        match &self.icon {
+            Some(Icon::Path(path)) => entry.file_icon(FileType::Path(&path.to_string_lossy())),
+            Some(Icon::Art(art)) => entry.file_icon(*art),
+            None => entry,
+        }
+    }
 }
 
 fn places() -> (Vec<Place>, usize) {
     use finder_fs::volumes::{Standard, standard};
     let home = standard(Standard::Home).unwrap_or_else(|| PathBuf::from("/"));
-    let place = |title: String, code| Place {
+    let place = |title: String, icon, code| Place {
         title,
+        icon,
         code: Some(code),
         path: None,
     };
     let separator = || Place {
         title: String::new(),
+        icon: None,
         code: None,
         path: None,
     };
     let name = |path: &Path| finder_fs::name::of_path(path);
+    let folder = |which| Some(Icon::Path(standard(which).unwrap_or_else(|| home.clone())));
+    let computer = crate::locations::artwork(crate::locations::COMPUTER).map(Icon::Art);
     let mut rows = vec![
-        place(crate::locations::computer_name().into(), "PfCm"),
-        place(name(Path::new("/")), "PfVo"),
+        place(crate::locations::computer_name().into(), computer, "PfCm"),
+        place(name(Path::new("/")), Some(Icon::Path("/".into())), "PfVo"),
         separator(),
-        place(name(&home), "PfHm"),
-        place("Desktop".into(), "PfDe"),
-        place("Documents".into(), "PfDo"),
-        place("Recents".into(), "PfAF"),
-        place("iCloud Drive".into(), "PfID"),
+        place(name(&home), folder(Standard::Home), "PfHm"),
+        place("Desktop".into(), folder(Standard::Desktop), "PfDe"),
+        place("Documents".into(), folder(Standard::Documents), "PfDo"),
+        place(
+            "Recents".into(),
+            Some(Icon::Path(RECENTS_ICON.into())),
+            "PfAF",
+        ),
+        place(
+            "iCloud Drive".into(),
+            Some(Icon::Art(crate::chrome::path_bar::icloud_art())),
+            "PfID",
+        ),
         separator(),
     ];
     let code = prefs::setting_text("NewWindowTarget");
@@ -118,13 +156,58 @@ fn places() -> (Vec<Place>, usize) {
         chosen = Some(rows.len());
         rows.push(Place {
             title: name(&path),
+            icon: Some(Icon::Path(path.clone())),
             code: Some("PfLo"),
             path: Some(path),
         });
         rows.push(separator());
     }
-    rows.push(place("Other…".into(), "PfLo"));
+    rows.push(place("Other…".into(), None, "PfLo"));
     (rows, chosen.unwrap_or(6))
+}
+
+fn at(x: f32, y: f32) -> Div {
+    div().absolute().left(px(x)).top(px(y - CHROME))
+}
+
+fn label(text: &str) -> NativeLabel {
+    native_label(
+        ElementId::Name(format!("ng.finder.settings.{text}").into()),
+        text,
+    )
+}
+
+fn footnote(text: &str) -> NativeLabel {
+    label(text)
+        .font_size(px(10.))
+        .color(SystemColor::SecondaryLabel)
+}
+
+fn lines(x: f32, y: f32, pitch: f32, texts: &[&str], make: fn(&str) -> NativeLabel) -> Div {
+    texts.iter().zip(0..).fold(div(), |lines, (text, line)| {
+        lines.child(
+            at(x, y + pitch * line as f32)
+                .w(px(WIDTH - x))
+                .child(make(text)),
+        )
+    })
+}
+
+fn global_on(key: &str) -> bool {
+    NSUserDefaults::standardUserDefaults().boolForKey(&NSString::from_str(key))
+}
+
+fn syncs_desktop() -> bool {
+    let Some(desktop) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Desktop) else {
+        return false;
+    };
+    let url =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&desktop.to_string_lossy()), true);
+    let mut synced = None;
+    let _ = unsafe { url.getResourceValue_forKey_error(&mut synced, NSURLIsUbiquitousItemKey) };
+    synced
+        .and_then(|synced| synced.downcast::<NSNumber>().ok())
+        .is_some_and(|synced| synced.boolValue())
 }
 
 fn heading(text: &'static str) -> impl IntoElement {
@@ -192,7 +275,7 @@ impl Settings {
             .iter()
             .map(|place| match place.code {
                 None => MenuEntry::separator(),
-                Some(_) => MenuEntry::item(place.title.clone()),
+                Some(_) => place.entry(),
             })
             .collect();
         let picked = cx.listener(move |_, index: &usize, window, cx| {
@@ -213,30 +296,72 @@ impl Settings {
             cx.notify();
         });
         div()
-            .flex()
-            .flex_col()
-            .gap(px(7.))
-            .child(heading("Show these items on the desktop:"))
-            .children(
-                DESKTOP.iter().map(|(label, key, default)| {
-                    div().pl(px(18.)).child(toggle(key, label, *default))
-                }),
-            )
-            .child(div().h(px(14.)))
-            .child(heading("New Finder windows show:"))
             .child(
-                div().pl(px(18.)).child(
+                at(28., 104.)
+                    .w(px(300.))
+                    .child(label("Show these items on the desktop:")),
+            )
+            .children(DESKTOP.iter().zip(0..).map(|((label, key, default), row)| {
+                at(48., 128. + 22. * row as f32).child(toggle(key, label, *default))
+            }))
+            .child(
+                at(28., 234.)
+                    .w(px(300.))
+                    .child(label("New Finder windows show:")),
+            )
+            .child(
+                at(48., 258.).child(
                     native_popup("ng.finder.settings.target", chosen)
                         .entries(entries)
                         .width(px(284.))
                         .on_change(picked),
                 ),
             )
-            .child(div().h(px(14.)))
-            .child(toggle(
+            .child(
+                at(30., 311.).child(
+                    native_checkbox("ng.finder.settings.sync", syncs_desktop())
+                        .title("Sync Desktop & Documents folders")
+                        .on_change(|_, window, cx| {
+                            cx.open_url(ICLOUD_SETTINGS);
+                            window.refresh();
+                        }),
+                ),
+            )
+            .child(lines(
+                50.5,
+                340.,
+                13.,
+                &[
+                    "Store your Desktop & Documents folders in iCloud Drive",
+                    "and access them from your other devices.",
+                ],
+                footnote,
+            ))
+            .child(at(30., 387.).child(toggle(
                 "FinderSpawnTab",
                 "Open folders in tabs instead of new windows",
                 true,
+            )))
+            .child(
+                at(30., 422.).child(
+                    native_checkbox(
+                        "ng.finder.settings.names",
+                        !global_on("NSSmartNamingDisabled"),
+                    )
+                    .title("Suggest file names")
+                    .enabled(false),
+                ),
+            )
+            .child(lines(
+                48.5,
+                440.,
+                13.,
+                &[
+                    "Suggested names when renaming, saving, and editing files",
+                    "are based on file content and the names of other files in the",
+                    "folder.",
+                ],
+                footnote,
             ))
             .into_any_element()
     }
@@ -424,26 +549,75 @@ impl Render for Settings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = match self.pane {
             0 => self.general(cx),
-            1 => self.tags(),
-            2 => self.sidebar(),
-            _ => self.advanced(),
+            1 => unplaced(self.tags()),
+            2 => unplaced(self.sidebar()),
+            _ => unplaced(self.advanced()),
         };
         native_root(
             div()
                 .size_full()
-                .pt(px(20.))
-                .px(px(27.))
-                .bg(system_color(SystemColor::WindowBackground))
+                .relative()
+                .child(
+                    material(
+                        "ng.finder.settings.background",
+                        RawMaterial::WindowBackground,
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
                 .child(pane),
         )
     }
 }
 
+fn unplaced(pane: AnyElement) -> AnyElement {
+    div().pt(px(20.)).px(px(27.)).child(pane).into_any_element()
+}
+
+fn install_toolbar(pane: usize, settings: WeakEntity<Settings>, window: &mut Window, cx: &mut App) {
+    let items: Vec<ToolbarItem> = PANES
+        .iter()
+        .enumerate()
+        .map(|(index, (name, symbol))| {
+            let settings = settings.clone();
+            ToolbarItem::symbol(format!("ng.finder.settings.{name}"), *symbol, *name)
+                .selectable(index == pane)
+                .on_click(move |window, cx| {
+                    settings
+                        .update(cx, |this, cx| show_pane(this, index, window, cx))
+                        .ok();
+                })
+        })
+        .collect();
+    set_toolbar(window, cx, Some(ToolbarStyle::Preference), &items);
+}
+
 fn show_pane(this: &mut Settings, pane: usize, window: &mut Window, cx: &mut Context<Settings>) {
+    if this.pane == pane {
+        return;
+    }
     this.pane = pane;
     prefs::set_setting_text(PANE, PANES[pane].0);
-    window.resize(size(px(WIDTH), px(HEIGHTS[pane])));
+    install_toolbar(pane, cx.entity().downgrade(), window, cx);
+    fit(window, pane);
     cx.notify();
+}
+
+/// Resizes to the pane's content, keeping the top edge where it is.
+fn fit(window: &Window, pane: usize) {
+    let Some(ns_window) = crate::frame::ns_window(window) else {
+        return;
+    };
+    let frame = ns_window.frame();
+    let chrome = frame.size.height - ns_window.contentRectForFrameRect(frame).size.height;
+    let height = chrome + f64::from(CONTENT[pane]);
+    let fitted = NSRect::new(
+        NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height - height),
+        NSSize::new(frame.size.width, height),
+    );
+    // The animator returns at once: a blocking resize would reach gpui while it holds the app.
+    let animator: Retained<NSWindow> = unsafe { msg_send![&*ns_window, animator] };
+    animator.setFrame_display(fitted, true);
 }
 
 pub(crate) fn open(cx: &mut App) {
@@ -474,36 +648,21 @@ fn show(cx: &mut App) {
     let opened: Option<WindowHandle<Settings>> = cx
         .open_window(
             WindowOptions {
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Found’er Settings".into()),
+                    ..Default::default()
+                }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(969.), px(350.)),
-                    size: size(px(WIDTH), px(HEIGHTS[pane])),
+                    size: size(px(WIDTH), px(CONTENT[pane])),
                 })),
                 is_resizable: false,
                 is_minimizable: false,
                 ..window_options()
             },
             |window, cx| {
-                window.set_window_title("Found’er Settings");
                 let entity = cx.new(|_| Settings { pane });
-                let weak = entity.downgrade();
-                let segments = PANES
-                    .iter()
-                    .map(|(name, symbol)| ToolbarSegment::new(*symbol, *name));
-                set_toolbar(
-                    window,
-                    cx,
-                    Some(ToolbarStyle::Unified),
-                    &[
-                        ToolbarItem::flexible_space(),
-                        ToolbarItem::group(TOOLBAR, "Settings", segments, pane).on_select(
-                            move |index, window, cx| {
-                                weak.update(cx, |this, cx| show_pane(this, index, window, cx))
-                                    .ok();
-                            },
-                        ),
-                        ToolbarItem::flexible_space(),
-                    ],
-                );
+                install_toolbar(pane, entity.downgrade(), window, cx);
                 entity
             },
         )
