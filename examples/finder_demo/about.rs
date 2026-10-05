@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use gpui::{
     App, Bounds, Context, Div, FontWeight, Pixels, Window, WindowBounds, WindowHandle,
@@ -9,7 +9,7 @@ use native_gpui::{
     LabelAlign, native_label, native_raster, native_root, titlebar_band, window_options,
 };
 use objc2::MainThreadMarker;
-use objc2_foundation::{NSBundle, NSString};
+use objc2_foundation::{NSBundle, NSString, ns_string};
 
 use crate::chrome::toolbar::{system_corners, titled_height};
 
@@ -21,11 +21,11 @@ const ICON_Y: f32 = 22.;
 const TEXT_X: f32 = 17.;
 
 thread_local! {
-    static OPEN: RefCell<Option<WindowHandle<About>>> = const { RefCell::new(None) };
+    static OPEN: Cell<Option<WindowHandle<About>>> = const { Cell::new(None) };
 }
 
 pub(crate) fn show(cx: &mut App) {
-    let raised = OPEN.with_borrow(|open| *open).is_some_and(|open| {
+    let raised = OPEN.get().is_some_and(|open| {
         open.update(cx, |_, window, _| window.activate_window())
             .is_ok()
     });
@@ -47,21 +47,15 @@ pub(crate) fn show(cx: &mut App) {
         |window, cx| {
             window.set_window_title("");
             system_corners(window);
-            cx.new(|cx| {
-                cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
-                    .detach();
-                About
-            })
+            cx.new(|_| About)
         },
     );
-    if let Ok(opened) = opened {
-        OPEN.with_borrow_mut(|open| *open = Some(opened));
-    }
+    OPEN.set(opened.ok());
 }
 
-fn bundle_string(key: &str) -> String {
+fn bundle_string(key: &NSString) -> String {
     NSBundle::mainBundle()
-        .objectForInfoDictionaryKey(&NSString::from_str(key))
+        .objectForInfoDictionaryKey(key)
         .and_then(|value| value.downcast::<NSString>().ok())
         .map(|value| value.to_string())
         .unwrap_or_default()
@@ -86,7 +80,7 @@ struct About;
 
 impl Render for About {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let name = bundle_string("CFBundleName");
+        let name = bundle_string(ns_string!("CFBundleName"));
         let (regular, small) = (tokens::system_font_size(), tokens::small_system_font_size());
         let icon = tokens::file_icon(FileType::Named("NSApplicationIcon"), px(ICON));
         native_root(
@@ -126,7 +120,7 @@ impl Render for About {
                             207.,
                             &format!(
                                 "{name} version {}",
-                                bundle_string("CFBundleShortVersionString")
+                                bundle_string(ns_string!("CFBundleShortVersionString"))
                             ),
                             small,
                             FontWeight::NORMAL,
@@ -134,7 +128,7 @@ impl Render for About {
                         .child(line(
                             "ng.finder.about.build",
                             224.,
-                            &format!("Build {}", bundle_string("CFBundleVersion")),
+                            &format!("Build {}", bundle_string(ns_string!("CFBundleVersion"))),
                             small,
                             FontWeight::NORMAL,
                         ))

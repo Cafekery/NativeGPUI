@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use gpui::{
     App, Bounds, Context, Window, WindowBounds, WindowHandle, WindowOptions, div, point,
@@ -23,11 +23,11 @@ const STATUS_BOTTOM: f32 = 3.;
 const STATUS_INSET: f32 = 2.;
 
 thread_local! {
-    static OPEN: RefCell<Option<WindowHandle<Clipboard>>> = const { RefCell::new(None) };
+    static OPEN: Cell<Option<WindowHandle<Clipboard>>> = const { Cell::new(None) };
 }
 
 pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
-    let raised = OPEN.with_borrow(|open| *open).is_some_and(|open| {
+    let raised = OPEN.get().is_some_and(|open| {
         open.update(cx, |_, window, _| window.activate_window())
             .is_ok()
     });
@@ -59,9 +59,7 @@ pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
             })
         },
     );
-    if let Ok(opened) = opened {
-        OPEN.with_borrow_mut(|open| *open = Some(opened));
-    }
+    OPEN.set(opened.ok());
 }
 
 struct Clipboard;

@@ -640,7 +640,7 @@ fn file_rows() -> Vec<MenuCommand> {
 
 fn tag_row() -> native_gpui::MenuView {
     let chosen = CHOSEN.with_borrow(Rc::clone);
-    let carried: Vec<Vec<crate::tags::RowTag>> = chosen
+    let carried: Vec<_> = chosen
         .keys
         .iter()
         .map(|key| crate::tags::row_tags(key))

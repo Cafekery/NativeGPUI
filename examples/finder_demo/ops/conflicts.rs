@@ -10,6 +10,7 @@ use native_gpui::{CheckState, Material, material, native_button, native_checkbox
 
 use super::After;
 use crate::app::FinderDemo;
+use crate::chrome::toolbar::ALERT_RADIUS;
 use crate::data::byte_string;
 use crate::palette::Palette;
 
@@ -241,11 +242,11 @@ impl FinderDemo {
                 div()
                     .relative()
                     .w(px(SHEET_W))
-                    .rounded(px(crate::chrome::toolbar::ALERT_RADIUS))
+                    .rounded(px(ALERT_RADIUS))
                     .overflow_hidden()
                     .child(
                         material("ng.finder.conflict.glass", Material::Popover)
-                            .corner_radius(px(crate::chrome::toolbar::ALERT_RADIUS))
+                            .corner_radius(px(ALERT_RADIUS))
                             .absolute()
                             .inset_0(),
                     )

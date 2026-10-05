@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Done, Op};
 use finder_fs::queue::{Event, JobId};
-use gpui::{AnyElement, App, Context, div, prelude::*, px};
+use gpui::{AnyElement, App, ClickEvent, Context, Entity, Window, div, prelude::*, px};
 use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
     Blending, Layer, Material, material, native_button, native_image, native_label,
@@ -166,15 +166,7 @@ impl FinderDemo {
         let rows: Vec<AnyElement> = self
             .jobs
             .iter()
-            .map(|job| {
-                let (demo, id) = (cx.entity(), job.id);
-                job_row(job, move |cx| {
-                    demo.update(cx, |this, cx| {
-                        this.queue.cancel(id);
-                        cx.notify();
-                    })
-                })
-            })
+            .map(|job| job_row(job, cx.entity()))
             .collect();
         let paused = self.jobs.iter().any(|job| job.paused);
         div()
@@ -188,7 +180,7 @@ impl FinderDemo {
                     .rounded(px(10.))
                     .overflow_hidden()
                     .block_mouse_except_scroll()
-                    // All native and Above: the band's material covers everything GPUI paints.
+                    // All native and Above: the material covers everything GPUI paints.
                     .child(
                         material("ng.finder.jobs.glass", Material::Popover)
                             .layer(Layer::Above)
@@ -362,7 +354,16 @@ fn fraction(job: &JobRow) -> f64 {
     }
 }
 
-pub(crate) fn progress_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static) -> AnyElement {
+fn cancel(demo: Entity<FinderDemo>, job: JobId) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        demo.update(cx, |this, cx| {
+            this.queue.cancel(job);
+            cx.notify();
+        })
+    }
+}
+
+pub(crate) fn progress_row(job: &JobRow, demo: Entity<FinderDemo>) -> AnyElement {
     let id = job.id.raw();
     let small = tokens::small_system_font_size();
     let icon = subject(&job.op)
@@ -419,7 +420,7 @@ pub(crate) fn progress_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static)
                     )
                     .tint(SystemColor::SecondaryLabel),
                 )
-                .on_click(move |_, _, cx| on_cancel(cx)),
+                .on_click(cancel(demo, job.id)),
         )
         .child(
             div()
@@ -436,8 +437,8 @@ pub(crate) fn progress_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static)
         .into_any_element()
 }
 
-pub(crate) fn job_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static) -> AnyElement {
-    let id = job.id;
+pub(crate) fn job_row(job: &JobRow, demo: Entity<FinderDemo>) -> AnyElement {
+    let id = job.id.raw();
     div()
         .flex()
         .flex_col()
@@ -447,27 +448,24 @@ pub(crate) fn job_row(job: &JobRow, on_cancel: impl Fn(&mut App) + 'static) -> A
                 .flex()
                 .gap(px(8.))
                 .child(div().flex_1().min_w(px(0.)).child(
-                    native_label(("ng.finder.jobs.label", id.raw()), &job.label).font_size(px(11.)),
+                    native_label(("ng.finder.jobs.label", id), &job.label).font_size(px(11.)),
                 ))
                 .child(
                     div()
-                        .id(("ng.finder.jobs.cancel", id.raw()))
+                        .id(("ng.finder.jobs.cancel", id))
                         .flex_none()
                         .w(px(CANCEL_W))
                         .child(
-                            native_label(("ng.finder.jobs.cancel.label", id.raw()), "Cancel")
+                            native_label(("ng.finder.jobs.cancel.label", id), "Cancel")
                                 .font_size(px(11.))
                                 .color(SystemColor::SecondaryLabel),
                         )
-                        .on_click(move |_, _, cx| on_cancel(cx)),
+                        .on_click(cancel(demo, job.id)),
                 ),
         )
-        .child(native_progress(
-            ("ng.finder.jobs.bar", id.raw()),
-            fraction(job),
-        ))
+        .child(native_progress(("ng.finder.jobs.bar", id), fraction(job)))
         .child(
-            native_label(("ng.finder.jobs.caption", id.raw()), &caption(job))
+            native_label(("ng.finder.jobs.caption", id), &caption(job))
                 .font_size(px(10.))
                 .color(SystemColor::SecondaryLabel),
         )

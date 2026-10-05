@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::collections::HashSet;
 
 use gpui::{
@@ -19,15 +19,15 @@ use crate::ops::jobs::{ROW_H, progress_row};
 const WIDTH: f32 = 399.;
 
 thread_local! {
-    static OPEN: RefCell<Option<WindowHandle<Progress>>> = const { RefCell::new(None) };
+    static OPEN: Cell<Option<WindowHandle<Progress>>> = const { Cell::new(None) };
 }
 
 pub(crate) fn shown() -> bool {
-    OPEN.with_borrow(|open| open.is_some())
+    OPEN.get().is_some()
 }
 
 pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
-    if let Some(open) = OPEN.with_borrow(|open| *open) {
+    if let Some(open) = OPEN.get() {
         open.update(cx, |_, window, _| window.remove_window()).ok();
         return;
     }
@@ -52,8 +52,7 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
                     ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Closable);
                 }
                 cx.new(|cx| {
-                    cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
-                        .detach();
+                    cx.on_release(|_, _| OPEN.set(None)).detach();
                     Progress {
                         watched: HashSet::new(),
                         watching: Vec::new(),
@@ -63,7 +62,7 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
             },
         );
         if let Ok(opened) = opened {
-            OPEN.with_borrow_mut(|open| *open = Some(opened));
+            OPEN.set(Some(opened));
         }
     });
 }
@@ -112,18 +111,12 @@ impl Render for Progress {
         let jobs: Vec<AnyElement> = demos
             .iter()
             .flat_map(|demo| {
-                demo.read(cx).jobs.iter().map(|job| {
-                    let (demo, id) = (demo.clone(), job.id);
-                    progress_row(job, move |cx| {
-                        demo.update(cx, |this, cx| {
-                            this.queue.cancel(id);
-                            cx.notify();
-                        })
-                    })
-                })
+                demo.read(cx)
+                    .jobs
+                    .iter()
+                    .map(|job| progress_row(job, demo.clone()))
             })
             .collect();
-        // The rows host native progress bars, which only a native root removes again.
         native_root(
             div()
                 .size_full()

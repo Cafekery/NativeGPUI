@@ -426,11 +426,7 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
         Some(open) => cx.defer(move |cx| {
             open.update(cx, |_, window, _| window.remove_window()).ok();
         }),
-        None => {
-            let kind = subject(demo);
-            FOLLOWED.set(Some(followed(demo, cx)));
-            cx.defer(move |cx| show(kind, cx));
-        }
+        None => show_for(demo, cx),
     }
 }
 
@@ -444,11 +440,13 @@ pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<Finder
     if OPEN.get().is_none() || !window.is_window_active() {
         return;
     }
-    let now = followed(demo, cx);
-    if FOLLOWED.get() == Some(now) {
-        return;
+    if FOLLOWED.get() != Some(followed(demo, cx)) {
+        show_for(demo, cx);
     }
-    FOLLOWED.set(Some(now));
+}
+
+fn show_for(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
+    FOLLOWED.set(Some(followed(demo, cx)));
     let kind = subject(demo);
     cx.defer(move |cx| show(kind, cx));
 }

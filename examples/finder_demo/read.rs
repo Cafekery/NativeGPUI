@@ -703,11 +703,7 @@ impl FinderDemo {
         // A disclosed folder shows its rows at once: rows landing later would push down those below.
         let first = plain.filter(|_| empty && (headed || id == self.here()));
         let screen = ((self.on_screen(), self.art_size()), extras);
-        let arts = if headed {
-            self.crumb_arts(id)
-        } else {
-            Vec::new()
-        };
+        let arts = headed.then(|| self.crumb_arts(id)).unwrap_or_default();
         let executor = cx.background_executor().clone();
         let listed = cx.background_executor().spawn(async move {
             let crumbs = icons::begin(arts, CRUMB_ART);

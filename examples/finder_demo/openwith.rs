@@ -29,11 +29,12 @@ pub(crate) fn url(path: &Path) -> Option<Retained<NSURL>> {
     Some(NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)))
 }
 
+fn path_of(url: &NSURL) -> Option<PathBuf> {
+    Some(PathBuf::from(url.path()?.to_string()))
+}
+
 fn paths(urls: impl IntoIterator<Item = Retained<NSURL>>) -> Vec<PathBuf> {
-    urls.into_iter()
-        .filter_map(|url| url.path())
-        .map(|path| PathBuf::from(path.to_string()))
-        .collect()
+    urls.into_iter().filter_map(|url| path_of(&url)).collect()
 }
 
 fn version_of(bundle: &Path) -> Option<String> {
@@ -59,12 +60,7 @@ pub(crate) fn apps_for_all(files: &[PathBuf]) -> Vec<App> {
     let Some(common) = common else {
         return Vec::new();
     };
-    let fallback = files
-        .first()
-        .and_then(|file| url(file))
-        .and_then(|url| workspace.URLForApplicationToOpenURL(&url))
-        .and_then(|url| url.path())
-        .map(|path| PathBuf::from(path.to_string()));
+    let fallback = files.first().and_then(|file| opener(file));
     let named: Vec<(String, PathBuf)> = common
         .into_iter()
         .map(|path| (finder_fs::name::of_path(&path), path))
@@ -132,7 +128,7 @@ pub(crate) fn alias_folder(file: &Path) -> Option<PathBuf> {
         NSURLBookmarkResolutionOptions::WithoutUI,
     )
     .ok()?;
-    let target = PathBuf::from(target.path()?.to_string());
+    let target = path_of(&target)?;
     (target != file && target.is_dir()).then_some(target)
 }
 
@@ -164,8 +160,7 @@ pub(crate) fn set_default(files: &[PathBuf], app: &Path) {
 
 pub(crate) fn opener(file: &Path) -> Option<PathBuf> {
     let file = url(file)?;
-    let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&file)?;
-    Some(PathBuf::from(app.path()?.to_string()))
+    path_of(&*NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&file)?)
 }
 
 fn content_type(file: &Path) -> Option<Retained<AnyObject>> {
@@ -179,7 +174,7 @@ pub(crate) fn type_default(file: &Path) -> Option<PathBuf> {
     let app: Option<Retained<NSURL>> = unsafe {
         msg_send![&*NSWorkspace::sharedWorkspace(), URLForApplicationToOpenContentType: &*kind]
     };
-    Some(PathBuf::from(app?.path()?.to_string()))
+    path_of(&*app?)
 }
 
 pub(crate) fn set_type_default(file: &Path, app: &Path) {
@@ -224,7 +219,7 @@ define_class!(
     unsafe impl NSOpenSavePanelDelegate for Filter {
         #[unsafe(method(panel:shouldEnableURL:))]
         fn should_enable(&self, _: &AnyObject, url: &NSURL) -> Bool {
-            let Some(path) = url.path().map(|path| PathBuf::from(path.to_string())) else {
+            let Some(path) = path_of(url) else {
                 return Bool::NO;
             };
             Bool::new(match path.extension().is_some_and(|ext| ext == "app") {
@@ -335,7 +330,7 @@ pub(crate) fn choose_app(files: Vec<PathBuf>, always: bool, cx: &mut Context<Fin
         if panel.runModal() != NSModalResponseOK {
             return;
         }
-        let Some(app) = paths(panel.URLs().to_vec()).into_iter().next() else {
+        let Some(app) = panel.URLs().firstObject().as_deref().and_then(path_of) else {
             return;
         };
         if keep.state() == NSControlStateValueOn {

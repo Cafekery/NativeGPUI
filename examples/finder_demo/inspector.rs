@@ -37,32 +37,25 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
         Some(open) => cx.defer(move |cx| {
             open.update(cx, |_, window, _| window.remove_window()).ok();
         }),
-        None => {
-            let lines = subject(demo);
-            FOLLOWED.set(Some(followed(demo, cx)));
-            let demo = cx.entity().downgrade();
-            cx.defer(move |cx| show(lines, demo, cx));
-        }
+        None => show_for(subject(demo), demo, cx),
     }
 }
 
 pub(crate) fn show_item(id: &'static str, demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
-    let lines = path_line(id).into_iter().collect();
-    FOLLOWED.set(Some(followed(demo, cx)));
-    let demo = cx.entity().downgrade();
-    cx.defer(move |cx| show(lines, demo, cx));
+    show_for(path_line(id).into_iter().collect(), demo, cx);
 }
 
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
     if OPEN.get().is_none() || !window.is_window_active() {
         return;
     }
-    let now = followed(demo, cx);
-    if FOLLOWED.get() == Some(now) {
-        return;
+    if FOLLOWED.get() != Some(followed(demo, cx)) {
+        show_for(subject(demo), demo, cx);
     }
-    FOLLOWED.set(Some(now));
-    let lines = subject(demo);
+}
+
+fn show_for(lines: Vec<Line>, demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
+    FOLLOWED.set(Some(followed(demo, cx)));
     let demo = cx.entity().downgrade();
     cx.defer(move |cx| show(lines, demo, cx));
 }
