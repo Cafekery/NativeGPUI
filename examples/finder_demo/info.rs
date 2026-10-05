@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+use block2::RcBlock;
 use finder_fs::flags::IS_STATIONERY;
 use finder_fs::meta::Meta;
 use finder_fs::tags::Tag;
@@ -26,14 +27,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBorderType, NSColor, NSFocusRingType, NSFont, NSImage,
-    NSImageScaling, NSImageView, NSResponder, NSScrollView, NSText, NSTextField, NSTextView,
-    NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBorderType, NSColor,
+    NSControlSize, NSFocusRingType, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSImage, NSImageScaling, NSImageView, NSMenuItem, NSModalResponse, NSModalResponseOK,
+    NSOpenPanel, NSPopUpButton, NSResponder, NSScrollView, NSText, NSTextField, NSTextView, NSView,
+    NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary,
-    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURLHasHiddenExtensionKey,
-    NSURLIsUserImmutableKey, ns_string,
+    NSMutableAttributedString, NSNumber, NSObject, NSPoint, NSRange, NSRect, NSSize, NSString,
+    NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
 };
 
 use crate::app::FinderDemo;
@@ -575,6 +578,61 @@ impl Sheet {
     }
 }
 
+/// The apps that can open the item, the one it opens with, and its type's default.
+struct Opener {
+    apps: Vec<PathBuf>,
+    chosen: Option<PathBuf>,
+    default: Option<PathBuf>,
+    rev: u64,
+}
+
+impl Opener {
+    fn of(path: &Path, rev: u64) -> Self {
+        let default = crate::openwith::type_default(path);
+        let mut apps: Vec<PathBuf> = crate::openwith::apps_for(path)
+            .into_iter()
+            .map(|app| app.path)
+            .collect();
+        if let Some(at) = default
+            .as_ref()
+            .and_then(|default| apps.iter().position(|app| app == default))
+        {
+            let default = apps.remove(at);
+            apps.insert(0, default);
+        }
+        Opener {
+            chosen: crate::openwith::opener(path),
+            apps,
+            default,
+            rev,
+        }
+    }
+
+    /// The pop-up's rows, `None` being a separator: the type's default, the other apps, then the
+    /// App Store and a chooser.
+    fn rows(&self) -> Vec<Option<Pick>> {
+        let mut rows = Vec::new();
+        for (at, app) in self.apps.iter().enumerate() {
+            if at == 1 && self.default.is_some() {
+                rows.push(None);
+            }
+            rows.push(Some(Pick::App(app.clone())));
+        }
+        if !rows.is_empty() {
+            rows.push(None);
+        }
+        rows.extend([Some(Pick::Store), Some(Pick::Other)]);
+        rows
+    }
+}
+
+#[derive(Clone, PartialEq)]
+enum Pick {
+    App(PathBuf),
+    Store,
+    Other,
+}
+
 #[derive(Copy, Clone)]
 enum Check {
     Stationery,
@@ -599,6 +657,7 @@ pub(crate) struct Info {
     hidden_extension: bool,
     following: Option<Task<()>>,
     titled: String,
+    opener: Option<Opener>,
     panel: bool,
     width: f32,
     asked: f32,
@@ -630,6 +689,7 @@ impl Info {
             hidden_extension: real && resource(path, unsafe { NSURLHasHiddenExtensionKey }),
             following: None,
             titled: String::new(),
+            opener: None,
             line,
             where_,
             subject,
@@ -1183,6 +1243,115 @@ impl Info {
             comment_box(self.line.row.path.clone(), editable),
         );
     }
+
+    fn ensure_opener(&mut self) {
+        let shown = self.open[Pane::OpenWith as usize] && self.subject == Subject::File;
+        if shown && self.opener.is_none() {
+            self.opener = Some(Opener::of(self.path(), 0));
+        }
+    }
+
+    fn open_with(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
+        let Some(opener) = &self.opener else {
+            return;
+        };
+        let width = sheet.width;
+        sheet.put(
+            (15., 23.5),
+            (width - 30., 22.),
+            apps_popup(self.line.row.path.clone(), opener, this.clone()),
+        );
+        sheet.put(
+            (13., 48.5),
+            (width - 26., 2. * LINE),
+            small(
+                "ng.finder.info.openwith.note",
+                "Use this application to open all documents like this one.",
+            )
+            .wraps(true),
+        );
+        let differs = opener.chosen.is_some() && opener.chosen != opener.default;
+        let this = this.clone();
+        sheet.put(
+            (15., 84.5),
+            (86., 20.),
+            native_button("ng.finder.info.change.all", "Change All\u{2026}")
+                .control_size(ControlSize::Small)
+                .enabled(differs)
+                .on_click(move |_, window, cx| {
+                    let ns = ns_window(window);
+                    this.update(cx, |info, cx| info.change_all(ns, cx)).ok();
+                }),
+        );
+    }
+
+    /// An app sets this item's own choice; the App Store and Other… rows act and leave it.
+    fn pick(&mut self, row: usize, cx: &mut Context<Self>) {
+        let path = self.path().to_path_buf();
+        let Some(opener) = &mut self.opener else {
+            return;
+        };
+        match opener.rows().into_iter().nth(row).flatten() {
+            Some(Pick::App(app)) => {
+                crate::openwith::set_default(&[path], &app);
+                opener.chosen = Some(app);
+            }
+            Some(Pick::Store) => crate::openwith::app_store(&[path]),
+            Some(Pick::Other) => choose_other(path, cx),
+            None => {}
+        }
+        cx.notify();
+    }
+
+    fn change_all(&mut self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
+        let app = self
+            .opener
+            .as_ref()
+            .and_then(|opener| opener.chosen.clone());
+        let (Some(app), Some(window), Some(mtm)) = (app, window, MainThreadMarker::new()) else {
+            return;
+        };
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(&format!(
+            "Are you sure you want to change all similar documents to open with the application \u{201c}{}\u{201d}?",
+            finder_fs::name::of_path(&app)
+        )));
+        let detail = match self.path().extension() {
+            Some(extension) => format!(
+                "This change will apply to all documents with extension \u{201c}{}\u{201d}.",
+                extension.to_string_lossy()
+            ),
+            None => format!(
+                "This change will apply to all documents with type \u{201c}{}\u{201d}.",
+                self.line.row.kind
+            ),
+        };
+        alert.setInformativeText(&NSString::from_str(&detail));
+        alert.addButtonWithTitle(ns_string!("Continue"));
+        alert.addButtonWithTitle(ns_string!("Cancel"));
+        let this = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
+        let handler = RcBlock::new(move |response: NSModalResponse| {
+            if response == NSAlertFirstButtonReturn {
+                let mut cx = async_cx.clone();
+                this.update(&mut cx, |info, cx| info.make_default(&app, cx))
+                    .ok();
+            }
+        });
+        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+    }
+
+    fn make_default(&mut self, app: &Path, cx: &mut Context<Self>) {
+        crate::openwith::set_type_default(self.path(), app);
+        if let Some(opener) = &mut self.opener {
+            opener.apps.retain(|known| known != app);
+            opener.apps.insert(0, app.to_path_buf());
+            opener.default = Some(app.to_path_buf());
+            opener.rev += 1;
+        }
+        cx.notify();
+    }
 }
 
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
@@ -1391,6 +1560,148 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
     )
 }
 
+/// Other… chooses any app for this item, from a task: the modal loop would re-enter GPUI's borrow.
+fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
+    cx.spawn(async move |this, cx| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(ns_string!("/Applications"))));
+        if panel.runModal() != NSModalResponseOK {
+            return;
+        }
+        let Some(app) = panel.URL().and_then(|url| url.path()) else {
+            return;
+        };
+        let app = PathBuf::from(app.to_string());
+        crate::openwith::set_default(std::slice::from_ref(&path), &app);
+        this.update(cx, |info, cx| {
+            let rev = info.opener.as_ref().map_or(0, |opener| opener.rev + 1);
+            let mut opener = Opener::of(&path, rev);
+            if !opener.apps.contains(&app) {
+                opener.apps.push(app.clone());
+            }
+            opener.chosen = Some(app);
+            info.opener = Some(opener);
+            cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+}
+
+fn apps_popup(path: SharedString, opener: &Opener, this: WeakEntity<Info>) -> impl IntoElement {
+    let key = key_of(
+        "ng.finder.info.openwith",
+        &format!("{path}\u{0}{}", opener.rev),
+    );
+    let rows = opener.rows();
+    let chosen = opener.chosen.clone().and_then(|app| {
+        let app = Some(Pick::App(app));
+        rows.iter().position(|row| *row == app)
+    });
+    let default = opener.default.clone();
+    hosted(
+        key,
+        move |mtm, target| {
+            let popup = NSPopUpButton::initWithFrame_pullsDown(
+                NSPopUpButton::alloc(mtm),
+                NSRect::ZERO,
+                false,
+            );
+            popup.setControlSize(NSControlSize::Small);
+            popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+            if let Some(menu) = popup.menu() {
+                for row in &rows {
+                    menu.addItem(&menu_row(mtm, row.as_ref(), default.as_deref()));
+                }
+            }
+            wire(&popup, target, key);
+            popup
+        },
+        move |popup, host| {
+            if let Some(chosen) = chosen {
+                if popup.indexOfSelectedItem() != chosen as isize {
+                    popup.selectItemAtIndex(chosen as isize);
+                }
+            }
+            let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
+                Box::new(
+                    sender
+                        .downcast_ref::<NSPopUpButton>()
+                        .map_or(-1, |popup| popup.indexOfSelectedItem()),
+                )
+            });
+            let this = this.clone();
+            host.on_event(
+                key,
+                read,
+                Some(Rc::new(move |value, _, cx| {
+                    let row = value.downcast::<isize>().ok().map(|row| *row);
+                    if let Some(row) = row.and_then(|row| usize::try_from(row).ok()) {
+                        this.update(cx, |info, cx| info.pick(row, cx)).ok();
+                    }
+                })),
+            );
+        },
+    )
+}
+
+/// A 16 pt icon and the bundle's name, the type's default marked in the secondary colour.
+fn menu_row(
+    mtm: MainThreadMarker,
+    row: Option<&Pick>,
+    default: Option<&Path>,
+) -> Retained<NSMenuItem> {
+    let Some(pick) = row else {
+        return NSMenuItem::separatorItem(mtm);
+    };
+    let item = NSMenuItem::new(mtm);
+    let app = match pick {
+        Pick::App(app) => app,
+        Pick::Store => {
+            item.setTitle(ns_string!("App Store\u{2026}"));
+            return item;
+        }
+        Pick::Other => {
+            item.setTitle(ns_string!("Other\u{2026}"));
+            return item;
+        }
+    };
+    let name = app.file_name().unwrap_or_default().to_string_lossy();
+    let suffix = match Some(app.as_path()) == default {
+        true => " (default)",
+        false => "",
+    };
+    item.setTitle(&NSString::from_str(&name));
+    let text =
+        NSMutableAttributedString::from_nsstring(&NSString::from_str(&format!("{name}{suffix}")));
+    let font = NSFont::systemFontOfSize(SMALL.into());
+    let tail = NSRange::new(name.encode_utf16().count(), suffix.encode_utf16().count());
+    unsafe {
+        text.addAttribute_value_range(NSFontAttributeName, &font, NSRange::new(0, text.length()));
+        text.addAttribute_value_range(
+            NSForegroundColorAttributeName,
+            &NSColor::labelColor(),
+            NSRange::new(0, text.length()),
+        );
+        text.addAttribute_value_range(
+            NSForegroundColorAttributeName,
+            &NSColor::secondaryLabelColor(),
+            tail,
+        );
+    }
+    item.setAttributedTitle(Some(&text));
+    let icon =
+        NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&app.to_string_lossy()));
+    icon.setSize(NSSize::new(16., 16.));
+    item.setImage(Some(&icon));
+    item
+}
+
 impl Render for Info {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = f32::from(window.viewport_size().width);
@@ -1400,6 +1711,7 @@ impl Render for Info {
         self.width = width;
         self.weigh(cx);
         self.fetch_metadata(cx);
+        self.ensure_opener();
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.title(window);
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
@@ -1415,6 +1727,7 @@ impl Render for Info {
                     Pane::MetaData => self.more_info(&mut sheet),
                     Pane::Name => self.name_pane(&mut sheet, &this),
                     Pane::Comments => self.comments(&mut sheet),
+                    Pane::OpenWith => self.open_with(&mut sheet, &this),
                     _ => {}
                 }
             }
