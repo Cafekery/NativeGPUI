@@ -6,7 +6,7 @@ use gpui::{
 };
 use native_gpui::window_options;
 use objc2::msg_send;
-use objc2_app_kit::NSWindowStyleMask;
+use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Line, path_line};
@@ -93,7 +93,7 @@ fn show(lines: Vec<Line>, cx: &mut App) {
     let shown: AnyView = match lines.len() {
         1 => {
             let line = first.clone();
-            cx.new(|_| Info::new(line, where_)).into()
+            cx.new(|_| Info::new(line, where_).in_panel()).into()
         }
         _ => cx.new(|_| Combined { lines, where_ }).into(),
     };
@@ -127,6 +127,7 @@ fn show(lines: Vec<Line>, cx: &mut App) {
                     let _: () = msg_send![&*panel, setFloatingPanel: true];
                 }
                 panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::UtilityWindow);
+                panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
             }
             let id = window.window_handle().window_id();
             cx.new(|cx| {
