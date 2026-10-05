@@ -7,6 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -14,8 +15,9 @@ use finder_fs::flags::IS_STATIONERY;
 use finder_fs::meta::Meta;
 use finder_fs::tags::Tag;
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, FontWeight, Render, SharedString, Task, WeakEntity,
-    Window, WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Entity, FontWeight, ObjectFit, Render, RenderImage,
+    SharedString, Task, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point,
+    prelude::*, px, size,
 };
 use native_gpui::tokens::{FileType, SystemColor, system_color};
 use native_gpui::{
@@ -68,6 +70,8 @@ const SHUT: f32 = 20.;
 const CHECK_ROW: f32 = 20.;
 const TAGGED_HEAD: f32 = 88.5;
 const SIMPLE_HEAD: f32 = 51.5;
+const PREVIEW_ICON: f32 = 128.;
+const PREVIEW_MOST: f32 = 480.;
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
 const EXPANDED_KEY: &str = "FXInfoPanesExpanded";
 /// The zero-width space lets a line start at ".config": UAX #14 never breaks before a full stop.
@@ -181,6 +185,27 @@ struct Weight {
     bytes: u64,
     on_disk: u64,
     items: Option<u64>,
+}
+
+/// What the preview pane draws: the item's icon, a picture as tall as its aspect, or a page.
+enum Shown {
+    Icon,
+    Picture(Arc<RenderImage>),
+    Page(Arc<RenderImage>),
+}
+
+impl Shown {
+    fn height(&self, width: f32) -> f32 {
+        match self {
+            Shown::Icon => PREVIEW_ICON,
+            Shown::Page(_) => PREVIEW_MOST,
+            Shown::Picture(image) => {
+                let size = image.size(0);
+                let aspect = u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32;
+                (width * aspect).round().min(PREVIEW_MOST)
+            }
+        }
+    }
 }
 
 fn weigh_tree(path: &Path, counted: bool) -> Weight {
@@ -473,12 +498,18 @@ fn icon_of(path: &str) -> Option<Retained<NSImage>> {
 }
 
 /// The item's own icon, never its preview: Finder heads an image's info with the PNG icon.
-fn head_icon(row: &Row, scale: f32) -> AnyElement {
+fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
     let Some(icon) = icon_of(&row.path) else {
-        return row_art(row, 32., scale, true);
+        return div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(row_art(row, side, scale, true))
+            .into_any_element();
     };
     hosted(
-        key_of("ng.finder.info.icon", &row.path),
+        key_of(name, &row.path),
         move |mtm, _| {
             let view = NSImageView::new(mtm);
             view.setImage(Some(&icon));
@@ -661,6 +692,7 @@ pub(crate) struct Info {
     panel: bool,
     width: f32,
     asked: f32,
+    preview: Shown,
 }
 
 impl Info {
@@ -702,6 +734,7 @@ impl Info {
             panel: false,
             width: info_width(),
             asked: 0.,
+            preview: Shown::Icon,
         }
     }
 
@@ -1025,7 +1058,7 @@ impl Info {
             Pane::Name => 80.,
             Pane::Comments => 75.,
             Pane::OpenWith => 113.,
-            Pane::Preview => BODY + 128. + FOOT,
+            Pane::Preview => BODY + self.preview.height(width - 32.) + FOOT,
             Pane::Privileges => 191.,
         }
     }
@@ -1062,7 +1095,11 @@ impl Info {
     fn head(&self, sheet: &mut Sheet, scale: f32) {
         let row = &self.line.row;
         let width = sheet.width;
-        sheet.put((11., 11.), (32., 32.), head_icon(row, scale));
+        sheet.put(
+            (11., 11.),
+            (32., 32.),
+            icon_view(row, "ng.finder.info.icon", 32., scale),
+        );
         let size = self.head_size();
         let size_w = size
             .as_deref()
@@ -1242,6 +1279,64 @@ impl Info {
             (sheet.width - 8., 46.),
             comment_box(self.line.row.path.clone(), editable),
         );
+    }
+
+    /// A picture or page once Quick Look has one; until then, and for what it can't preview, the
+    /// icon.
+    fn shown(&self, scale: f32) -> Shown {
+        let row = &self.line.row;
+        if self.subject != Subject::File || !self.open[Pane::Preview as usize] {
+            return Shown::Icon;
+        }
+        match crate::thumbs::thumb(row, PREVIEW_MOST, scale, true, false) {
+            Some(image) if matches!(row.face, Face::Image | Face::Movie) => Shown::Picture(image),
+            Some(image) => Shown::Page(image),
+            None => Shown::Icon,
+        }
+    }
+
+    fn preview_pane(&self, sheet: &mut Sheet, scale: f32) {
+        let width = sheet.width - 32.;
+        let height = self.preview.height(width);
+        match &self.preview {
+            Shown::Icon => sheet.put(
+                (16., BODY),
+                (width, PREVIEW_ICON),
+                icon_view(
+                    &self.line.row,
+                    "ng.finder.info.preview",
+                    PREVIEW_ICON,
+                    scale,
+                ),
+            ),
+            Shown::Picture(image) => sheet.put(
+                (16., BODY),
+                (width, height),
+                img(image.clone())
+                    .size_full()
+                    .object_fit(ObjectFit::Contain),
+            ),
+            Shown::Page(image) => {
+                let size = image.size(0);
+                let aspect = u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32;
+                sheet.put(
+                    (15.5, BODY - 0.5),
+                    (width + 1., height + 1.),
+                    div()
+                        .size_full()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(system_color(SystemColor::Separator))
+                        .bg(system_color(SystemColor::TextBackground))
+                        .overflow_hidden()
+                        .child(
+                            img(image.clone())
+                                .w(px(width - 1.))
+                                .h(px((width - 1.) * aspect)),
+                        ),
+                );
+            }
+        }
     }
 
     fn ensure_opener(&mut self) {
@@ -1712,6 +1807,7 @@ impl Render for Info {
         self.weigh(cx);
         self.fetch_metadata(cx);
         self.ensure_opener();
+        self.preview = self.shown(window.scale_factor());
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.title(window);
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
@@ -1728,7 +1824,8 @@ impl Render for Info {
                     Pane::Name => self.name_pane(&mut sheet, &this),
                     Pane::Comments => self.comments(&mut sheet),
                     Pane::OpenWith => self.open_with(&mut sheet, &this),
-                    _ => {}
+                    Pane::Preview => self.preview_pane(&mut sheet, window.scale_factor()),
+                    Pane::Privileges => {}
                 }
             }
             sheet.y += height;
