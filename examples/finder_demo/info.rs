@@ -1,17 +1,20 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::ffi::{CString, c_char};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use finder_fs::flags::IS_STATIONERY;
 use finder_fs::meta::Meta;
 use finder_fs::tags::Tag;
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, FontWeight, Render, SharedString, WeakEntity, Window,
-    WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Entity, FontWeight, Render, SharedString, Task, WeakEntity,
+    Window, WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{FileType, SystemColor, system_color};
 use native_gpui::{
@@ -21,16 +24,18 @@ use native_gpui::{
 };
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{Message, msg_send};
+use objc2::{MainThreadOnly, Message, msg_send};
 use objc2_app_kit::{
-    NSFocusRingType, NSFont, NSImage, NSImageScaling, NSImageView, NSTextField, NSView, NSWindow,
-    NSWindowTitleVisibility, NSWorkspace,
+    NSAutoresizingMaskOptions, NSFocusRingType, NSFont, NSImage, NSImageScaling, NSImageView,
+    NSTextField, NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary,
-    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURLIsUserImmutableKey, ns_string,
+    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURLHasHiddenExtensionKey,
+    NSURLIsUserImmutableKey, ns_string,
 };
 
+use crate::app::FinderDemo;
 use crate::art::row_art;
 use crate::data::{
     Face, Folder, Line, Row, byte_string, count, folder_of, intern_path, small_text_width,
@@ -43,7 +48,10 @@ use crate::tags::{held_tags, retag};
 
 unsafe extern "C" {
     fn getuid() -> u32;
+    fn access(path: *const c_char, mode: i32) -> i32;
 }
+
+const W_OK: i32 = 2;
 
 pub(crate) const WIDTH: f32 = 265.;
 pub(crate) const HEIGHT: f32 = 541.;
@@ -61,6 +69,8 @@ const EXPANDED_KEY: &str = "FXInfoPanesExpanded";
 /// The zero-width space lets a line start at ".config": UAX #14 never breaks before a full stop.
 const CRUMB_SEPARATOR: &str = " \u{25b8} \u{200b}";
 const KEPT: usize = 512;
+const FOLLOW_EVERY: Duration = Duration::from_millis(100);
+const FOLLOW_TRIES: usize = 600;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Pane {
@@ -364,6 +374,28 @@ fn set_resource(path: &Path, key: &NSString, on: bool) -> bool {
     unsafe { url.setResourceValue_forKey_error(Some(&NSNumber::new_bool(on)), key) }.is_ok()
 }
 
+fn resource(path: &Path, key: &NSString) -> bool {
+    let Some(url) = crate::openwith::url(path) else {
+        return false;
+    };
+    let mut value = None;
+    let _ = unsafe { url.getResourceValue_forKey_error(&mut value, key) };
+    value
+        .and_then(|value| value.downcast::<NSNumber>().ok())
+        .is_some_and(|value| value.boolValue())
+}
+
+fn writable(path: &Path) -> bool {
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { access(path.as_ptr(), W_OK) == 0 }
+}
+
+fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
+    NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+}
+
 fn titlebar_height(window: &NSWindow) -> f32 {
     (window.frame().size.height - window.contentLayoutRect().size.height) as f32
 }
@@ -552,6 +584,7 @@ pub(crate) struct Info {
     line: Line,
     where_: SharedString,
     subject: Subject,
+    demo: WeakEntity<FinderDemo>,
     tags: Option<Rc<[Tag]>>,
     open: [bool; 7],
     weight: Option<Weight>,
@@ -561,13 +594,17 @@ pub(crate) struct Info {
     owned: bool,
     locked: bool,
     stationery: bool,
+    renamable: bool,
+    hidden_extension: bool,
+    following: Option<Task<()>>,
+    titled: String,
     panel: bool,
     width: f32,
     asked: f32,
 }
 
 impl Info {
-    pub(crate) fn new(line: Line, where_: SharedString) -> Self {
+    pub(crate) fn new(line: Line, where_: SharedString, demo: WeakEntity<FinderDemo>) -> Self {
         let path = Path::new(line.row.path.as_ref());
         let subject = Subject::of(&line.row);
         let meta = std::fs::symlink_metadata(path).ok();
@@ -580,14 +617,22 @@ impl Info {
             _ => None,
         };
         let real = meta.is_some();
+        let locked = real && finder_fs::ops::locked(path);
         Info {
             tags: (real && subject != Subject::Place).then(|| held_tags(path).into()),
             owned: meta.is_some_and(|meta| meta.uid() == unsafe { getuid() }),
-            locked: real && finder_fs::ops::locked(path),
+            locked,
             stationery: subject == Subject::File && finder_fs::flags::of(path) & IS_STATIONERY != 0,
+            renamable: real
+                && matches!(subject, Subject::File | Subject::Folder | Subject::App)
+                && path.parent().is_some_and(writable),
+            hidden_extension: real && resource(path, unsafe { NSURLHasHiddenExtensionKey }),
+            following: None,
+            titled: String::new(),
             line,
             where_,
             subject,
+            demo,
             open: panes_open(),
             weight,
             weighing: false,
@@ -680,6 +725,77 @@ impl Info {
             }
         }
         cx.notify();
+    }
+
+    fn reload(&mut self) {
+        if let Some(line) = crate::data::path_line(intern_path(self.path())) {
+            self.line = line;
+        }
+    }
+
+    /// The title and proxy icon follow the item through a rename.
+    fn title(&mut self, window: &mut Window) {
+        let title = format!("{} Info", self.line.row.display);
+        if self.titled == title {
+            return;
+        }
+        window.set_window_title(&title);
+        if let Some(ns) = ns_window(window).filter(|_| !self.panel) {
+            let shown = crate::openwith::url(self.path()).filter(|_| self.path().is_absolute());
+            ns.setRepresentedURL(shown.as_deref());
+        }
+        self.titled = title;
+    }
+
+    /// Renames through the Finder window, which may first ask about the extension, then follows
+    /// the item to its new name for a while.
+    fn rename(&mut self, name: &str, cx: &mut Context<Self>) {
+        let from = self.path().to_path_buf();
+        let wanted = name.trim().replace('/', ":");
+        if wanted.is_empty() || from.file_name().is_some_and(|old| *old == *wanted) {
+            return;
+        }
+        let Some(demo) = self.demo.upgrade() else {
+            return;
+        };
+        let key = self.line.row.path.clone();
+        demo.update(cx, |demo, cx| demo.rename(&key, name, cx));
+        let to = from.with_file_name(&wanted);
+        let inode = std::fs::symlink_metadata(&from).ok().map(|meta| meta.ino());
+        self.following = Some(cx.spawn(async move |this, cx| {
+            for _ in 0..FOLLOW_TRIES {
+                cx.background_executor().timer(FOLLOW_EVERY).await;
+                if std::fs::symlink_metadata(&to).ok().map(|meta| meta.ino()) != inode {
+                    continue;
+                }
+                let Some(line) = crate::data::path_line(intern_path(&to)) else {
+                    return;
+                };
+                this.update(cx, |info, cx| {
+                    info.line = line;
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+        }));
+    }
+
+    fn hide_extension(&mut self, on: bool, cx: &mut Context<Self>) {
+        if set_resource(self.path(), unsafe { NSURLHasHiddenExtensionKey }, on) {
+            self.hidden_extension = on;
+            self.reload();
+        }
+        cx.notify();
+    }
+
+    fn has_extension(&self) -> bool {
+        matches!(self.subject, Subject::File | Subject::App)
+            && self
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str()?.rsplit_once('.'))
+                .is_some_and(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
     }
 
     fn head_size(&self) -> Option<String> {
@@ -1032,6 +1148,31 @@ impl Info {
             );
         }
     }
+
+    fn name_pane(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
+        let width = sheet.width;
+        let renamable = self.renamable && !self.locked;
+        sheet.put(
+            (11., BODY - 1.),
+            (width - 22., 26.),
+            name_field(self.line.row.path.clone(), renamable, this.clone()),
+        );
+        let this = this.clone();
+        sheet.put(
+            (16., 57.5),
+            (100., 18.),
+            native_checkbox("ng.finder.info.hide", self.hidden_extension)
+                .title("Hide extension")
+                .control_size(ControlSize::Small)
+                .enabled(renamable && self.has_extension())
+                .on_change(move |state: &CheckState, _, cx| {
+                    this.update(cx, |info, cx| {
+                        info.hide_extension(*state == CheckState::On, cx)
+                    })
+                    .ok();
+                }),
+        );
+    }
 }
 
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
@@ -1089,6 +1230,62 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
     )
 }
 
+/// Renames on Return or when it loses focus, as Finder's field does. The field's bezel draws a
+/// point outside its frame, so it sits inset in a holder the host can clip.
+fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl IntoElement {
+    let key = key_of("ng.finder.info.name.field", &path);
+    let name = Path::new(path.as_ref())
+        .file_name()
+        .map(|name| finder_fs::name::display(&name.to_string_lossy()).into_owned())
+        .unwrap_or_default();
+    hosted(
+        key,
+        move |mtm, target| {
+            let holder = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., 100., 26.));
+            let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), rect(1., 1., 98., 24.));
+            field.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            field.setFont(Some(&NSFont::systemFontOfSize(13.)));
+            field.setStringValue(&NSString::from_str(&name));
+            if let Some(cell) = field.cell() {
+                cell.setSendsActionOnEndEditing(true);
+                cell.setScrollable(true);
+            }
+            wire(&field, target, key);
+            holder.addSubview(&field);
+            holder
+        },
+        move |holder, host| {
+            let field = holder.subviews().firstObject();
+            if let Some(field) = field.and_then(|field| field.downcast::<NSTextField>().ok()) {
+                if field.isEnabled() != enabled {
+                    field.setEnabled(enabled);
+                }
+            }
+            let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
+                Box::new(
+                    sender
+                        .downcast_ref::<NSTextField>()
+                        .map(|field| field.stringValue().to_string())
+                        .unwrap_or_default(),
+                )
+            });
+            let this = this.clone();
+            host.on_event(
+                key,
+                read,
+                Some(Rc::new(move |value, _, cx| {
+                    if let Ok(name) = value.downcast::<String>() {
+                        this.update(cx, |info, cx| info.rename(&name, cx)).ok();
+                    }
+                })),
+            );
+        },
+    )
+}
+
 impl Render for Info {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = f32::from(window.viewport_size().width);
@@ -1099,6 +1296,7 @@ impl Render for Info {
         self.weigh(cx);
         self.fetch_metadata(cx);
         cx.defer(|_| crate::thumbs::collect_thumbnails());
+        self.title(window);
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
         let this = cx.entity().downgrade();
         let mut sheet = Sheet::new(width);
@@ -1110,6 +1308,7 @@ impl Render for Info {
                 match pane {
                     Pane::General => self.general(&mut sheet, &this),
                     Pane::MetaData => self.more_info(&mut sheet),
+                    Pane::Name => self.name_pane(&mut sheet, &this),
                     _ => {}
                 }
             }
@@ -1162,15 +1361,13 @@ pub(crate) fn open(
         return;
     }
     for (step, line) in lines.into_iter().enumerate() {
-        open_info(Info::new(line, where_.clone()), step, cx);
+        open_info(Info::new(line, where_.clone(), demo.downgrade()), step, cx);
     }
 }
 
 fn open_info(info: Info, step: usize, cx: &mut App) {
     let width = info.width;
     let height = TITLEBAR + info.content_height(width);
-    let title = format!("{} Info", info.line.row.display);
-    let shown = crate::openwith::url(info.path()).filter(|_| info.path().is_absolute());
     let offset = step as f32 * 24.;
     let _ = cx.open_window(
         WindowOptions {
@@ -1181,11 +1378,9 @@ fn open_info(info: Info, step: usize, cx: &mut App) {
             ..window_options()
         },
         move |window, cx| {
-            window.set_window_title(&title);
             crate::chrome::toolbar::titlebar_corners(window);
             if let Some(ns) = ns_window(window) {
                 ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
-                ns.setRepresentedURL(shown.as_deref());
             }
             cx.new(|_| info)
         },

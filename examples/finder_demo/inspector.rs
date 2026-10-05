@@ -1,8 +1,8 @@
 use std::cell::Cell;
 
 use gpui::{
-    AnyView, App, Bounds, Context, EntityId, Render, Window, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions, div, point, prelude::*, px, size,
+    AnyView, App, Bounds, Context, EntityId, Render, WeakEntity, Window, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::window_options;
 use objc2::msg_send;
@@ -40,7 +40,8 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
         None => {
             let lines = subject(demo);
             FOLLOWED.set(Some(followed(demo, cx)));
-            cx.defer(move |cx| show(lines, cx));
+            let demo = cx.entity().downgrade();
+            cx.defer(move |cx| show(lines, demo, cx));
         }
     }
 }
@@ -48,7 +49,8 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
 pub(crate) fn show_item(id: &'static str, demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     let lines = path_line(id).into_iter().collect();
     FOLLOWED.set(Some(followed(demo, cx)));
-    cx.defer(move |cx| show(lines, cx));
+    let demo = cx.entity().downgrade();
+    cx.defer(move |cx| show(lines, demo, cx));
 }
 
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
@@ -61,7 +63,8 @@ pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<Finder
     }
     FOLLOWED.set(Some(now));
     let lines = subject(demo);
-    cx.defer(move |cx| show(lines, cx));
+    let demo = cx.entity().downgrade();
+    cx.defer(move |cx| show(lines, demo, cx));
 }
 
 fn followed(demo: &FinderDemo, cx: &Context<FinderDemo>) -> (EntityId, u64, u64, &'static str) {
@@ -81,7 +84,7 @@ fn subject(demo: &FinderDemo) -> Vec<Line> {
     }
 }
 
-fn show(lines: Vec<Line>, cx: &mut App) {
+fn show(lines: Vec<Line>, demo: WeakEntity<FinderDemo>, cx: &mut App) {
     let Some(first) = lines.first() else {
         return;
     };
@@ -93,7 +96,7 @@ fn show(lines: Vec<Line>, cx: &mut App) {
     let shown: AnyView = match lines.len() {
         1 => {
             let line = first.clone();
-            cx.new(|_| Info::new(line, where_).in_panel()).into()
+            cx.new(|_| Info::new(line, where_, demo).in_panel()).into()
         }
         _ => cx.new(|_| Combined { lines, where_ }).into(),
     };
