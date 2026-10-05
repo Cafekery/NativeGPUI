@@ -8,7 +8,7 @@ use gpui::{
 };
 use native_gpui::sidebar::SidebarMetrics;
 use native_gpui::tokens;
-use native_gpui::{NativeScrollBars, native_root, native_scroll_bars};
+use native_gpui::{NativeScrollBars, native_root, native_rule, native_scroll_bars};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
@@ -354,6 +354,20 @@ impl FinderDemo {
                 };
                 column.child(band_edge(top + header_h, px(scope_h) + header_h, scrolled))
             })
+            .when(
+                matches!(self.view, LIST_VIEW | COLUMN_VIEW) && !self.airdrop_shown(),
+                |column| {
+                    column.child(
+                        div()
+                            .absolute()
+                            .top(above)
+                            .left(if banded { metrics.left } else { px(0.) })
+                            .right_0()
+                            .h(px(0.5))
+                            .child(native_rule("ng.finder.toolbar.rule")),
+                    )
+                },
+            )
             .children(search_bars.map(|(scope, criteria)| {
                 div()
                     .absolute()
