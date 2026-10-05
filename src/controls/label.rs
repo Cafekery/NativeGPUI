@@ -23,6 +23,7 @@ pub fn native_label(id: impl Into<ElementId>, text: &str) -> NativeLabel {
         align: LabelAlign::default(),
         tabular: false,
         truncates: true,
+        wraps: false,
     }
 }
 
@@ -55,6 +56,7 @@ pub struct NativeLabel {
     align: LabelAlign,
     tabular: bool,
     truncates: bool,
+    wraps: bool,
 }
 
 impl NativeLabel {
@@ -88,6 +90,12 @@ impl NativeLabel {
         self
     }
 
+    /// Wraps by word and fills its parent's height, which the caller sizes to the lines it needs.
+    pub fn wraps(mut self, wraps: bool) -> Self {
+        self.wraps = wraps;
+        self
+    }
+
     fn point_size(&self) -> Pixels {
         self.font_size.unwrap_or_else(system_font_size)
     }
@@ -116,8 +124,12 @@ impl NativeLabel {
             probe.setFont(Some(&self.font()));
             probe.fittingSize()
         });
+        let height = match self.wraps {
+            true => relative(1.).into(),
+            false => px(fitting.height as f32).into(),
+        };
         Style {
-            size: size(relative(1.).into(), px(fitting.height as f32).into()),
+            size: size(relative(1.).into(), height),
             ..Default::default()
         }
     }
@@ -139,10 +151,15 @@ impl NativeLabel {
         if field.alignment() != align {
             field.setAlignment(align);
         }
-        let breaks = if self.truncates {
-            NSLineBreakMode::ByTruncatingTail
-        } else {
-            NSLineBreakMode::ByClipping
+        if let Some(cell) = field.cell() {
+            if cell.wraps() != self.wraps {
+                cell.setWraps(self.wraps);
+            }
+        }
+        let breaks = match (self.wraps, self.truncates) {
+            (true, _) => NSLineBreakMode::ByWordWrapping,
+            (false, true) => NSLineBreakMode::ByTruncatingTail,
+            (false, false) => NSLineBreakMode::ByClipping,
         };
         if field.lineBreakMode() != breaks {
             field.setLineBreakMode(breaks);
