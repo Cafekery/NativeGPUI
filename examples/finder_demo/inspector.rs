@@ -98,7 +98,7 @@ fn show(lines: Vec<Line>, demo: WeakEntity<FinderDemo>, cx: &mut App) {
             let line = first.clone();
             cx.new(|_| Info::new(line, where_, demo).in_panel()).into()
         }
-        _ => cx.new(|_| Combined { lines, where_ }).into(),
+        _ => cx.new(|_| Combined::new(lines, where_)).into(),
     };
     if let Some(open) = OPEN.get() {
         let retitled = open.update(cx, |inspector, window, cx| {

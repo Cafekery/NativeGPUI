@@ -68,6 +68,8 @@ const GRANTS_PANE: f32 = 194.5;
 const OWNERSHIP_ROW: f32 = 20.;
 const LOCK_ICON: &str =
     "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/LockedIcon.icns";
+const MANY_ICON: &str =
+    "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/MultipleItemsIcon.icns";
 
 pub(crate) const WIDTH: f32 = 265.;
 pub(crate) const HEIGHT: f32 = 541.;
@@ -810,12 +812,7 @@ impl Info {
     fn toggle(&mut self, pane: Pane, cx: &mut Context<Self>) {
         let at = pane as usize;
         self.open[at] = !self.open[at];
-        let flags: Vec<(&str, bool)> = PANES
-            .iter()
-            .zip(self.open)
-            .map(|(pane, open)| (pane.key(), open))
-            .collect();
-        prefs::set_setting_flags(EXPANDED_KEY, &flags);
+        save_panes(self.open);
         cx.notify();
     }
 
@@ -917,21 +914,6 @@ impl Info {
         }
     }
 
-    fn size_text(&self) -> SharedString {
-        let Some(weight) = self.weight else {
-            return "Calculating\u{2026}".into();
-        };
-        let text = format!(
-            "{} ({} on disk)",
-            exact_bytes(weight.bytes),
-            byte_string(weight.on_disk)
-        );
-        match weight.items {
-            Some(items) => format!("{text} for {}", items_text(items)).into(),
-            None => text.into(),
-        }
-    }
-
     fn general_rows(&self, room: f32) -> Vec<(&'static str, SharedString)> {
         let row = &self.line.row;
         let date = |seconds: f64| SharedString::from(long_date(seconds, room));
@@ -974,7 +956,7 @@ impl Info {
                     Subject::App => app_kind(self.path(), &row.kind).into(),
                     _ => row.kind.clone(),
                 };
-                let mut rows = vec![("Kind", kind), ("Size", self.size_text())];
+                let mut rows = vec![("Kind", kind), ("Size", weight_text(self.weight))];
                 if !self.where_.is_empty() {
                     rows.push(("Where", self.where_.clone()));
                 }
@@ -1098,18 +1080,6 @@ impl Info {
         self.head_height() + panes
     }
 
-    fn fit(&mut self, window: &Window, height: f32, cx: &mut Context<Self>) {
-        if (height - self.asked).abs() < 0.25 {
-            return;
-        }
-        self.asked = height;
-        let Some(ns) = ns_window(window) else {
-            return;
-        };
-        // Outside gpui's borrow of the window: AppKit reports the resize back synchronously.
-        cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
-    }
-
     fn head(&self, sheet: &mut Sheet, scale: f32) {
         let row = &self.line.row;
         let width = sheet.width;
@@ -1176,44 +1146,17 @@ impl Info {
     }
 
     fn pane_chrome(&self, sheet: &mut Sheet, pane: Pane, height: f32, this: &WeakEntity<Self>) {
-        let at = pane as usize;
-        let width = sheet.width;
-        let flip = {
-            let this = this.clone();
-            move |cx: &mut App| {
+        let this = this.clone();
+        pane_chrome(
+            sheet,
+            pane,
+            self.open[pane as usize],
+            height,
+            self.subject.panes().last() != Some(&pane),
+            Rc::new(move |cx: &mut App| {
                 this.update(cx, |info, cx| info.toggle(pane, cx)).ok();
-            }
-        };
-        let click = flip.clone();
-        sheet.put(
-            (0., 0.),
-            (width, 16.),
-            div()
-                .id(("ng.finder.info.pane", at))
-                .size_full()
-                .on_click(move |_, _, cx| click(cx)),
+            }),
         );
-        sheet.put(
-            (7., 3.5),
-            (13., 13.),
-            native_button(("ng.finder.info.disclose", at), "")
-                .bezel_style(ButtonBezel::Disclosure)
-                .on(self.open[at])
-                .square(13.)
-                .on_click(move |_, _, cx| flip(cx)),
-        );
-        sheet.put(
-            (20., 3.5),
-            (width - 40., LINE),
-            small(("ng.finder.info.pane.title", at), pane.title()),
-        );
-        if self.subject.panes().last() != Some(&pane) {
-            sheet.put(
-                (0., height - 1.),
-                (width, 1.),
-                native_rule(("ng.finder.info.pane.rule", at)),
-            );
-        }
     }
 
     fn general(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
@@ -2440,7 +2383,7 @@ impl Render for Info {
             }
             sheet.y += height;
         }
-        self.fit(window, titlebar + sheet.y, cx);
+        fit(&mut self.asked, window, titlebar + sheet.y, cx);
         sheet.page(titlebar)
     }
 }
@@ -2514,16 +2457,83 @@ fn open_info(info: Info, step: usize, cx: &mut App) {
 }
 
 pub(crate) struct Combined {
-    pub(crate) lines: Vec<Line>,
-    pub(crate) where_: SharedString,
+    lines: Vec<Line>,
+    where_: SharedString,
+    weight: Option<Weight>,
+    weighing: bool,
+    open: bool,
+    asked: f32,
 }
 
-impl Render for Combined {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let width = f32::from(window.viewport_size().width);
-        let scale = window.scale_factor();
-        let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
-        let total: u64 = self.lines.iter().map(|line| line.row.bytes).sum();
+impl Combined {
+    pub(crate) fn new(lines: Vec<Line>, where_: SharedString) -> Self {
+        Combined {
+            lines,
+            where_,
+            weight: None,
+            weighing: false,
+            open: panes_open()[Pane::General as usize],
+            asked: 0.,
+        }
+    }
+
+    /// "for 6 items" counts the selected items and everything inside them.
+    fn weigh(&mut self, cx: &mut Context<Self>) {
+        if self.weight.is_some() || self.weighing {
+            return;
+        }
+        self.weighing = true;
+        let paths: Vec<PathBuf> = self
+            .lines
+            .iter()
+            .map(|line| PathBuf::from(line.row.path.as_ref()))
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let weight = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut total = Weight {
+                        bytes: 0,
+                        on_disk: 0,
+                        items: Some(paths.len() as u64),
+                    };
+                    for path in &paths {
+                        let Ok(meta) = std::fs::symlink_metadata(path) else {
+                            continue;
+                        };
+                        let inner = match meta.is_dir() {
+                            true => weigh_tree(path, true),
+                            false => Weight {
+                                bytes: meta.len(),
+                                on_disk: meta.blocks() * 512,
+                                items: None,
+                            },
+                        };
+                        total.bytes += inner.bytes;
+                        total.on_disk += inner.on_disk;
+                        total.items = total.items.map(|items| items + inner.items.unwrap_or(0));
+                    }
+                    total
+                })
+                .await;
+            this.update(cx, |combined, cx| {
+                combined.weight = Some(weight);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn toggle(&mut self, cx: &mut Context<Self>) {
+        self.open = !self.open;
+        let mut open = panes_open();
+        open[Pane::General as usize] = self.open;
+        save_panes(open);
+        cx.notify();
+    }
+
+    fn rows(&self) -> Vec<(&'static str, SharedString)> {
         let mut kinds: Vec<&str> = self
             .lines
             .iter()
@@ -2531,10 +2541,38 @@ impl Render for Combined {
             .collect();
         kinds.sort_unstable();
         kinds.dedup();
+        let mut rows = vec![
+            ("Kind", kinds.join(", ").into()),
+            ("Size", weight_text(self.weight)),
+        ];
+        if !self.where_.is_empty() {
+            rows.push(("Where", self.where_.clone()));
+        }
+        rows
+    }
+}
+
+impl Render for Combined {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let width = f32::from(window.viewport_size().width);
+        self.weigh(cx);
+        let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
         let mut sheet = Sheet::new(width);
+        sheet.put((11., 11.), (32., 32.), many_icon());
+        let size = self
+            .weight
+            .map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes));
+        let size_w = field_width(&size, 13., false);
+        sheet.put(
+            (width - 6. - size_w, 9.),
+            (size_w, 16.),
+            native_label("ng.finder.info.size", &size)
+                .font_size(px(13.))
+                .align(LabelAlign::Right),
+        );
         sheet.put(
             (47., 9.),
-            (width - 55., 16.),
+            (width - 55. - size_w.max(17.), 16.),
             native_label(
                 "ng.finder.info.name",
                 &format!("{} items", count(self.lines.len())),
@@ -2548,49 +2586,51 @@ impl Render for Combined {
             native_rule("ng.finder.info.head"),
         );
         sheet.y = SIMPLE_HEAD;
-        sheet.put(
-            (20., 3.5),
-            (width - 40., LINE),
-            small("ng.finder.info.pane.title", Pane::General.title()),
+        let rows = self.rows();
+        let height = match self.open {
+            true => {
+                let value_w = width - 82.;
+                let lines: f32 = rows
+                    .iter()
+                    .map(|(_, value)| line_count(value, value_w) as f32 * LINE)
+                    .sum();
+                BODY + lines + FOOT
+            }
+            false => SHUT,
+        };
+        let this = cx.entity().downgrade();
+        pane_chrome(
+            &mut sheet,
+            Pane::General,
+            self.open,
+            height,
+            false,
+            Rc::new(move |cx: &mut App| {
+                this.update(cx, |combined, cx| combined.toggle(cx)).ok();
+            }),
         );
-        let rows = sheet.rows(&[
-            ("Kind", kinds.join(", ").into()),
-            ("Size", byte_string(total).into()),
-            ("Where", self.where_.clone()),
-        ]);
-        sheet.y += rows + FOOT;
-        let listed = self.lines.len() as f32 * 20.;
-        sheet.put(
-            (12., 0.),
-            (width - 24., listed),
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .children(self.lines.iter().enumerate().map(|(at, line)| {
-                    div()
-                        .h(px(16.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(row_art(&line.row, 16., scale, false))
-                        .child(
-                            div()
-                                .flex_1()
-                                .h(px(LINE))
-                                .child(small(("ng.finder.info.item", at), &line.row.display)),
-                        )
-                        .child(
-                            div().w(px(64.)).h(px(LINE)).child(
-                                secondary(("ng.finder.info.item.size", at), &line.row.size)
-                                    .align(LabelAlign::Right),
-                            ),
-                        )
-                })),
-        );
-        sheet.y += listed + FOOT;
+        if self.open {
+            sheet.rows(&rows);
+        }
+        sheet.y += height;
+        fit(&mut self.asked, window, titlebar + sheet.y, cx);
         sheet.page(titlebar)
     }
+}
+
+fn many_icon() -> impl IntoElement {
+    hosted(
+        key_of("ng.finder.info.many", MANY_ICON),
+        |mtm, _| {
+            let view = NSImageView::new(mtm);
+            let image =
+                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(MANY_ICON));
+            view.setImage(image.as_deref());
+            view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+            view
+        },
+        |_, _| {},
+    )
 }
 
 fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
@@ -2605,7 +2645,89 @@ fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
         move |window, cx| {
             window.set_window_title("Multiple Item Info");
             crate::chrome::toolbar::titlebar_corners(window);
-            cx.new(|_| Combined { lines, where_ })
+            if let Some(ns) = ns_window(window) {
+                ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
+            }
+            cx.new(|_| Combined::new(lines, where_))
         },
     );
+}
+
+fn save_panes(open: [bool; 7]) {
+    let flags: Vec<(&str, bool)> = PANES
+        .iter()
+        .zip(open)
+        .map(|(pane, open)| (pane.key(), open))
+        .collect();
+    prefs::set_setting_flags(EXPANDED_KEY, &flags);
+}
+
+fn weight_text(weight: Option<Weight>) -> SharedString {
+    let Some(weight) = weight else {
+        return "Calculating\u{2026}".into();
+    };
+    let text = format!(
+        "{} ({} on disk)",
+        exact_bytes(weight.bytes),
+        byte_string(weight.on_disk)
+    );
+    match weight.items {
+        Some(items) => format!("{text} for {}", items_text(items)).into(),
+        None => text.into(),
+    }
+}
+
+fn fit<T: 'static>(asked: &mut f32, window: &Window, height: f32, cx: &mut Context<T>) {
+    if (height - *asked).abs() < 0.25 {
+        return;
+    }
+    *asked = height;
+    let Some(ns) = ns_window(window) else {
+        return;
+    };
+    // Outside gpui's borrow of the window: AppKit reports the resize back synchronously.
+    cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
+}
+
+/// A section's header row, disclosure, title and closing rule.
+fn pane_chrome(
+    sheet: &mut Sheet,
+    pane: Pane,
+    open: bool,
+    height: f32,
+    rule: bool,
+    flip: Rc<dyn Fn(&mut App)>,
+) {
+    let at = pane as usize;
+    let width = sheet.width;
+    let click = flip.clone();
+    sheet.put(
+        (0., 0.),
+        (width, 16.),
+        div()
+            .id(("ng.finder.info.pane", at))
+            .size_full()
+            .on_click(move |_, _, cx| click(cx)),
+    );
+    sheet.put(
+        (7., 3.5),
+        (13., 13.),
+        native_button(("ng.finder.info.disclose", at), "")
+            .bezel_style(ButtonBezel::Disclosure)
+            .on(open)
+            .square(13.)
+            .on_click(move |_, _, cx| flip(cx)),
+    );
+    sheet.put(
+        (20., 3.5),
+        (width - 40., LINE),
+        small(("ng.finder.info.pane.title", at), pane.title()),
+    );
+    if rule {
+        sheet.put(
+            (0., height - 1.),
+            (width, 1.),
+            native_rule(("ng.finder.info.pane.rule", at)),
+        );
+    }
 }
