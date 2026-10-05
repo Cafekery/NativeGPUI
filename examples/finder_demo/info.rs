@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_char};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -13,6 +13,7 @@ use std::time::Duration;
 use block2::RcBlock;
 use finder_fs::flags::IS_STATIONERY;
 use finder_fs::meta::Meta;
+use finder_fs::permissions::{self, Grant, Privilege};
 use finder_fs::tags::Tag;
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, FontWeight, ObjectFit, Render, RenderImage,
@@ -26,19 +27,24 @@ use native_gpui::{
     wire,
 };
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
+use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBorderType, NSColor,
-    NSControlSize, NSFocusRingType, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImage, NSImageScaling, NSImageView, NSMenuItem, NSModalResponse, NSModalResponseOK,
-    NSOpenPanel, NSPopUpButton, NSResponder, NSScrollView, NSText, NSTextField, NSTextView, NSView,
-    NSWindow, NSWindowTitleVisibility, NSWorkspace,
+    NSActionCell, NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBorderType,
+    NSCell, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType,
+    NSFont, NSFontAttributeName, NSFontWeightRegular, NSForegroundColorAttributeName, NSImage,
+    NSImageScaling, NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpArrowPosition, NSPopUpButton,
+    NSPopUpButtonCell, NSResponder, NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSTableCellView, NSTableColumn, NSTableHeaderCell, NSTableView,
+    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate,
+    NSTableViewGridLineStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSText, NSTextField,
+    NSTextFieldCell, NSTextView, NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSDate, NSDateFormatter, NSDateFormatterStyle, NSDictionary,
-    NSMutableAttributedString, NSNumber, NSObject, NSPoint, NSRange, NSRect, NSSize, NSString,
-    NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
+    NSMutableAttributedString, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect,
+    NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
 };
 
 use crate::app::FinderDemo;
@@ -58,6 +64,10 @@ unsafe extern "C" {
 }
 
 const W_OK: i32 = 2;
+const GRANTS_PANE: f32 = 194.5;
+const OWNERSHIP_ROW: f32 = 20.;
+const LOCK_ICON: &str =
+    "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/LockedIcon.icns";
 
 pub(crate) const WIDTH: f32 = 265.;
 pub(crate) const HEIGHT: f32 = 541.;
@@ -693,6 +703,8 @@ pub(crate) struct Info {
     width: f32,
     asked: f32,
     preview: Shown,
+    access: Option<Access>,
+    first_mode: Option<u32>,
 }
 
 impl Info {
@@ -710,6 +722,7 @@ impl Info {
         };
         let real = meta.is_some();
         let locked = real && finder_fs::ops::locked(path);
+        let first_mode = real.then(|| permissions::mode(path).ok()).flatten();
         Info {
             tags: (real && subject != Subject::Place).then(|| held_tags(path).into()),
             owned: meta.is_some_and(|meta| meta.uid() == unsafe { getuid() }),
@@ -735,6 +748,8 @@ impl Info {
             width: info_width(),
             asked: 0.,
             preview: Shown::Icon,
+            access: None,
+            first_mode,
         }
     }
 
@@ -1059,7 +1074,10 @@ impl Info {
             Pane::Comments => 75.,
             Pane::OpenWith => 113.,
             Pane::Preview => BODY + self.preview.height(width - 32.) + FOOT,
-            Pane::Privileges => 191.,
+            Pane::Privileges => {
+                let ownership = self.access.as_ref().and_then(|access| access.ownership);
+                GRANTS_PANE + ownership.map_or(0., |_| OWNERSHIP_ROW)
+            }
         }
     }
 
@@ -1281,6 +1299,101 @@ impl Info {
             (sheet.width - 8., 46.),
             comment_box(self.line.row.path.clone(), editable),
         );
+    }
+
+    fn ensure_access(&mut self) {
+        let shown = self.open[Pane::Privileges as usize] && self.subject != Subject::Place;
+        if shown && self.access.is_none() {
+            self.access = Some(Access::of(self.path(), self.subject));
+        }
+    }
+
+    /// Only the owner may change a class's privilege without root; an ACL entry has no class.
+    fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
+        let class = self
+            .access
+            .as_ref()
+            .and_then(|access| access.grants.get(row)?.class);
+        if let Some(class) = class {
+            permissions::set(self.path(), class, privilege).ok();
+        }
+        self.access = Some(Access::of(self.path(), self.subject));
+        cx.notify();
+    }
+
+    fn revert(&mut self, cx: &mut Context<Self>) {
+        if let Some(mode) = self.first_mode {
+            permissions::set_mode(self.path(), mode).ok();
+        }
+        self.access = Some(Access::of(self.path(), self.subject));
+        cx.notify();
+    }
+
+    fn confirm_apply(&self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
+        let (Some(window), Some(mtm)) = (window, MainThreadMarker::new()) else {
+            return;
+        };
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(ns_string!(
+            "Are you sure you want to apply the selected owner, group, and permissions to all the enclosed items?"
+        ));
+        alert.setInformativeText(ns_string!("You can\u{2019}t undo this."));
+        alert.addButtonWithTitle(ns_string!("OK"));
+        alert.addButtonWithTitle(ns_string!("Cancel"));
+        let path = self.path().to_path_buf();
+        let background = cx.background_executor().clone();
+        let handler = RcBlock::new(move |response: NSModalResponse| {
+            if response == NSAlertFirstButtonReturn {
+                let path = path.clone();
+                background
+                    .spawn(async move { permissions::apply_to_enclosed(&path) })
+                    .detach();
+            }
+        });
+        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+    }
+
+    fn privileges(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
+        let Some(access) = &self.access else {
+            return;
+        };
+        let width = sheet.width;
+        let path = self.line.row.path.clone();
+        let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
+        sheet.put(
+            (12., BODY),
+            (width - 24., LINE),
+            small("ng.finder.info.yours", yours_text(access.yours)),
+        );
+        sheet.put(
+            (14., 46.5),
+            (width - 29., 113.),
+            grants_table(
+                path.clone(),
+                &access.grants,
+                self.owned,
+                folder,
+                this.clone(),
+            ),
+        );
+        let changed = access.mode.is_some() && access.mode != self.first_mode;
+        sheet.put(
+            (15., 162.5),
+            (tools_width(), 22.),
+            grant_tools(path, self.owned, folder, changed, this.clone()),
+        );
+        let bottom = self.pane_height(Pane::Privileges, width);
+        if let Some(ignores) = access.ownership {
+            sheet.put(
+                (14., GRANTS_PANE - 7.),
+                (191., 16.),
+                native_checkbox("ng.finder.info.ownership", ignores)
+                    .title("Ignore ownership on this volume")
+                    .control_size(ControlSize::Small)
+                    .enabled(false),
+            );
+        }
+        sheet.put((width - 32., bottom - 27.), (18., 18.), lock_view());
     }
 
     /// A picture or page once Quick Look has one; until then, and for what it can't preview, the
@@ -1562,6 +1675,500 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
     )
 }
 
+struct Access {
+    grants: Vec<Grant>,
+    yours: Privilege,
+    mode: Option<u32>,
+    ownership: Option<bool>,
+}
+
+impl Access {
+    /// The startup disk shows no "Ignore ownership" row.
+    fn of(path: &Path, subject: Subject) -> Self {
+        Access {
+            grants: permissions::grants(path).unwrap_or_default(),
+            yours: permissions::yours(path),
+            mode: permissions::mode(path).ok(),
+            ownership: (subject == Subject::Volume && path != Path::new("/"))
+                .then(|| finder_fs::volumes::ignores_ownership(path)),
+        }
+    }
+}
+
+fn yours_text(privilege: Privilege) -> &'static str {
+    match privilege {
+        Privilege::ReadWrite => "You can read and write",
+        Privilege::ReadOnly => "You can only read",
+        Privilege::WriteOnly => "You can only write (Drop Box)",
+        Privilege::NoAccess => "You have no access",
+        Privilege::Custom => "You have custom access",
+    }
+}
+
+const PRIVILEGES: [Privilege; 5] = [
+    Privilege::ReadWrite,
+    Privilege::ReadOnly,
+    Privilege::WriteOnly,
+    Privilege::NoAccess,
+    Privilege::Custom,
+];
+
+fn privilege_title(privilege: Privilege) -> &'static str {
+    match privilege {
+        Privilege::ReadWrite => "Read & Write",
+        Privilege::ReadOnly => "Read only",
+        Privilege::WriteOnly => "Write only (Drop Box)",
+        Privilege::NoAccess => "No Access",
+        Privilege::Custom => "Custom",
+    }
+}
+
+fn privilege_tag(privilege: Privilege) -> isize {
+    PRIVILEGES
+        .iter()
+        .position(|known| *known == privilege)
+        .unwrap_or(0) as isize
+}
+
+fn row_tag(path: &str, row: usize) -> u64 {
+    key_of("ng.finder.info.grant", &format!("{path}\u{0}{row}"))
+}
+
+struct GrantsIvars {
+    cells: Vec<[Retained<NSView>; 2]>,
+    fitted: Cell<f64>,
+}
+
+define_class!(
+    /// Finder indents its column titles past AppKit's own inset.
+    #[unsafe(super(NSTableHeaderCell, NSTextFieldCell, NSActionCell, NSCell, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGInfoGrantsHeader"]
+    #[ivars = f64]
+    struct GrantsHeader;
+
+    impl GrantsHeader {
+        #[unsafe(method(drawInteriorWithFrame:inView:))]
+        fn draw_interior(&self, frame: NSRect, view: &NSView) {
+            let indent = *self.ivars();
+            let frame = rect(
+                frame.origin.x + indent,
+                frame.origin.y,
+                frame.size.width - indent,
+                frame.size.height,
+            );
+            unsafe { msg_send![super(self), drawInteriorWithFrame: frame, inView: view] }
+        }
+    }
+);
+
+impl GrantsHeader {
+    fn new(mtm: MainThreadMarker, title: &str, indent: f64) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(indent);
+        unsafe { msg_send![super(this), initTextCell: &*NSString::from_str(title)] }
+    }
+}
+
+define_class!(
+    /// Disabled, it takes no clicks yet keeps its rows' colours, as Finder's does.
+    #[unsafe(super(NSTableView, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGInfoGrants"]
+    #[ivars = GrantsIvars]
+    struct Grants;
+
+    impl Grants {
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            match self.isEnabled() {
+                true => unsafe { msg_send![super(self), hitTest: point] },
+                false => None,
+            }
+        }
+    }
+
+    unsafe impl NSObjectProtocol for Grants {}
+
+    unsafe impl NSTableViewDataSource for Grants {
+        #[unsafe(method(numberOfRowsInTableView:))]
+        fn number_of_rows(&self, _: &NSTableView) -> isize {
+            self.ivars().cells.len() as isize
+        }
+    }
+
+    unsafe impl NSControlTextEditingDelegate for Grants {}
+
+    unsafe impl NSTableViewDelegate for Grants {
+        #[unsafe(method_id(tableView:viewForTableColumn:row:))]
+        fn view_for(
+            &self,
+            _: &NSTableView,
+            column: Option<&NSTableColumn>,
+            row: isize,
+        ) -> Option<Retained<NSView>> {
+            let at = usize::from(column.is_some_and(|column| &*column.identifier() == ns_string!("priv")));
+            let cells = usize::try_from(row)
+                .ok()
+                .and_then(|row| self.ivars().cells.get(row));
+            cells.map(|cells| cells[at].clone())
+        }
+    }
+);
+
+fn name_cell(mtm: MainThreadMarker, grant: &Grant) -> Retained<NSView> {
+    let cell = NSTableCellView::initWithFrame(NSTableCellView::alloc(mtm), rect(0., 0., 113., 14.));
+    let symbol = match grant.group {
+        true => ns_string!("person.2.fill"),
+        false => ns_string!("person.crop.circle"),
+    };
+    if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(symbol, None) {
+        let size = image.size();
+        let icon = NSImageView::initWithFrame(
+            NSImageView::alloc(mtm),
+            rect(
+                15.5 - size.width / 2.,
+                (14. - size.height) / 2.,
+                size.width,
+                size.height,
+            ),
+        );
+        icon.setImage(Some(&image));
+        icon.setImageScaling(NSImageScaling::ScaleNone);
+        icon.setContentTintColor(Some(&NSColor::labelColor()));
+        cell.addSubview(&icon);
+        unsafe { cell.setImageView(Some(&icon)) };
+    }
+    let title = match grant.me {
+        true => format!("{} (Me)", grant.name),
+        false => grant.name.clone(),
+    };
+    let label = NSTextField::labelWithString(&NSString::from_str(&title), mtm);
+    label.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+    label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    label.setFrame(rect(28., 0., 85., 14.));
+    label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    cell.addSubview(&label);
+    unsafe { cell.setTextField(Some(&label)) };
+    Retained::into_super(cell)
+}
+
+/// Write only is a folder's choice; a row already holding another keeps it listed.
+fn privilege_popup(
+    mtm: MainThreadMarker,
+    privilege: Privilege,
+    folder: bool,
+) -> Retained<NSPopUpButton> {
+    let popup =
+        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+    popup.setBordered(false);
+    popup.setControlSize(NSControlSize::Small);
+    popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+    if let Some(cell) = popup
+        .cell()
+        .and_then(|cell| cell.downcast::<NSPopUpButtonCell>().ok())
+    {
+        cell.setArrowPosition(NSPopUpArrowPosition::ArrowAtBottom);
+    }
+    for choice in PRIVILEGES {
+        let listed = match choice {
+            Privilege::WriteOnly => folder,
+            Privilege::Custom => false,
+            _ => true,
+        };
+        if !listed && choice != privilege {
+            continue;
+        }
+        popup.addItemWithTitle(&NSString::from_str(privilege_title(choice)));
+        if let Some(item) = popup.lastItem() {
+            item.setTag(privilege_tag(choice));
+        }
+    }
+    popup
+}
+
+/// Finder's table: owner, ACL entries, group and everyone, each with its privilege.
+fn grants_table(
+    path: SharedString,
+    grants: &[Grant],
+    editable: bool,
+    folder: bool,
+    this: WeakEntity<Info>,
+) -> impl IntoElement {
+    let rows: String = grants
+        .iter()
+        .map(|grant| {
+            format!(
+                "{}\u{0}{:?}\u{0}{:?}\u{0}",
+                grant.name, grant.class, grant.privilege
+            )
+        })
+        .collect();
+    let key = key_of(
+        "ng.finder.info.grants",
+        &format!("{path}\u{0}{folder}\u{0}{rows}"),
+    );
+    let made = grants.to_vec();
+    let states: Vec<(isize, bool)> = grants
+        .iter()
+        .map(|grant| (privilege_tag(grant.privilege), grant.class.is_some()))
+        .collect();
+    let tags_path = path.clone();
+    hosted(
+        key,
+        move |mtm, target| {
+            let scroll =
+                NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., 236., 113.));
+            scroll.setBorderType(NSBorderType::BezelBorder);
+            scroll.setHasVerticalScroller(true);
+            scroll.setAutohidesScrollers(true);
+            let cells = made
+                .iter()
+                .enumerate()
+                .map(|(row, grant)| {
+                    let popup = privilege_popup(mtm, grant.privilege, folder);
+                    wire(&popup, target, row_tag(&path, row));
+                    popup.setFrame(rect(-1., 0., 111., 14.));
+                    let holder = NSTableCellView::initWithFrame(
+                        NSTableCellView::alloc(mtm),
+                        rect(0., 0., 112., 14.),
+                    );
+                    holder.addSubview(&popup);
+                    [name_cell(mtm, grant), Retained::into_super(holder)]
+                })
+                .collect();
+            let table = Grants::alloc(mtm).set_ivars(GrantsIvars {
+                cells,
+                fitted: Cell::new(0.),
+            });
+            let table: Retained<Grants> =
+                unsafe { msg_send![super(table), initWithFrame: NSRect::ZERO] };
+            table.setStyle(NSTableViewStyle::Plain);
+            table.setRowSizeStyle(NSTableViewRowSizeStyle::Custom);
+            table.setRowHeight(LINE.into());
+            table.setIntercellSpacing(NSSize::new(3., 2.));
+            table.setGridStyleMask(NSTableViewGridLineStyle::SolidVerticalGridLineMask);
+            table.setUsesAlternatingRowBackgroundColors(true);
+            table.setColumnAutoresizingStyle(
+                NSTableViewColumnAutoresizingStyle::UniformColumnAutoresizingStyle,
+            );
+            table.setAllowsColumnReordering(false);
+            table.setFocusRingType(NSFocusRingType::None);
+            for (id, title, indent) in [
+                (ns_string!("name"), "Name", 5.),
+                (ns_string!("priv"), "Privilege", 13.),
+            ] {
+                let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), id);
+                column.setHeaderCell(&GrantsHeader::new(mtm, title, indent));
+                column.setWidth(108.);
+                column.setMinWidth(40.);
+                table.addTableColumn(&column);
+            }
+            unsafe {
+                table.setDataSource(Some(ProtocolObject::from_ref(&*table)));
+                table.setDelegate(Some(ProtocolObject::from_ref(&*table)));
+            }
+            scroll.setDocumentView(Some(&table));
+            scroll
+        },
+        move |scroll, host| {
+            let Some(table) = scroll
+                .documentView()
+                .and_then(|table| table.downcast::<Grants>().ok())
+            else {
+                return;
+            };
+            if table.isEnabled() != editable {
+                table.setEnabled(editable);
+            }
+            let inner = scroll.contentSize().width;
+            if table.ivars().fitted.get() != inner {
+                table.ivars().fitted.set(inner);
+                let columns = table.tableColumns();
+                let half = ((inner - 6.) / 2.).round();
+                for (column, width) in columns.iter().zip([half, inner - 6. - half]) {
+                    column.setWidth(width);
+                }
+            }
+            for (row, (cells, &(tag, posix))) in table.ivars().cells.iter().zip(&states).enumerate()
+            {
+                let popup = cells[1].subviews().firstObject();
+                let Some(popup) = popup.and_then(|popup| popup.downcast::<NSPopUpButton>().ok())
+                else {
+                    continue;
+                };
+                if popup.selectedTag() != tag {
+                    popup.selectItemWithTag(tag);
+                }
+                if popup.isEnabled() != posix {
+                    popup.setEnabled(posix);
+                }
+                let read: NativeRead = Rc::new(|sender: &AnyObject| -> Box<dyn Any> {
+                    Box::new(
+                        sender
+                            .downcast_ref::<NSPopUpButton>()
+                            .map_or(-1, |popup| popup.selectedTag()),
+                    )
+                });
+                let this = this.clone();
+                host.on_event_channel(
+                    key,
+                    row_tag(&tags_path, row),
+                    read,
+                    Some(Rc::new(move |value, _, cx| {
+                        let chosen = value
+                            .downcast::<isize>()
+                            .ok()
+                            .and_then(|tag| PRIVILEGES.get(usize::try_from(*tag).ok()?).copied());
+                        if let Some(privilege) = chosen {
+                            this.update(cx, |info, cx| info.grant(row, privilege, cx))
+                                .ok();
+                        }
+                    })),
+                );
+            }
+        },
+    )
+}
+
+fn action_item(
+    mtm: MainThreadMarker,
+    target: &Target,
+    title: &str,
+    tag: u64,
+) -> Retained<NSMenuItem> {
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(&NSString::from_str(title));
+    item.setTag(tag as isize);
+    unsafe {
+        item.setTarget(Some(target.as_ref()));
+        item.setAction(Some(sel!(ngAction:)));
+    }
+    item
+}
+
+/// Add and Remove stay off: adding a user needs a directory-service picker, and only an ACL entry
+/// could be removed.
+fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
+    let control = NSSegmentedControl::new(mtm);
+    control.setSegmentStyle(NSSegmentStyle::Rounded);
+    control.setTrackingMode(NSSegmentSwitchTracking::Momentary);
+    control.setControlSize(NSControlSize::Small);
+    control.setSegmentCount(3);
+    for (at, (symbol, tip)) in [
+        (ns_string!("plus"), ns_string!("Add")),
+        (ns_string!("minus"), ns_string!("Remove")),
+        (ns_string!("ellipsis.circle"), ns_string!("Action")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let config =
+            NSImageSymbolConfiguration::configurationWithPointSize_weight(SMALL.into(), unsafe {
+                NSFontWeightRegular
+            });
+        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(symbol, Some(tip))
+            .and_then(|image| image.imageWithSymbolConfiguration(&config));
+        control.setImage_forSegment(image.as_deref(), at as isize);
+        control.setToolTip_forSegment(Some(tip), at as isize);
+        control.setEnabled_forSegment(false, at as isize);
+    }
+    control.setMenu_forSegment(Some(&NSMenu::new(mtm)), 2);
+    control.setShowsMenuIndicator_forSegment(true, 2);
+    control
+}
+
+fn tools_width() -> f32 {
+    thread_local! {
+        static WIDTH: f32 = MainThreadMarker::new()
+            .map_or(78.5, |mtm| tools_control(mtm).intrinsicContentSize().width as f32);
+    }
+    WIDTH.with(|width| *width)
+}
+
+fn grant_tools(
+    path: SharedString,
+    editable: bool,
+    folder: bool,
+    changed: bool,
+    this: WeakEntity<Info>,
+) -> impl IntoElement {
+    let key = key_of(
+        "ng.finder.info.grants.tools",
+        &format!("{path}\u{0}{folder}"),
+    );
+    let apply = key_of("ng.finder.info.grants.apply", &path);
+    let revert = key_of("ng.finder.info.grants.revert", &path);
+    hosted(
+        key,
+        move |mtm, target| {
+            let control = tools_control(mtm);
+            if let Some(menu) = control.menuForSegment(2) {
+                menu.setAutoenablesItems(false);
+                if folder {
+                    menu.addItem(&action_item(
+                        mtm,
+                        target,
+                        "Apply to enclosed items\u{2026}",
+                        apply,
+                    ));
+                }
+                menu.addItem(&action_item(mtm, target, "Revert changes", revert));
+            }
+            control
+        },
+        move |control, host| {
+            if control.isEnabledForSegment(2) != editable {
+                control.setEnabled_forSegment(editable, 2);
+            }
+            if let Some(revert_item) = control
+                .menuForSegment(2)
+                .and_then(|menu| menu.itemWithTag(revert as isize))
+            {
+                if revert_item.isEnabled() != changed {
+                    revert_item.setEnabled(changed);
+                }
+            }
+            let read: NativeRead = Rc::new(|_: &AnyObject| -> Box<dyn Any> { Box::new(()) });
+            let to_revert = this.clone();
+            host.on_event_channel(
+                key,
+                revert,
+                read.clone(),
+                Some(Rc::new(move |_, _, cx| {
+                    to_revert.update(cx, |info, cx| info.revert(cx)).ok();
+                })),
+            );
+            let to_apply = this.clone();
+            host.on_event_channel(
+                key,
+                apply,
+                read,
+                Some(Rc::new(move |_, window, cx| {
+                    let ns = ns_window(window);
+                    to_apply
+                        .update(cx, |info, cx| info.confirm_apply(ns, cx))
+                        .ok();
+                })),
+            );
+        },
+    )
+}
+
+fn lock_view() -> impl IntoElement {
+    hosted(
+        key_of("ng.finder.info.lock", LOCK_ICON),
+        |mtm, _| {
+            let view = NSImageView::new(mtm);
+            let image =
+                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(LOCK_ICON));
+            view.setImage(image.as_deref());
+            view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+            view
+        },
+        |_, _| {},
+    )
+}
+
 struct CommentIvars {
     path: PathBuf,
     saved: RefCell<String>,
@@ -1810,6 +2417,7 @@ impl Render for Info {
         self.fetch_metadata(cx);
         self.ensure_opener();
         self.preview = self.shown(window.scale_factor());
+        self.ensure_access();
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.title(window);
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
@@ -1827,7 +2435,7 @@ impl Render for Info {
                     Pane::Comments => self.comments(&mut sheet),
                     Pane::OpenWith => self.open_with(&mut sheet, &this),
                     Pane::Preview => self.preview_pane(&mut sheet, window.scale_factor()),
-                    Pane::Privileges => {}
+                    Pane::Privileges => self.privileges(&mut sheet, &this),
                 }
             }
             sheet.y += height;
