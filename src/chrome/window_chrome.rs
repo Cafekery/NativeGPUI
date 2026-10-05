@@ -627,7 +627,6 @@ pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
 pub enum ToolbarStyle {
     Unified,
     UnifiedCompact,
-    /// A settings window's: labelled icons, centred, the selected pane highlighted.
     Preference,
 }
 
@@ -723,7 +722,7 @@ pub enum ToolbarItem {
         tool_tip: Option<String>,
         on_click: Option<ToolbarHandler>,
         enabled: bool,
-        /// `Some` makes the item one of the toolbar's selectable panes; `true` is the selected one.
+        /// `Some` makes a selectable pane; `true` selects it.
         selected: Option<bool>,
     },
     Group {
@@ -896,7 +895,6 @@ impl ToolbarItem {
         self
     }
 
-    /// One of the toolbar's panes: AppKit highlights it while `selected` and on click.
     pub fn selectable(mut self, selected: bool) -> Self {
         if let ToolbarItem::Symbol { selected: slot, .. } = &mut self {
             *slot = Some(selected);
@@ -1401,7 +1399,6 @@ impl ToolbarDelegate {
             } => {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
                 item.setLabel(&worded(&label));
-                // A selectable pane shows its selection by AppKit's highlight, never a bezel.
                 item.setBordered(selected.is_none());
                 if let Some(image) = symbol_image(&symbol, &label) {
                     item.setImage(Some(&image));

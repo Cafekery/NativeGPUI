@@ -20,7 +20,6 @@ const FAVOURITES_X: f32 = 77.;
 const FAVOURITE_W: f32 = 32.;
 const FAVOURITES_PER_ROW: usize = 7;
 
-/// A tag dragged from the table, or from the favourites at this index.
 #[derive(Clone)]
 pub(super) struct DraggedTag {
     name: String,
@@ -63,10 +62,6 @@ fn small(text: &str) -> NativeLabel {
 
 fn names(tags: &[Tag]) -> Vec<String> {
     tags.iter().map(|tag| tag.name.clone()).collect()
-}
-
-fn borrowed(names: &[String]) -> Vec<&str> {
-    names.iter().map(String::as_str).collect()
 }
 
 impl Settings {
@@ -367,7 +362,7 @@ impl Settings {
         };
         let moved = order.remove(from);
         order.insert(at.min(order.len()), moved);
-        crate::tags::set_order(&borrowed(&order));
+        crate::tags::set_order(&order);
         sidebar::reload_sidebars(cx);
         cx.notify();
     }
@@ -392,7 +387,7 @@ impl Settings {
             None if favourites.contains(&dragged.name) => return,
             None => favourites.insert(slot.min(favourites.len()), dragged.name.clone()),
         }
-        crate::tags::set_favourites(&borrowed(&favourites));
+        crate::tags::set_favourites(&favourites);
         cx.notify();
     }
 
@@ -400,7 +395,7 @@ impl Settings {
         let mut favourites = names(&crate::tags::tags());
         if index < favourites.len() {
             favourites.remove(index);
-            crate::tags::set_favourites(&borrowed(&favourites));
+            crate::tags::set_favourites(&favourites);
             cx.notify();
         }
     }

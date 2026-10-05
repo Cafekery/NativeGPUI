@@ -75,7 +75,6 @@ fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
         .collect()
 }
 
-/// One row each, and one for the line saying nothing runs.
 fn rows_shown(demos: &[Entity<FinderDemo>], cx: &App) -> usize {
     demos
         .iter()

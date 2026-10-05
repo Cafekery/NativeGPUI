@@ -31,7 +31,8 @@ pub(crate) struct RowTag {
     pub(crate) color: u8,
 }
 
-static FAVORITES: LazyLock<RwLock<Arc<[Tag]>>> = LazyLock::new(|| RwLock::new(favourites().into()));
+static FAVORITES: LazyLock<RwLock<Arc<[Tag]>>> =
+    LazyLock::new(|| RwLock::new(favourites(&all()).into()));
 static LISTED: LazyLock<RwLock<Arc<[Tag]>>> = LazyLock::new(|| RwLock::new(listed().into()));
 
 pub(crate) fn tags() -> Arc<[Tag]> {
@@ -42,7 +43,6 @@ pub(crate) fn all() -> Arc<[Tag]> {
     LISTED.read().unwrap().clone()
 }
 
-/// Finder's tags with those added or deleted in the demo's settings, in the demo's sidebar order.
 fn listed() -> Vec<Tag> {
     let mut listed = finder_fs::tags::all();
     for name in prefs::tag_list("added").unwrap_or_default() {
@@ -62,11 +62,10 @@ fn listed() -> Vec<Tag> {
     listed
 }
 
-fn favourites() -> Vec<Tag> {
+fn favourites(listed: &[Tag]) -> Vec<Tag> {
     let Some(names) = prefs::tag_list("favourites") else {
         return finder_fs::tags::favorites();
     };
-    let listed = listed();
     names
         .into_iter()
         .map(|name| {
@@ -83,22 +82,22 @@ fn favourites() -> Vec<Tag> {
 }
 
 fn reread_lists() {
-    *LISTED.write().unwrap() = listed().into();
-    *FAVORITES.write().unwrap() = favourites().into();
+    let listed = listed();
+    *FAVORITES.write().unwrap() = favourites(&listed).into();
+    *LISTED.write().unwrap() = listed.into();
 }
 
-pub(crate) fn set_order(names: &[&str]) {
+pub(crate) fn set_order(names: &[impl AsRef<str>]) {
     let ids: Vec<String> = names
         .iter()
-        .map(|name| format!("tag:{name}"))
+        .map(|name| format!("tag:{}", name.as_ref()))
         .chain(["tag:".to_owned()])
         .collect();
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     prefs::set_sidebar_rows("g-tags", &ids);
     reread_lists();
 }
 
-pub(crate) fn set_favourites(names: &[&str]) {
+pub(crate) fn set_favourites(names: &[impl AsRef<str>]) {
     prefs::set_tag_list("favourites", names);
     reread_lists();
 }
@@ -106,7 +105,6 @@ pub(crate) fn set_favourites(names: &[&str]) {
 fn edit_list(list: &str, edit: impl FnOnce(&mut Vec<String>)) {
     let mut names = prefs::tag_list(list).unwrap_or_default();
     edit(&mut names);
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     prefs::set_tag_list(list, &names);
 }
 
@@ -116,32 +114,33 @@ pub(crate) fn add(name: &str) {
     reread_lists();
 }
 
-/// Names a tag the demo added; Finder's own tags keep theirs.
 pub(crate) fn rename(old: &str, new: &str) {
     edit_list("added", |added| {
         for name in added.iter_mut().filter(|name| *name == old) {
             *name = new.to_owned();
         }
     });
-    let order: Vec<String> = all().iter().map(|tag| tag.name.clone()).collect();
-    let order: Vec<&str> = order
+    let listed = all();
+    let order: Vec<&str> = listed
         .iter()
-        .map(|name| if name == old { new } else { name.as_str() })
+        .map(|tag| match tag.name == old {
+            true => new,
+            false => &tag.name,
+        })
         .collect();
     set_order(&order);
 }
 
-/// Drops the tag from the demo's lists; the files that carry it keep it.
 pub(crate) fn delete(name: &str) {
     edit_list("added", |added| added.retain(|kept| kept != name));
     edit_list("deleted", |deleted| deleted.push(name.to_owned()));
-    if tags().iter().any(|tag| tag.name == name) {
-        let kept: Vec<String> = tags()
+    let favourites = tags();
+    if favourites.iter().any(|tag| tag.name == name) {
+        let kept: Vec<&str> = favourites
             .iter()
-            .map(|tag| tag.name.clone())
-            .filter(|kept| kept != name)
+            .map(|tag| tag.name.as_str())
+            .filter(|kept| *kept != name)
             .collect();
-        let kept: Vec<&str> = kept.iter().map(String::as_str).collect();
         prefs::set_tag_list("favourites", &kept);
     }
     reread_lists();

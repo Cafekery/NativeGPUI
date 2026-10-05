@@ -457,7 +457,6 @@ pub fn replace_edit_rows(commands: impl IntoIterator<Item = MenuCommand>) {
     }
 }
 
-/// Makes the About row `install_menus` put in the app menu send `action`, not open AppKit's panel.
 pub fn replace_about_row(action: impl Action) {
     let Some((mtm, bar)) = bar() else {
         return;

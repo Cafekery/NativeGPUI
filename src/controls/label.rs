@@ -90,7 +90,7 @@ impl NativeLabel {
         self
     }
 
-    /// Wraps by word and fills its parent's height, which the caller sizes to the lines it needs.
+    /// Wraps by word and takes its parent's height; the caller sizes it to its lines.
     pub fn wraps(mut self, wraps: bool) -> Self {
         self.wraps = wraps;
         self

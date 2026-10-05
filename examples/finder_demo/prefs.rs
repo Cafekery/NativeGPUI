@@ -234,7 +234,6 @@ pub(crate) fn set_setting_number(key: &str, value: f64) {
     write(key, value);
 }
 
-/// One flag of a dictionary of flags, such as Finder's `FXInfoPanesExpanded`.
 pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
     let flags = setting(key)?.downcast::<NSDictionary>().ok()?;
     Some(
@@ -245,18 +244,13 @@ pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
     )
 }
 
-pub(crate) fn set_setting_flags(key: &str, flags: &[(&str, bool)]) {
-    let names: Vec<Retained<NSString>> = flags
-        .iter()
-        .map(|(name, _)| NSString::from_str(name))
-        .collect();
-    let values: Vec<Retained<NSNumber>> = flags
-        .iter()
-        .map(|(_, on)| NSNumber::new_bool(*on))
-        .collect();
+pub(crate) fn set_setting_flags<'a>(key: &str, flags: impl IntoIterator<Item = (&'a str, bool)>) {
+    let (names, values): (Vec<Retained<NSString>>, Vec<Retained<NSNumber>>) = flags
+        .into_iter()
+        .map(|(name, on)| (NSString::from_str(name), NSNumber::new_bool(on)))
+        .unzip();
     let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
-    let values: Vec<&NSNumber> = values.iter().map(|value| &**value).collect();
-    let value: &AnyObject = &NSDictionary::from_slices(&names, &values);
+    let value: &AnyObject = &NSDictionary::from_retained_objects(&names, &values);
     unsafe { defaults().setObject_forKey(Some(value), &NSString::from_str(key)) };
 }
 
@@ -372,11 +366,14 @@ fn read_list(key: &str) -> Vec<String> {
     sidebar_file().remove(key).unwrap_or_default()
 }
 
-fn write_list(key: &str, values: &[&str]) {
+fn write_list(key: &str, values: &[impl AsRef<str>]) {
     let mut kept = sidebar_file();
     kept.insert(
         key.to_owned(),
-        values.iter().map(|value| (*value).to_owned()).collect(),
+        values
+            .iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect(),
     );
     write_sidebar_file(&kept);
 }
@@ -385,7 +382,7 @@ pub(crate) fn sidebar_rows(group: &str) -> Vec<String> {
     read_list(&format!("rows.{group}"))
 }
 
-pub(crate) fn set_sidebar_rows(group: &str, rows: &[&str]) {
+pub(crate) fn set_sidebar_rows(group: &str, rows: &[impl AsRef<str>]) {
     write_list(&format!("rows.{group}"), rows);
 }
 
@@ -405,12 +402,11 @@ pub(crate) fn set_removed(group: &str, ids: &[&str]) {
     write_list(&format!("removed.{group}"), ids);
 }
 
-/// The demo's own tag lists: `favourites`, and the tags `added` or `deleted` in its settings.
 pub(crate) fn tag_list(list: &str) -> Option<Vec<String>> {
     sidebar_file().remove(&format!("tags.{list}"))
 }
 
-pub(crate) fn set_tag_list(list: &str, names: &[&str]) {
+pub(crate) fn set_tag_list(list: &str, names: &[impl AsRef<str>]) {
     write_list(&format!("tags.{list}"), names);
 }
 

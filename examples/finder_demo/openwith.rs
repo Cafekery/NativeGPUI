@@ -162,7 +162,6 @@ pub(crate) fn set_default(files: &[PathBuf], app: &Path) {
     }
 }
 
-/// The app `file` opens with: its own choice where it has one, else its type's.
 pub(crate) fn opener(file: &Path) -> Option<PathBuf> {
     let file = url(file)?;
     let app = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&file)?;
@@ -175,7 +174,6 @@ fn content_type(file: &Path) -> Option<Retained<AnyObject>> {
     kind
 }
 
-/// The app every document of `file`'s type opens with.
 pub(crate) fn type_default(file: &Path) -> Option<PathBuf> {
     let kind = content_type(file)?;
     let app: Option<Retained<NSURL>> = unsafe {

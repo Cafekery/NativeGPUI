@@ -8,6 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::thread::LocalKey;
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -199,7 +200,16 @@ struct Weight {
     items: Option<u64>,
 }
 
-/// What the preview pane draws: the item's icon, a picture as tall as its aspect, or a page.
+impl Weight {
+    fn file(meta: &std::fs::Metadata) -> Self {
+        Weight {
+            bytes: meta.len(),
+            on_disk: meta.blocks() * 512,
+            items: None,
+        }
+    }
+}
+
 enum Shown {
     Icon,
     Picture(Arc<RenderImage>),
@@ -211,13 +221,14 @@ impl Shown {
         match self {
             Shown::Icon => PREVIEW_ICON,
             Shown::Page(_) => PREVIEW_MOST,
-            Shown::Picture(image) => {
-                let size = image.size(0);
-                let aspect = u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32;
-                (width * aspect).round().min(PREVIEW_MOST)
-            }
+            Shown::Picture(image) => (width * aspect(image)).round().min(PREVIEW_MOST),
         }
     }
+}
+
+fn aspect(image: &RenderImage) -> f32 {
+    let size = image.size(0);
+    u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32
 }
 
 fn weigh_tree(path: &Path, counted: bool) -> Weight {
@@ -270,56 +281,54 @@ fn by(width: impl std::fmt::Display, height: impl std::fmt::Display) -> SharedSt
     format!("{width}\u{200a}\u{d7}\u{200a}{height}").into()
 }
 
-/// The width an `NSTextField` label needs to show `text` whole.
-fn field_width(text: &str, size: f32, bold: bool) -> f32 {
-    thread_local! {
-        static SEEN: RefCell<HashMap<(String, u32, bool), f32>> = RefCell::new(HashMap::new());
+fn remembered<V: Copy>(
+    seen: &'static LocalKey<RefCell<HashMap<u64, V>>>,
+    key: u64,
+    measure: impl FnOnce() -> V,
+) -> V {
+    if let Some(value) = seen.with_borrow(|seen| seen.get(&key).copied()) {
+        return value;
     }
-    let key = (text.to_owned(), size.to_bits(), bold);
-    if let Some(width) = SEEN.with_borrow(|seen| seen.get(&key).copied()) {
-        return width;
-    }
-    let mtm = MainThreadMarker::new().expect("laid out on the main thread");
-    let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-    let font = match bold {
-        true => NSFont::boldSystemFontOfSize(size.into()),
-        false => NSFont::systemFontOfSize(size.into()),
-    };
-    field.setFont(Some(&font));
-    let width = field.fittingSize().width as f32;
-    SEEN.with_borrow_mut(|seen| {
+    let value = measure();
+    seen.with_borrow_mut(|seen| {
         if seen.len() >= KEPT {
             seen.clear();
         }
-        seen.insert(key, width);
+        seen.insert(key, value);
     });
-    width
+    value
 }
 
-/// How many 14 pt lines a wrapping 11 pt label `width` wide takes for `text`.
+fn field_width(text: &str, size: f32, bold: bool) -> f32 {
+    thread_local! {
+        static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
+    }
+    remembered(&SEEN, key_of((text, size.to_bits(), bold)), || {
+        let mtm = MainThreadMarker::new().expect("laid out on the main thread");
+        let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+        let font = match bold {
+            true => NSFont::boldSystemFontOfSize(size.into()),
+            false => NSFont::systemFontOfSize(size.into()),
+        };
+        field.setFont(Some(&font));
+        field.fittingSize().width as f32
+    })
+}
+
 fn line_count(text: &str, width: f32) -> usize {
     thread_local! {
-        static SEEN: RefCell<HashMap<(String, u32), usize>> = RefCell::new(HashMap::new());
+        static SEEN: RefCell<HashMap<u64, usize>> = RefCell::default();
     }
-    let key = (text.to_owned(), width.to_bits());
-    if let Some(lines) = SEEN.with_borrow(|seen| seen.get(&key).copied()) {
-        return lines;
-    }
-    let mtm = MainThreadMarker::new().expect("laid out on the main thread");
-    let field = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
-    field.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
-    let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(width.into(), 1e6));
-    let height = field.cell().map_or(f64::from(LINE), |cell| {
-        cell.cellSizeForBounds(bounds).height
-    });
-    let lines = ((height / f64::from(LINE)).round() as usize).max(1);
-    SEEN.with_borrow_mut(|seen| {
-        if seen.len() >= KEPT {
-            seen.clear();
-        }
-        seen.insert(key, lines);
-    });
-    lines
+    remembered(&SEEN, key_of((text, width.to_bits())), || {
+        let mtm = MainThreadMarker::new().expect("laid out on the main thread");
+        let field = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
+        field.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(width.into(), 1e6));
+        let height = field.cell().map_or(f64::from(LINE), |cell| {
+            cell.cellSizeForBounds(bounds).height
+        });
+        ((height / f64::from(LINE)).round() as usize).max(1)
+    })
 }
 
 fn formatter(date: NSDateFormatterStyle, time: NSDateFormatterStyle) -> Retained<NSDateFormatter> {
@@ -355,7 +364,6 @@ fn header_date(seconds: f64) -> String {
     }
 }
 
-/// The fullest date style that fits `room`.
 fn long_date(seconds: f64, room: f32) -> String {
     use NSDateFormatterStyle as Style;
     thread_local! {
@@ -408,14 +416,7 @@ fn system_version(mount: &str) -> Option<String> {
     Some(version.downcast::<NSString>().ok()?.to_string())
 }
 
-fn set_resource(path: &Path, key: &NSString, on: bool) -> bool {
-    let Some(url) = crate::openwith::url(path) else {
-        return false;
-    };
-    unsafe { url.setResourceValue_forKey_error(Some(&NSNumber::new_bool(on)), key) }.is_ok()
-}
-
-fn resource(path: &Path, key: &NSString) -> bool {
+pub(crate) fn resource(path: &Path, key: &NSString) -> bool {
     let Some(url) = crate::openwith::url(path) else {
         return false;
     };
@@ -424,6 +425,13 @@ fn resource(path: &Path, key: &NSString) -> bool {
     value
         .and_then(|value| value.downcast::<NSNumber>().ok())
         .is_some_and(|value| value.boolValue())
+}
+
+fn set_resource(path: &Path, key: &NSString, on: bool) -> bool {
+    let Some(url) = crate::openwith::url(path) else {
+        return false;
+    };
+    unsafe { url.setResourceValue_forKey_error(Some(&NSNumber::new_bool(on)), key) }.is_ok()
 }
 
 fn writable(path: &Path) -> bool {
@@ -462,13 +470,12 @@ fn fit_window(window: &NSWindow, height: f32) {
     );
 }
 
-fn key_of(name: &str, path: &str) -> u64 {
+fn key_of(parts: impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
-    (name, path).hash(&mut hasher);
+    parts.hash(&mut hasher);
     hasher.finish()
 }
 
-/// An AppKit view of the example's own, placed at the element's bounds every paint.
 fn hosted<V: Message + AsRef<NSView> + 'static>(
     key: u64,
     make: impl Fn(MainThreadMarker, &Target) -> Retained<V> + 'static,
@@ -509,7 +516,7 @@ fn icon_of(path: &str) -> Option<Retained<NSImage>> {
     }
 }
 
-/// The item's own icon, never its preview: Finder heads an image's info with the PNG icon.
+/// The item's icon, never its preview: Finder heads an image's info with its icon.
 fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
     let Some(icon) = icon_of(&row.path) else {
         return div()
@@ -521,7 +528,7 @@ fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
             .into_any_element();
     };
     hosted(
-        key_of(name, &row.path),
+        key_of((name, &row.path)),
         move |mtm, _| {
             let view = NSImageView::new(mtm);
             view.setImage(Some(&icon));
@@ -541,7 +548,6 @@ fn secondary(id: impl Into<gpui::ElementId>, text: &str) -> NativeLabel {
     small(id, text).color(SystemColor::SecondaryLabel)
 }
 
-/// Finder's measured frames: each pane positions its views from the top of its own band.
 struct Sheet {
     width: f32,
     y: f32,
@@ -570,7 +576,6 @@ impl Sheet {
         );
     }
 
-    /// Label column right-aligned to x 68, values wrapping from x 72.
     fn rows(&mut self, rows: &[(&str, SharedString)]) -> f32 {
         let value_w = self.width - 82.;
         let mut y = BODY;
@@ -589,6 +594,37 @@ impl Sheet {
             y += height;
         }
         y
+    }
+
+    fn title(&mut self, icon: impl IntoElement, name: &str, size: Option<&str>) {
+        let width = self.width;
+        self.put((11., 11.), (32., 32.), icon);
+        let size_w = size.map_or(0., |size| field_width(size, 13., false));
+        if let Some(size) = size {
+            self.put(
+                (width - 6. - size_w, 9.),
+                (size_w, 16.),
+                native_label("ng.finder.info.size", size)
+                    .font_size(px(13.))
+                    .align(LabelAlign::Right),
+            );
+        }
+        self.put(
+            (47., 9.),
+            (width - 55. - size_w.max(17.), 16.),
+            native_label("ng.finder.info.name", name)
+                .font_size(px(13.))
+                .weight(FontWeight::BOLD),
+        );
+    }
+
+    fn end_head(&mut self, head: f32) {
+        self.put(
+            (0., head - 1.),
+            (self.width, 1.),
+            native_rule("ng.finder.info.head"),
+        );
+        self.y = head;
     }
 
     fn page(self, titlebar: f32) -> impl IntoElement {
@@ -621,7 +657,6 @@ impl Sheet {
     }
 }
 
-/// The apps that can open the item, the one it opens with, and its type's default.
 struct Opener {
     apps: Vec<PathBuf>,
     chosen: Option<PathBuf>,
@@ -651,8 +686,7 @@ impl Opener {
         }
     }
 
-    /// The pop-up's rows, `None` being a separator: the type's default, the other apps, then the
-    /// App Store and a chooser.
+    /// `None` is a separator.
     fn rows(&self) -> Vec<Option<Pick>> {
         let mut rows = Vec::new();
         for (at, app) in self.apps.iter().enumerate() {
@@ -715,11 +749,7 @@ impl Info {
         let subject = Subject::of(&line.row);
         let meta = std::fs::symlink_metadata(path).ok();
         let weight = match (subject, &meta) {
-            (Subject::File, Some(meta)) if !meta.is_dir() => Some(Weight {
-                bytes: meta.len(),
-                on_disk: meta.blocks() * 512,
-                items: None,
-            }),
+            (Subject::File, Some(meta)) if !meta.is_dir() => Some(Weight::file(meta)),
             _ => None,
         };
         let real = meta.is_some();
@@ -817,15 +847,14 @@ impl Info {
     }
 
     fn set_check(&mut self, check: Check, on: bool, cx: &mut Context<Self>) {
-        let path = self.path().to_path_buf();
         match check {
             Check::Stationery => {
-                if finder_fs::flags::set(&path, IS_STATIONERY, on).is_ok() {
+                if finder_fs::flags::set(self.path(), IS_STATIONERY, on).is_ok() {
                     self.stationery = on;
                 }
             }
             Check::Locked => {
-                if set_resource(&path, unsafe { NSURLIsUserImmutableKey }, on) {
+                if set_resource(self.path(), unsafe { NSURLIsUserImmutableKey }, on) {
                     self.locked = on;
                 }
             }
@@ -839,7 +868,6 @@ impl Info {
         }
     }
 
-    /// The title and proxy icon follow the item through a rename.
     fn title(&mut self, window: &mut Window) {
         let title = format!("{} Info", self.line.row.display);
         if self.titled == title {
@@ -853,8 +881,6 @@ impl Info {
         self.titled = title;
     }
 
-    /// Renames through the Finder window, which may first ask about the extension, then follows
-    /// the item to its new name for a while.
     fn rename(&mut self, name: &str, cx: &mut Context<Self>) {
         let from = self.path().to_path_buf();
         let wanted = name.trim().replace('/', ":");
@@ -864,8 +890,7 @@ impl Info {
         let Some(demo) = self.demo.upgrade() else {
             return;
         };
-        let key = self.line.row.path.clone();
-        demo.update(cx, |demo, cx| demo.rename(&key, name, cx));
+        demo.update(cx, |demo, cx| demo.rename(&self.line.row.path, name, cx));
         let to = from.with_file_name(&wanted);
         let inode = std::fs::symlink_metadata(&from).ok().map(|meta| meta.ino());
         self.following = Some(cx.spawn(async move |this, cx| {
@@ -907,10 +932,7 @@ impl Info {
     fn head_size(&self) -> Option<String> {
         match self.subject {
             Subject::Volume | Subject::Place => None,
-            _ => Some(
-                self.weight
-                    .map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes)),
-            ),
+            _ => Some(size_text(self.weight)),
         }
     }
 
@@ -974,7 +996,6 @@ impl Info {
         }
     }
 
-    /// Title, state, and the change it makes when the box can be clicked.
     fn checks(&self) -> Vec<(&'static str, bool, Option<Check>)> {
         let locked = ("Locked", self.locked, self.owned.then_some(Check::Locked));
         let shared = ("Shared folder", false, None);
@@ -1008,7 +1029,6 @@ impl Info {
         BODY + rows + checks + FOOT
     }
 
-    /// Spotlight's rows with the width of their label column, which starts at x 10.
     fn more_rows(&self, width: f32) -> (f32, Vec<(&'static str, SharedString)>) {
         let Some(metadata) = &self.metadata else {
             return (0., Vec::new());
@@ -1083,30 +1103,10 @@ impl Info {
     fn head(&self, sheet: &mut Sheet, scale: f32) {
         let row = &self.line.row;
         let width = sheet.width;
-        sheet.put(
-            (11., 11.),
-            (32., 32.),
+        sheet.title(
             icon_view(row, "ng.finder.info.icon", 32., scale),
-        );
-        let size = self.head_size();
-        let size_w = size
-            .as_deref()
-            .map_or(0., |size| field_width(size, 13., false));
-        if let Some(size) = &size {
-            sheet.put(
-                (width - 6. - size_w, 9.),
-                (size_w, 16.),
-                native_label("ng.finder.info.size", size)
-                    .font_size(px(13.))
-                    .align(LabelAlign::Right),
-            );
-        }
-        sheet.put(
-            (47., 9.),
-            (width - 55. - size_w.max(17.), 16.),
-            native_label("ng.finder.info.name", &row.display)
-                .font_size(px(13.))
-                .weight(FontWeight::BOLD),
+            &row.display,
+            self.head_size().as_deref(),
         );
         if self.subject != Subject::Place {
             let label_w = field_width("Modified:", SMALL, false);
@@ -1136,13 +1136,7 @@ impl Info {
                 tags_field(row.path.clone(), tags),
             );
         }
-        let head = self.head_height();
-        sheet.put(
-            (0., head - 1.),
-            (width, 1.),
-            native_rule("ng.finder.info.head"),
-        );
-        sheet.y = head;
+        sheet.end_head(self.head_height());
     }
 
     fn pane_chrome(&self, sheet: &mut Sheet, pane: Pane, height: f32, this: &WeakEntity<Self>) {
@@ -1251,7 +1245,6 @@ impl Info {
         }
     }
 
-    /// Only the owner may change a class's privilege without root; an ACL entry has no class.
     fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
         let class = self
             .access
@@ -1273,27 +1266,25 @@ impl Info {
     }
 
     fn confirm_apply(&self, window: Option<Retained<NSWindow>>, cx: &mut Context<Self>) {
-        let (Some(window), Some(mtm)) = (window, MainThreadMarker::new()) else {
+        let Some(window) = window else {
             return;
         };
-        let alert = NSAlert::new(mtm);
-        alert.setMessageText(ns_string!(
-            "Are you sure you want to apply the selected owner, group, and permissions to all the enclosed items?"
-        ));
-        alert.setInformativeText(ns_string!("You can\u{2019}t undo this."));
-        alert.addButtonWithTitle(ns_string!("OK"));
-        alert.addButtonWithTitle(ns_string!("Cancel"));
         let path = self.path().to_path_buf();
         let background = cx.background_executor().clone();
-        let handler = RcBlock::new(move |response: NSModalResponse| {
-            if response == NSAlertFirstButtonReturn {
+        confirm(
+            &window,
+            ns_string!(
+                "Are you sure you want to apply the selected owner, group, and permissions to all the enclosed items?"
+            ),
+            ns_string!("You can\u{2019}t undo this."),
+            ns_string!("OK"),
+            move || {
                 let path = path.clone();
                 background
                     .spawn(async move { permissions::apply_to_enclosed(&path) })
                     .detach();
-            }
-        });
-        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+            },
+        );
     }
 
     fn privileges(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
@@ -1336,11 +1327,13 @@ impl Info {
                     .enabled(false),
             );
         }
-        sheet.put((width - 32., bottom - 27.), (18., 18.), lock_view());
+        sheet.put(
+            (width - 32., bottom - 27.),
+            (18., 18.),
+            icon_file(LOCK_ICON),
+        );
     }
 
-    /// A picture or page once Quick Look has one; until then, and for what it can't preview, the
-    /// icon.
     fn shown(&self, scale: f32) -> Shown {
         let row = &self.line.row;
         if self.subject != Subject::File || !self.open[Pane::Preview as usize] {
@@ -1375,8 +1368,7 @@ impl Info {
                     .object_fit(ObjectFit::Contain),
             ),
             Shown::Page(image) => {
-                let size = image.size(0);
-                let aspect = u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32;
+                let tall = (width - 1.) * aspect(image);
                 sheet.put(
                     (15.5, BODY - 0.5),
                     (width + 1., height + 1.),
@@ -1387,11 +1379,7 @@ impl Info {
                         .border_color(system_color(SystemColor::Separator))
                         .bg(system_color(SystemColor::TextBackground))
                         .overflow_hidden()
-                        .child(
-                            img(image.clone())
-                                .w(px(width - 1.))
-                                .h(px((width - 1.) * aspect)),
-                        ),
+                        .child(img(image.clone()).w(px(width - 1.)).h(px(tall))),
                 );
             }
         }
@@ -1438,7 +1426,6 @@ impl Info {
         );
     }
 
-    /// An app sets this item's own choice; the App Store and Other… rows act and leave it.
     fn pick(&mut self, row: usize, cx: &mut Context<Self>) {
         let path = self.path().to_path_buf();
         let Some(opener) = &mut self.opener else {
@@ -1461,14 +1448,13 @@ impl Info {
             .opener
             .as_ref()
             .and_then(|opener| opener.chosen.clone());
-        let (Some(app), Some(window), Some(mtm)) = (app, window, MainThreadMarker::new()) else {
+        let (Some(app), Some(window)) = (app, window) else {
             return;
         };
-        let alert = NSAlert::new(mtm);
-        alert.setMessageText(&NSString::from_str(&format!(
+        let message = format!(
             "Are you sure you want to change all similar documents to open with the application \u{201c}{}\u{201d}?",
             finder_fs::name::of_path(&app)
-        )));
+        );
         let detail = match self.path().extension() {
             Some(extension) => format!(
                 "This change will apply to all documents with extension \u{201c}{}\u{201d}.",
@@ -1479,20 +1465,19 @@ impl Info {
                 self.line.row.kind
             ),
         };
-        alert.setInformativeText(&NSString::from_str(&detail));
-        alert.addButtonWithTitle(ns_string!("Continue"));
-        alert.addButtonWithTitle(ns_string!("Cancel"));
         let this = cx.entity().downgrade();
         let async_cx = cx.to_async();
-        // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
-        let handler = RcBlock::new(move |response: NSModalResponse| {
-            if response == NSAlertFirstButtonReturn {
+        confirm(
+            &window,
+            &NSString::from_str(&message),
+            &NSString::from_str(&detail),
+            ns_string!("Continue"),
+            move || {
                 let mut cx = async_cx.clone();
                 this.update(&mut cx, |info, cx| info.make_default(&app, cx))
                     .ok();
-            }
-        });
-        alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
+            },
+        );
     }
 
     fn make_default(&mut self, app: &Path, cx: &mut Context<Self>) {
@@ -1507,8 +1492,32 @@ impl Info {
     }
 }
 
+fn confirm(
+    window: &NSWindow,
+    message: &NSString,
+    detail: &NSString,
+    ok: &NSString,
+    on_ok: impl Fn() + 'static,
+) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(message);
+    alert.setInformativeText(detail);
+    alert.addButtonWithTitle(ok);
+    alert.addButtonWithTitle(ns_string!("Cancel"));
+    // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
+    let handler = RcBlock::new(move |response: NSModalResponse| {
+        if response == NSAlertFirstButtonReturn {
+            on_ok();
+        }
+    });
+    alert.beginSheetModalForWindow_completionHandler(window, Some(&handler));
+}
+
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
-    let key = key_of("ng.finder.info.tags", &path);
+    let key = key_of(("ng.finder.info.tags", &path));
     hosted(
         key,
         move |mtm, target| {
@@ -1562,10 +1571,9 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
     )
 }
 
-/// Renames on Return or when it loses focus, as Finder's field does. The field's bezel draws a
-/// point outside its frame, so it sits inset in a holder the host can clip.
+/// Its bezel draws a point outside its frame, so it sits inset in a holder the host can clip.
 fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl IntoElement {
-    let key = key_of("ng.finder.info.name.field", &path);
+    let key = key_of(("ng.finder.info.name.field", &path));
     let name = Path::new(path.as_ref())
         .file_name()
         .map(|name| finder_fs::name::display(&name.to_string_lossy()).into_owned())
@@ -1674,7 +1682,7 @@ fn privilege_tag(privilege: Privilege) -> isize {
 }
 
 fn row_tag(path: &str, row: usize) -> u64 {
-    key_of("ng.finder.info.grant", &format!("{path}\u{0}{row}"))
+    key_of(("ng.finder.info.grant", path, row))
 }
 
 struct GrantsIvars {
@@ -1683,7 +1691,6 @@ struct GrantsIvars {
 }
 
 define_class!(
-    /// Finder indents its column titles past AppKit's own inset.
     #[unsafe(super(NSTableHeaderCell, NSTextFieldCell, NSActionCell, NSCell, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGInfoGrantsHeader"]
@@ -1713,7 +1720,7 @@ impl GrantsHeader {
 }
 
 define_class!(
-    /// Disabled, it takes no clicks yet keeps its rows' colours, as Finder's does.
+    /// Disabled, it ignores clicks yet keeps its rows' colours.
     #[unsafe(super(NSTableView, NSControl, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGInfoGrants"]
@@ -1795,7 +1802,6 @@ fn name_cell(mtm: MainThreadMarker, grant: &Grant) -> Retained<NSView> {
     Retained::into_super(cell)
 }
 
-/// Write only is a folder's choice; a row already holding another keeps it listed.
 fn privilege_popup(
     mtm: MainThreadMarker,
     privilege: Privilege,
@@ -1829,7 +1835,6 @@ fn privilege_popup(
     popup
 }
 
-/// Finder's table: owner, ACL entries, group and everyone, each with its privilege.
 fn grants_table(
     path: SharedString,
     grants: &[Grant],
@@ -1837,19 +1842,7 @@ fn grants_table(
     folder: bool,
     this: WeakEntity<Info>,
 ) -> impl IntoElement {
-    let rows: String = grants
-        .iter()
-        .map(|grant| {
-            format!(
-                "{}\u{0}{:?}\u{0}{:?}\u{0}",
-                grant.name, grant.class, grant.privilege
-            )
-        })
-        .collect();
-    let key = key_of(
-        "ng.finder.info.grants",
-        &format!("{path}\u{0}{folder}\u{0}{rows}"),
-    );
+    let key = key_of(("ng.finder.info.grants", &path, folder, grants));
     let made = grants.to_vec();
     let states: Vec<(isize, bool)> = grants
         .iter()
@@ -1989,8 +1982,7 @@ fn action_item(
     item
 }
 
-/// Add and Remove stay off: adding a user needs a directory-service picker, and only an ACL entry
-/// could be removed.
+/// Add and Remove stay off: adding a user needs a directory-service picker.
 fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
     let control = NSSegmentedControl::new(mtm);
     control.setSegmentStyle(NSSegmentStyle::Rounded);
@@ -2035,12 +2027,9 @@ fn grant_tools(
     changed: bool,
     this: WeakEntity<Info>,
 ) -> impl IntoElement {
-    let key = key_of(
-        "ng.finder.info.grants.tools",
-        &format!("{path}\u{0}{folder}"),
-    );
-    let apply = key_of("ng.finder.info.grants.apply", &path);
-    let revert = key_of("ng.finder.info.grants.revert", &path);
+    let key = key_of(("ng.finder.info.grants.tools", &path, folder));
+    let apply = key_of(("ng.finder.info.grants.apply", &path));
+    let revert = key_of(("ng.finder.info.grants.revert", &path));
     hosted(
         key,
         move |mtm, target| {
@@ -2097,13 +2086,13 @@ fn grant_tools(
     )
 }
 
-fn lock_view() -> impl IntoElement {
+fn icon_file(path: &'static str) -> impl IntoElement {
     hosted(
-        key_of("ng.finder.info.lock", LOCK_ICON),
-        |mtm, _| {
+        key_of(("ng.finder.info.icon_file", path)),
+        move |mtm, _| {
             let view = NSImageView::new(mtm);
             let image =
-                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(LOCK_ICON));
+                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path));
             view.setImage(image.as_deref());
             view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             view
@@ -2118,7 +2107,6 @@ struct CommentIvars {
 }
 
 define_class!(
-    /// Saves the comment where Finder keeps it when editing ends or the view leaves its window.
     #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGInfoComment"]
@@ -2168,7 +2156,7 @@ impl Comment {
 
 fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
     hosted(
-        key_of("ng.finder.info.comment", &path),
+        key_of(("ng.finder.info.comment", &path)),
         move |mtm, _| {
             let scroll =
                 NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., 100., 46.));
@@ -2207,7 +2195,7 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
     )
 }
 
-/// Other… chooses any app for this item, from a task: the modal loop would re-enter GPUI's borrow.
+/// Runs from a task: the open panel's modal loop would re-enter GPUI's borrow.
 fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
     cx.spawn(async move |this, cx| {
         let Some(mtm) = MainThreadMarker::new() else {
@@ -2241,15 +2229,11 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
 }
 
 fn apps_popup(path: SharedString, opener: &Opener, this: WeakEntity<Info>) -> impl IntoElement {
-    let key = key_of(
-        "ng.finder.info.openwith",
-        &format!("{path}\u{0}{}", opener.rev),
-    );
+    let key = key_of(("ng.finder.info.openwith", &path, opener.rev));
     let rows = opener.rows();
-    let chosen = opener.chosen.clone().and_then(|app| {
-        let app = Some(Pick::App(app));
-        rows.iter().position(|row| *row == app)
-    });
+    let chosen = rows
+        .iter()
+        .position(|row| matches!(row, Some(Pick::App(app)) if opener.chosen.as_ref() == Some(app)));
     let default = opener.default.clone();
     hosted(
         key,
@@ -2297,7 +2281,6 @@ fn apps_popup(path: SharedString, opener: &Opener, this: WeakEntity<Info>) -> im
     )
 }
 
-/// A 16 pt icon and the bundle's name, the type's default marked in the secondary colour.
 fn menu_row(
     mtm: MainThreadMarker,
     row: Option<&Pick>,
@@ -2426,18 +2409,25 @@ pub(crate) fn open(
         (lines, SharedString::from(where_.unwrap_or_default()))
     };
     if summary && lines.len() > 1 {
-        open_combined(lines, where_, cx);
+        let combined = Combined::new(lines, where_);
+        let shape = (info_width(), HEIGHT);
+        open_window(combined, 0., shape, Some("Multiple Item Info"), cx);
         return;
     }
     for (step, line) in lines.into_iter().enumerate() {
-        open_info(Info::new(line, where_.clone(), demo.downgrade()), step, cx);
+        let info = Info::new(line, where_.clone(), demo.downgrade());
+        let shape = (info.width, TITLEBAR + info.content_height(info.width));
+        open_window(info, step as f32 * 24., shape, None, cx);
     }
 }
 
-fn open_info(info: Info, step: usize, cx: &mut App) {
-    let width = info.width;
-    let height = TITLEBAR + info.content_height(width);
-    let offset = step as f32 * 24.;
+fn open_window<V: Render>(
+    view: V,
+    offset: f32,
+    (width, height): (f32, f32),
+    title: Option<&'static str>,
+    cx: &mut App,
+) {
     let _ = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -2447,11 +2437,14 @@ fn open_info(info: Info, step: usize, cx: &mut App) {
             ..window_options()
         },
         move |window, cx| {
+            if let Some(title) = title {
+                window.set_window_title(title);
+            }
             crate::chrome::toolbar::titlebar_corners(window);
             if let Some(ns) = ns_window(window) {
                 ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
             }
-            cx.new(|_| info)
+            cx.new(|_| view)
         },
     );
 }
@@ -2477,7 +2470,6 @@ impl Combined {
         }
     }
 
-    /// "for 6 items" counts the selected items and everything inside them.
     fn weigh(&mut self, cx: &mut Context<Self>) {
         if self.weight.is_some() || self.weighing {
             return;
@@ -2503,11 +2495,7 @@ impl Combined {
                         };
                         let inner = match meta.is_dir() {
                             true => weigh_tree(path, true),
-                            false => Weight {
-                                bytes: meta.len(),
-                                on_disk: meta.blocks() * 512,
-                                items: None,
-                            },
+                            false => Weight::file(&meta),
                         };
                         total.bytes += inner.bytes;
                         total.on_disk += inner.on_disk;
@@ -2558,34 +2546,13 @@ impl Render for Combined {
         self.weigh(cx);
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
         let mut sheet = Sheet::new(width);
-        sheet.put((11., 11.), (32., 32.), many_icon());
-        let size = self
-            .weight
-            .map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes));
-        let size_w = field_width(&size, 13., false);
-        sheet.put(
-            (width - 6. - size_w, 9.),
-            (size_w, 16.),
-            native_label("ng.finder.info.size", &size)
-                .font_size(px(13.))
-                .align(LabelAlign::Right),
+        let size = size_text(self.weight);
+        sheet.title(
+            icon_file(MANY_ICON),
+            &format!("{} items", count(self.lines.len())),
+            Some(&size),
         );
-        sheet.put(
-            (47., 9.),
-            (width - 55. - size_w.max(17.), 16.),
-            native_label(
-                "ng.finder.info.name",
-                &format!("{} items", count(self.lines.len())),
-            )
-            .font_size(px(13.))
-            .weight(FontWeight::BOLD),
-        );
-        sheet.put(
-            (0., SIMPLE_HEAD - 1.),
-            (width, 1.),
-            native_rule("ng.finder.info.head"),
-        );
-        sheet.y = SIMPLE_HEAD;
+        sheet.end_head(SIMPLE_HEAD);
         let rows = self.rows();
         let height = match self.open {
             true => {
@@ -2618,48 +2585,18 @@ impl Render for Combined {
     }
 }
 
-fn many_icon() -> impl IntoElement {
-    hosted(
-        key_of("ng.finder.info.many", MANY_ICON),
-        |mtm, _| {
-            let view = NSImageView::new(mtm);
-            let image =
-                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(MANY_ICON));
-            view.setImage(image.as_deref());
-            view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
-            view
-        },
-        |_, _| {},
-    )
-}
-
-fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
-    let _ = cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: point(px(60.), px(80.)),
-                size: size(px(info_width()), px(HEIGHT)),
-            })),
-            ..window_options()
-        },
-        move |window, cx| {
-            window.set_window_title("Multiple Item Info");
-            crate::chrome::toolbar::titlebar_corners(window);
-            if let Some(ns) = ns_window(window) {
-                ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
-            }
-            cx.new(|_| Combined::new(lines, where_))
-        },
+fn save_panes(open: [bool; 7]) {
+    prefs::set_setting_flags(
+        EXPANDED_KEY,
+        PANES
+            .iter()
+            .zip(open)
+            .map(|(pane, open)| (pane.key(), open)),
     );
 }
 
-fn save_panes(open: [bool; 7]) {
-    let flags: Vec<(&str, bool)> = PANES
-        .iter()
-        .zip(open)
-        .map(|(pane, open)| (pane.key(), open))
-        .collect();
-    prefs::set_setting_flags(EXPANDED_KEY, &flags);
+fn size_text(weight: Option<Weight>) -> String {
+    weight.map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes))
 }
 
 fn weight_text(weight: Option<Weight>) -> SharedString {
@@ -2689,7 +2626,6 @@ fn fit<T: 'static>(asked: &mut f32, window: &Window, height: f32, cx: &mut Conte
     cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
 }
 
-/// A section's header row, disclosure, title and closing rule.
 fn pane_chrome(
     sheet: &mut Sheet,
     pane: Pane,

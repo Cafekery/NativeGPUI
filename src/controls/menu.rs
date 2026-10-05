@@ -49,7 +49,7 @@ pub enum MenuEntry {
         symbol: Option<String>,
         /// A filled disc in this sRGB colour, drawn where the symbol would go.
         dot: Option<(u8, u8, u8)>,
-        /// A file's icon, drawn where the symbol would go; set by [`MenuEntry::file_icon`].
+        /// Drawn where the symbol would go; set by [`MenuEntry::file_icon`].
         file_icon: Option<String>,
         enabled: bool,
         checked: bool,
@@ -100,7 +100,6 @@ impl MenuEntry {
         self
     }
 
-    /// The icon Finder shows for this file, type or named image.
     pub fn file_icon(mut self, kind: FileType<'_>) -> Self {
         if let Self::Item { file_icon, .. } = &mut self {
             *file_icon = Some(kind.tag());

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Div, ElementId, FontWeight, IntoElement,
     ParentElement, Render, Styled, TitlebarOptions, UniformListScrollHandle, WeakEntity, Window,
-    WindowBounds, WindowHandle, WindowOptions, div, point, px, size,
+    WindowBounds, WindowOptions, div, point, px, size,
 };
 use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
@@ -15,7 +15,7 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSImage, NSWindow};
 use objc2_foundation::{
-    NSNumber, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLIsUbiquitousItemKey, NSUserDefaults,
+    NSPoint, NSRect, NSSize, NSString, NSURL, NSURLIsUbiquitousItemKey, NSUserDefaults,
 };
 
 use crate::app::FinderDemo;
@@ -25,7 +25,6 @@ use crate::prefs::{self, WindowTarget};
 mod tags_pane;
 
 const WIDTH: f32 = 377.;
-/// The frames below are Finder's, from its window's top: the content starts under the toolbar.
 const CHROME: f32 = 88.;
 const CONTENT: [f32; 4] = [407., 503., 740., 304.];
 const PANES: [(&str, &str); 4] = [
@@ -88,7 +87,6 @@ const SCOPES: [(&str, &str); 3] = [
 pub(crate) struct Settings {
     pane: usize,
     tag_picked: Option<String>,
-    /// The name being typed for a tag just added.
     tag_draft: Option<String>,
     tag_fresh: bool,
     tag_scroll: UniformListScrollHandle,
@@ -99,7 +97,6 @@ enum Icon {
     Art(FileType<'static>),
 }
 
-/// One row of the New Finder windows show menu: its title and the `NewWindowTarget` it stores.
 struct Place {
     title: String,
     icon: Option<Icon>,
@@ -109,6 +106,9 @@ struct Place {
 
 impl Place {
     fn entry(&self) -> MenuEntry {
+        if self.code.is_none() {
+            return MenuEntry::separator();
+        }
         let entry = MenuEntry::item(self.title.clone());
         match &self.icon {
             Some(Icon::Path(path)) => entry.file_icon(FileType::Path(&path.to_string_lossy())),
@@ -205,16 +205,8 @@ fn global_on(key: &str) -> bool {
 }
 
 fn syncs_desktop() -> bool {
-    let Some(desktop) = finder_fs::volumes::standard(finder_fs::volumes::Standard::Desktop) else {
-        return false;
-    };
-    let url =
-        NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&desktop.to_string_lossy()), true);
-    let mut synced = None;
-    let _ = unsafe { url.getResourceValue_forKey_error(&mut synced, NSURLIsUbiquitousItemKey) };
-    synced
-        .and_then(|synced| synced.downcast::<NSNumber>().ok())
-        .is_some_and(|synced| synced.boolValue())
+    finder_fs::volumes::standard(finder_fs::volumes::Standard::Desktop)
+        .is_some_and(|desktop| crate::info::resource(&desktop, unsafe { NSURLIsUbiquitousItemKey }))
 }
 
 fn toggle(key: &'static str, label: &str, default: bool) -> impl IntoElement {
@@ -271,13 +263,7 @@ impl FinderDemo {
 impl Settings {
     fn general(&self, cx: &mut Context<Self>) -> AnyElement {
         let (rows, chosen) = places();
-        let entries: Vec<MenuEntry> = rows
-            .iter()
-            .map(|place| match place.code {
-                None => MenuEntry::separator(),
-                Some(_) => place.entry(),
-            })
-            .collect();
+        let entries: Vec<MenuEntry> = rows.iter().map(Place::entry).collect();
         let picked = cx.listener(move |_, index: &usize, window, cx| {
             let (places, _) = places();
             let Some(place) = places.get(*index) else {
@@ -466,7 +452,7 @@ fn row_icon(shown: Shown) -> AnyElement {
             .tint(SystemColor::SecondaryLabel)
             .into_any_element()
     };
-    // Finder's art for the rows SF Symbols has no glyph for, named for `native_image` to find.
+    // Named so `native_image` can find it.
     let art = |resource: &str| {
         let name = format!("ng.finder.settings.{resource}");
         let named = NSString::from_str(&name);
@@ -586,7 +572,6 @@ fn show_pane(this: &mut Settings, pane: usize, window: &mut Window, cx: &mut Con
     cx.notify();
 }
 
-/// Resizes to the pane's content, keeping the top edge where it is.
 fn fit(window: &Window, pane: usize) {
     let Some(ns_window) = crate::frame::ns_window(window) else {
         return;
@@ -617,19 +602,13 @@ fn show(cx: &mut App) {
         .windows()
         .into_iter()
         .find_map(|window| window.downcast::<Settings>());
-    if let Some(window) = open {
-        window
-            .update(cx, |_, window, _| window.activate_window())
-            .ok();
-        return;
-    }
-    let remembered = prefs::setting_text(PANE);
-    let pane = PANES
-        .iter()
-        .position(|(name, _)| Some(*name) == remembered.as_deref())
-        .unwrap_or(0);
-    let opened: Option<WindowHandle<Settings>> = cx
-        .open_window(
+    let window = open.or_else(|| {
+        let remembered = prefs::setting_text(PANE);
+        let pane = PANES
+            .iter()
+            .position(|(name, _)| Some(*name) == remembered.as_deref())
+            .unwrap_or(0);
+        cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Found’er Settings".into()),
@@ -655,8 +634,9 @@ fn show(cx: &mut App) {
                 entity
             },
         )
-        .ok();
-    if let Some(window) = opened {
+        .ok()
+    });
+    if let Some(window) = window {
         window
             .update(cx, |_, window, _| window.activate_window())
             .ok();

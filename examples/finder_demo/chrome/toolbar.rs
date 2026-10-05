@@ -181,7 +181,6 @@ pub(crate) fn titlebar_corners_of(window: &objc2_app_kit::NSWindow) {
     let _ = window;
 }
 
-/// The frame height AppKit gives a window with only a titlebar around `content` points.
 pub(crate) fn titled_height(content: f32, mtm: MainThreadMarker) -> Pixels {
     let content = NSRect::new(NSPoint::ZERO, NSSize::new(1., content.into()));
     px(
