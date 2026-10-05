@@ -41,6 +41,7 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
             },
             |window, cx| {
                 window.set_window_title("Progress");
+                crate::chrome::toolbar::titlebar_corners(window);
                 cx.new(|cx| {
                     cx.on_release(|_, _| OPEN.with_borrow_mut(|open| *open = None))
                         .detach();

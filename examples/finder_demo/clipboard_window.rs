@@ -36,6 +36,7 @@ pub(crate) fn show(_: &ShowClipboard, cx: &mut App) {
         },
         |window, cx| {
             window.set_window_title("Clipboard");
+            crate::chrome::toolbar::titlebar_corners(window);
             cx.new(|cx| {
                 cx.observe_window_activation(window, |_, _, cx| cx.notify())
                     .detach();

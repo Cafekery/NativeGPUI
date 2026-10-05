@@ -143,6 +143,7 @@ impl Trimmer {
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
+        crate::chrome::toolbar::titlebar_corners_of(&window);
         window.setTitle(&NSString::from_str(&item.file_name()?.to_string_lossy()));
         window.setContentView(Some(&view));
         let trimmer = Trimmer::alloc(mtm).set_ivars(Ivars {

@@ -153,6 +153,31 @@ pub(crate) fn concentric_corners() {
     };
 }
 
+/// What macOS 26 gave a window with only a titlebar: half its 32 pt band.
+#[cfg(feature = "private-api")]
+const TITLEBAR_RADIUS: f64 = 16.;
+
+/// A window without a toolbar keeps macOS 26's titlebar radius, not the toolbar windows' one.
+pub(crate) fn titlebar_corners(window: &gpui::Window) {
+    if let Some(window) = crate::frame::ns_window(window) {
+        titlebar_corners_of(&window);
+    }
+}
+
+pub(crate) fn titlebar_corners_of(window: &objc2_app_kit::NSWindow) {
+    #[cfg(feature = "private-api")]
+    if window.toolbar().is_none()
+        && objc2::runtime::NSObjectProtocol::respondsToSelector(
+            window,
+            objc2::sel!(_setCornerRadius:),
+        )
+    {
+        unsafe { objc2::msg_send![window, _setCornerRadius: TITLEBAR_RADIUS] }
+    }
+    #[cfg(not(feature = "private-api"))]
+    let _ = window;
+}
+
 fn airdrop_glyph() -> Option<Retained<NSImage>> {
     system_symbol("airdrop").or_else(airdrop_art)
 }

@@ -299,6 +299,7 @@ pub(crate) fn open(
             },
             move |window, cx| {
                 window.set_window_title(&format!("{} Info", line.row.display));
+                crate::chrome::toolbar::titlebar_corners(window);
                 cx.new(|_| Info::new(line, where_))
             },
         );
@@ -376,6 +377,7 @@ fn open_combined(lines: Vec<Line>, where_: SharedString, cx: &mut App) {
         },
         move |window, cx| {
             window.set_window_title("Multiple Item Info");
+            crate::chrome::toolbar::titlebar_corners(window);
             cx.new(|_| Combined { lines, where_ })
         },
     );

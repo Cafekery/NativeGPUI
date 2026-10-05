@@ -88,6 +88,7 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
         },
         |window, cx| {
             window.set_window_title("Connect to Server");
+            super::toolbar::titlebar_corners(window);
             cx.new(|_| Connect {
                 demo,
                 host,
