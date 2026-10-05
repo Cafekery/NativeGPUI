@@ -81,7 +81,6 @@ impl Render for FinderDemo {
         self.sync_window_min();
         self.sync_stats(cx);
         self.sync_preview_window(window, cx);
-        native_gpui::set_trailing_inset(window, f32::from(self.metrics().right));
         self.spring_tick(window, cx);
         if self.bands.tick() {
             window.request_animation_frame();

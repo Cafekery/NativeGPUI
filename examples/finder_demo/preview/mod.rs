@@ -15,7 +15,7 @@ use gpui::{
     prelude::*, px, size,
 };
 use native_gpui::tokens;
-use native_gpui::{chrome_host, native_root, native_screen_rect, tab_bar_height, window_options};
+use native_gpui::{chrome_host, native_root, native_screen_rect, window_options};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, msg_send};
@@ -363,8 +363,7 @@ impl FinderDemo {
         self.list_focused = self.focus.is_focused(window) && key;
         self.list_room =
             f32::from(viewport.width) - f32::from(metrics.left) - f32::from(metrics.right);
-        let top = metrics.top - px(tab_bar_height(window));
-        self.pane_h = f32::from(viewport.height - top - metrics.bottom) - RESIZE_EDGE;
+        self.pane_h = f32::from(viewport.height - metrics.top - metrics.bottom) - RESIZE_EDGE;
         self.fit_name_column();
 
         if metrics.right <= px(DIVIDER_GRAB + RESIZE_EDGE) {
@@ -376,7 +375,10 @@ impl FinderDemo {
 
         // Clear of the divider's grab and the parent's resize edges, which a child window takes.
         let bounds = Bounds {
-            origin: point(viewport.width - metrics.right + px(DIVIDER_GRAB), top),
+            origin: point(
+                viewport.width - metrics.right + px(DIVIDER_GRAB),
+                metrics.top,
+            ),
             size: size(
                 metrics.right - px(DIVIDER_GRAB + RESIZE_EDGE),
                 px(self.pane_h),
