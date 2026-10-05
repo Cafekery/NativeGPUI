@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use finder_fs::flags::IS_STATIONERY;
+use finder_fs::meta::Meta;
 use finder_fs::tags::Tag;
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, FontWeight, Render, SharedString, WeakEntity, Window,
@@ -212,6 +213,10 @@ fn items_text(items: u64) -> String {
         1 => "1 item".to_owned(),
         _ => format!("{} items", count(items as usize)),
     }
+}
+
+fn by(width: impl std::fmt::Display, height: impl std::fmt::Display) -> SharedString {
+    format!("{width}\u{200a}\u{d7}\u{200a}{height}").into()
 }
 
 /// The width an `NSTextField` label needs to show `text` whole.
@@ -551,6 +556,8 @@ pub(crate) struct Info {
     open: [bool; 7],
     weight: Option<Weight>,
     weighing: bool,
+    metadata: Option<Meta>,
+    fetching: bool,
     owned: bool,
     locked: bool,
     stationery: bool,
@@ -584,6 +591,8 @@ impl Info {
             open: panes_open(),
             weight,
             weighing: false,
+            metadata: None,
+            fetching: false,
             panel: false,
             width: info_width(),
             asked: 0.,
@@ -616,6 +625,27 @@ impl Info {
                 .await;
             this.update(cx, |info, cx| {
                 info.weight = Some(weight);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn fetch_metadata(&mut self, cx: &mut Context<Self>) {
+        let shown = self.open[Pane::MetaData as usize] && self.subject != Subject::Place;
+        if !shown || self.metadata.is_some() || self.fetching {
+            return;
+        }
+        self.fetching = true;
+        let path = self.path().to_path_buf();
+        cx.spawn(async move |this, cx| {
+            let metadata = cx
+                .background_executor()
+                .spawn(async move { finder_fs::meta::meta(&path) })
+                .await;
+            this.update(cx, |info, cx| {
+                info.metadata = Some(metadata);
                 cx.notify();
             })
             .ok();
@@ -771,13 +801,50 @@ impl Info {
         BODY + rows + checks + FOOT
     }
 
+    /// Spotlight's rows with the width of their label column, which starts at x 10.
+    fn more_rows(&self, width: f32) -> (f32, Vec<(&'static str, SharedString)>) {
+        let Some(metadata) = &self.metadata else {
+            return (0., Vec::new());
+        };
+        let value = |name: &str| {
+            metadata
+                .values
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        let mut rows = Vec::new();
+        if let Some((w, h)) = metadata.pixels {
+            rows.push(("Dimensions", by(w, h)));
+        }
+        if let Some((w, h)) =
+            value("kMDItemResolutionWidthDPI").zip(value("kMDItemResolutionHeightDPI"))
+        {
+            rows.push(("Resolution", by(w, h)));
+        }
+        if let Some(duration) = metadata.duration.and_then(crate::preview::duration) {
+            rows.push(("Duration", duration));
+        }
+        let opened = metadata.last_used;
+        let label_w = rows
+            .iter()
+            .map(|(label, _)| *label)
+            .chain(opened.map(|_| "Last opened"))
+            .map(|label| field_width(&format!("{label}:"), SMALL, false))
+            .fold(0., f32::max);
+        if let Some(at) = opened {
+            rows.push(("Last opened", long_date(at, width - 24. - label_w).into()));
+        }
+        (label_w, rows)
+    }
+
     fn pane_height(&self, pane: Pane, width: f32) -> f32 {
         if !self.open[pane as usize] {
             return SHUT;
         }
         match pane {
             Pane::General => self.general_height(width),
-            Pane::MetaData => BODY + LINE + FOOT,
+            Pane::MetaData => BODY + self.more_rows(width).1.len().max(1) as f32 * LINE + FOOT,
             Pane::Name => 80.,
             Pane::Comments => 75.,
             Pane::OpenWith => 113.,
@@ -936,6 +1003,35 @@ impl Info {
             y += CHECK_ROW;
         }
     }
+
+    fn more_info(&self, sheet: &mut Sheet) {
+        let width = sheet.width;
+        let (label_w, rows) = self.more_rows(width);
+        if rows.is_empty() {
+            if self.metadata.is_some() {
+                sheet.put(
+                    (10., BODY),
+                    (30., LINE),
+                    secondary("ng.finder.info.more.none", "--"),
+                );
+            }
+            return;
+        }
+        for (at, (label, value)) in rows.iter().enumerate() {
+            let y = BODY + at as f32 * LINE;
+            sheet.put(
+                (10., y),
+                (label_w, LINE),
+                small(("ng.finder.info.more.key", at), &format!("{label}:"))
+                    .align(LabelAlign::Right),
+            );
+            sheet.put(
+                (10. + label_w, y),
+                (width - 20. - label_w, LINE),
+                small(("ng.finder.info.more.value", at), value),
+            );
+        }
+    }
 }
 
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
@@ -1001,6 +1097,7 @@ impl Render for Info {
         }
         self.width = width;
         self.weigh(cx);
+        self.fetch_metadata(cx);
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         let titlebar = ns_window(window).map_or(TITLEBAR, |window| titlebar_height(&window));
         let this = cx.entity().downgrade();
@@ -1009,8 +1106,12 @@ impl Render for Info {
         for &pane in self.subject.panes() {
             let height = self.pane_height(pane, width);
             self.pane_chrome(&mut sheet, pane, height, &this);
-            if pane == Pane::General && self.open[pane as usize] {
-                self.general(&mut sheet, &this);
+            if self.open[pane as usize] {
+                match pane {
+                    Pane::General => self.general(&mut sheet, &this),
+                    Pane::MetaData => self.more_info(&mut sheet),
+                    _ => {}
+                }
             }
             sheet.y += height;
         }
