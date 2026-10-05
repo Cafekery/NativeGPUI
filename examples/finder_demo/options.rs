@@ -497,7 +497,7 @@ impl Build<'_> {
         )
         .font_size(tokens::system_font_size_for(SMALL))
         .color(SystemColor::SecondaryLabel);
-        self.put(at(76., 154., div().w(px(42.)).child(points)));
+        self.put(at(76., 154., div().w(px(142.)).child(points)));
         self.put(document("ng.finder.options.icon.small", 16.).map(|doc| at(20., 172., doc)));
         let size = native_slider("ng.finder.options.size", size_slider(options.size))
             .range(0., SIZE_STEPS)
