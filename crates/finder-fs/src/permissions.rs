@@ -1,7 +1,7 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const ACL_TYPE_EXTENDED: c_int = 0x0000_0100;
 const ACL_FIRST_ENTRY: c_int = 0;
@@ -138,7 +138,7 @@ fn with(mode: u32, folder: bool, class: Class, privilege: Privilege) -> u32 {
 pub fn apply_to_enclosed(folder: &Path) -> io::Result<usize> {
     let from = std::fs::metadata(folder)?.mode();
     let me = unsafe { libc::getuid() };
-    let mut owned: Vec<(PathBuf, u32, bool)> = Vec::new();
+    let mut owned = Vec::new();
     let mut pending = vec![folder.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -173,19 +173,13 @@ fn user_name(uid: libc::uid_t) -> String {
     if uid == 0 {
         return "system".to_owned();
     }
-    let user = unsafe { libc::getpwuid(uid) };
-    name_or_unknown(match user.is_null() {
-        true => std::ptr::null(),
-        false => unsafe { (*user).pw_name },
-    })
+    let user = unsafe { libc::getpwuid(uid).as_ref() };
+    name_or_unknown(user.map_or(std::ptr::null_mut(), |user| user.pw_name))
 }
 
 fn group_name(gid: libc::gid_t) -> String {
-    let group = unsafe { libc::getgrgid(gid) };
-    name_or_unknown(match group.is_null() {
-        true => std::ptr::null(),
-        false => unsafe { (*group).gr_name },
-    })
+    let group = unsafe { libc::getgrgid(gid).as_ref() };
+    name_or_unknown(group.map_or(std::ptr::null_mut(), |group| group.gr_name))
 }
 
 fn name_or_unknown(name: *const c_char) -> String {

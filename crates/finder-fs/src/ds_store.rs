@@ -3,10 +3,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-use objc2_foundation::{
-    NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions, NSPropertyListSerialization,
-    NSString,
-};
+use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
 #[derive(Debug, PartialEq)]
 pub enum Value<'a> {
@@ -24,12 +21,7 @@ pub struct Record<'a> {
 }
 
 pub fn records(bytes: &[u8]) -> Option<Vec<Record<'_>>> {
-    Some(
-        entries(bytes)?
-            .into_iter()
-            .map(|(record, _)| record)
-            .collect(),
-    )
+    entries(bytes).map(|found| found.into_iter().map(|(record, _)| record).collect())
 }
 
 fn entries(bytes: &[u8]) -> Option<Vec<(Record<'_>, &[u8])>> {
@@ -91,16 +83,18 @@ impl IconOptions {
     pub fn read(options: &NSDictionary) -> Self {
         let value = |key: &str| options.objectForKey(&NSString::from_str(key));
         let number = |key: &str| value(key)?.downcast::<NSNumber>().ok();
+        let float = |key: &str| number(key).map(|number| number.floatValue());
+        let flag = |key: &str| number(key).map(|number| number.boolValue());
         let text = |key: &str| Some(value(key)?.downcast::<NSString>().ok()?.to_string());
-        let part = |key: &str| number(key).map_or(1., |part| part.floatValue());
+        let part = |key: &str| float(key).unwrap_or(1.);
         Self {
             arrange_by: text("arrangeBy"),
-            icon_size: number("iconSize").map(|size| size.floatValue()),
-            grid_spacing: number("gridSpacing").map(|spacing| spacing.floatValue()),
-            text_size: number("textSize").map(|size| size.floatValue()),
-            label_on_bottom: number("labelOnBottom").map(|bottom| bottom.boolValue()),
-            show_item_info: number("showItemInfo").map(|on| on.boolValue()),
-            show_icon_preview: number("showIconPreview").map(|on| on.boolValue()),
+            icon_size: float("iconSize"),
+            grid_spacing: float("gridSpacing"),
+            text_size: float("textSize"),
+            label_on_bottom: flag("labelOnBottom"),
+            show_item_info: flag("showItemInfo"),
+            show_icon_preview: flag("showIconPreview"),
             background: number("backgroundType").and_then(|kind| match kind.integerValue() {
                 0 => Some(Background::Default),
                 1 => Some(Background::Color([
@@ -175,10 +169,10 @@ pub fn set_comment(folder: &Path, name: &str, comment: &str) -> io::Result<()> {
         read => read?,
     };
     let parsed = entries(&bytes);
-    let tail = match parsed {
-        Some(_) => bytes.get(20..36).unwrap_or(&FRESH_TAIL),
-        None => FRESH_TAIL.as_slice(),
-    };
+    let tail = bytes
+        .get(20..36)
+        .filter(|_| parsed.is_some())
+        .unwrap_or(&FRESH_TAIL);
     let found = parsed.unwrap_or_default();
     let existing = found
         .iter()
@@ -212,15 +206,13 @@ pub fn set_comment(folder: &Path, name: &str, comment: &str) -> io::Result<()> {
 fn icon_locations(records: &[Record]) -> HashMap<String, (f32, f32)> {
     records
         .iter()
-        .filter_map(|record| {
-            let Value::Blob(blob) = record.value else {
-                return None;
-            };
-            (&record.code == b"Iloc").then_some(())?;
-            let mut blob = Reader::new(blob);
-            let x = blob.u32()? as i32;
-            let y = blob.u32()? as i32;
-            Some((record.name.clone(), (x as f32, y as f32)))
+        .filter_map(|record| match record.value {
+            Value::Blob(blob) if &record.code == b"Iloc" => {
+                let mut blob = Reader::new(blob);
+                let (x, y) = (blob.u32()? as i32, blob.u32()? as i32);
+                Some((record.name.clone(), (x as f32, y as f32)))
+            }
+            _ => None,
         })
         .collect()
 }
@@ -230,16 +222,7 @@ fn icon_options(records: &[Record], name: &str) -> Option<IconOptions> {
         Value::Blob(blob) if record.name == name && &record.code == b"icvp" => Some(blob),
         _ => None,
     })?;
-    let options = unsafe {
-        NSPropertyListSerialization::propertyListWithData_options_format_error(
-            &NSData::with_bytes(blob),
-            NSPropertyListMutabilityOptions::Immutable,
-            std::ptr::null_mut(),
-        )
-    }
-    .ok()?
-    .downcast::<NSDictionary>()
-    .ok()?;
+    let options = crate::plist(blob)?.downcast::<NSDictionary>().ok()?;
     Some(IconOptions::read(&options))
 }
 
@@ -446,46 +429,50 @@ fn arena(records: &[&[u8]], tail: &[u8]) -> Option<Vec<u8>> {
         levels += 1;
     };
     let nodes = layout.blocks.len() as u32;
-    let mut db = Vec::new();
-    for value in [root, levels, records.len() as u32, nodes, PAGE as u32] {
-        db.extend(value.to_be_bytes());
-    }
+    let db = [root, levels, records.len() as u32, nodes, PAGE as u32]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect();
     layout.blocks.push((dsdb, db));
     let count = layout.addresses.len();
+    let slots = count.next_multiple_of(256);
     let free_bound = layout.buddy.free.iter().map(Vec::len).sum::<usize>() + 32;
-    let root_size = 8 + 4 * count.next_multiple_of(256) + 4 + 9 + 4 * 32 + 4 * free_bound;
+    let root_size = 8 + 4 * slots + 4 + 9 + 4 * 32 + 4 * free_bound;
     let root_block = layout.buddy.alloc(root_size)?;
     layout.addresses[0] = root_block;
     let mut info = Vec::new();
     info.extend((count as u32).to_be_bytes());
     info.extend(0u32.to_be_bytes());
-    for at in 0..count.next_multiple_of(256) {
-        let address = layout.addresses.get(at).copied().unwrap_or(0);
-        info.extend(address.to_be_bytes());
-    }
+    info.extend(
+        (0..slots).flat_map(|at| layout.addresses.get(at).copied().unwrap_or(0).to_be_bytes()),
+    );
     info.extend(1u32.to_be_bytes());
     info.extend(b"\x04DSDB");
     info.extend(1u32.to_be_bytes());
     for free in &layout.buddy.free {
         info.extend((free.len() as u32).to_be_bytes());
-        free.iter()
-            .for_each(|offset| info.extend(offset.to_be_bytes()));
+        info.extend(free.iter().flat_map(|offset| offset.to_be_bytes()));
     }
     layout.blocks.push((root_block, info));
     let span = |address: u32| ((address & !0x1f) as usize, 1usize << (address & 0x1f));
     let end = layout
         .blocks
         .iter()
-        .map(|&(address, _)| span(address).0 + span(address).1)
+        .map(|&(address, _)| span(address))
+        .map(|(offset, size)| offset + size)
         .max()?;
-    let mut file = vec![0; 4 + end];
     let (root_offset, root_size) = span(root_block);
-    file[..4].copy_from_slice(&1u32.to_be_bytes());
-    file[4..8].copy_from_slice(b"Bud1");
-    file[8..12].copy_from_slice(&(root_offset as u32).to_be_bytes());
-    file[12..16].copy_from_slice(&(root_size as u32).to_be_bytes());
-    file[16..20].copy_from_slice(&(root_offset as u32).to_be_bytes());
-    file[20..36].copy_from_slice(tail);
+    let root_at = (root_offset as u32).to_be_bytes();
+    let mut file = [
+        &1u32.to_be_bytes()[..],
+        b"Bud1",
+        &root_at,
+        &(root_size as u32).to_be_bytes(),
+        &root_at,
+        tail,
+    ]
+    .concat();
+    file.resize(4 + end, 0);
     for (address, bytes) in &layout.blocks {
         let offset = 4 + span(*address).0;
         file[offset..offset + bytes.len()].copy_from_slice(bytes);
@@ -496,6 +483,8 @@ fn arena(records: &[&[u8]], tail: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const COMMENTS: &[u8] = include_bytes!("testdata/comments.DS_Store");
 
     #[test]
     fn reads_each_icon_centre_finder_recorded_on_and_off_the_grid() {
@@ -525,21 +514,17 @@ mod tests {
 
     #[test]
     fn reads_the_comment_finder_set_on_each_item() {
-        let dir = std::env::temp_dir().join(format!("finder-fs-comments-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = include_bytes!("testdata/comments.DS_Store");
-        std::fs::write(dir.join(".DS_Store"), store).unwrap();
-        let expected: HashMap<String, String> = [
-            ("Banana.txt", "beta note"),
-            ("Cherry.txt", "cmmt only"),
-            ("Date.txt", "alpha note"),
-        ]
-        .into_iter()
-        .map(|(name, comment)| (name.to_owned(), comment.to_owned()))
-        .collect();
+        let dir = folder("comments", Some(COMMENTS));
         let found = comments(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(found, expected);
+        assert_eq!(
+            found,
+            notes(&[
+                ("Banana.txt", "beta note"),
+                ("Cherry.txt", "cmmt only"),
+                ("Date.txt", "alpha note"),
+            ])
+        );
     }
 
     fn folder(tag: &str, store: Option<&[u8]>) -> std::path::PathBuf {
@@ -567,10 +552,7 @@ mod tests {
 
     #[test]
     fn rewrites_a_comment_finder_set_and_keeps_the_others() {
-        let dir = folder(
-            "rewrite",
-            Some(include_bytes!("testdata/comments.DS_Store")),
-        );
+        let dir = folder("rewrite", Some(COMMENTS));
         set_comment(&dir, "Banana.txt", "new").unwrap();
         let found = comments(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -586,7 +568,7 @@ mod tests {
 
     #[test]
     fn inserts_and_removes_comments_in_finder_order() {
-        let dir = folder("insert", Some(include_bytes!("testdata/comments.DS_Store")));
+        let dir = folder("insert", Some(COMMENTS));
         set_comment(&dir, "Apple.txt", "first").unwrap();
         set_comment(&dir, "banana 2.txt", "lower case").unwrap();
         set_comment(&dir, "Cherry.txt", "").unwrap();

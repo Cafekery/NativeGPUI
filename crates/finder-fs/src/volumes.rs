@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, OsStr, c_void};
+use std::ffi::{CStr, OsStr, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
@@ -90,7 +90,7 @@ fn available_at(values: &Values, path: &Path) -> u64 {
 }
 
 fn statfs(path: &Path) -> Option<libc::statfs> {
-    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let path = crate::c_path(path).ok()?;
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     (unsafe { libc::statfs(path.as_ptr(), &mut stat) } == 0).then_some(stat)
 }

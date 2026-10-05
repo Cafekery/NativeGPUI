@@ -256,12 +256,8 @@ fn icon_class(name: &CStr, init: Sel) -> Option<&'static AnyClass> {
 
 fn symbol_name(icon: &AnyObject) -> Option<String> {
     let symbol: Option<Retained<AnyObject>> = unsafe { msg_send![icon, symbol] };
-    let name: Option<Retained<NSString>> = match symbol {
-        Some(symbol) if symbol.class().responds_to(sel!(name)) => unsafe {
-            msg_send![&symbol, name]
-        },
-        _ => None,
-    };
+    let symbol = symbol.filter(|symbol| symbol.class().responds_to(sel!(name)))?;
+    let name: Option<Retained<NSString>> = unsafe { msg_send![&symbol, name] };
     name.map(|name| name.to_string())
 }
 

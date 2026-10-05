@@ -84,8 +84,8 @@ pub fn favorites() -> Vec<Tag> {
 
 /// The tags Finder's sidebar shows only because they were used lately, not pinned there.
 pub fn recent() -> Vec<String> {
-    let listed = crate::sidebar::tags().unwrap_or_default();
-    listed
+    crate::sidebar::tags()
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|(tag, pinned)| (!pinned).then_some(tag.name))
         .collect()
