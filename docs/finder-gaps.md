@@ -494,7 +494,9 @@ stopped after the mount had settled.
 
 Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both windows at 240,120
 1100x680 in list view on the same folder, sidebar 216 and preview pane 241 wide, nothing selected.
-Traffic lights, corner radius, window shadow and title type measure identical.
+Traffic lights, window shadow and title type measure identical. The corners differ on purpose:
+Finder 27 rounds its windows 16 pt; the demo keeps macOS 26's 26 pt, concentric with the toolbar's
+capsules (18 pt radius, 8 pt in from the top and side), for every titled window but utility panels.
 
 - [x] Rows: Finder's rule, max(icon, ceil(ascent + descent)) + 4, read off Finder over AX at text
   10 to 16 with 16 and 32 pt icons: 20, 20, 20, 20, 21, 22, 23 and 36 throughout; each row as wide

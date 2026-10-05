@@ -81,6 +81,7 @@ fn main() {
         std::borrow::Cow::Borrowed(_) => None,
     });
     keep::skip_appkit_restore();
+    chrome::toolbar::concentric_corners();
     gpui_platform::application().run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
