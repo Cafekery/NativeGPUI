@@ -64,7 +64,7 @@ const GAP_HEADER: f32 = 19.;
 const GAP_HEADER_ICON: f32 = 9.;
 const GAP_HEADER_NAME: f32 = 6.8;
 const GAP_HEADER_HEAD: f32 = 19.6;
-pub(super) const ACTIONS_H: f32 = 70.;
+const ACTIONS_H: f32 = 70.;
 const ACTION_TOP: f32 = 15.5;
 const ACTION_SLOT_W: f32 = 76.;
 const ACTION_ICON_SIZE: f32 = 14.;
@@ -119,7 +119,6 @@ struct Ink {
     kind: Hsla,
     rule: Hsla,
     action: Hsla,
-    well: Hsla,
 }
 
 impl Ink {
@@ -135,7 +134,6 @@ impl Ink {
                     kind: white(0.18),
                     rule: white(0.138),
                     action: white(0.5),
-                    well: hsla(0., 0., 32. / 255., 1.),
                 }
             }
             Appearance::Light => {
@@ -151,7 +149,6 @@ impl Ink {
                     kind: under(51.5),
                     rule: black(0.094),
                     action: black(0.5),
-                    well: hsla(0., 0., 1., 1.),
                 }
             }
         }
@@ -168,7 +165,6 @@ impl Ink {
             kind: secondary,
             rule: system_color(SystemColor::Separator),
             action: secondary,
-            well: hsla(0., 0., 0., 0.),
         }
     }
 }
@@ -958,7 +954,6 @@ impl Shown {
                     .h(px(TAGS_WELL_H))
                     .w_full()
                     .pt(px(TAGS_TEXT_TOP))
-                    .bg(ink.well)
                     .child(tags),
             )
         });

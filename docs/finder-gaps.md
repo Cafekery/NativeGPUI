@@ -340,10 +340,11 @@ Finder 27 (26A428), dark and light, window 1100x680, sidebar 216, pane 241, list
   (Finder 71 key, 73 non-key).
 - [ ] After a live appearance switch Finder's kind line turns secondary (116 dark, 134 light) until
   its window is reopened; the card keeps the tertiary a window opens with (77 dark, 185 light).
-- [x] The tags well: Finder fills it on the user's Mac (32 dark, 255 light, x 869–1090, y 549–582,
-  "Add Tags…" at x 870, y 552–564.5, ink 87 dark, 189 light) and draws no rule under the tags row,
-  key and non-key, for a picture and a text file; the card matches within a level, its placeholder
-  1 pt wider. On the mini (26A5416b) Finder drew a rule there instead.
+- [x] The tags well and the quick actions band show the pane's glass, by choice: Finder fills the
+  well (32 dark, 255 light, x 869–1090, y 549–582) and lays AppKit's content background under the
+  band (y 610–680); the card leaves both clear, with "Add Tags…" where Finder's sits (x 869,
+  y 552–564.5), 1 pt wider. Neither rules off the tags row, key and non-key, for a picture and a
+  text file; on the mini (26A5416b) Finder drew a rule there.
 - [x] Show Preview after Hide Preview brings Finder's pane back 288 wide in list and gallery view,
   at any window width (900–1300), selection or earlier width (241 and 240 set by the divider), and
   Finder saves 288 for that view; the demo does the same.

@@ -356,11 +356,6 @@ impl FinderDemo {
                 px(MIN_W),
                 px(MAX_W),
             );
-            let band = self.selected.len() > 1
-                || self.cursor_line().is_some_and(|line| {
-                    options::shows(options::kind_of(&line.row), options::QUICK_ACTIONS)
-                });
-            sidebar.set_inspector_footer(px(if band { card::ACTIONS_H } else { 0. }));
         }
         let metrics = self.metrics();
         let viewport = window.viewport_size();
