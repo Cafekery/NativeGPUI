@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use block2::RcBlock;
-use gpui::{App, Context, WeakEntity, Window, px};
+use gpui::{App, Context, Pixels, WeakEntity, Window, px};
 use native_gpui::sidebar::{system_symbol, system_template};
 use native_gpui::{
     MenuEntry, ToolbarCustomization, ToolbarGroupWidth, ToolbarItem, ToolbarSegment,
@@ -14,9 +14,12 @@ use native_gpui::{
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSToolbarItem, NSWindowTitleVisibility,
+    NSBezierPath, NSColor, NSImage, NSMenuToolbarItem, NSToolbarItem, NSWindow, NSWindowStyleMask,
+    NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString, NSUserDefaults};
+use objc2_foundation::{
+    MainThreadMarker, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString, NSUserDefaults,
+};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, GROUP_KEYS};
@@ -176,6 +179,16 @@ pub(crate) fn titlebar_corners_of(window: &objc2_app_kit::NSWindow) {
     }
     #[cfg(not(feature = "private-api"))]
     let _ = window;
+}
+
+/// The frame height AppKit gives a window with only a titlebar around `content` points.
+pub(crate) fn titled_height(content: f32, mtm: MainThreadMarker) -> Pixels {
+    let content = NSRect::new(NSPoint::ZERO, NSSize::new(1., content.into()));
+    px(
+        NSWindow::frameRectForContentRect_styleMask(content, NSWindowStyleMask::Titled, mtm)
+            .size
+            .height as f32,
+    )
 }
 
 fn airdrop_glyph() -> Option<Retained<NSImage>> {

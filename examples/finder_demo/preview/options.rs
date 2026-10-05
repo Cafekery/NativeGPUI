@@ -6,7 +6,7 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{CheckState, native_checkbox, native_root, native_rule, window_options};
-use objc2_app_kit::NSWindowStyleMask;
+use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, Row};
@@ -434,6 +434,12 @@ pub(crate) fn toggle(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     }
 }
 
+pub(crate) fn close(cx: &mut App) {
+    if let Some(open) = OPEN.take() {
+        open.update(cx, |_, window, _| window.remove_window()).ok();
+    }
+}
+
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
     if OPEN.get().is_none() || !window.is_window_active() {
         return;
@@ -486,7 +492,6 @@ fn show(kind: &'static Kind, cx: &mut App) {
                 origin: point(px(736.), px(310.)),
                 size: size(px(240.), px(tall)),
             })),
-            focus: false,
             is_minimizable: false,
             is_resizable: false,
             ..window_options()
@@ -495,6 +500,7 @@ fn show(kind: &'static Kind, cx: &mut App) {
             window.set_window_title(&title);
             if let Some(panel) = ns_window(window) {
                 panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::UtilityWindow);
+                panel.setTitleVisibility(NSWindowTitleVisibility::Visible);
             }
             let id = window.window_handle().window_id();
             cx.new(|cx| {

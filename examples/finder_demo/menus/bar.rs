@@ -10,7 +10,7 @@ use gpui::{
 };
 use native_gpui::{
     MenuCommand, MenuSection, add_menu, extend_menu, on_menu_enabled, on_menu_state, on_menu_title,
-    replace_edit_rows, set_menu, set_toolbar_search_active,
+    replace_about_row, replace_edit_rows, set_menu, set_toolbar_search_active,
 };
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSHelpManager;
@@ -131,6 +131,7 @@ actions!(
         UpInNewWindow,
         SelectStartupDisk,
         ShowSettings,
+        ShowAbout,
         CycleWindows,
         ShowProgressWindow,
         ViewColumns,
@@ -519,6 +520,9 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(crate::clipboard_window::show);
     cx.on_action(crate::progress_window::toggle);
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
+    cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
+    // A key panel is main too, so gpui has no active window to dispatch the menu's action to.
+    cx.on_action(|_: &ShowPreviewOptions, cx| crate::preview::options::close(cx));
     cx.on_action(|_: &MacUserGuide, _| open_mac_help("mh43558"));
     cx.on_action(|_: &TipsForYourMac, cx| cx.open_url(TIPS));
     cx.bind_keys([KeyBinding::new("cmd-shift-.", ToggleHidden, None)]);
@@ -526,6 +530,7 @@ pub(crate) fn install(cx: &mut App) {
     on_menu_enabled(enabled);
     on_menu_title(titled);
     set_menu("File", file_rows());
+    replace_about_row(ShowAbout);
     extend_menu(
         MenuSection::App,
         [

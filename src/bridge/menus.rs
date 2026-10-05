@@ -457,6 +457,28 @@ pub fn replace_edit_rows(commands: impl IntoIterator<Item = MenuCommand>) {
     }
 }
 
+/// Makes the About row `install_menus` put in the app menu send `action`, not open AppKit's panel.
+pub fn replace_about_row(action: impl Action) {
+    let Some((mtm, bar)) = bar() else {
+        return;
+    };
+    let Some(menu) = submenu_of(&bar, &MenuSection::App.title()) else {
+        return;
+    };
+    let about = Some(sel!(orderFrontStandardAboutPanel:));
+    let Some(row) = menu.itemArray().iter().find(|row| row.action() == about) else {
+        return;
+    };
+    let at = menu.indexOfItem(&row);
+    menu.removeItem(&row);
+    add_command(
+        mtm,
+        &menu,
+        at,
+        MenuCommand::new(row.title().to_string(), action),
+    );
+}
+
 fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>, first: bool) {
     let Some((mtm, bar)) = bar() else {
         return;
