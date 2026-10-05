@@ -16,7 +16,7 @@ use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, is_volume_root, server_symbol};
 use crate::ops::After;
 use crate::prefs;
-use crate::tags::finder_color_rgb;
+use crate::tags::tag_system_color;
 
 pub(crate) const SIDEBAR_W: f32 = 216.;
 pub(crate) const FAVOURITES: &str = "g-favourites";
@@ -34,8 +34,11 @@ impl Glyph {
         match *self {
             Glyph::Symbol(name) => SidebarIcon::Symbol(name.into()),
             Glyph::SymbolOr(name, art) => SidebarIcon::SymbolOrResource(name.into(), art.into()),
-            Glyph::Tag(color) => SidebarIcon::Dot(finder_color_rgb(color)),
-            Glyph::AllTags => SidebarIcon::Dots,
+            Glyph::Tag(color) => match tag_system_color(color) {
+                Some(color) => SidebarIcon::TintedSymbol("circlebadge.fill".into(), color),
+                None => SidebarIcon::Symbol("circlebadge".into()),
+            },
+            Glyph::AllTags => SidebarIcon::Symbol("circlebadge.2".into()),
         }
     }
 }
@@ -477,7 +480,7 @@ pub(crate) fn groups() -> Vec<Group> {
         .iter()
         .filter(|tag| !recent.contains(&tag.name))
         .map(|tag| Row {
-            muted: finder_color_rgb(tag.color).is_none(),
+            muted: tag_system_color(tag.color).is_none(),
             ..row(
                 intern(&format!("tag:{}", tag.name)),
                 tag.name.clone(),

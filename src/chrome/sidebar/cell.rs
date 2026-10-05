@@ -484,7 +484,7 @@ fn key_window(view: &NSOutlineView) -> bool {
 
 fn icon_image(icon: &SidebarIcon, points: f64) -> Option<Retained<NSImage>> {
     match icon {
-        SidebarIcon::Symbol(name) => system_symbol(name),
+        SidebarIcon::Symbol(name) | SidebarIcon::TintedSymbol(name, _) => system_symbol(name),
         SidebarIcon::SymbolOrResource(name, resource) => {
             system_symbol(name).or_else(|| core_types_template(resource, points))
         }
@@ -505,7 +505,8 @@ fn configure_cell(cell: &SidebarCell, node: &Node, icon_points: f64) {
         Some(SidebarIcon::Dot(Some(rgb))) => Some(srgb(rgb)),
         _ => None,
     };
-    cell.ivars().muted.set(node.muted);
+    let tinted = matches!(node.icon, Some(SidebarIcon::TintedSymbol(..)));
+    cell.ivars().muted.set(node.muted && !tinted);
 
     if let Some(view) = unsafe { cell.imageView() } {
         let image = node
