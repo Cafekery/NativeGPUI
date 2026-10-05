@@ -15,10 +15,12 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole, NSBezierPath, NSBox,
-    NSBoxType, NSButton, NSColor, NSColorSystemEffect, NSControlStateValueOff,
-    NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName, NSImage,
-    NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSStringDrawing, NSTitlePosition, NSView,
+    NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole,
+    NSAutoresizingMaskOptions, NSBezelStyle, NSBezierPath, NSBox, NSBoxType, NSButton, NSColor,
+    NSColorSystemEffect, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
+    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightSemibold, NSImage,
+    NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSMenu, NSMenuItem, NSPopUpButton,
+    NSResponder, NSStringDrawing, NSTextAlignment, NSTintProminence, NSTitlePosition, NSView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedStringKey, NSDictionary, NSNumber, NSObject, NSPoint,
@@ -36,6 +38,7 @@ use crate::controls::{
     with_width,
 };
 use crate::system::color::to_nscolor;
+use crate::system::tokens::SystemColor;
 use crate::system::wording::worded;
 
 /// A native menu row; a separator takes an index as in `NSMenu`, and view rows never report.
@@ -789,6 +792,7 @@ pub fn native_popup(id: impl Into<ElementId>, selected: usize) -> NativePopup {
         font_size: None,
         width: None,
         enabled: true,
+        tinted: false,
         on_change: None,
     }
 }
@@ -803,6 +807,7 @@ pub struct NativePopup {
     font_size: Option<Pixels>,
     width: Option<Length>,
     enabled: bool,
+    tinted: bool,
     on_change: Option<NativeDispatch>,
 }
 
@@ -849,6 +854,12 @@ impl NativePopup {
         self
     }
 
+    /// A secondary-prominence button's face: the accent title on an accent tint.
+    pub fn tinted(mut self, tinted: bool) -> Self {
+        self.tinted = tinted;
+        self
+    }
+
     pub fn on_change(mut self, handler: impl Fn(&usize, &mut Window, &mut App) + 'static) -> Self {
         self.on_change = Some(Rc::new(move |value, window, cx| {
             let Ok(index) = value.downcast::<isize>() else {
@@ -861,11 +872,19 @@ impl NativePopup {
         self
     }
 
+    // A transparent pop-up still draws its chevron at the automatic bezel style.
+    fn drawn_bezel(&self) -> ButtonBezel {
+        match self.tinted {
+            true => ButtonBezel::Push,
+            false => self.bezel,
+        }
+    }
+
     fn layout(&self) -> Style {
         let inputs = (
             &self.entries,
             self.pull_down,
-            self.bezel,
+            self.drawn_bezel(),
             self.control_size,
             self.font_size,
         );
@@ -876,7 +895,7 @@ impl NativePopup {
                 self.pull_down,
             );
             probe.setAutoenablesItems(false);
-            probe.setBezelStyle(self.bezel.to_native());
+            probe.setBezelStyle(self.drawn_bezel().to_native());
             probe.setControlSize(self.control_size.into());
             sync_font_size(&probe, self.font_size.map(Pixels::to_f64));
             if let Some(menu) = probe.menu() {
@@ -887,7 +906,7 @@ impl NativePopup {
         with_width(fitted, self.width)
     }
 
-    fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
+    fn paint(&mut self, slot: Slot, window: &mut Window, _: &mut App) {
         let popup = slot.place(Layer::Above, |mtm, target| {
             let popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
@@ -926,11 +945,21 @@ impl NativePopup {
                 }
             }
         }
-        let bezel = self.bezel.to_native();
+        let bezel = self.drawn_bezel().to_native();
         if popup.bezelStyle() != bezel {
             popup.setBezelStyle(bezel);
         }
         sync_enabled(&popup, self.enabled);
+        if popup.isTransparent() != self.tinted {
+            popup.setTransparent(self.tinted);
+        }
+        sync_face(
+            &popup,
+            self.tinted,
+            self.control_size,
+            self.enabled,
+            window.is_window_active(),
+        );
 
         // `integerValue` is the cell state, the same for every row; the selection is this.
         slot.on_event(
@@ -944,6 +973,110 @@ impl NativePopup {
 }
 
 hosted_element!(NativePopup);
+
+const CHEVRON_TRAIL: f64 = 6.5;
+
+struct FaceIvars {
+    chevron: Retained<NSImageView>,
+}
+
+define_class!(
+    /// `NSPopUpButton` ignores `tintProminence`, so a button draws over the transparent pop-up.
+    #[unsafe(super(NSButton, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGPopupFace"]
+    #[ivars = FaceIvars]
+    struct PopupFace;
+
+    impl PopupFace {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+impl PopupFace {
+    fn new(popup: &NSPopUpButton) -> Option<Retained<Self>> {
+        let mtm = popup.mtm();
+        let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+            popup.font()?.pointSize(),
+            unsafe { NSFontWeightSemibold },
+            NSImageSymbolScale::Small,
+        );
+        let image = symbol_image("chevron.up.chevron.down", None)?
+            .imageWithSymbolConfiguration(&configuration)?;
+        // A button's own trailing image sits 3pt further in than a pop-up's chevron.
+        let chevron = NSImageView::imageViewWithImage(&image, mtm);
+        let bounds = popup.bounds();
+        let art = image.size();
+        chevron.setFrame(NSRect::new(
+            NSPoint::new(
+                bounds.size.width - CHEVRON_TRAIL - art.width,
+                (bounds.size.height - art.height) / 2.,
+            ),
+            art,
+        ));
+        chevron.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewMinXMargin
+                | NSAutoresizingMaskOptions::ViewMinYMargin
+                | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
+        chevron.setAccessibilityElement(false);
+        let this = Self::alloc(mtm).set_ivars(FaceIvars {
+            chevron: chevron.clone(),
+        });
+        let face: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: bounds] };
+        face.setBezelStyle(NSBezelStyle::Push);
+        face.setTintProminence(NSTintProminence::Secondary);
+        face.setAlignment(NSTextAlignment::Left);
+        face.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        face.setAccessibilityElement(false);
+        face.addSubview(&chevron);
+        popup.addSubview(&face);
+        Some(face)
+    }
+}
+
+fn sync_face(popup: &NSPopUpButton, tinted: bool, size: ControlSize, enabled: bool, active: bool) {
+    let found = popup
+        .subviews()
+        .iter()
+        .find_map(|view| view.downcast::<PopupFace>().ok());
+    let face = match found {
+        Some(face) if !tinted => return face.removeFromSuperview(),
+        Some(face) => face,
+        None if !tinted => return,
+        None => match PopupFace::new(popup) {
+            Some(face) => face,
+            None => return,
+        },
+    };
+    sync_control_size(&face, size);
+    sync_enabled(&face, enabled);
+    let font = popup.font();
+    if face.font() != font {
+        face.setFont(font.as_deref());
+    }
+    let title = popup.titleOfSelectedItem().unwrap_or_else(NSString::new);
+    if face.title() != title {
+        face.setTitle(&title);
+    }
+    // The button's own tint follows its window's key state; the chevron is told it.
+    let tint = match (enabled, active) {
+        (false, _) => SystemColor::TertiaryLabel,
+        (true, true) => SystemColor::ControlAccent,
+        (true, false) => SystemColor::Label,
+    }
+    .ns_color();
+    let chevron = &face.ivars().chevron;
+    if chevron.contentTintColor().as_ref() != Some(&tint) {
+        chevron.setContentTintColor(Some(&tint));
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum MenuOrigin {
