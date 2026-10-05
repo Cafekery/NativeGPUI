@@ -23,19 +23,45 @@
       "layers": [
         {
           "glass": false,
-          "image-name": "mouth.svg",
-          "name": "mouth"
+          "image-name": "eye.right.svg",
+          "name": "eye.right",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              8,
+              15
+            ]
+          }
         },
         {
           "glass": false,
-          "image-name": "eyes.svg",
-          "name": "eyes"
+          "image-name": "eye.left.svg",
+          "name": "eye.left",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              -11,
+              15
+            ]
+          }
+        },
+        {
+          "glass": false,
+          "image-name": "mouth.svg",
+          "name": "mouth",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              25
+            ]
+          }
         }
       ],
       "name": "Face",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.5
+        "opacity": 0.4
       },
       "specular": false,
       "translucency": {
@@ -48,7 +74,14 @@
         {
           "glass": false,
           "image-name": "head.svg",
-          "name": "head"
+          "name": "head",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              11
+            ]
+          }
         }
       ],
       "name": "Head",
@@ -58,8 +91,8 @@
       },
       "specular": true,
       "translucency": {
-        "enabled": false,
-        "value": 0.5
+        "enabled": true,
+        "value": 0.25
       }
     }
   ],
