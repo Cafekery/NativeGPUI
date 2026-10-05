@@ -1189,11 +1189,13 @@ impl Info {
             (width - 40., LINE),
             small(("ng.finder.info.pane.title", at), pane.title()),
         );
-        sheet.put(
-            (0., height - 1.),
-            (width, 1.),
-            native_rule(("ng.finder.info.pane.rule", at)),
-        );
+        if self.subject.panes().last() != Some(&pane) {
+            sheet.put(
+                (0., height - 1.),
+                (width, 1.),
+                native_rule(("ng.finder.info.pane.rule", at)),
+            );
+        }
     }
 
     fn general(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
