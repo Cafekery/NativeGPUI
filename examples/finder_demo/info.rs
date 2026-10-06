@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_char};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -17,46 +17,38 @@ use finder_fs::meta::Meta;
 use finder_fs::permissions::{self, Grant, Privilege};
 use finder_fs::tags::Tag;
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, FontWeight, ObjectFit, Render, RenderImage,
-    SharedString, Task, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point,
+    AnyElement, App, Bounds, Context, Div, Entity, FontWeight, Render, RenderImage, SharedString,
+    Stateful, Task, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point,
     prelude::*, px, size,
 };
-use native_gpui::tokens::{FileType, SystemColor, system_color};
+use native_gpui::tokens::{FileType, SystemColor, ns_font, system_color, system_font_family};
 use native_gpui::{
-    ButtonBezel, CheckState, ControlSize, LabelAlign, Layer, NativeHost, NativeLabel, Target,
-    native_button, native_checkbox, native_label, native_root, native_rule, window_options, wire,
+    ControlSize, LabelAlign, Layer, MenuEntry, NativeHost, Target, native_button, native_label,
+    native_popup, native_root, native_rule, native_switch, window_options, wire,
 };
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{
     AnyThread, DefinedClass, DowncastTarget, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSActionCell, NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBorderType,
-    NSCell, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFocusRingType,
-    NSFont, NSFontAttributeName, NSFontWeightRegular, NSForegroundColorAttributeName, NSImage,
-    NSImageScaling, NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSMenu, NSMenuItem,
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSPopUpArrowPosition, NSPopUpButton,
-    NSPopUpButtonCell, NSResponder, NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking,
-    NSSegmentedControl, NSTableCellView, NSTableColumn, NSTableHeaderCell, NSTableView,
-    NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate,
-    NSTableViewGridLineStyle, NSTableViewRowSizeStyle, NSTableViewStyle, NSText, NSTextField,
-    NSTextFieldCell, NSTextView, NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSButton, NSColor, NSControlSize,
+    NSFocusRingType, NSFont, NSFontWeightRegular, NSImage, NSImageScaling,
+    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse,
+    NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSResponder, NSScrollView, NSSegmentStyle,
+    NSSegmentSwitchTracking, NSSegmentedControl, NSText, NSTextAlignment, NSTextField, NSTextView,
+    NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSBundleExecutableArchitectureARM64,
     NSBundleExecutableArchitectureX86_64, NSDate, NSDateFormatter, NSDateFormatterStyle,
-    NSDictionary, NSMutableAttributedString, NSNumber, NSObject, NSObjectProtocol, NSPoint,
-    NSRange, NSRect, NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey,
-    ns_string,
+    NSDictionary, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
+    NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
 };
 
 use crate::app::FinderDemo;
-use crate::art::row_art;
-use crate::data::{
-    Face, Folder, Line, Row, byte_string, count, folder_of, intern_path, small_text_width,
-    volume_at,
-};
+use crate::art::{row_art, small_glyph};
+use crate::data::{Face, Folder, Line, Row, byte_string, count, folder_of, intern_path, volume_at};
 use crate::frame::ns_window;
 use crate::prefs;
 use crate::tag_editor::{tag_field, tags_in};
@@ -68,97 +60,38 @@ unsafe extern "C" {
 }
 
 const W_OK: i32 = 2;
-const GRANTS_PANE: f32 = 194.5;
-const OWNERSHIP_ROW: f32 = 20.;
 const LOCK_ICON: &str =
     "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/LockedIcon.icns";
 const MANY_ICON: &str =
     "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/MultipleItemsIcon.icns";
 
-pub(crate) const WIDTH: f32 = 265.;
-pub(crate) const HEIGHT: f32 = 541.;
+pub(crate) const WIDTH: f32 = 360.;
+pub(crate) const HEIGHT: f32 = 620.;
+const SHORTEST: f32 = 240.;
 const TITLEBAR: f32 = 32.;
-const LINE: f32 = 14.;
-const SMALL: f32 = 11.;
-const BODY: f32 = 24.5;
-const FOOT: f32 = 8.5;
-const SHUT: f32 = 20.;
-const CHECK_ROW: f32 = 20.;
-const TAGGED_HEAD: f32 = 88.5;
-const SIMPLE_HEAD: f32 = 51.5;
-const PREVIEW_ICON: f32 = 128.;
-const PREVIEW_MOST: f32 = 480.;
+const MARGIN: f32 = 20.;
+const INSET: f32 = 10.;
+const ROW: f32 = 37.;
+const BODY: f32 = 13.;
+const LINE: f32 = 16.;
+const GAP: f32 = 16.;
+const RADIUS: f32 = 12.;
+const SECTION: f32 = 30.;
+const STACK: f32 = 10.;
+const TITLE: f32 = LINE + STACK;
+const TOP: f32 = 16.;
+const PREVIEW: f32 = 128.;
+const THUMB: f32 = 320.;
+const NAME: f32 = 15.;
+const COMMENT: f32 = 48.;
+const BOTTOM: f32 = 20.;
+const NOTE: &str = "Use this application to open all documents like this one.";
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
-const EXPANDED_KEY: &str = "FXInfoPanesExpanded";
 /// The zero-width space lets a line start at ".config": UAX #14 never breaks before a full stop.
 const CRUMB_SEPARATOR: &str = " \u{25b8} \u{200b}";
 const KEPT: usize = 512;
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Pane {
-    General,
-    MetaData,
-    Name,
-    Comments,
-    OpenWith,
-    Preview,
-    Privileges,
-}
-
-const PANES: [Pane; 7] = [
-    Pane::General,
-    Pane::MetaData,
-    Pane::Name,
-    Pane::Comments,
-    Pane::OpenWith,
-    Pane::Preview,
-    Pane::Privileges,
-];
-
-impl Pane {
-    fn key(self) -> &'static str {
-        match self {
-            Pane::General => "General",
-            Pane::MetaData => "MetaData",
-            Pane::Name => "Name",
-            Pane::Comments => "Comments",
-            Pane::OpenWith => "OpenWith",
-            Pane::Preview => "Preview",
-            Pane::Privileges => "Privileges",
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Pane::General => "General:",
-            Pane::MetaData => "More Info:",
-            Pane::Name => "Name & Extension:",
-            Pane::Comments => "Comments:",
-            Pane::OpenWith => "Open with:",
-            Pane::Preview => "Preview:",
-            Pane::Privileges => "Sharing & Permissions:",
-        }
-    }
-}
-
-fn panes_open() -> [bool; 7] {
-    PANES.map(|pane| {
-        prefs::setting_flag(EXPANDED_KEY, pane.key())
-            .unwrap_or(matches!(pane, Pane::General | Pane::Preview))
-    })
-}
-
-fn save_panes(open: [bool; 7]) {
-    prefs::set_setting_flags(
-        EXPANDED_KEY,
-        PANES
-            .iter()
-            .zip(open)
-            .map(|(pane, open)| (pane.key(), open)),
-    );
-}
 
 fn info_width() -> f32 {
     prefs::setting_number(WIDTH_KEY)
@@ -187,21 +120,6 @@ impl Subject {
             (_, true) if row.path.ends_with(".app") => Self::App,
             (Face::Folder, false) => Self::Folder,
             _ => Self::File,
-        }
-    }
-
-    fn panes(self) -> &'static [Pane] {
-        match self {
-            Self::File => &PANES,
-            Self::Place => &[Pane::General, Pane::Preview],
-            _ => &[
-                Pane::General,
-                Pane::MetaData,
-                Pane::Name,
-                Pane::Comments,
-                Pane::Preview,
-                Pane::Privileges,
-            ],
         }
     }
 }
@@ -275,8 +193,11 @@ fn weigh_all(paths: &[PathBuf]) -> Weight {
     }
 }
 
-fn size_text(weight: Option<Weight>) -> String {
-    weight.map_or_else(|| "--".to_owned(), |weight| byte_string(weight.bytes))
+fn items_text(items: u64) -> String {
+    match items {
+        1 => "1 item".to_owned(),
+        items => format!("{} items", count(items as usize)),
+    }
 }
 
 fn weight_text(weight: Option<Weight>) -> SharedString {
@@ -285,8 +206,7 @@ fn weight_text(weight: Option<Weight>) -> SharedString {
     };
     let text = bytes_text(weight.bytes, weight.on_disk);
     match weight.items {
-        Some(1) => format!("{text} for 1 item").into(),
-        Some(items) => format!("{text} for {} items", count(items as usize)).into(),
+        Some(items) => format!("{text} for {}", items_text(items)).into(),
         None => text.into(),
     }
 }
@@ -307,16 +227,6 @@ enum Shown {
     Icon,
     Picture(Arc<RenderImage>),
     Page(Arc<RenderImage>),
-}
-
-impl Shown {
-    fn height(&self, width: f32) -> f32 {
-        match self {
-            Shown::Icon => PREVIEW_ICON,
-            Shown::Page(_) => PREVIEW_MOST,
-            Shown::Picture(image) => (width * aspect(image)).round().min(PREVIEW_MOST),
-        }
-    }
 }
 
 fn aspect(image: &RenderImage) -> f32 {
@@ -342,32 +252,39 @@ fn remembered<V: Copy>(
     value
 }
 
-fn field_width(text: &str, size: f32) -> f32 {
+fn text_width(text: &str) -> f32 {
     thread_local! {
         static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
     }
-    remembered(&SEEN, key_of((text, size.to_bits())), || {
+    remembered(&SEEN, key_of(text), || {
         let mtm = MainThreadMarker::new().expect("laid out on the main thread");
         let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-        field.setFont(Some(&NSFont::systemFontOfSize(size.into())));
+        field.setFont(ns_font(system_font_family(), px(BODY), FontWeight::NORMAL).as_deref());
         field.fittingSize().width as f32
     })
 }
 
-fn line_count(text: &str, width: f32) -> usize {
+fn text_height(text: &str, size: f32, weight: FontWeight, width: f32) -> f32 {
     thread_local! {
-        static SEEN: RefCell<HashMap<u64, usize>> = RefCell::default();
+        static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
     }
-    remembered(&SEEN, key_of((text, width.to_bits())), || {
+    let key = key_of((text, size.to_bits(), weight.0.to_bits(), width.to_bits()));
+    remembered(&SEEN, key, || {
         let mtm = MainThreadMarker::new().expect("laid out on the main thread");
         let field = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
-        field.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+        field.setFont(ns_font(system_font_family(), px(size), weight).as_deref());
         let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(width.into(), 1e6));
-        let height = field.cell().map_or(f64::from(LINE), |cell| {
-            cell.cellSizeForBounds(bounds).height
-        });
-        ((height / f64::from(LINE)).round() as usize).max(1)
+        field.cell().map_or(0., |cell| {
+            cell.cellSizeForBounds(bounds).height.ceil() as f32
+        })
     })
+}
+
+fn lines_height(text: &str, width: f32) -> f32 {
+    (text_height(text, BODY, FontWeight::NORMAL, width) / LINE)
+        .round()
+        .max(1.)
+        * LINE
 }
 
 fn formatter(date: NSDateFormatterStyle, time: NSDateFormatterStyle) -> Retained<NSDateFormatter> {
@@ -383,25 +300,6 @@ fn format_date(formatter: &NSDateFormatter, seconds: f64) -> String {
         .to_string()
 }
 
-fn header_date(seconds: f64) -> String {
-    use NSDateFormatterStyle as Style;
-    thread_local! {
-        static DAY: Retained<NSDateFormatter> = {
-            let day = formatter(Style::MediumStyle, Style::NoStyle);
-            day.setDoesRelativeDateFormatting(true);
-            day
-        };
-        static PLAIN: Retained<NSDateFormatter> = formatter(Style::MediumStyle, Style::NoStyle);
-        static TIME: Retained<NSDateFormatter> = formatter(Style::NoStyle, Style::ShortStyle);
-        static BOTH: Retained<NSDateFormatter> = formatter(Style::MediumStyle, Style::ShortStyle);
-    }
-    let day = DAY.with(|day| format_date(day, seconds));
-    match PLAIN.with(|plain| format_date(plain, seconds)) == day {
-        true => BOTH.with(|both| format_date(both, seconds)),
-        false => format!("{day}, {}", TIME.with(|time| format_date(time, seconds))),
-    }
-}
-
 fn long_date(seconds: f64, room: f32) -> String {
     use NSDateFormatterStyle as Style;
     thread_local! {
@@ -412,7 +310,7 @@ fn long_date(seconds: f64, room: f32) -> String {
     STYLES.with(|styles| {
         let mut texts = styles.iter().map(|style| format_date(style, seconds));
         let mut text = texts.next().unwrap_or_default();
-        while small_text_width(&text) > room {
+        while text_width(&text) > room {
             let Some(shorter) = texts.next() else { break };
             text = shorter;
         }
@@ -478,24 +376,6 @@ fn writable(path: &Path) -> bool {
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
-}
-
-fn fit_window(window: &NSWindow, height: f32) {
-    let frame = window.frame();
-    let mut height = f64::from(height);
-    if let Some(screen) = window.screen() {
-        height = height.min(screen.visibleFrame().size.height);
-    }
-    window.setContentMinSize(NSSize::new(WIDTH.into(), height));
-    window.setContentMaxSize(NSSize::new(1e4, height));
-    if (frame.size.height - height).abs() < 0.25 {
-        return;
-    }
-    let top = frame.origin.y + frame.size.height;
-    window.setFrame_display(
-        rect(frame.origin.x, top - height, frame.size.width, height),
-        true,
-    );
 }
 
 fn key_of(parts: impl Hash) -> u64 {
@@ -582,17 +462,20 @@ fn icon_of(path: &str) -> Option<Retained<NSImage>> {
     }
 }
 
-fn icon_view(row: &Row, name: &str, side: f32, scale: f32) -> AnyElement {
+fn icon_view(row: &Row, scale: f32) -> AnyElement {
     let Some(icon) = icon_of(&row.path) else {
         return div()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
-            .child(row_art(row, side, scale, true))
+            .child(row_art(row, PREVIEW, scale, true))
             .into_any_element();
     };
-    image_view(key_of((name, &row.path)), move || Some(icon.clone())).into_any_element()
+    image_view(key_of(("ng.finder.info.icon", &row.path)), move || {
+        Some(icon.clone())
+    })
+    .into_any_element()
 }
 
 fn icon_file(path: &'static str) -> impl IntoElement {
@@ -617,190 +500,250 @@ fn image_view(
     )
 }
 
-fn small(id: impl Into<gpui::ElementId>, text: &str) -> NativeLabel {
-    native_label(id, text).font_size(px(SMALL))
+type Flip = Rc<dyn Fn(bool, &mut App)>;
+
+fn flip(
+    this: &WeakEntity<Info>,
+    act: impl Fn(&mut Info, bool, &mut Context<Info>) + 'static,
+) -> Flip {
+    let this = this.clone();
+    Rc::new(move |on, cx| {
+        this.update(cx, |info, cx| act(info, on, cx)).ok();
+    })
 }
 
-fn secondary(id: impl Into<gpui::ElementId>, text: &str) -> NativeLabel {
-    small(id, text).color(SystemColor::SecondaryLabel)
+fn section(id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .pt(px(SECTION))
+        .flex()
+        .flex_col()
+        .gap(px(STACK))
 }
 
-struct Sheet {
-    width: f32,
-    y: f32,
-    out: Vec<AnyElement>,
+fn heading(title: &str) -> Div {
+    div()
+        .px(px(MARGIN + INSET))
+        .child(native_label("title", title).weight(FontWeight::BOLD))
 }
 
-impl Sheet {
-    fn new(width: f32) -> Self {
-        Sheet {
-            width,
-            y: 0.,
-            out: Vec::new(),
-        }
-    }
-
-    fn put(&mut self, (x, y): (f32, f32), (width, height): (f32, f32), child: impl IntoElement) {
-        self.out.push(
+fn labelled(label: &str, color: SystemColor, value: impl IntoElement) -> AnyElement {
+    div()
+        .h(px(ROW))
+        .px(px(INSET))
+        .flex()
+        .items_center()
+        .gap(px(GAP))
+        .child(
             div()
-                .absolute()
-                .left(px(x))
-                .top(px(self.y + y))
-                .w(px(width))
-                .h(px(height))
-                .child(child)
-                .into_any_element(),
-        );
-    }
-
-    fn rows(&mut self, rows: &[(&str, SharedString)]) -> f32 {
-        let value_w = self.width - 82.;
-        let mut y = BODY;
-        for (at, (label, value)) in rows.iter().enumerate() {
-            let height = line_count(value, value_w) as f32 * LINE;
-            self.put(
-                (-2., y),
-                (72., LINE),
-                small(("ng.finder.info.key", at), &format!("{label}:")).align(LabelAlign::Right),
-            );
-            self.put(
-                (70., y),
-                (value_w, height),
-                small(("ng.finder.info.value", at), value).wraps(true),
-            );
-            y += height;
-        }
-        y
-    }
-
-    fn title(&mut self, icon: impl IntoElement, name: &str, size: Option<&str>) {
-        let width = self.width;
-        self.put((11., 11.), (32., 32.), icon);
-        let size_w = size.map_or(0., |size| field_width(size, 13.));
-        if let Some(size) = size {
-            self.put(
-                (width - 6. - size_w, 9.),
-                (size_w, 16.),
-                native_label("ng.finder.info.size", size)
-                    .font_size(px(13.))
-                    .align(LabelAlign::Right),
-            );
-        }
-        self.put(
-            (47., 9.),
-            (width - 55. - size_w.max(17.), 16.),
-            native_label("ng.finder.info.name", name)
-                .font_size(px(13.))
-                .weight(FontWeight::BOLD),
-        );
-    }
-
-    fn end_head(&mut self, head: f32) {
-        self.put(
-            (0., head - 1.),
-            (self.width, 1.),
-            native_rule("ng.finder.info.head"),
-        );
-        self.y = head;
-    }
-
-    fn finish<V: 'static>(
-        self,
-        asked: &mut f32,
-        window: &Window,
-        cx: &mut Context<V>,
-    ) -> impl IntoElement {
-        let ns = ns_window(window);
-        let titlebar = ns.as_ref().map_or(TITLEBAR, |ns| {
-            (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
-        });
-        let height = titlebar + self.y;
-        if (height - *asked).abs() >= 0.25 {
-            *asked = height;
-            // Outside gpui's borrow of the window: AppKit reports the resize back synchronously.
-            if let Some(ns) = ns {
-                cx.spawn(async move |_, _| fit_window(&ns, height)).detach();
-            }
-        }
-        native_root(
-            div()
-                .size_full()
-                .relative()
-                .bg(system_color(SystemColor::WindowBackground))
-                .child(
-                    div()
-                        .id("ng.finder.info.scroll")
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(titlebar))
-                        .bottom_0()
-                        .overflow_y_scroll()
-                        .child(div().relative().w_full().h(px(self.y)).children(self.out)),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(titlebar))
-                        .h(px(0.5))
-                        .child(native_rule("ng.finder.info.titlebar")),
-                ),
+                .flex_none()
+                .w(px(text_width(label)))
+                .child(native_label("label", label).color(color)),
         )
+        .child(div().flex_1().flex().justify_end().child(value))
+        .into_any_element()
+}
+
+fn switch_row(title: &str, on: bool, change: Option<Flip>) -> AnyElement {
+    let color = match change {
+        Some(_) => SystemColor::Label,
+        None => SystemColor::DisabledControlText,
+    };
+    let switch = native_switch("switch", on)
+        .control_size(ControlSize::Mini)
+        .enabled(change.is_some())
+        .on_change(move |on, _, cx| {
+            if let Some(change) = &change {
+                change(*on, cx);
+            }
+        });
+    labelled(title, color, switch)
+}
+
+struct Form {
+    wide: f32,
+    inner: f32,
+    hair: f32,
+}
+
+impl Form {
+    fn new(width: f32, hair: f32) -> Self {
+        let wide = width - 2. * MARGIN;
+        Form {
+            wide,
+            inner: wide - 2. * INSET,
+            hair,
+        }
+    }
+
+    fn room(&self, label: &str) -> f32 {
+        self.inner - text_width(label) - GAP
+    }
+
+    fn fits(&self, label: &str, value: &str) -> bool {
+        text_width(value) <= self.room(label)
+    }
+
+    fn value_height(&self, label: &str, value: &str) -> f32 {
+        match self.fits(label, value) {
+            true => ROW,
+            false => ROW + 8. + lines_height(value, self.inner),
+        }
+    }
+
+    fn values_height(&self, rows: &[(&str, SharedString)]) -> f32 {
+        rows.iter()
+            .map(|(label, value)| self.value_height(label, value))
+            .sum()
+    }
+
+    fn values(&self, rows: &[(&str, SharedString)]) -> Vec<AnyElement> {
+        rows.iter()
+            .map(|(label, value)| {
+                let shown = native_label("value", value)
+                    .color(SystemColor::SecondaryLabel)
+                    .align(LabelAlign::Right);
+                if self.fits(label, value) {
+                    return labelled(label, SystemColor::Label, shown);
+                }
+                let tall = lines_height(value, self.inner);
+                div()
+                    .h(px(ROW + 8. + tall))
+                    .p(px(INSET))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(native_label("label", label))
+                    .child(div().h(px(tall)).child(shown.wraps(true)))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn card(&self, id: &'static str, rows: Vec<AnyElement>) -> Stateful<Div> {
+        let last = rows.len().saturating_sub(1);
+        div()
+            .id(id)
+            .mx(px(MARGIN))
+            .rounded(px(RADIUS))
+            .bg(system_color(SystemColor::QuaternarySystemFill))
+            .children(rows.into_iter().enumerate().map(|(at, row)| {
+                div().id(at).relative().child(row).when(at < last, |row| {
+                    row.child(
+                        div()
+                            .absolute()
+                            .left(px(INSET))
+                            .right(px(INSET))
+                            .bottom_0()
+                            .h(px(self.hair))
+                            .bg(system_color(SystemColor::Separator)),
+                    )
+                })
+            }))
+    }
+
+    fn name_height(&self, name: &str) -> f32 {
+        text_height(name, NAME, FontWeight::SEMIBOLD, self.wide)
+    }
+
+    fn head_height(&self, name: &str, summary: bool, tagged: bool) -> f32 {
+        let summary = if summary { 2. + LINE } else { 0. };
+        let tags = if tagged { GAP + ROW } else { 0. };
+        TOP + PREVIEW + INSET + self.name_height(name) + summary + tags
+    }
+
+    fn head(
+        &self,
+        preview: impl IntoElement,
+        name: &str,
+        summary: &str,
+        tags: Option<AnyElement>,
+    ) -> Div {
+        div()
+            .pt(px(TOP))
+            .flex()
+            .flex_col()
+            .child(div().mx(px(MARGIN)).h(px(PREVIEW)).child(preview))
+            .child(
+                div()
+                    .mx(px(MARGIN))
+                    .mt(px(INSET))
+                    .h(px(self.name_height(name)))
+                    .child(
+                        native_label("ng.finder.info.name", name)
+                            .font_size(px(NAME))
+                            .weight(FontWeight::SEMIBOLD)
+                            .align(LabelAlign::Center)
+                            .wraps(true),
+                    ),
+            )
+            .when(!summary.is_empty(), |head| {
+                head.child(
+                    div().mx(px(MARGIN)).mt(px(2.)).child(
+                        native_label("ng.finder.info.summary", summary)
+                            .color(SystemColor::SecondaryLabel)
+                            .align(LabelAlign::Center),
+                    ),
+                )
+            })
+            .when_some(tags, |head, tags| {
+                head.child(
+                    div()
+                        .mt(px(GAP))
+                        .child(self.card("ng.finder.info.tags", vec![tags])),
+                )
+            })
     }
 }
 
-fn pane_chrome(
-    sheet: &mut Sheet,
-    pane: Pane,
-    open: bool,
-    rule: Option<f32>,
-    flip: Rc<dyn Fn(&mut App)>,
-) {
-    let at = pane as usize;
-    let width = sheet.width;
-    let click = flip.clone();
-    sheet.put(
-        (0., 0.),
-        (width, 16.),
+fn page(window: &Window, head: Div, sections: Vec<AnyElement>) -> impl IntoElement {
+    let titlebar = ns_window(window).map_or(TITLEBAR, |ns| {
+        (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
+    });
+    native_root(
         div()
-            .id(("ng.finder.info.pane", at))
             .size_full()
-            .on_click(move |_, _, cx| click(cx)),
-    );
-    sheet.put(
-        (7., 3.5),
-        (13., 13.),
-        native_button(("ng.finder.info.disclose", at), "")
-            .bezel_style(ButtonBezel::Disclosure)
-            .on(open)
-            .square(13.)
-            .on_click(move |_, _, cx| flip(cx)),
-    );
-    sheet.put(
-        (20., 3.5),
-        (width - 40., LINE),
-        small(("ng.finder.info.pane.title", at), pane.title()),
-    );
-    if let Some(bottom) = rule {
-        sheet.put(
-            (0., bottom - 1.),
-            (width, 1.),
-            native_rule(("ng.finder.info.pane.rule", at)),
-        );
-    }
+            .relative()
+            .bg(system_color(SystemColor::WindowBackground))
+            .child(
+                div()
+                    .id("ng.finder.info.scroll")
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(titlebar))
+                    .bottom_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .pb(px(BOTTOM))
+                            .flex()
+                            .flex_col()
+                            .child(head)
+                            .children(sections),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(titlebar))
+                    .h(px(0.5))
+                    .child(native_rule("ng.finder.info.titlebar")),
+            ),
+    )
 }
 
 struct Opener {
     apps: Vec<PathBuf>,
     chosen: Option<PathBuf>,
     default: Option<PathBuf>,
-    rev: u64,
 }
 
 impl Opener {
-    fn of(path: &Path, rev: u64) -> Self {
+    fn of(path: &Path) -> Self {
         let default = crate::openwith::type_default(path);
         let mut apps: Vec<PathBuf> = crate::openwith::apps_for(path)
             .into_iter()
@@ -816,7 +759,6 @@ impl Opener {
             chosen: crate::openwith::opener(path),
             apps,
             default,
-            rev,
         }
     }
 
@@ -843,6 +785,32 @@ enum Pick {
     Other,
 }
 
+impl Pick {
+    fn title(&self, default: Option<&Path>) -> String {
+        match self {
+            Pick::App(app) => {
+                let name = finder_fs::name::of_path(app);
+                match default == Some(app.as_path()) {
+                    true => format!("{name} (default)"),
+                    false => name,
+                }
+            }
+            Pick::Separator => String::new(),
+            Pick::Store => "App Store\u{2026}".to_owned(),
+            Pick::Other => "Other\u{2026}".to_owned(),
+        }
+    }
+
+    fn entry(&self, default: Option<&Path>) -> MenuEntry {
+        match self {
+            Pick::Separator => MenuEntry::separator(),
+            Pick::App(app) => MenuEntry::item(self.title(default))
+                .file_icon(FileType::Path(&app.to_string_lossy())),
+            _ => MenuEntry::item(self.title(default)),
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 enum Check {
     Stationery,
@@ -855,7 +823,6 @@ pub(crate) struct Info {
     subject: Subject,
     demo: WeakEntity<FinderDemo>,
     tags: Option<Rc<[Tag]>>,
-    open: [bool; 7],
     weight: Option<Weight>,
     weighing: bool,
     metadata: Option<Meta>,
@@ -870,7 +837,6 @@ pub(crate) struct Info {
     opener: Option<Opener>,
     panel: bool,
     width: f32,
-    asked: f32,
     preview: Shown,
     access: Option<Access>,
     first_mode: Option<u32>,
@@ -900,7 +866,6 @@ impl Info {
             where_,
             subject,
             demo,
-            open: panes_open(),
             weighing: false,
             metadata: None,
             fetching: false,
@@ -909,7 +874,6 @@ impl Info {
             opener: None,
             panel: false,
             width: info_width(),
-            asked: 0.,
             preview: Shown::Icon,
             access: None,
         }
@@ -942,8 +906,7 @@ impl Info {
     }
 
     fn fetch_metadata(&mut self, cx: &mut Context<Self>) {
-        let shown = self.open[Pane::MetaData as usize] && self.subject != Subject::Place;
-        if !shown || self.fetching {
+        if self.subject == Subject::Place || self.fetching {
             return;
         }
         self.fetching = true;
@@ -955,11 +918,16 @@ impl Info {
         );
     }
 
-    fn toggle(&mut self, pane: Pane, cx: &mut Context<Self>) {
-        let at = pane as usize;
-        self.open[at] = !self.open[at];
-        save_panes(self.open);
-        cx.notify();
+    fn ensure_opener(&mut self) {
+        if self.subject == Subject::File && self.opener.is_none() {
+            self.opener = Some(Opener::of(self.path()));
+        }
+    }
+
+    fn ensure_access(&mut self) {
+        if self.subject != Subject::Place && self.access.is_none() {
+            self.access = Some(Access::of(self.path(), self.subject));
+        }
     }
 
     fn set_check(&mut self, check: Check, on: bool, cx: &mut Context<Self>) {
@@ -1039,9 +1007,29 @@ impl Info {
                 .is_some_and(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
     }
 
-    fn general_rows(&self, width: f32) -> Vec<(&'static str, SharedString)> {
+    fn summary(&self) -> String {
         let row = &self.line.row;
-        let date = |seconds: f64| SharedString::from(long_date(seconds, width - 86.));
+        let mut parts = vec![row.kind.to_string()];
+        match self.subject {
+            Subject::Place => {}
+            Subject::Volume => {
+                parts.extend(volume_at(&row.path).map(|volume| byte_string(volume.capacity)))
+            }
+            _ => {
+                if let Some(weight) = self.weight {
+                    parts.push(byte_string(weight.bytes));
+                    parts.extend(weight.items.map(items_text));
+                }
+            }
+        }
+        parts.retain(|part| !part.is_empty());
+        parts.join(" \u{b7} ")
+    }
+
+    fn general_rows(&self, form: &Form) -> Vec<(&'static str, SharedString)> {
+        let row = &self.line.row;
+        let date =
+            |label: &str, seconds: f64| SharedString::from(long_date(seconds, form.room(label)));
         match self.subject {
             Subject::Place => {
                 let mut rows = crate::locations::info_fields(row).unwrap_or_default();
@@ -1059,8 +1047,8 @@ impl Info {
                 let used = volume.capacity.saturating_sub(volume.available);
                 let mut rows = vec![
                     ("Kind", row.kind.clone()),
-                    ("Created", date(row.created_at)),
-                    ("Modified", date(row.modified_at)),
+                    ("Created", date("Created", row.created_at)),
+                    ("Modified", date("Modified", row.modified_at)),
                 ];
                 if let Some(version) = system_version(&row.path) {
                     rows.push(("Version", version.into()));
@@ -1083,8 +1071,8 @@ impl Info {
                     rows.push(("Where", self.where_.clone()));
                 }
                 rows.extend([
-                    ("Created", date(row.created_at)),
-                    ("Modified", date(row.modified_at)),
+                    ("Created", date("Created", row.created_at)),
+                    ("Modified", date("Modified", row.modified_at)),
                 ]);
                 if self.subject == Subject::App {
                     if let Some(version) = finder_fs::meta::bundle_version(self.path()) {
@@ -1115,9 +1103,9 @@ impl Info {
         }
     }
 
-    fn more_rows(&self, width: f32) -> (f32, Vec<(&'static str, SharedString)>) {
+    fn more_rows(&self, form: &Form) -> Vec<(&'static str, SharedString)> {
         let Some(metadata) = &self.metadata else {
-            return (0., Vec::new());
+            return Vec::new();
         };
         let value = |name: &str| {
             metadata
@@ -1138,194 +1126,270 @@ impl Info {
         if let Some(duration) = metadata.duration.and_then(crate::preview::duration) {
             rows.push(("Duration", duration));
         }
-        let opened = metadata.last_used;
-        let label_w = rows
-            .iter()
-            .map(|(label, _)| *label)
-            .chain(opened.map(|_| "Last opened"))
-            .map(|label| field_width(&format!("{label}:"), SMALL))
-            .fold(0., f32::max);
-        if let Some(at) = opened {
-            rows.push(("Last opened", long_date(at, width - 24. - label_w).into()));
+        if let Some(at) = metadata.last_used {
+            rows.push((
+                "Last opened",
+                long_date(at, form.room("Last opened")).into(),
+            ));
         }
-        (label_w, rows)
+        rows
     }
 
-    fn pane_height(&self, pane: Pane, width: f32) -> f32 {
-        if !self.open[pane as usize] {
-            return SHUT;
-        }
-        match pane {
-            Pane::General => {
-                let value_w = width - 82.;
-                let rows: f32 = self
-                    .general_rows(width)
-                    .iter()
-                    .map(|(_, value)| line_count(value, value_w) as f32 * LINE)
-                    .sum();
-                let checks = match self.checks().len() {
-                    0 => 0.,
-                    checks => 8. + checks as f32 * CHECK_ROW,
-                };
-                BODY + rows + checks + FOOT
-            }
-            Pane::MetaData => BODY + self.more_rows(width).1.len().max(1) as f32 * LINE + FOOT,
-            Pane::Name => 80.,
-            Pane::Comments => 75.,
-            Pane::OpenWith => 113.,
-            Pane::Preview => BODY + self.preview.height(width - 32.) + FOOT,
-            Pane::Privileges => {
-                let ownership = self.access.as_ref().and_then(|access| access.ownership);
-                GRANTS_PANE + ownership.map_or(0., |_| OWNERSHIP_ROW)
-            }
-        }
-    }
-
-    fn head_height(&self) -> f32 {
-        match self.tags {
-            Some(_) => TAGGED_HEAD,
-            None => SIMPLE_HEAD,
-        }
-    }
-
-    fn content_height(&self, width: f32) -> f32 {
-        let panes: f32 = self
-            .subject
-            .panes()
-            .iter()
-            .map(|pane| self.pane_height(*pane, width))
-            .sum();
-        self.head_height() + panes
-    }
-
-    fn head(&self, sheet: &mut Sheet, scale: f32) {
-        let row = &self.line.row;
-        let width = sheet.width;
-        let size = match self.subject {
-            Subject::Volume | Subject::Place => None,
-            _ => Some(size_text(self.weight)),
+    fn general_height(&self, form: &Form) -> f32 {
+        let toggles = match self.checks().len() {
+            0 => 0.,
+            checks => STACK + checks as f32 * ROW,
         };
-        sheet.title(
-            icon_view(row, "ng.finder.info.icon", 32., scale),
+        SECTION + TITLE + form.values_height(&self.general_rows(form)) + toggles
+    }
+
+    fn default_height(&self, width: f32) -> f32 {
+        let form = Form::new(width, 1.);
+        let row = &self.line.row;
+        let head = form.head_height(
             &row.display,
-            size.as_deref(),
+            !self.summary().is_empty(),
+            self.tags.is_some(),
         );
-        if self.subject != Subject::Place {
-            let label_w = field_width("Modified:", SMALL);
-            sheet.put(
-                (47., 28.),
-                (label_w, LINE),
-                secondary("ng.finder.info.modified", "Modified:"),
-            );
-            sheet.put(
-                (47. + label_w, 28.),
-                (width - 53. - label_w, LINE),
-                secondary("ng.finder.info.date", &header_date(row.modified_at)),
-            );
+        TITLEBAR + head + self.general_height(&form) + BOTTOM
+    }
+
+    fn shown(&self, scale: f32) -> Shown {
+        let row = &self.line.row;
+        if self.subject != Subject::File {
+            return Shown::Icon;
         }
-        if let Some(tags) = &self.tags {
-            sheet.put(
-                (4., 51.),
-                (width - 8., 33.),
+        match crate::thumbs::thumb(row, THUMB, scale, true, false) {
+            Some(image) if matches!(row.face, Face::Image | Face::Movie) => Shown::Picture(image),
+            Some(image) => Shown::Page(image),
+            None => Shown::Icon,
+        }
+    }
+
+    fn preview(&self, form: &Form, scale: f32) -> AnyElement {
+        let (image, page) = match &self.preview {
+            Shown::Icon => return icon_view(&self.line.row, scale),
+            Shown::Picture(image) => (image, false),
+            Shown::Page(image) => (image, true),
+        };
+        let tall = (form.wide * aspect(image)).min(PREVIEW);
+        let wide = tall / aspect(image);
+        let edge = if page { 1. } else { 0. };
+        let shown = img(image.clone())
+            .w(px(wide - 2. * edge))
+            .h(px(tall - 2. * edge))
+            .rounded(px(4. - edge));
+        div()
+            .w_full()
+            .h(px(PREVIEW))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
                 div()
-                    .size_full()
-                    .border_1()
-                    .border_color(system_color(SystemColor::Separator)),
-            );
-            sheet.put(
-                (3., 52.),
-                (width - 8., 31.),
-                tags_field(row.path.clone(), tags.clone()),
-            );
-        }
-        sheet.end_head(self.head_height());
-    }
-
-    fn general(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
-        let width = sheet.width;
-        let top = sheet.rows(&self.general_rows(width)) + 14.;
-        for (at, (title, on, check)) in self.checks().into_iter().enumerate() {
-            let mut box_ = native_checkbox(("ng.finder.info.check", at), on)
-                .title(title)
-                .control_size(ControlSize::Small)
-                .enabled(check.is_some());
-            if let Some(check) = check {
-                let this = this.clone();
-                box_ = box_.on_change(move |state: &CheckState, _, cx| {
-                    this.update(cx, |info, cx| {
-                        info.set_check(check, *state == CheckState::On, cx)
+                    .w(px(wide))
+                    .h(px(tall))
+                    .rounded(px(4.))
+                    .when(page, |page| {
+                        page.border_1()
+                            .border_color(system_color(SystemColor::Separator))
+                            .bg(system_color(SystemColor::TextBackground))
                     })
-                    .ok();
-                });
-            }
-            sheet.put((55., top + at as f32 * CHECK_ROW), (width - 65., 16.), box_);
-        }
+                    .child(shown),
+            )
+            .into_any_element()
     }
 
-    fn more_info(&self, sheet: &mut Sheet) {
-        let width = sheet.width;
-        let (label_w, rows) = self.more_rows(width);
-        if rows.is_empty() && self.metadata.is_some() {
-            sheet.put(
-                (10., BODY),
-                (30., LINE),
-                secondary("ng.finder.info.more.none", "--"),
-            );
-        }
-        for (at, (label, value)) in rows.iter().enumerate() {
-            let y = BODY + at as f32 * LINE;
-            sheet.put(
-                (10., y),
-                (label_w, LINE),
-                small(("ng.finder.info.more.key", at), &format!("{label}:"))
-                    .align(LabelAlign::Right),
-            );
-            sheet.put(
-                (10. + label_w, y),
-                (width - 20. - label_w, LINE),
-                small(("ng.finder.info.more.value", at), value),
-            );
-        }
+    fn head(&self, form: &Form, scale: f32) -> Div {
+        let row = &self.line.row;
+        let tags = self.tags.as_ref().map(|tags| {
+            div()
+                .h(px(ROW))
+                .pl(px(INSET - 2.))
+                .pr(px(INSET))
+                .pt(px(9.))
+                .pb(px(6.))
+                .child(tags_field(row.path.clone(), tags.clone()))
+                .into_any_element()
+        });
+        form.head(
+            self.preview(form, scale),
+            &row.display,
+            &self.summary(),
+            tags,
+        )
     }
 
-    fn name_pane(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
+    fn general(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
+        let toggles: Vec<AnyElement> = self
+            .checks()
+            .into_iter()
+            .map(|(title, on, check)| {
+                let change = check
+                    .map(|check| flip(this, move |info, on, cx| info.set_check(check, on, cx)));
+                switch_row(title, on, change)
+            })
+            .collect();
+        section("ng.finder.info.general")
+            .child(heading("General"))
+            .child(form.card("values", form.values(&self.general_rows(form))))
+            .when(!toggles.is_empty(), |section| {
+                section.child(form.card("toggles", toggles))
+            })
+    }
+
+    fn more_info(&self, form: &Form) -> Option<Stateful<Div>> {
+        let rows = self.more_rows(form);
+        (!rows.is_empty()).then(|| {
+            section("ng.finder.info.more")
+                .child(heading("More Info"))
+                .child(form.card("values", form.values(&rows)))
+        })
+    }
+
+    fn name_section(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
         let renamable = self.renamable && !self.locked;
-        sheet.put(
-            (11., BODY - 1.),
-            (sheet.width - 22., 26.),
-            name_field(self.line.row.path.clone(), renamable, this.clone()),
-        );
-        let this = this.clone();
-        sheet.put(
-            (16., 57.5),
-            (100., 18.),
-            native_checkbox("ng.finder.info.hide", self.hidden_extension)
-                .title("Hide extension")
-                .control_size(ControlSize::Small)
-                .enabled(renamable && self.has_extension())
-                .on_change(move |state: &CheckState, _, cx| {
-                    this.update(cx, |info, cx| {
-                        info.hide_extension(*state == CheckState::On, cx)
-                    })
-                    .ok();
-                }),
-        );
+        let field = div().w_full().h(px(LINE)).child(name_field(
+            self.line.row.path.clone(),
+            renamable,
+            this.clone(),
+        ));
+        let hide = (renamable && self.has_extension()).then(|| flip(this, Info::hide_extension));
+        section("ng.finder.info.name")
+            .child(heading("Name & Extension"))
+            .child(form.card(
+                "card",
+                vec![
+                    labelled("Name", SystemColor::Label, field),
+                    switch_row("Hide extension", self.hidden_extension, hide),
+                ],
+            ))
     }
 
-    fn comments(&self, sheet: &mut Sheet) {
+    fn comments(&self, form: &Form) -> Stateful<Div> {
         let editable = self.renamable && !self.locked && writable(self.path());
-        sheet.put(
-            (4., BODY),
-            (sheet.width - 8., 46.),
-            comment_box(self.line.row.path.clone(), editable),
+        let text = div().p(px(INSET)).child(
+            div()
+                .h(px(COMMENT))
+                .child(comment_box(self.line.row.path.clone(), editable)),
         );
+        section("ng.finder.info.comments")
+            .child(heading("Comments"))
+            .child(form.card("card", vec![text.into_any_element()]))
     }
 
-    fn ensure_access(&mut self) {
-        let shown = self.open[Pane::Privileges as usize] && self.subject != Subject::Place;
-        if shown && self.access.is_none() {
-            self.access = Some(Access::of(self.path(), self.subject));
-        }
+    fn open_with(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
+        let opener = self.opener.as_ref()?;
+        let rows = opener.rows();
+        let chosen = rows
+            .iter()
+            .position(|row| matches!(row, Pick::App(app) if opener.chosen.as_ref() == Some(app)))
+            .unwrap_or(0);
+        let default = opener.default.as_deref();
+        let shown = rows
+            .get(chosen)
+            .map_or(String::new(), |row| row.title(default));
+        let pick = this.clone();
+        let popup = native_popup("popup", chosen)
+            .entries(rows.iter().map(|row| row.entry(default)))
+            .bordered(false)
+            .width(px(hugging(
+                &shown,
+                matches!(rows.get(chosen), Some(Pick::App(_))),
+            )))
+            .on_change(move |&row, _, cx| {
+                pick.update(cx, |info, cx| info.pick(row, cx)).ok();
+            });
+        let change = this.clone();
+        let button = native_button("change", "Change All\u{2026}")
+            .enabled(opener.chosen.is_some() && opener.chosen != opener.default)
+            .on_click(move |_, window, cx| {
+                let ns = ns_window(window);
+                change.update(cx, |info, cx| info.change_all(ns, cx)).ok();
+            });
+        let note = lines_height(NOTE, form.inner - change_all_width() - GAP);
+        let all = div()
+            .h(px(note.max(24.) + 2. * INSET))
+            .px(px(INSET))
+            .flex()
+            .items_center()
+            .gap(px(GAP))
+            .child(
+                div().flex_1().h(px(note)).child(
+                    native_label("note", NOTE)
+                        .color(SystemColor::SecondaryLabel)
+                        .wraps(true),
+                ),
+            )
+            .child(button);
+        Some(
+            section("ng.finder.info.openwith")
+                .child(heading("Open with"))
+                .child(form.card(
+                    "card",
+                    vec![
+                        labelled("Application", SystemColor::Label, popup),
+                        all.into_any_element(),
+                    ],
+                )),
+        )
+    }
+
+    fn privileges(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
+        let access = self.access.as_ref()?;
+        let path = &self.line.row.path;
+        let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
+        let grants = access
+            .grants
+            .iter()
+            .enumerate()
+            .map(|(row, grant)| grant_row(row, grant, folder, self.owned, this.clone()))
+            .collect();
+        let changed = access.mode.is_some() && access.mode != self.first_mode;
+        let tools = tools_size();
+        Some(
+            section("ng.finder.info.privileges")
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(heading("Sharing & Permissions"))
+                        .child(
+                            div().px(px(MARGIN + INSET)).child(
+                                native_label("yours", yours_text(access.yours))
+                                    .color(SystemColor::SecondaryLabel),
+                            ),
+                        ),
+                )
+                .child(form.card("grants", grants))
+                .when_some(access.ownership, |section, ignores| {
+                    section.child(form.card(
+                        "ownership",
+                        vec![switch_row("Ignore ownership on this volume", ignores, None)],
+                    ))
+                })
+                .child(
+                    div()
+                        .mx(px(MARGIN))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .w(px(tools.width as f32))
+                                .h(px(tools.height as f32))
+                                .child(grant_tools(
+                                    path,
+                                    self.owned,
+                                    folder,
+                                    changed,
+                                    this.clone(),
+                                )),
+                        )
+                        .child(div().size(px(18.)).child(icon_file(LOCK_ICON))),
+                ),
+        )
     }
 
     fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
@@ -1367,139 +1431,6 @@ impl Info {
                     .spawn(async move { permissions::apply_to_enclosed(&path) })
                     .detach();
             },
-        );
-    }
-
-    fn privileges(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
-        let Some(access) = &self.access else {
-            return;
-        };
-        let width = sheet.width;
-        let path = &self.line.row.path;
-        let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
-        sheet.put(
-            (12., BODY),
-            (width - 24., LINE),
-            small("ng.finder.info.yours", yours_text(access.yours)),
-        );
-        sheet.put(
-            (14., 46.5),
-            (width - 29., 113.),
-            grants_table(path, &access.grants, self.owned, folder, this.clone()),
-        );
-        let changed = access.mode.is_some() && access.mode != self.first_mode;
-        sheet.put(
-            (15., 162.5),
-            (tools_width(), 22.),
-            grant_tools(path, self.owned, folder, changed, this.clone()),
-        );
-        if let Some(ignores) = access.ownership {
-            sheet.put(
-                (14., GRANTS_PANE - 7.),
-                (191., 16.),
-                native_checkbox("ng.finder.info.ownership", ignores)
-                    .title("Ignore ownership on this volume")
-                    .control_size(ControlSize::Small)
-                    .enabled(false),
-            );
-        }
-        let bottom = self.pane_height(Pane::Privileges, width);
-        sheet.put(
-            (width - 32., bottom - 27.),
-            (18., 18.),
-            icon_file(LOCK_ICON),
-        );
-    }
-
-    fn shown(&self, scale: f32) -> Shown {
-        let row = &self.line.row;
-        if self.subject != Subject::File || !self.open[Pane::Preview as usize] {
-            return Shown::Icon;
-        }
-        match crate::thumbs::thumb(row, PREVIEW_MOST, scale, true, false) {
-            Some(image) if matches!(row.face, Face::Image | Face::Movie) => Shown::Picture(image),
-            Some(image) => Shown::Page(image),
-            None => Shown::Icon,
-        }
-    }
-
-    fn preview_pane(&self, sheet: &mut Sheet, scale: f32) {
-        let width = sheet.width - 32.;
-        let height = self.preview.height(width);
-        match &self.preview {
-            Shown::Icon => sheet.put(
-                (16., BODY),
-                (width, PREVIEW_ICON),
-                icon_view(
-                    &self.line.row,
-                    "ng.finder.info.preview",
-                    PREVIEW_ICON,
-                    scale,
-                ),
-            ),
-            Shown::Picture(image) => sheet.put(
-                (16., BODY),
-                (width, height),
-                img(image.clone())
-                    .size_full()
-                    .object_fit(ObjectFit::Contain),
-            ),
-            Shown::Page(image) => {
-                let tall = (width - 1.) * aspect(image);
-                sheet.put(
-                    (15.5, BODY - 0.5),
-                    (width + 1., height + 1.),
-                    div()
-                        .size_full()
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(system_color(SystemColor::Separator))
-                        .bg(system_color(SystemColor::TextBackground))
-                        .overflow_hidden()
-                        .child(img(image.clone()).w(px(width - 1.)).h(px(tall))),
-                );
-            }
-        }
-    }
-
-    fn ensure_opener(&mut self) {
-        let shown = self.open[Pane::OpenWith as usize] && self.subject == Subject::File;
-        if shown && self.opener.is_none() {
-            self.opener = Some(Opener::of(self.path(), 0));
-        }
-    }
-
-    fn open_with(&self, sheet: &mut Sheet, this: &WeakEntity<Self>) {
-        let Some(opener) = &self.opener else {
-            return;
-        };
-        let width = sheet.width;
-        sheet.put(
-            (15., 23.5),
-            (width - 30., 22.),
-            apps_popup(&self.line.row.path, opener, this.clone()),
-        );
-        sheet.put(
-            (13., 48.5),
-            (width - 26., 2. * LINE),
-            small(
-                "ng.finder.info.openwith.note",
-                "Use this application to open all documents like this one.",
-            )
-            .wraps(true),
-        );
-        let differs = opener.chosen.is_some() && opener.chosen != opener.default;
-        let this = this.clone();
-        sheet.put(
-            (15., 84.5),
-            (86., 20.),
-            native_button("ng.finder.info.change.all", "Change All\u{2026}")
-                .control_size(ControlSize::Small)
-                .enabled(differs)
-                .on_click(move |_, window, cx| {
-                    let ns = ns_window(window);
-                    this.update(cx, |info, cx| info.change_all(ns, cx)).ok();
-                }),
         );
     }
 
@@ -1563,7 +1494,6 @@ impl Info {
             opener.apps.retain(|known| known != app);
             opener.apps.insert(0, app.to_path_buf());
             opener.default = Some(app.to_path_buf());
-            opener.rev += 1;
         }
         cx.notify();
     }
@@ -1585,36 +1515,22 @@ impl Render for Info {
         cx.defer(|_| crate::thumbs::collect_thumbnails());
         self.title(window);
         let this = cx.weak_entity();
-        let mut sheet = Sheet::new(width);
-        self.head(&mut sheet, scale);
-        let panes = self.subject.panes();
-        for &pane in panes {
-            let open = self.open[pane as usize];
-            let height = self.pane_height(pane, width);
-            let info = this.clone();
-            pane_chrome(
-                &mut sheet,
-                pane,
-                open,
-                (panes.last() != Some(&pane)).then_some(height),
-                Rc::new(move |cx: &mut App| {
-                    info.update(cx, |info, cx| info.toggle(pane, cx)).ok();
-                }),
+        let form = Form::new(width, 1. / scale);
+        let mut sections = vec![self.general(&form, &this).into_any_element()];
+        if self.subject != Subject::Place {
+            sections.extend(self.more_info(&form).map(IntoElement::into_any_element));
+            sections.push(self.name_section(&form, &this).into_any_element());
+            sections.push(self.comments(&form).into_any_element());
+            sections.extend(
+                self.open_with(&form, &this)
+                    .map(IntoElement::into_any_element),
             );
-            if open {
-                match pane {
-                    Pane::General => self.general(&mut sheet, &this),
-                    Pane::MetaData => self.more_info(&mut sheet),
-                    Pane::Name => self.name_pane(&mut sheet, &this),
-                    Pane::Comments => self.comments(&mut sheet),
-                    Pane::OpenWith => self.open_with(&mut sheet, &this),
-                    Pane::Preview => self.preview_pane(&mut sheet, scale),
-                    Pane::Privileges => self.privileges(&mut sheet, &this),
-                }
-            }
-            sheet.y += height;
+            sections.extend(
+                self.privileges(&form, &this)
+                    .map(IntoElement::into_any_element),
+            );
         }
-        sheet.finish(&mut self.asked, window, cx)
+        page(window, self.head(&form, scale), sections)
     }
 }
 
@@ -1644,7 +1560,6 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
         key,
         move |mtm, target| {
             let field = tag_field(mtm, NSRect::ZERO, &tags);
-            field.setFont(Some(&NSFont::systemFontOfSize(12.)));
             field.setBezeled(false);
             field.setBordered(false);
             field.setDrawsBackground(false);
@@ -1678,19 +1593,17 @@ fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
     )
 }
 
-/// Its bezel draws a point outside its frame, so it sits inset in a holder the host can clip.
 fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl IntoElement {
     let key = key_of(("ng.finder.info.name.field", &path));
     hosted(
         key,
         move |mtm, target| {
-            let holder = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., 100., 26.));
-            let field = NSTextField::initWithFrame(NSTextField::alloc(mtm), rect(1., 1., 98., 24.));
-            field.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewWidthSizable
-                    | NSAutoresizingMaskOptions::ViewHeightSizable,
-            );
-            field.setFont(Some(&NSFont::systemFontOfSize(13.)));
+            let field = NSTextField::new(mtm);
+            field.setBezeled(false);
+            field.setBordered(false);
+            field.setDrawsBackground(false);
+            field.setAlignment(NSTextAlignment::Right);
+            field.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
             if let Some(name) = Path::new(path.as_ref()).file_name() {
                 let name = finder_fs::name::display(&name.to_string_lossy()).into_owned();
                 field.setStringValue(&NSString::from_str(&name));
@@ -1700,15 +1613,11 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
                 cell.setScrollable(true);
             }
             wire(&field, target, key);
-            holder.addSubview(&field);
-            holder
+            field
         },
-        move |holder, host| {
-            let field = holder.subviews().firstObject();
-            if let Some(field) = field.and_then(|field| field.downcast::<NSTextField>().ok()) {
-                if field.isEnabled() != enabled {
-                    field.setEnabled(enabled);
-                }
+        move |field, host| {
+            if field.isEnabled() != enabled {
+                field.setEnabled(enabled);
             }
             let this = this.clone();
             on_action(
@@ -1771,300 +1680,93 @@ fn privilege_title(privilege: Privilege) -> &'static str {
     }
 }
 
-fn privilege_tag(privilege: Privilege) -> isize {
-    PRIVILEGES
-        .iter()
-        .position(|known| *known == privilege)
-        .unwrap_or(0) as isize
-}
-
-fn row_tag(table: u64, row: usize) -> u64 {
-    key_of((table, row))
-}
-
-struct GrantsIvars {
-    cells: Vec<[Retained<NSView>; 2]>,
-    fitted: Cell<f64>,
-}
-
-define_class!(
-    #[unsafe(super(NSTableHeaderCell, NSTextFieldCell, NSActionCell, NSCell, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "NGInfoGrantsHeader"]
-    #[ivars = f64]
-    struct GrantsHeader;
-
-    impl GrantsHeader {
-        #[unsafe(method(drawInteriorWithFrame:inView:))]
-        fn draw_interior(&self, frame: NSRect, view: &NSView) {
-            let indent = *self.ivars();
-            let frame = rect(
-                frame.origin.x + indent,
-                frame.origin.y,
-                frame.size.width - indent,
-                frame.size.height,
-            );
-            unsafe { msg_send![super(self), drawInteriorWithFrame: frame, inView: view] }
-        }
-    }
-);
-
-impl GrantsHeader {
-    fn new(mtm: MainThreadMarker, title: &str, indent: f64) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(indent);
-        unsafe { msg_send![super(this), initTextCell: &*NSString::from_str(title)] }
-    }
-}
-
-define_class!(
-    /// Disabled, it ignores clicks yet keeps its rows' colours.
-    #[unsafe(super(NSTableView, NSControl, NSView, NSResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "NGInfoGrants"]
-    #[ivars = GrantsIvars]
-    struct Grants;
-
-    impl Grants {
-        #[unsafe(method_id(hitTest:))]
-        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
-            match self.isEnabled() {
-                true => unsafe { msg_send![super(self), hitTest: point] },
-                false => None,
-            }
-        }
-    }
-
-    unsafe impl NSObjectProtocol for Grants {}
-
-    unsafe impl NSTableViewDataSource for Grants {
-        #[unsafe(method(numberOfRowsInTableView:))]
-        fn number_of_rows(&self, _: &NSTableView) -> isize {
-            self.ivars().cells.len() as isize
-        }
-    }
-
-    unsafe impl NSControlTextEditingDelegate for Grants {}
-
-    unsafe impl NSTableViewDelegate for Grants {
-        #[unsafe(method_id(tableView:viewForTableColumn:row:))]
-        fn view_for(
-            &self,
-            _: &NSTableView,
-            column: Option<&NSTableColumn>,
-            row: isize,
-        ) -> Option<Retained<NSView>> {
-            let at = usize::from(column.is_some_and(|column| &*column.identifier() == ns_string!("priv")));
-            let cells = usize::try_from(row)
-                .ok()
-                .and_then(|row| self.ivars().cells.get(row));
-            cells.map(|cells| cells[at].clone())
-        }
-    }
-);
-
-fn name_cell(mtm: MainThreadMarker, grant: &Grant) -> Retained<NSView> {
-    let cell = NSTableCellView::initWithFrame(NSTableCellView::alloc(mtm), rect(0., 0., 113., 14.));
-    let symbol = match grant.group {
-        true => ns_string!("person.2.fill"),
-        false => ns_string!("person.crop.circle"),
-    };
-    if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(symbol, None) {
-        let size = image.size();
-        let icon = NSImageView::initWithFrame(
-            NSImageView::alloc(mtm),
-            rect(
-                15.5 - size.width / 2.,
-                (14. - size.height) / 2.,
-                size.width,
-                size.height,
-            ),
-        );
-        icon.setImage(Some(&image));
-        icon.setImageScaling(NSImageScaling::ScaleNone);
-        icon.setContentTintColor(Some(&NSColor::labelColor()));
-        cell.addSubview(&icon);
-        unsafe { cell.setImageView(Some(&icon)) };
-    }
-    let title = match grant.me {
-        true => NSString::from_str(&format!("{} (Me)", grant.name)),
-        false => NSString::from_str(&grant.name),
-    };
-    let label = NSTextField::labelWithString(&title, mtm);
-    label.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
-    label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    label.setFrame(rect(28., 0., 85., 14.));
-    label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-    cell.addSubview(&label);
-    unsafe { cell.setTextField(Some(&label)) };
-    Retained::into_super(cell)
-}
-
-fn small_popup(mtm: MainThreadMarker) -> Retained<NSPopUpButton> {
-    let popup =
-        NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-    popup.setControlSize(NSControlSize::Small);
-    popup.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
-    popup
-}
-
-fn privilege_popup(
-    mtm: MainThreadMarker,
-    privilege: Privilege,
+fn grant_row(
+    row: usize,
+    grant: &Grant,
     folder: bool,
-) -> Retained<NSPopUpButton> {
-    let popup = small_popup(mtm);
-    popup.setBordered(false);
-    if let Some(cell) = popup
-        .cell()
-        .and_then(|cell| cell.downcast::<NSPopUpButtonCell>().ok())
-    {
-        cell.setArrowPosition(NSPopUpArrowPosition::ArrowAtBottom);
-    }
-    for (tag, choice) in PRIVILEGES.into_iter().enumerate() {
-        let listed = match choice {
-            Privilege::WriteOnly => folder,
-            Privilege::Custom => false,
-            _ => true,
-        };
-        if !listed && choice != privilege {
-            continue;
-        }
-        popup.addItemWithTitle(&NSString::from_str(privilege_title(choice)));
-        if let Some(item) = popup.lastItem() {
-            item.setTag(tag as isize);
-        }
-    }
-    popup
-}
-
-fn bezel_scroll(mtm: MainThreadMarker, width: f64, height: f64) -> Retained<NSScrollView> {
-    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0., 0., width, height));
-    scroll.setBorderType(NSBorderType::BezelBorder);
-    scroll.setHasVerticalScroller(true);
-    scroll.setAutohidesScrollers(true);
-    scroll
-}
-
-fn grants_table(
-    path: &str,
-    grants: &[Grant],
     editable: bool,
-    folder: bool,
     this: WeakEntity<Info>,
-) -> impl IntoElement {
-    let key = key_of(("ng.finder.info.grants", path, folder, grants));
-    let grants: Rc<[Grant]> = grants.into();
-    let made = grants.clone();
-    hosted(
-        key,
-        move |mtm, target| {
-            let scroll = bezel_scroll(mtm, 236., 113.);
-            let cells = made
-                .iter()
-                .enumerate()
-                .map(|(row, grant)| {
-                    let popup = privilege_popup(mtm, grant.privilege, folder);
-                    wire(&popup, target, row_tag(key, row));
-                    popup.setFrame(rect(-1., 0., 111., 14.));
-                    let holder = NSTableCellView::initWithFrame(
-                        NSTableCellView::alloc(mtm),
-                        rect(0., 0., 112., 14.),
-                    );
-                    holder.addSubview(&popup);
-                    [name_cell(mtm, grant), Retained::into_super(holder)]
-                })
-                .collect();
-            let table = Grants::alloc(mtm).set_ivars(GrantsIvars {
-                cells,
-                fitted: Cell::new(0.),
-            });
-            let table: Retained<Grants> =
-                unsafe { msg_send![super(table), initWithFrame: NSRect::ZERO] };
-            table.setStyle(NSTableViewStyle::Plain);
-            table.setRowSizeStyle(NSTableViewRowSizeStyle::Custom);
-            table.setRowHeight(LINE.into());
-            table.setIntercellSpacing(NSSize::new(3., 2.));
-            table.setGridStyleMask(NSTableViewGridLineStyle::SolidVerticalGridLineMask);
-            table.setUsesAlternatingRowBackgroundColors(true);
-            table.setColumnAutoresizingStyle(
-                NSTableViewColumnAutoresizingStyle::UniformColumnAutoresizingStyle,
-            );
-            table.setAllowsColumnReordering(false);
-            table.setFocusRingType(NSFocusRingType::None);
-            for (id, title, indent) in [
-                (ns_string!("name"), "Name", 5.),
-                (ns_string!("priv"), "Privilege", 13.),
-            ] {
-                let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), id);
-                column.setHeaderCell(&GrantsHeader::new(mtm, title, indent));
-                column.setWidth(108.);
-                column.setMinWidth(40.);
-                table.addTableColumn(&column);
-            }
-            unsafe {
-                table.setDataSource(Some(ProtocolObject::from_ref(&*table)));
-                table.setDelegate(Some(ProtocolObject::from_ref(&*table)));
-            }
-            scroll.setDocumentView(Some(&table));
-            scroll
-        },
-        move |scroll, host| {
-            let Some(table) = scroll
-                .documentView()
-                .and_then(|table| table.downcast::<Grants>().ok())
-            else {
-                return;
-            };
-            if table.isEnabled() != editable {
-                table.setEnabled(editable);
-            }
-            let inner = scroll.contentSize().width;
-            if table.ivars().fitted.replace(inner) != inner {
-                let columns = table.tableColumns();
-                let half = ((inner - 6.) / 2.).round();
-                for (column, width) in columns.iter().zip([half, inner - 6. - half]) {
-                    column.setWidth(width);
+) -> AnyElement {
+    let choices: Vec<Privilege> = PRIVILEGES
+        .into_iter()
+        .filter(|&choice| {
+            choice == grant.privilege
+                || match choice {
+                    Privilege::WriteOnly => folder,
+                    Privilege::Custom => false,
+                    _ => true,
                 }
+        })
+        .collect();
+    let chosen = choices
+        .iter()
+        .position(|&choice| choice == grant.privilege)
+        .unwrap_or(0);
+    let symbol = match grant.group {
+        true => "person.2.fill",
+        false => "person.crop.circle",
+    };
+    let name = match grant.me {
+        true => format!("{} (Me)", grant.name),
+        false => grant.name.clone(),
+    };
+    let popup = native_popup("privilege", chosen)
+        .items(choices.iter().map(|&choice| privilege_title(choice)))
+        .bordered(false)
+        .width(px(hugging(privilege_title(grant.privilege), false)))
+        .enabled(editable && grant.class.is_some())
+        .on_change(move |&at, _, cx| {
+            if let Some(&privilege) = choices.get(at) {
+                this.update(cx, |info, cx| info.grant(row, privilege, cx))
+                    .ok();
             }
-            for (row, (cells, grant)) in table.ivars().cells.iter().zip(grants.iter()).enumerate() {
-                let popup = cells[1].subviews().firstObject();
-                let Some(popup) = popup.and_then(|popup| popup.downcast::<NSPopUpButton>().ok())
-                else {
-                    continue;
-                };
-                let tag = privilege_tag(grant.privilege);
-                if popup.selectedTag() != tag {
-                    popup.selectItemWithTag(tag);
-                }
-                let posix = grant.class.is_some();
-                if popup.isEnabled() != posix {
-                    popup.setEnabled(posix);
-                }
-                let this = this.clone();
-                on_action(
-                    host,
-                    key,
-                    row_tag(key, row),
-                    |popup: &NSPopUpButton| popup.selectedTag(),
-                    move |tag, _, cx| {
-                        let chosen = usize::try_from(tag)
-                            .ok()
-                            .and_then(|tag| PRIVILEGES.get(tag));
-                        if let Some(&privilege) = chosen {
-                            this.update(cx, |info, cx| info.grant(row, privilege, cx))
-                                .ok();
-                        }
-                    },
-                );
-            }
-        },
-    )
+        });
+    div()
+        .h(px(ROW))
+        .px(px(INSET))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex_none()
+                .w(px(20.))
+                .flex()
+                .justify_center()
+                .children(small_glyph(
+                    symbol,
+                    BODY,
+                    FontWeight::NORMAL,
+                    SystemColor::Label,
+                )),
+        )
+        .child(div().flex_1().child(native_label("name", &name)))
+        .child(popup)
+        .into_any_element()
 }
 
-fn menu_item(mtm: MainThreadMarker, title: &NSString) -> Retained<NSMenuItem> {
-    let item = NSMenuItem::new(mtm);
-    item.setTitle(title);
-    item
+/// AppKit sizes a pop-up to its widest row; a form's value hugs its chevron.
+fn hugging(title: &str, icon: bool) -> f32 {
+    native_gpui::fitting_size_keyed("NSPopUpButton.info_value", key_of((title, icon)), |mtm| {
+        let popup =
+            NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+        popup.setBordered(false);
+        popup.addItemWithTitle(&NSString::from_str(title));
+        if let Some(item) = popup.lastItem().filter(|_| icon) {
+            let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(16., 16.));
+            item.setImage(Some(&image));
+        }
+        popup.fittingSize()
+    })
+    .width as f32
+}
+
+fn change_all_width() -> f32 {
+    native_gpui::fitting_size("NSButton.info_change_all", |mtm| unsafe {
+        NSButton::buttonWithTitle_target_action(ns_string!("Change All\u{2026}"), None, None, mtm)
+            .fittingSize()
+    })
+    .width as f32
 }
 
 fn action_item(
@@ -2073,7 +1775,8 @@ fn action_item(
     title: &str,
     tag: u64,
 ) -> Retained<NSMenuItem> {
-    let item = menu_item(mtm, &NSString::from_str(title));
+    let item = NSMenuItem::new(mtm);
+    item.setTitle(&NSString::from_str(title));
     item.setTag(tag as isize);
     unsafe {
         item.setTarget(Some(target.as_ref()));
@@ -2089,10 +1792,9 @@ fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
     control.setTrackingMode(NSSegmentSwitchTracking::Momentary);
     control.setControlSize(NSControlSize::Small);
     control.setSegmentCount(3);
-    let config =
-        NSImageSymbolConfiguration::configurationWithPointSize_weight(SMALL.into(), unsafe {
-            NSFontWeightRegular
-        });
+    let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(11., unsafe {
+        NSFontWeightRegular
+    });
     for (at, (symbol, tip)) in (0..).zip([
         (ns_string!("plus"), ns_string!("Add")),
         (ns_string!("minus"), ns_string!("Remove")),
@@ -2109,11 +1811,10 @@ fn tools_control(mtm: MainThreadMarker) -> Retained<NSSegmentedControl> {
     control
 }
 
-fn tools_width() -> f32 {
+fn tools_size() -> NSSize {
     native_gpui::fitting_size("NSSegmentedControl.info_tools", |mtm| {
         tools_control(mtm).intrinsicContentSize()
     })
-    .width as f32
 }
 
 fn grant_tools(
@@ -2241,7 +1942,12 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
     hosted(
         key_of(("ng.finder.info.comment", &path)),
         move |mtm, _| {
-            let scroll = bezel_scroll(mtm, 100., 46.);
+            let scroll = NSScrollView::initWithFrame(
+                NSScrollView::alloc(mtm),
+                rect(0., 0., 100., COMMENT.into()),
+            );
+            scroll.setHasVerticalScroller(true);
+            scroll.setAutohidesScrollers(true);
             let size = scroll.contentSize();
             let text = Comment::new(
                 mtm,
@@ -2258,7 +1964,7 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
             }
             text.setRichText(false);
             text.setAllowsUndo(true);
-            text.setFont(Some(&NSFont::systemFontOfSize(SMALL.into())));
+            text.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
             text.setTextColor(Some(&NSColor::labelColor()));
             scroll.setDocumentView(Some(&text));
             scroll
@@ -2294,8 +2000,7 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
         let app = PathBuf::from(app.to_string());
         crate::openwith::set_default(std::slice::from_ref(&path), &app);
         this.update(cx, |info, cx| {
-            let rev = info.opener.as_ref().map_or(0, |opener| opener.rev + 1);
-            let mut opener = Opener::of(&path, rev);
+            let mut opener = Opener::of(&path);
             if !opener.apps.contains(&app) {
                 opener.apps.push(app.clone());
             }
@@ -2306,89 +2011,6 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
         .ok();
     })
     .detach();
-}
-
-fn apps_popup(path: &str, opener: &Opener, this: WeakEntity<Info>) -> impl IntoElement {
-    let key = key_of(("ng.finder.info.openwith", path, opener.rev));
-    let rows = opener.rows();
-    let chosen = rows
-        .iter()
-        .position(|row| matches!(row, Pick::App(app) if opener.chosen.as_ref() == Some(app)));
-    let default = opener.default.clone();
-    hosted(
-        key,
-        move |mtm, target| {
-            let popup = small_popup(mtm);
-            if let Some(menu) = popup.menu() {
-                for row in &rows {
-                    menu.addItem(&menu_row(mtm, row, default.as_deref()));
-                }
-            }
-            wire(&popup, target, key);
-            popup
-        },
-        move |popup, host| {
-            if let Some(chosen) = chosen {
-                if popup.indexOfSelectedItem() != chosen as isize {
-                    popup.selectItemAtIndex(chosen as isize);
-                }
-            }
-            let this = this.clone();
-            on_action(
-                host,
-                key,
-                key,
-                |popup: &NSPopUpButton| popup.indexOfSelectedItem(),
-                move |row, _, cx| {
-                    if let Ok(row) = usize::try_from(row) {
-                        this.update(cx, |info, cx| info.pick(row, cx)).ok();
-                    }
-                },
-            );
-        },
-    )
-}
-
-fn menu_row(mtm: MainThreadMarker, row: &Pick, default: Option<&Path>) -> Retained<NSMenuItem> {
-    let app = match row {
-        Pick::App(app) => app,
-        Pick::Separator => return NSMenuItem::separatorItem(mtm),
-        Pick::Store => return menu_item(mtm, ns_string!("App Store\u{2026}")),
-        Pick::Other => return menu_item(mtm, ns_string!("Other\u{2026}")),
-    };
-    let name = app.file_name().unwrap_or_default().to_string_lossy();
-    let suffix = match Some(app.as_path()) == default {
-        true => " (default)",
-        false => "",
-    };
-    let item = menu_item(mtm, &NSString::from_str(&name));
-    let text =
-        NSMutableAttributedString::from_nsstring(&NSString::from_str(&format!("{name}{suffix}")));
-    let whole = NSRange::new(0, text.length());
-    let tail = NSRange::new(name.encode_utf16().count(), suffix.encode_utf16().count());
-    unsafe {
-        text.addAttribute_value_range(
-            NSFontAttributeName,
-            &NSFont::systemFontOfSize(SMALL.into()),
-            whole,
-        );
-        text.addAttribute_value_range(
-            NSForegroundColorAttributeName,
-            &NSColor::labelColor(),
-            whole,
-        );
-        text.addAttribute_value_range(
-            NSForegroundColorAttributeName,
-            &NSColor::secondaryLabelColor(),
-            tail,
-        );
-    }
-    item.setAttributedTitle(Some(&text));
-    let icon =
-        NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&app.to_string_lossy()));
-    icon.setSize(NSSize::new(16., 16.));
-    item.setImage(Some(&icon));
-    item
 }
 
 fn crumb_text(folder: &Folder) -> String {
@@ -2428,20 +2050,16 @@ pub(crate) fn open(
             .or_else(|| state.folder().map(crumb_text));
         (lines, SharedString::from(where_.unwrap_or_default()))
     };
+    let width = info_width();
     if summary && lines.len() > 1 {
-        let shape = (info_width(), HEIGHT);
-        open_window(
-            Combined::new(lines, where_),
-            0.,
-            shape,
-            Some("Multiple Item Info"),
-            cx,
-        );
+        let combined = Combined::new(lines, where_);
+        let shape = (width, combined.default_height(width));
+        open_window(combined, 0., shape, Some("Multiple Item Info"), cx);
         return;
     }
     for (step, line) in lines.into_iter().enumerate() {
         let info = Info::new(line, where_.clone(), demo.downgrade());
-        let shape = (info.width, TITLEBAR + info.content_height(info.width));
+        let shape = (width, info.default_height(width));
         open_window(info, step as f32 * 24., shape, None, cx);
     }
 }
@@ -2459,6 +2077,7 @@ fn open_window<V: Render>(
                 origin: point(px(60. + offset), px(80. + offset)),
                 size: size(px(width), px(height)),
             })),
+            window_min_size: Some(size(px(WIDTH), px(SHORTEST))),
             ..window_options()
         },
         move |window, cx| {
@@ -2479,8 +2098,6 @@ pub(crate) struct Combined {
     where_: SharedString,
     weight: Option<Weight>,
     weighing: bool,
-    open: bool,
-    asked: f32,
 }
 
 impl Combined {
@@ -2490,8 +2107,6 @@ impl Combined {
             where_,
             weight: None,
             weighing: false,
-            open: panes_open()[Pane::General as usize],
-            asked: 0.,
         }
     }
 
@@ -2512,12 +2127,8 @@ impl Combined {
         );
     }
 
-    fn toggle(&mut self, cx: &mut Context<Self>) {
-        self.open = !self.open;
-        let mut open = panes_open();
-        open[Pane::General as usize] = self.open;
-        save_panes(open);
-        cx.notify();
+    fn name(&self) -> String {
+        items_text(self.lines.len() as u64)
     }
 
     fn rows(&self) -> Vec<(&'static str, SharedString)> {
@@ -2537,33 +2148,29 @@ impl Combined {
         }
         rows
     }
+
+    fn default_height(&self, width: f32) -> f32 {
+        let form = Form::new(width, 1.);
+        let head = form.head_height(&self.name(), true, false);
+        TITLEBAR + head + SECTION + TITLE + form.values_height(&self.rows()) + BOTTOM
+    }
 }
 
 impl Render for Combined {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.weigh(cx);
-        let mut sheet = Sheet::new(f32::from(window.viewport_size().width));
-        sheet.title(
-            icon_file(MANY_ICON),
-            &format!("{} items", count(self.lines.len())),
-            Some(&size_text(self.weight)),
+        let form = Form::new(
+            f32::from(window.viewport_size().width),
+            1. / window.scale_factor(),
         );
-        sheet.end_head(SIMPLE_HEAD);
-        let this = cx.weak_entity();
-        pane_chrome(
-            &mut sheet,
-            Pane::General,
-            self.open,
-            None,
-            Rc::new(move |cx: &mut App| {
-                this.update(cx, |combined, cx| combined.toggle(cx)).ok();
-            }),
-        );
-        let height = match self.open {
-            true => sheet.rows(&self.rows()) + FOOT,
-            false => SHUT,
-        };
-        sheet.y += height;
-        sheet.finish(&mut self.asked, window, cx)
+        let summary = self
+            .weight
+            .map(|weight| byte_string(weight.bytes))
+            .unwrap_or_default();
+        let general = section("ng.finder.info.general")
+            .child(heading("General"))
+            .child(form.card("values", form.values(&self.rows())));
+        let head = form.head(icon_file(MANY_ICON), &self.name(), &summary, None);
+        page(window, head, vec![general.into_any_element()])
     }
 }
