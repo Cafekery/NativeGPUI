@@ -14,6 +14,7 @@ mod file_viewer;
 mod fit;
 mod form;
 mod frame;
+mod fsearch;
 mod icon_well;
 mod icons;
 mod info;
@@ -117,6 +118,7 @@ fn main() {
             index().warm();
         })
         .detach();
+        warm.spawn(async { fsearch::start() }).detach();
         warm.spawn(async { icons::ask_app_management(icons::installed_apps()) })
             .detach();
         warm.spawn(async {

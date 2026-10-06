@@ -50,6 +50,7 @@ objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, f
 [dev-dependencies]
 convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
+fsearch = { path = "crates/fsearch" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2117a376b97104049f60e843afa92f18fa7f5748", features = ["font-kit"] }
 
 [[example]]

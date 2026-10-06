@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use block2::StackBlock;
@@ -8,11 +9,13 @@ use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
 use objc2_foundation::{NSNotification, NSNotificationCenter};
 
 use crate::app::FinderDemo;
+use crate::chrome::criteria_bar::Criterion;
 use crate::chrome::toolbar::SEARCH_ID;
 use crate::chrome::{criteria_bar, scope_bar};
 use crate::data;
+use crate::data::Row;
 use crate::listing::next_rev;
-use crate::{index, prefs};
+use crate::{fsearch, index, prefs};
 
 const HITS: usize = 200;
 const ALL_HITS: usize = 10_000;
@@ -58,6 +61,51 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
     std::mem::forget(observer);
 }
 
+/// Rows for fsearch's hits, in order: from what the app's own index already
+/// recorded, else one getattrlist each (a few threads at once). `None` once
+/// `stale` says a newer search started.
+fn fsearch_rows(
+    paths: &[PathBuf],
+    index: &finder_fs::index::Index,
+    criteria: &[Criterion],
+    stale: impl Fn() -> bool + Sync,
+) -> Option<Vec<Arc<Row>>> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let parts = std::thread::scope(|s| {
+        let tasks: Vec<_> = paths
+            .chunks(paths.len().div_ceil(threads).max(1))
+            .map(|part| {
+                let stale = &stale;
+                s.spawn(move || {
+                    let mut rows = Vec::with_capacity(part.len());
+                    for chunk in part.chunks(CHUNK) {
+                        if stale() {
+                            return None;
+                        }
+                        rows.extend(
+                            chunk
+                                .iter()
+                                .filter_map(|path| {
+                                    let entry = index
+                                        .entry(path)
+                                        .or_else(|| finder_fs::list::listed_entry_at(path).ok())?;
+                                    Some(data::hit_row(path, &entry, index))
+                                })
+                                .filter(|row| criteria.iter().all(|it| it.holds(row))),
+                        );
+                    }
+                    Some(rows)
+                })
+            })
+            .collect();
+        tasks
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect::<Option<Vec<_>>>()
+    })?;
+    Some(parts.concat())
+}
+
 impl FinderDemo {
     pub(crate) fn in_search(&self) -> bool {
         !self.query.trim().is_empty()
@@ -88,6 +136,7 @@ impl FinderDemo {
         let wanted = self.query.trim().to_string();
         let criteria = self.criteria.clone();
         let everywhere = self.scope == scope_bar::THIS_MAC;
+        let daemon = self.scope != scope_bar::NETWORK;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
             scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
@@ -104,6 +153,17 @@ impl FinderDemo {
                             return Some((Vec::new(), true));
                         }
                         let index = index();
+                        let fast = daemon
+                            .then(|| fsearch::search(&query, &under, limit))
+                            .flatten();
+                        if let Some(paths) = fast {
+                            let complete = paths.len() < limit;
+                            let mut rows = fsearch_rows(&paths, index, &criteria, || {
+                                pass.load(Ordering::Relaxed) != generation
+                            })?;
+                            rows.truncate(limit);
+                            return Some((rows, complete));
+                        }
                         let mut found = match everywhere {
                             true => index.search(&query, None, limit),
                             false => under
