@@ -2,10 +2,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
 use objc2_app_kit::{NSMenu, NSTintConfiguration, NSView};
-use objc2_foundation::{MainThreadMarker, NSInteger};
+use objc2_foundation::{MainThreadMarker, NSInteger, NSNotification, NSString};
 
 use super::cell::tint_rows;
-use super::{Shared, SidebarIcon};
+use super::{Shared, SidebarExpand, SidebarIcon};
 
 pub(super) fn children(shared: &Shared, item: Option<&AnyObject>) -> NSInteger {
     shared
@@ -97,4 +97,22 @@ pub(super) fn eject_clicked(shared: &Shared, sender: &NSView) {
         return;
     };
     shared.defer(move |window, app| handler(&id, window, app));
+}
+
+pub(super) fn expansion_changed(shared: &Shared, note: &NSNotification, expanded: bool) {
+    if shared.expanding.get() > 0 {
+        return;
+    }
+    let Some(handler) = shared.on_expand.borrow().clone() else {
+        return;
+    };
+    let key = NSString::from_str("NSObject");
+    let item: Option<Retained<AnyObject>> = note
+        .userInfo()
+        .and_then(|info| unsafe { msg_send![&*info, objectForKey: &*key] });
+    let Some(id) = item.and_then(|item| shared.model.borrow().id_for(Shared::key_of_item(&item)))
+    else {
+        return;
+    };
+    shared.defer(move |window, app| handler(&SidebarExpand { id, expanded }, window, app));
 }

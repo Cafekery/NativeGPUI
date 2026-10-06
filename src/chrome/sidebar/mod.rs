@@ -285,10 +285,17 @@ pub struct SidebarMove {
     pub index: usize,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SidebarExpand {
+    pub id: SharedString,
+    pub expanded: bool,
+}
+
 type SelectHandler = Rc<dyn Fn(&Option<SharedString>, &mut Window, &mut App)>;
 type ReorderHandler = Rc<dyn Fn(&SidebarMove, &mut Window, &mut App)>;
 type EjectHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 type DropHandler = Rc<dyn Fn(&SidebarDrop, &mut Window, &mut App)>;
+type ExpandHandler = Rc<dyn Fn(&SidebarExpand, &mut Window, &mut App)>;
 type MenuHandler = Rc<dyn Fn(&SharedString) -> Vec<MenuEntry>>;
 type MenuPickHandler = Rc<dyn Fn(&SharedString, usize, &mut Window, &mut App)>;
 
@@ -299,9 +306,11 @@ struct Shared {
     on_reorder: RefCell<Option<ReorderHandler>>,
     on_eject: RefCell<Option<EjectHandler>>,
     on_drop_paths: RefCell<Option<DropHandler>>,
+    on_expand: RefCell<Option<ExpandHandler>>,
     on_menu: RefCell<Option<(MenuHandler, MenuPickHandler)>>,
     menu_row: RefCell<Option<SharedString>>,
     suppress: Cell<u32>,
+    expanding: Cell<u32>,
     writes: Cell<u64>,
     cx: AsyncWindowContext,
     expand_groups: Cell<bool>,
@@ -356,6 +365,14 @@ impl Shared {
         self.suppress.set(self.suppress.get() - 1);
     }
 
+    // The outline view tells its delegate of `expandItem:` exactly as of a click on a disclosure.
+    fn expanding<R>(&self, change: impl FnOnce() -> R) -> R {
+        self.expanding.set(self.expanding.get() + 1);
+        let changed = change();
+        self.expanding.set(self.expanding.get() - 1);
+        changed
+    }
+
     fn defer(&self, run: impl FnOnce(&mut Window, &mut App) + 'static) {
         self.cx
             .spawn(async move |cx| {
@@ -377,6 +394,8 @@ struct Views {
     inspector: RefCell<Option<Inspector>>,
     inspector_asked: Cell<bool>,
     backdrop: Option<Retained<NSVisualEffectView>>,
+    sidebar_resized: Rc<Cell<Option<f64>>>,
+    sidebar_moving: Rc<Cell<bool>>,
 }
 
 struct Inspector {
@@ -446,6 +465,46 @@ fn observe_inspector(
         )
     }
 }
+
+fn observe_sidebar(
+    split: &NSSplitViewController,
+    item: &NSSplitViewItem,
+    view: &NSView,
+    resized: &Rc<Cell<Option<f64>>>,
+    moving: &Rc<Cell<bool>>,
+) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let (item, view) = (item.retain(), view.retain());
+    let (resized, moving) = (resized.clone(), moving.clone());
+    let key = NSString::from_str("NSSplitViewDividerIndex");
+    let block = StackBlock::new(move |note: NonNull<NSNotification>| {
+        if moving.get() || item.isCollapsed() {
+            return;
+        }
+        let dragged = unsafe { note.as_ref() }.userInfo().is_some_and(|info| {
+            let index: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*info, objectForKey: &*key] };
+            index.is_some_and(|index| {
+                let index: NSInteger = unsafe { msg_send![&*index, integerValue] };
+                index == 0
+            })
+        });
+        if dragged {
+            // The item's wrapper: the view inside it lags a divider move by a turn.
+            let host = unsafe { view.superview() }.unwrap_or_else(|| view.clone());
+            resized.set(Some(host.frame().size.width));
+        }
+    })
+    .copy();
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSSplitViewDidResizeSubviewsNotification),
+            Some(&split.splitView()),
+            None,
+            &block,
+        )
+    }
+}
+
 fn observe_key_state(
     window: &NSWindow,
     shared: &Rc<Shared>,
@@ -518,7 +577,7 @@ impl NativeSidebar {
         // Model first, AppKit second: every delta call in `apply_diff` re-enters the data source.
         let plan = plan_diff(&state.shared.model.borrow(), &next);
         *state.shared.model.borrow_mut() = next;
-        apply_diff(state, plan)
+        state.shared.expanding(|| apply_diff(state, plan))
     }
 
     pub fn set_selected(&self, id: Option<&str>) {
@@ -528,7 +587,7 @@ impl NativeSidebar {
         let wanted = id.and_then(|id| state.shared.model.borrow().key_for_id(id));
         let row = match wanted {
             Some(key) => {
-                reveal(state, key);
+                state.shared.expanding(|| reveal(state, key));
                 unsafe { outline.rowForItem(Some(&state.shared.item(key))) }
             }
             None => -1,
@@ -581,6 +640,10 @@ impl NativeSidebar {
         *self.0.shared.on_eject.borrow_mut() = Some(Rc::new(handler));
     }
 
+    pub fn on_expand(&self, handler: impl Fn(&SidebarExpand, &mut Window, &mut App) + 'static) {
+        *self.0.shared.on_expand.borrow_mut() = Some(Rc::new(handler));
+    }
+
     pub fn toggle(&self) {
         unsafe { self.0.views.split.toggleSidebar(None) };
     }
@@ -604,9 +667,11 @@ impl NativeSidebar {
         }
         let saved = SavedState::capture(state);
         outline.setRowSizeStyle(wanted);
-        outline.reloadData();
-        expand_groups(state);
-        saved.restore(state);
+        state.shared.expanding(|| {
+            outline.reloadData();
+            expand_groups(state);
+            saved.restore(state);
+        });
         state.shared.wrote(1);
         state.pane_shared.align(&state.views.pane);
     }
@@ -622,8 +687,19 @@ impl NativeSidebar {
 
     pub fn set_thickness(&self, thickness: Pixels) {
         let split = self.0.views.split.splitView();
+        self.0.views.sidebar_moving.set(true);
         split.setPosition_ofDividerAtIndex(thickness.to_f64(), 0);
+        self.0.views.sidebar_moving.set(false);
         self.0.pane_shared.align(&self.0.views.pane);
+    }
+
+    /// The width the user last dragged the sidebar to.
+    pub fn take_sidebar_resize(&self) -> Option<Pixels> {
+        self.0
+            .views
+            .sidebar_resized
+            .take()
+            .map(|width| px(width as f32))
     }
 
     pub fn set_thickness_limits(&self, min: Pixels, max: Pixels) {
@@ -778,7 +854,7 @@ impl NativeSidebar {
 
     pub fn set_expand_groups(&self, expand: bool) {
         self.0.shared.expand_groups.set(expand);
-        expand_groups(&self.0);
+        self.0.shared.expanding(|| expand_groups(&self.0));
     }
 
     pub fn expands_groups(&self) -> bool {
@@ -801,13 +877,13 @@ impl NativeSidebar {
             return;
         }
         state.shared.wrote(1);
-        unsafe {
+        state.shared.expanding(|| unsafe {
             if expanded {
                 outline.expandItem(Some(&item));
             } else {
                 outline.collapseItem(Some(&item));
             }
-        }
+        });
     }
 
     pub fn is_expanded(&self, id: &str) -> bool {
@@ -1255,6 +1331,16 @@ define_class!(
             fn selection_did_change(&self, _: &NSNotification) {
                 source::selection_changed(self.ivars())
             }
+
+            #[unsafe(method(outlineViewItemDidExpand:))]
+            fn item_did_expand(&self, note: &NSNotification) {
+                source::expansion_changed(self.ivars(), note, true)
+            }
+
+            #[unsafe(method(outlineViewItemDidCollapse:))]
+            fn item_did_collapse(&self, note: &NSNotification) {
+                source::expansion_changed(self.ivars(), note, false)
+            }
         }
 );
 
@@ -1362,9 +1448,11 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
         on_reorder: RefCell::new(None),
         on_eject: RefCell::new(None),
         on_drop_paths: RefCell::new(None),
+        on_expand: RefCell::new(None),
         on_menu: RefCell::new(None),
         menu_row: RefCell::new(None),
         suppress: Cell::new(0),
+        expanding: Cell::new(0),
         writes: Cell::new(0),
         cx: window.to_async(cx),
         expand_groups: Cell::new(options.expand_groups),
@@ -1536,7 +1624,15 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     pane_shared.align(&pane);
     outline.sizeLastColumnToFit();
 
-    let observers = observe_key_state(&ns_window, &shared);
+    let (sidebar_resized, sidebar_moving) = (Rc::default(), Rc::default());
+    let mut observers = observe_key_state(&ns_window, &shared);
+    observers.push(observe_sidebar(
+        &split,
+        &sidebar_item,
+        &scroll,
+        &sidebar_resized,
+        &sidebar_moving,
+    ));
     let state = SidebarState {
         views: Views {
             scroll,
@@ -1550,6 +1646,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
             inspector: RefCell::new(None),
             inspector_asked: Cell::new(false),
             backdrop,
+            sidebar_resized,
+            sidebar_moving,
         },
         shared,
         pane_shared,

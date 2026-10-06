@@ -28,8 +28,8 @@ use native_gpui::{
 
 use native_gpui::sidebar::SidebarRowSize;
 use native_gpui::{
-    NativeSidebar, PaneAlign, SidebarIcon, SidebarItem, SidebarMetrics, SidebarOptions,
-    sidebar_group, sidebar_item, system_template,
+    NativeSidebar, PaneAlign, SidebarExpand, SidebarIcon, SidebarItem, SidebarMetrics,
+    SidebarOptions, sidebar_group, sidebar_item, system_template,
 };
 
 use native_gpui::{
@@ -55,4 +55,5 @@ fn main() {
     let _ = native_gpui::NativeSegmented::segment_enabled;
     let _ = ToolbarItem::selectable;
     let _ = ToolbarStyle::Preference;
+    let _ = NativeSidebar::take_sidebar_resize;
 }
