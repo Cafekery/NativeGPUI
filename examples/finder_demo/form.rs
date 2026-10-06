@@ -14,6 +14,7 @@ use objc2::{AnyThread, MainThreadOnly};
 use objc2_app_kit::{NSControlSize, NSFont, NSImage, NSPopUpButton, NSTextField, NSWindow};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
 
+use crate::chrome::toolbar::SYSTEM_RADIUS;
 use crate::frame::ns_window;
 
 pub(crate) const MARGIN: f32 = 20.;
@@ -30,6 +31,7 @@ pub(crate) const BOTTOM: f32 = 20.;
 pub(crate) const KEPT: usize = 512;
 const RADIUS: f32 = 12.;
 const PANEL_TITLEBAR: f32 = 24.;
+const PANEL_MARGIN: f32 = 8.;
 
 pub(crate) type Flip = Rc<dyn Fn(bool, &mut App)>;
 
@@ -133,12 +135,13 @@ pub(crate) const REGULAR: Density = Density {
     indent: 20.,
 };
 
-/// A utility panel's: the small system font, small controls and the rows they need.
+/// A utility panel's: the small system font, small controls and the rows they need, its cards
+/// concentric with the panel's corners.
 pub(crate) const COMPACT: Density = Density {
     row: 26.,
     inset: 8.,
-    margin: 12.,
-    radius: 8.,
+    margin: PANEL_MARGIN,
+    radius: SYSTEM_RADIUS as f32 - PANEL_MARGIN,
     gap: 12.,
     font: 11.,
     line: 14.,
