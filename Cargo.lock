@@ -1726,6 +1726,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsearch"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memchr",
+ "memmap2",
+ "rayon",
+ "regex",
+ "regex-syntax",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
