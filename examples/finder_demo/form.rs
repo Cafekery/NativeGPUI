@@ -267,39 +267,46 @@ impl Form {
     }
 
     pub(crate) fn card(&self, id: &'static str, rows: Vec<AnyElement>) -> Stateful<Div> {
-        self.indented(id, rows.into_iter().map(|row| (0., row)))
+        self.shell(id).children(self.rows(rows))
     }
 
-    /// The hairline under a row starts where that row's own content does.
-    fn indented(
-        &self,
-        id: &'static str,
-        rows: impl ExactSizeIterator<Item = (f32, AnyElement)>,
-    ) -> Stateful<Div> {
-        let last = rows.len().saturating_sub(1);
+    pub(crate) fn shell(&self, id: &'static str) -> Stateful<Div> {
         div()
             .id(id)
             .mx(px(self.density.margin))
             .rounded(px(self.density.radius))
             .bg(system_color(SystemColor::QuaternarySystemFill))
-            .children(rows.enumerate().map(|(at, (indent, row))| {
-                div()
-                    .id(at)
-                    .relative()
-                    .pl(px(indent))
-                    .child(row)
-                    .when(at < last, |row| {
-                        row.child(
-                            div()
-                                .absolute()
-                                .left(px(self.density.inset + indent))
-                                .right(px(self.density.inset))
-                                .bottom_0()
-                                .h(px(self.hair))
-                                .bg(system_color(SystemColor::Separator)),
-                        )
-                    })
-            }))
+    }
+
+    pub(crate) fn rows(&self, rows: Vec<AnyElement>) -> impl Iterator<Item = Stateful<Div>> {
+        self.ruled(rows.into_iter().map(|row| (0., row)))
+    }
+
+    /// The hairline under a row starts where that row's own content does.
+    fn ruled(
+        &self,
+        rows: impl ExactSizeIterator<Item = (f32, AnyElement)>,
+    ) -> impl Iterator<Item = Stateful<Div>> {
+        let (inset, hair) = (self.density.inset, self.hair);
+        let last = rows.len().saturating_sub(1);
+        rows.enumerate().map(move |(at, (indent, row))| {
+            div()
+                .id(at)
+                .relative()
+                .pl(px(indent))
+                .child(row)
+                .when(at < last, |row| {
+                    row.child(
+                        div()
+                            .absolute()
+                            .left(px(inset + indent))
+                            .right(px(inset))
+                            .bottom_0()
+                            .h(px(hair))
+                            .bg(system_color(SystemColor::Separator)),
+                    )
+                })
+        })
     }
 }
 
@@ -415,7 +422,7 @@ impl Sheet {
             let content = div().h(px(row.tall)).child(row.content);
             (row.indent, content.into_any_element())
         });
-        let card = self.form.indented("card", rows);
+        let card = self.form.shell("card").children(self.form.ruled(rows));
         self.parts.push(
             div()
                 .id(id)

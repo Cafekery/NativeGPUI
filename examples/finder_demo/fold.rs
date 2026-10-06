@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::f32::consts::TAU;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString};
 
-use crate::form::{INSET, MARGIN, SECTION, key_of};
+use crate::form::{Form, INSET, MARGIN, SECTION, key_of};
 
 /// SwiftUI's `.smooth` spring: critically damped, with a 0.5 s response.
 const RESPONSE: f32 = 0.5;
@@ -31,7 +31,7 @@ pub(crate) struct Fold {
     open: bool,
     from: f32,
     moved: Option<Instant>,
-    tall: Rc<Cell<f32>>,
+    heights: Rc<RefCell<Vec<f32>>>,
 }
 
 impl Fold {
@@ -40,7 +40,7 @@ impl Fold {
             open,
             from: f32::from(u8::from(open)),
             moved: None,
-            tall: Rc::default(),
+            heights: Rc::default(),
         }
     }
 
@@ -77,45 +77,83 @@ fn spring(seconds: f32) -> f32 {
     1. - (1. + at) * (-at).exp()
 }
 
-/// A titled section whose title row folds the rest away: its layout height springs while what it
-/// holds fades in place at full size.
+/// What a section folds away, each under its own gap.
+pub(crate) enum Part {
+    Card(&'static str, Vec<AnyElement>),
+    Plain(AnyElement),
+}
+
+/// A titled section whose title row folds the rest away. One edge springs down its parts and
+/// clips each at it, a card keeping its corners, while what they hold fades on the same spring.
 pub(crate) fn section(
+    form: &Form,
     id: &'static str,
     title: &str,
     fold: &Fold,
     toggle: impl Fn(&mut Window, &mut App) + 'static,
-    parts: Vec<(f32, AnyElement)>,
+    parts: Vec<(f32, Part)>,
 ) -> Stateful<Div> {
     let (openness, moving) = fold.state();
     let toggle: NativeHandler = Rc::new(move |_, window, cx| toggle(window, cx));
-    let tall = fold.tall.clone();
-    let measure = canvas(
-        |_, _, _| (),
-        move |bounds, _, _, _| tall.set(bounds.size.height.into()),
-    )
-    .absolute()
-    .size_full();
-    let held = div()
-        .relative()
-        .children(
-            parts
-                .into_iter()
-                .map(|(gap, part)| div().mt(px(gap)).child(part)),
-        )
-        .child(measure);
     div()
         .id(id)
         .pt(px(SECTION))
         .flex()
         .flex_col()
         .child(header(id, title, openness, fold.open, toggle))
-        .when(fold.open || moving, |section| {
-            section.child(
-                div()
-                    .when(moving, |body| body.h(px(openness * fold.tall.get())))
-                    .child(native_opacity(openness, held)),
-            )
+        .children(match fold.open || moving {
+            true => body(form, fold, openness, moving, parts),
+            false => Vec::new(),
         })
+}
+
+fn body(
+    form: &Form,
+    fold: &Fold,
+    openness: f32,
+    moving: bool,
+    parts: Vec<(f32, Part)>,
+) -> Vec<AnyElement> {
+    let natural = {
+        let mut heights = fold.heights.borrow_mut();
+        heights.resize(parts.len(), 0.);
+        heights.clone()
+    };
+    let total: f32 = parts.iter().map(|(gap, _)| gap).sum::<f32>() + natural.iter().sum::<f32>();
+    let mut edge = openness * total;
+    let mut reveal = |size: f32| {
+        let shown = size.min(edge);
+        edge -= shown;
+        shown
+    };
+    parts
+        .into_iter()
+        .zip(natural)
+        .enumerate()
+        .map(|(at, ((gap, part), tall))| {
+            let (gap, shown) = (reveal(gap), reveal(tall));
+            let heights = fold.heights.clone();
+            let measure = canvas(
+                |_, _, _| (),
+                move |bounds, _, _, _| {
+                    if let Some(tall) = heights.borrow_mut().get_mut(at) {
+                        *tall = bounds.size.height.into();
+                    }
+                },
+            )
+            .absolute()
+            .size_full();
+            let (clip, held) = match part {
+                Part::Card(id, rows) => (form.shell(id), div().children(form.rows(rows))),
+                Part::Plain(content) => (div().id(at), div().child(content)),
+            };
+            let clip = clip
+                .mt(px(gap))
+                .when(moving, |clip| clip.h(px(shown)).overflow_hidden())
+                .child(held.relative().child(measure));
+            native_opacity(openness, clip).into_any_element()
+        })
+        .collect()
 }
 
 fn header(id: &str, title: &str, openness: f32, open: bool, toggle: NativeHandler) -> Div {

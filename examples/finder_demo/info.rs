@@ -52,7 +52,7 @@ use crate::art::{row_art, small_glyph};
 use crate::data::{
     Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
 };
-use crate::fold::{self, Fold};
+use crate::fold::{self, Fold, Part};
 use crate::form::{
     BODY, BOTTOM, Flip, Form, GAP, INSET, KEPT, LINE, MARGIN, ROW, SECTION, STACK, TITLE, TITLEBAR,
     hugging, key_of, labelled, lines_height, page, remembered, switch_row, text_height, text_width,
@@ -586,8 +586,8 @@ fn name_height(form: &Form, name: &str) -> f32 {
     text_height(name, NAME, FontWeight::SEMIBOLD, form.wide)
 }
 
-fn card(form: &Form, id: &'static str, rows: Vec<AnyElement>) -> (f32, AnyElement) {
-    (STACK, form.card(id, rows).into_any_element())
+fn card(id: &'static str, rows: Vec<AnyElement>) -> (f32, Part) {
+    (STACK, Part::Card(id, rows))
 }
 
 fn header_height(form: &Form, name: &str, summary: bool, tagged: bool) -> f32 {
@@ -1376,16 +1376,16 @@ impl Info {
 
     fn pane(
         &self,
-        this: &WeakEntity<Self>,
+        (form, this): (&Form, &WeakEntity<Self>),
         pane: Pane,
         (id, title): (&'static str, &str),
-        parts: Vec<(f32, AnyElement)>,
+        parts: Vec<(f32, Part)>,
     ) -> Stateful<Div> {
         let this = this.clone();
         let toggle = move |_: &mut Window, cx: &mut App| {
             this.update(cx, |info, cx| info.fold(pane, cx)).ok();
         };
-        fold::section(id, title, &self.folds[pane as usize], toggle, parts)
+        fold::section(form, id, title, &self.folds[pane as usize], toggle, parts)
     }
 
     fn fold(&mut self, pane: Pane, cx: &mut Context<Self>) {
@@ -1405,20 +1405,20 @@ impl Info {
                 switch_row(title, on, change)
             })
             .collect();
-        let mut parts = vec![card(form, "values", values(form, &self.general_rows(form)))];
+        let mut parts = vec![card("values", values(form, &self.general_rows(form)))];
         if !toggles.is_empty() {
-            parts.push(card(form, "toggles", toggles));
+            parts.push(card("toggles", toggles));
         }
         let names = ("ng.finder.info.general", "General");
-        self.pane(this, Pane::General, names, parts)
+        self.pane((form, this), Pane::General, names, parts)
     }
 
     fn more_info(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
         let rows = self.more_rows(form);
         (!rows.is_empty()).then(|| {
-            let parts = vec![card(form, "values", values(form, &rows))];
+            let parts = vec![card("values", values(form, &rows))];
             let names = ("ng.finder.info.more", "More Info");
-            self.pane(this, Pane::MetaData, names, parts)
+            self.pane((form, this), Pane::MetaData, names, parts)
         })
     }
 
@@ -1435,7 +1435,7 @@ impl Info {
             switch_row("Hide extension", self.hidden_extension, hide),
         ];
         let names = ("ng.finder.info.name", "Name & Extension");
-        self.pane(this, Pane::Name, names, vec![card(form, "card", rows)])
+        self.pane((form, this), Pane::Name, names, vec![card("card", rows)])
     }
 
     fn comments(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
@@ -1445,9 +1445,9 @@ impl Info {
                 .h(px(COMMENT))
                 .child(comment_box(self.line.row.path.clone(), editable)),
         );
-        let parts = vec![card(form, "card", vec![text.into_any_element()])];
+        let parts = vec![card("card", vec![text.into_any_element()])];
         let names = ("ng.finder.info.comments", "Comments");
-        self.pane(this, Pane::Comments, names, parts)
+        self.pane((form, this), Pane::Comments, names, parts)
     }
 
     fn open_with(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
@@ -1499,7 +1499,12 @@ impl Info {
             all.into_any_element(),
         ];
         let names = ("ng.finder.info.openwith", "Open with");
-        Some(self.pane(this, Pane::OpenWith, names, vec![card(form, "card", rows)]))
+        Some(self.pane(
+            (form, this),
+            Pane::OpenWith,
+            names,
+            vec![card("card", rows)],
+        ))
     }
 
     fn privileges(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
@@ -1517,10 +1522,13 @@ impl Info {
         let yours = div().px(px(MARGIN + INSET)).child(
             native_label("yours", yours_text(access.yours)).color(SystemColor::SecondaryLabel),
         );
-        let mut parts = vec![(4., yours.into_any_element()), card(form, "grants", grants)];
+        let mut parts = vec![
+            (4., Part::Plain(yours.into_any_element())),
+            card("grants", grants),
+        ];
         if let Some(ignores) = access.ownership {
             let row = switch_row("Ignore ownership on this volume", ignores, None);
-            parts.push(card(form, "ownership", vec![row]));
+            parts.push(card("ownership", vec![row]));
         }
         let controls = div()
             .mx(px(MARGIN))
@@ -1534,9 +1542,9 @@ impl Info {
                     .child(grant_tools(path, self.owned, folder, changed, this.clone())),
             )
             .child(div().size(px(18.)).child(icon_file(LOCK_ICON)));
-        parts.push((STACK, controls.into_any_element()));
+        parts.push((STACK, Part::Plain(controls.into_any_element())));
         let names = ("ng.finder.info.privileges", "Sharing & Permissions");
-        Some(self.pane(this, Pane::Privileges, names, parts))
+        Some(self.pane((form, this), Pane::Privileges, names, parts))
     }
 
     fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
@@ -2344,13 +2352,14 @@ impl Render for Combined {
             .unwrap_or_default();
         let this = cx.weak_entity();
         let general = fold::section(
+            &form,
             "ng.finder.info.general",
             "General",
             &self.general,
             move |_, cx| {
                 this.update(cx, |combined, cx| combined.fold(cx)).ok();
             },
-            vec![card(&form, "values", values(&form, &self.rows()))],
+            vec![card("values", values(&form, &self.rows()))],
         );
         let paths = self.paths();
         let first = paths.first().cloned();
