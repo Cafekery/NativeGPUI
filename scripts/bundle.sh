@@ -44,6 +44,26 @@ if [ -d "$icon" ]; then
   rm -f "$app/Contents/Resources/icon.plist"
 fi
 
+doc_keys=
+if [ "$name" = finder_demo ]; then
+  doc_keys=$(cat <<'TYPES'
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>		<string>Folder</string>
+			<key>CFBundleTypeRole</key>		<string>Viewer</string>
+			<key>LSHandlerRank</key>		<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+				<string>public.volume</string>
+			</array>
+		</dict>
+	</array>
+TYPES
+  )
+fi
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -56,6 +76,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key>			<string>$product</string>
 $icon_keys
+$doc_keys
 	<key>CFBundleDisplayName</key>		<string>$product</string>
 	<key>CFBundlePackageType</key>		<string>APPL</string>
 	<key>CFBundleShortVersionString</key>	<string>0.1.0</string>

@@ -3,7 +3,6 @@ pub(crate) mod conflicts;
 pub(crate) mod jobs;
 pub(crate) mod undo;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use block2::RcBlock;
@@ -102,7 +101,8 @@ impl FinderDemo {
             self.read_folder(id, cx);
         }
         if after == After::Reveal {
-            return reveal(&results, cx);
+            cx.defer(move |cx| crate::navigate::reveal(&results, cx));
+            return;
         }
         let shown = |dir: &Path| {
             let id = intern_path(dir);
@@ -335,33 +335,4 @@ fn ask_unlock(item: &Path, deleting: bool, offer_all: bool) -> (bool, bool) {
 
 fn key_of(path: &Path) -> SharedString {
     SharedString::from(path.to_string_lossy().into_owned())
-}
-
-fn reveal(results: &[PathBuf], cx: &mut Context<FinderDemo>) {
-    let mut folders: HashMap<&'static str, Vec<SharedString>> = HashMap::new();
-    for path in results {
-        if let Some(dir) = path.parent() {
-            folders
-                .entry(intern_path(dir))
-                .or_default()
-                .push(key_of(path));
-        }
-    }
-    cx.defer(move |cx| {
-        for (extra, (dir, keys)) in folders.into_iter().enumerate() {
-            let shown = cx
-                .windows()
-                .into_iter()
-                .filter_map(|window| window.downcast::<FinderDemo>())
-                .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == dir));
-            let window = shown.unwrap_or_else(|| crate::open_finder_window(dir, extra + 1, cx));
-            window
-                .update(cx, |demo, window, cx| {
-                    window.activate_window();
-                    demo.choose(keys);
-                    cx.notify();
-                })
-                .ok();
-        }
-    });
 }

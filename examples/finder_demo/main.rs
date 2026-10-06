@@ -10,6 +10,7 @@ mod data;
 mod dock;
 mod dragdrop;
 mod elastic;
+mod file_viewer;
 mod fit;
 mod form;
 mod frame;
@@ -63,7 +64,6 @@ use native_gpui::tokens::{self, SystemTheme};
 use native_gpui::{install_menus, remember_frame, window_options};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
-use crate::data::intern_path;
 use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
 
 /// Each save rewrites the whole snapshot; a launch replays the events since the last one.
@@ -85,7 +85,9 @@ fn main() {
     });
     keep::skip_appkit_restore();
     chrome::toolbar::concentric_corners();
-    gpui_platform::application().run(|cx: &mut App| {
+    let application = gpui_platform::application();
+    application.on_open_urls(file_viewer::arrived);
+    application.run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
         menus::install(cx);
@@ -134,9 +136,8 @@ fn main() {
             cx.update(|cx| cx.refresh_windows());
         })
         .detach();
-        if !keep::reopen(cx) {
-            open_finder_window(intern_path(&home()), 0, cx);
-        }
+        let restored = keep::reopen(cx);
+        file_viewer::follow(restored, cx);
         keep::follow_quit(cx);
         crawl(cx);
         thumbs::follow_thumbnails(cx);

@@ -4,7 +4,7 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{App, Context, SharedString, Window};
+use gpui::{App, Context, SharedString, Window, WindowHandle};
 
 use crate::app::FinderDemo;
 use crate::art::Previews;
@@ -68,16 +68,68 @@ fn display_name(path: &'static str) -> String {
 }
 
 /// The index keys the bytes on disk, which `realpath` gives, not the typed form; a symlink stays.
+fn stored(path: &Path) -> PathBuf {
+    let fold = |path: &Path| finder_fs::sort::fold(&path.to_string_lossy());
+    std::fs::canonicalize(path)
+        .ok()
+        .filter(|real| fold(real) == fold(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
     let path = typed_path(text);
-    if !finder_fs::list::is_dir(&path) {
-        return None;
+    finder_fs::list::is_dir(&path).then(|| intern_path(&stored(&path)))
+}
+
+/// Found'er's browser windows, front to back.
+pub(crate) fn browser_windows(cx: &App) -> Vec<WindowHandle<FinderDemo>> {
+    let mut windows = cx.window_stack().unwrap_or_default();
+    for window in cx.windows() {
+        if !windows.contains(&window) {
+            windows.push(window);
+        }
     }
-    let fold = |path: &Path| finder_fs::sort::fold(&path.to_string_lossy());
-    let stored = std::fs::canonicalize(&path)
-        .ok()
-        .filter(|real| fold(real) == fold(&path));
-    Some(intern_path(stored.as_deref().unwrap_or(&path)))
+    windows
+        .into_iter()
+        .filter_map(|window| window.downcast::<FinderDemo>())
+        .collect()
+}
+
+/// Selects `items` in the frontmost window on their folder, or a new one, and brings it forward.
+pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
+    let mut folders: Vec<(&'static str, Vec<SharedString>)> = Vec::new();
+    for item in items.iter().map(|item| stored(item)) {
+        let folder = item
+            .parent()
+            .and_then(|parent| folder_at_path(&parent.to_string_lossy()));
+        let (Some(folder), Some(name)) = (folder, item.file_name()) else {
+            continue;
+        };
+        let key = Path::new(folder).join(name).to_string_lossy().into_owned();
+        match folders.iter_mut().find(|(at, _)| *at == folder) {
+            Some((_, keys)) => keys.push(key.into()),
+            None => folders.push((folder, vec![key.into()])),
+        }
+    }
+    for (folder, keys) in folders {
+        let windows = browser_windows(cx);
+        let shown = windows
+            .iter()
+            .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == folder))
+            .copied();
+        let window = shown.unwrap_or_else(|| open_finder_window(folder, windows.len(), cx));
+        window
+            .update(cx, |demo, window, cx| {
+                window.activate_window();
+                let last = keys.last().cloned();
+                demo.choose(keys);
+                if let Some(last) = last {
+                    demo.reveal(&last);
+                }
+                cx.notify();
+            })
+            .ok();
+    }
 }
 
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
