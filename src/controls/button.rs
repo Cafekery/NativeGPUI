@@ -17,7 +17,7 @@ use crate::bridge::host::{
 };
 use crate::controls::{
     bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_control_size,
-    sync_enabled, with_width,
+    sync_enabled, sync_font_size, with_width,
 };
 use crate::system::tokens::{SystemColor, ns_font_weight, system_font_size_for};
 
@@ -689,6 +689,10 @@ impl NativeSegmented {
             fill_segments(&control, &self.segments, &self.symbols);
             control.setSegmentStyle(self.style.to_native());
             control.setControlSize(self.control_size.into());
+            sync_font_size(
+                &control,
+                Some(system_font_size_for(self.control_size).to_f64()),
+            );
             control.fittingSize()
         })
     }
@@ -706,6 +710,11 @@ impl NativeSegmented {
             control.setSegmentStyle(style);
         }
         sync_control_size(&control, self.control_size);
+        // A segmented control keeps its font when its control size changes.
+        sync_font_size(
+            &control,
+            Some(system_font_size_for(self.control_size).to_f64()),
+        );
         let bezel = self.selected_bezel.map(SystemColor::ns_color);
         if control.selectedSegmentBezelColor() != bezel {
             control.setSelectedSegmentBezelColor(bezel.as_deref());
