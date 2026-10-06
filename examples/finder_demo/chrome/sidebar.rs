@@ -276,11 +276,24 @@ fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> 
     }
 }
 
-pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, bool)>)> {
+pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, CheckState)>)> {
     let favourites = finder_fs::sidebar::listed_favorites();
     let locations = finder_fs::sidebar::listed_locations();
     let on = visibility(&favourites, &locations);
-    let row = |shown: Shown, title: String| (shown, title, on(shown).1);
+    let [disks_mixed, external_mixed] = finder_fs::sidebar::volume_kinds_mixed();
+    let row = |shown: Shown, title: String| {
+        let mixed = match shown {
+            Shown::HardDisks => disks_mixed,
+            Shown::ExternalDisks => external_mixed,
+            _ => false,
+        };
+        let state = if mixed && !prefs::has_setting(&key(shown)) {
+            CheckState::Mixed
+        } else {
+            on(shown).1.into()
+        };
+        (shown, title, state)
+    };
     let home = finder_fs::volumes::standard(Standard::Home).unwrap_or_default();
     let computer = crate::locations::computer_name().to_owned();
     let said = |text: &str| finder_fs::words::say(text).into_owned();

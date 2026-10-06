@@ -32,6 +32,20 @@ const SHOWN: [&str; 3] = [
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumes",
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowNetworkVolumes",
 ];
+const MIXED: [&str; 2] = [
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrivesExceptions",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumesExceptions",
+];
+
+struct Kinds {
+    shown: [bool; 3],
+    mixed: [bool; 2],
+}
+
+const UNSET: Kinds = Kinds {
+    shown: [true; 3],
+    mixed: [false; 2],
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Special {
@@ -133,7 +147,7 @@ pub fn listed_favorites() -> Vec<Listed> {
 }
 
 pub fn listed_locations() -> Vec<Listed> {
-    let (items, shown) = read(VOLUMES).unwrap_or_else(|| {
+    let (items, kinds) = read(VOLUMES).unwrap_or_else(|| {
         let item = |special| Item {
             visible: true,
             path: None,
@@ -145,14 +159,19 @@ pub fn listed_locations() -> Vec<Listed> {
             item(Special::AirDrop),
             item(Special::Trash),
         ];
-        (items, [true; 3])
+        (items, UNSET)
     });
-    arrange(&items, shown, &volumes::mounted())
+    arrange(&items, kinds.shown, &volumes::mounted())
 }
 
 /// Finder's Hard disks, External disks and Connected servers sidebar settings.
 pub fn volume_kinds_shown() -> [bool; 3] {
-    read(VOLUMES).map_or([true; 3], |(_, shown)| shown)
+    read(VOLUMES).map_or(UNSET.shown, |(_, kinds)| kinds.shown)
+}
+
+/// Finder draws Hard disks and External disks mixed while a single volume is an exception.
+pub fn volume_kinds_mixed() -> [bool; 2] {
+    read(VOLUMES).map_or(UNSET.mixed, |(_, kinds)| kinds.mixed)
 }
 
 pub fn provider_symbol(root: &Path) -> Option<String> {
@@ -232,7 +251,7 @@ fn arrange(
     rows
 }
 
-fn read(name: &'static str) -> Option<(Vec<Item>, [bool; 3])> {
+fn read(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
     let lists = crate::home()?.join(LISTS);
     let Some(root) = SUFFIXES
         .iter()
@@ -248,18 +267,22 @@ fn read(name: &'static str) -> Option<(Vec<Item>, [bool; 3])> {
     let properties = root
         .objectForKey(ns_string!("properties"))
         .and_then(|properties| properties.downcast::<NSDictionary>().ok());
-    let shown = SHOWN.map(|key| {
+    let flag = |key: &str, unset: bool| {
         properties
             .as_deref()
             .and_then(|properties| number(properties, &NSString::from_str(key)))
-            .is_none_or(|shown| shown.boolValue())
-    });
-    Some((items, shown))
+            .map_or(unset, |flag| flag.boolValue())
+    };
+    let kinds = Kinds {
+        shown: SHOWN.map(|key| flag(key, true)),
+        mixed: MIXED.map(|key| flag(key, false)),
+    };
+    Some((items, kinds))
 }
 
 /// An app may not read Finder's lists itself; `sharedfilelistd` hands over their visible items.
 #[allow(deprecated)]
-fn shared(name: &'static str) -> Option<(Vec<Item>, [bool; 3])> {
+fn shared(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
     let (list, items) = snapshot(name)?;
     let special = CFString::from_static_str("com.apple.LSSharedFileList.SpecialItemIdentifier");
     let items = items
@@ -276,12 +299,16 @@ fn shared(name: &'static str) -> Option<(Vec<Item>, [bool; 3])> {
             }
         })
         .collect();
-    let shown = SHOWN.map(|key| {
+    let flag = |key: &'static str, unset: bool| {
         unsafe { list.property(&CFString::from_static_str(key)) }
             .and_then(|value| truthy(&value))
-            .unwrap_or(true)
-    });
-    Some((items, shown))
+            .unwrap_or(unset)
+    };
+    let kinds = Kinds {
+        shown: SHOWN.map(|key| flag(key, true)),
+        mixed: MIXED.map(|key| flag(key, false)),
+    };
+    Some((items, kinds))
 }
 
 #[allow(deprecated)]

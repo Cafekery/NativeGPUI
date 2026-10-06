@@ -198,6 +198,10 @@ fn setting(key: &str) -> Option<Retained<AnyObject>> {
         .or_else(|| finder_domain()?.objectForKey(&key))
 }
 
+pub(crate) fn has_setting(key: &str) -> bool {
+    setting(key).is_some()
+}
+
 pub(crate) fn setting_on(key: &str, default: bool) -> bool {
     let Some(value) = setting(key) else {
         return default;

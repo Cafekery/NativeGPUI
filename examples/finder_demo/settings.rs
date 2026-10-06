@@ -370,19 +370,20 @@ impl Settings {
         for (section, rows) in sidebar::shown_sections() {
             if !section.is_empty() {
                 pane = pane.child(
-                    at(38., y + 4.5).w(px(200.)).child(
+                    at(38., y + 5.).w(px(200.)).child(
                         small(section)
-                            .weight(FontWeight::BOLD)
+                            .weight(FontWeight::SEMIBOLD)
                             .color(SystemColor::SecondaryLabel),
                     ),
                 );
                 y += 27.;
             }
-            for (shown, title, on) in rows {
+            for (shown, title, state) in rows {
                 pane = pane
                     .child(
                         at(41., y + 1.).child(
-                            native_checkbox(("ng.finder.settings.row", shown as usize), on)
+                            native_checkbox(("ng.finder.settings.row", shown as usize), false)
+                                .state(state)
                                 .control_size(ControlSize::Small)
                                 .on_change(move |state: &CheckState, _, cx| {
                                     sidebar::set_row_shown(shown, *state == CheckState::On);
