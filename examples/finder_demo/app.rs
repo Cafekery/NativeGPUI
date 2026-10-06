@@ -37,7 +37,7 @@ use crate::{prefs, read};
 
 pub(crate) const LIST_CONTEXT: &str = "FinderList";
 
-const SIDEBAR_WAIT: Duration = Duration::from_millis(100);
+const SIDEBAR_POLL: Duration = Duration::from_millis(100);
 
 thread_local! {
     pub(crate) static EARLY_SIDEBAR: RefCell<Option<Receiver<Vec<sidebar::Group>>>> =
@@ -171,26 +171,31 @@ pub(crate) struct FinderDemo {
 impl FinderDemo {
     pub(crate) fn new(start: &'static str, cx: &mut Context<Self>) -> Self {
         let answer = EARLY_SIDEBAR.take().unwrap_or_else(ask_sidebar);
-        let groups = answer.recv_timeout(SIDEBAR_WAIT).ok();
-        if groups.is_none() {
-            cx.spawn(async move |this, cx| {
-                let groups = loop {
-                    cx.background_executor().timer(SIDEBAR_WAIT).await;
-                    match answer.try_recv() {
-                        Ok(groups) => break groups,
-                        Err(TryRecvError::Empty) => continue,
-                        Err(TryRecvError::Disconnected) => return,
-                    }
-                };
-                this.update(cx, |this, cx| {
-                    this.sidebar_took(groups);
-                    cx.notify();
+        let groups = match answer.try_recv() {
+            Ok(groups) => {
+                sidebar::remember(&groups);
+                groups
+            }
+            Err(_) => {
+                cx.spawn(async move |this, cx| {
+                    let groups = loop {
+                        cx.background_executor().timer(SIDEBAR_POLL).await;
+                        match answer.try_recv() {
+                            Ok(groups) => break groups,
+                            Err(TryRecvError::Empty) => continue,
+                            Err(TryRecvError::Disconnected) => return,
+                        }
+                    };
+                    this.update(cx, |this, cx| {
+                        this.sidebar_took(groups);
+                        cx.notify();
+                    })
+                    .ok();
                 })
-                .ok();
-            })
-            .detach();
-        }
-        let groups = groups.unwrap_or_default();
+                .detach();
+                sidebar::last_groups()
+            }
+        };
         let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = changes.clone();
         read::follow_events(changes, cx);

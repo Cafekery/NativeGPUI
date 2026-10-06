@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::Op;
@@ -22,6 +23,11 @@ pub(crate) const SIDEBAR_W: f32 = 216.;
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
 
+thread_local! {
+    static LAST: RefCell<Vec<Group>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum Glyph {
     Symbol(&'static str),
     SymbolOr(&'static str, &'static str),
@@ -45,6 +51,7 @@ impl Glyph {
 
 const APPLICATIONS: Glyph = Glyph::SymbolOr("appstore", "SidebarApplicationsFolder");
 
+#[derive(Clone)]
 pub(crate) struct Row {
     pub(crate) id: &'static str,
     pub(crate) title: SharedString,
@@ -54,6 +61,7 @@ pub(crate) struct Row {
     pub(crate) muted: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct Group {
     pub(crate) id: &'static str,
     pub(crate) title: &'static str,
@@ -596,6 +604,15 @@ pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
         .collect()
 }
 
+/// The rows a window took last: a new window shows them while it asks for its own.
+pub(crate) fn last_groups() -> Vec<Group> {
+    LAST.with_borrow(Clone::clone)
+}
+
+pub(crate) fn remember(groups: &[Group]) {
+    LAST.set(groups.to_vec());
+}
+
 pub(crate) fn reload_sidebars(cx: &mut App) {
     let windows: Vec<_> = cx
         .windows()
@@ -644,6 +661,7 @@ impl FinderDemo {
 
     pub(crate) fn sidebar_took(&mut self, groups: Vec<Group>) {
         self.sidebar_rows = stored_rows(&groups);
+        remember(&groups);
         self.sidebar_groups = groups;
         self.update_sidebar();
         self.sidebar_follow();
