@@ -87,8 +87,7 @@ const COMMENT: f32 = 48.;
 const BOTTOM: f32 = 20.;
 const NOTE: &str = "Use this application to open all documents like this one.";
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
-/// The zero-width space lets a line start at ".config": UAX #14 never breaks before a full stop.
-const CRUMB_SEPARATOR: &str = " \u{25b8} \u{200b}";
+const CRUMB_SEPARATOR: &str = " \u{25b8} ";
 const KEPT: usize = 512;
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
@@ -587,7 +586,7 @@ impl Form {
     fn value_height(&self, label: &str, value: &str) -> f32 {
         match self.fits(label, value) {
             true => ROW,
-            false => ROW + 8. + lines_height(value, self.inner),
+            false => ROW + 8. + lines_height(&self.crumb_lines(value), self.inner),
         }
     }
 
@@ -597,16 +596,35 @@ impl Form {
             .sum()
     }
 
+    fn crumb_lines(&self, value: &str) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        for name in value.split(CRUMB_SEPARATOR) {
+            match lines.last_mut() {
+                Some(line)
+                    if text_width(&format!("{line}{CRUMB_SEPARATOR}{name}")) <= self.inner =>
+                {
+                    line.push_str(CRUMB_SEPARATOR);
+                    line.push_str(name);
+                }
+                _ => lines.push(name.to_owned()),
+            }
+        }
+        lines.join(&format!("{}\n", CRUMB_SEPARATOR.trim_end()))
+    }
+
     fn values(&self, rows: &[(&str, SharedString)]) -> Vec<AnyElement> {
         rows.iter()
             .map(|(label, value)| {
-                let shown = native_label("value", value)
-                    .color(SystemColor::SecondaryLabel)
-                    .align(LabelAlign::Right);
+                let shown = |text: &str| {
+                    native_label("value", text)
+                        .color(SystemColor::SecondaryLabel)
+                        .align(LabelAlign::Right)
+                };
                 if self.fits(label, value) {
-                    return labelled(label, SystemColor::Label, shown);
+                    return labelled(label, SystemColor::Label, shown(value));
                 }
-                let tall = lines_height(value, self.inner);
+                let text = self.crumb_lines(value);
+                let tall = lines_height(&text, self.inner);
                 div()
                     .h(px(ROW + 8. + tall))
                     .p(px(INSET))
@@ -614,7 +632,7 @@ impl Form {
                     .flex_col()
                     .gap(px(8.))
                     .child(native_label("label", label))
-                    .child(div().h(px(tall)).child(shown.wraps(true)))
+                    .child(div().h(px(tall)).child(shown(&text).wraps(true)))
                     .into_any_element()
             })
             .collect()
@@ -1948,6 +1966,7 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
             );
             scroll.setHasVerticalScroller(true);
             scroll.setAutohidesScrollers(true);
+            scroll.setDrawsBackground(false);
             let size = scroll.contentSize();
             let text = Comment::new(
                 mtm,
@@ -1961,7 +1980,9 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
             text.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
             if let Some(container) = unsafe { text.textContainer() } {
                 container.setWidthTracksTextView(true);
+                container.setLineFragmentPadding(0.);
             }
+            text.setDrawsBackground(false);
             text.setRichText(false);
             text.setAllowsUndo(true);
             text.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
