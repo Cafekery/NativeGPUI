@@ -27,25 +27,42 @@ const VOLUMES: &str = "com.apple.LSSharedFileList.FavoriteVolumes";
 const HIDDEN: &str = "com.apple.LSSharedFileList.ItemIsHidden";
 const TAGS: &str = "com.apple.LSSharedFileList.ProjectsItems";
 const TAG_LABEL: &str = "kLSSharedTagFileListItemLabel";
-const SHOWN: [&str; 3] = [
+const SHOWN: [&str; 4] = [
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrives",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowRemovableVolumes",
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumes",
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowNetworkVolumes",
 ];
-const MIXED: [&str; 2] = [
+const MIXED: [&str; 3] = [
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowHardDrivesExceptions",
+    "com.apple.LSSharedFileList.FavoriteVolumes.ShowRemovableVolumesExceptions",
     "com.apple.LSSharedFileList.FavoriteVolumes.ShowEjectableVolumesExceptions",
 ];
+const CLOUD: &str = "com.apple.finder.showcloudservices";
+const PROVIDER_HIDDEN: &str = "com.apple.finder.kLSSharedFileListItemIsFileProviderHidden";
 
-struct Kinds {
-    shown: [bool; 3],
-    mixed: [bool; 2],
+struct Flags {
+    shown: [bool; 4],
+    mixed: [bool; 3],
+    cloud: bool,
 }
 
-const UNSET: Kinds = Kinds {
-    shown: [true; 3],
-    mixed: [false; 2],
+const UNSET: Flags = Flags {
+    shown: [true; 4],
+    mixed: [false; 3],
+    cloud: true,
 };
+
+/// Finder's settings for its Locations rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VolumeSettings {
+    /// Hard disks, External disks, CDs, DVDs, and iOS Devices, Connected servers.
+    pub shown: [bool; 4],
+    /// Hard disks, External disks, CDs, DVDs, and iOS Devices: mixed while single volumes are exceptions.
+    pub mixed: [bool; 3],
+    /// Cloud Storage: `None` while only some of its locations are hidden.
+    pub cloud: Option<bool>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Special {
@@ -147,7 +164,7 @@ pub fn listed_favorites() -> Vec<Listed> {
 }
 
 pub fn listed_locations() -> Vec<Listed> {
-    let (items, kinds) = read(VOLUMES).unwrap_or_else(|| {
+    let (items, flags) = read(VOLUMES).unwrap_or_else(|| {
         let item = |special| Item {
             visible: true,
             path: None,
@@ -161,17 +178,29 @@ pub fn listed_locations() -> Vec<Listed> {
         ];
         (items, UNSET)
     });
-    arrange(&items, kinds.shown, &volumes::mounted())
+    let [disks, external, _, network] = flags.shown;
+    arrange(&items, [disks, external, network], &volumes::mounted())
 }
 
-/// Finder's Hard disks, External disks and Connected servers sidebar settings.
-pub fn volume_kinds_shown() -> [bool; 3] {
-    read(VOLUMES).map_or(UNSET.shown, |(_, kinds)| kinds.shown)
-}
-
-/// Finder draws Hard disks and External disks mixed while a single volume is an exception.
-pub fn volume_kinds_mixed() -> [bool; 2] {
-    read(VOLUMES).map_or(UNSET.mixed, |(_, kinds)| kinds.mixed)
+pub fn volume_settings() -> VolumeSettings {
+    let (items, flags) = read(VOLUMES).unwrap_or((Vec::new(), UNSET));
+    let providers = items
+        .iter()
+        .filter(|item| item.special == Some(Special::FileProvider));
+    let (shown, hidden) = providers.fold((0, 0), |(shown, hidden), item| match item.visible {
+        true => (shown + 1, hidden),
+        false => (shown, hidden + 1),
+    });
+    let cloud = match (flags.cloud, shown, hidden) {
+        (false, ..) | (true, 0, 1..) => Some(false),
+        (true, _, 0) => Some(true),
+        (true, ..) => None,
+    };
+    VolumeSettings {
+        shown: flags.shown,
+        mixed: flags.mixed,
+        cloud,
+    }
 }
 
 pub fn provider_symbol(root: &Path) -> Option<String> {
@@ -251,7 +280,7 @@ fn arrange(
     rows
 }
 
-fn read(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
+fn read(name: &'static str) -> Option<(Vec<Item>, Flags)> {
     let lists = crate::home()?.join(LISTS);
     let Some(root) = SUFFIXES
         .iter()
@@ -273,24 +302,28 @@ fn read(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
             .and_then(|properties| number(properties, &NSString::from_str(key)))
             .map_or(unset, |flag| flag.boolValue())
     };
-    let kinds = Kinds {
+    let flags = Flags {
         shown: SHOWN.map(|key| flag(key, true)),
         mixed: MIXED.map(|key| flag(key, false)),
+        cloud: flag(CLOUD, true),
     };
-    Some((items, kinds))
+    Some((items, flags))
 }
 
 /// An app may not read Finder's lists itself; `sharedfilelistd` hands over their visible items.
 #[allow(deprecated)]
-fn shared(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
+fn shared(name: &'static str) -> Option<(Vec<Item>, Flags)> {
     let (list, items) = snapshot(name)?;
     let special = CFString::from_static_str("com.apple.LSSharedFileList.SpecialItemIdentifier");
+    let provider_hidden = CFString::from_static_str(PROVIDER_HIDDEN);
     let items = items
         .iter()
         .map(|item| {
             let name = unsafe { item.display_name() }.to_string();
             Item {
-                visible: true,
+                visible: !unsafe { item.property(&provider_hidden) }
+                    .and_then(|value| truthy(&value))
+                    .unwrap_or(false),
                 path: resolved(&item).map(PathBuf::from),
                 name: (!name.is_empty()).then_some(name),
                 special: unsafe { item.property(&special) }
@@ -304,11 +337,12 @@ fn shared(name: &'static str) -> Option<(Vec<Item>, Kinds)> {
             .and_then(|value| truthy(&value))
             .unwrap_or(unset)
     };
-    let kinds = Kinds {
+    let flags = Flags {
         shown: SHOWN.map(|key| flag(key, true)),
         mixed: MIXED.map(|key| flag(key, false)),
+        cloud: flag(CLOUD, true),
     };
-    Some((items, kinds))
+    Some((items, flags))
 }
 
 #[allow(deprecated)]
@@ -433,9 +467,13 @@ fn entry(item: &AnyObject) -> Option<Item> {
         let provider = provider.downcast::<NSNumber>().ok()?.boolValue();
         provider.then_some(Special::FileProvider)
     });
+    let provider_hidden = property(&NSString::from_str(PROVIDER_HIDDEN))
+        .and_then(|value| value.downcast::<NSNumber>().ok())
+        .is_some_and(|hidden| hidden.boolValue());
     Some(Item {
-        visible: number(item, ns_string!("visibility"))
-            .is_none_or(|visibility| visibility.integerValue() == 0),
+        visible: !provider_hidden
+            && number(item, ns_string!("visibility"))
+                .is_none_or(|visibility| visibility.integerValue() == 0),
         path: item
             .objectForKey(ns_string!("Bookmark"))
             .and_then(|bookmark| bookmark.downcast::<NSData>().ok())
