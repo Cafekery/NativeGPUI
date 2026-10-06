@@ -208,23 +208,27 @@ fn items_text(items: u64) -> String {
     }
 }
 
-fn weight_text(weight: Option<Weight>) -> SharedString {
+fn weight_rows(weight: Option<Weight>) -> Vec<(&'static str, SharedString)> {
     let Some(weight) = weight else {
-        return "Calculating\u{2026}".into();
+        return vec![("Size", "Calculating\u{2026}".into())];
     };
-    let text = bytes_text(weight.bytes, weight.on_disk);
-    match weight.items {
-        Some(items) => format!("{text} for {}", items_text(items)).into(),
-        None => text.into(),
-    }
+    let mut rows = vec![
+        ("Size", size_text(weight.bytes).into()),
+        ("On disk", byte_string(weight.on_disk).into()),
+    ];
+    rows.extend(
+        weight
+            .items
+            .map(|items| ("Contains", items_text(items).into())),
+    );
+    rows
 }
 
-fn bytes_text(bytes: u64, on_disk: u64) -> String {
-    let exact = match bytes < 1000 {
+fn size_text(bytes: u64) -> String {
+    match bytes < 1000 {
         true => byte_string(bytes),
-        false => format!("{} bytes", count(bytes as usize)),
-    };
-    format!("{exact} ({} on disk)", byte_string(on_disk))
+        false => format!("{} ({} bytes)", byte_string(bytes), count(bytes as usize)),
+    }
 }
 
 fn by(width: impl std::fmt::Display, height: impl std::fmt::Display) -> SharedString {
@@ -1289,7 +1293,7 @@ impl Info {
                     ("Format", volume.format.into()),
                     ("Capacity", byte_string(volume.capacity).into()),
                     ("Available", byte_string(volume.available).into()),
-                    ("Used", bytes_text(used, used).into()),
+                    ("Used", size_text(used).into()),
                 ]);
                 rows
             }
@@ -1298,7 +1302,8 @@ impl Info {
                     Subject::App => app_kind(self.path(), &row.kind).into(),
                     _ => row.kind.clone(),
                 };
-                let mut rows = vec![("Kind", kind), ("Size", weight_text(self.weight))];
+                let mut rows = vec![("Kind", kind)];
+                rows.extend(weight_rows(self.weight));
                 if !self.where_.is_empty() {
                     rows.push((WHERE, self.where_.clone()));
                 }
@@ -2384,10 +2389,8 @@ impl Combined {
             .collect();
         kinds.sort_unstable();
         kinds.dedup();
-        let mut rows = vec![
-            ("Kind", kinds.join(", ").into()),
-            ("Size", weight_text(self.weight)),
-        ];
+        let mut rows = vec![("Kind", kinds.join(", ").into())];
+        rows.extend(weight_rows(self.weight));
         if !self.where_.is_empty() {
             rows.push((WHERE, self.where_.clone()));
         }
