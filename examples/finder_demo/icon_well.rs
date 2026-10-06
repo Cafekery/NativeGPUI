@@ -277,8 +277,6 @@ impl IconWell {
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
         this.setEditable(true);
-        // Finder's well takes a click but stays out of the Tab loop.
-        this.setRefusesFirstResponder(true);
         this.setIdentifier(Some(ns_string!("Icon")));
         this.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeURL }]));
         WELLS.with_borrow_mut(|wells| {
@@ -389,7 +387,8 @@ pub(crate) fn refresh(paths: &[PathBuf], cx: &mut App) {
             cx.drop_image(image, None);
         }
     }
-    crate::read::notify_windows(cx);
+    // Runs inside the sending window's update, where that window can't be updated again.
+    cx.defer(crate::read::notify_windows);
 }
 
 /// Undo and Redo of the key window's icon well, when the well itself isn't first responder.
