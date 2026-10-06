@@ -180,6 +180,14 @@ impl Index {
         Some(tree.children(id).map(|child| tree.entry(child)).collect())
     }
 
+    /// What the index recorded for one path, once its folder has been listed.
+    pub fn entry(&self, path: &Path) -> Option<Entry> {
+        let tree = self.read();
+        let id = tree.find(path)?;
+        let parent = tree.nodes[id as usize].parent;
+        (parent != store::NONE && tree.nodes[parent as usize].listed()).then(|| tree.entry(id))
+    }
+
     /// A listed folder's modification time as the index recorded it, in whole seconds.
     pub fn modified(&self, dir: &Path) -> Option<SystemTime> {
         let tree = self.read();
