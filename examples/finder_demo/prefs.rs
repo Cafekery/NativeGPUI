@@ -242,6 +242,21 @@ pub(crate) fn set_setting_number(key: &str, value: f64) {
     write(key, value);
 }
 
+pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
+    let flags = setting(key)?.downcast::<NSDictionary>().ok()?;
+    Some(value(&flags, flag)?.downcast_ref::<NSNumber>()?.boolValue())
+}
+
+pub(crate) fn set_setting_flags<'a>(key: &str, flags: impl IntoIterator<Item = (&'a str, bool)>) {
+    let (names, values): (Vec<_>, Vec<_>) = flags
+        .into_iter()
+        .map(|(name, on)| (NSString::from_str(name), NSNumber::new_bool(on)))
+        .unzip();
+    let names: Vec<&NSString> = names.iter().map(|name| &**name).collect();
+    let value: &AnyObject = &NSDictionary::from_retained_objects(&names, &values);
+    unsafe { defaults().setObject_forKey(Some(value), &NSString::from_str(key)) };
+}
+
 pub(crate) fn opens_folders_in_tabs() -> bool {
     setting_on("FinderSpawnTab", true)
 }

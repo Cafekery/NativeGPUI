@@ -98,15 +98,6 @@ pub(crate) fn lines_height(text: &str, width: f32) -> f32 {
         * LINE
 }
 
-pub(crate) fn section(id: &'static str) -> Stateful<Div> {
-    div()
-        .id(id)
-        .pt(px(SECTION))
-        .flex()
-        .flex_col()
-        .gap(px(STACK))
-}
-
 /// A form's row height, spacing and type size.
 #[derive(Copy, Clone, PartialEq)]
 pub(crate) struct Density {
@@ -216,10 +207,6 @@ impl Density {
     }
 }
 
-pub(crate) fn heading(title: &str) -> Div {
-    REGULAR.heading(title)
-}
-
 pub(crate) fn labelled(label: &str, color: SystemColor, value: impl IntoElement) -> AnyElement {
     REGULAR.labelled(label, color, value)
 }
@@ -320,7 +307,7 @@ pub(crate) fn page(
     window: &Window,
     content: Vec<AnyElement>,
     bottom: f32,
-    fit: Option<impl Fn(&Window, f32) + 'static>,
+    fit: impl Fn(&Window, f32) + 'static,
 ) -> impl IntoElement {
     let titlebar = ns_window(window).map_or(TITLEBAR, |ns| {
         (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
@@ -347,18 +334,16 @@ pub(crate) fn page(
                             .flex()
                             .flex_col()
                             .children(content)
-                            .when_some(fit, |content, fit| {
-                                content.child(
-                                    canvas(
-                                        |_, _, _| (),
-                                        move |bounds, _, window, _| {
-                                            fit(window, titlebar + f32::from(bounds.size.height));
-                                        },
-                                    )
-                                    .absolute()
-                                    .size_full(),
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        fit(window, titlebar + f32::from(bounds.size.height));
+                                    },
                                 )
-                            }),
+                                .absolute()
+                                .size_full(),
+                            ),
                     ),
             )
             .child(
@@ -463,7 +448,7 @@ impl Sheet {
     }
 
     pub(crate) fn into_page(self, window: &Window) -> impl IntoElement {
-        page(window, self.parts, COMPACT.margin, Some(fit_panel))
+        page(window, self.parts, COMPACT.margin, fit_panel)
     }
 }
 

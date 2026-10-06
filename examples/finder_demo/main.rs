@@ -12,6 +12,7 @@ mod dragdrop;
 mod elastic;
 mod file_viewer;
 mod fit;
+mod fold;
 mod form;
 mod frame;
 mod fsearch;

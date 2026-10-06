@@ -52,10 +52,10 @@ use crate::art::{row_art, small_glyph};
 use crate::data::{
     Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
 };
+use crate::fold::{self, Fold};
 use crate::form::{
     BODY, BOTTOM, Flip, Form, GAP, INSET, KEPT, LINE, MARGIN, ROW, SECTION, STACK, TITLE, TITLEBAR,
-    heading, hugging, key_of, labelled, lines_height, page, remembered, section, switch_row,
-    text_height, text_width,
+    hugging, key_of, labelled, lines_height, page, remembered, switch_row, text_height, text_width,
 };
 use crate::frame::ns_window;
 use crate::icon_well::{self, IconWell};
@@ -88,6 +88,7 @@ const COMMENT: f32 = 48.;
 const PATH_TRAIL: f32 = 2.;
 const NOTE: &str = "Use this application to open all documents like this one.";
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
+const EXPANDED_KEY: &str = "FXInfoPanesExpanded";
 const WHERE: &str = "Where";
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
@@ -96,6 +97,53 @@ fn info_width() -> f32 {
     prefs::setting_number(WIDTH_KEY)
         .map_or(WIDTH, |width| width as f32)
         .clamp(NARROWEST, WIDEST)
+}
+
+#[derive(Copy, Clone)]
+enum Pane {
+    General,
+    MetaData,
+    Name,
+    Comments,
+    OpenWith,
+    Privileges,
+}
+
+const PANES: [Pane; 6] = [
+    Pane::General,
+    Pane::MetaData,
+    Pane::Name,
+    Pane::Comments,
+    Pane::OpenWith,
+    Pane::Privileges,
+];
+
+impl Pane {
+    fn key(self) -> &'static str {
+        match self {
+            Pane::General => "General",
+            Pane::MetaData => "MetaData",
+            Pane::Name => "Name",
+            Pane::Comments => "Comments",
+            Pane::OpenWith => "OpenWith",
+            Pane::Privileges => "Privileges",
+        }
+    }
+}
+
+/// Finder's choice until Found'er saves its own; a pane neither names stays open.
+fn panes_open() -> [bool; 6] {
+    PANES.map(|pane| prefs::setting_flag(EXPANDED_KEY, pane.key()).unwrap_or(true))
+}
+
+fn remember(pane: Pane, open: bool) {
+    let mut kept = panes_open();
+    kept[pane as usize] = open;
+    let flags = PANES
+        .into_iter()
+        .zip(kept)
+        .map(|(pane, open)| (pane.key(), open));
+    prefs::set_setting_flags(EXPANDED_KEY, flags);
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -538,6 +586,10 @@ fn name_height(form: &Form, name: &str) -> f32 {
     text_height(name, NAME, FontWeight::SEMIBOLD, form.wide)
 }
 
+fn card(form: &Form, id: &'static str, rows: Vec<AnyElement>) -> (f32, AnyElement) {
+    (STACK, form.card(id, rows).into_any_element())
+}
+
 fn header_height(form: &Form, name: &str, summary: bool, tagged: bool) -> f32 {
     let summary = if summary { 2. + LINE } else { 0. };
     let tags = if tagged { GAP + ROW } else { 0. };
@@ -592,6 +644,11 @@ fn bound(window: &Window, tall: f32) {
     let Some(ns) = ns_window(window) else {
         return;
     };
+    // AppKit keeps a window's frame on whole points.
+    let tall = tall.ceil();
+    let height = ns.contentRectForFrameRect(ns.frame()).size.height;
+    let was = ns.contentMaxSize().height;
+    let follows = was >= f64::from(f32::MAX) || (height - was).abs() < 0.5;
     let min = NSSize::new(NARROWEST.into(), SHORTEST.min(tall).into());
     let max = NSSize::new(WIDEST.into(), tall.into());
     if ns.contentMinSize() != min {
@@ -600,10 +657,11 @@ fn bound(window: &Window, tall: f32) {
     if ns.contentMaxSize() != max {
         ns.setContentMaxSize(max);
     }
-    if refit(&ns).is_some() {
+    let wanted = follows.then_some(f64::from(tall));
+    if refit(&ns, wanted).is_some() {
         // Resized inside gpui's update, the window keeps drawing at its old size.
         let block = RcBlock::new(move || {
-            if let Some(frame) = refit(&ns) {
+            if let Some(frame) = refit(&ns, wanted) {
                 ns.setFrame_display(frame, true);
             }
         });
@@ -611,19 +669,25 @@ fn bound(window: &Window, tall: f32) {
     }
 }
 
-fn refit(ns: &NSWindow) -> Option<NSRect> {
+/// Within its limits at the content height wanted, its top edge fixed and never grown off screen.
+fn refit(ns: &NSWindow, wanted: Option<f64>) -> Option<NSRect> {
     let content = ns.contentRectForFrameRect(ns.frame());
     let (min, max) = (ns.contentMinSize(), ns.contentMaxSize());
+    let top = content.origin.y + content.size.height;
+    let room = ns
+        .screen()
+        .map_or(f64::MAX, |screen| top - screen.visibleFrame().origin.y)
+        .max(content.size.height);
+    let height = wanted.map_or(content.size.height, |wanted| wanted.min(room));
     let fitted = NSSize::new(
         content.size.width.min(max.width).max(min.width),
-        content.size.height.min(max.height).max(min.height),
+        height.min(max.height).max(min.height),
     );
     if (fitted.width - content.size.width).abs() < 0.5
         && (fitted.height - content.size.height).abs() < 0.5
     {
         return None;
     }
-    let top = content.origin.y + content.size.height;
     let rect = NSRect::new(NSPoint::new(content.origin.x, top - fitted.height), fitted);
     Some(ns.frameRectForContentRect(rect))
 }
@@ -633,7 +697,7 @@ fn keep_fitted(ns: &NSWindow) -> Retained<ProtocolObject<dyn NSObjectProtocol>> 
     let window = Weak::new(ns);
     let block = StackBlock::new(move |_: NonNull<NSNotification>| {
         if let Some(window) = window.load() {
-            if let Some(frame) = refit(&window) {
+            if let Some(frame) = refit(&window, None) {
                 window.setFrame_display(frame, true);
             }
         }
@@ -899,6 +963,7 @@ pub(crate) struct Info {
     first_mode: Option<u32>,
     custom_icon: bool,
     icon_seen: u64,
+    folds: [Fold; 6],
 }
 
 impl Info {
@@ -937,6 +1002,7 @@ impl Info {
             width: info_width(),
             preview: Shown::Icon,
             access: None,
+            folds: panes_open().map(Fold::new),
         }
     }
 
@@ -1308,6 +1374,27 @@ impl Info {
         )
     }
 
+    fn pane(
+        &self,
+        this: &WeakEntity<Self>,
+        pane: Pane,
+        (id, title): (&'static str, &str),
+        parts: Vec<(f32, AnyElement)>,
+    ) -> Stateful<Div> {
+        let this = this.clone();
+        let toggle = move |_: &mut Window, cx: &mut App| {
+            this.update(cx, |info, cx| info.fold(pane, cx)).ok();
+        };
+        fold::section(id, title, &self.folds[pane as usize], toggle, parts)
+    }
+
+    fn fold(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        let fold = &mut self.folds[pane as usize];
+        fold.toggle();
+        remember(pane, fold.is_open());
+        cx.notify();
+    }
+
     fn general(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
         let toggles: Vec<AnyElement> = self
             .checks()
@@ -1318,20 +1405,20 @@ impl Info {
                 switch_row(title, on, change)
             })
             .collect();
-        section("ng.finder.info.general")
-            .child(heading("General"))
-            .child(form.card("values", values(form, &self.general_rows(form))))
-            .when(!toggles.is_empty(), |section| {
-                section.child(form.card("toggles", toggles))
-            })
+        let mut parts = vec![card(form, "values", values(form, &self.general_rows(form)))];
+        if !toggles.is_empty() {
+            parts.push(card(form, "toggles", toggles));
+        }
+        let names = ("ng.finder.info.general", "General");
+        self.pane(this, Pane::General, names, parts)
     }
 
-    fn more_info(&self, form: &Form) -> Option<Stateful<Div>> {
+    fn more_info(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
         let rows = self.more_rows(form);
         (!rows.is_empty()).then(|| {
-            section("ng.finder.info.more")
-                .child(heading("More Info"))
-                .child(form.card("values", values(form, &rows)))
+            let parts = vec![card(form, "values", values(form, &rows))];
+            let names = ("ng.finder.info.more", "More Info");
+            self.pane(this, Pane::MetaData, names, parts)
         })
     }
 
@@ -1343,27 +1430,24 @@ impl Info {
             this.clone(),
         ));
         let hide = (renamable && self.has_extension()).then(|| flip(this, Info::hide_extension));
-        section("ng.finder.info.name")
-            .child(heading("Name & Extension"))
-            .child(form.card(
-                "card",
-                vec![
-                    labelled("Name", SystemColor::Label, field),
-                    switch_row("Hide extension", self.hidden_extension, hide),
-                ],
-            ))
+        let rows = vec![
+            labelled("Name", SystemColor::Label, field),
+            switch_row("Hide extension", self.hidden_extension, hide),
+        ];
+        let names = ("ng.finder.info.name", "Name & Extension");
+        self.pane(this, Pane::Name, names, vec![card(form, "card", rows)])
     }
 
-    fn comments(&self, form: &Form) -> Stateful<Div> {
+    fn comments(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
         let editable = self.renamable && !self.locked && writable(self.path());
         let text = div().p(px(INSET)).child(
             div()
                 .h(px(COMMENT))
                 .child(comment_box(self.line.row.path.clone(), editable)),
         );
-        section("ng.finder.info.comments")
-            .child(heading("Comments"))
-            .child(form.card("card", vec![text.into_any_element()]))
+        let parts = vec![card(form, "card", vec![text.into_any_element()])];
+        let names = ("ng.finder.info.comments", "Comments");
+        self.pane(this, Pane::Comments, names, parts)
     }
 
     fn open_with(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
@@ -1410,17 +1494,12 @@ impl Info {
                 ),
             )
             .child(button);
-        Some(
-            section("ng.finder.info.openwith")
-                .child(heading("Open with"))
-                .child(form.card(
-                    "card",
-                    vec![
-                        labelled("Application", SystemColor::Label, popup),
-                        all.into_any_element(),
-                    ],
-                )),
-        )
+        let rows = vec![
+            labelled("Application", SystemColor::Label, popup),
+            all.into_any_element(),
+        ];
+        let names = ("ng.finder.info.openwith", "Open with");
+        Some(self.pane(this, Pane::OpenWith, names, vec![card(form, "card", rows)]))
     }
 
     fn privileges(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
@@ -1435,49 +1514,29 @@ impl Info {
             .collect();
         let changed = access.mode.is_some() && access.mode != self.first_mode;
         let tools = tools_size();
-        Some(
-            section("ng.finder.info.privileges")
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(heading("Sharing & Permissions"))
-                        .child(
-                            div().px(px(MARGIN + INSET)).child(
-                                native_label("yours", yours_text(access.yours))
-                                    .color(SystemColor::SecondaryLabel),
-                            ),
-                        ),
-                )
-                .child(form.card("grants", grants))
-                .when_some(access.ownership, |section, ignores| {
-                    section.child(form.card(
-                        "ownership",
-                        vec![switch_row("Ignore ownership on this volume", ignores, None)],
-                    ))
-                })
-                .child(
-                    div()
-                        .mx(px(MARGIN))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .w(px(tools.width as f32))
-                                .h(px(tools.height as f32))
-                                .child(grant_tools(
-                                    path,
-                                    self.owned,
-                                    folder,
-                                    changed,
-                                    this.clone(),
-                                )),
-                        )
-                        .child(div().size(px(18.)).child(icon_file(LOCK_ICON))),
-                ),
-        )
+        let yours = div().px(px(MARGIN + INSET)).child(
+            native_label("yours", yours_text(access.yours)).color(SystemColor::SecondaryLabel),
+        );
+        let mut parts = vec![(4., yours.into_any_element()), card(form, "grants", grants)];
+        if let Some(ignores) = access.ownership {
+            let row = switch_row("Ignore ownership on this volume", ignores, None);
+            parts.push(card(form, "ownership", vec![row]));
+        }
+        let controls = div()
+            .mx(px(MARGIN))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .w(px(tools.width as f32))
+                    .h(px(tools.height as f32))
+                    .child(grant_tools(path, self.owned, folder, changed, this.clone())),
+            )
+            .child(div().size(px(18.)).child(icon_file(LOCK_ICON)));
+        parts.push((STACK, controls.into_any_element()));
+        let names = ("ng.finder.info.privileges", "Sharing & Permissions");
+        Some(self.pane(this, Pane::Privileges, names, parts))
     }
 
     fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
@@ -1610,9 +1669,12 @@ impl Render for Info {
             self.general(&form, &this).into_any_element(),
         ];
         if self.subject != Subject::Place {
-            content.extend(self.more_info(&form).map(IntoElement::into_any_element));
+            content.extend(
+                self.more_info(&form, &this)
+                    .map(IntoElement::into_any_element),
+            );
             content.push(self.name_section(&form, &this).into_any_element());
-            content.push(self.comments(&form).into_any_element());
+            content.push(self.comments(&form, &this).into_any_element());
             content.extend(
                 self.open_with(&form, &this)
                     .map(IntoElement::into_any_element),
@@ -1622,7 +1684,10 @@ impl Render for Info {
                     .map(IntoElement::into_any_element),
             );
         }
-        page(window, content, BOTTOM, (!self.panel).then_some(bound))
+        if self.folds.iter().any(Fold::moving) {
+            window.request_animation_frame();
+        }
+        page(window, content, BOTTOM, bound)
     }
 }
 
@@ -2180,7 +2245,7 @@ pub(crate) struct Combined {
     where_: SharedString,
     weight: Option<Weight>,
     weighing: bool,
-    panel: bool,
+    general: Fold,
     same: Option<bool>,
     same_seen: Option<u64>,
 }
@@ -2192,15 +2257,16 @@ impl Combined {
             where_,
             weight: None,
             weighing: false,
-            panel: false,
+            general: Fold::new(panes_open()[Pane::General as usize]),
             same: None,
             same_seen: None,
         }
     }
 
-    pub(crate) fn in_panel(mut self) -> Self {
-        self.panel = true;
-        self
+    fn fold(&mut self, cx: &mut Context<Self>) {
+        self.general.toggle();
+        remember(Pane::General, self.general.is_open());
+        cx.notify();
     }
 
     fn weigh(&mut self, cx: &mut Context<Self>) {
@@ -2276,9 +2342,16 @@ impl Render for Combined {
             .weight
             .map(|weight| byte_string(weight.bytes))
             .unwrap_or_default();
-        let general = section("ng.finder.info.general")
-            .child(heading("General"))
-            .child(form.card("values", values(&form, &self.rows())));
+        let this = cx.weak_entity();
+        let general = fold::section(
+            "ng.finder.info.general",
+            "General",
+            &self.general,
+            move |_, cx| {
+                this.update(cx, |combined, cx| combined.fold(cx)).ok();
+            },
+            vec![card(&form, "values", values(&form, &self.rows()))],
+        );
         let paths = self.paths();
         let first = paths.first().cloned();
         let same = self.same == Some(true);
@@ -2300,11 +2373,14 @@ impl Render for Combined {
             .justify_center()
             .child(div().size(px(PREVIEW)).child(well));
         let head = header(&form, preview, &self.name(), &summary, None);
+        if self.general.moving() {
+            window.request_animation_frame();
+        }
         page(
             window,
             vec![head, general.into_any_element()],
             BOTTOM,
-            (!self.panel).then_some(bound),
+            bound,
         )
     }
 }
