@@ -6,12 +6,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread::LocalKey;
 use std::time::Duration;
 
-use block2::RcBlock;
+use block2::{RcBlock, StackBlock};
 use finder_fs::flags::IS_STATIONERY;
 use finder_fs::meta::Meta;
 use finder_fs::permissions::{self, Grant, Privilege};
@@ -26,8 +27,8 @@ use native_gpui::{
     ControlSize, LabelAlign, Layer, MenuEntry, NativeHost, Target, native_button, native_label,
     native_popup, native_root, native_rule, native_switch, window_options, wire,
 };
-use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject};
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{
     AnyThread, DefinedClass, DowncastTarget, MainThreadOnly, Message, define_class, msg_send, sel,
 };
@@ -35,20 +36,24 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSButton, NSColor, NSControlSize,
     NSFocusRingType, NSFont, NSFontWeightRegular, NSImage, NSImageScaling,
     NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse,
-    NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSResponder, NSScrollView, NSSegmentStyle,
-    NSSegmentSwitchTracking, NSSegmentedControl, NSText, NSTextAlignment, NSTextField, NSTextView,
-    NSView, NSWindow, NSWindowTitleVisibility, NSWorkspace,
+    NSModalResponseOK, NSOpenPanel, NSPathControl, NSPathControlItem, NSPopUpButton, NSResponder,
+    NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSText,
+    NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowDidResizeNotification,
+    NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSBundleExecutableArchitectureARM64,
+    MainThreadMarker, NSArray, NSBundle, NSBundleExecutableArchitectureARM64,
     NSBundleExecutableArchitectureX86_64, NSDate, NSDateFormatter, NSDateFormatterStyle,
-    NSDictionary, NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
-    NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
+    NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSObject, NSPoint, NSRect,
+    NSRunLoop, NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey,
+    ns_string,
 };
 
 use crate::app::FinderDemo;
 use crate::art::{row_art, small_glyph};
-use crate::data::{Face, Folder, Line, Row, byte_string, count, folder_of, intern_path, volume_at};
+use crate::data::{
+    Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
+};
 use crate::frame::ns_window;
 use crate::prefs;
 use crate::tag_editor::{tag_field, tags_in};
@@ -68,6 +73,8 @@ const MANY_ICON: &str =
 pub(crate) const WIDTH: f32 = 360.;
 pub(crate) const HEIGHT: f32 = 620.;
 const SHORTEST: f32 = 240.;
+const NARROWEST: f32 = 265.;
+const WIDEST: f32 = 400.;
 const TITLEBAR: f32 = 32.;
 const MARGIN: f32 = 20.;
 const INSET: f32 = 10.;
@@ -85,9 +92,11 @@ const THUMB: f32 = 320.;
 const NAME: f32 = 15.;
 const COMMENT: f32 = 48.;
 const BOTTOM: f32 = 20.;
+// NSPathControl ends its last title 2pt further in than a label ends its text.
+const PATH_TRAIL: f32 = 2.;
 const NOTE: &str = "Use this application to open all documents like this one.";
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
-const CRUMB_SEPARATOR: &str = " \u{25b8} ";
+const WHERE: &str = "Where";
 const KEPT: usize = 512;
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
@@ -95,7 +104,7 @@ const FOLLOW_TRIES: usize = 600;
 fn info_width() -> f32 {
     prefs::setting_number(WIDTH_KEY)
         .map_or(WIDTH, |width| width as f32)
-        .max(WIDTH)
+        .clamp(NARROWEST, WIDEST)
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -580,13 +589,13 @@ impl Form {
     }
 
     fn fits(&self, label: &str, value: &str) -> bool {
-        text_width(value) <= self.room(label)
+        label == WHERE || text_width(value) <= self.room(label)
     }
 
     fn value_height(&self, label: &str, value: &str) -> f32 {
         match self.fits(label, value) {
             true => ROW,
-            false => ROW + 8. + lines_height(&self.crumb_lines(value), self.inner),
+            false => ROW + 8. + lines_height(value, self.inner),
         }
     }
 
@@ -596,25 +605,13 @@ impl Form {
             .sum()
     }
 
-    fn crumb_lines(&self, value: &str) -> String {
-        let mut lines: Vec<String> = Vec::new();
-        for name in value.split(CRUMB_SEPARATOR) {
-            match lines.last_mut() {
-                Some(line)
-                    if text_width(&format!("{line}{CRUMB_SEPARATOR}{name}")) <= self.inner =>
-                {
-                    line.push_str(CRUMB_SEPARATOR);
-                    line.push_str(name);
-                }
-                _ => lines.push(name.to_owned()),
-            }
-        }
-        lines.join(&format!("{}\n", CRUMB_SEPARATOR.trim_end()))
-    }
-
     fn values(&self, rows: &[(&str, SharedString)]) -> Vec<AnyElement> {
         rows.iter()
             .map(|(label, value)| {
+                if *label == WHERE {
+                    let room = self.room(label);
+                    return labelled(label, SystemColor::Label, where_control(value, room));
+                }
                 let shown = |text: &str| {
                     native_label("value", text)
                         .color(SystemColor::SecondaryLabel)
@@ -623,8 +620,7 @@ impl Form {
                 if self.fits(label, value) {
                     return labelled(label, SystemColor::Label, shown(value));
                 }
-                let text = self.crumb_lines(value);
-                let tall = lines_height(&text, self.inner);
+                let tall = lines_height(value, self.inner);
                 div()
                     .h(px(ROW + 8. + tall))
                     .p(px(INSET))
@@ -632,7 +628,7 @@ impl Form {
                     .flex_col()
                     .gap(px(8.))
                     .child(native_label("label", label))
-                    .child(div().h(px(tall)).child(shown(&text).wraps(true)))
+                    .child(div().h(px(tall)).child(shown(value).wraps(true)))
                     .into_any_element()
             })
             .collect()
@@ -714,7 +710,7 @@ impl Form {
     }
 }
 
-fn page(window: &Window, head: Div, sections: Vec<AnyElement>) -> impl IntoElement {
+fn page(window: &Window, head: Div, sections: Vec<AnyElement>, bounded: bool) -> impl IntoElement {
     let titlebar = ns_window(window).map_or(TITLEBAR, |ns| {
         (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
     });
@@ -735,11 +731,24 @@ fn page(window: &Window, head: Div, sections: Vec<AnyElement>) -> impl IntoEleme
                     .child(
                         div()
                             .w_full()
+                            .relative()
                             .pb(px(BOTTOM))
                             .flex()
                             .flex_col()
                             .child(head)
-                            .children(sections),
+                            .children(sections)
+                            .when(bounded, |content| {
+                                content.child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            bound(window, titlebar + f32::from(bounds.size.height));
+                                        },
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                            }),
                     ),
             )
             .child(
@@ -752,6 +761,211 @@ fn page(window: &Window, head: Div, sections: Vec<AnyElement>) -> impl IntoEleme
                     .child(native_rule("ng.finder.info.titlebar")),
             ),
     )
+}
+
+fn bound(window: &Window, tall: f32) {
+    let Some(ns) = ns_window(window) else {
+        return;
+    };
+    let min = NSSize::new(NARROWEST.into(), SHORTEST.min(tall).into());
+    let max = NSSize::new(WIDEST.into(), tall.into());
+    if ns.contentMinSize() != min {
+        ns.setContentMinSize(min);
+    }
+    if ns.contentMaxSize() != max {
+        ns.setContentMaxSize(max);
+    }
+    if refit(&ns).is_some() {
+        // Resized inside gpui's update, the window keeps drawing at its old size.
+        let block = RcBlock::new(move || {
+            if let Some(frame) = refit(&ns) {
+                ns.setFrame_display(frame, true);
+            }
+        });
+        unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
+    }
+}
+
+fn refit(ns: &NSWindow) -> Option<NSRect> {
+    let content = ns.contentRectForFrameRect(ns.frame());
+    let (min, max) = (ns.contentMinSize(), ns.contentMaxSize());
+    let fitted = NSSize::new(
+        content.size.width.min(max.width).max(min.width),
+        content.size.height.min(max.height).max(min.height),
+    );
+    if (fitted.width - content.size.width).abs() < 0.5
+        && (fitted.height - content.size.height).abs() < 0.5
+    {
+        return None;
+    }
+    let top = content.origin.y + content.size.height;
+    let rect = NSRect::new(NSPoint::new(content.origin.x, top - fitted.height), fitted);
+    Some(ns.frameRectForContentRect(rect))
+}
+
+// AppKit holds only a user's drag to contentMaxSize; a setFrame from code goes through unclamped.
+fn keep_fitted(ns: &NSWindow) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let window = Weak::new(ns);
+    let block = StackBlock::new(move |_: NonNull<NSNotification>| {
+        if let Some(window) = window.load() {
+            if let Some(frame) = refit(&window) {
+                window.setFrame_display(frame, true);
+            }
+        }
+    })
+    .copy();
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowDidResizeNotification),
+            Some(ns),
+            None,
+            &block,
+        )
+    }
+}
+
+type Crumbs = Rc<[(&'static str, &'static str)]>;
+
+fn crumbs_at(path: &str) -> Crumbs {
+    thread_local! {
+        static SEEN: RefCell<HashMap<&'static str, Crumbs>> = RefCell::default();
+    }
+    let id = intern_path(Path::new(path));
+    SEEN.with_borrow_mut(|seen| {
+        if seen.len() >= KEPT {
+            seen.clear();
+        }
+        seen.entry(id)
+            .or_insert_with(|| folder_of(id).crumbs.into())
+            .clone()
+    })
+}
+
+fn crumb_icon(id: &str) -> Retained<NSImage> {
+    if icloud_drive() == Some(id) {
+        if let FileType::Named(name) = crate::chrome::path_bar::icloud_art() {
+            if let Some(art) = NSImage::imageNamed(&NSString::from_str(name)) {
+                return art;
+            }
+        }
+    }
+    NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(id))
+}
+
+fn show_crumbs(control: &NSPathControl, crumbs: &[(&'static str, &'static str)], shown: usize) {
+    let hidden = crumbs.len().saturating_sub(shown);
+    let first = match hidden {
+        0 => crumbs.first().map_or("", |&(name, _)| name),
+        _ => "\u{2026}",
+    };
+    let items = control.pathItems();
+    let same = items.count() == crumbs.len() - hidden + usize::from(hidden > 0)
+        && items
+            .firstObject()
+            .is_some_and(|item| item.title().to_string() == first);
+    if same {
+        return;
+    }
+    let more = (hidden > 0).then(|| {
+        let item = NSPathControlItem::new();
+        item.setTitle(ns_string!("\u{2026}"));
+        item
+    });
+    let items: Vec<Retained<NSPathControlItem>> = more
+        .into_iter()
+        .chain(crumbs[hidden..].iter().map(|&(name, id)| {
+            let item = NSPathControlItem::new();
+            item.setTitle(&NSString::from_str(name));
+            item.setImage(Some(&crumb_icon(id)));
+            item
+        }))
+        .collect();
+    control.setPathItems(&NSArray::from_retained_slice(&items));
+}
+
+fn path_control(mtm: MainThreadMarker) -> Retained<NSPathControl> {
+    let control = NSPathControl::new(mtm);
+    control.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
+    control
+}
+
+fn crumbs_fit(path: &str, crumbs: &[(&'static str, &'static str)], room: f32) -> (usize, f32, f32) {
+    thread_local! {
+        static SEEN: RefCell<HashMap<u64, (usize, f32, f32)>> = RefCell::default();
+    }
+    let room = room.floor();
+    remembered(&SEEN, key_of((path, room as i32)), || {
+        let control = path_control(MainThreadMarker::new().expect("laid out on the main thread"));
+        let mut shown = crumbs.len();
+        loop {
+            show_crumbs(&control, crumbs, shown);
+            let fitting = control.fittingSize();
+            if shown <= 1 || fitting.width as f32 <= room {
+                return (
+                    shown,
+                    fitting.width.ceil() as f32,
+                    fitting.height.ceil() as f32,
+                );
+            }
+            shown -= 1;
+        }
+    })
+}
+
+fn where_control(path: &SharedString, room: f32) -> impl IntoElement {
+    let key = key_of(("ng.finder.info.where", path));
+    let room = room + PATH_TRAIL;
+    let crumbs = crumbs_at(path);
+    let (shown, wide, tall) = crumbs_fit(path, &crumbs, room);
+    let hidden = crumbs.len().saturating_sub(shown);
+    let ids: Vec<&'static str> = crumbs[hidden..].iter().map(|&(_, id)| id).collect();
+    let tip = NSString::from_str(path);
+    div()
+        .w(px(wide.min(room)))
+        .h(px(tall))
+        .mr(px(-PATH_TRAIL))
+        .child(hosted(
+            key,
+            move |mtm, target| {
+                let control = path_control(mtm);
+                control.setToolTip(Some(&tip));
+                wire(&control, target, key);
+                control
+            },
+            move |control, host| {
+                show_crumbs(control, &crumbs, shown);
+                let ids = ids.clone();
+                on_action(
+                    host,
+                    key,
+                    key,
+                    move |control: &NSPathControl| {
+                        let clicked = control.clickedPathItem()?;
+                        let at = control.pathItems().iter().position(|item| {
+                            Retained::as_ptr(&item) == Retained::as_ptr(&clicked)
+                        })?;
+                        ids.get(at.checked_sub(usize::from(hidden > 0))?).copied()
+                    },
+                    |id, _, cx| {
+                        if let Some(id) = id {
+                            show_folder(id, cx);
+                        }
+                    },
+                );
+            },
+        ))
+}
+
+fn show_folder(dir: &'static str, cx: &mut App) {
+    let shown = cx
+        .windows()
+        .into_iter()
+        .filter_map(|window| window.downcast::<FinderDemo>())
+        .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == dir));
+    let window = shown.unwrap_or_else(|| crate::open_finder_window(dir, 1, cx));
+    window
+        .update(cx, |_, window, _| window.activate_window())
+        .ok();
 }
 
 struct Opener {
@@ -1086,7 +1300,7 @@ impl Info {
                 };
                 let mut rows = vec![("Kind", kind), ("Size", weight_text(self.weight))];
                 if !self.where_.is_empty() {
-                    rows.push(("Where", self.where_.clone()));
+                    rows.push((WHERE, self.where_.clone()));
                 }
                 rows.extend([
                     ("Created", date("Created", row.created_at)),
@@ -1548,7 +1762,7 @@ impl Render for Info {
                     .map(IntoElement::into_any_element),
             );
         }
-        page(window, self.head(&form, scale), sections)
+        page(window, self.head(&form, scale), sections, !self.panel)
     }
 }
 
@@ -2034,16 +2248,11 @@ fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
     .detach();
 }
 
-fn crumb_text(folder: &Folder) -> String {
-    let names: Vec<&str> = folder.crumbs.iter().map(|&(name, _)| name).collect();
-    names.join(CRUMB_SEPARATOR)
-}
-
 pub(crate) fn where_of(id: &str) -> Option<String> {
     let parent = Path::new(id)
         .parent()
         .filter(|parent| parent.is_absolute())?;
-    Some(crumb_text(&folder_of(intern_path(parent))))
+    Some(parent.to_string_lossy().into_owned())
 }
 
 pub(crate) fn open(
@@ -2052,25 +2261,27 @@ pub(crate) fn open(
     summary: bool,
     cx: &mut App,
 ) {
-    let (lines, where_) = {
+    let lines: Vec<Line> = {
         let state = demo.read(cx);
         let chosen = match at {
             Some(_) => Vec::new(),
             None => state.chosen_lines(),
         };
         let at = at.or_else(|| (chosen.is_empty() && !state.results()).then(|| state.here()));
-        let lines = match at {
+        match at {
             Some(id) => crate::locations::info_line(id)
                 .or_else(|| crate::data::path_line(id))
                 .into_iter()
                 .collect(),
             None => chosen,
-        };
-        let where_ = at
-            .and_then(where_of)
-            .or_else(|| state.folder().map(crumb_text));
-        (lines, SharedString::from(where_.unwrap_or_default()))
+        }
     };
+    let where_ = SharedString::from(
+        lines
+            .first()
+            .and_then(|line| where_of(&line.key))
+            .unwrap_or_default(),
+    );
     let width = info_width();
     if summary && lines.len() > 1 {
         let combined = Combined::new(lines, where_);
@@ -2098,7 +2309,7 @@ fn open_window<V: Render>(
                 origin: point(px(60. + offset), px(80. + offset)),
                 size: size(px(width), px(height)),
             })),
-            window_min_size: Some(size(px(WIDTH), px(SHORTEST))),
+            window_min_size: Some(size(px(NARROWEST), px(SHORTEST))),
             ..window_options()
         },
         move |window, cx| {
@@ -2106,10 +2317,16 @@ fn open_window<V: Render>(
                 window.set_window_title(title);
             }
             crate::chrome::toolbar::system_corners(window);
+            let view = cx.new(|_| view);
             if let Some(ns) = ns_window(window) {
                 ns.setTitleVisibility(NSWindowTitleVisibility::Visible);
+                let observer = keep_fitted(&ns);
+                cx.observe_release(&view, move |_, _| unsafe {
+                    NSNotificationCenter::defaultCenter().removeObserver(observer.as_ref());
+                })
+                .detach();
             }
-            cx.new(|_| view)
+            view
         },
     );
 }
@@ -2119,6 +2336,7 @@ pub(crate) struct Combined {
     where_: SharedString,
     weight: Option<Weight>,
     weighing: bool,
+    panel: bool,
 }
 
 impl Combined {
@@ -2128,7 +2346,13 @@ impl Combined {
             where_,
             weight: None,
             weighing: false,
+            panel: false,
         }
+    }
+
+    pub(crate) fn in_panel(mut self) -> Self {
+        self.panel = true;
+        self
     }
 
     fn weigh(&mut self, cx: &mut Context<Self>) {
@@ -2165,7 +2389,7 @@ impl Combined {
             ("Size", weight_text(self.weight)),
         ];
         if !self.where_.is_empty() {
-            rows.push(("Where", self.where_.clone()));
+            rows.push((WHERE, self.where_.clone()));
         }
         rows
     }
@@ -2192,6 +2416,6 @@ impl Render for Combined {
             .child(heading("General"))
             .child(form.card("values", form.values(&self.rows())));
         let head = form.head(icon_file(MANY_ICON), &self.name(), &summary, None);
-        page(window, head, vec![general.into_any_element()])
+        page(window, head, vec![general.into_any_element()], !self.panel)
     }
 }
