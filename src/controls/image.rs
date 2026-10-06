@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use gpui::{App, ElementId, FontWeight, ImageId, Style, Window, px, size};
+use gpui::{App, ElementId, FontWeight, Hsla, ImageId, Style, Window, px, size};
 use objc2::rc::Retained;
 use objc2::{AllocAnyThread, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
@@ -12,6 +12,7 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSSize, NSSt
 
 use crate::bridge::host::{Layer, Slot, hosted_element};
 use crate::controls::{snap_origin, symbol_image};
+use crate::system::color::to_nscolor;
 use crate::system::tokens::{Symbol, SystemColor, bitmap, ns_font_weight};
 
 const RASTERS_KEPT: usize = 256;
@@ -28,7 +29,7 @@ pub fn native_image(id: impl Into<ElementId>, name: &str) -> NativeImage {
     NativeImage {
         id: id.into(),
         source: Source::Named(name.to_string()),
-        tint: SystemColor::Label,
+        tint: Tint::System(SystemColor::Label),
     }
 }
 
@@ -41,7 +42,7 @@ pub fn native_symbol(
     NativeImage {
         id: id.into(),
         source: Source::Symbol((name.to_string(), size.to_bits(), weight.0.to_bits())),
-        tint: SystemColor::Label,
+        tint: Tint::System(SystemColor::Label),
     }
 }
 
@@ -49,7 +50,7 @@ pub fn native_raster(id: impl Into<ElementId>, raster: Symbol) -> NativeImage {
     NativeImage {
         id: id.into(),
         source: Source::Raster(raster),
-        tint: SystemColor::Label,
+        tint: Tint::System(SystemColor::Label),
     }
 }
 
@@ -59,15 +60,34 @@ enum Source {
     Raster(Symbol),
 }
 
+#[derive(Clone, Copy)]
+enum Tint {
+    System(SystemColor),
+    Fixed(Hsla),
+    Untinted,
+}
+
 pub struct NativeImage {
     id: ElementId,
     source: Source,
-    tint: SystemColor,
+    tint: Tint,
 }
 
 impl NativeImage {
     pub fn tint(mut self, tint: SystemColor) -> Self {
-        self.tint = tint;
+        self.tint = Tint::System(tint);
+        self
+    }
+
+    /// A fixed colour in place of a system tint.
+    pub fn ink(mut self, ink: impl Into<Hsla>) -> Self {
+        self.tint = Tint::Fixed(ink.into());
+        self
+    }
+
+    /// AppKit inks the template itself, fading it while the window is not key.
+    pub fn untinted(mut self) -> Self {
+        self.tint = Tint::Untinted;
         self
     }
 
@@ -115,9 +135,13 @@ impl NativeImage {
         if view.image() != image {
             view.setImage(image.as_deref());
         }
-        let tint = self.tint.ns_color();
-        if view.contentTintColor().as_ref() != Some(&tint) {
-            view.setContentTintColor(Some(&tint));
+        let tint = match self.tint {
+            Tint::System(color) => Some(color.ns_color()),
+            Tint::Fixed(color) => Some(to_nscolor(color)),
+            Tint::Untinted => None,
+        };
+        if view.contentTintColor() != tint {
+            view.setContentTintColor(tint.as_deref());
         }
     }
 }

@@ -2,7 +2,8 @@ use gpui::{App, ElementId, FontWeight, Pixels, SharedString, Style, Window, px, 
 use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSControl, NSFont, NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField, NSView,
+    NSColorSystemEffect, NSControl, NSFont, NSLineBreakMode, NSResponder, NSTextAlignment,
+    NSTextField, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 
@@ -20,6 +21,7 @@ pub fn native_label(id: impl Into<ElementId>, text: &str) -> NativeLabel {
         font_size: None,
         weight: FontWeight::NORMAL,
         color: SystemColor::Label,
+        disabled: false,
         align: LabelAlign::default(),
         tabular: false,
         truncates: true,
@@ -53,6 +55,7 @@ pub struct NativeLabel {
     font_size: Option<Pixels>,
     weight: FontWeight,
     color: SystemColor,
+    disabled: bool,
     align: LabelAlign,
     tabular: bool,
     truncates: bool,
@@ -72,6 +75,12 @@ impl NativeLabel {
 
     pub fn color(mut self, color: SystemColor) -> Self {
         self.color = color;
+        self
+    }
+
+    /// Draws its colour with AppKit's disabled effect.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -140,7 +149,10 @@ impl NativeLabel {
         if field.font().as_ref() != Some(&font) {
             field.setFont(Some(&font));
         }
-        let color = self.color.ns_color();
+        let mut color = self.color.ns_color();
+        if self.disabled {
+            color = color.colorWithSystemEffect(NSColorSystemEffect::Disabled);
+        }
         if field.textColor().as_ref() != Some(&color) {
             field.setTextColor(Some(&color));
         }

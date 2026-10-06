@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::Op;
-use finder_fs::sidebar::{Listed, Special};
+use finder_fs::sidebar::{Listed, Special, VolumeSettings};
 use finder_fs::volumes::Standard;
 use gpui::{App, SharedString, Window, prelude::*, px};
 use native_gpui::sidebar::{
@@ -239,10 +239,14 @@ fn is_standard(path: &Path, which: Standard) -> bool {
 }
 
 /// Each row's state as Finder shows it, then as the demo does.
-fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> (bool, bool) {
+fn visibility(
+    favourites: &[Listed],
+    locations: &[Listed],
+    volumes: &VolumeSettings,
+) -> impl Fn(Shown) -> (bool, bool) {
     let special = |which| locations.iter().any(|listed| listed.special == Some(which));
     let [recents, shared] = finder_fs::sidebar::top_rows_shown();
-    let [disks, external, servers] = finder_fs::sidebar::volume_kinds_shown();
+    let [disks, external, media, servers] = volumes.shown;
     let folders = FOLDERS.iter().map(|&(shown, which)| {
         let listed = favourites.iter().any(|listed| {
             listed
@@ -257,12 +261,12 @@ fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> 
         (Shown::Recents, recents),
         (Shown::Shared, shared),
         (Shown::ICloudDrive, special(Special::ICloudDrive)),
-        (Shown::CloudStorage, special(Special::FileProvider)),
+        (Shown::CloudStorage, volumes.cloud != Some(false)),
         (Shown::Home, special(Special::Home)),
         (Shown::Computer, special(Special::Computer)),
         (Shown::HardDisks, disks),
         (Shown::ExternalDisks, external),
-        (Shown::Removable, true),
+        (Shown::Removable, media),
         (Shown::AirDrop, special(Special::AirDrop)),
         (Shown::Bonjour, true),
         (Shown::Servers, servers),
@@ -276,11 +280,29 @@ fn visibility(favourites: &[Listed], locations: &[Listed]) -> impl Fn(Shown) -> 
     }
 }
 
-pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, bool)>)> {
+pub(crate) fn shown_sections() -> Vec<(&'static str, Vec<(Shown, String, CheckState)>)> {
     let favourites = finder_fs::sidebar::listed_favorites();
     let locations = finder_fs::sidebar::listed_locations();
-    let on = visibility(&favourites, &locations);
-    let row = |shown: Shown, title: String| (shown, title, on(shown).1);
+    let volumes = finder_fs::sidebar::volume_settings();
+    let on = visibility(&favourites, &locations, &volumes);
+    let [disks_mixed, external_mixed, media_mixed] = volumes.mixed;
+    let row = |shown: Shown, title: String| {
+        let mixed = match shown {
+            Shown::HardDisks => disks_mixed,
+            Shown::ExternalDisks => external_mixed,
+            Shown::Removable => {
+                media_mixed || on(shown).0 && prefs::has_entries("iOSDevicesExcludedFromSidebar")
+            }
+            Shown::CloudStorage => volumes.cloud.is_none(),
+            _ => false,
+        };
+        let state = if mixed && !prefs::has_setting(&key(shown)) {
+            CheckState::Mixed
+        } else {
+            on(shown).1.into()
+        };
+        (shown, title, state)
+    };
     let home = finder_fs::volumes::standard(Standard::Home).unwrap_or_default();
     let computer = crate::locations::computer_name().to_owned();
     let said = |text: &str| finder_fs::words::say(text).into_owned();
@@ -365,7 +387,11 @@ fn listed(title: String, path: Option<PathBuf>, special: Option<Special>) -> Lis
 pub(crate) fn groups() -> Vec<Group> {
     let mut favourites = finder_fs::sidebar::listed_favorites();
     let mut locations = finder_fs::sidebar::listed_locations();
-    let on = visibility(&favourites, &locations);
+    let on = visibility(
+        &favourites,
+        &locations,
+        &finder_fs::sidebar::volume_settings(),
+    );
     let shows = |shown| on(shown).1;
     for &(shown, which) in &FOLDERS {
         let here = |listed: &Listed| {
