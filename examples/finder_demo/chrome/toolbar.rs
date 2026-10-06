@@ -385,9 +385,8 @@ impl FinderDemo {
             .enabled(!airdrop)
             // Automatic, not Expanded: the capsule has to collapse when the search field opens.
             .group_width(ToolbarGroupWidth::Automatic)
-            .on_select(select(&this, |this, index, _, cx| {
-                this.set_view(index, cx);
-                cx.notify();
+            .on_select(select(&this, |this, index, window, cx| {
+                this.pick_view(index, window, cx);
             })),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")

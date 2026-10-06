@@ -146,7 +146,7 @@ pub(crate) fn reopen(cx: &mut App) -> bool {
 fn join(tab: WindowHandle<FinderDemo>, host: Option<AnyWindowHandle>, view: usize, cx: &mut App) {
     tab.update(cx, |demo, window, cx| {
         if demo.view != view {
-            demo.pick_view(view, window, cx);
+            demo.browse_as(view, window, cx);
         }
         if let Some(host) = host {
             native_gpui::add_tab(host, window, cx);

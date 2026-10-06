@@ -26,8 +26,12 @@ pub(crate) fn overflows(content: f32, room: f32) -> bool {
 
 impl FinderDemo {
     pub(crate) fn pick_view(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.browse_view = view;
         prefs::set_view(view);
+        self.browse_as(view, window, cx);
+    }
+
+    pub(crate) fn browse_as(&mut self, view: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.browse_view = view;
         self.set_view(view, cx);
         self.install_toolbar(window, cx);
         self.retitle(window);
