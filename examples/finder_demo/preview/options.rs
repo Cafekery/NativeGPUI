@@ -1,16 +1,19 @@
 use std::cell::Cell;
+use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, Context, EntityId, Render, SharedString, Window, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions, div, point, prelude::*, px, size,
+    App, Bounds, Context, EntityId, Render, Window, WindowBounds, WindowHandle, WindowKind,
+    WindowOptions, point, prelude::*, px, size,
 };
-use native_gpui::tokens::{self, SystemColor, system_color};
-use native_gpui::{CheckState, native_checkbox, native_root, native_rule, window_options};
+use native_gpui::window_options;
 use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, Row};
+use crate::form::{self, Flip, Sheet, switch_row};
 use crate::frame::ns_window;
+
+const WIDTH: f32 = 280.;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Source {
@@ -343,77 +346,48 @@ struct PreviewOptions {
     kind: &'static Kind,
 }
 
-fn state(kind: &Kind, keys: &[&str]) -> CheckState {
-    let shown = keys.iter().filter(|key| shows(kind, key)).count();
-    match shown {
-        0 => CheckState::Off,
-        n if n == keys.len() => CheckState::On,
-        _ => CheckState::Mixed,
+fn flip(kind: &'static Kind, keys: Vec<&'static str>) -> Flip {
+    Rc::new(move |on, cx| choose(kind, &keys, on, cx))
+}
+
+/// A group's switch is on while any of its fields shows, and its fields can change only then.
+fn sheet(kind: &'static Kind, width: f32, hair: f32) -> Sheet {
+    let alone = |key: &'static str| {
+        form::Row::new(switch_row(
+            key,
+            shows(kind, key),
+            Some(flip(kind, vec![key])),
+        ))
+    };
+    let mut rows = vec![alone(TAGS)];
+    for group in kind.groups {
+        let keys = group.keys();
+        let on = keys.iter().any(|key| shows(kind, key));
+        rows.push(form::Row::new(switch_row(
+            group.title,
+            on,
+            Some(flip(kind, keys)),
+        )));
+        rows.extend(group.fields.iter().map(|field| {
+            let key = field.key();
+            let change = on.then(|| flip(kind, vec![key]));
+            form::Row::new(switch_row(field.label, shows(kind, key), change)).nested()
+        }));
     }
+    let mut sheet = Sheet::new(width, hair);
+    sheet.card("ng.finder.preview.options.info", Some("Show Info"), rows);
+    sheet.card(
+        "ng.finder.preview.options.quick",
+        None,
+        vec![alone(QUICK_ACTIONS)],
+    );
+    sheet
 }
 
 impl Render for PreviewOptions {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let kind = self.kind;
-        let small = tokens::small_system_font_size();
-        let checkbox = |id: SharedString, title: &'static str, keys: Vec<&'static str>| {
-            let checked = state(kind, &keys);
-            native_checkbox(id, checked == CheckState::On)
-                .title(title)
-                .state(checked)
-                .on_change(move |state: &CheckState, _, cx| {
-                    choose(kind, &keys, *state != CheckState::Off, cx);
-                })
-        };
-        let mut groups = div().flex().flex_col().gap(px(6.)).child(checkbox(
-            "ng.finder.preview.options.tags".into(),
-            TAGS,
-            vec![TAGS],
-        ));
-        for group in kind.groups {
-            groups = groups
-                .child(checkbox(
-                    format!("ng.finder.preview.options.{}", group.title).into(),
-                    group.title,
-                    group.keys(),
-                ))
-                .children(group.fields.iter().enumerate().map(|(at, field)| {
-                    div().pl(px(20.)).child(checkbox(
-                        format!("ng.finder.preview.options.{}.{at}", group.title).into(),
-                        field.label,
-                        vec![field.key()],
-                    ))
-                }));
-        }
-        native_root(
-            div()
-                .size_full()
-                .bg(system_color(SystemColor::WindowBackground))
-                .pt(px(33.))
-                .px(px(20.))
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .text_size(small)
-                        .line_height(px(16.))
-                        .text_color(system_color(SystemColor::Label))
-                        .mb(px(7.))
-                        .child("Show Info:"),
-                )
-                .child(groups)
-                .child(
-                    div()
-                        .mt(px(12.))
-                        .h(px(5.))
-                        .child(native_rule("ng.finder.preview.options.rule")),
-                )
-                .child(div().mt(px(20.)).child(checkbox(
-                    "ng.finder.preview.options.quick".into(),
-                    QUICK_ACTIONS,
-                    vec![QUICK_ACTIONS],
-                ))),
-        )
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let width = f32::from(window.viewport_size().width);
+        sheet(self.kind, width, 1. / window.scale_factor()).into_page(window)
     }
 }
 
@@ -460,13 +434,8 @@ fn subject(demo: &FinderDemo) -> &'static Kind {
         .map_or(&FOLDER, |line| kind_of(&line.row))
 }
 
-fn height(kind: &Kind) -> f32 {
-    let rows = 1 + kind
-        .groups
-        .iter()
-        .map(|group| 1 + group.fields.len())
-        .sum::<usize>();
-    119. + 24. * rows as f32
+fn height(kind: &'static Kind) -> f32 {
+    sheet(kind, WIDTH, 1.).height()
 }
 
 fn show(kind: &'static Kind, cx: &mut App) {
@@ -488,7 +457,7 @@ fn show(kind: &'static Kind, cx: &mut App) {
             kind: WindowKind::Floating,
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(736.), px(310.)),
-                size: size(px(240.), px(tall)),
+                size: size(px(WIDTH), px(tall)),
             })),
             is_minimizable: false,
             is_resizable: false,

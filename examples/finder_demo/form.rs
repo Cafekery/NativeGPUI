@@ -4,12 +4,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::thread::LocalKey;
 
+use block2::RcBlock;
 use gpui::{AnyElement, App, Div, FontWeight, Stateful, Window, canvas, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, ns_font, system_color, system_font_family};
 use native_gpui::{ControlSize, native_label, native_root, native_rule, native_switch};
 use objc2::{AnyThread, MainThreadOnly};
-use objc2_app_kit::{NSImage, NSPopUpButton, NSTextField};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{NSImage, NSPopUpButton, NSTextField, NSWindow};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
 
 use crate::frame::ns_window;
 
@@ -26,6 +27,8 @@ pub(crate) const TITLEBAR: f32 = 32.;
 pub(crate) const BOTTOM: f32 = 20.;
 pub(crate) const KEPT: usize = 512;
 const RADIUS: f32 = 12.;
+const INDENT: f32 = 20.;
+const PANEL_TITLEBAR: f32 = 24.;
 
 pub(crate) type Flip = Rc<dyn Fn(bool, &mut App)>;
 
@@ -173,24 +176,38 @@ impl Form {
     }
 
     pub(crate) fn card(&self, id: &'static str, rows: Vec<AnyElement>) -> Stateful<Div> {
+        self.indented(id, rows.into_iter().map(|row| (0., row)))
+    }
+
+    /// The hairline under a row starts where that row's own content does.
+    fn indented(
+        &self,
+        id: &'static str,
+        rows: impl ExactSizeIterator<Item = (f32, AnyElement)>,
+    ) -> Stateful<Div> {
         let last = rows.len().saturating_sub(1);
         div()
             .id(id)
             .mx(px(MARGIN))
             .rounded(px(RADIUS))
             .bg(system_color(SystemColor::QuaternarySystemFill))
-            .children(rows.into_iter().enumerate().map(|(at, row)| {
-                div().id(at).relative().child(row).when(at < last, |row| {
-                    row.child(
-                        div()
-                            .absolute()
-                            .left(px(INSET))
-                            .right(px(INSET))
-                            .bottom_0()
-                            .h(px(self.hair))
-                            .bg(system_color(SystemColor::Separator)),
-                    )
-                })
+            .children(rows.enumerate().map(|(at, (indent, row))| {
+                div()
+                    .id(at)
+                    .relative()
+                    .pl(px(indent))
+                    .child(row)
+                    .when(at < last, |row| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .left(px(INSET + indent))
+                                .right(px(INSET))
+                                .bottom_0()
+                                .h(px(self.hair))
+                                .bg(system_color(SystemColor::Separator)),
+                        )
+                    })
             }))
     }
 }
@@ -249,4 +266,130 @@ pub(crate) fn page(
                     .child(native_rule("ng.finder.form.titlebar")),
             ),
     )
+}
+
+/// A row of a panel's card at its own height, indented when it is an option of the row above.
+pub(crate) struct Row {
+    content: AnyElement,
+    tall: f32,
+    indent: f32,
+}
+
+impl Row {
+    pub(crate) fn new(content: impl IntoElement) -> Self {
+        Row {
+            content: content.into_any_element(),
+            tall: ROW,
+            indent: 0.,
+        }
+    }
+
+    pub(crate) fn tall(mut self, tall: f32) -> Self {
+        self.tall = tall;
+        self
+    }
+
+    pub(crate) fn nested(mut self) -> Self {
+        self.indent = INDENT;
+        self
+    }
+}
+
+/// A utility panel's cards, summed up as they are added so the panel opens at its content's height.
+pub(crate) struct Sheet {
+    form: Form,
+    parts: Vec<AnyElement>,
+    tall: f32,
+}
+
+impl Sheet {
+    pub(crate) fn new(width: f32, hair: f32) -> Self {
+        Sheet {
+            form: Form::new(width, hair),
+            parts: Vec::new(),
+            tall: PANEL_TITLEBAR + BOTTOM,
+        }
+    }
+
+    /// A titled card opens a section; an untitled one sits just under the card above it.
+    pub(crate) fn card(&mut self, id: &'static str, title: Option<&str>, rows: Vec<Row>) {
+        let above = match (self.parts.is_empty(), title) {
+            (true, _) => MARGIN,
+            (false, Some(_)) => SECTION,
+            (false, None) => STACK,
+        };
+        let rows_tall: f32 = rows.iter().map(|row| row.tall).sum();
+        self.tall += above + title.map_or(0., |_| TITLE) + rows_tall;
+        let rows = rows.into_iter().map(|row| {
+            let content = div().h(px(row.tall)).child(row.content);
+            (row.indent, content.into_any_element())
+        });
+        let card = self.form.indented("card", rows);
+        self.parts.push(
+            div()
+                .id(id)
+                .pt(px(above))
+                .flex()
+                .flex_col()
+                .gap(px(STACK))
+                .when_some(title, |part, title| part.child(heading(title)))
+                .child(card)
+                .into_any_element(),
+        );
+    }
+
+    /// The panel's own button, trailing, under every card.
+    pub(crate) fn button(&mut self, button: impl IntoElement, tall: f32) {
+        self.tall += MARGIN + tall;
+        self.parts.push(
+            div()
+                .pt(px(MARGIN))
+                .px(px(MARGIN))
+                .flex()
+                .justify_end()
+                .child(button)
+                .into_any_element(),
+        );
+    }
+
+    pub(crate) fn height(&self) -> f32 {
+        self.tall
+    }
+
+    pub(crate) fn into_page(self, window: &Window) -> impl IntoElement {
+        page(window, self.parts, Some(fit_panel))
+    }
+}
+
+/// As tall as its content, or as its screen where that is shorter, and never below the screen.
+fn fit_panel(window: &Window, tall: f32) {
+    let Some(ns) = ns_window(window) else {
+        return;
+    };
+    if panel_frame(&ns, tall).is_none() {
+        return;
+    }
+    // Resized inside gpui's update, the window keeps drawing at its old size.
+    let block = RcBlock::new(move || {
+        if let Some(frame) = panel_frame(&ns, tall) {
+            ns.setFrame_display(frame, true);
+        }
+    });
+    unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
+}
+
+fn panel_frame(ns: &NSWindow, tall: f32) -> Option<NSRect> {
+    let frame = ns.frame();
+    let visible = ns.screen().map(|screen| screen.visibleFrame());
+    let tall = f64::from(tall);
+    let height = visible.map_or(tall, |visible| tall.min(visible.size.height));
+    let top = frame.origin.y + frame.size.height;
+    let bottom = visible.map_or(top - height, |visible| (top - height).max(visible.origin.y));
+    if (frame.size.height - height).abs() < 0.5 && (frame.origin.y - bottom).abs() < 0.5 {
+        return None;
+    }
+    Some(NSRect::new(
+        NSPoint::new(frame.origin.x, bottom),
+        NSSize::new(frame.size.width, height),
+    ))
 }
