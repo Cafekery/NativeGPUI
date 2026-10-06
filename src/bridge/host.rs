@@ -246,6 +246,7 @@ struct Pooled {
     clip_frame: NSRect,
     view_frame: NSRect,
     hidden: bool,
+    alpha: f32,
     generation: u64,
 }
 
@@ -262,6 +263,7 @@ struct HostState {
     created: Vec<u64>,
     kept: HashMap<EntityId, (Vec<u64>, u64)>,
     generation: u64,
+    alpha: f32,
 }
 
 impl HostState {
@@ -364,6 +366,7 @@ impl NativeHost {
             created: Vec::new(),
             kept: HashMap::new(),
             generation: 1,
+            alpha: 1.,
         })))
     }
 
@@ -474,6 +477,7 @@ impl NativeHost {
                 clip_frame,
                 view_frame: NSRect::ZERO,
                 hidden: false,
+                alpha: 1.,
                 generation: 0,
             };
             state.slots.insert(key, pooled);
@@ -493,6 +497,10 @@ impl NativeHost {
         if slot.hidden != hidden {
             slot.clip.setHidden(hidden);
             slot.hidden = hidden;
+        }
+        if slot.alpha != state.alpha {
+            slot.clip.setAlphaValue(state.alpha.into());
+            slot.alpha = state.alpha;
         }
         slot.generation = state.generation;
 
@@ -555,6 +563,14 @@ impl NativeHost {
 
     pub(crate) fn placed(&self) -> usize {
         self.0.borrow().order.len()
+    }
+
+    pub(crate) fn alpha(&self) -> f32 {
+        self.0.borrow().alpha
+    }
+
+    pub(crate) fn set_alpha(&self, alpha: f32) {
+        self.0.borrow_mut().alpha = alpha;
     }
 
     /// A cached view that placed nothing replayed its last paint: its views stay placed.

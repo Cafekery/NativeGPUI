@@ -6,7 +6,9 @@ use native_gpui::{
     ValueKind, element_key, fitting_size, fitting_size_keyed, wire,
 };
 
-use native_gpui::{NativeRoot, focus_gpui, native_root, window_options};
+use native_gpui::{
+    NativeOpacity, NativeRoot, focus_gpui, native_opacity, native_root, window_options,
+};
 
 use native_gpui::{
     MenuCommand, MenuSection, add_menu, extend_menu, install_menus, on_menu_state,

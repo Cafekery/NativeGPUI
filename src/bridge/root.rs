@@ -2,7 +2,7 @@ use std::panic::Location;
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, DispatchPhase, Element, ElementId, EntityId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, Pixels, StyleRefinement,
+    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, Pixels, StyleRefinement, Styled,
     TitlebarOptions, Window, WindowBackgroundAppearance, WindowOptions,
 };
 
@@ -91,6 +91,79 @@ impl Element for NativeCached {
 }
 
 impl IntoElement for NativeCached {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// `child` drawn at `opacity`, the AppKit views it hosts faded with it.
+pub fn native_opacity(opacity: f32, child: impl Styled + IntoElement) -> NativeOpacity {
+    NativeOpacity {
+        opacity,
+        child: child.opacity(opacity).into_any_element(),
+    }
+}
+
+pub struct NativeOpacity {
+    opacity: f32,
+    child: AnyElement,
+}
+
+impl Element for NativeOpacity {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let host = NativeHost::get(window, cx);
+        let outer = host.alpha();
+        host.set_alpha(outer * self.opacity);
+        self.child.paint(window, cx);
+        host.set_alpha(outer);
+    }
+}
+
+impl IntoElement for NativeOpacity {
     type Element = Self;
 
     fn into_element(self) -> Self {

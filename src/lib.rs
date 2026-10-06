@@ -20,7 +20,10 @@ pub use bridge::menus::{
     MenuCommand, MenuSection, TextCommand, add_menu, extend_menu, install_menus, on_menu_enabled,
     on_menu_state, on_menu_title, prepend_menu, replace_about_row, replace_edit_rows, set_menu,
 };
-pub use bridge::root::{NativeCached, NativeRoot, native_cached, native_root, window_options};
+pub use bridge::root::{
+    NativeCached, NativeOpacity, NativeRoot, native_cached, native_opacity, native_root,
+    window_options,
+};
 pub use chrome::sidebar::*;
 pub use chrome::tabs::{add_tab, set_trailing_inset, tab_bar_height, window_tabs};
 pub use chrome::window_chrome::*;

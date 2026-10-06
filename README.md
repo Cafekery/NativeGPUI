@@ -62,7 +62,7 @@ The value you pass a component must be the state its `on_change` writes.
 |---|---|
 | `lib.rs` | the crate's rules in doc form and the public surface |
 | `bridge/host.rs` | the per-window view pool (`NativeHost`), `place`/`commit`, event delivery, the `hosted_element!` boilerplate |
-| `bridge/root.rs` | `native_root` and `window_options` |
+| `bridge/root.rs` | `native_root`, `native_opacity` (fades a subtree with the AppKit views it hosts) and `window_options` |
 | `bridge/appkit.rs` | reaching GPUI's view, the flipped container class, the key path adoption |
 | `bridge/menus.rs` | the standard menu bar: `install_menus`, `add_menu`, `extend_menu` |
 | `chrome/window_chrome.rs` | corners, toolbar, flags, cursor, and the `native_rect` → `native_window_rect` → `native_screen_rect` recipe |
