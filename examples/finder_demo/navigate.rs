@@ -99,24 +99,17 @@ pub(crate) fn browser_windows(cx: &App) -> Vec<WindowHandle<FinderDemo>> {
 pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
     let mut folders: Vec<(&'static str, Vec<SharedString>)> = Vec::new();
     for item in items.iter().map(|item| stored(item)) {
-        let folder = item
-            .parent()
-            .and_then(|parent| folder_at_path(&parent.to_string_lossy()));
-        let (Some(folder), Some(name)) = (folder, item.file_name()) else {
+        let Some((folder, key)) = shown_at(&item, cx) else {
             continue;
         };
-        let key = Path::new(folder).join(name).to_string_lossy().into_owned();
         match folders.iter_mut().find(|(at, _)| *at == folder) {
-            Some((_, keys)) => keys.push(key.into()),
-            None => folders.push((folder, vec![key.into()])),
+            Some((_, keys)) => keys.push(key),
+            None => folders.push((folder, vec![key])),
         }
     }
     for (folder, keys) in folders {
         let windows = browser_windows(cx);
-        let shown = windows
-            .iter()
-            .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == folder))
-            .copied();
+        let shown = showing(folder, &windows, cx);
         let window = shown.unwrap_or_else(|| open_finder_window(folder, windows.len(), cx));
         window
             .update(cx, |demo, window, cx| {
@@ -130,6 +123,57 @@ pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
             })
             .ok();
     }
+}
+
+fn showing(
+    folder: &str,
+    windows: &[WindowHandle<FinderDemo>],
+    cx: &App,
+) -> Option<WindowHandle<FinderDemo>> {
+    windows
+        .iter()
+        .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == folder))
+        .copied()
+}
+
+/// The folder `item` is selected in, and its key there: its own folder, unless no window shows
+/// that one and another lists the item.
+fn shown_at(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
+    let folder = folder_at_path(&item.parent()?.to_string_lossy())?;
+    let key = Path::new(folder).join(item.file_name()?);
+    let key = SharedString::from(key.to_string_lossy().into_owned());
+    if showing(folder, &browser_windows(cx), cx).is_some() {
+        return Some((folder, key));
+    }
+    Some(listed(item, cx).unwrap_or((folder, key)))
+}
+
+/// NSWorkspace sends a symlinked item as its target, so Safari arrives from its cryptex: it shows
+/// where a window, or else /Applications, lists a symlink to it under the same name.
+fn listed(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
+    let name = item.file_name()?.to_string_lossy();
+    let real = std::fs::canonicalize(item).ok()?;
+    let links_to_item = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_symlink())
+            && std::fs::canonicalize(path).is_ok_and(|target| target == real)
+    };
+    for window in browser_windows(cx) {
+        let Ok(demo) = window.read(cx) else {
+            continue;
+        };
+        let row = demo.folder().and_then(|folder| {
+            (folder.rows.iter())
+                .find(|row| *row.name == *name && links_to_item(Path::new(&*row.path)))
+        });
+        if let Some(row) = row {
+            return Some((demo.here(), row.path.clone()));
+        }
+    }
+    let applications = Path::new("/Applications").join(&*name);
+    links_to_item(&applications).then(|| {
+        let key = applications.to_string_lossy().into_owned();
+        (intern_path(Path::new("/Applications")), key.into())
+    })
 }
 
 fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {

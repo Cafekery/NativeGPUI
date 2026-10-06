@@ -508,6 +508,10 @@ Measured on macOS 27.0.1 (26A434).
   `open -b` alike, with `aapd` (activation expected) set. Found'er takes the event itself and reads
   the paths from the bookmarks: AppKit's own handler resolved them on the main thread
   (`CFURLResolveBookmarkData`), where a share that stopped answering stalled it.
+- [x] NSWorkspace resolves a symlink before it makes the bookmark, so `/Applications/Safari.app`
+  arrives as `/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app`, and
+  LaunchServices registers Safari there too. Found'er selects such an item where an open window, or
+  else `/Applications`, lists a symlink to it under the same name.
 - [x] Folders and volumes opened with Found'er (Open With, `open -a`) open in a new window or tab,
   as Settings' open-folders-in-tabs says, or bring forward the window already on them. A launch
   made by a request opens only the windows it asks for.
