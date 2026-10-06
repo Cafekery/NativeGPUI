@@ -3,17 +3,17 @@ use std::path::{Path, PathBuf};
 use gpui::{
     AnyElement, App, AppContext, Bounds, Context, Div, FontWeight, IntoElement, ParentElement,
     Render, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions, div, point,
-    px, size,
+    px, rgb, size,
 };
-use native_gpui::tokens::{self, FileType, SystemColor};
+use native_gpui::tokens::{self, Appearance, FileType, SystemColor};
 use native_gpui::{
     CheckState, ControlSize, MenuEntry, NativeLabel, RawMaterial, ToolbarItem, ToolbarStyle,
-    material, native_checkbox, native_image, native_label, native_popup, native_root,
-    native_symbol, set_toolbar, system_template, window_options,
+    material, native_checkbox, native_image, native_label, native_popup, native_root, set_toolbar,
+    system_symbol, window_options,
 };
 use objc2::msg_send;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSImage, NSWindow};
+use objc2_app_kit::{NSImage, NSImageSymbolConfiguration, NSWindow};
 use objc2_foundation::{
     NSPoint, NSRect, NSSize, NSString, NSURL, NSURLIsUbiquitousItemKey, NSUserDefaults,
 };
@@ -364,7 +364,7 @@ impl Settings {
             .into_any_element()
     }
 
-    fn sidebar(&self) -> AnyElement {
+    fn sidebar(&self, key: bool) -> AnyElement {
         let mut pane = div().child(heading(26., 108., "Show these items in the sidebar:"));
         let mut y = 139.;
         for (section, rows) in sidebar::shown_sections() {
@@ -390,19 +390,11 @@ impl Settings {
                                 }),
                         ),
                     )
-                    .child(
-                        at(58., y - 1.)
-                            .w(px(20.))
-                            .h(px(16.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(row_icon(shown)),
-                    )
+                    .child(row_icon(shown, key, y))
                     .child(
                         at(79., y - 1.)
                             .w(px(260.))
-                            .child(label(&title).color(SystemColor::SecondaryLabel)),
+                            .child(label(&title).disabled(!key)),
                     );
                 y += 28.;
             }
@@ -435,47 +427,56 @@ impl Settings {
     }
 }
 
-fn row_icon(shown: Shown) -> AnyElement {
-    let id = ("ng.finder.settings.icon", shown as usize);
-    let symbol = |name: &str| {
-        native_symbol(id, name, 13., FontWeight::NORMAL)
-            .tint(SystemColor::SecondaryLabel)
-            .into_any_element()
-    };
-    let art = |resource: &str| {
-        let name = format!("ng.finder.settings.{resource}");
-        let named = NSString::from_str(&name);
-        if NSImage::imageNamed(&named).is_none() {
-            if let Some(image) = system_template(resource, px(14.)) {
-                image.setName(Some(&named));
-            }
+fn row_icon(shown: Shown, key: bool, y: f32) -> Div {
+    let computer;
+    let symbol = match shown {
+        Shown::Recents => "clock",
+        Shown::Shared => "person.2",
+        Shown::Applications => "appstore",
+        Shown::Desktop => "menubar.dock.rectangle",
+        Shown::Documents => "doc",
+        Shown::Downloads => "arrow.down.circle",
+        Shown::Movies => "film",
+        Shown::Music => "music",
+        Shown::Pictures => "photo",
+        Shown::ICloudDrive | Shown::CloudStorage => "icloud",
+        Shown::Home => "house",
+        Shown::Computer => {
+            computer = crate::locations::computer_symbol();
+            &computer
         }
-        native_image(id, &name)
-            .tint(SystemColor::SecondaryLabel)
-            .into_any_element()
+        Shown::HardDisks => "internaldrive",
+        Shown::ExternalDisks => "externaldrive",
+        Shown::Removable => "opticaldisc",
+        Shown::AirDrop => "airdrop",
+        Shown::Bonjour => "bonjour",
+        Shown::Servers => "pc",
+        Shown::Trash => "trash",
+        Shown::RecentTags => "circlebadge.2",
     };
-    match shown {
-        Shown::Recents => symbol("clock"),
-        Shown::Shared => symbol("person.2"),
-        Shown::Applications => art("SidebarApplicationsFolder"),
-        Shown::Desktop => symbol("menubar.dock.rectangle"),
-        Shown::Documents => symbol("doc"),
-        Shown::Downloads => symbol("arrow.down.circle"),
-        Shown::Movies => symbol("film"),
-        Shown::Music => art("SidebarMusicFolder"),
-        Shown::Pictures => symbol("photo"),
-        Shown::ICloudDrive | Shown::CloudStorage => symbol("icloud"),
-        Shown::Home => symbol("house"),
-        Shown::Computer => symbol(&crate::locations::computer_symbol()),
-        Shown::HardDisks => symbol("internaldrive"),
-        Shown::ExternalDisks => symbol("externaldrive"),
-        Shown::Removable => symbol("opticaldisc"),
-        Shown::AirDrop => art("SidebarAirDrop"),
-        Shown::Bonjour => symbol("bonjour"),
-        Shown::Servers => symbol("display"),
-        Shown::Trash => symbol("trash"),
-        Shown::RecentTags => symbol("circlebadge.2"),
-    }
+    let name = format!("ng.finder.settings.{symbol}");
+    let named = NSString::from_str(&name);
+    let Some(image) = NSImage::imageNamed(&named).or_else(|| {
+        let look = NSImageSymbolConfiguration::configurationWithPointSize_weight(13., 0.);
+        let image = system_symbol(symbol)?.imageWithSymbolConfiguration(&look)?;
+        image.setName(Some(&named));
+        Some(image)
+    }) else {
+        return div();
+    };
+    let size = image.size();
+    let baseline = image.alignmentRect().origin.y;
+    // Finder sits each symbol on its label's baseline, centred to the whole point.
+    let x = 68. - (size.width / 2.).floor();
+    let top = f64::from(y) + 12. - (size.height - baseline);
+    let icon = native_image(("ng.finder.settings.icon", shown as usize), &name);
+    let icon = match (key, tokens::current_appearance()) {
+        (false, _) => icon.untinted(),
+        (true, Appearance::Dark) => icon.tint(SystemColor::Label),
+        // Finder inks light rows calibrated white 0.01, which draws as sRGB 3, not black.
+        (true, _) => icon.ink(rgb(0x030303)),
+    };
+    at(x as f32, top as f32).child(icon)
 }
 
 fn store_target_path(path: &Path) {
@@ -508,11 +509,11 @@ fn choose_folder(window: &mut Window, cx: &mut Context<Settings>) {
 }
 
 impl Render for Settings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = match self.pane {
             0 => self.general(cx),
             1 => self.tags(cx),
-            2 => self.sidebar(),
+            2 => self.sidebar(window.is_window_active()),
             _ => self.advanced(),
         };
         native_root(
@@ -612,9 +613,13 @@ fn show(cx: &mut App) {
                 ..window_options()
             },
             |window, cx| {
-                let entity = cx.new(|_| Settings {
-                    pane,
-                    tag_list: Default::default(),
+                let entity = cx.new(|cx| {
+                    cx.observe_window_activation(window, |_, _, cx| cx.notify())
+                        .detach();
+                    Settings {
+                        pane,
+                        tag_list: Default::default(),
+                    }
                 });
                 crate::chrome::toolbar::system_corners(window);
                 install_toolbar(pane, entity.downgrade(), window, cx);
