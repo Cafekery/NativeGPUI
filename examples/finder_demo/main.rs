@@ -62,6 +62,7 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemTheme};
 use native_gpui::{install_menus, remember_frame, window_options};
+use objc2_foundation::{NSProcessInfo, NSString};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
@@ -87,6 +88,11 @@ fn main() {
     chrome::toolbar::concentric_corners();
     let application = gpui_platform::application();
     application.on_open_urls(file_viewer::arrived);
+    application.on_reopen(|cx| {
+        if navigate::browser_windows(cx).is_empty() {
+            menus::open_first_window(cx);
+        }
+    });
     application.run(|cx: &mut App| {
         tokens::init(cx);
         install_menus(cx);
@@ -100,16 +106,10 @@ fn main() {
             KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
         ]);
         navigate::arrive_on_keys(cx);
-        cx.on_window_closed(|cx, _| {
-            if !cx
-                .windows()
-                .iter()
-                .any(|window| window.downcast::<FinderDemo>().is_some())
-            {
-                cx.quit();
-            }
-        })
-        .detach();
+        // Like Finder it outlives its windows, and AppKit ends a windowless app that allows automatic termination.
+        NSProcessInfo::processInfo().disableAutomaticTermination(&NSString::from_str(
+            "Found'er keeps running without windows",
+        ));
         let warm = cx.background_executor().clone();
         warm.spawn(async {
             index().warm();

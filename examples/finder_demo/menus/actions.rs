@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use finder_fs::ops::{Conflict, Op, Restore};
-use gpui::{App, Bounds, Context, Pixels, Point, SharedString, Window, point, px, size};
+use gpui::{
+    App, Bounds, Context, Pixels, Point, SharedString, Window, WindowHandle, point, px, size,
+};
 use native_gpui::surfaces::SurfaceEdge;
 use native_gpui::{ShareItem, SharePicker, SurfaceAnchor, present_share_picker};
 use objc2_foundation::{NSString, NSURL, NSURLBookmarkResolutionOptions};
@@ -15,7 +17,7 @@ use crate::prefs::{self, WindowTarget};
 use crate::search::RECENTS;
 use crate::sound::Sound;
 use crate::views::icon::Arrangement;
-use crate::{open_finder_tab, open_finder_window};
+use crate::{home, open_finder_tab, open_finder_window};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Act {
@@ -481,4 +483,21 @@ pub(super) fn open_windows(ids: impl IntoIterator<Item = &'static str>, cx: &mut
     for (extra, id) in ids.into_iter().enumerate() {
         open_finder_window(id, extra + 1, cx);
     }
+}
+
+/// The window New Finder Window opens when no window is left to ask, at home for a listing.
+pub(crate) fn open_first_window(cx: &mut App) -> WindowHandle<FinderDemo> {
+    let target = new_window_target();
+    let listing = target.starts_with("tag:") || target == RECENTS;
+    let start = match listing {
+        true => intern_path(&home()),
+        false => target,
+    };
+    let window = open_finder_window(start, 0, cx);
+    if listing {
+        window
+            .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))
+            .ok();
+    }
+    window
 }

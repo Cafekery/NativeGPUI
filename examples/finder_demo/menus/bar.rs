@@ -16,7 +16,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::NSHelpManager;
 use objc2_foundation::{NSString, NSURL};
 
-use super::actions::open_windows;
+use super::actions::{open_first_window, open_windows};
 use super::context::{swatch_row, unlistable_folder};
 use super::edit::PasteExactly;
 use crate::app::FinderDemo;
@@ -531,6 +531,15 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
     cx.on_action(|_: &ToggleDefaultBrowser, _| crate::file_viewer::toggle_default());
+    cx.on_action(|_: &NewWindow, cx| {
+        open_first_window(cx);
+    });
+    cx.on_action(|_: &GoToFolder, cx| {
+        open_first_window(cx)
+            .update(cx, |demo, window, cx| demo.open_go(window, cx))
+            .ok();
+    });
+    follow_locations(cx);
     // A key panel is main too, so gpui has no active window to dispatch the menu's action to.
     cx.on_action(|_: &ShowPreviewOptions, cx| crate::preview::options::close(cx));
     cx.on_action(|_: &MacUserGuide, _| open_mac_help("mh43558"));
@@ -800,17 +809,32 @@ pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
 }
 
 fn locations() -> Vec<(String, &'static str)> {
-    LOCATIONS.with_borrow_mut(|known| {
-        known
-            .get_or_insert_with(|| {
+    LOCATIONS.with_borrow(|known| known.clone().unwrap_or_default())
+}
+
+/// Listing the locations asks every volume for its capacity, which a share that stopped answering stalls.
+fn follow_locations(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let found = cx
+            .background_executor()
+            .spawn(async {
                 listed_locations()
                     .into_iter()
                     .filter(|row| row.special == Some(Special::FileProvider))
                     .filter_map(|row| Some((row.title, intern_path(&row.path?))))
-                    .collect()
+                    .collect::<Vec<_>>()
             })
-            .clone()
+            .await;
+        cx.update(|cx| {
+            LOCATIONS.set(Some(found));
+            let recents = crate::navigate::browser_windows(cx)
+                .first()
+                .and_then(|front| front.read(cx).ok().map(|demo| demo.recents.clone()))
+                .unwrap_or_default();
+            set_menu("Go", go_rows(&recents));
+        });
     })
+    .detach();
 }
 
 fn go_head() -> Vec<MenuCommand> {

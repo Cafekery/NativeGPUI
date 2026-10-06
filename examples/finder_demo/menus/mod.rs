@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui::{App, ElementId, IntoElement, Pixels, Point, SharedString, WeakEntity, Window};
 use native_gpui::{MenuEntry, MenuView, NativeContextMenu, native_context_menu};
 
-pub(crate) use self::actions::Act;
+pub(crate) use self::actions::{Act, open_first_window};
 pub(crate) use self::bar::{
     Back, CopyNames, Forward, NewTab, SelectAll, ShowClipboard, ShowProgressWindow, ZoomIn,
     ZoomOut, chosen_state, go_rows, install, open_mac_help, remember,
