@@ -503,6 +503,11 @@ Measured on macOS 27.0.1 (26A434).
   event, the one `open -a` sends: a file is selected and scrolled to in a window on its folder (the
   frontmost one already there, else a new one); a folder opens, where Finder would select it in its
   parent. `selectFile:` with a root and no file sends a bare reopen.
+- [x] Each item in that event is a bookmark (`bmrk`) that already holds its path, from
+  `activateFileViewerSelectingURLs:`, `selectFile:`, NSWorkspace's openURLs, `open -a` and
+  `open -b` alike, with `aapd` (activation expected) set. Found'er takes the event itself and reads
+  the paths from the bookmarks: AppKit's own handler resolved them on the main thread
+  (`CFURLResolveBookmarkData`), where a share that stopped answering stalled it.
 - [x] Folders and volumes opened with Found'er (Open With, `open -a`) open in a new window or tab,
   as Settings' open-folders-in-tabs says, or bring forward the window already on them. A launch
   made by a request opens only the windows it asks for.

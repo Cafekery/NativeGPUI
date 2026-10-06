@@ -88,6 +88,7 @@ fn main() {
     chrome::toolbar::concentric_corners();
     let application = gpui_platform::application();
     application.on_open_urls(file_viewer::arrived);
+    file_viewer::take_open_documents();
     application.on_reopen(|cx| {
         if navigate::browser_windows(cx).is_empty() {
             menus::open_first_window(cx);
