@@ -814,6 +814,7 @@ pub fn native_popup(id: impl Into<ElementId>, selected: usize) -> NativePopup {
         entries: Vec::new(),
         pull_down: false,
         bezel: ButtonBezel::Automatic,
+        bordered: true,
         control_size: ControlSize::default(),
         font_size: None,
         width: None,
@@ -829,6 +830,7 @@ pub struct NativePopup {
     entries: Vec<MenuEntry>,
     pull_down: bool,
     bezel: ButtonBezel,
+    bordered: bool,
     control_size: ControlSize,
     font_size: Option<Pixels>,
     width: Option<Length>,
@@ -856,6 +858,11 @@ impl NativePopup {
 
     pub fn bezel_style(mut self, bezel: ButtonBezel) -> Self {
         self.bezel = bezel;
+        self
+    }
+
+    pub fn bordered(mut self, bordered: bool) -> Self {
+        self.bordered = bordered;
         self
     }
 
@@ -911,6 +918,7 @@ impl NativePopup {
             &self.entries,
             self.pull_down,
             self.drawn_bezel(),
+            self.bordered,
             self.control_size,
             self.font_size,
         );
@@ -922,6 +930,7 @@ impl NativePopup {
             );
             probe.setAutoenablesItems(false);
             probe.setBezelStyle(self.drawn_bezel().to_native());
+            probe.setBordered(self.bordered);
             probe.setControlSize(self.control_size.into());
             sync_font_size(&probe, self.font_size.map(Pixels::to_f64));
             if let Some(menu) = probe.menu() {
@@ -974,6 +983,9 @@ impl NativePopup {
         let bezel = self.drawn_bezel().to_native();
         if popup.bezelStyle() != bezel {
             popup.setBezelStyle(bezel);
+        }
+        if popup.isBordered() != self.bordered {
+            popup.setBordered(self.bordered);
         }
         sync_enabled(&popup, self.enabled);
         if popup.isTransparent() != self.tinted {
