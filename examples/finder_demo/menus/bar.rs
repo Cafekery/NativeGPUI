@@ -120,6 +120,7 @@ actions!(
         SortByOpened,
         SortBySize,
         SortByTags,
+        ToggleDefaultBrowser,
         ToggleHidden,
         TogglePathBar,
         TogglePreview,
@@ -328,6 +329,9 @@ fn one_of(action: &dyn Action, rows: &[&dyn Action]) -> bool {
 }
 
 fn enabled(action: &dyn Action) -> bool {
+    if action.partial_eq(&ToggleDefaultBrowser) {
+        return crate::file_viewer::can_be_default();
+    }
     let mirror = MIRROR.get();
     if mirror.location && one_of(action, &[&NewFolder, &Paste, &MoveHere, &PasteExactly]) {
         return false;
@@ -397,6 +401,9 @@ fn enabled(action: &dyn Action) -> bool {
 }
 
 fn checked(action: &dyn Action) -> Option<bool> {
+    if action.partial_eq(&ToggleDefaultBrowser) {
+        return Some(crate::file_viewer::is_default());
+    }
     let Mirror {
         view,
         sort,
@@ -523,6 +530,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &crate::ops::undo::RedoOp, cx| crate::icon_well::redo_in_key_window(cx));
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
+    cx.on_action(|_: &ToggleDefaultBrowser, _| crate::file_viewer::toggle_default());
     // A key panel is main too, so gpui has no active window to dispatch the menu's action to.
     cx.on_action(|_: &ShowPreviewOptions, cx| crate::preview::options::close(cx));
     cx.on_action(|_: &MacUserGuide, _| open_mac_help("mh43558"));
@@ -540,6 +548,13 @@ pub(crate) fn install(cx: &mut App) {
             MenuCommand::new("Empty Trash", EmptyTrashNow)
                 .key("cmd-alt-shift-backspace")
                 .option_alternate(),
+        ],
+    );
+    extend_menu(
+        MenuSection::App,
+        [
+            MenuCommand::new("Use Found'er as Default File Browser", ToggleDefaultBrowser),
+            MenuCommand::separator(),
         ],
     );
     extend_menu(

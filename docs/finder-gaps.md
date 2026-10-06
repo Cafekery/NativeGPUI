@@ -490,6 +490,28 @@ stopped after the mount had settled.
   waited 15,440 ms inside `connectToCoreServicesD` before any of the demo's code ran.
 - A Favorites or Locations item names the path its bookmark stored, as Finder's list last wrote
   it; an item whose folder has since moved or gone is not followed or dropped at launch.
+## Default file browser
+
+Measured on macOS 27.0.1 (26A434).
+
+- [x] Found'er ▸ Use Found'er as Default File Browser writes the global `NSFileViewer` default
+  (Found'er's bundle id) and deletes it again when turned off; the row is checked while the key
+  names Found'er. Every app's Show in Finder or Reveal (NSWorkspace's
+  `activateFileViewerSelectingURLs:` and `selectFile:inFileViewerRootedAtPath:`) and Terminal's
+  `open -R` then land in Found'er. Nothing prompts.
+- [x] NSWorkspace hands a file viewer other than Finder the items themselves in an open-documents
+  event, the one `open -a` sends: a file is selected and scrolled to in a window on its folder (the
+  frontmost one already there, else a new one); a folder opens, where Finder would select it in its
+  parent. `selectFile:` with a root and no file sends a bare reopen.
+- [x] Folders and volumes opened with Found'er (Open With, `open -a`) open in a new window or tab,
+  as Settings' open-folders-in-tabs says, or bring forward the window already on them. A launch
+  made by a request opens only the windows it asks for.
+- [ ] Folders opened any other way stay Finder's: LaunchServices refuses `public.folder` to any
+  handler but Finder, with paramErr (-50) from both `setDefaultApplicationAtURL:toOpenContentType:`
+  and `LSSetDefaultRoleHandlerForContentType`, whatever rank the claim carries. So `open ~/dir`
+  opens Finder.
+- Finder keeps running either way and keeps the Desktop, the Trash, its Dock icon, ⌥⌘Space and
+  every script that addresses Finder by name.
 ## macOS 27 audit
 
 Finder 27.0 (26A428) against the demo on one 2x display, dark and light, both windows at 240,120

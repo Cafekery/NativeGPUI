@@ -6,11 +6,17 @@ use block2::StackBlock;
 use finder_fs::kind::is_package_name;
 use gpui::{App, AsyncApp};
 use objc2_app_kit::{NSApplicationDidFinishLaunchingNotification, NSRunningApplication};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSString, NSURL};
+use objc2_core_foundation::{
+    CFPreferencesCopyValue, CFPreferencesSetValue, CFPreferencesSynchronize, CFString,
+    kCFPreferencesAnyApplication, kCFPreferencesAnyHost, kCFPreferencesCurrentUser,
+};
+use objc2_foundation::{NSBundle, NSNotification, NSNotificationCenter, NSString, NSURL};
 
 use crate::data::intern_path;
 use crate::navigate::{browser_windows, folder_at_path, reveal};
 use crate::{home, open_finder_window};
+
+const FILE_VIEWER: &str = "NSFileViewer";
 
 thread_local! {
     static APP: OnceCell<AsyncApp> = const { OnceCell::new() };
@@ -127,5 +133,57 @@ fn show_folder(folder: &'static str, cx: &mut App) {
         None => {
             open_finder_window(folder, windows.len(), cx);
         }
+    }
+}
+
+/// Found'er reveals for every app: the global `NSFileViewer` names it.
+pub(crate) fn is_default() -> bool {
+    own_id().is_some_and(|id| file_viewer().as_ref() == Some(&id))
+}
+
+pub(crate) fn can_be_default() -> bool {
+    own_id().is_some()
+}
+
+/// LaunchServices refuses `public.folder` to any handler but Finder: both `NSWorkspace` and
+/// `LSSetDefaultRoleHandlerForContentType` answer paramErr, whatever rank the claim carries.
+pub(crate) fn toggle_default() {
+    let id = own_id().filter(|_| !is_default());
+    set_file_viewer(id.as_deref());
+}
+
+fn own_id() -> Option<String> {
+    Some(NSBundle::mainBundle().bundleIdentifier()?.to_string())
+}
+
+fn file_viewer() -> Option<String> {
+    let key = CFString::from_static_str(FILE_VIEWER);
+    let value = unsafe {
+        CFPreferencesCopyValue(
+            &key,
+            kCFPreferencesAnyApplication,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost,
+        )
+    }?;
+    Some(value.downcast::<CFString>().ok()?.to_string())
+}
+
+fn set_file_viewer(id: Option<&str>) {
+    let key = CFString::from_static_str(FILE_VIEWER);
+    let value = id.map(CFString::from_str);
+    unsafe {
+        CFPreferencesSetValue(
+            &key,
+            value.as_deref().map(|value| value.as_ref()),
+            kCFPreferencesAnyApplication,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost,
+        );
+        CFPreferencesSynchronize(
+            kCFPreferencesAnyApplication,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost,
+        );
     }
 }
