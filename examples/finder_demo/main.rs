@@ -11,6 +11,7 @@ mod dock;
 mod dragdrop;
 mod elastic;
 mod fit;
+mod form;
 mod frame;
 mod icon_well;
 mod icons;

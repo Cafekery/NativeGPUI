@@ -2,14 +2,12 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_char};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::thread::LocalKey;
 use std::time::Duration;
 
 use block2::{RcBlock, StackBlock};
@@ -22,10 +20,10 @@ use gpui::{
     Stateful, Task, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point,
     prelude::*, px, size,
 };
-use native_gpui::tokens::{FileType, SystemColor, ns_font, system_color, system_font_family};
+use native_gpui::tokens::{FileType, SystemColor, system_color};
 use native_gpui::{
-    ControlSize, LabelAlign, Layer, MenuEntry, NativeHost, Target, native_button, native_label,
-    native_popup, native_root, native_rule, native_switch, window_options, wire,
+    LabelAlign, Layer, MenuEntry, NativeHost, Target, native_button, native_label, native_popup,
+    window_options, wire,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
@@ -36,10 +34,10 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSButton, NSColor, NSControlSize,
     NSFocusRingType, NSFont, NSFontWeightRegular, NSImage, NSImageScaling,
     NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse,
-    NSModalResponseOK, NSOpenPanel, NSPathControl, NSPathControlItem, NSPopUpButton, NSResponder,
-    NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSText,
-    NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowButton,
-    NSWindowDidResizeNotification, NSWindowTitleVisibility, NSWorkspace,
+    NSModalResponseOK, NSOpenPanel, NSPathControl, NSPathControlItem, NSResponder, NSScrollView,
+    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSText, NSTextAlignment,
+    NSTextField, NSTextView, NSView, NSWindow, NSWindowButton, NSWindowDidResizeNotification,
+    NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSBundleExecutableArchitectureARM64,
@@ -53,6 +51,11 @@ use crate::app::FinderDemo;
 use crate::art::{row_art, small_glyph};
 use crate::data::{
     Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
+};
+use crate::form::{
+    BODY, BOTTOM, Flip, Form, GAP, INSET, KEPT, LINE, MARGIN, ROW, SECTION, STACK, TITLE, TITLEBAR,
+    heading, hugging, key_of, labelled, lines_height, page, remembered, section, switch_row,
+    text_height, text_width,
 };
 use crate::frame::ns_window;
 use crate::icon_well::{self, IconWell};
@@ -76,29 +79,16 @@ pub(crate) const HEIGHT: f32 = 620.;
 const SHORTEST: f32 = 240.;
 const NARROWEST: f32 = 265.;
 const WIDEST: f32 = 400.;
-const TITLEBAR: f32 = 32.;
-const MARGIN: f32 = 20.;
-const INSET: f32 = 10.;
-const ROW: f32 = 37.;
-const BODY: f32 = 13.;
-const LINE: f32 = 16.;
-const GAP: f32 = 16.;
-const RADIUS: f32 = 12.;
-const SECTION: f32 = 30.;
-const STACK: f32 = 10.;
-const TITLE: f32 = LINE + STACK;
 const TOP: f32 = 16.;
 const PREVIEW: f32 = 128.;
 const THUMB: f32 = 320.;
 const NAME: f32 = 15.;
 const COMMENT: f32 = 48.;
-const BOTTOM: f32 = 20.;
 // NSPathControl ends its last title 2pt further in than a label ends its text.
 const PATH_TRAIL: f32 = 2.;
 const NOTE: &str = "Use this application to open all documents like this one.";
 const WIDTH_KEY: &str = "FXInfoWindowWidth";
 const WHERE: &str = "Where";
-const KEPT: usize = 512;
 const FOLLOW_EVERY: Duration = Duration::from_millis(100);
 const FOLLOW_TRIES: usize = 600;
 
@@ -247,59 +237,6 @@ fn aspect(image: &RenderImage) -> f32 {
     u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32
 }
 
-fn remembered<V: Copy>(
-    seen: &'static LocalKey<RefCell<HashMap<u64, V>>>,
-    key: u64,
-    measure: impl FnOnce() -> V,
-) -> V {
-    if let Some(value) = seen.with_borrow(|seen| seen.get(&key).copied()) {
-        return value;
-    }
-    let value = measure();
-    seen.with_borrow_mut(|seen| {
-        if seen.len() >= KEPT {
-            seen.clear();
-        }
-        seen.insert(key, value);
-    });
-    value
-}
-
-fn text_width(text: &str) -> f32 {
-    thread_local! {
-        static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
-    }
-    remembered(&SEEN, key_of(text), || {
-        let mtm = MainThreadMarker::new().expect("laid out on the main thread");
-        let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
-        field.setFont(ns_font(system_font_family(), px(BODY), FontWeight::NORMAL).as_deref());
-        field.fittingSize().width as f32
-    })
-}
-
-fn text_height(text: &str, size: f32, weight: FontWeight, width: f32) -> f32 {
-    thread_local! {
-        static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
-    }
-    let key = key_of((text, size.to_bits(), weight.0.to_bits(), width.to_bits()));
-    remembered(&SEEN, key, || {
-        let mtm = MainThreadMarker::new().expect("laid out on the main thread");
-        let field = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
-        field.setFont(ns_font(system_font_family(), px(size), weight).as_deref());
-        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(width.into(), 1e6));
-        field.cell().map_or(0., |cell| {
-            cell.cellSizeForBounds(bounds).height.ceil() as f32
-        })
-    })
-}
-
-fn lines_height(text: &str, width: f32) -> f32 {
-    (text_height(text, BODY, FontWeight::NORMAL, width) / LINE)
-        .round()
-        .max(1.)
-        * LINE
-}
-
 fn formatter(date: NSDateFormatterStyle, time: NSDateFormatterStyle) -> Retained<NSDateFormatter> {
     let formatter = NSDateFormatter::new();
     formatter.setDateStyle(date);
@@ -389,12 +326,6 @@ fn writable(path: &Path) -> bool {
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
-}
-
-fn key_of(parts: impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    parts.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn hosted<V: Message + AsRef<NSView> + 'static>(
@@ -545,8 +476,6 @@ fn icon_well(
     )
 }
 
-type Flip = Rc<dyn Fn(bool, &mut App)>;
-
 fn flip(
     this: &WeakEntity<Info>,
     act: impl Fn(&mut Info, bool, &mut Context<Info>) + 'static,
@@ -557,247 +486,104 @@ fn flip(
     })
 }
 
-fn section(id: &'static str) -> Stateful<Div> {
+fn fits(form: &Form, label: &str, value: &str) -> bool {
+    label == WHERE || text_width(value) <= form.room(label)
+}
+
+fn value_height(form: &Form, label: &str, value: &str) -> f32 {
+    match fits(form, label, value) {
+        true => ROW,
+        false => ROW + 8. + lines_height(value, form.inner),
+    }
+}
+
+fn values_height(form: &Form, rows: &[(&str, SharedString)]) -> f32 {
+    rows.iter()
+        .map(|(label, value)| value_height(form, label, value))
+        .sum()
+}
+
+fn values(form: &Form, rows: &[(&str, SharedString)]) -> Vec<AnyElement> {
+    rows.iter()
+        .map(|(label, value)| {
+            if *label == WHERE {
+                let room = form.room(label);
+                return labelled(label, SystemColor::Label, where_control(value, room));
+            }
+            let shown = |text: &str| {
+                native_label("value", text)
+                    .color(SystemColor::SecondaryLabel)
+                    .align(LabelAlign::Right)
+            };
+            if fits(form, label, value) {
+                return labelled(label, SystemColor::Label, shown(value));
+            }
+            let tall = lines_height(value, form.inner);
+            div()
+                .h(px(ROW + 8. + tall))
+                .p(px(INSET))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(native_label("label", label))
+                .child(div().h(px(tall)).child(shown(value).wraps(true)))
+                .into_any_element()
+        })
+        .collect()
+}
+
+fn name_height(form: &Form, name: &str) -> f32 {
+    text_height(name, NAME, FontWeight::SEMIBOLD, form.wide)
+}
+
+fn header_height(form: &Form, name: &str, summary: bool, tagged: bool) -> f32 {
+    let summary = if summary { 2. + LINE } else { 0. };
+    let tags = if tagged { GAP + ROW } else { 0. };
+    TOP + PREVIEW + INSET + name_height(form, name) + summary + tags
+}
+
+fn header(
+    form: &Form,
+    preview: impl IntoElement,
+    name: &str,
+    summary: &str,
+    tags: Option<AnyElement>,
+) -> AnyElement {
     div()
-        .id(id)
-        .pt(px(SECTION))
+        .pt(px(TOP))
         .flex()
         .flex_col()
-        .gap(px(STACK))
-}
-
-fn heading(title: &str) -> Div {
-    div()
-        .px(px(MARGIN + INSET))
-        .child(native_label("title", title).weight(FontWeight::BOLD))
-}
-
-fn labelled(label: &str, color: SystemColor, value: impl IntoElement) -> AnyElement {
-    div()
-        .h(px(ROW))
-        .px(px(INSET))
-        .flex()
-        .items_center()
-        .gap(px(GAP))
+        .child(div().mx(px(MARGIN)).h(px(PREVIEW)).child(preview))
         .child(
             div()
-                .flex_none()
-                .w(px(text_width(label)))
-                .child(native_label("label", label).color(color)),
+                .mx(px(MARGIN))
+                .mt(px(INSET))
+                .h(px(name_height(form, name)))
+                .child(
+                    native_label("ng.finder.info.name", name)
+                        .font_size(px(NAME))
+                        .weight(FontWeight::SEMIBOLD)
+                        .align(LabelAlign::Center)
+                        .wraps(true),
+                ),
         )
-        .child(div().flex_1().flex().justify_end().child(value))
-        .into_any_element()
-}
-
-fn switch_row(title: &str, on: bool, change: Option<Flip>) -> AnyElement {
-    let color = match change {
-        Some(_) => SystemColor::Label,
-        None => SystemColor::DisabledControlText,
-    };
-    let switch = native_switch("switch", on)
-        .control_size(ControlSize::Mini)
-        .enabled(change.is_some())
-        .on_change(move |on, _, cx| {
-            if let Some(change) = &change {
-                change(*on, cx);
-            }
-        });
-    labelled(title, color, switch)
-}
-
-struct Form {
-    wide: f32,
-    inner: f32,
-    hair: f32,
-}
-
-impl Form {
-    fn new(width: f32, hair: f32) -> Self {
-        let wide = width - 2. * MARGIN;
-        Form {
-            wide,
-            inner: wide - 2. * INSET,
-            hair,
-        }
-    }
-
-    fn room(&self, label: &str) -> f32 {
-        self.inner - text_width(label) - GAP
-    }
-
-    fn fits(&self, label: &str, value: &str) -> bool {
-        label == WHERE || text_width(value) <= self.room(label)
-    }
-
-    fn value_height(&self, label: &str, value: &str) -> f32 {
-        match self.fits(label, value) {
-            true => ROW,
-            false => ROW + 8. + lines_height(value, self.inner),
-        }
-    }
-
-    fn values_height(&self, rows: &[(&str, SharedString)]) -> f32 {
-        rows.iter()
-            .map(|(label, value)| self.value_height(label, value))
-            .sum()
-    }
-
-    fn values(&self, rows: &[(&str, SharedString)]) -> Vec<AnyElement> {
-        rows.iter()
-            .map(|(label, value)| {
-                if *label == WHERE {
-                    let room = self.room(label);
-                    return labelled(label, SystemColor::Label, where_control(value, room));
-                }
-                let shown = |text: &str| {
-                    native_label("value", text)
+        .when(!summary.is_empty(), |head| {
+            head.child(
+                div().mx(px(MARGIN)).mt(px(2.)).child(
+                    native_label("ng.finder.info.summary", summary)
                         .color(SystemColor::SecondaryLabel)
-                        .align(LabelAlign::Right)
-                };
-                if self.fits(label, value) {
-                    return labelled(label, SystemColor::Label, shown(value));
-                }
-                let tall = lines_height(value, self.inner);
-                div()
-                    .h(px(ROW + 8. + tall))
-                    .p(px(INSET))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(native_label("label", label))
-                    .child(div().h(px(tall)).child(shown(value).wraps(true)))
-                    .into_any_element()
-            })
-            .collect()
-    }
-
-    fn card(&self, id: &'static str, rows: Vec<AnyElement>) -> Stateful<Div> {
-        let last = rows.len().saturating_sub(1);
-        div()
-            .id(id)
-            .mx(px(MARGIN))
-            .rounded(px(RADIUS))
-            .bg(system_color(SystemColor::QuaternarySystemFill))
-            .children(rows.into_iter().enumerate().map(|(at, row)| {
-                div().id(at).relative().child(row).when(at < last, |row| {
-                    row.child(
-                        div()
-                            .absolute()
-                            .left(px(INSET))
-                            .right(px(INSET))
-                            .bottom_0()
-                            .h(px(self.hair))
-                            .bg(system_color(SystemColor::Separator)),
-                    )
-                })
-            }))
-    }
-
-    fn name_height(&self, name: &str) -> f32 {
-        text_height(name, NAME, FontWeight::SEMIBOLD, self.wide)
-    }
-
-    fn head_height(&self, name: &str, summary: bool, tagged: bool) -> f32 {
-        let summary = if summary { 2. + LINE } else { 0. };
-        let tags = if tagged { GAP + ROW } else { 0. };
-        TOP + PREVIEW + INSET + self.name_height(name) + summary + tags
-    }
-
-    fn head(
-        &self,
-        preview: impl IntoElement,
-        name: &str,
-        summary: &str,
-        tags: Option<AnyElement>,
-    ) -> Div {
-        div()
-            .pt(px(TOP))
-            .flex()
-            .flex_col()
-            .child(div().mx(px(MARGIN)).h(px(PREVIEW)).child(preview))
-            .child(
-                div()
-                    .mx(px(MARGIN))
-                    .mt(px(INSET))
-                    .h(px(self.name_height(name)))
-                    .child(
-                        native_label("ng.finder.info.name", name)
-                            .font_size(px(NAME))
-                            .weight(FontWeight::SEMIBOLD)
-                            .align(LabelAlign::Center)
-                            .wraps(true),
-                    ),
+                        .align(LabelAlign::Center),
+                ),
             )
-            .when(!summary.is_empty(), |head| {
-                head.child(
-                    div().mx(px(MARGIN)).mt(px(2.)).child(
-                        native_label("ng.finder.info.summary", summary)
-                            .color(SystemColor::SecondaryLabel)
-                            .align(LabelAlign::Center),
-                    ),
-                )
-            })
-            .when_some(tags, |head, tags| {
-                head.child(
-                    div()
-                        .mt(px(GAP))
-                        .child(self.card("ng.finder.info.tags", vec![tags])),
-                )
-            })
-    }
-}
-
-fn page(window: &Window, head: Div, sections: Vec<AnyElement>, bounded: bool) -> impl IntoElement {
-    let titlebar = ns_window(window).map_or(TITLEBAR, |ns| {
-        (ns.frame().size.height - ns.contentLayoutRect().size.height) as f32
-    });
-    native_root(
-        div()
-            .size_full()
-            .relative()
-            .bg(system_color(SystemColor::WindowBackground))
-            .child(
+        })
+        .when_some(tags, |head, tags| {
+            head.child(
                 div()
-                    .id("ng.finder.info.scroll")
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(titlebar))
-                    .bottom_0()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .w_full()
-                            .relative()
-                            .pb(px(BOTTOM))
-                            .flex()
-                            .flex_col()
-                            .child(head)
-                            .children(sections)
-                            .when(bounded, |content| {
-                                content.child(
-                                    canvas(
-                                        |_, _, _| (),
-                                        move |bounds, _, window, _| {
-                                            bound(window, titlebar + f32::from(bounds.size.height));
-                                        },
-                                    )
-                                    .absolute()
-                                    .size_full(),
-                                )
-                            }),
-                    ),
+                    .mt(px(GAP))
+                    .child(form.card("ng.finder.info.tags", vec![tags])),
             )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(titlebar))
-                    .h(px(0.5))
-                    .child(native_rule("ng.finder.info.titlebar")),
-            ),
-    )
+        })
+        .into_any_element()
 }
 
 fn bound(window: &Window, tall: f32) {
@@ -1432,13 +1218,14 @@ impl Info {
             0 => 0.,
             checks => STACK + checks as f32 * ROW,
         };
-        SECTION + TITLE + form.values_height(&self.general_rows(form)) + toggles
+        SECTION + TITLE + values_height(form, &self.general_rows(form)) + toggles
     }
 
     fn default_height(&self, width: f32) -> f32 {
         let form = Form::new(width, 1.);
         let row = &self.line.row;
-        let head = form.head_height(
+        let head = header_height(
+            &form,
             &row.display,
             !self.summary().is_empty(),
             self.tags.is_some(),
@@ -1498,7 +1285,7 @@ impl Info {
             .into_any_element()
     }
 
-    fn head(&self, form: &Form, scale: f32) -> Div {
+    fn head(&self, form: &Form, scale: f32) -> AnyElement {
         let row = &self.line.row;
         let tags = self.tags.as_ref().map(|tags| {
             div()
@@ -1510,7 +1297,8 @@ impl Info {
                 .child(tags_field(row.path.clone(), tags.clone()))
                 .into_any_element()
         });
-        form.head(
+        header(
+            form,
             self.preview(form, scale),
             &row.display,
             &self.summary(),
@@ -1530,7 +1318,7 @@ impl Info {
             .collect();
         section("ng.finder.info.general")
             .child(heading("General"))
-            .child(form.card("values", form.values(&self.general_rows(form))))
+            .child(form.card("values", values(form, &self.general_rows(form))))
             .when(!toggles.is_empty(), |section| {
                 section.child(form.card("toggles", toggles))
             })
@@ -1541,7 +1329,7 @@ impl Info {
         (!rows.is_empty()).then(|| {
             section("ng.finder.info.more")
                 .child(heading("More Info"))
-                .child(form.card("values", form.values(&rows)))
+                .child(form.card("values", values(form, &rows)))
         })
     }
 
@@ -1815,21 +1603,24 @@ impl Render for Info {
         self.title(window);
         let this = cx.weak_entity();
         let form = Form::new(width, 1. / scale);
-        let mut sections = vec![self.general(&form, &this).into_any_element()];
+        let mut content = vec![
+            self.head(&form, scale),
+            self.general(&form, &this).into_any_element(),
+        ];
         if self.subject != Subject::Place {
-            sections.extend(self.more_info(&form).map(IntoElement::into_any_element));
-            sections.push(self.name_section(&form, &this).into_any_element());
-            sections.push(self.comments(&form).into_any_element());
-            sections.extend(
+            content.extend(self.more_info(&form).map(IntoElement::into_any_element));
+            content.push(self.name_section(&form, &this).into_any_element());
+            content.push(self.comments(&form).into_any_element());
+            content.extend(
                 self.open_with(&form, &this)
                     .map(IntoElement::into_any_element),
             );
-            sections.extend(
+            content.extend(
                 self.privileges(&form, &this)
                     .map(IntoElement::into_any_element),
             );
         }
-        page(window, self.head(&form, scale), sections, !self.panel)
+        page(window, content, (!self.panel).then_some(bound))
     }
 }
 
@@ -2042,22 +1833,6 @@ fn grant_row(
         .child(div().flex_1().child(native_label("name", &name)))
         .child(popup)
         .into_any_element()
-}
-
-/// AppKit sizes a pop-up to its widest row; a form's value hugs its chevron.
-fn hugging(title: &str, icon: bool) -> f32 {
-    native_gpui::fitting_size_keyed("NSPopUpButton.info_value", key_of((title, icon)), |mtm| {
-        let popup =
-            NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-        popup.setBordered(false);
-        popup.addItemWithTitle(&NSString::from_str(title));
-        if let Some(item) = popup.lastItem().filter(|_| icon) {
-            let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(16., 16.));
-            item.setImage(Some(&image));
-        }
-        popup.fittingSize()
-    })
-    .width as f32
 }
 
 fn change_all_width() -> f32 {
@@ -2482,8 +2257,8 @@ impl Combined {
 
     fn default_height(&self, width: f32) -> f32 {
         let form = Form::new(width, 1.);
-        let head = form.head_height(&self.name(), true, false);
-        TITLEBAR + head + SECTION + TITLE + form.values_height(&self.rows()) + BOTTOM
+        let head = header_height(&form, &self.name(), true, false);
+        TITLEBAR + head + SECTION + TITLE + values_height(&form, &self.rows()) + BOTTOM
     }
 }
 
@@ -2501,7 +2276,7 @@ impl Render for Combined {
             .unwrap_or_default();
         let general = section("ng.finder.info.general")
             .child(heading("General"))
-            .child(form.card("values", form.values(&self.rows())));
+            .child(form.card("values", values(&form, &self.rows())));
         let paths = self.paths();
         let first = paths.first().cloned();
         let same = self.same == Some(true);
@@ -2517,7 +2292,11 @@ impl Render for Combined {
             .items_center()
             .justify_center()
             .child(div().size(px(PREVIEW)).child(well));
-        let head = form.head(preview, &self.name(), &summary, None);
-        page(window, head, vec![general.into_any_element()], !self.panel)
+        let head = header(&form, preview, &self.name(), &summary, None);
+        page(
+            window,
+            vec![head, general.into_any_element()],
+            (!self.panel).then_some(bound),
+        )
     }
 }
