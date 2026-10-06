@@ -868,6 +868,9 @@ impl Shown {
                                 move |_: &MouseDownEvent, _, cx| {
                                     finder.update(cx, |this, cx| {
                                         this.preview_expanded = !this.preview_expanded;
+                                        crate::prefs::set_preview_info_expanded(
+                                            this.preview_expanded,
+                                        );
                                         cx.notify();
                                     })
                                 }

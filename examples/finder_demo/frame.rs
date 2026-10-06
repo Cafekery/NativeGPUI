@@ -80,6 +80,7 @@ impl Render for FinderDemo {
         }
         self.sync_window_min();
         self.sync_stats(cx);
+        self.sync_sidebar();
         self.sync_preview_window(window, cx);
         self.spring_tick(window, cx);
         if self.bands.tick() {

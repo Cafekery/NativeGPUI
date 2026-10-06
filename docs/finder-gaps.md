@@ -40,6 +40,18 @@ a context menu but not in the menu bar are listed as wiring, not as features.
   launch, opens at the frame of the browser window last moved, resized or closed, kept across
   launches; with a browser window already open it cascades down and right off the front one. The
   frame stays inside its screen's visible frame, or the main screen's once that display is gone
+- [x] What a window shows is kept as Finder keeps it, in the demo's own defaults under Finder's
+  key and read before Finder's: each sidebar section's disclosure
+  (`SidebarPlacesSectionDisclosedState`, `SidebarDevicesSectionDisclosedState` and Finder's own
+  spelling `SidebarTagsSctionDisclosedState`), the sidebar shown (`ShowSidebar`) and its dragged
+  width (`SidebarWidth2`), the path bar (`ShowPathbar`), the status bar (`ShowStatusBar`) and the
+  preview's Show More (`PreviewPaneInfoExpanded`). As Finder's do, a change reaches new windows and
+  the next launch, not windows already open; except the status bar, which every window takes from
+  the setting each time it goes somewhere, without resizing. A section collapsed in a window stays
+  collapsed when that window goes to one of its items. ⇧⌘. shows hidden files in every window
+  until quit and is never written, as Finder's (`AppleShowAllFiles` is only read). The toolbar's
+  view buttons keep the view for new windows as ⌘1–4 do; reopening kept windows no longer does.
+  The toolbar shows in every new window, as Finder's does whatever was hidden before.
 
 ## Features
 
@@ -154,8 +166,8 @@ rule: the title keeps a quarter of the window width; the search field gives way 
 then its 40pt button), then the view switcher (164 → 50pt popup), then the title (to 160), the last
 space and, last, items into the overflow menu. Every threshold moves 4/3pt per point of sidebar.
 
-- [x] The demo's sidebar opens at Finder's saved width (`SidebarWidth2`, 221 here, which a new
-  Finder window opened at; 216 when there is none) and stops at 158, as
+- [x] The demo's sidebar opens at the width it was last dragged to, else Finder's (`SidebarWidth2`,
+  221 here, which a new Finder window opened at; 216 when there is none) and stops at 158, as
   a new Finder window's, and its preview pane takes Finder's saved width (`PreviewPaneWidth`, 241
   here, and `PreviewPaneGalleryWidth` in gallery view), 288 when there is none, down to 240. At
   those defaults Finder starts shrinking the field at 1365, collapses it at 1145 and collapses the

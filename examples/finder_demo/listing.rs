@@ -1,11 +1,11 @@
-use std::cell::RefMut;
+use std::cell::{Cell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 use std::sync::{Arc, Weak};
 
 use finder_fs::sort::fold;
-use gpui::SharedString;
+use gpui::{App, SharedString};
 
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
@@ -16,6 +16,24 @@ use crate::views::column::Rung;
 const COLUMNS_HELD: usize = 32;
 const INDEXES_HELD: usize = 4;
 const SCANS_BEFORE_MAP: usize = 2;
+
+thread_local! {
+    // ⇧⌘. shows hidden files in every window until quit, as Finder's does; it never writes the setting.
+    static HIDDEN: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+pub(crate) fn shows_hidden() -> bool {
+    HIDDEN.get().unwrap_or_else(|| {
+        let shown = crate::prefs::shows_all_files();
+        HIDDEN.set(Some(shown));
+        shown
+    })
+}
+
+pub(crate) fn toggle_hidden(cx: &mut App) {
+    HIDDEN.set(Some(!shows_hidden()));
+    crate::read::notify_windows(cx);
+}
 
 pub(crate) enum Slot {
     Header(SharedString),
@@ -412,11 +430,11 @@ impl FinderDemo {
             && self.expanded.is_empty()
             && self.filtered.trim().is_empty()
             && self.type_filter.is_none())
-        .then_some(self.show_hidden)
+        .then_some(shows_hidden())
     }
 
     pub(crate) fn plain_on_arrival(&self) -> Option<bool> {
-        self.expanded.is_empty().then_some(self.show_hidden)
+        self.expanded.is_empty().then_some(shows_hidden())
     }
 
     pub(crate) fn built(&self, id: &'static str, hidden: bool, lines: Vec<Line>) {
@@ -436,7 +454,7 @@ impl FinderDemo {
         Stamp {
             here: self.here(),
             order,
-            hidden: self.show_hidden,
+            hidden: shows_hidden(),
             query: self.filtered.clone(),
             filter: self.type_filter.clone(),
             hits: self.hits_rev,

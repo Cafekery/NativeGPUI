@@ -548,6 +548,7 @@ impl FinderDemo {
         self.tag_listing = None;
         self.icons.forget();
         self.clear_type_filter();
+        self.follow_status_bar();
         let here = self.here();
         self.list_look = ListLook::of(here);
         self.load_columns();

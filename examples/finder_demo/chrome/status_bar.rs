@@ -19,6 +19,7 @@ const SIDE_W: f32 = 120.;
 impl FinderDemo {
     pub(crate) fn toggle_status_bar(&mut self, window: &Window, cx: &mut Context<Self>) {
         self.status_bar_shown = !self.status_bar_shown;
+        crate::prefs::set_shows_status_bar(self.status_bar_shown);
         cx.notify();
         let Some(ns_window) = ns_window(window) else {
             return;
@@ -30,6 +31,11 @@ impl FinderDemo {
         // Off this draw: a resize serviced inside it reaches gpui while it cannot take its app.
         cx.spawn(async move |_, _| ns_window.setFrame_display(frame, true))
             .detach();
+    }
+
+    /// Finder sets a window's status bar from the setting each time it goes somewhere, without resizing it.
+    pub(crate) fn follow_status_bar(&mut self) {
+        self.status_bar_shown = crate::prefs::shows_status_bar();
     }
 
     pub(crate) fn status_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {

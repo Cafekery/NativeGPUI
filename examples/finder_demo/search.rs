@@ -186,6 +186,7 @@ impl FinderDemo {
         self.hits.clear();
         self.hits_rev = next_rev();
         self.tag_listing = Some(id);
+        self.follow_status_bar();
         self.retitle(window);
         cx.notify();
         let tag = id.strip_prefix("tag:").unwrap_or_default();

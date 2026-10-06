@@ -42,7 +42,6 @@ pub(crate) struct Finder {
     pub(crate) toolbar: Vec<String>,
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
-    pub(crate) sidebar_width: Option<f32>,
     pub(crate) columns: Vec<Column>,
     pub(crate) arranged: (Column, Column),
     pub(crate) icon_options: IconOptions,
@@ -166,7 +165,6 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
             (column, ascending.unwrap_or(true))
         }),
         pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
-        sidebar_width: width("SidebarWidth2"),
         columns: match listed.is_empty() {
             true => vec![Column::Modified, Column::Size, Column::Kind],
             false => columns,
@@ -1029,4 +1027,54 @@ pub(crate) fn set_view_option_on(options: &str, key: &str, on: bool) {
 
 pub(crate) fn finder_look_number(settings: &str, key: &str) -> Option<f64> {
     finder_number("StandardViewSettings", settings, key)
+}
+
+const SHOW_PATH_BAR: &str = "ShowPathbar";
+const SHOW_STATUS_BAR: &str = "ShowStatusBar";
+const SHOW_SIDEBAR: &str = "ShowSidebar";
+const SIDEBAR_WIDTH: &str = "SidebarWidth2";
+const PREVIEW_INFO: &str = "PreviewPaneInfoExpanded";
+
+pub(crate) fn shows_path_bar() -> bool {
+    setting_on(SHOW_PATH_BAR, true)
+}
+
+pub(crate) fn set_shows_path_bar(on: bool) {
+    set_setting_on(SHOW_PATH_BAR, on);
+}
+
+pub(crate) fn shows_status_bar() -> bool {
+    setting_on(SHOW_STATUS_BAR, false)
+}
+
+pub(crate) fn set_shows_status_bar(on: bool) {
+    set_setting_on(SHOW_STATUS_BAR, on);
+}
+
+pub(crate) fn shows_sidebar() -> bool {
+    setting_on(SHOW_SIDEBAR, true)
+}
+
+pub(crate) fn set_shows_sidebar(on: bool) {
+    set_setting_on(SHOW_SIDEBAR, on);
+}
+
+pub(crate) fn sidebar_width() -> Option<f32> {
+    setting_number(SIDEBAR_WIDTH).map(|width| width as f32)
+}
+
+pub(crate) fn set_sidebar_width(width: f32) {
+    set_setting_number(SIDEBAR_WIDTH, f64::from(width.floor()));
+}
+
+pub(crate) fn preview_info_expanded() -> bool {
+    setting_on(PREVIEW_INFO, false)
+}
+
+pub(crate) fn set_preview_info_expanded(on: bool) {
+    set_setting_on(PREVIEW_INFO, on);
+}
+
+pub(crate) fn shows_all_files() -> bool {
+    setting_on("AppleShowAllFiles", false)
 }

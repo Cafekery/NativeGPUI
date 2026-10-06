@@ -6,8 +6,8 @@ use finder_fs::sidebar::{Listed, Special, VolumeSettings};
 use finder_fs::volumes::Standard;
 use gpui::{App, SharedString, Window, prelude::*, px};
 use native_gpui::sidebar::{
-    NativeSidebar, SidebarDrop, SidebarIcon, SidebarItem, SidebarMove, SidebarOptions,
-    sidebar_group, sidebar_item, system_symbol,
+    NativeSidebar, SidebarDrop, SidebarExpand, SidebarIcon, SidebarItem, SidebarMove,
+    SidebarOptions, sidebar_group, sidebar_item, system_symbol,
 };
 use native_gpui::{CheckState, Material};
 use objc2_app_kit::NSWorkspace;
@@ -22,6 +22,21 @@ use crate::tags::tag_system_color;
 pub(crate) const SIDEBAR_W: f32 = 216.;
 pub(crate) const FAVOURITES: &str = "g-favourites";
 pub(crate) const LOCATIONS: &str = "g-locations";
+
+// Finder's own keys, its spelling of the Tags one included.
+const SECTIONS: [(&str, &str); 3] = [
+    (FAVOURITES, "SidebarPlacesSectionDisclosedState"),
+    (LOCATIONS, "SidebarDevicesSectionDisclosedState"),
+    ("g-tags", "SidebarTagsSctionDisclosedState"),
+];
+
+pub(crate) fn closed_sections() -> Vec<&'static str> {
+    SECTIONS
+        .iter()
+        .filter(|(_, key)| !prefs::setting_on(key, true))
+        .map(|(group, _)| *group)
+        .collect()
+}
 
 thread_local! {
     static LAST: RefCell<Vec<Group>> = const { RefCell::new(Vec::new()) };
@@ -670,6 +685,13 @@ impl FinderDemo {
     fn update_sidebar(&self) {
         if let Some(sidebar) = &self.sidebar {
             sidebar.update(&self.sidebar_items());
+            self.disclose_sections(sidebar);
+        }
+    }
+
+    fn disclose_sections(&self, sidebar: &NativeSidebar) {
+        for group in &self.sidebar_groups {
+            sidebar.set_expanded(group.id, !self.closed_sections.contains(&group.id));
         }
     }
 
@@ -678,19 +700,52 @@ impl FinderDemo {
             return;
         };
         let target = self.target();
-        let known = self.sidebar_rows.iter().any(|rows| rows.contains(&target));
-        sidebar.set_selected(known.then_some(target));
+        let shown = (self.sidebar_groups.iter().zip(&self.sidebar_rows)).any(|(group, rows)| {
+            !self.closed_sections.contains(&group.id) && rows.contains(&target)
+        });
+        sidebar.set_selected(shown.then_some(target));
+    }
+
+    fn section_toggled(&mut self, toggled: &SidebarExpand) {
+        let Some(&(group, key)) = SECTIONS.iter().find(|(id, _)| *id == toggled.id.as_ref()) else {
+            return;
+        };
+        self.closed_sections.retain(|closed| *closed != group);
+        if !toggled.expanded {
+            self.closed_sections.push(group);
+        }
+        prefs::set_setting_on(key, toggled.expanded);
+        if toggled.expanded {
+            self.sidebar_follow();
+        }
+    }
+
+    pub(crate) fn sync_sidebar(&mut self) {
+        let Some(sidebar) = &self.sidebar else {
+            return;
+        };
+        let hidden = sidebar.is_collapsed();
+        if hidden != self.sidebar_hidden {
+            self.sidebar_hidden = hidden;
+            prefs::set_shows_sidebar(!hidden);
+        }
+        if let Some(width) = sidebar.take_sidebar_resize() {
+            prefs::set_sidebar_width(f32::from(width));
+        }
     }
 
     pub(crate) fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_hidden = !prefs::shows_sidebar();
         let sidebar = NativeSidebar::install(
             window,
             cx,
             SidebarOptions {
-                thickness: px(prefs::finder().sidebar_width.unwrap_or(SIDEBAR_W)),
+                thickness: px(prefs::sidebar_width().unwrap_or(SIDEBAR_W)),
                 min_thickness: px(158.),
                 max_thickness: px(0.),
                 content_min_thickness: px(crate::preview::LIST_MIN_W),
+                collapsed: self.sidebar_hidden,
+                expand_groups: false,
                 reorderable: true,
                 backdrop: Some(Material::Card),
                 edge_rule: true,
@@ -739,6 +794,9 @@ impl FinderDemo {
         sidebar.on_eject(cx.listener(|this, id: &SharedString, window, cx| {
             this.eject(id, window, cx);
         }));
+        sidebar.on_expand(cx.listener(|this, toggled: &SidebarExpand, _, _| {
+            this.section_toggled(toggled);
+        }));
         let demo = cx.entity().downgrade();
         sidebar.on_menu(
             |id| crate::menus::sidebar(id).entries,
@@ -754,6 +812,7 @@ impl FinderDemo {
             },
         );
         sidebar.update(&self.sidebar_items());
+        self.disclose_sections(&sidebar);
         self.sidebar = Some(sidebar);
         self.sidebar_follow();
         self.retitle(window);

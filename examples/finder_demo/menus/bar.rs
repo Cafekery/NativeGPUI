@@ -1179,14 +1179,14 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &TogglePathBar, _, cx| {
                 this.path_bar_shown = !this.path_bar_shown;
+                crate::prefs::set_shows_path_bar(this.path_bar_shown);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleStatusBar, window, cx| {
                 this.toggle_status_bar(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleHidden, _, cx| {
-                this.show_hidden = !this.show_hidden;
-                cx.notify();
+            .on_action(cx.listener(|_, _: &ToggleHidden, _, cx| {
+                cx.defer(crate::listing::toggle_hidden);
             }))
             .on_action(cx.listener(|this, _: &Up, window, cx| {
                 this.up(window, cx);
