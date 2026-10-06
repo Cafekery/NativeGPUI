@@ -460,7 +460,7 @@ impl Render for Connect {
                             native_button("ng.finder.connect.browse", "Browse")
                                 .width(px(BROWSE_W))
                                 .on_click(|_, _, cx| {
-                                    crate::open_finder_window(crate::locations::NETWORK, 1, cx);
+                                    crate::open_finder_window(crate::locations::NETWORK, cx);
                                 }),
                         ),
                 )

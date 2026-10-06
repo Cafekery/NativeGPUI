@@ -316,7 +316,7 @@ impl FinderDemo {
                 let crumb_row =
                     crumb_row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if is_alt_click(event) {
-                            crate::open_finder_window(id, 1, cx);
+                            crate::open_finder_window(id, cx);
                             window.remove_window();
                         } else {
                             this.go(id, window, cx);

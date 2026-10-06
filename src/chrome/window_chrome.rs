@@ -19,22 +19,23 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
-    NSImage, NSLayoutConstraint, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuToolbarItem, NSPopover,
-    NSPopoverBehavior, NSSearchField, NSSearchToolbarItem, NSSegmentStyle, NSSegmentSwitchTracking,
-    NSSegmentedControl, NSSharingServicePickerDelegate, NSSharingServicePickerToolbarItem,
-    NSSharingServicePickerToolbarItemDelegate, NSSplitView, NSSplitViewController, NSTextAlignment,
-    NSTextField, NSToolTipTag, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
-    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemGroup,
-    NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
+    NSApplication, NSAutoresizingMaskOptions, NSCursor, NSEvent, NSEventMask, NSEventModifierFlags,
+    NSEventType, NSImage, NSLayoutConstraint, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSMenuToolbarItem, NSPopover, NSPopoverBehavior, NSScreen, NSSearchField, NSSearchToolbarItem,
+    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSSharingServicePickerDelegate,
+    NSSharingServicePickerToolbarItem, NSSharingServicePickerToolbarItemDelegate, NSSplitView,
+    NSSplitViewController, NSTextAlignment, NSTextField, NSToolTipTag, NSToolbar,
+    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
+    NSToolbarItemGroup, NSToolbarItemGroupControlRepresentation, NSToolbarItemGroupSelectionMode,
     NSToolbarItemIdentifier, NSToolbarSpaceItemIdentifier, NSTrackingArea, NSTrackingAreaOptions,
     NSTrackingSeparatorToolbarItem, NSUserInterfaceItemIdentification, NSView, NSViewController,
-    NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowLevel, NSWindowOrderingMode,
-    NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowDidMoveNotification,
+    NSWindowDidResizeNotification, NSWindowLevel, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowToolbarStyle, NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
-    NSString, NSUserDefaults,
+    MainThreadMarker, NSArray, NSIntersectionRect, NSNotification, NSNotificationCenter, NSObject,
+    NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSUserDefaults,
 };
 use objc2_quartz_core::CATransaction;
 
@@ -2004,11 +2005,151 @@ pub struct WindowFlags {
     pub appearance: Option<tokens::Appearance>,
 }
 
+thread_local! {
+    static SAVING: RefCell<Vec<(Weak<NSWindow>, Retained<NSString>)>> =
+        const { RefCell::new(Vec::new()) };
+    static FOLLOWING_FRAMES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Opens at the frame last saved under `name`, cascaded off the front window that saves there too.
 pub fn remember_frame(window: &Window, name: &str) {
     let ns_window = ns_window_of(window);
     let name = NSString::from_str(name);
-    ns_window.setFrameUsingName(&name);
-    ns_window.setFrameAutosaveName(&name);
+    // A window AppKit already added to a tab group has that group's frame.
+    let tabbed = (ns_window.tabbedWindows()).is_some_and(|tabs| tabs.count() > 1);
+    if !tabbed {
+        place_remembered(&ns_window, &name);
+    }
+    keep_saving(&ns_window, name);
+}
+
+fn place_remembered(window: &NSWindow, name: &NSString) {
+    if let Some(frame) = saved_frame(name) {
+        window.setFrame_display(frame, false);
+    }
+    if let Some(front) = front_saving(name, window) {
+        let frame = front.frame();
+        let top_left = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
+        // Cascading off the front window itself would also pull it back on screen.
+        let next = window.cascadeTopLeftFromPoint(top_left);
+        window.cascadeTopLeftFromPoint(next);
+    }
+    if let Some(frame) = on_screen(window.frame()) {
+        window.setFrame_display(frame, false);
+    }
+}
+
+/// `setFrameUsingName:` centres the frame on the main screen once the visible frame of the screen
+/// it was saved on has changed, as a Dock moving between displays changes it.
+fn saved_frame(name: &NSString) -> Option<NSRect> {
+    let key = NSString::from_str(&format!("NSWindow Frame {name}"));
+    let saved = NSUserDefaults::standardUserDefaults().stringForKey(&key)?;
+    let numbers: Vec<f64> = (saved.to_string().split_whitespace())
+        .take(4)
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let [x, y, width, height] = numbers[..] else {
+        return None;
+    };
+    Some(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)))
+}
+
+/// Saves the frame under `name` whenever the window moves, resizes or closes.
+pub fn save_frame(window: &Window, name: &str) {
+    keep_saving(&ns_window_of(window), NSString::from_str(name));
+}
+
+fn front_saving(name: &NSString, except: &NSWindow) -> Option<Retained<NSWindow>> {
+    let mtm = MainThreadMarker::new()?;
+    let ordered = NSApplication::sharedApplication(mtm).orderedWindows();
+    SAVING.with_borrow(|saving| {
+        ordered.iter().find(|window| {
+            **window != *except
+                && window.isVisible()
+                && saving.iter().any(|(saved, under)| {
+                    under.isEqualToString(name)
+                        && saved.load().is_some_and(|saved| saved == *window)
+                })
+        })
+    })
+}
+
+/// Inside the visible frame of the screen `frame` lies most on, or of the main screen.
+fn on_screen(frame: NSRect) -> Option<NSRect> {
+    let mtm = MainThreadMarker::new()?;
+    let overlap = |screen: &NSScreen| {
+        let shared = NSIntersectionRect(frame, screen.frame());
+        shared.size.width * shared.size.height
+    };
+    let screen = (NSScreen::screens(mtm).iter())
+        .filter(|screen| overlap(screen) > 0.)
+        .max_by(|one, other| overlap(one).total_cmp(&overlap(other)))
+        .or_else(|| NSScreen::mainScreen(mtm))?;
+    let visible = screen.visibleFrame();
+    let size = NSSize::new(
+        frame.size.width.min(visible.size.width),
+        frame.size.height.min(visible.size.height),
+    );
+    let x = (frame.origin.x).clamp(
+        visible.origin.x,
+        visible.origin.x + visible.size.width - size.width,
+    );
+    let y = (frame.origin.y).clamp(
+        visible.origin.y,
+        visible.origin.y + visible.size.height - size.height,
+    );
+    Some(NSRect::new(NSPoint::new(x, y), size))
+}
+
+fn keep_saving(window: &Retained<NSWindow>, name: Retained<NSString>) {
+    if !FOLLOWING_FRAMES.replace(true) {
+        follow_frames();
+    }
+    SAVING.with_borrow_mut(|saving| {
+        saving.retain(|(saved, _)| saved.load().is_some());
+        saving.push((Weak::from_retained(window), name));
+    });
+}
+
+fn follow_frames() {
+    let center = NSNotificationCenter::defaultCenter();
+    let notes = unsafe {
+        [
+            (NSWindowDidMoveNotification, false),
+            (NSWindowDidResizeNotification, false),
+            (NSWindowWillCloseNotification, true),
+        ]
+    };
+    for (note, closing) in notes {
+        let block = RcBlock::new(move |note: ptr::NonNull<NSNotification>| {
+            save_frame_of(unsafe { note.as_ref() }, closing);
+        });
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(note), None, None, &block)
+        };
+        std::mem::forget(observer);
+    }
+}
+
+fn save_frame_of(note: &NSNotification, closing: bool) {
+    let Some(window) = (note.object()).and_then(|object| object.downcast::<NSWindow>().ok()) else {
+        return;
+    };
+    let name = SAVING.with_borrow_mut(|saving| {
+        let at = (saving.iter())
+            .position(|(saved, _)| saved.load().is_some_and(|saved| saved == window))?;
+        let name = saving[at].1.clone();
+        if closing {
+            saving.swap_remove(at);
+        }
+        Some(name)
+    });
+    // A full-screen window's frame is its screen's.
+    let full_screen = window.styleMask().contains(NSWindowStyleMask::FullScreen);
+    if let Some(name) = name.filter(|_| !full_screen && (closing || window.isVisible())) {
+        window.saveFrameUsingName(&name);
+    }
 }
 
 /// Open `sheet` hidden: gpui draws only a window AppKit reports visible, so this draws it first.

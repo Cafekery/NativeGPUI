@@ -189,7 +189,7 @@ pub(crate) fn follow(restored: bool, cx: &mut App) {
             return;
         }
         app.spawn(async move |cx| {
-            cx.update(|cx| open_finder_window(intern_path(&home()), 0, cx));
+            cx.update(|cx| open_finder_window(intern_path(&home()), cx));
         })
         .detach();
     };
@@ -271,7 +271,7 @@ fn show_folder(folder: &'static str, cx: &mut App) {
                 .ok();
         }
         None => {
-            open_finder_window(folder, windows.len(), cx);
+            open_finder_window(folder, cx);
         }
     }
 }

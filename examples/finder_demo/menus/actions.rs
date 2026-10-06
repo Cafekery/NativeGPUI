@@ -180,7 +180,7 @@ impl FinderDemo {
             Act::OpenTerminal(path) => open_terminal(path),
             Act::OpenTab(id) => self.open_tab(id, window, cx),
             Act::OpenWindowAt(id) => {
-                open_finder_window(id, 1, cx);
+                open_finder_window(id, cx);
             }
             Act::AddToDock(id) => {
                 if let Err(error) = crate::dock::add(&[PathBuf::from(id)]) {
@@ -463,7 +463,7 @@ impl FinderDemo {
 
     pub(crate) fn open_new_window(&self, cx: &mut Context<Self>) {
         let target = new_window_target();
-        let window = open_finder_window(self.listing_start(target), 1, cx);
+        let window = open_finder_window(self.listing_start(target), cx);
         if target == RECENTS {
             window
                 .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))
@@ -480,8 +480,8 @@ impl FinderDemo {
 }
 
 pub(super) fn open_windows(ids: impl IntoIterator<Item = &'static str>, cx: &mut App) {
-    for (extra, id) in ids.into_iter().enumerate() {
-        open_finder_window(id, extra + 1, cx);
+    for id in ids {
+        open_finder_window(id, cx);
     }
 }
 
@@ -493,7 +493,7 @@ pub(crate) fn open_first_window(cx: &mut App) -> WindowHandle<FinderDemo> {
         true => intern_path(&home()),
         false => target,
     };
-    let window = open_finder_window(start, 0, cx);
+    let window = open_finder_window(start, cx);
     if listing {
         window
             .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))

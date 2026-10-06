@@ -68,7 +68,7 @@ pub(crate) fn pick_on_click(
                     this.open_tab(folder, window, cx)
                 }
                 Some(folder) => {
-                    crate::open_finder_window(folder, 1, cx);
+                    crate::open_finder_window(folder, cx);
                 }
                 None if twice => this.open(&line, window, cx),
                 None => {}

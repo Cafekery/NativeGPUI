@@ -36,6 +36,10 @@ a context menu but not in the menu bar are listed as wiring, not as features.
 - [x] View ▸ Customize Toolbar…: AppKit's palette, over a toolbar that starts from Finder's own
   arrangement (`NSToolbar Configuration Browser`)
 - [x] Tag swatches read as seven unlabelled groups to VoiceOver; Finder's are radio buttons named “Add “Red” label” and “Remove “Red” label”
+- [x] A new window, whether a reveal or open from another app, ⌘N, a Dock click or the first at
+  launch, opens at the frame of the browser window last moved, resized or closed, kept across
+  launches; with a browser window already open it cascades down and right off the front one. The
+  frame stays inside its screen's visible frame, or the main screen's once that display is gone
 
 ## Features
 

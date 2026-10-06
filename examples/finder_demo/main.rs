@@ -61,7 +61,7 @@ use gpui::{
     App, Bounds, KeyBinding, WindowBounds, WindowHandle, WindowOptions, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemTheme};
-use native_gpui::{install_menus, remember_frame, window_options};
+use native_gpui::{install_menus, remember_frame, save_frame, window_options};
 use objc2_foundation::{NSProcessInfo, NSString};
 
 use crate::app::{FinderDemo, LIST_CONTEXT};
@@ -74,6 +74,7 @@ const KINDS_WARM: usize = 400;
 /// gpui gives shutdown handlers about 200 ms.
 const QUIT_WAIT: Duration = Duration::from_millis(150);
 pub(crate) const WINDOW_W: f32 = 1200.;
+const FRAME: &str = "ng.finder.window";
 
 fn main() {
     prefs::share_folder_looks();
@@ -211,17 +212,12 @@ fn crawl(cx: &mut App) {
         .detach();
 }
 
-pub(crate) fn open_finder_window(
-    start: &'static str,
-    extra: usize,
-    cx: &mut App,
-) -> WindowHandle<FinderDemo> {
-    let step = px(extra as f32 * 30.);
+pub(crate) fn open_finder_window(start: &'static str, cx: &mut App) -> WindowHandle<FinderDemo> {
     let bounds = WindowBounds::Windowed(Bounds {
-        origin: point(px(160.) + step, px(120.) + step),
+        origin: point(px(160.), px(120.)),
         size: size(px(WINDOW_W), px(772.)),
     });
-    finder_window(start, bounds, extra == 0, true, cx)
+    finder_window(start, bounds, true, true, cx)
 }
 
 /// Hidden until it joins its tab group, at the frame that group already has.
@@ -248,8 +244,9 @@ fn finder_window(
             ..window_options()
         },
         |window, cx| {
-            if remember {
-                remember_frame(window, "ng.finder.window");
+            match remember {
+                true => remember_frame(window, FRAME),
+                false => save_frame(window, FRAME),
             }
             native_gpui::window_tabs(window, menus::NewTab, cx);
             cx.new(|cx| {

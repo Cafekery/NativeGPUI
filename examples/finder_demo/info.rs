@@ -785,7 +785,7 @@ fn show_folder(dir: &'static str, cx: &mut App) {
         .into_iter()
         .filter_map(|window| window.downcast::<FinderDemo>())
         .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == dir));
-    let window = shown.unwrap_or_else(|| crate::open_finder_window(dir, 1, cx));
+    let window = shown.unwrap_or_else(|| crate::open_finder_window(dir, cx));
     window
         .update(cx, |_, window, _| window.activate_window())
         .ok();

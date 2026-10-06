@@ -108,9 +108,8 @@ pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
         }
     }
     for (folder, keys) in folders {
-        let windows = browser_windows(cx);
-        let shown = showing(folder, &windows, cx);
-        let window = shown.unwrap_or_else(|| open_finder_window(folder, windows.len(), cx));
+        let shown = showing(folder, &browser_windows(cx), cx);
+        let window = shown.unwrap_or_else(|| open_finder_window(folder, cx));
         window
             .update(cx, |demo, window, cx| {
                 window.activate_window();
@@ -385,7 +384,7 @@ impl FinderDemo {
             return;
         };
         cx.defer(move |cx| {
-            open_finder_window(parent, 1, cx)
+            open_finder_window(parent, cx)
                 .update(cx, |demo: &mut FinderDemo, _, _| demo.choose([key]))
                 .ok();
         });
@@ -671,8 +670,8 @@ impl FinderDemo {
             return;
         };
         self.go(first, window, cx);
-        for (extra, id) in rest.iter().enumerate() {
-            open_finder_window(id, extra + 1, cx);
+        for id in rest {
+            open_finder_window(id, cx);
         }
     }
 
