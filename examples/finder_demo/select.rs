@@ -21,6 +21,7 @@ impl FinderDemo {
     pub(crate) fn reveal(&mut self, key: &SharedString) {
         let lines = self.lines(self.view == LIST_VIEW);
         if let Some(index) = self.line_at(&lines, key) {
+            self.reveal_next.take_if(|next| *next == *key);
             self.scroll.scroll_to_item(
                 self.slot_of(&lines, index) + self.list_inset().0,
                 ScrollStrategy::Center,
