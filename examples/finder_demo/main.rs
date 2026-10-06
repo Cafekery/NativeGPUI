@@ -12,6 +12,7 @@ mod dragdrop;
 mod elastic;
 mod fit;
 mod frame;
+mod icon_well;
 mod icons;
 mod info;
 mod input;

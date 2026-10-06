@@ -96,10 +96,17 @@ fn counted(
 }
 
 pub(super) fn enabled(action: &dyn Action, chosen: &Chosen) -> Option<bool> {
+    let icons = crate::icon_well::history();
     let on = if action.partial_eq(&UndoOp) {
-        HISTORY.with_borrow(|history| history.undo.is_some())
+        icons.map_or_else(
+            || HISTORY.with_borrow(|history| history.undo.is_some()),
+            |(undo, _)| undo.is_some(),
+        )
     } else if action.partial_eq(&RedoOp) {
-        HISTORY.with_borrow(|history| history.redo.is_some())
+        icons.map_or_else(
+            || HISTORY.with_borrow(|history| history.redo.is_some()),
+            |(_, redo)| redo.is_some(),
+        )
     } else if action.partial_eq(&Cut) || action.partial_eq(&CopyLink) {
         false
     } else if action.partial_eq(&CopyNames) || action.partial_eq(&DeselectAll) {
@@ -122,10 +129,17 @@ pub(super) fn titled(action: &dyn Action, chosen: &Chosen) -> Option<SharedStrin
             .as_ref()
             .map_or_else(|| verb.into(), |label| format!("{verb} {label}").into())
     };
+    let icons = crate::icon_well::history();
     let title = if action.partial_eq(&UndoOp) {
-        HISTORY.with_borrow(|history| labelled("Undo", &history.undo))
+        match icons {
+            Some((undo, _)) => labelled("Undo", &undo.map(SharedString::new_static)),
+            None => HISTORY.with_borrow(|history| labelled("Undo", &history.undo)),
+        }
     } else if action.partial_eq(&RedoOp) {
-        HISTORY.with_borrow(|history| labelled("Redo", &history.redo))
+        match icons {
+            Some((_, redo)) => labelled("Redo", &redo.map(SharedString::new_static)),
+            None => HISTORY.with_borrow(|history| labelled("Redo", &history.redo)),
+        }
     } else if action.partial_eq(&CopyNames) {
         counted(
             chosen.count,

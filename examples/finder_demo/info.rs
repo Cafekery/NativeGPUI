@@ -38,8 +38,8 @@ use objc2_app_kit::{
     NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse,
     NSModalResponseOK, NSOpenPanel, NSPathControl, NSPathControlItem, NSPopUpButton, NSResponder,
     NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSText,
-    NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowDidResizeNotification,
-    NSWindowTitleVisibility, NSWorkspace,
+    NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowButton,
+    NSWindowDidResizeNotification, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSBundleExecutableArchitectureARM64,
@@ -55,6 +55,7 @@ use crate::data::{
     Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
 };
 use crate::frame::ns_window;
+use crate::icon_well::{self, IconWell};
 use crate::prefs;
 use crate::tag_editor::{tag_field, tags_in};
 use crate::tags::{held_tags, retag};
@@ -475,19 +476,21 @@ fn icon_of(path: &str) -> Option<Retained<NSImage>> {
 }
 
 fn icon_view(row: &Row, scale: f32) -> AnyElement {
-    let Some(icon) = icon_of(&row.path) else {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
+    let path = row.path.clone();
+    let centred = div().size_full().flex().items_center().justify_center();
+    if !Path::new(path.as_ref()).is_absolute() && icon_of(&path).is_none() {
+        return centred
             .child(row_art(row, PREVIEW, scale, true))
             .into_any_element();
-    };
-    image_view(key_of(("ng.finder.info.icon", &row.path)), move || {
-        Some(icon.clone())
-    })
-    .into_any_element()
+    }
+    let paths = vec![PathBuf::from(path.as_ref())];
+    centred
+        .child(
+            div()
+                .size(px(PREVIEW))
+                .child(icon_well(paths, true, move || icon_of(&path))),
+        )
+        .into_any_element()
 }
 
 fn icon_file(path: &'static str) -> impl IntoElement {
@@ -509,6 +512,36 @@ fn image_view(
             view
         },
         |_, _| {},
+    )
+}
+
+fn icon_well(
+    paths: Vec<PathBuf>,
+    same: bool,
+    image: impl Fn() -> Option<Retained<NSImage>> + 'static,
+) -> impl IntoElement {
+    let key = key_of(("ng.finder.info.well", &paths));
+    hosted(
+        key,
+        move |mtm, target| {
+            let well = IconWell::new(mtm, paths.clone());
+            wire(&well, target, key);
+            well
+        },
+        move |well, host| {
+            well.sync(same, &image);
+            on_action(
+                host,
+                key,
+                key,
+                |well: &IconWell| well.take_event(),
+                |event, _, cx| {
+                    if let Some(event) = event {
+                        icon_well::handle(event, cx);
+                    }
+                },
+            );
+        },
     )
 }
 
@@ -1076,6 +1109,8 @@ pub(crate) struct Info {
     preview: Shown,
     access: Option<Access>,
     first_mode: Option<u32>,
+    custom_icon: bool,
+    icon_seen: u64,
 }
 
 impl Info {
@@ -1098,6 +1133,8 @@ impl Info {
                 && path.parent().is_some_and(writable),
             hidden_extension: real && resource(path, unsafe { NSURLHasHiddenExtensionKey }),
             first_mode: real.then(|| permissions::mode(path).ok()).flatten(),
+            custom_icon: real && native_gpui::tokens::has_custom_icon(path),
+            icon_seen: icon_well::generation(),
             line,
             where_,
             subject,
@@ -1193,6 +1230,24 @@ impl Info {
             ns.setRepresentedURL(shown.as_deref());
         }
         self.titled = Some(display.clone());
+    }
+
+    fn follow_icon(&mut self, window: &Window) {
+        let generation = icon_well::generation();
+        if self.icon_seen == generation {
+            return;
+        }
+        self.icon_seen = generation;
+        let path = self.path().to_path_buf();
+        self.custom_icon = path.is_absolute() && native_gpui::tokens::has_custom_icon(&path);
+        let proxy = ns_window(window)
+            .filter(|_| !self.panel && path.is_absolute())
+            .and_then(|ns| ns.standardWindowButton(NSWindowButton::DocumentIconButton));
+        if let Some(proxy) = proxy {
+            let icon = NSWorkspace::sharedWorkspace()
+                .iconForFile(&NSString::from_str(&path.to_string_lossy()));
+            proxy.setImage(Some(&icon));
+        }
     }
 
     fn rename(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -1393,7 +1448,7 @@ impl Info {
 
     fn shown(&self, scale: f32) -> Shown {
         let row = &self.line.row;
-        if self.subject != Subject::File {
+        if self.subject != Subject::File || self.custom_icon {
             return Shown::Icon;
         }
         match crate::thumbs::thumb(row, THUMB, scale, true, false) {
@@ -1426,13 +1481,19 @@ impl Info {
                 div()
                     .w(px(wide))
                     .h(px(tall))
+                    .relative()
                     .rounded(px(4.))
                     .when(page, |page| {
                         page.border_1()
                             .border_color(system_color(SystemColor::Separator))
                             .bg(system_color(SystemColor::TextBackground))
                     })
-                    .child(shown),
+                    .child(shown)
+                    .child(div().absolute().inset_0().child(icon_well(
+                        vec![self.path().to_path_buf()],
+                        true,
+                        || None,
+                    ))),
             )
             .into_any_element()
     }
@@ -1747,6 +1808,7 @@ impl Render for Info {
         self.weigh(cx);
         self.fetch_metadata(cx);
         self.ensure_opener();
+        self.follow_icon(window);
         self.preview = self.shown(scale);
         self.ensure_access();
         cx.defer(|_| crate::thumbs::collect_thumbnails());
@@ -2342,6 +2404,8 @@ pub(crate) struct Combined {
     weight: Option<Weight>,
     weighing: bool,
     panel: bool,
+    same: Option<bool>,
+    same_seen: Option<u64>,
 }
 
 impl Combined {
@@ -2352,6 +2416,8 @@ impl Combined {
             weight: None,
             weighing: false,
             panel: false,
+            same: None,
+            same_seen: None,
         }
     }
 
@@ -2365,15 +2431,32 @@ impl Combined {
             return;
         }
         self.weighing = true;
-        let paths: Vec<PathBuf> = self
-            .lines
-            .iter()
-            .map(|line| PathBuf::from(line.row.path.as_ref()))
-            .collect();
+        let paths = self.paths();
         in_background(
             cx,
             move || weigh_all(&paths),
             |combined, weight| combined.weight = Some(weight),
+        );
+    }
+
+    fn paths(&self) -> Vec<PathBuf> {
+        self.lines
+            .iter()
+            .map(|line| PathBuf::from(line.row.path.as_ref()))
+            .collect()
+    }
+
+    fn check_same(&mut self, cx: &mut Context<Self>) {
+        let generation = icon_well::generation();
+        if self.same_seen == Some(generation) {
+            return;
+        }
+        self.same_seen = Some(generation);
+        let paths = self.paths();
+        in_background(
+            cx,
+            move || icon_well::same_icons(&paths),
+            |combined, same| combined.same = Some(same),
         );
     }
 
@@ -2407,6 +2490,7 @@ impl Combined {
 impl Render for Combined {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.weigh(cx);
+        self.check_same(cx);
         let form = Form::new(
             f32::from(window.viewport_size().width),
             1. / window.scale_factor(),
@@ -2418,7 +2502,22 @@ impl Render for Combined {
         let general = section("ng.finder.info.general")
             .child(heading("General"))
             .child(form.card("values", form.values(&self.rows())));
-        let head = form.head(icon_file(MANY_ICON), &self.name(), &summary, None);
+        let paths = self.paths();
+        let first = paths.first().cloned();
+        let same = self.same == Some(true);
+        let well = icon_well(paths, same, move || match first.as_ref().filter(|_| same) {
+            Some(first) => icon_of(&first.to_string_lossy()),
+            None => {
+                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(MANY_ICON))
+            }
+        });
+        let preview = div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(px(PREVIEW)).child(well));
+        let head = form.head(preview, &self.name(), &summary, None);
         page(window, head, vec![general.into_any_element()], !self.panel)
     }
 }

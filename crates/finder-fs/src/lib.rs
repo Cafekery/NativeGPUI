@@ -1,5 +1,6 @@
 pub mod comment;
 pub mod complete;
+pub mod custom_icon;
 pub mod ds_store;
 pub mod entry;
 pub mod flags;

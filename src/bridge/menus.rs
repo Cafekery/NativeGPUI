@@ -12,7 +12,8 @@ use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSEventTrackingRunLoopMode, NSMenu, NSMenuDelegate, NSMenuItem, NSText, NSWindow,
+    NSEventTrackingRunLoopMode, NSImageView, NSMenu, NSMenuDelegate, NSMenuItem, NSResponder,
+    NSText, NSWindow,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSRunLoop,
@@ -42,7 +43,7 @@ impl MenuSection {
     }
 }
 
-/// A stock Edit command of the text being typed in.
+/// A stock Edit command of the text being typed in, or of an image view editing its image.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TextCommand {
     Undo,
@@ -187,7 +188,7 @@ impl MenuCommand {
         self
     }
 
-    /// While text is being typed in, the row is `text`'s: its stock title, the text's to allow and to do.
+    /// While text is being typed in or an image view edits its image, the row is `text`'s: its stock title, the responder's to allow and to do.
     pub fn edits_text(mut self, text: TextCommand) -> Self {
         self.text = Some(text);
         self
@@ -697,14 +698,25 @@ fn show_with_option(row: &NSMenuItem) {
     unsafe { NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSEventTrackingRunLoopMode) };
 }
 
-fn editing_text() -> bool {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return false;
-    };
+fn first_responder() -> Option<Retained<NSResponder>> {
+    let mtm = MainThreadMarker::new()?;
     NSApplication::sharedApplication(mtm)
-        .keyWindow()
-        .and_then(|window| window.firstResponder())
-        .is_some_and(|responder| responder.isKindOfClass(NSText::class()))
+        .keyWindow()?
+        .firstResponder()
+}
+
+fn editing_text() -> bool {
+    first_responder().is_some_and(|responder| responder.isKindOfClass(NSText::class()))
+}
+
+/// Text being typed in, or an image view that cuts, copies and pastes its own image.
+fn editing_natively() -> bool {
+    first_responder().is_some_and(|responder| {
+        responder.isKindOfClass(NSText::class())
+            || responder
+                .downcast_ref::<NSImageView>()
+                .is_some_and(|well| well.isEditable() && well.allowsCutCopyPaste())
+    })
 }
 
 /// The field editor's own ⌘ and ⌥ delete and arrow chords, which a row would take off the text.
@@ -865,14 +877,13 @@ define_class!(
             let Some(item) = (unsafe { sender.as_ref() }) else {
                 return Bool::YES;
             };
-            let editing = editing_text();
-            if editing && edits_text(item) {
+            if editing_text() && edits_text(item) {
                 return Bool::NO;
             }
             let Some((action, text)) = command_of(item) else {
                 return Bool::YES;
             };
-            if let Some(text) = text.filter(|_| editing) {
+            if let Some(text) = text.filter(|_| editing_natively()) {
                 item.setTitle(&worded(text.title()));
                 return Bool::new(text_allows(item, text));
             }
@@ -963,7 +974,7 @@ impl CommandSink {
         let Some((action, text)) = command_of(item) else {
             return;
         };
-        if let Some(text) = text.filter(|_| editing_text()) {
+        if let Some(text) = text.filter(|_| editing_natively()) {
             let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
             unsafe { app.sendAction_to_from(text.selector(), None, Some(item)) };
             return;

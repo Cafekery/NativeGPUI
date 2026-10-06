@@ -65,6 +65,9 @@ impl FinderDemo {
         let board = NSPasteboard::generalPasteboard();
         board.clearContents();
         board.writeObjects(&NSArray::from_retained_slice(&items));
+        if let Some(first) = keys.first() {
+            crate::icon_well::promise_icon(&board, std::path::Path::new(&**first));
+        }
         OWN_CHANGE.set(board.changeCount());
     }
 

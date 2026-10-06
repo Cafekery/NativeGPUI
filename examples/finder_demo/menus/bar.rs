@@ -519,6 +519,8 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(cycle_windows);
     cx.on_action(crate::clipboard_window::show);
     cx.on_action(crate::progress_window::toggle);
+    cx.on_action(|_: &crate::ops::undo::UndoOp, cx| crate::icon_well::undo_in_key_window(cx));
+    cx.on_action(|_: &crate::ops::undo::RedoOp, cx| crate::icon_well::redo_in_key_window(cx));
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
     // A key panel is main too, so gpui has no active window to dispatch the menu's action to.
