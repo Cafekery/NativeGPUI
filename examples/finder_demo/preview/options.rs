@@ -10,10 +10,10 @@ use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Face, Row};
-use crate::form::{self, Flip, Sheet, switch_row};
+use crate::form::{self, COMPACT, Flip, Sheet};
 use crate::frame::ns_window;
 
-const WIDTH: f32 = 280.;
+const WIDTH: f32 = 240.;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Source {
@@ -353,17 +353,13 @@ fn flip(kind: &'static Kind, keys: Vec<&'static str>) -> Flip {
 /// A group's switch is on while any of its fields shows, and its fields can change only then.
 fn sheet(kind: &'static Kind, width: f32, hair: f32) -> Sheet {
     let alone = |key: &'static str| {
-        form::Row::new(switch_row(
-            key,
-            shows(kind, key),
-            Some(flip(kind, vec![key])),
-        ))
+        form::Row::new(COMPACT.switch_row(key, shows(kind, key), Some(flip(kind, vec![key]))))
     };
     let mut rows = vec![alone(TAGS)];
     for group in kind.groups {
         let keys = group.keys();
         let on = keys.iter().any(|key| shows(kind, key));
-        rows.push(form::Row::new(switch_row(
+        rows.push(form::Row::new(COMPACT.switch_row(
             group.title,
             on,
             Some(flip(kind, keys)),
@@ -371,7 +367,7 @@ fn sheet(kind: &'static Kind, width: f32, hair: f32) -> Sheet {
         rows.extend(group.fields.iter().map(|field| {
             let key = field.key();
             let change = on.then(|| flip(kind, vec![key]));
-            form::Row::new(switch_row(field.label, shows(kind, key), change)).nested()
+            form::Row::new(COMPACT.switch_row(field.label, shows(kind, key), change)).nested()
         }));
     }
     let mut sheet = Sheet::new(width, hair);

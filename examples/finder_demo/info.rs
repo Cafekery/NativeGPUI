@@ -1620,7 +1620,7 @@ impl Render for Info {
                     .map(IntoElement::into_any_element),
             );
         }
-        page(window, content, (!self.panel).then_some(bound))
+        page(window, content, BOTTOM, (!self.panel).then_some(bound))
     }
 }
 
@@ -2296,6 +2296,7 @@ impl Render for Combined {
         page(
             window,
             vec![head, general.into_any_element()],
+            BOTTOM,
             (!self.panel).then_some(bound),
         )
     }

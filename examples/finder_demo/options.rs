@@ -11,7 +11,7 @@ use gpui::{
 use native_gpui::tokens::SystemColor;
 use native_gpui::{
     LabelAlign, MenuEntry, NativePopup, NativeSlider, native_button, native_color_well,
-    native_label, native_popup, native_segmented, native_slider, native_symbol, window_options,
+    native_popup, native_segmented, native_slider, native_symbol, window_options,
 };
 use objc2::msg_send;
 use objc2_app_kit::{NSModalResponseOK, NSOpenPanel, NSWindowStyleMask, NSWindowTitleVisibility};
@@ -19,17 +19,17 @@ use objc2_foundation::MainThreadMarker;
 
 use crate::app::FinderDemo;
 use crate::data::{Column, GROUP_KEYS, SORT_KEYS, SORT_TITLES};
-use crate::form::{Flip, GAP, INSET, LINE, Row, Sheet, hugging, labelled, switch_row, text_width};
+use crate::form::{COMPACT, Flip, Row, Sheet};
 use crate::frame::ns_window;
 use crate::prefs;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::header::column_title;
 use crate::views::icon::{Arrangement, SIZE_STEPS, size_slider, slider_size};
 
-const WIDTH: f32 = 320.;
-const SLIDER_ROW: f32 = 60.;
-const SLIDER_END: f32 = 24.;
-const BUTTON: f32 = 24.;
+const WIDTH: f32 = 260.;
+const SLIDER_ROW: f32 = 46.;
+const SLIDER_END: f32 = 20.;
+const BUTTON: f32 = 20.;
 
 const TEXT_SIZES: [f32; 7] = [10., 11., 12., 13., 14., 15., 16.];
 const LIST_ICONS: [f32; 2] = [16., 32.];
@@ -122,12 +122,16 @@ impl Build<'_> {
     }
 
     fn switch(&self, title: &str, on: bool, change: Change<bool>) -> Row {
-        Row::new(switch_row(title, on, Some(self.flip(change))))
+        Row::new(COMPACT.switch_row(title, on, Some(self.flip(change))))
     }
 
     fn popup(&self, title: &str, popup: NativePopup, shown: &str) -> Row {
-        let popup = popup.bordered(false).width(px(hugging(shown, false)));
-        Row::new(labelled(title, SystemColor::Label, popup))
+        let popup = popup
+            .bordered(false)
+            .control_size(COMPACT.controls())
+            .font_size(px(COMPACT.font))
+            .width(px(COMPACT.hugging(shown)));
+        Row::new(COMPACT.labelled(title, SystemColor::Label, popup))
     }
 
     fn segmented(
@@ -141,8 +145,9 @@ impl Build<'_> {
         let run = self.run(change);
         let control = native_segmented(id, selected)
             .segments(segments.iter().copied())
+            .control_size(COMPACT.controls())
             .on_change(move |at: &usize, _, cx| run(*at, cx));
-        Row::new(labelled(title, SystemColor::Label, control))
+        Row::new(COMPACT.labelled(title, SystemColor::Label, control))
     }
 
     /// The label and its value over a slider that spans the card, its ends showing the extremes.
@@ -155,7 +160,9 @@ impl Build<'_> {
         change: Change<f64>,
     ) -> Row {
         let run = self.run(change);
-        let slider = slider.on_change(move |value: &f64, _, cx| run(*value, cx));
+        let slider = slider
+            .control_size(COMPACT.controls())
+            .on_change(move |value: &f64, _, cx| run(*value, cx));
         let end = |image: AnyElement| {
             div()
                 .flex_none()
@@ -166,20 +173,17 @@ impl Build<'_> {
                 .child(image)
         };
         let label = div()
-            .h(px(LINE))
-            .flex()
-            .gap(px(GAP))
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(text_width(title)))
-                    .child(native_label("label", title)),
-            )
-            .child(div().flex_1().children(value.map(|value| {
-                native_label("value", &value)
-                    .color(SystemColor::SecondaryLabel)
-                    .align(LabelAlign::Right)
-            })));
+            .h(px(COMPACT.line))
+            .relative()
+            .child(COMPACT.label("label", title))
+            .children(value.map(|value| {
+                div().absolute().inset_0().child(
+                    COMPACT
+                        .label("value", &value)
+                        .color(SystemColor::SecondaryLabel)
+                        .align(LabelAlign::Right),
+                )
+            }));
         let track = div()
             .h(px(SLIDER_END))
             .flex()
@@ -191,11 +195,11 @@ impl Build<'_> {
         Row::new(
             div()
                 .size_full()
-                .px(px(INSET))
-                .pt(px(INSET))
+                .px(px(COMPACT.inset))
+                .pt(px(6.))
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(px(2.))
                 .child(label)
                 .child(track),
         )
@@ -328,8 +332,8 @@ impl Build<'_> {
                     "Icon size",
                     Some(format!("{0} \u{d7} {0}", options.size)),
                     (
-                        symbol("ng.finder.options.icon.small", "doc", 12.),
-                        symbol("ng.finder.options.icon.large", "doc", 20.),
+                        symbol("ng.finder.options.icon.small", "doc", 10.),
+                        symbol("ng.finder.options.icon.large", "doc", 16.),
                     ),
                     size,
                     |this, step, cx| {
@@ -343,8 +347,8 @@ impl Build<'_> {
                     "Grid spacing",
                     None,
                     (
-                        symbol("ng.finder.options.spacing.small", "square.grid.3x3", 12.),
-                        symbol("ng.finder.options.spacing.large", "square.grid.2x2", 20.),
+                        symbol("ng.finder.options.spacing.small", "square.grid.3x3", 10.),
+                        symbol("ng.finder.options.spacing.large", "square.grid.2x2", 16.),
                     ),
                     spacing,
                     |this, spacing, cx| {
@@ -410,6 +414,7 @@ impl Build<'_> {
         let run = self.run(chosen);
         let kinds = native_segmented("ng.finder.options.background", kind)
             .segments(["Default", "Color", "Picture"])
+            .control_size(COMPACT.controls())
             .on_change(move |kind: &usize, _, cx| run(*kind, cx));
         let mut rows = vec![Row::new(
             div()
@@ -429,7 +434,11 @@ impl Build<'_> {
                         let rgb = color.to_rgb();
                         run(Background::Color([rgb.r, rgb.g, rgb.b]), cx)
                     });
-                rows.push(Row::new(labelled("Color", SystemColor::Label, well)));
+                rows.push(Row::new(COMPACT.labelled(
+                    "Color",
+                    SystemColor::Label,
+                    well,
+                )));
             }
             Background::Picture(path) => rows.push(self.picture(&path)),
             Background::Default => {}
@@ -445,6 +454,7 @@ impl Build<'_> {
             |name| name.to_string_lossy().into_owned(),
         );
         let choose = native_button("ng.finder.options.picture.choose", "Choose\u{2026}")
+            .control_size(COMPACT.controls())
             .on_click(move |_, _, cx| demo.update(cx, |_, cx| choose_picture(cx)));
         let value = div()
             .w_full()
@@ -453,7 +463,8 @@ impl Build<'_> {
             .gap(px(8.))
             .child(
                 div().flex_1().child(
-                    native_label("value", &named)
+                    COMPACT
+                        .label("value", &named)
                         .color(SystemColor::SecondaryLabel)
                         .align(LabelAlign::Right)
                         .truncates(true),
@@ -470,7 +481,7 @@ impl Build<'_> {
                         dropped(Background::Picture(path), cx);
                     }
                 })
-                .child(labelled("Picture", SystemColor::Label, value)),
+                .child(COMPACT.labelled("Picture", SystemColor::Label, value)),
         )
     }
 
@@ -513,7 +524,7 @@ impl Build<'_> {
                     })
                 });
                 let on = column.is_some_and(|column| shows(self.state, column));
-                Row::new(switch_row(title, on, change))
+                Row::new(COMPACT.switch_row(title, on, change))
             })
             .collect();
         sheet.card("ng.finder.options.columns", Some("Show Columns"), columns);
@@ -638,7 +649,7 @@ fn sheet(demo: &Entity<FinderDemo>, state: &FinderDemo, width: f32, hair: f32) -
                 opens.is_some(),
                 |this, on, _| this.always_open(on),
             ),
-            Row::new(switch_row(
+            Row::new(COMPACT.switch_row(
                 &format!("Browse in {name} view"),
                 opens.is_some_and(|(_, browse)| browse),
                 browse,
@@ -661,6 +672,7 @@ fn sheet(demo: &Entity<FinderDemo>, state: &FinderDemo, width: f32, hair: f32) -
     if view != COLUMN_VIEW {
         let run = build.run(|this, (), _| prefs::use_as_defaults(this.view, this.here()));
         let button = native_button("ng.finder.options.defaults", "Use as Defaults")
+            .control_size(COMPACT.controls())
             .enabled(prefs::has_own_settings(view, here))
             .on_click(move |_, _, cx| run((), cx));
         sheet.button(button, BUTTON);
@@ -722,10 +734,8 @@ pub(crate) fn open(demo: &Entity<FinderDemo>, cx: &mut App) {
         },
         |window, cx| {
             if let Some(panel) = ns_window(window) {
-                unsafe {
-                    let _: () = msg_send![&*panel, setFloatingPanel: true];
-                    let _: () = msg_send![&*panel, setBecomesKeyOnlyIfNeeded: true];
-                }
+                // A switch draws its accent only in the key window, so a click has to make this key.
+                let _: () = unsafe { msg_send![&*panel, setFloatingPanel: true] };
                 panel.setStyleMask(
                     panel.styleMask()
                         | NSWindowStyleMask::UtilityWindow
