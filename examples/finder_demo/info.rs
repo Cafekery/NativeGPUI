@@ -419,7 +419,7 @@ fn icon_view(row: &Row, scale: f32) -> AnyElement {
         .child(
             div()
                 .size(px(PREVIEW))
-                .child(icon_well(paths, true, move || icon_of(&path))),
+                .child(icon_well(paths, true, Some(move || icon_of(&path)))),
         )
         .into_any_element()
 }
@@ -446,10 +446,12 @@ fn image_view(
     )
 }
 
+/// With no `image` the well lies over a picture: it keeps its menu, keys, drops and focus ring
+/// but paints nothing.
 fn icon_well(
     paths: Vec<PathBuf>,
     same: bool,
-    image: impl Fn() -> Option<Retained<NSImage>> + 'static,
+    image: Option<impl Fn() -> Option<Retained<NSImage>> + 'static>,
 ) -> impl IntoElement {
     let key = key_of(("ng.finder.info.well", &paths));
     hosted(
@@ -460,7 +462,7 @@ fn icon_well(
             well
         },
         move |well, host| {
-            well.sync(same, &image);
+            well.sync(same, image.as_ref());
             on_action(
                 host,
                 key,
@@ -1279,7 +1281,7 @@ impl Info {
                     .child(div().absolute().inset_0().child(icon_well(
                         vec![self.path().to_path_buf()],
                         true,
-                        || None,
+                        None::<fn() -> _>,
                     ))),
             )
             .into_any_element()
@@ -2280,12 +2282,17 @@ impl Render for Combined {
         let paths = self.paths();
         let first = paths.first().cloned();
         let same = self.same == Some(true);
-        let well = icon_well(paths, same, move || match first.as_ref().filter(|_| same) {
-            Some(first) => icon_of(&first.to_string_lossy()),
-            None => {
-                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(MANY_ICON))
-            }
-        });
+        let well = icon_well(
+            paths,
+            same,
+            Some(move || match first.as_ref().filter(|_| same) {
+                Some(first) => icon_of(&first.to_string_lossy()),
+                None => NSImage::initWithContentsOfFile(
+                    NSImage::alloc(),
+                    &NSString::from_str(MANY_ICON),
+                ),
+            }),
+        );
         let preview = div()
             .size_full()
             .flex()

@@ -78,7 +78,7 @@ pub(crate) enum Event {
 pub(crate) struct WellIvars {
     paths: Vec<PathBuf>,
     same: Cell<bool>,
-    shown: Cell<Option<(u64, bool)>>,
+    shown: Cell<Option<(u64, bool, bool)>>,
     handed: Cell<bool>,
     event: RefCell<Option<Event>>,
 }
@@ -286,14 +286,19 @@ impl IconWell {
         this
     }
 
-    /// `image` runs only when an icon changed since the last call, or `same` did.
-    pub(crate) fn sync(&self, same: bool, image: impl FnOnce() -> Option<Retained<NSImage>>) {
+    /// `image` runs only when an icon changed since the last call, or `same` did, or the well
+    /// came out from over a picture or went back over one, where it paints nothing.
+    pub(crate) fn sync(
+        &self,
+        same: bool,
+        image: Option<impl FnOnce() -> Option<Retained<NSImage>>>,
+    ) {
         let ivars = self.ivars();
         ivars.same.set(same);
-        let now = Some((generation(), same));
+        let now = Some((generation(), same, image.is_some()));
         if ivars.shown.get() != now {
             ivars.shown.set(now);
-            self.setImage(image().as_deref());
+            self.setImage(image.and_then(|image| image()).as_deref());
             self.noteFocusRingMaskChanged();
         }
     }
