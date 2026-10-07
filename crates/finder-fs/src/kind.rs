@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use objc2::rc::Retained;
 use objc2_foundation::NSString;
-use objc2_uniform_type_identifiers::UTType;
+use objc2_uniform_type_identifiers::{UTTagClassFilenameExtension, UTType};
 
 use crate::entry::{Entry, EntryKind};
 
@@ -290,6 +290,44 @@ pub fn conforms(uti: &str, category: Category) -> bool {
         Category::Other => false,
         _ => conformance(uti) >> category as u16 & 1 == 1,
     }
+}
+
+/// Whether `uti` is `wanted` or conforms to it, as Spotlight reads a content type tree.
+pub fn conforms_to(uti: &str, wanted: &str) -> bool {
+    type Held = HashMap<String, HashMap<String, bool>>;
+    static HELD: LazyLock<RwLock<Held>> = LazyLock::new(Default::default);
+    if uti == wanted {
+        return true;
+    }
+    if let Some(&held) = HELD
+        .read()
+        .unwrap()
+        .get(wanted)
+        .and_then(|known| known.get(uti))
+    {
+        return held;
+    }
+    let conforms = well_known(uti)
+        .zip(well_known(wanted))
+        .is_some_and(|(ty, base)| ty.conformsToType(&base));
+    HELD.write()
+        .unwrap()
+        .entry(wanted.to_owned())
+        .or_default()
+        .insert(uti.to_owned(), conforms);
+    conforms
+}
+
+/// The filename extensions `uti` declares.
+pub fn extensions(uti: &str) -> Vec<String> {
+    let Some(ty) = well_known(uti) else {
+        return Vec::new();
+    };
+    ty.tags()
+        .objectForKey(unsafe { UTTagClassFilenameExtension })
+        .map_or_else(Vec::new, |exts| {
+            exts.iter().map(|ext| ext.to_string()).collect()
+        })
 }
 
 #[cfg(test)]
