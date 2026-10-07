@@ -11,6 +11,7 @@ use crate::art::Previews;
 use crate::data::{Folder, Line, intern, intern_path, parent_of, split_key};
 use crate::menus::{self, Back, Forward};
 use crate::tags::tag_title;
+use crate::terms::Search;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::ColumnLook;
 use crate::views::gallery::GalleryLook;
@@ -304,6 +305,7 @@ impl FinderDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::search_field::clear(window);
         let id = arriving.id();
         if hold && self.holds_for(id) {
             self.arriving = Some(arriving);
@@ -533,6 +535,7 @@ impl FinderDemo {
 
     fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.arriving = None;
+        crate::search_field::clear(window);
         self.enter(cx);
         self.read_folder(self.here(), cx);
         self.settle();
@@ -541,9 +544,10 @@ impl FinderDemo {
 
     fn enter(&mut self, cx: &mut Context<Self>) {
         self.deselect();
-        self.query.clear();
+        self.query = Search::default();
+        self.raw_query = None;
         self.criteria.clear();
-        self.filtered.clear();
+        self.filtered = Search::default();
         self.hits.clear();
         self.tag_listing = None;
         self.icons.forget();

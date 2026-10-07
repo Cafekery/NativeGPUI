@@ -1,9 +1,14 @@
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use block2::StackBlock;
+use finder_fs::index::Index;
+use finder_fs::sort::fold;
 use gpui::{App, Context, Window};
 use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
 use objc2_foundation::{NSNotification, NSNotificationCenter};
@@ -15,6 +20,7 @@ use crate::chrome::{criteria_bar, scope_bar};
 use crate::data;
 use crate::data::Row;
 use crate::listing::next_rev;
+use crate::terms::Search;
 use crate::{fsearch, index, prefs};
 
 const HITS: usize = 200;
@@ -61,21 +67,21 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
     std::mem::forget(observer);
 }
 
-/// Rows for fsearch's hits, in order: from what the app's own index already
+/// Rows for the hits, in order: from what the app's own index already
 /// recorded, else one getattrlist each (a few threads at once). `None` once
 /// `stale` says a newer search started.
-fn fsearch_rows(
-    paths: &[PathBuf],
-    index: &finder_fs::index::Index,
-    criteria: &[Criterion],
-    stale: impl Fn() -> bool + Sync,
+fn hit_rows(
+    paths: &[&Path],
+    index: &Index,
+    admit: impl Fn(&Row) -> bool + Sync,
+    stale: &(impl Fn() -> bool + Sync),
 ) -> Option<Vec<Arc<Row>>> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     let parts = std::thread::scope(|s| {
         let tasks: Vec<_> = paths
             .chunks(paths.len().div_ceil(threads).max(1))
             .map(|part| {
-                let stale = &stale;
+                let admit = &admit;
                 s.spawn(move || {
                     let mut rows = Vec::with_capacity(part.len());
                     for chunk in part.chunks(CHUNK) {
@@ -85,13 +91,13 @@ fn fsearch_rows(
                         rows.extend(
                             chunk
                                 .iter()
-                                .filter_map(|path| {
+                                .filter_map(|&path| {
                                     let entry = index
                                         .entry(path)
                                         .or_else(|| finder_fs::list::listed_entry_at(path).ok())?;
                                     Some(data::hit_row(path, &entry, index))
                                 })
-                                .filter(|row| criteria.iter().all(|it| it.holds(row))),
+                                .filter(|row| admit(row)),
                         );
                     }
                     Some(rows)
@@ -106,9 +112,112 @@ fn fsearch_rows(
     Some(parts.concat())
 }
 
+/// What Spotlight finds for `query` under each of `roots` (everywhere if
+/// empty), at most `limit`, leaving out folders macOS would ask before
+/// opening. `None` once `stale`.
+fn spotlight(
+    query: &str,
+    roots: &[PathBuf],
+    limit: usize,
+    stale: &impl Fn() -> bool,
+) -> Option<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for root in roots
+        .iter()
+        .map(Some)
+        .chain(roots.is_empty().then_some(None))
+    {
+        let mut command = Command::new("/usr/bin/mdfind");
+        if let Some(root) = root {
+            command.arg("-onlyin").arg(root);
+        }
+        let Ok(mut child) = command
+            .arg(query)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(out) = child.stdout.take() {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if found.len() >= limit || stale() {
+                    break;
+                }
+                found.push(PathBuf::from(line));
+            }
+        }
+        child.kill().ok();
+        child.wait().ok();
+    }
+    (!stale()).then(|| fsearch::reachable_only(found))
+}
+
+/// The rows for a search: fsearch's name hits as it ranks them, then the
+/// files only their content answers for; or, given tags, what Spotlight has
+/// tagged. Each is checked against every term fsearch only narrows to.
+/// `None` while fsearch can't answer, or once `stale`.
+fn gather(
+    search: &Search,
+    under: &[PathBuf],
+    limit: usize,
+    spotlit: bool,
+    criteria: &[Criterion],
+    stale: &(impl Fn() -> bool + Sync),
+) -> Option<(Vec<Arc<Row>>, bool)> {
+    let index = index();
+    let matcher = search.matcher();
+    let mut contents: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+    let mut found = Vec::new();
+    for word in search.contents() {
+        let mut paths = fsearch::search(&search.content(&word), under, limit).unwrap_or_default();
+        if let Some(query) = search.spotlight(&word).filter(|_| spotlit) {
+            paths.extend(spotlight(&query, under, limit, stale)?);
+        }
+        found.extend(paths.iter().cloned());
+        contents.entry(fold(&word)).or_default().extend(paths);
+    }
+    let (named, found) = match search.tagged() {
+        Some(query) => (Vec::new(), spotlight(&query, under, limit, stale)?),
+        None => (fsearch::search(&search.names(), under, limit)?, found),
+    };
+    let mut seen = HashSet::new();
+    let named: Vec<&Path> = named
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| seen.insert(*path))
+        .collect();
+    let found: Vec<&Path> = found
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| seen.insert(*path))
+        .collect();
+    let complete = named.len() < limit && found.len() < limit;
+    let criteria = |row: &Row| criteria.iter().all(|it| it.holds(row));
+    let mut rows = hit_rows(
+        &named,
+        index,
+        |row| matcher.fits(row) && criteria(row),
+        stale,
+    )?;
+    let held = |row: &Row, word: &str| {
+        contents
+            .get(word)
+            .is_some_and(|paths| paths.contains(Path::new(row.path.as_ref())))
+    };
+    rows.extend(hit_rows(
+        &found,
+        index,
+        |row| matcher.admits_found(row, |word| held(row, word)) && criteria(row),
+        stale,
+    )?);
+    rows.truncate(limit);
+    Some((rows, complete))
+}
+
 impl FinderDemo {
     pub(crate) fn in_search(&self) -> bool {
-        !self.query.trim().is_empty()
+        !self.query.is_empty()
     }
 
     pub(crate) fn search_bars_h(&self) -> f32 {
@@ -116,15 +225,20 @@ impl FinderDemo {
     }
 
     pub(crate) fn results(&self) -> bool {
-        self.tag_listing.is_some() || (!self.filtered.trim().is_empty() && !self.hits.is_empty())
+        self.tag_listing.is_some() || (!self.filtered.is_empty() && !self.hits.is_empty())
     }
 
-    pub(crate) fn search(&mut self, text: String, cx: &mut Context<Self>) {
+    /// `raw` is Spotlight's query for the same search, which a saved search keeps.
+    pub(crate) fn search(&mut self, search: Search, raw: Option<String>, cx: &mut Context<Self>) {
+        self.raw_query = raw;
+        if search == self.query {
+            return;
+        }
         self.arrive_now(cx);
-        if !self.in_search() && !text.trim().is_empty() {
+        if !self.in_search() && !search.is_empty() {
             self.scope = prefs::search_scope();
         }
-        self.query = text;
+        self.query = search;
         self.run_search(cx);
     }
 
@@ -133,7 +247,7 @@ impl FinderDemo {
         cx.notify();
         let live = self.search_gen.clone();
         let generation = live.fetch_add(1, Ordering::Relaxed) + 1;
-        let wanted = self.query.trim().to_string();
+        let wanted = self.query.clone();
         let criteria = self.criteria.clone();
         let everywhere = self.scope == scope_bar::THIS_MAC;
         let daemon = self.scope != scope_bar::NETWORK;
@@ -142,46 +256,50 @@ impl FinderDemo {
             scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
             _ => vec![PathBuf::from(self.here())],
         };
+        let spotlit = !wanted.contents().is_empty() || wanted.tagged().is_some();
         cx.spawn(async move |this, cx| {
-            for limit in [HITS, ALL_HITS] {
-                let query = wanted.clone();
+            for (limit, last) in [(HITS, false), (ALL_HITS, true)] {
+                let search = wanted.clone();
                 let (under, criteria, pass) = (under.clone(), criteria.clone(), live.clone());
                 let found = cx
                     .background_executor()
                     .spawn(async move {
-                        if query.is_empty() {
+                        if search.is_empty() {
                             return Some((Vec::new(), true));
                         }
-                        let index = index();
-                        let fast = daemon
-                            .then(|| fsearch::search(&query, &under, limit))
+                        let stale = || pass.load(Ordering::Relaxed) != generation;
+                        let gathered = daemon
+                            .then(|| gather(&search, &under, limit, last, &criteria, &stale))
                             .flatten();
-                        if let Some(paths) = fast {
-                            let complete = paths.len() < limit;
-                            let mut rows = fsearch_rows(&paths, index, &criteria, || {
-                                pass.load(Ordering::Relaxed) != generation
-                            })?;
-                            rows.truncate(limit);
-                            return Some((rows, complete));
+                        if let Some(found) = gathered {
+                            return Some(found);
                         }
+                        if stale() {
+                            return None;
+                        }
+                        let index = index();
+                        let matcher = search.matcher();
                         let mut found = match everywhere {
-                            true => index.search(&query, None, limit),
+                            true => index.search(&search.text, None, limit),
                             false => under
                                 .iter()
-                                .flat_map(|root| index.search(&query, Some(root), limit))
+                                .flat_map(|root| index.search(&search.text, Some(root), limit))
                                 .collect(),
                         };
                         let complete = found.len() < limit;
                         found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
                         let mut rows = Vec::new();
                         for hits in found.chunks(CHUNK) {
-                            if pass.load(Ordering::Relaxed) != generation {
+                            if stale() {
                                 return None;
                             }
                             rows.extend(
                                 hits.iter()
                                     .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
-                                    .filter(|row| criteria.iter().all(|it| it.holds(row))),
+                                    .filter(|row| {
+                                        matcher.admits_found(row, |_| false)
+                                            && criteria.iter().all(|it| it.holds(row))
+                                    }),
                             );
                             if rows.len() >= limit {
                                 rows.truncate(limit);
@@ -225,7 +343,7 @@ impl FinderDemo {
                     cx.notify();
                     true
                 });
-                if complete || !matches!(shown, Ok(true)) {
+                if (complete && !spotlit) || !matches!(shown, Ok(true)) {
                     break;
                 }
             }
@@ -241,7 +359,8 @@ impl FinderDemo {
     ) {
         self.arriving = None;
         self.deselect();
-        self.query.clear();
+        crate::search_field::clear(window);
+        self.query = Search::default();
         self.criteria.clear();
         self.hits.clear();
         self.hits_rev = next_rev();

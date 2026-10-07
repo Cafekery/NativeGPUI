@@ -27,6 +27,7 @@ use crate::elastic::Bands;
 use crate::listing::{Keys, Listings};
 use crate::ops::{conflicts, jobs};
 use crate::preview::{self, INSET, PREVIEW_W, PreviewWindow};
+use crate::terms::Search;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
 use crate::views::column::{ColumnFit, ColumnLook};
 use crate::views::gallery::GalleryLook;
@@ -75,11 +76,13 @@ pub(crate) struct FinderDemo {
     pub(crate) header_drag: Option<HeaderDrag>,
     pub(crate) header: Option<Entity<HeaderBand>>,
     pub(crate) header_press: Option<f32>,
-    pub(crate) query: String,
+    pub(crate) query: Search,
+    /// The query Spotlight would run for it, as Finder's field writes it.
+    pub(crate) raw_query: Option<String>,
     pub(crate) search_editing: bool,
     pub(crate) titled: String,
     /// The query the rows on screen are filtered by; `query` is what has been typed since.
-    pub(crate) filtered: String,
+    pub(crate) filtered: Search,
     pub(crate) criteria: Vec<crate::chrome::criteria_bar::Criterion>,
     pub(crate) scope: usize,
     pub(crate) expanded: Keys,
@@ -238,9 +241,10 @@ impl FinderDemo {
             header_drag: None,
             header: None,
             header_press: None,
-            query: String::new(),
+            query: Search::default(),
+            raw_query: None,
             search_editing: false,
-            filtered: String::new(),
+            filtered: Search::default(),
             scope: prefs::search_scope(),
             expanded: Keys::default(),
             expanding: HashMap::new(),

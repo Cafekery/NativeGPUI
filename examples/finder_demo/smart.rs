@@ -27,10 +27,12 @@ pub(crate) fn file_of(listing: &str) -> Option<&str> {
     listing.strip_prefix(PREFIX)
 }
 
-fn raw_query(text: &str, criteria: &[Criterion]) -> String {
+/// `field` is the search field's own clause, else its text is matched against names.
+fn raw_query(field: Option<&str>, text: &str, criteria: &[Criterion]) -> String {
     let text = text.trim();
-    let clauses: Vec<String> = (!text.is_empty())
-        .then(|| name_clause("*", text, "*"))
+    let clauses: Vec<String> = field
+        .map(str::to_owned)
+        .or_else(|| (!text.is_empty()).then(|| name_clause("*", text, "*")))
         .into_iter()
         .chain(criteria.iter().filter_map(Criterion::raw_query))
         .collect();
@@ -204,7 +206,8 @@ impl FinderDemo {
                 .collect(),
             _ => vec![self.here().to_string()],
         };
-        match save(name, &raw_query(&self.query, &self.criteria), &folders) {
+        let raw = raw_query(self.raw_query.as_deref(), &self.query.text, &self.criteria);
+        match save(name, &raw, &folders) {
             Ok(file) => {
                 self.pin_favourite(vec![file.clone()], cx);
                 self.go(intern_path(&file), window, cx);

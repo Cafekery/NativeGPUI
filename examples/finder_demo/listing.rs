@@ -10,6 +10,7 @@ use gpui::{App, SharedString};
 use crate::app::FinderDemo;
 use crate::chrome::criteria_bar::Criterion;
 use crate::data::{Bands, Column, Folders, Line, Order, Row, today};
+use crate::terms::Search;
 use crate::view::{COLUMN_VIEW, LIST_VIEW};
 use crate::views::column::Rung;
 
@@ -56,7 +57,7 @@ struct Stamp {
     here: &'static str,
     order: Order,
     hidden: bool,
-    query: String,
+    query: Search,
     filter: Option<String>,
     hits: u64,
 }
@@ -258,13 +259,13 @@ impl Shape {
             return;
         };
         out.reserve(all.len().saturating_sub(from));
-        let query = fold(self.stamp.query.trim());
+        let matcher = self.stamp.query.matcher();
         let type_filter = fold(self.stamp.filter.as_deref().unwrap_or(""));
         let rows = all
             .iter()
             .skip(from)
             .filter(|row| self.stamp.hidden || !row.hidden)
-            .filter(|row| query.is_empty() || folds_to(&row.name, &query))
+            .filter(|row| matcher.admits(row))
             .filter(|row| type_filter.is_empty() || folds_to(&row.name, &type_filter));
         for row in rows {
             let open = row
@@ -428,7 +429,7 @@ impl FinderDemo {
         (self.tag_listing.is_none()
             && !self.results()
             && self.expanded.is_empty()
-            && self.filtered.trim().is_empty()
+            && self.filtered.is_empty()
             && self.type_filter.is_none())
         .then_some(shows_hidden())
     }
@@ -481,9 +482,9 @@ impl FinderDemo {
         }
     }
 
-    pub(crate) fn shape_filtered(&self, query: &str, hits: Vec<Arc<Row>>, rev: u64) -> Shape {
+    pub(crate) fn shape_filtered(&self, query: &Search, hits: Vec<Arc<Row>>, rev: u64) -> Shape {
         let mut shape = self.shape(self.view == LIST_VIEW);
-        shape.stamp.query = query.to_owned();
+        shape.stamp.query = query.clone();
         shape.stamp.hits = rev;
         shape.results = self.tag_listing.is_some() || !(query.is_empty() || hits.is_empty());
         shape.hits = hits;

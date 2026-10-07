@@ -410,10 +410,12 @@ impl FinderDemo {
             ToolbarItem::search(SEARCH_ID, "Search")
                 .placeholder("Search")
                 .width(px(SEARCH_W))
+                .field(crate::search_field::build)
                 .on_change({
                     let this = this.clone();
-                    move |text, _, cx| {
-                        this.update(cx, |this: &mut Self, cx| this.search(text.to_string(), cx))
+                    move |text, window, cx| {
+                        let (search, raw) = crate::search_field::typed(window, text);
+                        this.update(cx, |this: &mut Self, cx| this.search(search, raw, cx))
                             .ok();
                     }
                 }),

@@ -1265,7 +1265,7 @@ impl FinderDemo {
     fn keeps_places(&self) -> bool {
         self.here().starts_with('/')
             && !self.results()
-            && self.filtered.trim().is_empty()
+            && self.filtered.is_empty()
             && self.type_filter.is_none()
     }
 

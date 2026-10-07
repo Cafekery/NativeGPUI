@@ -92,6 +92,16 @@ pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec
     Some(found)
 }
 
+/// The paths of `found` that are shown, by the rule the hits follow.
+pub(crate) fn reachable_only(found: Vec<PathBuf>) -> Vec<PathBuf> {
+    let home = crate::home();
+    let mut folders = HashMap::new();
+    found
+        .into_iter()
+        .filter(|path| reachable(path, &home, &mut folders))
+        .collect()
+}
+
 /// Reading inside a folder macOS guards puts its consent prompt on screen, so
 /// a result there is shown only once the user has already let Found'er in.
 /// Hits share folders, so each folder's answer is kept in `folders`.
