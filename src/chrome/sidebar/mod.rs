@@ -1474,7 +1474,9 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     }
     outline.registerForDraggedTypes(&NSArray::from_retained_slice(&dragged_types));
 
-    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), strip);
+    let scroll: Retained<SidebarScroll> =
+        unsafe { msg_send![SidebarScroll::alloc(mtm), initWithFrame: strip] };
+    let scroll = Retained::into_super(scroll);
     scroll.setDocumentView(Some(&outline));
     scroll.setHasVerticalScroller(true);
     scroll.setDrawsBackground(false);
@@ -1483,17 +1485,10 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     );
 
     if options.edge_rule {
-        let frame = NSRect::new(
-            NSPoint::new(strip.size.width - 1., 0.),
-            NSSize::new(1., strip.size.height),
-        );
         let rule: Retained<EdgeRule> =
-            unsafe { msg_send![EdgeRule::alloc(mtm), initWithFrame: frame] };
-        rule.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewMinXMargin
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
+            unsafe { msg_send![EdgeRule::alloc(mtm), initWithFrame: NSRect::ZERO] };
         scroll.addSubview(&rule);
+        scroll.tile();
     }
 
     let sidebar_vc = NSViewController::init(NSViewController::alloc(mtm));
@@ -1677,6 +1672,30 @@ define_class!(
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, _point: NSPoint) -> *mut NSView {
             std::ptr::null_mut()
+        }
+    }
+);
+
+define_class!(
+    #[unsafe(super(NSScrollView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NGSidebarScroll"]
+    struct SidebarScroll;
+
+    impl SidebarScroll {
+        // NSScrollView lays out only its own parts on a resize, never autoresizing an added subview.
+        #[unsafe(method(tile))]
+        fn tile(&self) {
+            let _: () = unsafe { msg_send![super(self), tile] };
+            let bounds = self.bounds();
+            for view in self.subviews() {
+                if view.isKindOfClass(EdgeRule::class()) {
+                    view.setFrame(NSRect::new(
+                        NSPoint::new(bounds.size.width - 1., 0.),
+                        NSSize::new(1., bounds.size.height),
+                    ));
+                }
+            }
         }
     }
 );
