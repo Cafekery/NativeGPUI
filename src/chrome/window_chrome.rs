@@ -645,6 +645,7 @@ type ToolbarHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 type ToolbarIndexHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type ToolbarTextHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 type ToolbarViewBuilder = Rc<dyn Fn(MainThreadMarker) -> Retained<NSView>>;
+type ToolbarFieldBuilder = Rc<dyn Fn(MainThreadMarker) -> Retained<NSSearchField>>;
 type ToolbarEntriesBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Vec<MenuEntry>>;
 type ToolbarItemsBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Vec<String>>;
 
@@ -744,6 +745,7 @@ pub enum ToolbarItem {
         width: Pixels,
         tool_tip: Option<String>,
         on_change: Option<ToolbarTextHandler>,
+        field: Option<ToolbarFieldBuilder>,
     },
     Menu {
         id: String,
@@ -823,6 +825,7 @@ impl ToolbarItem {
             width: px(220.),
             tool_tip: None,
             on_change: None,
+            field: None,
         }
     }
 
@@ -917,6 +920,17 @@ impl ToolbarItem {
     pub fn on_change(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
         if let ToolbarItem::Search { on_change, .. } = &mut self {
             *on_change = Some(Rc::new(handler));
+        }
+        self
+    }
+
+    /// Builds the search item's field, for a subclass of `NSSearchField`.
+    pub fn field(
+        mut self,
+        build: impl Fn(MainThreadMarker) -> Retained<NSSearchField> + 'static,
+    ) -> Self {
+        if let ToolbarItem::Search { field, .. } = &mut self {
+            *field = Some(Rc::new(build));
         }
         self
     }
@@ -1492,6 +1506,7 @@ impl ToolbarDelegate {
                 label,
                 placeholder,
                 width,
+                field: build,
                 ..
             } => {
                 let item = NSSearchToolbarItem::initWithItemIdentifier(
@@ -1500,7 +1515,10 @@ impl ToolbarDelegate {
                 );
                 item.setLabel(&worded(&label));
                 // The item takes over the field's layout on assignment, so configure it first.
-                let field = NSSearchField::new(mtm);
+                let field = match build {
+                    Some(build) => build(mtm),
+                    None => NSSearchField::new(mtm),
+                };
                 if !placeholder.is_empty() {
                     field.setPlaceholderString(Some(&NSString::from_str(&placeholder)));
                 }
@@ -1926,7 +1944,14 @@ fn toolbar_item(window: &Window, id: &str) -> Option<Retained<NSToolbarItem>> {
 }
 
 pub fn toolbar_item_view(window: &Window, id: &str) -> Option<Retained<NSView>> {
-    toolbar_item(window, id)?.view()
+    let item = toolbar_item(window, id)?;
+    // A search item has no `view`; its field is what stands in the toolbar.
+    match item.downcast_ref::<NSSearchToolbarItem>() {
+        Some(search) => Some(Retained::into_super(Retained::into_super(
+            Retained::into_super(search.searchField()),
+        ))),
+        None => item.view(),
+    }
 }
 
 pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
