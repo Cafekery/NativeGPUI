@@ -18,9 +18,9 @@ use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NS
 
 use crate::form::{Form, INSET, MARGIN, SECTION, key_of};
 
-/// SwiftUI's `.smooth` spring: critically damped, with a 0.5 s response.
-const RESPONSE: f32 = 0.5;
-const SETTLED: Duration = Duration::from_millis(750);
+/// A critically damped spring, twice as quick as SwiftUI's `.smooth`.
+const RESPONSE: f32 = 0.25;
+const SETTLED: Duration = Duration::from_millis(380);
 const CHEVRON: f64 = 11.2;
 const BOX: f32 = 16.;
 const REACH: f32 = 4.;
