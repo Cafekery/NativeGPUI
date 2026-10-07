@@ -21,8 +21,9 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSColor, NSPanel, NSWindow, NSWindowDidResizeNotification, NSWindowOrderingMode,
-    NSWindowStyleMask, NSWindowWillCloseNotification,
+    NSApplication, NSApplicationDidUnhideNotification, NSColor, NSPanel, NSWindow,
+    NSWindowDidResizeNotification, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSPoint, NSRect, NSRunLoop, NSSize,
@@ -50,7 +51,7 @@ const DIVIDER_GRAB: f32 = 3.;
 pub(crate) struct PreviewWindow {
     handle: WindowHandle<PreviewPane>,
     window: Retained<NSWindow>,
-    follow: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    follow: [Retained<ProtocolObject<dyn NSObjectProtocol>>; 2],
     pane: EntityId,
     handed: Rc<Handed>,
 }
@@ -75,7 +76,10 @@ impl PreviewWindow {
 
 impl Drop for PreviewWindow {
     fn drop(&mut self) {
-        unsafe { NSNotificationCenter::defaultCenter().removeObserver(self.follow.as_ref()) };
+        let center = NSNotificationCenter::defaultCenter();
+        for observer in &self.follow {
+            unsafe { center.removeObserver(observer.as_ref()) };
+        }
     }
 }
 
@@ -103,26 +107,49 @@ fn place(parent: &NSWindow, pane: &NSWindow, sidebar: &NativeSidebar) {
     }
 }
 
+fn attach(parent: &NSWindow, pane: &NSWindow) {
+    unsafe { parent.addChildWindow_ordered(pane, NSWindowOrderingMode::Above) };
+    pane.setLevel(parent.level());
+}
+
 /// Moves the pane within the parent's own resize: placed from the next frame, it trails the edge.
 fn follow_parent(
     parent: &NSWindow,
     pane: &Retained<NSWindow>,
     sidebar: &NativeSidebar,
-) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
-    let (host, pane, sidebar) = (Weak::new(parent), pane.clone(), sidebar.clone());
-    let block = StackBlock::new(move |_: NonNull<NSNotification>| {
+) -> [Retained<ProtocolObject<dyn NSObjectProtocol>>; 2] {
+    let (host, card, sidebar) = (Weak::new(parent), pane.clone(), sidebar.clone());
+    let resized = StackBlock::new(move |_: NonNull<NSNotification>| {
         if let Some(host) = host.load() {
-            place(&host, &pane, &sidebar);
+            place(&host, &card, &sidebar);
         }
     })
     .copy();
+    let (host, card) = (Weak::new(parent), pane.clone());
+    // Unhiding the app adds a child to its parent's movement group again, and it moves once per copy.
+    let unhidden = StackBlock::new(move |_: NonNull<NSNotification>| {
+        if let Some(host) = host.load().filter(|host| host.isVisible()) {
+            host.removeChildWindow(&card);
+            attach(&host, &card);
+        }
+    })
+    .copy();
+    let center = NSNotificationCenter::defaultCenter();
     unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSWindowDidResizeNotification),
-            Some(parent),
-            None,
-            &block,
-        )
+        [
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidResizeNotification),
+                Some(parent),
+                None,
+                &resized,
+            ),
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSApplicationDidUnhideNotification),
+                None,
+                None,
+                &unhidden,
+            ),
+        ]
     }
 }
 
@@ -285,8 +312,7 @@ fn open_preview_window(
             let _: () = msg_send![&*window, setBecomesKeyOnlyIfNeeded: true];
         }
         place(&parent, &window, &sidebar);
-        unsafe { parent.addChildWindow_ordered(&window, NSWindowOrderingMode::Above) };
-        window.setLevel(parent.level());
+        attach(&parent, &window);
         let follow = follow_parent(&parent, &window, &sidebar);
         Some(PreviewWindow {
             handle,
