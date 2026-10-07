@@ -11,15 +11,8 @@ use std::sync::OnceLock;
 use ::fsearch::{Engine, Grep, Options, Query};
 use finder_fs::index::off_limits;
 
-const JACE: &str = "Jace";
-
-/// Whose search engine answers, shown in the path bar's corner: Noah's
-/// fsearch, or Jace's built-in index when `NG_NO_FSEARCH` is set.
-pub(crate) fn name() -> &'static str {
-    match std::env::var_os("NG_NO_FSEARCH") {
-        Some(_) => JACE,
-        None => "Noah",
-    }
+fn enabled() -> bool {
+    std::env::var_os("NG_NO_FSEARCH").is_none()
 }
 
 /// Start the engine at launch, so the index is loaded and following changes
@@ -33,7 +26,7 @@ fn engine() -> Option<&'static Engine> {
     static ENGINE: OnceLock<Option<Engine>> = OnceLock::new();
     ENGINE
         .get_or_init(|| {
-            if name() == JACE {
+            if !enabled() {
                 return None;
             }
             let home = crate::home();

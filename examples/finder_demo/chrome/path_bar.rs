@@ -338,7 +338,6 @@ impl FinderDemo {
             });
         }
 
-        let engine = crate::fsearch::name();
         let paint = BarPaint::now();
         div()
             .h(px(PATH_H))
@@ -349,23 +348,6 @@ impl FinderDemo {
             .child(edge_row(0., paint.rim[0]))
             .child(edge_row(EDGE_ROW, paint.rim[1]))
             .child(trail)
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(TRAIL_INSET))
-                    .flex()
-                    .items_center()
-                    .child(
-                        div().w(px(label_width(engine))).child(
-                            native_label("ng.finder.engine", engine)
-                                .font_size(tokens::small_system_font_size())
-                                .truncates(false)
-                                .color(SystemColor::TertiaryLabel),
-                        ),
-                    ),
-            )
             .into_any_element()
     }
 
