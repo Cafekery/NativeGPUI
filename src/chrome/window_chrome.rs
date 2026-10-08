@@ -1354,6 +1354,11 @@ impl ToolbarDelegate {
     }
 
     fn menu_owner(&self, menu: &NSMenu) -> Option<String> {
+        let mut menu = menu.retain();
+        while let Some(parent) = unsafe { menu.supermenu() } {
+            menu = parent;
+        }
+        let menu = &*menu;
         self.ivars().built.borrow().iter().find_map(|(id, item)| {
             let owned = item.downcast_ref::<NSMenuToolbarItem>()?.menu();
             ptr::eq(Retained::as_ptr(&owned), menu).then(|| id.clone())
