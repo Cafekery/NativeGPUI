@@ -65,9 +65,11 @@ fn syntax(word: &str) -> bool {
     word.contains(['"', '/'])
         || word.starts_with(['!', '\'', '^'])
         || word.ends_with('$')
-        || word
-            .split_once(':')
-            .is_some_and(|(key, _)| ::fsearch::query::is_filter(key))
+        || word.split_once(':').is_some_and(|(key, value)| {
+            ::fsearch::Query::default()
+                .filter(key, value, "")
+                .unwrap_or(true)
+        })
 }
 
 fn kind_filter(uti: &str) -> String {

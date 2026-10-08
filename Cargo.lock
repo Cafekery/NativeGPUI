@@ -1735,6 +1735,7 @@ dependencies = [
  "rayon",
  "regex",
  "regex-syntax",
+ "serde",
 ]
 
 [[package]]

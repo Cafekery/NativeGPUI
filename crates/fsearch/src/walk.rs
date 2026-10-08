@@ -9,20 +9,17 @@ use rayon::Scope;
 use std::cell::RefCell;
 use std::ffi::CString;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const NONE: u32 = u32::MAX;
 
-/// Folders never to open: set when the process runs without Full Disk
+/// Folders never to open: set when the daemon runs without Full Disk
 /// Access, where opening a consent-gated folder (Downloads, Desktop, ...)
 /// pops a privacy prompt and blocks the call until someone answers it.
 pub static SKIP: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
 
 pub fn blocked(path: &[u8]) -> bool {
-    SKIP.get().is_some_and(|v| {
-        v.iter()
-            .any(|s| path.starts_with(s) && (path.len() == s.len() || path[s.len()] == b'/'))
-    })
+    SKIP.get().is_some_and(|v| v.iter().any(|s| path.starts_with(s) && (path.len() == s.len() || path[s.len()] == b'/')))
 }
 
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
@@ -56,17 +53,9 @@ pub struct Listing {
     pub ents: Vec<RawEnt>,
 }
 
-#[derive(Default)]
-pub struct Stats {
-    pub dirs: AtomicU64,
-    pub entries: AtomicU64,
-    pub denied: AtomicU64,
-}
-
 struct Ctx {
     next_id: AtomicU32,
     out: Vec<Mutex<Vec<Listing>>>,
-    stats: Stats,
 }
 
 thread_local! {
@@ -74,34 +63,15 @@ thread_local! {
 }
 
 /// Scan `root` recursively. Listing id 0 is `root` itself.
-pub fn scan(root: &[u8], threads: usize) -> (Vec<Listing>, Stats) {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .start_handler(|_| crate::no_materialize())
-        .build()
-        .unwrap();
-    let ctx = Ctx {
-        next_id: AtomicU32::new(1),
-        out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect(),
-        stats: Stats::default(),
-    };
+pub fn scan(root: &[u8], threads: usize) -> Vec<Listing> {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| crate::no_materialize()).build().unwrap();
+    let ctx = Ctx { next_id: AtomicU32::new(1), out: (0..threads + 1).map(|_| Mutex::new(Vec::new())).collect() };
     raise_fd_limit();
-    let fd = if blocked(root) {
-        -1
-    } else {
-        CString::new(root).map_or(-1, |c| unsafe { libc::open(c.as_ptr(), OPEN_DIR) })
-    };
+    let fd = if blocked(root) { -1 } else { CString::new(root).map_or(-1, |c| unsafe { libc::open(c.as_ptr(), OPEN_DIR) }) };
     // Paths are only tracked when there is something to skip.
-    let path = SKIP
-        .get()
-        .is_some_and(|v| !v.is_empty())
-        .then(|| root.to_vec());
+    let path = SKIP.get().is_some_and(|v| !v.is_empty()).then(|| root.to_vec());
     pool.scope(|s| finish_dir(s, fd, path, 0, &ctx));
-    let mut all = Vec::new();
-    for m in ctx.out {
-        all.append(&mut m.into_inner().unwrap());
-    }
-    (all, ctx.stats)
+    ctx.out.into_iter().flat_map(|m| m.into_inner().unwrap()).collect()
 }
 
 fn raise_fd_limit() {
@@ -117,11 +87,7 @@ pub fn list_one(path: &[u8]) -> Option<Listing> {
     if blocked(path) {
         return None;
     }
-    let mut l = Listing {
-        id: 0,
-        names: Vec::new(),
-        ents: Vec::new(),
-    };
+    let mut l = Listing { id: 0, names: Vec::new(), ents: Vec::new() };
     list_into(path, &mut l).then_some(l)
 }
 
@@ -140,13 +106,8 @@ impl Drop for Fd {
 // close() is ~19us per directory (two Endpoint Security clients tax every
 // open), getattrlistbulk ~14us; past ~8 threads the kernel side stops scaling.
 fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &'s Ctx) {
-    let mut l = Listing {
-        id,
-        names: Vec::new(),
-        ents: Vec::new(),
-    };
+    let mut l = Listing { id, names: Vec::new(), ents: Vec::new() };
     if fd < 0 {
-        ctx.stats.denied.fetch_add(1, Ordering::Relaxed);
         push(l, ctx);
         return;
     }
@@ -164,10 +125,6 @@ fn finish_dir<'s>(s: &Scope<'s>, fd: i32, path: Option<Vec<u8>>, id: u32, ctx: &
             kids.push((CString::new(name).unwrap_or_default(), e.child, child_path));
         }
     }
-    ctx.stats.dirs.fetch_add(1, Ordering::Relaxed);
-    ctx.stats
-        .entries
-        .fetch_add(l.ents.len() as u64, Ordering::Relaxed);
     push(l, ctx);
     for (name, cid, child_path) in kids {
         let parent = me.clone();
@@ -194,9 +151,7 @@ fn rd64(b: &[u8], at: usize) -> u64 {
 
 /// Returns false if the directory could not be opened.
 fn list_into(path: &[u8], l: &mut Listing) -> bool {
-    let Ok(cpath) = CString::new(path) else {
-        return false;
-    };
+    let Ok(cpath) = CString::new(path) else { return false };
     let fd = unsafe { libc::open(cpath.as_ptr(), OPEN_DIR) };
     if fd < 0 {
         return false;
@@ -209,25 +164,13 @@ fn list_into(path: &[u8], l: &mut Listing) -> bool {
 fn list_fd(fd: i32, l: &mut Listing) {
     let mut al: libc::attrlist = unsafe { std::mem::zeroed() };
     al.bitmapcount = libc::ATTR_BIT_MAP_COUNT;
-    al.commonattr = libc::ATTR_CMN_RETURNED_ATTRS
-        | libc::ATTR_CMN_NAME
-        | ATTR_CMN_ERROR
-        | libc::ATTR_CMN_OBJTYPE
-        | libc::ATTR_CMN_MODTIME
-        | libc::ATTR_CMN_FLAGS;
+    al.commonattr =
+        libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_NAME | ATTR_CMN_ERROR | libc::ATTR_CMN_OBJTYPE | libc::ATTR_CMN_MODTIME | libc::ATTR_CMN_FLAGS;
     al.dirattr = libc::ATTR_DIR_MOUNTSTATUS;
     al.fileattr = libc::ATTR_FILE_DATALENGTH;
     BUF.with_borrow_mut(|buf| {
         loop {
-            let n = unsafe {
-                libc::getattrlistbulk(
-                    fd,
-                    &mut al as *mut _ as *mut libc::c_void,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                    0,
-                )
-            };
+            let n = unsafe { libc::getattrlistbulk(fd, &mut al as *mut _ as *mut libc::c_void, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n <= 0 {
                 break;
             }
@@ -291,13 +234,6 @@ fn parse_entry(b: &[u8], l: &mut Listing) {
     if name.is_empty() || name.len() > u16::MAX as usize {
         return;
     }
-    l.ents.push(RawEnt {
-        name_off: l.names.len() as u32,
-        name_len: name.len() as u16,
-        kind,
-        size,
-        mtime,
-        child: NONE,
-    });
+    l.ents.push(RawEnt { name_off: l.names.len() as u32, name_len: name.len() as u16, kind, size, mtime, child: NONE });
     l.names.extend_from_slice(name);
 }

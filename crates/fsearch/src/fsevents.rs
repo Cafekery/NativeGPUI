@@ -48,12 +48,7 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFStringCreateWithCString(alloc: *const c_void, s: *const i8, enc: u32) -> *const c_void;
-    fn CFArrayCreate(
-        alloc: *const c_void,
-        vals: *const *const c_void,
-        n: isize,
-        cbs: *const c_void,
-    ) -> *const c_void;
+    fn CFArrayCreate(alloc: *const c_void, vals: *const *const c_void, n: isize, cbs: *const c_void) -> *const c_void;
     static kCFTypeArrayCallBacks: c_void;
 }
 
@@ -61,25 +56,11 @@ unsafe extern "C" {
     fn dispatch_queue_create(label: *const i8, attr: *const c_void) -> *mut c_void;
 }
 
-extern "C" fn on_events(
-    _s: *mut c_void,
-    info: *mut c_void,
-    n: usize,
-    paths: *mut c_void,
-    flags: *const u32,
-    ids: *const u64,
-) {
+extern "C" fn on_events(_s: *mut c_void, info: *mut c_void, n: usize, paths: *mut c_void, flags: *const u32, ids: *const u64) {
     let tx = unsafe { &*(info as *const Sender<Vec<Event>>) };
     let paths = paths as *const *const i8;
-    let batch = (0..n)
-        .map(|i| unsafe {
-            Event {
-                path: CStr::from_ptr(*paths.add(i)).to_bytes().to_vec(),
-                flags: *flags.add(i),
-                id: *ids.add(i),
-            }
-        })
-        .collect();
+    let batch =
+        (0..n).map(|i| unsafe { Event { path: CStr::from_ptr(*paths.add(i)).to_bytes().to_vec(), flags: *flags.add(i), id: *ids.add(i) } }).collect();
     let _ = tx.send(batch);
 }
 
@@ -105,12 +86,7 @@ impl Drop for Stream {
 pub fn watch(since: u64, latency: f64, tx: Sender<Vec<Event>>) -> Stream {
     unsafe {
         let root = CFStringCreateWithCString(std::ptr::null(), c"/".as_ptr(), 0x0800_0100);
-        let arr = CFArrayCreate(
-            std::ptr::null(),
-            &root,
-            1,
-            &kCFTypeArrayCallBacks as *const c_void,
-        );
+        let arr = CFArrayCreate(std::ptr::null(), &root, 1, &kCFTypeArrayCallBacks as *const c_void);
         // The sender is leaked: a callback may still be in flight when the
         // stream stops, and streams are replaced rarely.
         let ctx = Context {
@@ -122,15 +98,7 @@ pub fn watch(since: u64, latency: f64, tx: Sender<Vec<Event>>) -> Stream {
         };
         // Not IgnoreSelf: linked into an app, the app's own renames and moves
         // are exactly what its search must see.
-        let s = FSEventStreamCreate(
-            std::ptr::null(),
-            on_events,
-            &ctx,
-            arr,
-            since,
-            latency,
-            CREATE_FLAG_NO_DEFER,
-        );
+        let s = FSEventStreamCreate(std::ptr::null(), on_events, &ctx, arr, since, latency, CREATE_FLAG_NO_DEFER);
         let q = dispatch_queue_create(c"fsearch.fsevents".as_ptr(), std::ptr::null());
         FSEventStreamSetDispatchQueue(s, q);
         FSEventStreamStart(s);
