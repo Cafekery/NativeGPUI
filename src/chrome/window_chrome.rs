@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::panic::Location;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use block2::RcBlock;
 use gpui::{
@@ -1834,9 +1835,17 @@ fn install_toolbar(
     let toolbar = {
         let mut slot = host.ivars().toolbar.borrow_mut();
         slot.get_or_insert_with(|| {
-            let name = "ng.window_chrome.toolbar";
+            // Toolbars sharing an identifier replay each other's inserts and removals by index.
+            let name = match customization {
+                Some(_) => "ng.window_chrome.toolbar".to_owned(),
+                None => {
+                    static FIXED: AtomicUsize = AtomicUsize::new(0);
+                    let n = FIXED.fetch_add(1, Ordering::Relaxed);
+                    format!("ng.window_chrome.toolbar.fixed.{n}")
+                }
+            };
             let toolbar =
-                NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str(name));
+                NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), &NSString::from_str(&name));
             toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             toolbar.setDisplayMode(match style {
                 ToolbarStyle::Preference => NSToolbarDisplayMode::IconAndLabel,
