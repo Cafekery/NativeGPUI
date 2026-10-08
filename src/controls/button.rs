@@ -74,7 +74,7 @@ fn sync_symbol(button: &NSButton, symbol: Option<&str>, label: &str, only: bool)
     sync_title(button, if symbol.is_some() && only { "" } else { label });
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CheckState {
     Off,
     On,
@@ -90,7 +90,7 @@ impl CheckState {
         }
     }
 
-    fn to_native(self) -> NSControlStateValue {
+    pub(crate) fn to_native(self) -> NSControlStateValue {
         match self {
             Self::Off => NSControlStateValueOff,
             Self::On => NSControlStateValueOn,

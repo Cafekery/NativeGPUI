@@ -52,7 +52,7 @@ use native_gpui::tokens::{
 };
 
 fn main() {
-    let _ = MenuCommand::checked;
+    let _ = MenuCommand::checked::<CheckState>;
     let _ = MenuEntry::file_icon;
     let _ = native_gpui::NativeSegmented::segment_enabled;
     let _ = ToolbarItem::selectable;

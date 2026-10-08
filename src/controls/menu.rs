@@ -17,10 +17,10 @@ use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityElement, NSAccessibilityRadioButtonRole,
     NSAutoresizingMaskOptions, NSBezelStyle, NSBezierPath, NSBox, NSBoxType, NSButton, NSColor,
-    NSColorSystemEffect, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSEvent,
-    NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightSemibold, NSImage,
-    NSImageSymbolConfiguration, NSImageSymbolScale, NSImageView, NSMenu, NSMenuItem, NSPopUpButton,
-    NSResponder, NSStringDrawing, NSTextAlignment, NSTintProminence, NSTitlePosition, NSView,
+    NSColorSystemEffect, NSControl, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont,
+    NSFontAttributeName, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration,
+    NSImageSymbolScale, NSImageView, NSMenu, NSMenuItem, NSPopUpButton, NSResponder,
+    NSStringDrawing, NSTextAlignment, NSTintProminence, NSTitlePosition, NSView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedStringKey, NSCopying, NSDictionary, NSNumber, NSObject,
@@ -32,7 +32,7 @@ use crate::bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element,
     wire,
 };
-use crate::controls::button::ButtonBezel;
+use crate::controls::button::{ButtonBezel, CheckState};
 use crate::controls::{
     hash_of, measured, nsstring_is, symbol_image, sync_control_size, sync_enabled, sync_font_size,
     with_width,
@@ -52,7 +52,7 @@ pub enum MenuEntry {
         /// Drawn where the symbol would go; set by [`MenuEntry::file_icon`].
         file_icon: Option<String>,
         enabled: bool,
-        checked: bool,
+        checked: CheckState,
         /// Drawn at the trailing edge only; a transient menu is not listening.
         key: Option<(String, Modifiers)>,
         /// Stands in for the row above it while ⌥ is held.
@@ -71,7 +71,7 @@ impl MenuEntry {
             dot: None,
             file_icon: None,
             enabled: true,
-            checked: false,
+            checked: CheckState::Off,
             key: None,
             alternate: false,
             submenu: Vec::new(),
@@ -114,9 +114,9 @@ impl MenuEntry {
         self
     }
 
-    pub fn checked(mut self, on: bool) -> Self {
+    pub fn checked<S: Into<CheckState>>(mut self, state: S) -> Self {
         if let Self::Item { checked, .. } = &mut self {
-            *checked = on;
+            *checked = state.into();
         }
         self
     }
@@ -610,6 +610,47 @@ fn dot_image(color: (u8, u8, u8)) -> Retained<NSImage> {
     image
 }
 
+pub(crate) fn set_state(item: &NSMenuItem, state: CheckState) {
+    if state == CheckState::Mixed {
+        unsafe { item.setMixedStateImage(Some(&mixed_state_image())) };
+    }
+    if item.state() != state.to_native() {
+        item.setState(state.to_native());
+    }
+}
+
+/// AppKit sizes the state column to the shown glyph, so a dash as wide as the checkmark keeps
+/// titles from shifting when a menu's rows go from checked to mixed.
+fn mixed_state_image() -> Retained<NSImage> {
+    thread_local! {
+        static DASH: Retained<NSImage> = {
+            let symbol = |name: &str| {
+                let shape = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+                    NSFont::menuFontOfSize(0.).pointSize(),
+                    unsafe { NSFontWeightSemibold },
+                    NSImageSymbolScale::Small,
+                );
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &NSString::from_str(name),
+                    None,
+                )
+                .and_then(|image| image.imageWithSymbolConfiguration(&shape))
+                .expect("SF Symbols has it")
+            };
+            let (check, dash) = (symbol("checkmark"), symbol("minus"));
+            let size = NSSize::new(check.size().width, dash.size().height);
+            let draw = block2::RcBlock::new(move |_: NSRect| -> Bool {
+                dash.drawInRect(NSRect::new(NSPoint::new(0., 0.), dash.size()));
+                Bool::YES
+            });
+            let image = NSImage::imageWithSize_flipped_drawingHandler(size, false, &draw);
+            image.setTemplate(true);
+            image
+        };
+    }
+    DASH.with(Clone::clone)
+}
+
 /// Brings `menu` in line with `entries` in place: `removeAllItems` would close an open menu.
 pub(crate) fn sync_menu(
     mtm: MainThreadMarker,
@@ -677,14 +718,7 @@ fn sync_level(
         if item.isEnabled() != *enabled {
             item.setEnabled(*enabled);
         }
-        let want_state = if *checked {
-            NSControlStateValueOn
-        } else {
-            NSControlStateValueOff
-        };
-        if item.state() != want_state {
-            item.setState(want_state);
-        }
+        set_state(&item, *checked);
 
         // An ⌥ row pairs with the row above it by their shared empty key; the mask tells them apart.
         let (equivalent, mask) = match key {

@@ -3,7 +3,8 @@ use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::controls::MenuView;
+use crate::controls::menu::set_state;
+use crate::controls::{CheckState, MenuView};
 use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
@@ -11,9 +12,8 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSEventTrackingRunLoopMode, NSImageView, NSMenu, NSMenuDelegate, NSMenuItem, NSResponder,
-    NSText, NSWindow,
+    NSApplication, NSEvent, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSImageView, NSMenu,
+    NSMenuDelegate, NSMenuItem, NSResponder, NSText, NSWindow,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSNumber, NSObject, NSObjectProtocol, NSProcessInfo, NSRunLoop,
@@ -86,7 +86,7 @@ pub struct MenuCommand {
     rows: Vec<MenuCommand>,
     alternate: bool,
     option_only: bool,
-    checked: bool,
+    checked: CheckState,
     text: Option<TextCommand>,
     selector: Option<Sel>,
     main_window: bool,
@@ -142,8 +142,9 @@ impl MenuCommand {
         self
     }
 
-    pub fn checked(mut self, on: bool) -> Self {
-        self.checked = on;
+    /// `Mixed` draws AppKit's dash, as a row whose submenu is partly chosen does.
+    pub fn checked<S: Into<CheckState>>(mut self, state: S) -> Self {
+        self.checked = state.into();
         self
     }
 
@@ -174,7 +175,7 @@ impl MenuCommand {
             rows: Vec::new(),
             alternate: false,
             option_only: false,
-            checked: false,
+            checked: CheckState::Off,
             text: None,
             selector: None,
             main_window: false,
@@ -771,19 +772,13 @@ fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
     Some((equivalent_key(&keystroke.key)?, mask))
 }
 
-fn set_state(row: &NSMenuItem, on: bool) {
-    row.setState(if on {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
-    });
-}
+type MenuState = dyn Fn(&dyn Action) -> Option<CheckState>;
 
-type MenuState = dyn Fn(&dyn Action) -> Option<bool>;
-
-/// Each `Some` is that row's state. Runs while gpui holds its `App`: read state of your own.
-pub fn on_menu_state(check: impl Fn(&dyn Action) -> Option<bool> + 'static) {
-    STATE.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
+/// Each `Some` is that row's state, a `bool` or a [`CheckState`]; a submenu's row gets one too
+/// when it has an action. Runs while gpui holds its `App`: read state of your own.
+pub fn on_menu_state<S: Into<CheckState>>(check: impl Fn(&dyn Action) -> Option<S> + 'static) {
+    STATE
+        .with_borrow_mut(|slot| *slot = Some(Rc::new(move |action| check(action).map(Into::into))));
 }
 
 /// Rows it answers `false` for are disabled; the rest stay enabled.
