@@ -24,7 +24,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedStringKey, NSCopying, NSDictionary, NSNumber, NSObject,
-    NSPoint, NSRect, NSSize, NSString,
+    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 
 use crate::bridge::appkit::Container;
@@ -714,6 +714,10 @@ fn sync_level(
         };
         if !matches {
             item.setImage(menu_image(symbol.as_deref(), *dot, file_icon.as_deref()).as_deref());
+            // macOS 27 hides row images unless asked to show them.
+            if item.respondsToSelector(sel!(setPreferredImageVisibility:)) {
+                let _: () = unsafe { msg_send![&*item, setPreferredImageVisibility: 1isize] };
+            }
             let key = want.map(|key| NSString::from_str(&key));
             let key: Option<&AnyObject> = key.as_deref().map(|key| key.as_ref());
             unsafe { item.setRepresentedObject(key) };
