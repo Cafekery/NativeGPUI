@@ -509,10 +509,10 @@ fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
         ),
         (MenuEntry::separator(), Act::Nothing),
     ];
-    sorts.extend(SORT_KEYS.iter().map(|column| {
+    sorts.extend(SORT_KEYS.into_iter().map(|column| {
         (
-            MenuEntry::item(column_title(*column)).checked(arranged == Arrangement::By(*column)),
-            Act::Arrange(Arrangement::By(*column)),
+            MenuEntry::item(column_title(column)).checked(arranged == Arrangement::By(column)),
+            Act::Arrange(Arrangement::By(column)),
         )
     }));
     menu.submenu("Sort By", sorts);
@@ -523,11 +523,11 @@ fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
     menu.submenu(
         "Clean Up By",
         CLEAN_UP_BY
-            .iter()
+            .into_iter()
             .map(|column| {
                 (
-                    MenuEntry::item(column_title(*column)),
-                    Act::CleanUpBy(*column),
+                    MenuEntry::item(column_title(column)),
+                    Act::CleanUpBy(column),
                 )
             })
             .collect(),
