@@ -32,7 +32,6 @@ pub enum Event {
         job: JobId,
         done: Done,
     },
-    /// A move, copy, duplicate or put back, which carries on past the items that fail.
     Carried(JobId, Carried),
 }
 
@@ -72,7 +71,6 @@ impl Queue {
         id
     }
 
-    /// `None` once the job has ended.
     pub fn progress(&self, job: JobId) -> Option<Progress> {
         self.shared.running.lock().get(&job).map(Transfer::progress)
     }
@@ -89,7 +87,6 @@ impl Queue {
         }
     }
 
-    /// What has landed stays.
     pub fn cancel(&self, job: JobId) {
         if let Some(transfer) = self.transfer(job) {
             transfer.cancel();
@@ -168,7 +165,6 @@ fn batch_done(results: Vec<PathBuf>, mut undos: Vec<Op>) -> Done {
     Done { results, undo }
 }
 
-/// The ops run one item at a time, so a cancel lands between items.
 fn items_mut(op: &mut Op) -> Option<&mut Vec<PathBuf>> {
     match op {
         Op::Trash(items) | Op::DeleteImmediately(items) | Op::MakeAlias(items) => Some(items),
@@ -267,7 +263,6 @@ impl Journal {
         }
     }
 
-    /// A redo lands its items afresh, so undoing it again starts from where they are now.
     pub fn redone(&mut self, at: usize, done: &Done) -> Option<u64> {
         let entry = self.undo_stack.get_mut(at)?;
         if let Some(undo) = done.undo.clone() {
@@ -276,10 +271,13 @@ impl Journal {
         Some(entry.serial)
     }
 
-    /// A retry finishes the job it retries, so one undo takes both back, its own half first, and
-    /// one redo runs the whole job again. False once that job's entry can no longer be undone.
+    /// Folds a retry's undo into the entry of the job it finished; false once that entry is gone.
     pub fn retried(&mut self, serial: u64, done: &Done) -> bool {
-        let Some(entry) = (self.undo_stack.iter_mut()).find(|entry| entry.serial == serial) else {
+        let Some(entry) = self
+            .undo_stack
+            .iter_mut()
+            .find(|entry| entry.serial == serial)
+        else {
             return false;
         };
         if let Some(undo) = done.undo.clone() {
@@ -341,51 +339,10 @@ fn describe(verb: &str, items: &[impl AsRef<Path>]) -> String {
 mod tests {
     use super::*;
     use crate::ops::transfer::End;
+    use crate::ops::transfer::tests::RamDisk;
     use std::fs;
-    use std::process::Command;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-
-    /// An HFS+ RAM disk: an APFS-to-APFS copy is a `copyfile(3)` clone, not a byte copy.
-    struct RamDisk {
-        device: String,
-        mount: PathBuf,
-    }
-
-    impl RamDisk {
-        fn new(mb: u64, name: &str) -> Option<RamDisk> {
-            let blocks = mb * 2048;
-            let out = Command::new("hdiutil")
-                .args(["attach", "-nomount", &format!("ram://{blocks}")])
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let device = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let ok = Command::new("diskutil")
-                .args(["eraseVolume", "HFS+", name, &device])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ok {
-                let _ = Command::new("hdiutil").args(["detach", &device]).status();
-                return None;
-            }
-            Some(RamDisk {
-                device,
-                mount: PathBuf::from(format!("/Volumes/{name}")),
-            })
-        }
-    }
-
-    impl Drop for RamDisk {
-        fn drop(&mut self) {
-            let _ = Command::new("hdiutil")
-                .args(["detach", &self.device, "-force"])
-                .status();
-        }
-    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
@@ -481,8 +438,8 @@ mod tests {
 
     #[test]
     fn a_held_job_lets_the_next_one_run_and_cancels_whole() {
-        let Some(ram) = RamDisk::new(300, &format!("QueueHeld{}", std::process::id())) else {
-            eprintln!("skipping: could not create a RAM disk for a non-cloned copy");
+        let Some(ram) = RamDisk::new(300, "HFS+", &format!("QueueHeld{}", std::process::id()))
+        else {
             return;
         };
         let dir = temp_dir("held");
@@ -647,8 +604,8 @@ mod tests {
     #[test]
     fn a_retried_move_undoes_and_redoes_as_one() {
         use std::os::unix::fs::PermissionsExt;
-        let Some(ram) = RamDisk::new(64, &format!("QueueRetried{}", std::process::id())) else {
-            eprintln!("skipping: could not create a RAM disk for a move across volumes");
+        let Some(ram) = RamDisk::new(64, "HFS+", &format!("QueueRetried{}", std::process::id()))
+        else {
             return;
         };
         let src = temp_dir("retried");
