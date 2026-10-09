@@ -122,10 +122,13 @@ pub fn ignores_ownership(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0)
 }
 
-fn mount_path(stats: &libc::statfs) -> PathBuf {
-    // SAFETY: the kernel NUL-terminates the mount name.
-    let mount = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
-    PathBuf::from(OsStr::from_bytes(mount.to_bytes()))
+pub(crate) fn statfs_str(chars: &[libc::c_char]) -> &CStr {
+    // SAFETY: the kernel NUL-terminates every name in a statfs record.
+    unsafe { CStr::from_ptr(chars.as_ptr()) }
+}
+
+pub(crate) fn mount_path(stats: &libc::statfs) -> PathBuf {
+    PathBuf::from(OsStr::from_bytes(statfs_str(&stats.f_mntonname).to_bytes()))
 }
 
 pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
@@ -133,7 +136,7 @@ pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
 }
 
 /// Reads the kernel's cached mount table, so a share that stopped answering can't stall it.
-fn mount_table() -> Vec<libc::statfs> {
+pub(crate) fn mount_table() -> Vec<libc::statfs> {
     let mut stats: Vec<libc::statfs> = Vec::new();
     // SAFETY: a null buffer asks only for the count; the second call passes a buffer of that size.
     let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
@@ -181,16 +184,13 @@ fn volume_from(stats: &libc::statfs) -> Volume {
         network: !local,
         capacity: stats.f_blocks * block,
         available: stats.f_bavail * block,
-        // SAFETY: the kernel NUL-terminates the type name.
-        format: unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) }
+        format: statfs_str(&stats.f_fstypename)
             .to_string_lossy()
             .into_owned(),
-        server: match local {
-            true => None,
-            // SAFETY: the kernel NUL-terminates the source name.
-            false => {
-                host_of(&unsafe { CStr::from_ptr(stats.f_mntfromname.as_ptr()) }.to_string_lossy())
-            }
+        server: if local {
+            None
+        } else {
+            host_of(&statfs_str(&stats.f_mntfromname).to_string_lossy())
         },
     };
     if !local {

@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::ffi::{CStr, OsStr, OsString, c_void};
+use std::ffi::{OsString, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::ptr::{NonNull, null_mut};
@@ -35,7 +35,6 @@ struct Shared {
     shutdown: AtomicBool,
     /// The watcher's run loop and its wake-up source, while its thread runs.
     run_loop: Mutex<Option<(usize, usize)>>,
-    /// The paths changed since the stream was made.
     stale: AtomicBool,
 }
 
@@ -63,9 +62,10 @@ fn as_watched(views: &[(PathBuf, PathBuf)], dirs: Vec<PathBuf>) -> Vec<PathBuf> 
     for dir in dirs {
         for (real, asked) in views {
             if let Ok(rest) = dir.strip_prefix(real) {
-                out.insert(match rest.as_os_str().is_empty() {
-                    true => asked.clone(),
-                    false => asked.join(rest),
+                out.insert(if rest.as_os_str().is_empty() {
+                    asked.clone()
+                } else {
+                    asked.join(rest)
                 });
             }
         }
@@ -220,23 +220,14 @@ fn resolved(dir: &Path) -> PathBuf {
 }
 
 fn shares() -> Vec<PathBuf> {
-    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-    let mut stats: Vec<libc::statfs> = Vec::with_capacity(count.max(0) as usize);
-    let bytes = (stats.capacity() * std::mem::size_of::<libc::statfs>()) as libc::c_int;
-    let got = unsafe { libc::getfsstat(stats.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
-    unsafe { stats.set_len(got.clamp(0, count.max(0)) as usize) };
-    stats
+    crate::volumes::mount_table()
         .iter()
         .filter(|mount| mount.f_flags & libc::MNT_LOCAL as u32 == 0)
-        .map(|mount| {
-            let on = unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) };
-            PathBuf::from(OsStr::from_bytes(on.to_bytes()))
-        })
+        .map(crate::volumes::mount_path)
         .collect()
 }
 
-/// Shares go unwatched: the kernel never hears of a change made on the server, and a share that
-/// stopped answering would hold this thread and every folder it watches.
+/// FSEvents never hears of a change made on a server, and a dead share would hang this thread.
 fn on_share(path: &Path) -> bool {
     leads_into(path, &shares())
 }
@@ -292,7 +283,6 @@ fn strip_trailing_slash(raw: &str) -> PathBuf {
 
 struct Context {
     on_change: OnChange,
-    /// Each watched path as FSEvents reports it, beside the path it was asked by.
     views: RefCell<Vec<(PathBuf, PathBuf)>>,
 }
 
@@ -381,7 +371,9 @@ unsafe extern "C-unwind" fn callback(
     let context = unsafe { &*(info as *const Context) };
     let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
-    let dirs: Vec<PathBuf> = (flags.iter().enumerate())
+    let dirs: Vec<PathBuf> = flags
+        .iter()
+        .enumerate()
         .filter(|(_, flag)| **flag & kFSEventStreamEventFlagHistoryDone == 0)
         .filter_map(|(i, _)| paths.get(i))
         .map(|path| strip_trailing_slash(&path.to_string()))
@@ -422,16 +414,14 @@ unsafe extern "C-unwind" fn probed(
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::sync::MutexGuard;
     use std::sync::mpsc;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-    use std::time::Duration;
 
     // Disk-heavy tests running alongside starve an FSEvents stream's callbacks past the timeouts.
     fn serial() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -442,14 +432,25 @@ mod tests {
         resolved(&dir)
     }
 
+    fn watching(dirs: &[&Path]) -> (Watcher, mpsc::Receiver<Vec<PathBuf>>) {
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(move |dirs| {
+            let _ = tx.send(dirs);
+        });
+        for dir in dirs {
+            watcher.watch(dir);
+        }
+        (watcher, rx)
+    }
+
     fn recv_containing(
         rx: &mpsc::Receiver<Vec<PathBuf>>,
         wanted: &Path,
         timeout: Duration,
     ) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = Instant::now() + timeout;
         loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return false;
             }
@@ -468,49 +469,24 @@ mod tests {
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
         let sub = resolved(&sub);
-
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(move |dirs| {
-            let _ = tx.send(dirs);
-        });
-        watcher.watch(&dir);
-        watcher.watch(&sub);
+        let (_watcher, rx) = watching(&[&dir, &sub]);
         thread::sleep(Duration::from_millis(500));
+        let wait = Duration::from_secs(10);
 
-        let started = std::time::Instant::now();
         fs::write(dir.join("a.txt"), b"hi").unwrap();
         assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(10)),
+            recv_containing(&rx, &dir, wait),
             "no callback for top-level create"
         );
-        eprintln!("watch: create -> callback in {:?}", started.elapsed());
-
-        let started = std::time::Instant::now();
         fs::rename(dir.join("a.txt"), dir.join("b.txt")).unwrap();
-        assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(10)),
-            "no callback for rename"
-        );
-        eprintln!("watch: rename -> callback in {:?}", started.elapsed());
-
-        let started = std::time::Instant::now();
+        assert!(recv_containing(&rx, &dir, wait), "no callback for rename");
         fs::write(sub.join("c.txt"), b"hi").unwrap();
         assert!(
-            recv_containing(&rx, &sub, Duration::from_secs(10)),
+            recv_containing(&rx, &sub, wait),
             "no callback for subdir create"
         );
-        eprintln!(
-            "watch: subdir create -> callback in {:?}",
-            started.elapsed()
-        );
-
-        let started = std::time::Instant::now();
         fs::remove_file(dir.join("b.txt")).unwrap();
-        assert!(
-            recv_containing(&rx, &dir, Duration::from_secs(10)),
-            "no callback for delete"
-        );
-        eprintln!("watch: delete -> callback in {:?}", started.elapsed());
+        assert!(recv_containing(&rx, &dir, wait), "no callback for delete");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -524,23 +500,16 @@ mod tests {
         let firmlinked = Path::new("/System/Volumes/Data").join(real.strip_prefix("/").unwrap());
         let holder = temp_dir("shapes-holder");
         let through = holder.join("link");
-        std::os::unix::fs::symlink(&real, &through).unwrap();
-
-        let (tx, rx) = mpsc::channel::<Vec<PathBuf>>();
-        let watcher = Watcher::new(move |dirs| {
-            let _ = tx.send(dirs);
-        });
-        for asked in [&linked, &firmlinked, &holder, &through] {
-            watcher.watch(asked);
-        }
+        symlink(&real, &through).unwrap();
+        let (_watcher, rx) = watching(&[&linked, &firmlinked, &holder, &through]);
         thread::sleep(Duration::from_millis(500));
 
         fs::write(real.join("a.txt"), b"hi").unwrap();
-        let mut missing: HashSet<PathBuf> = HashSet::from([linked, firmlinked, through]);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut missing = HashSet::from([linked, firmlinked, through]);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !missing.is_empty() {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let Ok(dirs) = rx.recv_timeout(remaining) else {
+            let Ok(dirs) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            else {
                 break;
             };
             for dir in dirs {
@@ -558,8 +527,8 @@ mod tests {
         let base = temp_dir("shares");
         fs::create_dir_all(base.join("share/in")).unwrap();
         fs::create_dir_all(base.join("dir")).unwrap();
-        std::os::unix::fs::symlink(base.join("share"), base.join("abs")).unwrap();
-        std::os::unix::fs::symlink("../share/in", base.join("dir/rel")).unwrap();
+        symlink(base.join("share"), base.join("abs")).unwrap();
+        symlink("../share/in", base.join("dir/rel")).unwrap();
         let shares = [base.join("share")];
         let linked = std::env::temp_dir().join(base.file_name().unwrap());
         assert_ne!(linked, base, "the temp dir is under a symlink");
@@ -582,11 +551,7 @@ mod tests {
         let moved =
             dir.with_file_name(format!("finder-fs-watch-renamed-to-{}", std::process::id()));
         let _ = fs::remove_dir_all(&moved);
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(move |dirs| {
-            let _ = tx.send(dirs);
-        });
-        watcher.watch(&dir);
+        let (_watcher, rx) = watching(&[&dir]);
         thread::sleep(Duration::from_millis(500));
 
         fs::rename(&dir, &moved).unwrap();
@@ -602,11 +567,7 @@ mod tests {
     fn unwatch_stops_callbacks() {
         let _serial = serial();
         let dir = temp_dir("unwatch");
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(move |dirs| {
-            let _ = tx.send(dirs);
-        });
-        watcher.watch(&dir);
+        let (watcher, rx) = watching(&[&dir]);
         thread::sleep(Duration::from_millis(250));
         fs::write(dir.join("a.txt"), b"hi").unwrap();
         assert!(
@@ -630,11 +591,7 @@ mod tests {
     fn drop_stops_callbacks() {
         let _serial = serial();
         let dir = temp_dir("drop");
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(move |dirs| {
-            let _ = tx.send(dirs);
-        });
-        watcher.watch(&dir);
+        let (watcher, rx) = watching(&[&dir]);
         thread::sleep(Duration::from_millis(250));
         fs::write(dir.join("a.txt"), b"hi").unwrap();
         assert!(
