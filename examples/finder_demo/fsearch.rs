@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ::fsearch::{Engine, Found, Grep, Options, Query, Totals, walk};
 use finder_fs::entry::{Entry, EntryKind};
-use finder_fs::index::off_limits;
+use finder_fs::privacy::off_limits;
 
 use crate::data::Facts;
 

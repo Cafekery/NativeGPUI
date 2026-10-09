@@ -54,7 +54,7 @@ shares the grant, a hand-made or ad-hoc bundle is a new app and asks again. A te
 ask at all gets a home of its own:
 
 ```sh
-open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_CRAWL=1 "dist/Found'er.app"
+open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_FSEARCH=1 "dist/Found'er.app"
 ```
 
 ## Capturing the screen
@@ -70,21 +70,6 @@ open -n --env HOME=/tmp/ngv/fixtures --env NG_NO_CRAWL=1 "dist/Found'er.app"
 | `NG_QUIT=<frames>` | the Finder demo exits after that many frames |
 | `NG_LABEL_HOSTED=0` | the label page renders GPUI text instead of `NSTextField`s |
 | `NGD_SABOTAGE=nohandler\|noclear` | the failing arms of `ngdispatch` |
-| `NG_CRAWL_TRACE=1` | the index writes every folder it walks, every refresh with its cost, every rescan FSEvents asks for, the catch-up plan and each save to stderr |
-
-## Index benchmarks
-
-`crates/finder-fs/examples` holds the rigs for the whole-Mac index. Each prints wall time, CPU seconds and memory footprint.
-
-| example | measures |
-|---|---|
-| `index_probe <store> [crawl\|sync root…]` | loading a snapshot, then a cold crawl or one launch's catch-up, then the first search |
-| `index_probe <store> follow root…` | the live follower under whatever churn the disk sees, every 5 s for `NG_FOLLOW_SECS` (60) |
-| `launch_bench <root> <store> <mode>` | one launch; several at once on one store show one owner walking and the rest reading |
-| `replay_probe <event id> root…` | what FSEvents replays since an id: batches, folders, rescans, and when history ends |
-| `index_bench` | a cold crawl of `/Applications`, `/usr`, `/Library` and `~/Developer`, read latency during it, save, load and search |
-
-A cold run needs both caches gone: delete the store and run `sudo purge` to empty the file system cache. Crawl a fixed tree rather than the live disk so runs compare, and run anything heavy on a machine nobody is using: a crawl of a whole Mac takes minutes of CPU.
 
 ## Frame rate
 

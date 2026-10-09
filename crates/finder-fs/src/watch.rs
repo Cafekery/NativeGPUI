@@ -1,17 +1,17 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::{CStr, OsStr, OsString, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::ptr::{NonNull, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
-    CFArray, CFRetained, CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext,
-    CFString, kCFRunLoopDefaultMode,
+    CFArray, CFRetained, CFRunLoop, CFRunLoopSource, CFRunLoopSourceContext, CFString,
+    kCFRunLoopDefaultMode,
 };
 #[allow(deprecated)]
 use objc2_core_services::FSEventStreamScheduleWithRunLoop;
@@ -19,52 +19,24 @@ use objc2_core_services::{
     ConstFSEventStreamRef, FSEventStreamCallback, FSEventStreamContext, FSEventStreamCreate,
     FSEventStreamCreateFlags, FSEventStreamEventFlags, FSEventStreamEventId,
     FSEventStreamGetLatestEventId, FSEventStreamInvalidate, FSEventStreamRef, FSEventStreamRelease,
-    FSEventStreamStart, FSEventStreamStop, FSEventsGetCurrentEventId,
-    kFSEventStreamCreateFlagUseCFTypes, kFSEventStreamCreateFlagWatchRoot,
-    kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagHistoryDone,
-    kFSEventStreamEventFlagKernelDropped, kFSEventStreamEventFlagMount,
-    kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagRootChanged,
-    kFSEventStreamEventFlagUnmount, kFSEventStreamEventFlagUserDropped,
-    kFSEventStreamEventIdSinceNow,
+    FSEventStreamStart, FSEventStreamStop, kFSEventStreamCreateFlagUseCFTypes,
+    kFSEventStreamCreateFlagWatchRoot, kFSEventStreamEventFlagEventIdsWrapped,
+    kFSEventStreamEventFlagHistoryDone, kFSEventStreamEventIdSinceNow,
 };
 
-#[derive(Clone, Debug, Default)]
-pub struct Replay {
-    pub dirs: Vec<PathBuf>,
-    pub rescan: Vec<PathBuf>,
-    pub event_id: u64,
-    pub history_done: bool,
-    pub wrapped: bool,
-}
-
-const RESCAN: FSEventStreamEventFlags = kFSEventStreamEventFlagMustScanSubDirs
-    | kFSEventStreamEventFlagUserDropped
-    | kFSEventStreamEventFlagKernelDropped
-    | kFSEventStreamEventFlagRootChanged
-    | kFSEventStreamEventFlagMount
-    | kFSEventStreamEventFlagUnmount;
-
-/// How soon a `since` callback that put work off gets an empty replay.
-const TICK: f64 = 1.0;
+const LATENCY: f64 = 0.1;
 const IDLE: f64 = 1.0e10;
 
-type OnChange = Box<dyn Fn(Replay) -> bool + Send>;
-
-/// Each watched path as FSEvents reports it, beside the path it was asked by.
-type Views = Arc<Mutex<Vec<(PathBuf, PathBuf)>>>;
+type OnChange = Box<dyn Fn(Vec<PathBuf>) + Send>;
 
 struct Shared {
     paths: Mutex<HashSet<PathBuf>>,
-    /// `None` for a caller that wants paths only as FSEvents reports them.
-    views: Option<Views>,
     changed: Condvar,
-    since: AtomicU64,
     shutdown: AtomicBool,
     /// The watcher's run loop and its wake-up source, while its thread runs.
     run_loop: Mutex<Option<(usize, usize)>>,
     /// The paths changed since the stream was made.
     stale: AtomicBool,
-    latency: f64,
 }
 
 impl Shared {
@@ -105,23 +77,22 @@ fn as_watched(views: &[(PathBuf, PathBuf)], dirs: Vec<PathBuf>) -> Vec<PathBuf> 
 impl Watcher {
     /// Reports each changed folder as FSEvents names it and under every path it was watched by.
     pub fn new(on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> Watcher {
-        let views = Views::default();
-        let seen = views.clone();
-        Watcher::spawn(
-            HashSet::new(),
-            kFSEventStreamEventIdSinceNow,
-            0.1,
-            Some(views),
-            Box::new(move |replay: Replay| {
-                let mut dirs = replay.dirs;
-                dirs.extend(replay.rescan);
-                if !dirs.is_empty() {
-                    on_change(as_watched(&seen.lock().unwrap(), dirs));
-                }
-                false
-            }),
-            false,
-        )
+        let shared = Arc::new(Shared {
+            paths: Mutex::default(),
+            changed: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+            run_loop: Mutex::new(None),
+            stale: AtomicBool::new(false),
+        });
+        let thread_shared = shared.clone();
+        let thread = thread::spawn(move || {
+            crate::utility_qos();
+            run(thread_shared, Box::new(on_change))
+        });
+        Watcher {
+            shared,
+            thread: Some(thread),
+        }
     }
 
     /// Touches no disk: the watcher's own thread resolves the path.
@@ -134,35 +105,6 @@ impl Watcher {
         self.shared.paths.lock().unwrap().remove(dir);
         self.shared.wake();
     }
-
-    fn spawn(
-        paths: HashSet<PathBuf>,
-        since: FSEventStreamEventId,
-        latency: f64,
-        views: Option<Views>,
-        on_change: OnChange,
-        tick: bool,
-    ) -> Watcher {
-        let shared = Arc::new(Shared {
-            paths: Mutex::new(paths),
-            views,
-            changed: Condvar::new(),
-            since: AtomicU64::new(since),
-            shutdown: AtomicBool::new(false),
-            run_loop: Mutex::new(None),
-            stale: AtomicBool::new(false),
-            latency,
-        });
-        let thread_shared = shared.clone();
-        let thread = thread::spawn(move || {
-            crate::utility_qos();
-            run(thread_shared, on_change, tick)
-        });
-        Watcher {
-            shared,
-            thread: Some(thread),
-        }
-    }
 }
 
 impl Drop for Watcher {
@@ -173,31 +115,6 @@ impl Drop for Watcher {
             let _ = thread.join();
         }
     }
-}
-
-/// `on_change` answers whether it put work off; until it says it has not, it ticks.
-pub fn since(
-    event_id: u64,
-    roots: Vec<PathBuf>,
-    on_change: impl Fn(Replay) -> bool + Send + 'static,
-) -> Watcher {
-    let since_when = match event_id {
-        0 => kFSEventStreamEventIdSinceNow,
-        id => id,
-    };
-    // A folder written ten times a second is read once a second; the index can lag that much.
-    Watcher::spawn(
-        roots.into_iter().collect(),
-        since_when,
-        1.0,
-        None,
-        Box::new(on_change),
-        true,
-    )
-}
-
-pub fn latest_event_id() -> u64 {
-    unsafe { FSEventsGetCurrentEventId() }
 }
 
 struct Stream(FSEventStreamRef);
@@ -297,7 +214,7 @@ pub fn changed_since(dir: &Path, event_id: u64, wait: Duration) -> bool {
     probe.changed.get() || !probe.history_done.get()
 }
 
-pub(crate) fn resolved(dir: &Path) -> PathBuf {
+fn resolved(dir: &Path) -> PathBuf {
     let real = crate::list::real_path(dir).unwrap_or_else(|| dir.to_path_buf());
     strip_trailing_slash(&real.to_string_lossy())
 }
@@ -375,10 +292,11 @@ fn strip_trailing_slash(raw: &str) -> PathBuf {
 
 struct Context {
     on_change: OnChange,
-    ticking: Cell<bool>,
+    /// Each watched path as FSEvents reports it, beside the path it was asked by.
+    views: RefCell<Vec<(PathBuf, PathBuf)>>,
 }
 
-fn run(shared: Arc<Shared>, on_change: OnChange, tick: bool) {
+fn run(shared: Arc<Shared>, on_change: OnChange) {
     let run_loop = CFRunLoop::current().expect("watcher thread has a run loop");
     let mode = unsafe { kCFRunLoopDefaultMode };
     let mut stirred = CFRunLoopSourceContext {
@@ -401,8 +319,9 @@ fn run(shared: Arc<Shared>, on_change: OnChange, tick: bool) {
     ));
     let context = Context {
         on_change,
-        ticking: Cell::new(tick),
+        views: RefCell::default(),
     };
+    let mut since = kFSEventStreamEventIdSinceNow;
 
     while !shared.shutdown.load(Ordering::SeqCst) {
         shared.stale.store(false, Ordering::SeqCst);
@@ -426,34 +345,23 @@ fn run(shared: Arc<Shared>, on_change: OnChange, tick: bool) {
             .map(|p| CFString::from_str(&p.to_string_lossy()))
             .collect();
         let refs: Vec<&CFString> = cf_paths.iter().map(|s| &**s).collect();
-        if let Some(published) = &shared.views {
-            *published.lock().unwrap() = views;
-        }
-        // Without WatchRoot a stream says nothing when the folder it watches is renamed or deleted.
-        let flags = match shared.views {
-            Some(_) => kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot,
-            None => kFSEventStreamCreateFlagUseCFTypes,
-        };
+        *context.views.borrow_mut() = views;
         let stream = Stream::new(
             &refs,
             Some(callback),
             &context as *const Context as *mut c_void,
-            shared.since.load(Ordering::SeqCst),
-            shared.latency,
-            flags,
+            since,
+            LATENCY,
+            // Without WatchRoot a stream says nothing when the folder it watches is renamed or deleted.
+            kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot,
         )
         .expect("FSEventStreamCreate failed");
         stream.start(&run_loop, mode.expect("default run loop mode"));
 
         while !shared.stale.load(Ordering::SeqCst) {
-            let wait = if context.ticking.get() { TICK } else { IDLE };
-            if CFRunLoop::run_in_mode(mode, wait, true) == CFRunLoopRunResult::TimedOut {
-                context.ticking.set((context.on_change)(Replay::default()));
-            }
+            CFRunLoop::run_in_mode(mode, IDLE, true);
         }
-        shared
-            .since
-            .store(stream.latest_event_id(), Ordering::SeqCst);
+        since = stream.latest_event_id();
     }
 
     *shared.run_loop.lock().unwrap() = None;
@@ -468,35 +376,19 @@ unsafe extern "C-unwind" fn callback(
     num_events: usize,
     event_paths: NonNull<c_void>,
     event_flags: NonNull<FSEventStreamEventFlags>,
-    event_ids: NonNull<FSEventStreamEventId>,
+    _event_ids: NonNull<FSEventStreamEventId>,
 ) {
     let context = unsafe { &*(info as *const Context) };
     let paths = unsafe { &*(event_paths.as_ptr() as *const CFArray<CFString>) };
     let flags = unsafe { std::slice::from_raw_parts(event_flags.as_ptr(), num_events) };
-    let ids = unsafe { std::slice::from_raw_parts(event_ids.as_ptr(), num_events) };
-
-    let mut replay = Replay::default();
-    let (mut dirs, mut rescan) = (HashSet::new(), HashSet::new());
-    for (i, (&flag, &id)) in flags.iter().zip(ids).enumerate() {
-        replay.event_id = replay.event_id.max(id);
-        replay.wrapped |= flag & kFSEventStreamEventFlagEventIdsWrapped != 0;
-        if flag & kFSEventStreamEventFlagHistoryDone != 0 {
-            replay.history_done = true;
-            continue;
-        }
-        let Some(path) = paths.get(i) else { continue };
-        let path = strip_trailing_slash(&path.to_string());
-        match flag & RESCAN != 0 {
-            true => rescan.insert(path),
-            false => dirs.insert(path),
-        };
+    let dirs: Vec<PathBuf> = (flags.iter().enumerate())
+        .filter(|(_, flag)| **flag & kFSEventStreamEventFlagHistoryDone == 0)
+        .filter_map(|(i, _)| paths.get(i))
+        .map(|path| strip_trailing_slash(&path.to_string()))
+        .collect();
+    if !dirs.is_empty() {
+        (context.on_change)(as_watched(&context.views.borrow(), dirs));
     }
-    if dirs.is_empty() && rescan.is_empty() && !replay.history_done {
-        return;
-    }
-    replay.dirs = dirs.into_iter().collect();
-    replay.rescan = rescan.into_iter().collect();
-    context.ticking.set((context.on_change)(replay));
 }
 
 unsafe extern "C-unwind" fn probed(
@@ -735,44 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn since_replays_history() {
-        let _serial = serial();
-        let dir = temp_dir("since");
-        let start_id = latest_event_id();
-        fs::write(dir.join("a.txt"), b"hi").unwrap();
-        thread::sleep(Duration::from_millis(500));
-
-        let (tx, rx) = mpsc::channel();
-        let started = std::time::Instant::now();
-        let _watcher = since(start_id, vec![dir.clone()], move |replay: Replay| {
-            if !replay.dirs.is_empty() {
-                let _ = tx.send((replay.dirs, replay.event_id));
-            }
-            false
-        });
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut saw_dir = false;
-        while std::time::Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            match rx.recv_timeout(remaining) {
-                Ok((dirs, id)) => {
-                    assert!(id >= start_id);
-                    if dirs.iter().any(|d| d == &dir) {
-                        saw_dir = true;
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        assert!(saw_dir, "since() did not replay the pre-existing change");
-        eprintln!("since: replay -> callback in {:?}", started.elapsed());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn drop_stops_callbacks() {
         let _serial = serial();
         let dir = temp_dir("drop");
@@ -796,28 +650,6 @@ mod tests {
             "no callbacks should fire after drop"
         );
 
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_drop_during_a_tick_still_stops_the_watcher() {
-        let _serial = serial();
-        let dir = temp_dir("tick-drop");
-        let (ticked, tick) = mpsc::channel();
-        let watcher = since(0, vec![dir.clone()], move |replay: Replay| {
-            if replay.event_id == 0 {
-                let _ = ticked.send(());
-                thread::sleep(Duration::from_millis(300));
-            }
-            true
-        });
-        tick.recv_timeout(Duration::from_secs(3)).unwrap();
-        let (dropped, done) = mpsc::channel();
-        thread::spawn(move || {
-            drop(watcher);
-            let _ = dropped.send(());
-        });
-        assert!(done.recv_timeout(Duration::from_secs(3)).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 }

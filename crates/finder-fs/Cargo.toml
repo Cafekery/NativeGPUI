@@ -2,7 +2,7 @@
 name = "finder-fs"
 version = "0.1.0"
 edition = "2021"
-description = "The file system behind the Finder demo: fast listings, a whole-Mac index, watching and file operations"
+description = "The file system behind the Finder demo: fast listings, watching and file operations"
 license = "MIT"
 publish = false
 

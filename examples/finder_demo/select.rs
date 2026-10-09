@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use finder_fs::index;
+use finder_fs::privacy;
 use gpui::{Context, ScrollStrategy, SharedString, Window};
 
 use crate::app::FinderDemo;
@@ -191,7 +191,7 @@ impl FinderDemo {
             }
             for row in folder.rows.iter().filter(|row| row.discloses) {
                 let Some(deeper) = row.opens else { continue };
-                if !index::off_limits(Path::new(deeper), &home) {
+                if !privacy::off_limits(Path::new(deeper), &home) {
                     opened.push(row.path.clone());
                     walk.push((deeper, depth + 1));
                 }

@@ -184,17 +184,11 @@ fn entry_with(path: &Path, common: libc::attrgroup_t) -> io::Result<Entry> {
     }
 }
 
-#[cfg(test)]
-pub(crate) static READS: std::sync::Mutex<Vec<std::path::PathBuf>> =
-    std::sync::Mutex::new(Vec::new());
-
 pub fn list_dir_batched(
     dir: &Path,
     batch: usize,
     mut on_batch: impl FnMut(Vec<Entry>),
 ) -> io::Result<()> {
-    #[cfg(test)]
-    READS.lock().unwrap().push(dir.to_path_buf());
     let open = open_dir(dir)?;
     let mut list = attr_list(COMMON_ATTRS);
     let mut buf = vec![0u8; 256 * 1024];
