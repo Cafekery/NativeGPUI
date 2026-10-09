@@ -12,6 +12,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSInteger, NSObject, NSPoint, NSRect, NSSize, NSString, NSURL,
+    ns_string,
 };
 
 use super::{Shared, SidebarDrop, SidebarMove};
@@ -24,7 +25,7 @@ const DRAG_ICON: f64 = 32.;
 fn dragged_key(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<u64> {
     let text = info
         .draggingPasteboard()
-        .stringForType(&NSString::from_str(ROW_PASTEBOARD_TYPE))?;
+        .stringForType(ns_string!(ROW_PASTEBOARD_TYPE))?;
     text.to_string().parse().ok()
 }
 
@@ -178,7 +179,7 @@ pub(super) fn row_pasteboard_item(
     let entry = NSPasteboardItem::new();
     entry.setString_forType(
         &NSString::from_str(&key.to_string()),
-        &NSString::from_str(ROW_PASTEBOARD_TYPE),
+        ns_string!(ROW_PASTEBOARD_TYPE),
     );
     Some(ProtocolObject::from_retained(entry))
 }

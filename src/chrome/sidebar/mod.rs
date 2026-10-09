@@ -29,7 +29,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSIndexSet, NSInteger, NSNotification, NSNotificationCenter,
-    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString,
+    NSNumber, NSObject, NSPoint, NSRect, NSSize, NSString, ns_string,
 };
 use objc2_quartz_core::CAAutoresizingMask;
 
@@ -335,8 +335,7 @@ impl Shared {
     }
 
     fn item_for_id(&self, id: &str) -> Option<Retained<AnyObject>> {
-        let key = self.model.borrow().key_for_id(id)?;
-        Some(self.item(key))
+        self.model.borrow().key_for_id(id).map(|key| self.item(key))
     }
 
     fn node_is(&self, key: u64, test: impl FnOnce(&Node) -> bool) -> bool {
@@ -425,9 +424,20 @@ struct SidebarState {
 impl Drop for SidebarState {
     fn drop(&mut self) {
         let center = NSNotificationCenter::defaultCenter();
-        for observer in self.observers.drain(..) {
+        for observer in &self.observers {
             unsafe { center.removeObserver(observer.as_ref()) };
         }
+    }
+}
+
+impl SidebarState {
+    fn align(&self) {
+        self.pane_shared.align(&self.views.pane);
+    }
+
+    fn relayout(&self) {
+        self.views.split.view().layoutSubtreeIfNeeded();
+        self.align();
     }
 }
 
@@ -436,11 +446,10 @@ fn observe_divider(
     split: &NSSplitViewController,
     resized: impl Fn(Option<NSInteger>) + 'static,
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
-    let key = NSString::from_str("NSSplitViewDividerIndex");
     let block = RcBlock::new(move |note: NonNull<NSNotification>| {
         let dragged = unsafe { note.as_ref() }.userInfo().and_then(|info| {
             let index: Option<Retained<AnyObject>> =
-                unsafe { msg_send![&*info, objectForKey: &*key] };
+                unsafe { msg_send![&*info, objectForKey: ns_string!("NSSplitViewDividerIndex")] };
             index.map(|index| unsafe { msg_send![&*index, integerValue] })
         });
         resized(dragged);
@@ -509,10 +518,7 @@ fn observe_key_state(
     .into_iter()
     .map(|name| {
         let shared = shared.clone();
-        let block = StackBlock::new(move |_: NonNull<NSNotification>| {
-            tint_rows(&shared.outline);
-        })
-        .copy();
+        let block = RcBlock::new(move |_: NonNull<NSNotification>| tint_rows(&shared.outline));
         unsafe {
             center.addObserverForName_object_queue_usingBlock(
                 Some(name),
@@ -561,7 +567,7 @@ impl NativeSidebar {
 
     pub fn update(&self, items: &[SidebarItem]) -> SidebarDiff {
         let state = &*self.0;
-        state.pane_shared.align(&state.views.pane);
+        state.align();
 
         let next = Model::build(items);
         // Model first, AppKit second: every delta call in `apply_diff` re-enters the data source.
@@ -663,7 +669,7 @@ impl NativeSidebar {
             saved.restore(state);
         });
         state.shared.wrote(1);
-        state.pane_shared.align(&state.views.pane);
+        state.align();
     }
 
     pub fn row_size(&self) -> SidebarRowSize {
@@ -676,11 +682,14 @@ impl NativeSidebar {
     }
 
     pub fn set_thickness(&self, thickness: Pixels) {
-        let split = self.0.views.split.splitView();
-        self.0.views.sidebar_moving.set(true);
-        split.setPosition_ofDividerAtIndex(thickness.to_f64(), 0);
-        self.0.views.sidebar_moving.set(false);
-        self.0.pane_shared.align(&self.0.views.pane);
+        let views = &self.0.views;
+        views.sidebar_moving.set(true);
+        views
+            .split
+            .splitView()
+            .setPosition_ofDividerAtIndex(thickness.to_f64(), 0);
+        views.sidebar_moving.set(false);
+        self.0.align();
     }
 
     /// The width the user last dragged the sidebar to.
@@ -696,13 +705,12 @@ impl NativeSidebar {
         let item = &self.0.views.sidebar_item;
         item.setMinimumThickness(min.to_f64());
         item.setMaximumThickness(max.to_f64());
-        self.0.views.split.view().layoutSubtreeIfNeeded();
-        self.0.pane_shared.align(&self.0.views.pane);
+        self.0.relayout();
     }
 
     /// Opens the trailing inspector at `thickness` or collapses it; the first call never animates.
     pub fn set_inspector(&self, thickness: Option<Pixels>, min: Pixels, max: Pixels) {
-        let mtm = MainThreadMarker::new().expect("set_inspector is a main-thread path");
+        let mtm = self.0.views.split.mtm();
         let mut slot = self.0.views.inspector.borrow_mut();
         let animate = self.0.views.inspector_asked.replace(true)
             && self
@@ -778,8 +786,7 @@ impl NativeSidebar {
                 inspector.item.setCollapsed(collapse);
             }
         }
-        self.0.views.split.view().layoutSubtreeIfNeeded();
-        self.0.pane_shared.align(&self.0.views.pane);
+        self.0.relayout();
     }
 
     /// Sets a shown inspector's thickness, as dragging its divider there would.
@@ -798,7 +805,7 @@ impl NativeSidebar {
         split.setPosition_ofDividerAtIndex(position, divider);
         self.0.views.split.view().layoutSubtreeIfNeeded();
         inspector.sliding.set(false);
-        self.0.pane_shared.align(&self.0.views.pane);
+        self.0.align();
     }
 
     /// The width AppKit last resized the inspector to, zero once dragged shut; own slides excluded.
@@ -833,8 +840,7 @@ impl NativeSidebar {
             return;
         }
         window.setToolbar(visible.then(|| self.0.views.toolbar.clone()).as_deref());
-        self.0.views.split.view().layoutSubtreeIfNeeded();
-        self.0.pane_shared.align(&self.0.views.pane);
+        self.0.relayout();
     }
 
     pub fn has_toolbar(&self) -> bool {
@@ -933,12 +939,7 @@ impl NativeSidebar {
         let first_responder = outline
             .window()
             .and_then(|w| w.firstResponder())
-            .is_some_and(|r| {
-                std::ptr::eq(
-                    &*r as *const _ as *const NSView,
-                    &**outline as *const _ as *const NSView,
-                )
-            });
+            .is_some_and(|r| std::ptr::eq(Retained::as_ptr(&r), Retained::as_ptr(outline).cast()));
         SidebarProbe {
             behavior: views.sidebar_item.behavior().0,
             allows_full_height_layout: views.sidebar_item.allowsFullHeightLayout(),
@@ -962,9 +963,7 @@ impl NativeSidebar {
     }
 
     pub fn screen_height(&self) -> f64 {
-        let mtm = MainThreadMarker::new()
-            .expect("a NativeSidebar is !Send, so it is only reachable on gpui's main thread");
-        NSScreen::screens(mtm)
+        NSScreen::screens(self.0.views.split.mtm())
             .firstObject()
             .map_or(0., |screen| screen.frame().size.height)
     }
@@ -1049,8 +1048,7 @@ struct PaneShared {
 
 impl PaneShared {
     fn align(&self, pane: &NSView) {
-        let Some(window) = pane.window() else { return };
-        let Some(content_view) = window.contentView() else {
+        let Some(content_view) = pane.window().and_then(|window| window.contentView()) else {
             return;
         };
         self.align_count.set(self.align_count.get() + 1);
@@ -1396,8 +1394,8 @@ fn toggle_sidebar_only() -> Retained<NSArray<NSString>> {
 }
 
 fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSidebar {
-    let mtm = MainThreadMarker::new().expect("gpui runs its windows on the main thread");
     let gpui = gpui_view(window);
+    let mtm = gpui.mtm();
     let ns_window = gpui.window().expect("gpui's view is in a window");
     let old_content = unsafe { gpui.superview() }.expect("gpui's view has a superview");
     let content_size = ns_window
@@ -1412,10 +1410,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     let outline: Retained<SidebarOutline> =
         unsafe { msg_send![SidebarOutline::alloc(mtm), initWithFrame: strip] };
     let outline: Retained<NSOutlineView> = Retained::into_super(outline);
-    let column = NSTableColumn::initWithIdentifier(
-        NSTableColumn::alloc(mtm),
-        &NSString::from_str("NGSidebarColumn"),
-    );
+    let column =
+        NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), ns_string!("NGSidebarColumn"));
     column.setMinWidth(40.);
     column.setWidth(40.);
     column.setMaxWidth(4000.);
@@ -1458,7 +1454,7 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
     unsafe { outline.setMenu(Some(&menu)) };
     let mut dragged_types = vec![unsafe { NSPasteboardTypeFileURL }.retain()];
     if options.reorderable {
-        dragged_types.push(NSString::from_str(ROW_PASTEBOARD_TYPE));
+        dragged_types.push(ns_string!(ROW_PASTEBOARD_TYPE).retain());
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
         outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::empty(), false);
     }
@@ -1530,10 +1526,8 @@ fn build(window: &mut Window, cx: &mut App, options: SidebarOptions) -> NativeSi
 
     let toolbar_delegate: Retained<SidebarToolbarDelegate> =
         unsafe { msg_send![SidebarToolbarDelegate::alloc(mtm), init] };
-    let toolbar = NSToolbar::initWithIdentifier(
-        NSToolbar::alloc(mtm),
-        &NSString::from_str("NGSidebarToolbar"),
-    );
+    let toolbar =
+        NSToolbar::initWithIdentifier(NSToolbar::alloc(mtm), ns_string!("NGSidebarToolbar"));
     toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_delegate)));
     toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
     unsafe {

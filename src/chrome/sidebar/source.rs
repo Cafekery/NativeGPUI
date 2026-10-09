@@ -1,8 +1,8 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
+use objc2::{MainThreadOnly, msg_send, sel};
 use objc2_app_kit::{NSMenu, NSTintConfiguration, NSView};
-use objc2_foundation::{MainThreadMarker, NSInteger, NSNotification, NSString};
+use objc2_foundation::{NSInteger, NSNotification, ns_string};
 
 use super::cell::tint_rows;
 use super::{Shared, SidebarExpand, SidebarIcon};
@@ -63,7 +63,6 @@ pub(super) fn selection_changed(shared: &Shared) {
 }
 
 pub(super) fn menu_needs_update(shared: &Shared, menu: &NSMenu, target: &AnyObject) {
-    let mtm = MainThreadMarker::new().expect("outline view callbacks are main-thread");
     let row = shared.id_at_row(shared.outline.clickedRow());
     let entries = match (&row, shared.on_menu.borrow().as_ref()) {
         (Some(row), Some((entries, _))) => entries(row),
@@ -71,7 +70,7 @@ pub(super) fn menu_needs_update(shared: &Shared, menu: &NSMenu, target: &AnyObje
     };
     *shared.menu_row.borrow_mut() = row;
     crate::controls::menu::sync_menu(
-        mtm,
+        menu.mtm(),
         menu,
         &entries,
         Some((target, sel!(ngSidebarMenuPick:))),
@@ -106,10 +105,9 @@ pub(super) fn expansion_changed(shared: &Shared, note: &NSNotification, expanded
     let Some(handler) = shared.on_expand.borrow().clone() else {
         return;
     };
-    let key = NSString::from_str("NSObject");
     let item: Option<Retained<AnyObject>> = note
         .userInfo()
-        .and_then(|info| unsafe { msg_send![&*info, objectForKey: &*key] });
+        .and_then(|info| unsafe { msg_send![&*info, objectForKey: ns_string!("NSObject")] });
     let Some(id) = item.and_then(|item| shared.model.borrow().id_for(Shared::key_of_item(&item)))
     else {
         return;
