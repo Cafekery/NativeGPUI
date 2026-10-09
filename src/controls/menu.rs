@@ -619,28 +619,24 @@ pub(crate) fn set_state(item: &NSMenuItem, state: CheckState) {
     }
 }
 
-/// AppKit sizes the state column to the shown glyph, so a dash as wide as the checkmark keeps
-/// titles from shifting when a menu's rows go from checked to mixed.
+// AppKit sizes the state column to its glyph: a checkmark-wide dash keeps titles still.
 fn mixed_state_image() -> Retained<NSImage> {
     thread_local! {
         static DASH: Retained<NSImage> = {
-            let symbol = |name: &str| {
-                let shape = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
-                    NSFont::menuFontOfSize(0.).pointSize(),
-                    unsafe { NSFontWeightSemibold },
-                    NSImageSymbolScale::Small,
-                );
-                NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &NSString::from_str(name),
-                    None,
-                )
-                .and_then(|image| image.imageWithSymbolConfiguration(&shape))
-                .expect("SF Symbols has it")
+            let shape = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+                NSFont::menuFontOfSize(0.).pointSize(),
+                unsafe { NSFontWeightSemibold },
+                NSImageSymbolScale::Small,
+            );
+            let symbol = |name| {
+                symbol_image(name, None)
+                    .and_then(|image| image.imageWithSymbolConfiguration(&shape))
+                    .expect("SF Symbols has it")
             };
             let (check, dash) = (symbol("checkmark"), symbol("minus"));
             let size = NSSize::new(check.size().width, dash.size().height);
             let draw = block2::RcBlock::new(move |_: NSRect| -> Bool {
-                dash.drawInRect(NSRect::new(NSPoint::new(0., 0.), dash.size()));
+                dash.drawInRect(NSRect::new(NSPoint::ZERO, dash.size()));
                 Bool::YES
             });
             let image = NSImage::imageWithSize_flipped_drawingHandler(size, false, &draw);

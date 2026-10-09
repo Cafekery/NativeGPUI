@@ -688,11 +688,7 @@ impl NativeSegmented {
             let control = NSSegmentedControl::new(mtm);
             fill_segments(&control, &self.segments, &self.symbols);
             control.setSegmentStyle(self.style.to_native());
-            control.setControlSize(self.control_size.into());
-            sync_font_size(
-                &control,
-                Some(system_font_size_for(self.control_size).to_f64()),
-            );
+            sync_segments_size(&control, self.control_size);
             control.fittingSize()
         })
     }
@@ -709,12 +705,7 @@ impl NativeSegmented {
         if control.segmentStyle() != style {
             control.setSegmentStyle(style);
         }
-        sync_control_size(&control, self.control_size);
-        // A segmented control keeps its font when its control size changes.
-        sync_font_size(
-            &control,
-            Some(system_font_size_for(self.control_size).to_f64()),
-        );
+        sync_segments_size(&control, self.control_size);
         let bezel = self.selected_bezel.map(SystemColor::ns_color);
         if control.selectedSegmentBezelColor() != bezel {
             control.setSelectedSegmentBezelColor(bezel.as_deref());
@@ -746,6 +737,12 @@ impl NativeSegmented {
 }
 
 hosted_element!(NativeSegmented);
+
+// A segmented control keeps its font when its control size changes.
+fn sync_segments_size(control: &NSSegmentedControl, size: ControlSize) {
+    sync_control_size(control, size);
+    sync_font_size(control, Some(system_font_size_for(size).to_f64()));
+}
 
 fn fill_segments(control: &NSSegmentedControl, segments: &[String], symbols: &[String]) {
     let count = segments.len().max(symbols.len());
