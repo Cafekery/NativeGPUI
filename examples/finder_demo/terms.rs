@@ -1,6 +1,6 @@
-//! A search as Finder's field holds it: tokens, each matching one attribute,
-//! then the text typed after them. A result matches all of them.
+//! A search as Finder's field holds it: tokens, then the text typed after them.
 
+use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use finder_fs::sort::fold;
@@ -51,7 +51,6 @@ fn push(query: &mut String, part: &str) {
     query.push_str(part);
 }
 
-/// One run in fsearch's language, spaces and all.
 fn quoted(text: &str) -> String {
     format!("\"{}\"", text.trim().replace('"', ""))
 }
@@ -60,8 +59,7 @@ fn exact(text: &str) -> String {
     quoted(&format!("'{}", text.trim()))
 }
 
-/// fsearch's own syntax, which only names answer to.
-fn syntax(word: &str) -> bool {
+fn is_syntax(word: &str) -> bool {
     word.contains(['"', '/'])
         || word.starts_with(['!', '\'', '^'])
         || word.ends_with('$')
@@ -83,15 +81,11 @@ fn kind_filter(uti: &str) -> String {
     }
 }
 
-fn now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0., |since| since.as_secs_f64())
-}
-
 /// fsearch reads a modification date as an age: `mtime:1s..9s` is between one and nine seconds old.
 fn date_filter(from: f64, to: f64) -> String {
-    let now = now();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0., |since| since.as_secs_f64());
     if from > now {
         return String::new();
     }
@@ -112,11 +106,15 @@ impl Search {
     }
 
     fn plain(&self) -> bool {
-        !self.text.split_whitespace().any(syntax)
+        !self.text.split_whitespace().any(is_syntax)
     }
 
-    /// The kind and date filters, in fsearch's language.
-    pub(crate) fn filters(&self) -> String {
+    fn plain_words(&self) -> impl Iterator<Item = &str> {
+        let plain = self.plain();
+        self.text.split_whitespace().filter(move |_| plain)
+    }
+
+    fn filters(&self) -> String {
         let mut filters = String::new();
         for term in &self.terms {
             match term {
@@ -128,8 +126,6 @@ impl Search {
         filters
     }
 
-    /// fsearch's query for names: the typed text in its own language, each
-    /// name or everything token as one exact run, and the filters.
     pub(crate) fn names(&self) -> String {
         let mut query = self.text.trim().to_owned();
         for term in &self.terms {
@@ -141,24 +137,20 @@ impl Search {
         query
     }
 
-    /// What Finder also looks for inside files: each everything token and
-    /// each plain word typed. Typed text in fsearch's syntax searches names.
+    /// The words Finder also looks for inside files.
     pub(crate) fn contents(&self) -> Vec<String> {
-        let typed = self.plain().then(|| self.text.split_whitespace());
         self.terms
             .iter()
             .filter_map(|term| match term {
                 Term::Everything(text) => Some(text.trim()),
                 _ => None,
             })
-            .chain(typed.into_iter().flatten())
+            .chain(self.plain_words())
             .filter(|text| text.chars().nth(1).is_some())
             .map(str::to_owned)
             .collect()
     }
 
-    /// fsearch's query for the files whose content holds `word`: every name
-    /// token and any typed syntax narrow which files are read.
     pub(crate) fn content(&self, word: &str) -> String {
         let mut query = format!("grep:{}", quoted(word));
         if !self.plain() {
@@ -173,8 +165,6 @@ impl Search {
         query
     }
 
-    /// Spotlight's query for everything that mentions `word`, as Finder's own
-    /// Contains asks it, narrowed to the kinds.
     pub(crate) fn spotlight(&self, word: &str) -> Option<String> {
         if !self.plain() {
             return None;
@@ -182,16 +172,12 @@ impl Search {
         let mut query = format!("(** == \"{}*\"cdw)", escape(word));
         for term in &self.terms {
             if let Term::Kind(uti) = term {
-                query.push_str(&format!(
-                    " && (kMDItemContentTypeTree == \"{}\")",
-                    escape(uti)
-                ));
+                let _ = write!(query, " && (kMDItemContentTypeTree == \"{}\")", escape(uti));
             }
         }
         Some(query)
     }
 
-    /// Spotlight's query for the tags, which only it knows.
     pub(crate) fn tagged(&self) -> Option<String> {
         let tags: Vec<String> = self
             .terms
@@ -205,11 +191,10 @@ impl Search {
     }
 
     pub(crate) fn matcher(&self) -> Matcher {
-        let typed = self.plain().then(|| self.text.split_whitespace());
         let mut matcher = Matcher {
             typed: fold(self.text.trim()),
             names: Vec::new(),
-            everything: typed.into_iter().flatten().map(fold).collect(),
+            everything: self.plain_words().map(fold).collect(),
             kinds: Vec::new(),
             dates: Vec::new(),
             tagged: false,
@@ -237,17 +222,13 @@ pub(crate) struct Matcher {
 }
 
 impl Matcher {
-    /// A row of the folder on screen, which matches by its name, kind and
-    /// dates alone. Tags are Spotlight's to answer.
+    /// A row of the folder on screen; tags are Spotlight's to answer.
     pub(crate) fn admits(&self, row: &Row) -> bool {
         !self.tagged
             && (self.typed.is_empty() || folds_to(&row.name, &self.typed))
-            && self.names.iter().all(|name| folds_to(&row.name, name))
-            && self.everything.iter().all(|word| folds_to(&row.name, word))
-            && self.fits(row)
+            && self.admits_found(row, |_| false)
     }
 
-    /// What fsearch can only narrow to: the kinds and the dates.
     pub(crate) fn fits(&self, row: &Row) -> bool {
         self.kinds
             .iter()
@@ -260,8 +241,7 @@ impl Matcher {
             })
     }
 
-    /// A row found by what it holds or by its tags: every name token holds
-    /// by name, every everything word by name or by `held(word)`.
+    /// `held(word)` answers whether the row's content holds an everything word.
     pub(crate) fn admits_found(&self, row: &Row, held: impl Fn(&str) -> bool) -> bool {
         self.names.iter().all(|name| folds_to(&row.name, name))
             && self

@@ -67,9 +67,6 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
     std::mem::forget(observer);
 }
 
-/// Rows for the hits, in order: from what the app's own index already
-/// recorded, else one getattrlist each (a few threads at once). `None` once
-/// `stale` says a newer search started.
 fn hit_rows(
     paths: &[&Path],
     index: &Index,
@@ -112,9 +109,6 @@ fn hit_rows(
     Some(parts.concat())
 }
 
-/// What Spotlight finds for `query` under each of `roots` (everywhere if
-/// empty), at most `limit`, leaving out folders macOS would ask before
-/// opening. `None` once `stale`.
 fn spotlight(
     query: &str,
     roots: &[PathBuf],
@@ -153,10 +147,7 @@ fn spotlight(
     (!stale()).then(|| fsearch::reachable_only(found))
 }
 
-/// The rows for a search: fsearch's name hits as it ranks them, then the
-/// files only their content answers for; or, given tags, what Spotlight has
-/// tagged. Each is checked against every term fsearch only narrows to.
-/// `None` while fsearch can't answer, or once `stale`.
+/// Name hits as fsearch ranks them, then content or tag hits. `None` while fsearch can't answer.
 fn gather(
     search: &Search,
     under: &[PathBuf],
