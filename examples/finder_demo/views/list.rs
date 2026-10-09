@@ -14,9 +14,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{
-    Column, Line, Row, date_style, enclosing_name, intern, kind_text, list_date, today,
-};
+use crate::data::{Column, Line, Row, date_style, intern, kind_text, list_date, today};
 use crate::dragdrop::{DragGhost, RowDrag, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
@@ -652,9 +650,6 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
                                     list_date(at, style, look.relative)
                                 }),
                         )
-                }
-                Column::Kind if look.searching => {
-                    cell.text_ellipsis().child(enclosing_name(&line.key))
                 }
                 Column::Kind => cell.text_ellipsis_middle().child(kind_text(
                     &line.row.kind,
