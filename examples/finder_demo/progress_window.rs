@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EntityId, Pixels, Subscription, Window, WindowBounds,
+    App, Bounds, Context, Entity, EntityId, Pixels, Subscription, Window, WindowBounds,
     WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
@@ -38,7 +38,6 @@ pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
     }
 }
 
-/// Opens for a job that runs a while, leaving the key window where it is.
 pub(crate) fn reveal(cx: &mut App) {
     if !shown() {
         open(false, cx);
@@ -110,14 +109,12 @@ struct Progress {
     watched: HashSet<EntityId>,
     watching: Vec<Subscription>,
     tall: Pixels,
-    /// Closes itself once its last row has gone, but not when opened with nothing in it. It
-    /// checks when a job changes rather than on draw, since a covered window never draws.
+    /// Checked when a job changes, not on draw: a covered window never draws.
     had_rows: bool,
     ticking: bool,
 }
 
 impl Progress {
-    /// Reads the running jobs ten times a second, and stops once none is left.
     fn tick(&mut self, cx: &mut Context<Self>) {
         self.ticking = true;
         cx.spawn(async move |this, cx| {
@@ -140,7 +137,7 @@ impl Progress {
     }
 
     fn jobs_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let shown = !row_heights(&demos(cx), cx).is_empty();
+        let shown = demos(cx).iter().any(|demo| demo.read(cx).progress_shown());
         if self.had_rows && !shown {
             cx.defer_in(window, |_, window, _| window.remove_window());
         }
@@ -161,8 +158,8 @@ impl Render for Progress {
             }
         }
         let mut running = false;
-        let mut rows: Vec<AnyElement> = Vec::new();
-        let mut heights: Vec<f32> = Vec::new();
+        let mut rows = Vec::new();
+        let mut heights = Vec::new();
         for demo in &demos {
             for job in demo.read(cx).jobs.iter().filter(|job| job.shown()) {
                 running |= job.running();

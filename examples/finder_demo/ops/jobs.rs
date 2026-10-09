@@ -18,11 +18,8 @@ use crate::data::{byte_string, count};
 use crate::form::{text_height, text_width_at};
 use crate::sound::Sound;
 
-/// A job that ends sooner never shows its progress.
 const SHOW_AFTER: Duration = Duration::from_millis(500);
 pub(crate) const WIDTH: f32 = 404.;
-/// Finder's rows are 61 pt apart with a hairline 54 pt below each row's top, and its window ends
-/// 56 pt below the last one's.
 pub(crate) const ROW_H: f32 = 61.;
 pub(crate) const LAST_ROW_H: f32 = 56.;
 pub(crate) const HAIRLINE_Y: f32 = 54.;
@@ -37,7 +34,7 @@ const BAR_H: f32 = 16.;
 const REASON_Y: f32 = 18.;
 const CAPTION_Y: f32 = 33.;
 const BUTTONS_H: f32 = 20.;
-/// A circle symbol is as wide as its point size; Finder's is 11 pt.
+/// A circle symbol is as wide as its point size.
 const GLYPH: f32 = 11.;
 const GLYPH_HIT: f32 = 20.;
 const GLYPH_GAP: f32 = 9.;
@@ -49,7 +46,6 @@ pub(crate) enum Record {
     New,
     Undo(usize),
     Redo(usize),
-    /// Folds into the journal entry of the job it retries.
     Retry(u64),
 }
 
@@ -64,11 +60,9 @@ pub(crate) struct JobRow {
     failed: Option<Failed>,
 }
 
-/// What an ended job could not carry, kept until it is retried or dismissed.
 struct Failed {
     failures: Vec<Failure>,
     retry: Option<Op>,
-    /// The journal entry holding what the job did carry.
     entry: Option<u64>,
 }
 
@@ -103,7 +97,6 @@ impl JobRow {
         }
     }
 
-    /// Once it has run a moment, and for as long as its failures wait for an answer.
     pub(crate) fn shown(&self) -> bool {
         self.failed.is_some() || self.began.elapsed() >= SHOW_AFTER
     }
@@ -112,8 +105,6 @@ impl JobRow {
         self.failed.is_none()
     }
 
-    /// A failure's reason wraps, and its row grows by the lines past the first and by how far its
-    /// buttons reach below the caption line they replace.
     pub(crate) fn height(&self) -> f32 {
         let Some(failed) = &self.failed else {
             return ROW_H;
@@ -142,38 +133,38 @@ fn name_of(path: &Path) -> String {
         .into_owned()
 }
 
-/// Finder counts what is left to carry, so the number falls as items land.
-fn named(items: &[PathBuf], left: Option<u64>) -> String {
+fn named<P: AsRef<Path>>(items: &[P], left: Option<u64>) -> String {
     match (items, left) {
         (_, Some(left)) if left > 1 => format!("{} items", count(left as usize)),
-        ([only], _) => format!("\u{201c}{}\u{201d}", name_of(only)),
+        ([only], _) => format!("\u{201c}{}\u{201d}", name_of(only.as_ref())),
         _ => format!("{} items", count(items.len())),
     }
 }
 
 fn describe(op: &Op, left: Option<u64>) -> String {
-    let to = |verb: &str, items: &[PathBuf], into: &Path| {
-        format!(
-            "{verb} {} to \u{201c}{}\u{201d}",
-            named(items, left),
-            name_of(into)
-        )
+    let to = |verb: &str, what: String, into: &Path| {
+        format!("{verb} {what} to \u{201c}{}\u{201d}", name_of(into))
     };
     match op {
-        Op::Move { items, into } => to("Moving", items, into),
-        Op::Copy { items, into } | Op::CopyExactly { items, into } => to("Copying", items, into),
+        Op::Move { items, into } => to("Moving", named(items, left), into),
+        Op::Copy { items, into } | Op::CopyExactly { items, into } => {
+            to("Copying", named(items, left), into)
+        }
         Op::Retry(request) => {
-            let sources: Vec<PathBuf> = request.items().map(|(item, _)| item.into()).collect();
             let into = request.items().next().and_then(|(_, dest)| dest.parent());
             let verb = match request.kind() {
                 Kind::Move => "Moving",
                 Kind::Copy | Kind::CopyExactly => "Copying",
             };
-            to(verb, &sources, into.unwrap_or(Path::new("/")))
+            to(
+                verb,
+                named(&sources(op), left),
+                into.unwrap_or(Path::new("/")),
+            )
         }
-        Op::Trash(items) => to("Moving", items, Path::new("Trash")),
+        Op::Trash(items) => to("Moving", named(items, left), Path::new("Trash")),
         Op::Duplicate(items) => match items.first().and_then(|first| first.parent()) {
-            Some(into) => to("Duplicating", items, into),
+            Some(into) => to("Duplicating", named(items, left), into),
             None => format!("Duplicating {}", named(items, left)),
         },
         Op::MakeAlias(items) => format!("Making Aliases of {}", named(items, left)),
@@ -184,7 +175,7 @@ fn describe(op: &Op, left: Option<u64>) -> String {
             format!("Creating \u{201c}{name}\u{201d}")
         }
         Op::PutBack(items) => {
-            let back: Vec<PathBuf> = items.iter().map(|item| item.to.clone()).collect();
+            let back: Vec<&Path> = items.iter().map(|item| item.to.as_path()).collect();
             format!("Putting Back {}", named(&back, left))
         }
         Op::Quick(quick) => format!("{} {}", quick.label(), named(quick.items(), left)),
@@ -202,7 +193,6 @@ fn failed_title(op: &Op, failed: &Failed) -> String {
     };
     if failed.refusal().is_some() {
         let left = sources(failed.retry.as_ref().unwrap_or(op));
-        let left: Vec<PathBuf> = left.into_iter().map(Path::to_path_buf).collect();
         return format!("{} couldn't be {verb}", named(&left, None));
     }
     match failed.failures.as_slice() {
@@ -245,8 +235,6 @@ fn subject(op: &Op) -> Option<&Path> {
     }
 }
 
-/// Finder's own wording, with the speed this one also shows; the time left waits for the engine
-/// to trust it.
 fn caption(progress: Option<&Progress>) -> String {
     let Some(progress) = progress else {
         return "Preparing\u{2026}".to_string();
@@ -297,7 +285,6 @@ fn remaining(secs: f64) -> String {
     }
 }
 
-/// The fraction done, or `None` while there is nothing yet to measure it by.
 fn fraction(progress: Option<&Progress>) -> Option<f64> {
     let progress = progress?;
     if progress.phase == Phase::Finishing {
@@ -354,7 +341,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Reads each running job's progress; true while any job still runs.
     pub(crate) fn poll_jobs(&mut self) -> bool {
         let mut running = false;
         for row in self.jobs.iter_mut().filter(|row| row.running()) {
@@ -366,7 +352,6 @@ impl FinderDemo {
         running
     }
 
-    /// Returns the journal entry that now holds what the job did.
     fn note(&mut self, row: &JobRow, done: &Done) -> Option<u64> {
         match row.record {
             Record::New => self.journal.record(done, &row.op),
@@ -432,7 +417,6 @@ impl FinderDemo {
         cx.notify();
     }
 
-    /// Items that failed keep their row, with what to show and what to try again.
     fn carried(&mut self, job: JobId, carried: Carried, cx: &mut Context<Self>) {
         let Some(mut row) = self.take_job(job) else {
             return;
@@ -517,11 +501,11 @@ impl FinderDemo {
     }
 }
 
-fn act(
+fn act<E: 'static>(
     demo: &Entity<FinderDemo>,
     job: JobId,
     act: impl Fn(&mut FinderDemo, JobId, &mut Context<FinderDemo>) + 'static,
-) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+) -> impl Fn(&E, &mut Window, &mut App) + 'static {
     let demo = demo.clone();
     move |_, _, cx| demo.update(cx, |this, cx| act(this, job, cx))
 }
@@ -538,7 +522,6 @@ fn on_queue(
     })
 }
 
-/// `right` is the circle's own inset; the click target around it is wider than the circle.
 fn glyph(
     id: (&'static str, u64),
     right: f32,
@@ -564,7 +547,6 @@ fn symbol(id: (&'static str, u64), name: &str) -> NativeImage {
     native_symbol(id, name, GLYPH, FontWeight::NORMAL).tint(SystemColor::SecondaryLabel)
 }
 
-/// Finder sets every line of a row, title included, in the small system font.
 fn text(
     id: (&'static str, u64),
     text: &str,
@@ -593,8 +575,6 @@ fn reason_height(reason: &str) -> f32 {
     text_height(reason, small, FontWeight::NORMAL, width).max(line)
 }
 
-/// The file in flight, when the title does not already name it and it is a sizable part of the
-/// job, so the caption is not a blur of small names.
 fn current_file(job: &JobRow, progress: &Progress, left: Option<u64>) -> Option<String> {
     let current = progress.current.as_ref()?;
     let named = left.is_none_or(|left| left <= 1) && sources(&job.op).len() == 1;
@@ -602,7 +582,6 @@ fn current_file(job: &JobRow, progress: &Progress, left: Option<u64>) -> Option<
     (progress.phase == Phase::Copying && !named && sizable).then(|| name_of(&current.path))
 }
 
-/// One job, laid out as Finder lays out its copy window's rows.
 pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElement {
     let id = job.id.raw();
     let small = tokens::small_system_font_size();
@@ -671,19 +650,17 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
                     .top(px(CAPTION_Y + reason_h - reason_height("")))
                     .flex()
                     .gap(px(8.))
-                    .child(button("ng.finder.progress.show", "Show").on_click({
-                        let demo = demo.clone();
-                        let job = job.id;
-                        move |_, _, cx| {
-                            demo.update(cx, |this, cx| this.show_failures(job, cx));
-                        }
-                    }))
+                    .child(button("ng.finder.progress.show", "Show").on_click(act(
+                        demo,
+                        job.id,
+                        |this, job, cx| this.show_failures(job, cx),
+                    )))
                     .when(failed.retry.is_some(), |buttons| {
-                        buttons.child(button("ng.finder.progress.retry", "Retry").on_click({
-                            let demo = demo.clone();
-                            let job = job.id;
-                            move |_, _, cx| demo.update(cx, |this, cx| this.retry_job(job, cx))
-                        }))
+                        buttons.child(button("ng.finder.progress.retry", "Retry").on_click(act(
+                            demo,
+                            job.id,
+                            FinderDemo::retry_job,
+                        )))
                     }),
             )
             .into_any_element();
@@ -724,12 +701,10 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             .child(bar),
     )
     .when(pausable, |row| {
-        let name = if paused {
-            "play.circle.fill"
-        } else {
-            "pause.circle.fill"
+        let (name, run): (_, fn(&Queue, JobId)) = match paused {
+            true => ("play.circle.fill", Queue::resume),
+            false => ("pause.circle.fill", Queue::pause),
         };
-        let run: fn(&Queue, JobId) = if paused { Queue::resume } else { Queue::pause };
         row.child(glyph(
             ("ng.finder.progress.pause", id),
             beside_glyph,
