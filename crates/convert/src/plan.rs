@@ -129,7 +129,7 @@ fn plan_image(source: Format, target: Format, intent: Intent) -> Planned {
 fn plan_audio(probe: &Probe, target: Format, intent: Intent) -> Planned {
     let codec = probe.audio_codec.as_deref().unwrap_or("");
     let lower = codec.to_ascii_lowercase();
-    if !lower.is_empty() && container_accepts(target, &lower) {
+    if container_accepts(target, &lower) {
         let lossless = lower == "flac" || lower == "alac" || lower.starts_with("pcm_");
         if intent == Intent::Web && !lossless {
             return Planned::new(PathTaken::Encode, "web re-encodes to a smaller bitrate");

@@ -19,7 +19,7 @@ fn main() {
     println!(
         "{{\"kind\":\"meta\",\"ffmpeg\":{},\"avifenc\":{},\"sips\":{}}}",
         ffmpeg_available(),
-        which("avifenc"),
+        runs("avifenc"),
         Path::new("/usr/bin/sips").exists()
     );
 
@@ -145,19 +145,19 @@ fn quality_checks(
                 )
             },
         );
+    }
 
-        if let Some(jpeg) = find(images, Format::Jpeg) {
-            let probed = probe(jpeg).unwrap();
-            let planned = plan(&probed, Format::Jpeg, Intent::Archive).unwrap();
-            Row::new("quality", Format::Jpeg, Format::Jpeg, Intent::Archive).print(
-                verdict(planned.path == PathTaken::Copy),
-                planned.path,
-                probed.bytes,
-                probed.bytes,
-                0.0,
-                &planned.notes,
-            );
-        }
+    if let Some(jpeg) = find(images, Format::Jpeg) {
+        let probed = probe(jpeg).unwrap();
+        let planned = plan(&probed, Format::Jpeg, Intent::Archive).unwrap();
+        Row::new("quality", Format::Jpeg, Format::Jpeg, Intent::Archive).print(
+            verdict(planned.path == PathTaken::Copy),
+            planned.path,
+            probed.bytes,
+            probed.bytes,
+            0.0,
+            &planned.notes,
+        );
     }
 
     if ffmpeg_available() {
@@ -456,7 +456,7 @@ fn pcm_eq(a: &Path, b: &Path) -> bool {
     matches!((decode(a), decode(b)), (Some(x), Some(y)) if x == y)
 }
 
-fn which(name: &str) -> bool {
+fn runs(name: &str) -> bool {
     std::process::Command::new(name)
         .arg("-version")
         .output()

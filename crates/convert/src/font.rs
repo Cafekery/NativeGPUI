@@ -49,11 +49,13 @@ pub fn run(job: &Job, probe: &Probe, planned: &Planned) -> Result<Report> {
         PathTaken::Copy => source,
         PathTaken::Remux => {
             let sfnt = to_sfnt(source, probe.format)?;
-            let outline = probe.outline.map_or_else(|| outline_of(&sfnt), Ok)?;
             match job.target {
                 Format::Ttf | Format::Otf => sfnt,
                 Format::Woff => wrap_woff1(&sfnt)?,
-                Format::Woff2 => wrap_woff2(&sfnt, outline, job.intent)?,
+                Format::Woff2 => {
+                    let outline = probe.outline.map_or_else(|| outline_of(&sfnt), Ok)?;
+                    wrap_woff2(&sfnt, outline, job.intent)?
+                }
                 _ => return Err(Error::new("not a font target")),
             }
         }
