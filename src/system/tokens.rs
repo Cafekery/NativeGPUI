@@ -197,8 +197,7 @@ impl SystemColor {
     }
 
     pub fn try_resolve(self, appearance: Appearance) -> Option<Hsla> {
-        let getter = self.getter();
-        with_appearance(appearance, || from_nscolor(&getter()))
+        with_appearance(appearance, || from_nscolor(&self.ns_color()))
     }
 }
 
@@ -377,7 +376,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGThemeObserver"]
-    #[ivars = ThemeObserverIvars]
+    #[ivars = AsyncApp]
     struct ThemeObserver;
 
     unsafe impl NSObjectProtocol for ThemeObserver {}
@@ -391,14 +390,10 @@ define_class!(
             _change: *mut AnyObject,
             _context: *mut std::ffi::c_void,
         ) {
-            bump(&self.ivars().cx);
+            bump(self.ivars());
         }
     }
 );
-
-struct ThemeObserverIvars {
-    cx: AsyncApp,
-}
 
 fn bump(cx: &AsyncApp) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -448,7 +443,7 @@ pub fn init(cx: &mut App) {
         }
     }
 
-    let kvo = ThemeObserver::alloc(mtm).set_ivars(ThemeObserverIvars { cx: async_cx });
+    let kvo = ThemeObserver::alloc(mtm).set_ivars(async_cx);
     let kvo: Retained<ThemeObserver> = unsafe { msg_send![super(kvo), init] };
     let nsapp = NSApplication::sharedApplication(mtm);
     let app: &NSObject = nsapp.as_ref();
@@ -551,10 +546,10 @@ pub fn ns_font_weight(weight: FontWeight) -> NSFontWeight {
         ]
     };
     table
-        .iter()
+        .into_iter()
         .min_by(|a, b| (a.0 - weight.0).abs().total_cmp(&(b.0 - weight.0).abs()))
-        .map(|(_, w)| *w)
         .expect("weight table is never empty")
+        .1
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -626,9 +621,8 @@ pub fn appkit_string_width(
 // `width(ch ch) - width(ch)` cancels the string's own side bearings.
 pub fn appkit_advance(family: &str, size: Pixels, weight: FontWeight, ch: char) -> Option<f32> {
     let font = ns_font(family, size, weight)?;
-    Some(
-        (typeset_width(&font, &format!("{ch}{ch}")) - typeset_width(&font, &ch.to_string())) as f32,
-    )
+    let pair = typeset_width(&font, &format!("{ch}{ch}"));
+    Some((pair - typeset_width(&font, ch.encode_utf8(&mut [0; 4]))) as f32)
 }
 
 pub fn gpui_advance(
@@ -1145,7 +1139,7 @@ mod tests {
     fn a_full_folder_shows_a_sheet_of_paper() {
         let paper = |kind| {
             let icon = file_icon(kind, px(128.)).expect("a declared type has an icon");
-            let bytes = icon.image.as_bytes(0).expect("one frame").to_vec();
+            let bytes = icon.image.as_bytes(0).expect("one frame");
             bytes
                 .chunks_exact(4)
                 .filter(|px| px[3] > 200 && px[..3].iter().all(|c| *c > 240))

@@ -39,7 +39,7 @@ impl Key {
         scale: f32,
         icon: bool,
     ) -> Self {
-        Key {
+        Self {
             path: path.to_path_buf(),
             mtime: modified,
             pixels: (f32::from(size) * scale).round().max(1.0) as u32,
@@ -122,8 +122,7 @@ pub fn thumbnail(
 ) {
     let key = Key::new(path, modified, size, scale, icon);
     let mut state = STATE.lock().unwrap();
-    if let Some(hit) = state.cache.get(&key) {
-        let hit = hit.clone();
+    if let Some(hit) = state.cache.get(&key).cloned() {
         drop(state);
         done(hit);
         return;
@@ -191,8 +190,8 @@ fn generate(key: Key) {
 
 fn render(image: &NSImage, max_pixels: usize) -> Option<Arc<RenderImage>> {
     let fit = image.size();
-    let w = (fit.width.round() as usize).clamp(1, max_pixels.max(1));
-    let h = (fit.height.round() as usize).clamp(1, max_pixels.max(1));
+    let w = (fit.width.round() as usize).clamp(1, max_pixels);
+    let h = (fit.height.round() as usize).clamp(1, max_pixels);
     tokens::rasterize(
         &[(image, NSCompositingOperation::SourceOver)],
         NSSize::new(w as f64, h as f64),
@@ -209,11 +208,12 @@ fn complete(key: Key, result: Option<Arc<RenderImage>>) {
     let (callbacks, next) = {
         let mut state = STATE.lock().unwrap();
         state.active -= 1;
+        let callbacks = state.waiters.remove(&key).unwrap_or_default();
         if let Some(Some(old)) = state.cache.insert(key.clone(), result.clone()) {
             state.bytes -= raster_bytes(&old);
         }
         state.bytes += result.as_deref().map_or(0, raster_bytes);
-        state.order.push_back(key.clone());
+        state.order.push_back(key);
         while state.order.len() > MAX_CACHE || state.bytes > MAX_BYTES {
             let Some(old) = state.order.pop_front() else {
                 break;
@@ -222,7 +222,6 @@ fn complete(key: Key, result: Option<Arc<RenderImage>>) {
                 state.bytes -= raster_bytes(&image);
             }
         }
-        let callbacks = state.waiters.remove(&key).unwrap_or_default();
         let next = (state.active < MAX_INFLIGHT)
             .then(|| state.queue.pop_back())
             .flatten();
@@ -266,9 +265,7 @@ mod tests {
             Pixels::from(32.0),
             2.0,
             true,
-            move |image| {
-                tx.send(image).unwrap();
-            },
+            move |image| tx.send(image).unwrap(),
         );
         let image = rx
             .recv_timeout(Duration::from_secs(2))
@@ -285,9 +282,7 @@ mod tests {
             Pixels::from(32.0),
             2.0,
             true,
-            move |image| {
-                tx2.send(image).unwrap();
-            },
+            move |image| tx2.send(image).unwrap(),
         );
         let second = rx2
             .recv_timeout(Duration::from_secs(2))
@@ -315,9 +310,7 @@ mod tests {
             Pixels::from(32.0),
             2.0,
             false,
-            move |image| {
-                tx.send(image).unwrap();
-            },
+            move |image| tx.send(image).unwrap(),
         );
         let raster = rx
             .recv_timeout(Duration::from_secs(2))
