@@ -197,12 +197,59 @@ impl Weight {
     }
 }
 
-fn weigh_tree(path: &Path, counted: bool) -> Weight {
-    let mut weight = Weight {
-        items: counted.then_some(0),
-        ..Weight::default()
-    };
+fn weigh_folder(path: &Path, counted: bool) -> Weight {
     let mut linked = HashSet::new();
+    let Some(totals) = crate::fsearch::totals(path) else {
+        let mut weight = Weight {
+            items: counted.then_some(0),
+            ..Weight::default()
+        };
+        weigh_tree(path, &mut weight, &mut linked);
+        return weight;
+    };
+    let mut weight = Weight {
+        bytes: totals.bytes,
+        on_disk: totals.allocated,
+        items: counted.then_some(totals.items),
+    };
+    if totals.hardlinks > 0 {
+        for (ino, bytes, on_disk) in linked_files(&crate::fsearch::hardlinks(path)) {
+            if linked.insert(ino) {
+                continue;
+            }
+            weight.bytes = weight.bytes.saturating_sub(bytes);
+            weight.on_disk = weight.on_disk.saturating_sub(on_disk);
+            if let Some(items) = &mut weight.items {
+                *items = items.saturating_sub(1);
+            }
+        }
+    }
+    for dir in &totals.unindexed {
+        weigh_tree(dir, &mut weight, &mut linked);
+    }
+    weight
+}
+
+fn linked_files(paths: &[PathBuf]) -> Vec<(u64, u64, u64)> {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    std::thread::scope(|s| {
+        let tasks: Vec<_> = paths
+            .chunks(paths.len().div_ceil(threads).max(1))
+            .map(|part| {
+                s.spawn(move || {
+                    part.iter()
+                        .filter_map(|path| std::fs::symlink_metadata(path).ok())
+                        .filter(|meta| meta.nlink() > 1 && !meta.is_dir())
+                        .map(|meta| (meta.ino(), meta.len(), meta.blocks() * 512))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        tasks.into_iter().flat_map(|t| t.join().unwrap()).collect()
+    })
+}
+
+fn weigh_tree(path: &Path, weight: &mut Weight, linked: &mut HashSet<u64>) {
     let mut pending = vec![path.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -225,7 +272,6 @@ fn weigh_tree(path: &Path, counted: bool) -> Weight {
             }
         }
     }
-    weight
 }
 
 fn weigh_all(paths: &[PathBuf]) -> Weight {
@@ -236,7 +282,7 @@ fn weigh_all(paths: &[PathBuf]) -> Weight {
             continue;
         };
         let inner = match meta.is_dir() {
-            true => weigh_tree(path, true),
+            true => weigh_folder(path, true),
             false => Weight::file(&meta),
         };
         total.bytes += inner.bytes;
@@ -1008,7 +1054,7 @@ impl Info {
         let counted = self.subject == Subject::Folder;
         in_background(
             cx,
-            move || weigh_tree(&path, counted),
+            move || weigh_folder(&path, counted),
             |info, weight| info.weight = Some(weight),
         );
     }
