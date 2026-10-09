@@ -330,10 +330,7 @@ fn byte_string(bytes: u64) -> String {
 }
 
 fn volume_of(path: &Path) -> Option<volumes::Volume> {
-    volumes::mounted()
-        .into_iter()
-        .filter(|volume| path.starts_with(&volume.path) && !volume.name.is_empty())
-        .max_by_key(|volume| volume.path.as_os_str().len())
+    volumes::holding(path).filter(|volume| !volume.name.is_empty())
 }
 
 /// `NSFileManager`'s own message names the boot volume whatever the destination was.

@@ -379,6 +379,44 @@ fn a_move_keeps_a_locked_source_it_cannot_remove() {
 }
 
 #[test]
+fn a_full_volume_hidden_from_browsing_is_the_one_named() {
+    let name = volume_name("H");
+    let Some(disk) = RamDisk::new(8, "HFS+", &name) else {
+        return;
+    };
+    let diskutil = |args: &[&str]| {
+        Command::new("diskutil")
+            .args(args)
+            .output()
+            .is_ok_and(|out| out.status.success())
+    };
+    let hidden = diskutil(&["unmount", &disk.device])
+        && diskutil(&["mount", "-mountOptions", "nobrowse", &disk.device]);
+    if !hidden {
+        eprintln!("skipping: could not mount the RAM disk hidden");
+        return;
+    }
+    let dir = temp_dir("hidden");
+    let big = dir.join("big.bin");
+    sparse(&big, 32 << 20);
+
+    let outcome = copy(
+        vec![big],
+        &disk.mount,
+        Conflict::KeepBoth,
+        OnError::Continue,
+    );
+
+    let message = outcome.failures.first().map(|f| f.error.to_string());
+    let message = message.unwrap_or_default();
+    assert!(
+        message.contains(&format!("on \u{201c}{name}\u{201d}")),
+        "{message}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn failures_are_collected_while_the_rest_lands() {
     if root_user() {
         return;

@@ -133,7 +133,7 @@ pub(crate) fn mount_point(path: &Path) -> Option<PathBuf> {
 }
 
 /// Reads the kernel's cached mount table, so a share that stopped answering can't stall it.
-pub fn mounted() -> Vec<Volume> {
+fn mount_table() -> Vec<libc::statfs> {
     let mut stats: Vec<libc::statfs> = Vec::new();
     // SAFETY: a null buffer asks only for the count; the second call passes a buffer of that size.
     let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
@@ -143,7 +143,11 @@ pub fn mounted() -> Vec<Volume> {
         let got = unsafe { libc::getfsstat(stats.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
         unsafe { stats.set_len(got.max(0) as usize) };
     }
-    let mut volumes: Vec<Volume> = stats
+    stats
+}
+
+pub fn mounted() -> Vec<Volume> {
+    let mut volumes: Vec<Volume> = mount_table()
         .iter()
         .filter(|stats| stats.f_flags & libc::MNT_DONTBROWSE as u32 == 0)
         .map(volume_from)
@@ -152,6 +156,15 @@ pub fn mounted() -> Vec<Volume> {
         volumes.swap(0, boot);
     }
     volumes
+}
+
+/// The volume `path` is on, one hidden from browsing too, such as a disk image attached that way.
+pub(crate) fn holding(path: &Path) -> Option<Volume> {
+    mount_table()
+        .iter()
+        .filter(|stats| path.starts_with(mount_path(stats)))
+        .max_by_key(|stats| mount_path(stats).as_os_str().len())
+        .map(volume_from)
 }
 
 fn volume_from(stats: &libc::statfs) -> Volume {
