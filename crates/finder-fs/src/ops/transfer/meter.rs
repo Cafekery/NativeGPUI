@@ -5,7 +5,7 @@ const ETA_SECS: f64 = 5.0;
 const SETTLE: Duration = Duration::from_secs(3);
 const ITEMS_TO_TRUST: u64 = 16;
 
-/// Speed and time left from counters sampled a few times a second.
+#[derive(Default)]
 pub(super) struct Meter {
     last: Option<(Instant, u64)>,
     moving: Duration,
@@ -21,17 +21,7 @@ pub(super) struct Left {
 }
 
 impl Meter {
-    pub fn new() -> Meter {
-        Meter {
-            last: None,
-            moving: Duration::ZERO,
-            bytes_per_sec: 0.0,
-            eta: None,
-        }
-    }
-
-    /// A paused stretch is skipped, so a resume does not read as a stall, and so is the one in
-    /// which copying began, which would read as a slow start.
+    /// Skips a paused stretch and the one copying began in: neither is the copy's speed.
     pub fn sample(&mut self, now: Instant, bytes: u64, paused: bool, left: &Left) {
         let Some((then, before)) = self.last.replace((now, bytes)) else {
             return;
@@ -61,7 +51,6 @@ impl Meter {
         self.eta.map(Duration::from_secs_f64)
     }
 
-    /// Many small files cost per item rather than per byte, so the slower of the two estimates wins.
     fn estimate(&self, left: &Left) -> Option<f64> {
         if left.counting || self.moving < SETTLE || self.bytes_per_sec <= 0.0 {
             return None;

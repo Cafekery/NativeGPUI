@@ -8,6 +8,7 @@ use std::ptr;
 use crate::check;
 
 const WHILE_FILLING: libc::mode_t = 0o700;
+const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
 
 fn split(path: &Path) -> io::Result<(&Path, CString)> {
     let name = path
@@ -27,23 +28,12 @@ fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
 }
 
 fn open_dir_at(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
-    owned(unsafe {
-        libc::openat(
-            dir.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
-    })
+    owned(unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), DIR_FLAGS) })
 }
 
 fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     let start = if path.is_absolute() { c"/" } else { c"." };
-    let mut dir = owned(unsafe {
-        libc::open(
-            start.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-        )
-    })?;
+    let mut dir = owned(unsafe { libc::open(start.as_ptr(), DIR_FLAGS) })?;
     for part in path.components() {
         dir = match part {
             Component::Normal(name) => open_dir_at(&dir, &CString::new(name.as_bytes())?)?,
@@ -78,22 +68,18 @@ fn names_in(dir: &OwnedFd) -> io::Result<Vec<CString>> {
         return Err(io::Error::last_os_error());
     }
     let mut names = Vec::new();
-    let mut failed = None;
-    loop {
+    let failed = loop {
         unsafe { *libc::__error() = 0 };
         let entry = unsafe { libc::readdir(handle) };
         if entry.is_null() {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(0) {
-                failed = Some(err);
-            }
-            break;
+            break (err.raw_os_error() != Some(0)).then_some(err);
         }
         let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
         if name != c"." && name != c".." {
             names.push(name.to_owned());
         }
-    }
+    };
     unsafe { libc::closedir(handle) };
     failed.map_or(Ok(names), Err)
 }
@@ -237,8 +223,7 @@ pub(super) fn stat(path: &Path) -> io::Result<libc::stat> {
 }
 
 pub(super) fn identity(path: &Path) -> io::Result<(u64, u64)> {
-    let meta = stat(path)?;
-    Ok((meta.st_dev as u64, meta.st_ino))
+    stat(path).map(|meta| (meta.st_dev as u64, meta.st_ino))
 }
 
 pub(super) fn remove(path: &Path) -> io::Result<()> {

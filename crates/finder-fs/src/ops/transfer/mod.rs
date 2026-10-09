@@ -22,12 +22,10 @@ mod plan;
 mod volume;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const TICK: Duration = Duration::from_millis(250);
 const SPACE_EVERY: Duration = Duration::from_secs(1);
-/// How long the copying waits for the walk, so that a total known not to fit is refused before
-/// anything is written.
 const PLAN_FOR: Duration = Duration::from_millis(500);
 const RELEASE_BYTES: u64 = 256 << 20;
 const RELEASE_ITEMS: usize = 1000;
@@ -37,13 +35,12 @@ const RELEASE_EVERY: Duration = Duration::from_secs(5);
 pub enum Kind {
     Copy,
     Move,
-    /// A copy that also keeps each item's owner and group, as far as this process may set them.
+    /// Also keeps each item's owner and group, as far as this process may set them.
     CopyExactly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnError {
-    /// Note the item and go on with the rest.
     Continue,
     Stop,
 }
@@ -77,7 +74,6 @@ impl Request {
         Request::each(kind, pairs, conflict, on_error)
     }
 
-    /// Each source to a destination of its own, as a put back or a duplicate names it.
     pub fn each(
         kind: Kind,
         pairs: impl IntoIterator<Item = (PathBuf, PathBuf)>,
@@ -100,7 +96,6 @@ impl Request {
         self.kind
     }
 
-    /// Each source with the destination it is aimed at.
     pub fn items(&self) -> impl ExactSizeIterator<Item = (&Path, &Path)> {
         self.items
             .iter()
@@ -112,7 +107,6 @@ impl Request {
 pub enum Phase {
     #[default]
     Copying,
-    /// Writing out what the destination still holds in memory, so that done means on the disk.
     Finishing,
     Done,
 }
@@ -120,7 +114,6 @@ pub enum Phase {
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub phase: Phase,
-    /// The totals still grow while the sources are walked.
     pub counting: bool,
     pub paused: bool,
     pub bytes_done: u64,
@@ -131,7 +124,6 @@ pub struct Progress {
     /// The largest file in flight.
     pub current: Option<Current>,
     pub bytes_per_sec: f64,
-    /// Only once the speed has settled and every item is counted.
     pub eta: Option<Duration>,
 }
 
@@ -146,7 +138,6 @@ pub struct Current {
 pub enum End {
     Finished,
     Cancelled,
-    /// A failure under `OnError::Stop`, or one no other item could get past, such as a full disk.
     Stopped,
 }
 
@@ -166,13 +157,11 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// The failed items again, or each item a stop or a failed move left, merged into what landed.
     pub fn retry(&self) -> Option<Request> {
         self.retry.clone()
     }
 }
 
-/// One transfer: `run` it on a worker thread and read `progress` from anywhere else.
 #[derive(Clone, Default)]
 pub struct Transfer {
     shared: Arc<Shared>,
@@ -206,7 +195,6 @@ struct Status {
     slots: Vec<Arc<Slot>>,
 }
 
-/// The file one worker is copying.
 #[derive(Default)]
 struct Slot {
     file: Mutex<Option<(PathBuf, u64)>>,
@@ -246,7 +234,6 @@ impl Transfer {
         }
     }
 
-    /// A file being copied pauses where it is.
     pub fn pause(&self) {
         *self.shared.paused.lock() = true;
     }
@@ -256,14 +243,12 @@ impl Transfer {
         self.shared.unpaused.notify_all();
     }
 
-    /// What has landed stays; a file caught halfway is removed. A cancel before `run` holds too.
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::SeqCst);
         let _paused = self.shared.paused.lock();
         self.shared.unpaused.notify_all();
     }
 
-    /// Work done item by item outside the engine reports through the same handle.
     pub(crate) fn begin_steps(&self, items: u64) {
         self.shared.begin();
         self.shared
@@ -273,7 +258,6 @@ impl Transfer {
         self.shared.status.lock().counting = false;
     }
 
-    /// Holds while paused; false once cancelled.
     pub(crate) fn next_step(&self) -> bool {
         self.shared.wait_while_paused();
         !self.shared.halted()
@@ -289,13 +273,21 @@ impl Transfer {
     pub fn run(&self, request: Request) -> Outcome {
         let shared = &*self.shared;
         shared.begin();
+        let is_move = request.kind == Kind::Move;
         for item in &request.items {
-            if let Err(error) = refusal(&request, item) {
+            let checked = match (item.dest.parent(), item.source.file_name()) {
+                (Some(into), Some(_)) => refuse_into_itself(&item.source, into, is_move),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "item has no file name",
+                )),
+            };
+            if let Err(error) = checked {
                 return refused(shared, item, error);
             }
         }
         let Some(first) = request.items.first() else {
-            shared.end();
+            shared.enter(Phase::Done);
             return Outcome {
                 done: Done::default(),
                 failures: Vec::new(),
@@ -338,33 +330,22 @@ impl Transfer {
                     leave();
                 });
             }
-            let mut meter = Meter::new();
+            let mut meter = Meter::default();
+            let mut space_checked = None;
             while alive.load(Ordering::SeqCst) > 0 {
                 thread::park_timeout(TICK);
-                job.tick(&mut meter);
+                job.tick(&mut meter, &mut space_checked);
             }
         });
         shared.status.lock().slots.clear();
-        job.finish(&request)
+        job.finish()
     }
 }
 
-fn refusal(request: &Request, item: &Item) -> io::Result<()> {
-    let into = item.dest.parent();
-    match (into, item.source.file_name()) {
-        (Some(into), Some(_)) => refuse_into_itself(&item.source, into, request.kind == Kind::Move),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "item has no file name",
-        )),
-    }
-}
-
-/// Nothing was touched: the whole request was turned down before it began.
 fn refused(shared: &Shared, item: &Item, error: io::Error) -> Outcome {
     shared.counts.failures.fetch_add(1, Ordering::Relaxed);
     shared.stopped.store(true, Ordering::SeqCst);
-    shared.end();
+    shared.enter(Phase::Done);
     Outcome {
         done: Done::default(),
         failures: vec![Failure {
@@ -379,6 +360,7 @@ fn refused(shared: &Shared, item: &Item, error: io::Error) -> Outcome {
 
 impl Shared {
     fn begin(&self) {
+        // Not `cancelled`: a cancel sent before `run` must hold.
         self.stopped.store(false, Ordering::SeqCst);
         let counts = &self.counts;
         for count in [
@@ -396,9 +378,9 @@ impl Shared {
         };
     }
 
-    fn end(&self) {
+    fn enter(&self, phase: Phase) {
         let mut status = self.status.lock();
-        status.phase = Phase::Done;
+        status.phase = phase;
         status.counting = false;
         status.eta = None;
     }
@@ -413,7 +395,6 @@ impl Shared {
         self.unpaused.notify_all();
     }
 
-    /// Returns at once once the transfer halts, so a paused job can still be cancelled.
     fn wait_while_paused(&self) {
         let mut paused = self.paused.lock();
         while *paused && !self.halted() {
@@ -422,7 +403,6 @@ impl Shared {
     }
 }
 
-/// A destination folder that the items inside it wait for.
 struct Gate {
     made: Mutex<Option<bool>>,
     settled: Condvar,
@@ -471,11 +451,9 @@ impl Gate {
 }
 
 enum What {
-    /// Makes the folder and opens its gate.
     Dir(Arc<Gate>),
     File,
     Link,
-    /// A folder whose paths run past `PATH_MAX`, taken whole by descriptor.
     Deep,
 }
 
@@ -486,23 +464,13 @@ struct Task {
     dest: PathBuf,
     parent: Arc<Gate>,
     size: u64,
-    /// Something is already at `dest` and goes to the Trash once this lands.
     over: bool,
-    /// The top-level item itself.
     is_root: bool,
-    /// The first thing created where there was nothing, which an undo takes away.
+    /// Lands where nothing of this transfer was before it, so an undo takes it away.
     top: bool,
-    /// Same volume as the destination, and it clones.
     clone: bool,
 }
 
-/// A folder this transfer made, given its source's metadata once everything inside has landed.
-struct Made {
-    source: PathBuf,
-    dest: PathBuf,
-}
-
-/// A copy staged beside the item it replaces, swapped in once all of it has landed.
 struct Swap {
     root: usize,
     source: PathBuf,
@@ -510,7 +478,6 @@ struct Swap {
     dest: PathBuf,
 }
 
-/// A source folder a move empties, with the leftovers it never carried.
 struct Emptied {
     dir: PathBuf,
     junk: Vec<PathBuf>,
@@ -522,10 +489,9 @@ struct Record {
     results: Vec<Option<PathBuf>>,
     landed: Vec<Restore>,
     displaced: Vec<Restore>,
-    made: Vec<Made>,
+    made: Vec<(PathBuf, PathBuf)>,
     swaps: Vec<Swap>,
     emptied: Vec<Emptied>,
-    /// Moved files inside a staged replace, whose sources go once it is swapped in.
     held: Vec<(PathBuf, PathBuf)>,
     /// Folders whose source could not be read, left writable for a retry.
     unsettled: Vec<PathBuf>,
@@ -550,7 +516,6 @@ struct Job<'a> {
     release: Mutex<Release>,
     allocated_total: AtomicU64,
     allocated_done: AtomicU64,
-    space_checked: Mutex<Option<Instant>>,
 }
 
 impl<'a> Job<'a> {
@@ -572,7 +537,6 @@ impl<'a> Job<'a> {
             release: Mutex::new(Release::default()),
             allocated_total: AtomicU64::new(0),
             allocated_done: AtomicU64::new(0),
-            space_checked: Mutex::new(None),
         }
     }
 
@@ -580,7 +544,6 @@ impl<'a> Job<'a> {
         self.kind == Kind::Move
     }
 
-    /// Latency, not bandwidth, bounds a network volume, so it takes more files at once.
     fn workers(&self) -> usize {
         match (self.volume.network, self.volume.xattrs) {
             (true, _) => 8,
@@ -593,10 +556,9 @@ impl<'a> Job<'a> {
         self.shared.halted()
     }
 
-    /// A clone shares its source's blocks, so only a real copy needs room.
     fn allocation(&self, task: &Task) -> u64 {
         match task.what {
-            What::File if !(task.clone && !task.over) => self.volume.allocated(task.size),
+            What::File if !task.clone || task.over => self.volume.allocated(task.size),
             What::Dir(_) | What::File | What::Link | What::Deep => 0,
         }
     }
@@ -609,7 +571,6 @@ impl<'a> Job<'a> {
             .fetch_add(self.allocation(task), Ordering::Relaxed);
     }
 
-    /// An item found already in place, as a merge finds a file that matches.
     fn count_done(&self, bytes: u64) {
         let counts = &self.shared.counts;
         counts.items_total.fetch_add(1, Ordering::Relaxed);
@@ -618,8 +579,7 @@ impl<'a> Job<'a> {
         counts.bytes_done.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Takes back what a task that never landed was counted for, partial bytes included. Once the
-    /// transfer halts the counts stay as they stood, so its row does not shrink before it ends.
+    /// Once halted the counts stand, so a stopping job's row never shrinks.
     fn forget(&self, task: &Task, partial: u64) {
         if self.halted() {
             return;
@@ -646,7 +606,6 @@ impl<'a> Job<'a> {
             .fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// A file takes its room as it starts: the destination may reserve all of it at once.
     fn claim(&self, task: &Task) {
         self.allocated_done
             .fetch_add(self.allocation(task), Ordering::SeqCst);
@@ -657,22 +616,19 @@ impl<'a> Job<'a> {
             .fetch_sub(self.allocation(task), Ordering::SeqCst);
     }
 
-    /// The room the files not yet started still need.
     fn needed(&self) -> u64 {
         let total = self.allocated_total.load(Ordering::SeqCst);
         total.saturating_sub(self.allocated_done.load(Ordering::SeqCst))
     }
 
-    /// Whether what is left fits; when it does not, the job stops for want of room.
     fn fits(&self) -> bool {
         if self.halted() {
             return false;
         }
-        // Room is read on both sides of the count: a file claims before it takes space and gives
-        // its space back before its claim, so one reading alone can see a file twice.
+        // Room is read on both sides of `needed`, or a file claiming or unclaiming counts twice.
         let room = self.volume.available();
         let needed = self.needed();
-        if needed == 0 || needed <= room || needed <= self.volume.available() {
+        if needed <= room || needed <= self.volume.available() {
             return true;
         }
         let first = &self.items[0];
@@ -686,12 +642,13 @@ impl<'a> Job<'a> {
         false
     }
 
-    /// A refusal is about the whole job, so it names its one item or none.
-    fn subject(&self) -> Option<String> {
-        match self.items {
-            [only] => Some(name_of(&only.source).into_owned()),
+    fn refusal(&self, refusal: Refusal, dest: &Path) -> Option<String> {
+        let item = match self.items {
+            [only] => Some(name_of(&only.source)),
             _ => None,
-        }
+        };
+        let needed = self.needed();
+        refusal_message(refusal, item.as_deref(), dest, self.is_move(), needed)
     }
 
     fn fail(&self, source: &Path, dest: &Path, error: io::Error) {
@@ -734,10 +691,8 @@ impl<'a> Job<'a> {
 
     fn made(&self, task: &Task) {
         self.landed(task, &task.dest);
-        self.record.lock().made.push(Made {
-            source: task.source.clone(),
-            dest: task.dest.clone(),
-        });
+        let made = (task.source.clone(), task.dest.clone());
+        self.record.lock().made.push(made);
     }
 
     fn displaced(&self, item: PathBuf, to: &Path) {
@@ -769,7 +724,6 @@ impl<'a> Job<'a> {
         });
     }
 
-    /// A moved file's source goes only once its copy is on the destination's disk.
     fn release(&self, task: &Task, at: &Path) {
         if !self.is_move() {
             return;
@@ -792,10 +746,13 @@ impl<'a> Job<'a> {
         release.since.get_or_insert_with(Instant::now);
     }
 
-    fn tick(&self, meter: &mut Meter) {
+    fn tick(&self, meter: &mut Meter, space_checked: &mut Option<Instant>) {
         if !self.halted() {
             self.measure(meter);
-            self.check_space();
+            if !space_checked.is_some_and(|at| at.elapsed() < SPACE_EVERY) {
+                *space_checked = Some(Instant::now());
+                self.fits();
+            }
         }
         self.release_sources(false);
     }
@@ -820,18 +777,7 @@ impl<'a> Job<'a> {
         status.eta = meter.eta().filter(|_| !paused);
     }
 
-    fn check_space(&self) {
-        {
-            let mut checked = self.space_checked.lock();
-            if checked.is_some_and(|at| at.elapsed() < SPACE_EVERY) {
-                return;
-            }
-            *checked = Some(Instant::now());
-        }
-        self.fits();
-    }
-
-    /// Batches the flush, which on an SD card can take seconds, rather than paying it per file.
+    /// Batched: flushing an SD card can take seconds.
     fn release_sources(&self, all: bool) {
         let batch = {
             let mut release = self.release.lock();
@@ -859,24 +805,21 @@ impl<'a> Job<'a> {
         }
     }
 
-    fn finish(&self, request: &Request) -> Outcome {
+    fn finish(&self) -> Outcome {
         if !self.halted() {
-            let mut status = self.shared.status.lock();
-            status.phase = Phase::Finishing;
-            status.counting = false;
-            status.eta = None;
+            self.shared.enter(Phase::Finishing);
         }
         let mut record = std::mem::take(&mut *self.record.lock());
-        let made = record.made.iter().rev();
-        for made in made.filter(|made| !record.unsettled.contains(&made.dest)) {
-            let _ = copy::settle_dir(self, &made.source, &made.dest);
+        for (source, dest) in record.made.iter().rev() {
+            if !record.unsettled.contains(dest) {
+                let _ = copy::settle_dir(self, source, dest);
+            }
         }
         self.swap(&mut record);
         if self.allocated_done.load(Ordering::Relaxed) > 0 {
             if let Err(error) = self.volume.flush() {
-                let into = request.items.first().map(|item| item.dest.clone());
-                let into = into.unwrap_or_default();
-                self.fail(&into, &into, error);
+                let into = &self.items[0].dest;
+                self.fail(into, into, error);
             }
         }
         self.release_sources(true);
@@ -892,12 +835,11 @@ impl<'a> Job<'a> {
                 let _ = std::fs::remove_dir(&emptied.dir);
             }
         }
-        self.shared.end();
+        self.shared.enter(Phase::Done);
         let failures = std::mem::take(&mut *self.failures.lock());
-        self.outcome(request, record, failures)
+        self.outcome(record, failures)
     }
 
-    /// A staged replace swaps in only whole: with anything inside it failed, the original stays.
     fn swap(&self, record: &mut Record) {
         let fm = NSFileManager::defaultManager();
         let mut held = std::mem::take(&mut record.held);
@@ -933,7 +875,7 @@ impl<'a> Job<'a> {
                 to: swap.source.clone(),
             });
             record.results[swap.root] = Some(swap.dest.clone());
-            for (_, at) in held.iter_mut() {
+            for (_, at) in &mut held {
                 if let Ok(inside) = at.strip_prefix(&swap.staged) {
                     *at = swap.dest.join(inside);
                 }
@@ -942,7 +884,7 @@ impl<'a> Job<'a> {
         self.release.lock().pairs.extend(held);
     }
 
-    fn outcome(&self, request: &Request, record: Record, failures: Vec<Failure>) -> Outcome {
+    fn outcome(&self, record: Record, failures: Vec<Failure>) -> Outcome {
         let end = match (
             self.shared.cancelled.load(Ordering::SeqCst),
             self.shared.stopped.load(Ordering::SeqCst),
@@ -952,7 +894,7 @@ impl<'a> Job<'a> {
             (false, false) => End::Finished,
         };
         let unfinished = || {
-            (request.items.iter().zip(&record.resolved))
+            (self.items.iter().zip(&record.resolved))
                 .filter_map(|(item, resolved)| {
                     let dest = resolved.clone()?;
                     taken(&item.source).then(|| Item {
@@ -977,10 +919,10 @@ impl<'a> Job<'a> {
                 .collect(),
         };
         let retry = (!again.is_empty()).then(|| Request {
-            kind: request.kind,
+            kind: self.kind,
             items: again,
             conflict: Conflict::Merge,
-            on_error: request.on_error,
+            on_error: self.on_error,
         });
         Outcome {
             done: Done {
@@ -992,25 +934,8 @@ impl<'a> Job<'a> {
             retry,
         }
     }
-
-    fn no_space_message(&self, dest: &Path) -> Option<String> {
-        let item = self.subject();
-        refusal_message(
-            Refusal::NoSpace,
-            item.as_deref(),
-            dest,
-            self.is_move(),
-            self.needed(),
-        )
-    }
-
-    fn read_only_message(&self, dest: &Path) -> Option<String> {
-        let item = self.subject();
-        refusal_message(Refusal::ReadOnly, item.as_deref(), dest, self.is_move(), 0)
-    }
 }
 
-/// A move leaves a folder's junk behind with whatever it could not carry.
 fn only_junk_in(emptied: &Emptied) -> bool {
     std::fs::read_dir(&emptied.dir).is_ok_and(|entries| {
         entries

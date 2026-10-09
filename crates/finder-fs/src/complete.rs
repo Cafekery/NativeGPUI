@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -142,7 +142,7 @@ fn user_home(user: &str) -> Option<PathBuf> {
         return None;
     }
     let dir = unsafe { CStr::from_ptr((*pw).pw_dir) };
-    Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+    Some(PathBuf::from(OsStr::from_bytes(dir.to_bytes())))
 }
 
 #[cfg(test)]
@@ -162,9 +162,21 @@ mod tests {
         root
     }
 
+    fn unindexed(typed: &str, limit: usize) -> Vec<Completion> {
+        complete(typed, |_, _| Vec::new(), limit)
+    }
+
+    fn under(root: &Path, typed: &str, limit: usize) -> Vec<Completion> {
+        unindexed(&format!("{}/{typed}", root.display()), limit)
+    }
+
+    fn shown(root: &Path, rest: &str) -> String {
+        format!("{}/{rest}", root.display())
+    }
+
     fn warm() {
         for _ in 0..5 {
-            complete("/", |_, _| Vec::new(), 1);
+            unindexed("/", 1);
         }
     }
 
@@ -175,13 +187,9 @@ mod tests {
     #[test]
     fn prefix_beats_fuzzy_case_insensitively() {
         let root = tree("prefix");
-        let out = complete(&format!("{}/dev", root.display()), |_, _| Vec::new(), 10);
         assert_eq!(
-            names(&out),
-            [
-                format!("{}/DevOps/", root.display()),
-                format!("{}/Developer/", root.display()),
-            ]
+            names(&under(&root, "dev", 10)),
+            [shown(&root, "DevOps/"), shown(&root, "Developer/")]
         );
     }
 
@@ -189,10 +197,9 @@ mod tests {
     fn hidden_folders_wait_for_a_typed_dot() {
         let root = tree("hidden");
         fs::create_dir_all(root.join(".config")).unwrap();
-        let listed = complete(&format!("{}/", root.display()), |_, _| Vec::new(), 10);
-        assert!(!names(&listed).iter().any(|name| name.contains("/.config")));
-        let dotted = complete(&format!("{}/.c", root.display()), |_, _| Vec::new(), 10);
-        assert_eq!(names(&dotted), [format!("{}/.config/", root.display())]);
+        let listed = names(&under(&root, "", 10));
+        assert!(!listed.iter().any(|name| name.contains("/.config")));
+        assert_eq!(names(&under(&root, ".c", 10)), [shown(&root, ".config/")]);
     }
 
     #[test]
@@ -201,23 +208,12 @@ mod tests {
         let locked = root.join("Devlocked");
         fs::create_dir_all(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let offered = names(&complete(
-            &format!("{}/Dev", root.display()),
-            |_, _| Vec::new(),
-            10,
-        ));
-        let exact = complete(
-            &format!("{}/Devlocked", root.display()),
-            |_, _| Vec::new(),
-            10,
-        );
+        let offered = names(&under(&root, "Dev", 10));
+        let exact = under(&root, "Devlocked", 10);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             offered,
-            [
-                format!("{}/DevOps/", root.display()),
-                format!("{}/Developer/", root.display()),
-            ]
+            [shown(&root, "DevOps/"), shown(&root, "Developer/")]
         );
         assert!(exact.is_empty());
     }
@@ -225,61 +221,40 @@ mod tests {
     #[test]
     fn fuzzy_subsequence_matches_out_of_order_letters() {
         let root = tree("fuzzy");
-        let out = complete(
-            &format!("{}/Developer/ntvgpui", root.display()),
-            |_, _| Vec::new(),
-            10,
-        );
         assert_eq!(
-            names(&out),
-            [format!("{}/Developer/NativeGPUI/", root.display())]
+            names(&under(&root, "Developer/ntvgpui", 10)),
+            [shown(&root, "Developer/NativeGPUI/")]
         );
     }
 
     #[test]
     fn exact_file_included_only_on_exact_match() {
         let root = tree("file");
-        assert!(
-            complete(
-                &format!("{}/Developer.t", root.display()),
-                |_, _| Vec::new(),
-                10
-            )
-            .is_empty()
-        );
-        let out = complete(
-            &format!("{}/Developer.txt", root.display()),
-            |_, _| Vec::new(),
-            10,
-        );
-        assert_eq!(out[0].display, format!("{}/Developer.txt", root.display()));
+        assert!(under(&root, "Developer.t", 10).is_empty());
+        let out = under(&root, "Developer.txt", 10);
+        assert_eq!(out[0].display, shown(&root, "Developer.txt"));
     }
 
     #[test]
     fn trailing_slash_lists_children_and_respects_limit() {
         let root = tree("slash");
-        let out = complete(&format!("{}/", root.display()), |_, _| Vec::new(), 10);
-        assert_eq!(out.len(), 3);
-        assert_eq!(
-            complete(&format!("{}/", root.display()), |_, _| Vec::new(), 1).len(),
-            1
-        );
+        assert_eq!(under(&root, "", 10).len(), 3);
+        assert_eq!(under(&root, "", 1).len(), 1);
     }
 
     #[test]
     fn tilde_expands_to_home_and_user() {
         warm();
         let home = crate::home().unwrap();
-        let out = complete("~/", |_, _| Vec::new(), 100);
-        assert!(!out.is_empty());
+        assert!(!unindexed("~/", 100).is_empty());
         let user = home.file_name().unwrap().to_str().unwrap();
-        let out = complete(&format!("~{user}"), |_, _| Vec::new(), 100);
+        let out = unindexed(&format!("~{user}"), 100);
         assert_eq!(out[0].display, "~/");
     }
 
     #[test]
     fn no_index_means_no_bare_name_search() {
-        assert!(complete("nativegpui", |_, _| Vec::new(), 10).is_empty());
+        assert!(unindexed("nativegpui", 10).is_empty());
     }
 
     #[test]
@@ -287,10 +262,10 @@ mod tests {
         warm();
         let root = tree("measured");
         let t0 = Instant::now();
-        let a = complete(&format!("{}/Dev", root.display()), |_, _| Vec::new(), 10);
+        let a = under(&root, "Dev", 10);
         let da = t0.elapsed();
         let t1 = Instant::now();
-        let b = complete("~/", |_, _| Vec::new(), 10);
+        let b = unindexed("~/", 10);
         let db = t1.elapsed();
         assert!(a.iter().any(|c| c.display.contains("Developer")));
         assert!(!b.is_empty());
