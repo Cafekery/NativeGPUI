@@ -123,6 +123,31 @@ fn clone(source: &Path, dest: &Path) -> io::Result<bool> {
     }
 }
 
+/// FAT and ExFAT keep no owner, mode or ACL, and every metadata call is a round trip to them.
+fn lean(job: &Job) -> bool {
+    !job.volume.xattrs && !job.volume.network
+}
+
+fn attributes(job: &Job, source: &File) -> u32 {
+    match lean(job) {
+        false => libc::COPYFILE_METADATA,
+        true if has_kept(source) => libc::COPYFILE_XATTR,
+        true => 0,
+    }
+}
+
+fn has_kept(source: &File) -> bool {
+    let mut names = [0u8; 1024];
+    let fd = source.as_raw_fd();
+    let len = unsafe { libc::flistxattr(fd, names.as_mut_ptr().cast(), names.len(), 0) };
+    let Ok(len) = usize::try_from(len) else {
+        return true;
+    };
+    names[..len]
+        .split(|&byte| byte == 0)
+        .any(|name| KEPT.contains(&name))
+}
+
 /// Copies into `temp` and checks that every byte arrived; returns the lock flags to set once
 /// the copy has its name, since a locked file cannot be renamed.
 fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Option<u32>> {
@@ -142,8 +167,9 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
         filter: !job.volume.xattrs,
         copied: 0,
     };
+    let carry = libc::COPYFILE_DATA | attributes(job, &source);
     let state = State::new(&mut status)?;
-    let copied = unsafe { libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state.0, ALL) };
+    let copied = unsafe { libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state.0, carry) };
     let error = io::Error::last_os_error();
     drop(state);
     if copied != 0 {
@@ -163,6 +189,12 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
     if written.len() != before.len() || status.copied != before.len() {
         let why = "not all of it could be written";
         return Err(because(job, &task.source, io::ErrorKind::InvalidData, why));
+    }
+    if lean(job) {
+        set_times(&out, &before);
+        // Not the staging file's flags: FAT and ExFAT hide any dot-named file.
+        let locks = before.st_flags() & LOCKS;
+        return Ok((locks != 0).then_some(locks));
     }
     if job.kind == Kind::Copy {
         regroup(&out, task.parent.gid());
@@ -257,16 +289,22 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
             .open(path)
     };
     let (from, into) = (open(source)?, open(dest)?);
-    let mut status = Status {
-        job,
-        slot: &Slot::default(),
-        filter: !job.volume.xattrs,
-        copied: 0,
-    };
-    let state = State::new(&mut status)?;
-    let flags = libc::COPYFILE_STAT | libc::COPYFILE_XATTR | libc::COPYFILE_ACL;
-    crate::check(unsafe { libc::fcopyfile(from.as_raw_fd(), into.as_raw_fd(), state.0, flags) })?;
-    if job.kind == Kind::Copy {
+    let carry = attributes(job, &from);
+    if carry != 0 {
+        let mut status = Status {
+            job,
+            slot: &Slot::default(),
+            filter: !job.volume.xattrs,
+            copied: 0,
+        };
+        let state = State::new(&mut status)?;
+        crate::check(unsafe {
+            libc::fcopyfile(from.as_raw_fd(), into.as_raw_fd(), state.0, carry)
+        })?;
+    }
+    if lean(job) {
+        set_times(&into, &from.metadata()?);
+    } else if job.kind == Kind::Copy {
         let parent = dest.parent().and_then(|parent| fs::metadata(parent).ok());
         regroup(&into, parent.map_or(u32::MAX, |meta| meta.gid()));
     }
@@ -307,6 +345,33 @@ fn keep_owner(source: &Path, dest: &Path) {
 fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
     let path = crate::c_path(path)?;
     crate::check(unsafe { libc::chflags(path.as_ptr(), flags) })
+}
+
+fn set_times(file: &File, times: &fs::Metadata) {
+    let mut wanted = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_CRTIME | libc::ATTR_CMN_MODTIME | libc::ATTR_CMN_ACCTIME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let at = |tv_sec, tv_nsec| libc::timespec { tv_sec, tv_nsec };
+    let mut values = [
+        at(times.st_birthtime(), times.st_birthtime_nsec()),
+        at(times.mtime(), times.mtime_nsec()),
+        at(times.atime(), times.atime_nsec()),
+    ];
+    unsafe {
+        libc::fsetattrlist(
+            file.as_raw_fd(),
+            (&mut wanted as *mut libc::attrlist).cast(),
+            values.as_mut_ptr().cast(),
+            std::mem::size_of_val(&values),
+            0,
+        )
+    };
 }
 
 struct Status<'s, 'j, 'a> {
