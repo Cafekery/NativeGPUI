@@ -62,7 +62,6 @@ pub enum Op {
         name: String,
     },
     PutBack(Vec<Restore>),
-    /// A transfer with every destination already chosen, as a retry runs it again.
     Retry(Request),
     Quick(Quick),
     Batch(Vec<Op>),
@@ -92,10 +91,6 @@ pub struct Done {
 }
 
 pub fn perform(op: Op, conflict: Conflict) -> io::Result<Done> {
-    let op = match carry(op, conflict, OnError::Stop, &Transfer::default()) {
-        Ok(carried) => return carried.into_done(),
-        Err(op) => op,
-    };
     match op {
         Op::Trash(items) => trash(items),
         Op::DeleteImmediately(items) => delete(items),
@@ -105,17 +100,20 @@ pub fn perform(op: Op, conflict: Conflict) -> io::Result<Done> {
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
         Op::Quick(quick) => quick::perform(quick),
-        Op::Batch(ops) => batch(ops, conflict),
         Op::Move { .. }
         | Op::Copy { .. }
         | Op::CopyExactly { .. }
         | Op::Duplicate(_)
         | Op::PutBack(_)
-        | Op::Retry(_) => unreachable!("carried above"),
+        | Op::Retry(_)
+        | Op::Batch(_) => match carry(op, conflict, OnError::Stop, &Transfer::default()) {
+            Ok(carried) => carried.into_done(),
+            Err(Op::Batch(ops)) => batch(ops, conflict),
+            Err(_) => unreachable!("carry hands back only a batch"),
+        },
     }
 }
 
-/// What a move, copy, duplicate or put back did, and the items it could not carry.
 #[derive(Debug)]
 pub struct Carried {
     pub done: Done,
@@ -127,18 +125,12 @@ pub struct Carried {
 
 impl Carried {
     fn into_done(self) -> io::Result<Done> {
-        let cause = self
-            .failures
-            .into_iter()
-            .next()
-            .map(|failure| failure.error);
-        let left = self.left.unwrap_or(Op::Batch(Vec::new()));
-        Unfinished::check(self.done, left, cause)
+        let cause = self.failures.into_iter().next().map(|first| first.error);
+        Unfinished::check(self.done, self.left, cause)
     }
 }
 
-/// Runs a move, copy, duplicate or put back on the transfer engine, whose progress `transfer`
-/// reports meanwhile; any other op comes back as it was.
+/// Runs a move, copy, duplicate, put back or retry on `transfer`; other ops come back unchanged.
 pub fn carry(
     op: Op,
     conflict: Conflict,
@@ -149,22 +141,20 @@ pub fn carry(
         Op::Move { items, into } => (Kind::Move, items, into),
         Op::Copy { items, into } => (Kind::Copy, items, into),
         Op::CopyExactly { items, into } => (Kind::CopyExactly, items, into),
+        Op::Retry(request) => return Ok(run_one(request, transfer)),
         Op::Duplicate(items) => return Ok(duplicate(items, on_error, transfer)),
         Op::PutBack(items) => return Ok(put_back(items, transfer)),
-        Op::Retry(request) => return Ok(run_all(vec![request], transfer)),
         Op::Batch(ops) if !ops.is_empty() && ops.iter().all(carried_alone) => {
-            return Ok(carry_each(ops, conflict, on_error, transfer));
+            let each = |op| match carry(op, conflict, on_error, transfer) {
+                Ok(carried) => carried,
+                Err(_) => unreachable!("only carried ops are batched here"),
+            };
+            return Ok(in_turn(ops, each, |op| op));
         }
         op => return Err(op),
     };
     let request = Request::new(kind, items, &into, conflict, on_error);
-    let outcome = transfer.run(request);
-    Ok(Carried {
-        left: outcome.retry().map(Op::Retry),
-        done: outcome.done,
-        failures: outcome.failures,
-        end: outcome.end,
-    })
+    Ok(run_one(request, transfer))
 }
 
 fn carried_alone(op: &Op) -> bool {
@@ -179,24 +169,34 @@ fn carried_alone(op: &Op) -> bool {
     )
 }
 
-/// Carries each op in turn on the one handle, so a folded undo shows its progress like any other;
-/// one that stops leaves itself and the rest to try again.
-fn carry_each(ops: Vec<Op>, conflict: Conflict, on_error: OnError, transfer: &Transfer) -> Carried {
+fn run_one(request: Request, transfer: &Transfer) -> Carried {
+    let outcome = transfer.run(request);
+    Carried {
+        left: outcome.retry().map(Op::Retry),
+        done: outcome.done,
+        failures: outcome.failures,
+        end: outcome.end,
+    }
+}
+
+fn in_turn<T>(
+    items: impl IntoIterator<Item = T>,
+    mut each: impl FnMut(T) -> Carried,
+    again: impl FnMut(T) -> Op,
+) -> Carried {
     let mut carried = Carried {
         done: Done::default(),
         failures: Vec::new(),
         end: End::Finished,
         left: None,
     };
-    let (mut undos, mut again) = (Vec::new(), Vec::new());
-    let mut ops = ops.into_iter();
-    for op in ops.by_ref() {
-        let Ok(step) = carry(op, conflict, on_error, transfer) else {
-            unreachable!("only carried ops are batched here");
-        };
+    let (mut undos, mut left) = (Vec::new(), Vec::new());
+    let mut items = items.into_iter();
+    for item in items.by_ref() {
+        let step = each(item);
         carried.done.results.extend(step.done.results);
         undos.extend(step.done.undo);
-        again.extend(step.left);
+        left.extend(step.left);
         carried.failures.extend(step.failures);
         carried.end = step.end;
         if step.end != End::Finished {
@@ -204,11 +204,11 @@ fn carry_each(ops: Vec<Op>, conflict: Conflict, on_error: OnError, transfer: &Tr
         }
     }
     if carried.end != End::Cancelled {
-        again.extend(ops);
+        left.extend(items.map(again));
     }
     undos.reverse();
     carried.done.undo = one_or_batch(undos);
-    carried.left = one_or_batch(again);
+    carried.left = one_or_batch(left);
     carried
 }
 
@@ -219,14 +219,13 @@ fn one_or_batch(mut ops: Vec<Op>) -> Option<Op> {
     }
 }
 
-/// One request per destination volume, which the engine reads once; a destination that cannot
-/// be read stands alone, so its refusal names it.
+/// A destination whose folder cannot be read gets a request of its own, so its refusal names it.
 fn by_volume(
     kind: Kind,
-    pairs: Vec<(PathBuf, PathBuf)>,
+    pairs: impl IntoIterator<Item = (PathBuf, PathBuf)>,
     conflict: Conflict,
     on_error: OnError,
-) -> Vec<Request> {
+) -> impl Iterator<Item = Request> {
     let mut groups: Vec<(Option<u64>, Vec<(PathBuf, PathBuf)>)> = Vec::new();
     for (source, dest) in pairs {
         let volume = std::fs::metadata(dir_of(&dest)).ok().map(|meta| meta.dev());
@@ -237,36 +236,11 @@ fn by_volume(
     }
     groups
         .into_iter()
-        .map(|(_, pairs)| Request::each(kind, pairs, conflict, on_error))
-        .collect()
+        .map(move |(_, pairs)| Request::each(kind, pairs, conflict, on_error))
 }
 
-/// Runs each request in turn on the one handle; with more than one, the undo is the caller's.
-fn run_all(requests: Vec<Request>, transfer: &Transfer) -> Carried {
-    let mut carried = Carried {
-        done: Done::default(),
-        failures: Vec::new(),
-        end: End::Finished,
-        left: None,
-    };
-    let mut again = Vec::new();
-    let mut requests = requests.into_iter();
-    for request in requests.by_ref() {
-        let outcome = transfer.run(request);
-        again.extend(outcome.retry().map(Op::Retry));
-        carried.done.results.extend(outcome.done.results);
-        carried.done.undo = outcome.done.undo;
-        carried.failures.extend(outcome.failures);
-        carried.end = outcome.end;
-        if outcome.end != End::Finished {
-            break;
-        }
-    }
-    if carried.end != End::Cancelled {
-        again.extend(requests.map(Op::Retry));
-    }
-    carried.left = one_or_batch(again);
-    carried
+fn run_all(requests: impl IntoIterator<Item = Request>, transfer: &Transfer) -> Carried {
+    in_turn(requests, |request| run_one(request, transfer), Op::Retry)
 }
 
 #[derive(Debug)]
@@ -285,14 +259,15 @@ impl std::fmt::Display for Unfinished {
 impl std::error::Error for Unfinished {}
 
 impl Unfinished {
-    fn check(done: Done, left: Op, cause: Option<io::Error>) -> io::Result<Done> {
-        match cause {
-            None => Ok(done),
-            Some(cause) => Err(io::Error::new(
-                cause.kind(),
-                Unfinished { done, left, cause },
-            )),
-        }
+    fn check(done: Done, left: Option<Op>, cause: Option<io::Error>) -> io::Result<Done> {
+        let Some(cause) = cause else {
+            return Ok(done);
+        };
+        let left = left.unwrap_or(Op::Batch(Vec::new()));
+        Err(io::Error::new(
+            cause.kind(),
+            Unfinished { done, left, cause },
+        ))
     }
 
     pub fn from_error(error: io::Error) -> Result<Unfinished, io::Error> {
@@ -315,30 +290,29 @@ fn name_of(path: &Path) -> Cow<'_, str> {
 }
 
 fn io_error(err: Retained<NSError>) -> io::Error {
-    let message = err.localizedDescription().to_string();
-    let domain = err.domain().to_string();
+    use std::io::ErrorKind::{AlreadyExists, NotFound, Other, PermissionDenied};
     let code = err.code();
-    let kind = if domain == "NSCocoaErrorDomain" {
-        if code == NSFileNoSuchFileError || code == NSFileReadNoSuchFileError {
-            io::ErrorKind::NotFound
-        } else if code == NSFileReadNoPermissionError || code == NSFileWriteNoPermissionError {
-            io::ErrorKind::PermissionDenied
-        } else if code == NSFileWriteFileExistsError {
-            io::ErrorKind::AlreadyExists
-        } else {
-            io::ErrorKind::Other
+    let kind = match err.domain().to_string().as_str() {
+        "NSCocoaErrorDomain" => {
+            if code == NSFileNoSuchFileError || code == NSFileReadNoSuchFileError {
+                NotFound
+            } else if code == NSFileReadNoPermissionError || code == NSFileWriteNoPermissionError {
+                PermissionDenied
+            } else if code == NSFileWriteFileExistsError {
+                AlreadyExists
+            } else {
+                Other
+            }
         }
-    } else if domain == "NSPOSIXErrorDomain" {
-        match code as i32 {
-            libc::ENOENT => io::ErrorKind::NotFound,
-            libc::EACCES | libc::EPERM => io::ErrorKind::PermissionDenied,
-            libc::EEXIST => io::ErrorKind::AlreadyExists,
-            _ => io::ErrorKind::Other,
-        }
-    } else {
-        io::ErrorKind::Other
+        "NSPOSIXErrorDomain" => match code as i32 {
+            libc::ENOENT => NotFound,
+            libc::EACCES | libc::EPERM => PermissionDenied,
+            libc::EEXIST => AlreadyExists,
+            _ => Other,
+        },
+        _ => Other,
     };
-    io::Error::new(kind, message)
+    io::Error::new(kind, err.localizedDescription().to_string())
 }
 
 pub fn walk_size(path: &Path) -> u64 {
@@ -348,14 +322,12 @@ pub fn walk_size(path: &Path) -> u64 {
     if !meta.is_dir() {
         return meta.len();
     }
-    std::fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| walk_size(&entry.path()))
-                .sum()
-        })
-        .unwrap_or(0)
+    std::fs::read_dir(path).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|entry| walk_size(&entry.path()))
+            .sum()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -385,8 +357,7 @@ fn volume_of(path: &Path) -> Option<volumes::Volume> {
     volumes::holding(path).filter(|volume| !volume.name.is_empty())
 }
 
-/// `NSFileManager`'s own message names the boot volume whatever the destination was. Without an
-/// item it speaks for several.
+/// `NSFileManager`'s own message names the boot volume whatever the destination was.
 fn refusal_message(
     refusal: Refusal,
     item: Option<&str>,
@@ -433,11 +404,10 @@ fn past_path_max(err: &NSError) -> bool {
 }
 
 fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Result<()> {
-    let (su, du) = (url(src), url(dst));
-    let landed = if is_move {
-        fm.moveItemAtURL_toURL_error(&su, &du)
-    } else {
-        fm.copyItemAtURL_toURL_error(&su, &du)
+    let (from, to) = (url(src), url(dst));
+    let landed = match is_move {
+        true => fm.moveItemAtURL_toURL_error(&from, &to),
+        false => fm.copyItemAtURL_toURL_error(&from, &to),
     };
     match landed {
         Ok(()) => Ok(()),
@@ -475,13 +445,12 @@ fn cocoa_error(code: i32, path: &Path) -> Option<Retained<NSError>> {
 }
 
 fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
-    let message = refusal_message(
-        refusal_of(err)?,
-        Some(&name_of(src)),
-        dest,
-        is_move,
-        walk_size(src),
-    )?;
+    let refusal = refusal_of(err)?;
+    let needed = match refusal {
+        Refusal::NoSpace => walk_size(src),
+        Refusal::ReadOnly => 0,
+    };
+    let message = refusal_message(refusal, Some(&name_of(src)), dest, is_move, needed)?;
     Some(io::Error::other(message))
 }
 
@@ -490,19 +459,17 @@ fn remove_path(fm: &NSFileManager, path: &Path) -> io::Result<()> {
 }
 
 fn check_name(name: &str) -> io::Result<()> {
-    let refuse = |advice: &str| {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("The name \u{201c}{name}\u{201d} can't be used.{advice}"),
-        ))
+    let advice = if name.len() > NAME_MAX {
+        " Try using a name with fewer characters."
+    } else if matches!(name, "" | "." | "..") || name.contains(['/', '\0']) {
+        ""
+    } else {
+        return Ok(());
     };
-    if name.len() > NAME_MAX {
-        return refuse(" Try using a name with fewer characters.");
-    }
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
-        return refuse("");
-    }
-    Ok(())
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("The name \u{201c}{name}\u{201d} can't be used.{advice}"),
+    ))
 }
 
 /// Finder asks before it clears a lock; `Op::Trash` and `Op::DeleteImmediately` clear it themselves.
@@ -517,9 +484,7 @@ fn unlock(path: &Path, deep: bool) -> io::Result<()> {
     // `chflags` follows a link, so the lock a link carries itself is left where it is.
     if flags & libc::UF_IMMUTABLE != 0 && !meta.is_symlink() {
         let name = crate::c_path(path)?;
-        if unsafe { libc::chflags(name.as_ptr(), flags & !libc::UF_IMMUTABLE) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        crate::check(unsafe { libc::chflags(name.as_ptr(), flags & !libc::UF_IMMUTABLE) })?;
     }
     if deep && meta.is_dir() {
         for entry in std::fs::read_dir(path)? {
@@ -545,10 +510,9 @@ fn taken(path: &Path) -> bool {
 
 /// A case-only rename on a case-insensitive volume finds the item itself at the destination.
 fn same_item(one: &Path, other: &Path) -> bool {
-    matches!((identity(one), identity(other)), (Some(one), Some(other)) if one == other)
+    identity(one).is_some_and(|one| identity(other) == Some(one))
 }
 
-/// No extension for dot-files or a trailing dot.
 fn split_name(name: &str) -> (&str, Option<&str>) {
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => (stem, Some(ext)),
@@ -563,7 +527,6 @@ fn with_ext(stem: &str, ext: Option<&str>) -> String {
     }
 }
 
-/// The first of `stem`, `stem 2`, `stem 3`, … not taken in `dir`.
 fn first_free(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
     (1..)
         .map(|n| match n {
@@ -578,7 +541,6 @@ fn dir_of(path: &Path) -> &Path {
     path.parent().unwrap_or(Path::new(""))
 }
 
-/// `path` itself, or numbered like Keep Both once its name is taken.
 fn free_path(path: &Path) -> PathBuf {
     let name = name_of(path);
     let (stem, ext) = split_name(&name);
@@ -616,12 +578,9 @@ fn staging_path(dest: &Path) -> PathBuf {
 
 fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
     let (from, to) = (crate::c_path(staged)?, crate::c_path(dest)?);
-    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } == 0 {
-        return Ok(());
-    }
-    let err = io::Error::last_os_error();
-    if !matches!(err.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
-        return Err(err);
+    match crate::check(unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) }) {
+        Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {}
+        swapped => return swapped,
     }
     let aside = staging_path(dest);
     std::fs::rename(dest, &aside)?;
@@ -636,36 +595,24 @@ fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
     let mut resulting: Option<Retained<NSURL>> = None;
     fm.trashItemAtURL_resultingItemURL_error(&url(path), Some(&mut resulting))
         .map_err(io_error)?;
-    Ok(resulting
-        .map(|u| path_from(&u))
-        .unwrap_or_else(|| path.to_path_buf()))
+    Ok(resulting.map_or_else(|| path.to_path_buf(), |landed| path_from(&landed)))
 }
 
-/// Finder carries on past its "the item is locked" question, so a lock is cleared and retried.
-fn past_the_lock<T>(
-    path: &Path,
-    deep: bool,
-    refused: io::Error,
-    again: impl FnOnce() -> io::Result<T>,
-) -> io::Result<T> {
-    if refused.kind() != io::ErrorKind::PermissionDenied || unlock(path, deep).is_err() {
-        return Err(refused);
+fn past_the_lock<T>(path: &Path, deep: bool, attempt: impl Fn() -> io::Result<T>) -> io::Result<T> {
+    match attempt() {
+        Err(refused) if refused.kind() == io::ErrorKind::PermissionDenied => {
+            unlock(path, deep).map_or(Err(refused), |()| attempt())
+        }
+        done => done,
     }
-    again()
 }
 
 fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
-    match trash_at(fm, path) {
-        Err(refused) => past_the_lock(path, false, refused, || trash_at(fm, path)),
-        landed => landed,
-    }
+    past_the_lock(path, false, || trash_at(fm, path))
 }
 
 fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
-    match remove_path(fm, path) {
-        Err(refused) => past_the_lock(path, true, refused, || remove_path(fm, path)),
-        gone => gone,
-    }
+    past_the_lock(path, true, || remove_path(fm, path))
 }
 
 /// A Replace swaps the old item out to a staging name, so it goes to the Trash under its own.
@@ -733,7 +680,6 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf) -> io::Result<Place
     })
 }
 
-/// Moves an item within its volume.
 fn place_one(
     fm: &NSFileManager,
     src: &Path,
@@ -754,7 +700,6 @@ fn place_one(
             transfer(fm, src, &dest, true)?;
             Ok(Placed::at(src, dest))
         }
-        Conflict::Replace => replace_at(fm, src, dest),
         Conflict::Merge if real_dir(src) && real_dir(&dest) => {
             let (mut landed, mut displaced) = (Vec::new(), Vec::new());
             for entry in std::fs::read_dir(src)? {
@@ -771,7 +716,7 @@ fn place_one(
                 displaced,
             })
         }
-        Conflict::Merge => replace_at(fm, src, dest),
+        Conflict::Replace | Conflict::Merge => replace_at(fm, src, dest),
     }
 }
 
@@ -791,9 +736,14 @@ fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()>
 }
 
 fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) -> Option<Op> {
-    let landed = (!is_move && !home.is_empty())
-        .then(|| Op::Trash(home.iter().map(|placed| placed.item.clone()).collect()));
-    let mut put_back = if is_move { home } else { Vec::new() };
+    let (landed, mut put_back) = match is_move {
+        true => (Vec::new(), home),
+        false => (
+            home.into_iter().map(|placed| placed.item).collect(),
+            Vec::new(),
+        ),
+    };
+    let landed = (!landed.is_empty()).then_some(Op::Trash(landed));
     put_back.extend(displaced);
     let restored = (!put_back.is_empty()).then_some(Op::PutBack(put_back));
     match (landed, restored) {
@@ -802,7 +752,6 @@ fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) 
     }
 }
 
-/// Keeps going past an item that refuses, and leaves only what refused to be put back again.
 fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
     for restore in &items {
         let _ = std::fs::create_dir_all(dir_of(&restore.to));
@@ -813,7 +762,7 @@ fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
         .partition(|(item, to)| real_dir(item) && real_dir(to) && apart(item, to));
     let merge = by_volume(Kind::Move, into, Conflict::Merge, OnError::Continue);
     let keep = by_volume(Kind::Move, beside, Conflict::KeepBoth, OnError::Continue);
-    let mut carried = run_all(merge.into_iter().chain(keep).collect(), transfer);
+    let mut carried = run_all(merge.chain(keep), transfer);
     let refused = |restore: &Restore| {
         carried
             .failures
@@ -832,8 +781,9 @@ fn apart(item: &Path, into: &Path) -> bool {
         return false;
     };
     entries.flatten().all(|entry| {
-        let (here, there) = (entry.path(), into.join(entry.file_name()));
-        entry.file_name() == ".DS_Store"
+        let name = entry.file_name();
+        let (here, there) = (entry.path(), into.join(&name));
+        name == ".DS_Store"
             || !taken(&there)
             || (real_dir(&here) && real_dir(&there) && apart(&here, &there))
     })
@@ -858,15 +808,11 @@ fn batch(ops: Vec<Op>, conflict: Conflict) -> io::Result<Done> {
             },
         }
     }
-    let left = match left.len() {
-        1 => left.pop().expect("one left"),
-        _ => Op::Batch(left),
-    };
     let done = Done {
         results,
         undo: None,
     };
-    Unfinished::check(done, left, cause)
+    Unfinished::check(done, one_or_batch(left), cause)
 }
 
 fn trash(items: Vec<PathBuf>) -> io::Result<Done> {
@@ -889,7 +835,7 @@ fn trash(items: Vec<PathBuf>) -> io::Result<Done> {
         results: home.iter().map(|restore| restore.item.clone()).collect(),
         undo: (!home.is_empty()).then_some(Op::PutBack(home)),
     };
-    Unfinished::check(done, Op::Trash(left), cause)
+    Unfinished::check(done, Some(Op::Trash(left)), cause)
 }
 
 fn delete(items: Vec<PathBuf>) -> io::Result<Done> {
@@ -939,15 +885,11 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
     })
 }
 
-/// Undone by deleting the copies outright, never by a trip to the Trash.
 fn duplicate(items: Vec<PathBuf>, on_error: OnError, transfer: &Transfer) -> Carried {
-    let pairs = items
-        .into_iter()
-        .map(|item| {
-            let dest = duplicate_path(&item);
-            (item, dest)
-        })
-        .collect();
+    let pairs = items.into_iter().map(|item| {
+        let dest = duplicate_path(&item);
+        (item, dest)
+    });
     let requests = by_volume(Kind::Copy, pairs, Conflict::KeepBoth, on_error);
     let mut carried = run_all(requests, transfer);
     let results = &carried.done.results;
@@ -991,14 +933,11 @@ fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    Ok(Done {
-        results: vec![dest.clone()],
-        undo: Some(Op::Trash(vec![dest])),
-    })
+    Ok(created(vec![dest]))
 }
 
 fn make_alias(items: Vec<PathBuf>) -> io::Result<Done> {
-    let results = items
+    items
         .iter()
         .map(|item| {
             let dest = alias_path(item);
@@ -1017,40 +956,36 @@ fn make_alias(items: Vec<PathBuf>) -> io::Result<Done> {
             .map_err(io_error)?;
             Ok(dest)
         })
-        .collect::<io::Result<Vec<_>>>()?;
-    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
-    Ok(Done { results, undo })
+        .collect::<io::Result<_>>()
+        .map(created)
 }
 
 fn new_item(into: PathBuf, name: String, is_dir: bool) -> io::Result<Done> {
     check_name(&name)?;
     let fm = NSFileManager::defaultManager();
     let dest = free_path(&into.join(&name));
+    let attributes = None::<&NSDictionary<NSFileAttributeKey, AnyObject>>;
     if is_dir {
         unsafe {
             fm.createDirectoryAtURL_withIntermediateDirectories_attributes_error(
                 &url(&dest),
                 false,
-                None::<&NSDictionary<NSFileAttributeKey, AnyObject>>,
+                attributes,
             )
         }
         .map_err(io_error)?;
     } else {
-        let ok = unsafe {
-            fm.createFileAtPath_contents_attributes(
-                &NSString::from_str(&dest.to_string_lossy()),
-                None,
-                None::<&NSDictionary<NSFileAttributeKey, AnyObject>>,
-            )
-        };
-        if !ok {
+        let path = NSString::from_str(&dest.to_string_lossy());
+        if !unsafe { fm.createFileAtPath_contents_attributes(&path, None, attributes) } {
             return Err(io::Error::other("could not create file"));
         }
     }
-    Ok(Done {
-        results: vec![dest.clone()],
-        undo: Some(Op::Trash(vec![dest])),
-    })
+    Ok(created(vec![dest]))
+}
+
+fn created(results: Vec<PathBuf>) -> Done {
+    let undo = (!results.is_empty()).then(|| Op::Trash(results.clone()));
+    Done { results, undo }
 }
 
 #[cfg(test)]
@@ -1078,6 +1013,12 @@ mod tests {
             Op::Batch(ops) => ops.iter().flat_map(displaced).collect(),
             _ => Vec::new(),
         }
+    }
+
+    fn lock(path: &Path) {
+        let flags = fs::symlink_metadata(path).unwrap().st_flags() | libc::UF_IMMUTABLE;
+        let name = crate::c_path(path).unwrap();
+        crate::check(unsafe { libc::chflags(name.as_ptr(), flags) }).unwrap();
     }
 
     #[test]
@@ -1679,14 +1620,7 @@ mod tests {
         touch(&from.join("a.txt"), "new");
         touch(&into.join("a.txt"), "old");
         let locked = into.join("a.txt");
-        assert!(
-            std::process::Command::new("chflags")
-                .arg("uchg")
-                .arg(&locked)
-                .status()
-                .unwrap()
-                .success()
-        );
+        lock(&locked);
 
         let _ = perform(
             Op::Move {
@@ -1788,8 +1722,7 @@ mod tests {
         assert!(ok.success(), "could not build the fixture");
     }
 
-    /// `remove_dir_all` holds a descriptor per level, which a test lowering the process's limit
-    /// alongside takes away; `rm` walks a tree past `PATH_MAX` on a handful.
+    /// `remove_dir_all` holds a descriptor per level, more than `FewDescriptors` leaves.
     fn remove_deep(dir: &Path) {
         let ok = std::process::Command::new("rm")
             .args(["-rf".as_ref(), dir.as_os_str()])
@@ -1985,16 +1918,6 @@ mod tests {
             return;
         }
         let dir = temp_dir("locked");
-        let lock = |path: &Path| {
-            assert!(
-                std::process::Command::new("/usr/bin/chflags")
-                    .arg("uchg")
-                    .arg(path)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
         let file = dir.join("locked.txt");
         touch(&file, "locked");
         lock(&file);
@@ -2017,10 +1940,7 @@ mod tests {
         .unwrap();
         assert!(!folder.exists(), "a locked child stopped nothing");
 
-        let _ = std::process::Command::new("/usr/bin/chflags")
-            .args(["-R", "nouchg"])
-            .arg(&dir)
-            .status();
+        let _ = unlock(&dir, true);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2169,8 +2089,7 @@ mod tests {
         if !crate::trash_reachable() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("finder-fs-ops-trash-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("trash");
         let file = dir.join("throwaway.txt");
         touch(&file, "gone soon");
 
@@ -2183,7 +2102,6 @@ mod tests {
         assert!(file.exists(), "put back restores the original path");
         assert_eq!(back.results, vec![file.clone()]);
 
-        let _ = fs::remove_file(&file);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2377,34 +2295,18 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         let child = folder.join("child.txt");
         touch(&child, "child");
-        for path in [&child, &folder] {
-            assert!(
-                std::process::Command::new("/usr/bin/chflags")
-                    .arg("uchg")
-                    .arg(path)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
+        lock(&child);
+        lock(&folder);
 
         let done = perform(Op::Trash(vec![folder.clone()]), Conflict::Replace).unwrap();
         perform(done.undo.unwrap(), Conflict::KeepBoth).unwrap();
         assert!(locked(&child), "the child's own lock survived the trip");
 
-        let _ = std::process::Command::new("/usr/bin/chflags")
-            .args(["-R", "nouchg"])
-            .arg(&dir)
-            .status();
+        let _ = unlock(&dir, true);
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn a_put_back_keeps_going_past_an_item_that_refuses() {
-        if !crate::trash_reachable() {
-            return;
-        }
-        let dir = temp_dir("put-back-partial");
+    fn put_back_past_a_gone_item(dir: &Path) -> (PathBuf, io::Result<Done>) {
         let kept = dir.join("kept.txt");
         touch(&kept, "kept");
         let trashed = perform(Op::Trash(vec![kept.clone()]), Conflict::Replace).unwrap();
@@ -2416,7 +2318,19 @@ mod tests {
             item: trashed.results[0].clone(),
             to: kept.clone(),
         };
-        let back = perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth);
+        (
+            kept,
+            perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth),
+        )
+    }
+
+    #[test]
+    fn a_put_back_keeps_going_past_an_item_that_refuses() {
+        if !crate::trash_reachable() {
+            return;
+        }
+        let dir = temp_dir("put-back-partial");
+        let (kept, back) = put_back_past_a_gone_item(&dir);
         assert!(back.is_err(), "the item that refused is still reported");
         assert_eq!(
             fs::read_to_string(&kept).ok().as_deref(),
@@ -2432,20 +2346,10 @@ mod tests {
             return;
         }
         let dir = temp_dir("put-back-left");
-        let kept = dir.join("kept.txt");
-        touch(&kept, "kept");
-        let trashed = perform(Op::Trash(vec![kept.clone()]), Conflict::Replace).unwrap();
-        let gone = Restore {
-            item: dir.join("gone.txt"),
-            to: dir.join("gone.txt"),
-        };
-        let home = Restore {
-            item: trashed.results[0].clone(),
-            to: kept.clone(),
-        };
-        let error = perform(Op::PutBack(vec![gone, home]), Conflict::KeepBoth).unwrap_err();
+        let (kept, back) = put_back_past_a_gone_item(&dir);
+        let error = back.unwrap_err();
         let unfinished = Unfinished::from_error(error).expect("the error says what is left");
-        assert_eq!(unfinished.done.results, vec![kept.clone()]);
+        assert_eq!(unfinished.done.results, vec![kept]);
         let Op::PutBack(left) = unfinished.left else {
             panic!("a put back leaves a put back");
         };
