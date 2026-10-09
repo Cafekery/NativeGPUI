@@ -21,6 +21,9 @@ mod meter;
 mod plan;
 mod volume;
 
+#[cfg(test)]
+mod tests;
+
 const TICK: Duration = Duration::from_millis(250);
 const SPACE_EVERY: Duration = Duration::from_secs(1);
 const RELEASE_BYTES: u64 = 256 << 20;
