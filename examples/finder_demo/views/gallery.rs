@@ -1,16 +1,19 @@
 use std::ops::Range;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use gpui::{AnyElement, Pixels, Point, Window, div, point, prelude::*, px};
 use native_gpui::{native_callout, native_scroll_bars, tokens};
 
 use crate::app::FinderDemo;
-use crate::art::{Poster, art_at, item_art, poster_art};
+use crate::art::{Poster, art_at, item_art, picture_art, poster_art};
+use crate::data::Line;
 use crate::elastic::stretching;
 use crate::menus::tiles_menu;
 use crate::palette::Palette;
+use crate::pictures::{self, Hero};
 use crate::prefs;
 use crate::tags::{row_tags, tag_dots};
+use crate::thumbs::thumb;
 use crate::ui::pick_on_click;
 use crate::view::GALLERY_VIEW;
 use crate::views::list::line_h;
@@ -94,9 +97,6 @@ impl FinderDemo {
         let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
         let scale = self.scale;
         let previews = self.previews.gallery;
-        if chosen.len() <= 1 {
-            self.ask_beside_cursor(size);
-        }
         let hero = match chosen.as_slice() {
             many if many.len() > 1 => Some(self.stack_hero(many, size)),
             _ => chosen
@@ -105,7 +105,7 @@ impl FinderDemo {
                 .or_else(|| self.cursor_line())
                 .map(|line| {
                     art_at(
-                        poster_art(&line.row, size, size, scale, Poster::Hero),
+                        self.hero(&lines, &line, size, previews.then_some(strip.icon)),
                         size,
                         Some(self.ql_icon.clone()),
                     )
@@ -210,6 +210,42 @@ impl FinderDemo {
                     )),
             )
             .into_any_element()
+    }
+
+    fn hero(
+        &self,
+        lines: &Arc<Vec<Line>>,
+        line: &Line,
+        size: f32,
+        thumb_side: Option<f32>,
+    ) -> AnyElement {
+        let scale = self.scale;
+        let row = &line.row;
+        let Some(at) = self.line_at(lines, &line.key) else {
+            return poster_art(row, size, size, scale, Poster::Hero);
+        };
+        let mut decoded = Vec::new();
+        for step in [0, 1, -1, 2, -2] {
+            let Some(near) = at.checked_add_signed(step).and_then(|at| lines.get(at)) else {
+                continue;
+            };
+            if pictures::decodes(&near.row) {
+                decoded.push(&*near.row);
+            } else if step.abs() == 1 {
+                // Asked before the shown one's, which the newest-first service then makes first.
+                thumb(&near.row, size, scale, true, false);
+            }
+        }
+        pictures::want(&decoded, (size * scale).ceil() as u32);
+        if !pictures::decodes(row) {
+            return poster_art(row, size, size, scale, Poster::Hero);
+        }
+        let stand_in = || thumb_side.and_then(|side| thumb(row, side, scale, true, true));
+        match pictures::hero(row, stand_in) {
+            Hero::Picture(image) => picture_art(row, Some(image), size, size, scale, Poster::Hero),
+            Hero::Waiting => picture_art(row, None, size, size, scale, Poster::Hero),
+            Hero::QuickLook => poster_art(row, size, size, scale, Poster::Hero),
+        }
     }
 
     pub(crate) fn strip_reveal(&self, index: usize) {

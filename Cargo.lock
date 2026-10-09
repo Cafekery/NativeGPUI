@@ -3147,6 +3147,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-quick-look-thumbnailing",
  "objc2-quick-look-ui",
+ "parking_lot",
  "raw-window-handle",
 ]
 

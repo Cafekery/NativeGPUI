@@ -32,6 +32,7 @@ mod openwith;
 mod ops;
 mod options;
 mod palette;
+mod pictures;
 mod prefs;
 mod preview;
 mod progress_window;
@@ -143,6 +144,7 @@ fn main() {
         keep::follow_quit(cx);
         reread_once_indexed(cx);
         thumbs::follow_thumbnails(cx);
+        pictures::follow_pictures(cx);
         preview::follow_stacks(cx);
         preview::keep_a_key_window();
         search::follow_search_fields(cx);

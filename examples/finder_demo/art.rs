@@ -126,7 +126,19 @@ pub(crate) fn poster_art(
     scale: f32,
     kind: Poster,
 ) -> AnyElement {
-    match thumb(row, width.max(height), scale, true, false) {
+    let image = thumb(row, width.max(height), scale, true, false);
+    picture_art(row, image, width, height, scale, kind)
+}
+
+pub(crate) fn picture_art(
+    row: &Row,
+    image: Option<Arc<RenderImage>>,
+    width: f32,
+    height: f32,
+    scale: f32,
+    kind: Poster,
+) -> AnyElement {
+    match image {
         Some(image) => poster(image, width, height, scale, kind),
         None => slot(width, height)
             .child(type_art(poster_kind(row), row.face, width.min(height)))

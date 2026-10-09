@@ -52,6 +52,7 @@ convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
 fsearch = { path = "crates/fsearch" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2117a376b97104049f60e843afa92f18fa7f5748", features = ["font-kit"] }
+parking_lot = "0.12"
 
 [[example]]
 name = "custom_glass"
