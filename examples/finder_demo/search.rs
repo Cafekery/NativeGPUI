@@ -143,7 +143,6 @@ fn spotlight(
     (!stale()).then(|| fsearch::reachable_only(found))
 }
 
-/// Name hits as fsearch ranks them, then content or tag hits. `None` while fsearch can't answer.
 fn gather(
     search: &Search,
     under: &[PathBuf],
@@ -229,7 +228,7 @@ impl FinderDemo {
         let generation = live.fetch_add(1, Ordering::Relaxed) + 1;
         let wanted = self.query.clone();
         let criteria = self.criteria.clone();
-        let daemon = self.scope != scope_bar::NETWORK;
+        let indexed = self.scope != scope_bar::NETWORK;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
             _ => vec![PathBuf::from(self.here())],
@@ -242,7 +241,7 @@ impl FinderDemo {
                 let found = cx
                     .background_executor()
                     .spawn(async move {
-                        if search.is_empty() || !daemon {
+                        if search.is_empty() || !indexed {
                             return Some((Vec::new(), true));
                         }
                         let stale = || pass.load(Ordering::Relaxed) != generation;

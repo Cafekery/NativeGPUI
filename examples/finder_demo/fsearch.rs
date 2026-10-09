@@ -1,5 +1,3 @@
-//! fsearch, linked in: a whole-disk name index kept live from FSEvents, and its query language.
-
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -45,12 +43,10 @@ fn engine() -> Option<&'static Engine> {
         .as_ref()
 }
 
-/// Blocks until the engine holds its index; false at once without an engine.
 pub(crate) fn wait_ready() -> bool {
     wait_ready_unless(|| false)
 }
 
-/// `wait_ready`, false as soon as `gone` says the answer is no longer wanted.
 pub(crate) fn wait_ready_unless(gone: impl Fn() -> bool) -> bool {
     let Some(engine) = engine() else {
         return false;
@@ -64,7 +60,6 @@ pub(crate) fn wait_ready_unless(gone: impl Fn() -> bool) -> bool {
     true
 }
 
-/// The engine is still loading or building its index.
 pub(crate) fn loading() -> bool {
     engine().is_some_and(|engine| !engine.status().ready)
 }
@@ -77,7 +72,6 @@ pub(crate) fn hardlinks(path: &Path) -> Vec<PathBuf> {
     engine().map_or_else(Vec::new, |engine| engine.hardlinks(path))
 }
 
-/// A folder's size and visible children; reached through a symlink, its size alone.
 pub(crate) fn facts(path: &Path) -> Facts {
     let Some(engine) = engine() else {
         return (None, None);
@@ -95,7 +89,6 @@ pub(crate) fn visible(path: &Path) -> Option<usize> {
     Some(totals(path)?.visible as usize)
 }
 
-/// `facts` of each folder in `dir`, by name.
 pub(crate) fn folders_in(dir: &Path) -> HashMap<String, Facts> {
     let Some(engine) = engine() else {
         return HashMap::new();
@@ -124,13 +117,11 @@ pub(crate) fn modified(dir: &Path) -> Option<SystemTime> {
     Some(time_of(engine()?.entry(dir)?.mtime))
 }
 
-/// What the index holds in `dir`, with only what it records of each entry.
 pub(crate) fn children(dir: &Path) -> Option<Vec<Entry>> {
     let held = engine()?.children(dir)?;
     Some(held.into_iter().map(entry_of).collect())
 }
 
-/// `children`, while FSEvents has no change for `dir` that the index has yet to apply.
 pub(crate) fn current_children(dir: &Path) -> Option<Vec<Entry>> {
     let engine = engine()?;
     let real = std::fs::canonicalize(dir).ok()?;
@@ -175,7 +166,6 @@ fn time_of(seconds: u32) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds.into())
 }
 
-/// Re-lists now those of `dirs` the index lists, so what is read next counts their change.
 pub(crate) fn note_changed(dirs: &[PathBuf]) {
     if let Some(engine) = engine() {
         engine.refresh(dirs);
@@ -217,7 +207,6 @@ pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec
     Some(reachable_only(found))
 }
 
-/// Folders named like `text`, best first.
 pub(crate) fn folders_named(text: &str, limit: usize) -> Vec<PathBuf> {
     let ranked = || {
         let engine = engine()?;
@@ -276,7 +265,7 @@ fn let_in(gate: &Path, home: &Path) -> bool {
 #[cfg(feature = "private-api")]
 fn granted(service: &'static str) -> bool {
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     static SEEN: Mutex<Vec<(&str, bool, Instant)>> = Mutex::new(Vec::new());
     let mut seen = SEEN.lock().unwrap();
     if let Some(&(_, granted, at)) = seen.iter().find(|(known, ..)| *known == service) {
