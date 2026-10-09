@@ -2120,7 +2120,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/Cafekery/gpui-macos?rev=458ab14286910a1576b2015209fab268fa8a1a48#458ab14286910a1576b2015209fab268fa8a1a48"
+source = "git+https://github.com/Cafekery/gpui-macos?rev=a9ed59c807e3d484d84f42a911557bf963766510#a9ed59c807e3d484d84f42a911557bf963766510"
 dependencies = [
  "accesskit",
  "accesskit_macos",
