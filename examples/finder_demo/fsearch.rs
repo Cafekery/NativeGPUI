@@ -1,7 +1,4 @@
-//! Search through fsearch, linked in: a whole-disk name index answering in
-//! about a millisecond, kept live from FSEvents in this process, and its
-//! query language (`ext:rs`, `kind:dir`, `grep:text`, ...) typed straight
-//! into the search field.
+//! fsearch, linked in: a whole-disk name index kept live from FSEvents, and its query language.
 
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
@@ -11,13 +8,6 @@ use std::sync::OnceLock;
 use ::fsearch::{Engine, Grep, Options, Query};
 use finder_fs::index::off_limits;
 
-fn enabled() -> bool {
-    std::env::var_os("NG_NO_FSEARCH").is_none()
-}
-
-/// Start the engine at launch, so the index is loaded and following changes
-/// before the first keystroke. Its index lives in the app's store; a second
-/// Found'er follows the first one's instead of building its own.
 pub(crate) fn start() {
     engine();
 }
@@ -26,13 +16,12 @@ fn engine() -> Option<&'static Engine> {
     static ENGINE: OnceLock<Option<Engine>> = OnceLock::new();
     ENGINE
         .get_or_init(|| {
-            if !enabled() {
+            if std::env::var_os("NG_NO_FSEARCH").is_some() {
                 return None;
             }
             let home = crate::home();
             let home_str = home.to_string_lossy().into_owned();
-            // Never open a consent-gated folder this app hasn't been let into:
-            // that puts a privacy prompt on screen.
+            // Opening a consent-gated folder this app hasn't been let into puts up a privacy prompt.
             let skip = ::fsearch::gated(&home_str)
                 .into_iter()
                 .map(|p| PathBuf::from(std::ffi::OsStr::from_bytes(&p)))
@@ -48,12 +37,9 @@ fn engine() -> Option<&'static Engine> {
         .as_ref()
 }
 
-/// Paths matching `query` under each of `under` (everywhere if empty), best
-/// first, or `None` while fsearch can't answer (still loading, a query it
-/// doesn't parse) or `NG_NO_FSEARCH` is set.
+/// `None` while fsearch can't answer: still loading, or a query it doesn't parse.
 pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec<PathBuf>> {
     let engine = engine()?;
-    let home = crate::home();
     let mut found = Vec::new();
     for root in under
         .iter()
@@ -66,33 +52,22 @@ pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec
             q.filter("in", &root.to_string_lossy(), engine.home())
                 .ok()?;
         }
-        let paths: Vec<PathBuf> = match q.grep.take() {
+        match q.grep.take() {
             Some(pattern) => {
                 let grep = Grep::new(&pattern, q.grep_mode).ok()?;
                 let (r, _) = engine.grep(&q, &grep).ok()?;
-                r.files
-                    .into_iter()
-                    .map(|f| PathBuf::from(std::ffi::OsStr::from_bytes(&f.path)))
-                    .collect()
+                found.extend(
+                    r.files
+                        .into_iter()
+                        .map(|f| PathBuf::from(std::ffi::OsStr::from_bytes(&f.path))),
+                );
             }
-            None => engine
-                .search(&q)
-                .ok()?
-                .into_iter()
-                .map(|f| f.path)
-                .collect(),
-        };
-        let mut folders = HashMap::new();
-        found.extend(
-            paths
-                .into_iter()
-                .filter(|path| reachable(path, &home, &mut folders)),
-        );
+            None => found.extend(engine.search(&q).ok()?.into_iter().map(|f| f.path)),
+        }
     }
-    Some(found)
+    Some(reachable_only(found))
 }
 
-/// The paths of `found` that are shown, by the rule the hits follow.
 pub(crate) fn reachable_only(found: Vec<PathBuf>) -> Vec<PathBuf> {
     let home = crate::home();
     let mut folders = HashMap::new();
@@ -102,22 +77,18 @@ pub(crate) fn reachable_only(found: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Reading inside a folder macOS guards puts its consent prompt on screen, so
-/// a result there is shown only once the user has already let Found'er in.
-/// Hits share folders, so each folder's answer is kept in `folders`.
 fn reachable(path: &Path, home: &Path, folders: &mut HashMap<PathBuf, bool>) -> bool {
     (!off_limits(path, home) || let_in(path, home))
         && path
             .parent()
-            .is_none_or(|dir| folder_ok(dir, home, folders))
+            .is_none_or(|dir| folder_reachable(dir, home, folders))
 }
 
-fn folder_ok(dir: &Path, home: &Path, folders: &mut HashMap<PathBuf, bool>) -> bool {
+fn folder_reachable(dir: &Path, home: &Path, folders: &mut HashMap<PathBuf, bool>) -> bool {
     if let Some(&ok) = folders.get(dir) {
         return ok;
     }
-    let ok = (!off_limits(dir, home) || let_in(dir, home))
-        && dir.parent().is_none_or(|up| folder_ok(up, home, folders));
+    let ok = reachable(dir, home, folders);
     folders.insert(dir.to_path_buf(), ok);
     ok
 }
@@ -132,8 +103,6 @@ fn let_in(gate: &Path, home: &Path) -> bool {
     granted(service)
 }
 
-/// Asking tccd costs about 4 ms, so a grant is kept for the session and
-/// anything short of one is asked again at most every few seconds.
 #[cfg(feature = "private-api")]
 fn granted(service: &'static str) -> bool {
     use std::sync::Mutex;
@@ -157,7 +126,6 @@ fn granted(_: &'static str) -> bool {
     false
 }
 
-/// TCC's answer for this app, which never puts a prompt up: 0 is granted.
 #[cfg(feature = "private-api")]
 fn preflight(service: &str) -> bool {
     use objc2::rc::Retained;

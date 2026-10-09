@@ -21,7 +21,7 @@ use objc2_foundation::{
 };
 
 use crate::data::intern_path;
-use crate::navigate::{browser_windows, folder_at_path, reveal};
+use crate::navigate::{browser_windows, folder_at_path, reveal, showing};
 use crate::{home, open_finder_window};
 
 const FILE_VIEWER: &str = "NSFileViewer";
@@ -52,8 +52,7 @@ define_class!(
     }
 );
 
-/// AppKit's own open-documents handler resolves each item's bookmark on the main thread, where a
-/// share that stopped answering stalls it; the bookmark already holds the item's path.
+/// AppKit's own open-documents handler resolves each bookmark on the main thread, stalling on a dead share.
 pub(crate) fn take_open_documents() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -84,7 +83,6 @@ pub(crate) fn take_open_documents() {
     std::mem::forget(observer);
 }
 
-/// `Application::on_open_urls`: the same items, when AppKit opens them itself.
 pub(crate) fn arrived(urls: Vec<String>) {
     take(urls.iter().filter_map(|url| file_path(url)).collect());
 }
@@ -149,8 +147,10 @@ fn coerce_later(unread: Vec<(u32, Vec<u8>)>) {
             return;
         };
         let coercing = app.background_executor().spawn(async move {
-            let paths = unread.iter().map(|(kind, bytes)| coerced(*kind, bytes));
-            paths.flatten().collect::<Vec<_>>()
+            unread
+                .iter()
+                .filter_map(|(kind, bytes)| coerced(*kind, bytes))
+                .collect::<Vec<_>>()
         });
         app.spawn(async move |_| take(coercing.await)).detach();
     });
@@ -179,7 +179,6 @@ fn take(paths: Vec<PathBuf>) {
     });
 }
 
-/// The first window opens once launching settles, unless windows were restored or a request opened its own.
 pub(crate) fn follow(restored: bool, cx: &mut App) {
     let app = cx.to_async();
     APP.with(|slot| slot.set(app.clone()).ok());
@@ -197,8 +196,7 @@ pub(crate) fn follow(restored: bool, cx: &mut App) {
         settle();
         return;
     }
-    // gpui runs the launch callback before AppKit takes the launch Apple Event, and that event's
-    // open request reaches `arrived` ahead of this notification.
+    // gpui runs the launch callback before AppKit takes the launch Apple Event, whose open request arrives first.
     let block = StackBlock::new(move |_: NonNull<NSNotification>| settle()).copy();
     let observer = unsafe {
         NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
@@ -213,10 +211,10 @@ pub(crate) fn follow(restored: bool, cx: &mut App) {
 
 fn file_path(url: &str) -> Option<PathBuf> {
     let url = NSURL::URLWithString(&NSString::from_str(url))?;
-    url.isFileURL()
-        .then(|| url.path())
-        .flatten()
-        .map(|path| PathBuf::from(path.to_string()))
+    if !url.isFileURL() {
+        return None;
+    }
+    Some(PathBuf::from(url.path()?.to_string()))
 }
 
 fn take_waiting(app: &AsyncApp) {
@@ -242,20 +240,18 @@ fn open(paths: Vec<PathBuf>, cx: &mut App) {
 
 /// NSWorkspace hands a file viewer the items it reveals as an open-documents event, so a folder opens.
 fn folder_of(path: &Path) -> Option<&'static str> {
-    let package = path
+    if path
         .file_name()
-        .is_some_and(|name| is_package_name(&name.to_string_lossy()));
-    (!package)
-        .then(|| folder_at_path(&path.to_string_lossy()))
-        .flatten()
+        .is_some_and(|name| is_package_name(&name.to_string_lossy()))
+    {
+        return None;
+    }
+    folder_at_path(&path.to_string_lossy())
 }
 
 fn show_folder(folder: &'static str, cx: &mut App) {
     let windows = browser_windows(cx);
-    let shown = windows
-        .iter()
-        .find(|window| window.read(cx).is_ok_and(|demo| demo.here() == folder));
-    if let Some(window) = shown {
+    if let Some(window) = showing(folder, &windows, cx) {
         window
             .update(cx, |_, window, _| window.activate_window())
             .ok();
@@ -276,7 +272,6 @@ fn show_folder(folder: &'static str, cx: &mut App) {
     }
 }
 
-/// Found'er reveals for every app: the global `NSFileViewer` names it.
 pub(crate) fn is_default() -> bool {
     own_id().is_some_and(|id| file_viewer().as_ref() == Some(&id))
 }
@@ -285,8 +280,7 @@ pub(crate) fn can_be_default() -> bool {
     own_id().is_some()
 }
 
-/// LaunchServices refuses `public.folder` to any handler but Finder: both `NSWorkspace` and
-/// `LSSetDefaultRoleHandlerForContentType` answer paramErr, whatever rank the claim carries.
+/// LaunchServices refuses `public.folder` to any handler but Finder, so only `NSFileViewer` is ours to set.
 pub(crate) fn toggle_default() {
     let id = own_id().filter(|_| !is_default());
     set_file_viewer(id.as_deref());

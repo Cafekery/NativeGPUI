@@ -81,29 +81,37 @@ fn value(of: &NSDictionary, key: &str) -> Option<Retained<AnyObject>> {
     of.objectForKey(&NSString::from_str(key))
 }
 
+fn dict_in(of: &NSDictionary, key: &str) -> Option<Retained<NSDictionary>> {
+    value(of, key)?.downcast().ok()
+}
+
+fn as_f64(object: &AnyObject) -> Option<f64> {
+    Some(object.downcast_ref::<NSNumber>()?.doubleValue())
+}
+
+fn as_bool(object: &AnyObject) -> Option<bool> {
+    Some(object.downcast_ref::<NSNumber>()?.boolValue())
+}
+
+fn as_string(object: &AnyObject) -> Option<String> {
+    Some(object.downcast_ref::<NSString>()?.to_string())
+}
+
+fn strings(list: &NSArray) -> Vec<String> {
+    list.iter().filter_map(|item| as_string(&*item)).collect()
+}
+
 static FINDER: LazyLock<Finder> = LazyLock::new(|| {
-    let defaults = finder_domain();
-    let read = |key: &str| defaults.as_ref()?.objectForKey(&NSString::from_str(key));
+    let finder = finder_domain();
+    let read = |key: &str| finder.as_ref()?.objectForKey(&NSString::from_str(key));
     let dict = |key: &str| read(key)?.downcast::<NSDictionary>().ok();
-    let list = dict("StandardViewSettings")
-        .and_then(|all| value(&all, "ExtendedListViewSettingsV2")?.downcast().ok());
-    let number = |key: &str| {
-        let found = value(list.as_ref()?, key)?.downcast::<NSNumber>().ok()?;
-        Some(found.doubleValue())
-    };
-    let toolbar = dict("NSToolbar Configuration Browser").and_then(|bar| {
-        value(&bar, "TB Item Identifiers")?
-            .downcast::<NSArray>()
-            .ok()
-    });
-    let text = |of: &NSDictionary, key: &str| {
-        Some(value(of, key)?.downcast::<NSString>().ok()?.to_string())
-    };
-    let icons = dict("StandardViewSettings").and_then(|all| {
-        value(&all, "IconViewSettings")?
-            .downcast::<NSDictionary>()
-            .ok()
-    });
+    let text = |of: &NSDictionary, key: &str| as_string(&*value(of, key)?);
+    let flagged = |of: &NSDictionary, key: &str| as_bool(&*value(of, key)?);
+    let settings = dict("StandardViewSettings");
+    let list = settings
+        .as_deref()
+        .and_then(|all| dict_in(all, "ExtendedListViewSettingsV2"));
+    let number = |key: &str| as_f64(&*value(list.as_deref()?, key)?);
     let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
     let listed: Vec<Retained<NSDictionary>> = list
         .as_deref()
@@ -114,66 +122,59 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
                 .filter_map(|column| column.downcast::<NSDictionary>().ok())
                 .collect()
         });
-    let flagged = |column: &NSDictionary, key: &str| {
-        value(column, key)
-            .and_then(|on| on.downcast::<NSNumber>().ok())
-            .map(|on| on.boolValue())
-    };
     let ascending = sort_id.as_deref().and_then(|id| {
-        listed.iter().find_map(|column| {
-            (text(column, "identifier")? == id).then_some(())?;
-            flagged(column, "ascending")
-        })
+        listed
+            .iter()
+            .filter(|column| text(column, "identifier").as_deref() == Some(id))
+            .find_map(|column| flagged(column, "ascending"))
     });
-    let sort = sort_id.as_deref().and_then(Column::from_id);
     let columns: Vec<Column> = listed
         .iter()
         .filter(|column| flagged(column, "visible") == Some(true))
         .filter_map(|column| Column::from_id(&text(column, "identifier")?))
         .filter(|column| *column != Column::Name)
         .collect();
-    let arranged = |settings: &str, view: &str, key: &str| -> Option<String> {
-        let all = dict(settings)?;
-        let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
-        text(&view, key)
-    };
-    let column_view = arranged("StandardViewOptions", "ColumnViewOptions", "ArrangeBy")
-        .and_then(|code| column_view_key(&code));
-    let gallery_view = arranged("StandardViewSettings", "GalleryViewSettings", "arrangeBy")
-        .and_then(|id| Column::from_id(&id));
-    let flag = |key: &str| {
-        read(key)
-            .and_then(|on| on.downcast::<NSNumber>().ok())
-            .is_some_and(|on| on.boolValue())
-    };
-    let width = |key: &str| {
-        let found = read(key)?.downcast::<NSNumber>().ok()?;
-        Some(found.doubleValue() as f32)
-    };
+    let flag = |key: &str| read(key).and_then(|on| as_bool(&*on)) == Some(true);
+    let width = |key: &str| Some(as_f64(&*read(key)?)? as f32);
     Finder {
         posix_title: flag("_FXShowPosixPathInTitle"),
         text_size: number("textSize").unwrap_or(13.) as f32,
         icon_size: number("iconSize").unwrap_or(16.) as f32,
         relative_dates: number("useRelativeDates").is_none_or(|on| on != 0.),
         calculate_all_sizes: number("calculateAllSizes").is_some_and(|on| on != 0.),
-        toolbar: toolbar.map_or_else(Vec::new, |ids| {
-            ids.iter()
-                .filter_map(|id| Some(id.downcast_ref::<NSString>()?.to_string()))
-                .collect()
-        }),
-        sort: sort.map_or((Column::Name, true), |column| {
-            (column, ascending.unwrap_or(true))
-        }),
+        toolbar: dict("NSToolbar Configuration Browser")
+            .and_then(|bar| {
+                value(&bar, "TB Item Identifiers")?
+                    .downcast::<NSArray>()
+                    .ok()
+            })
+            .map_or_else(Vec::new, |ids| strings(&ids)),
+        sort: sort_id
+            .as_deref()
+            .and_then(Column::from_id)
+            .map_or((Column::Name, true), |column| {
+                (column, ascending.unwrap_or(true))
+            }),
         pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
         columns: match listed.is_empty() {
             true => vec![Column::Modified, Column::Size, Column::Kind],
             false => columns,
         },
         arranged: (
-            column_view.unwrap_or(Column::Name),
-            gallery_view.unwrap_or(Column::Name),
+            dict("StandardViewOptions")
+                .and_then(|all| text(&*dict_in(&all, "ColumnViewOptions")?, "ArrangeBy"))
+                .and_then(|code| column_view_key(&code))
+                .unwrap_or(Column::Name),
+            settings
+                .as_deref()
+                .and_then(|all| text(&*dict_in(all, "GalleryViewSettings")?, "arrangeBy"))
+                .and_then(|id| Column::from_id(&id))
+                .unwrap_or(Column::Name),
         ),
-        icon_options: icons.map_or_else(IconOptions::default, |icons| IconOptions::read(&icons)),
+        icon_options: settings
+            .as_deref()
+            .and_then(|all| dict_in(all, "IconViewSettings"))
+            .map_or_else(IconOptions::default, |icons| IconOptions::read(&icons)),
         group: finder_string("FXPreferredGroupBy")
             .and_then(|name| group_key(&name))
             .unwrap_or(Column::Kind),
@@ -210,12 +211,12 @@ pub(crate) fn setting_on(key: &str, default: bool) -> bool {
     let Some(value) = setting(key) else {
         return default;
     };
-    if let Some(number) = value.downcast_ref::<NSNumber>() {
-        return number.boolValue();
+    if let Some(on) = as_bool(&*value) {
+        return on;
     }
-    value.downcast_ref::<NSString>().map_or(default, |text| {
+    as_string(&*value).map_or(default, |text| {
         matches!(
-            text.to_string().trim().chars().next(),
+            text.trim().chars().next(),
             Some('Y' | 'y' | 'T' | 't' | '1'..='9')
         )
     })
@@ -226,7 +227,7 @@ pub(crate) fn set_setting_on(key: &str, on: bool) {
 }
 
 pub(crate) fn setting_text(key: &str) -> Option<String> {
-    Some(setting(key)?.downcast::<NSString>().ok()?.to_string())
+    as_string(&*setting(key)?)
 }
 
 pub(crate) fn set_setting_text(key: &str, value: &str) {
@@ -235,7 +236,7 @@ pub(crate) fn set_setting_text(key: &str, value: &str) {
 }
 
 pub(crate) fn setting_number(key: &str) -> Option<f64> {
-    Some(setting(key)?.downcast::<NSNumber>().ok()?.doubleValue())
+    as_f64(&*setting(key)?)
 }
 
 pub(crate) fn set_setting_number(key: &str, value: f64) {
@@ -244,7 +245,7 @@ pub(crate) fn set_setting_number(key: &str, value: f64) {
 
 pub(crate) fn setting_flag(key: &str, flag: &str) -> Option<bool> {
     let flags = setting(key)?.downcast::<NSDictionary>().ok()?;
-    Some(value(&flags, flag)?.downcast_ref::<NSNumber>()?.boolValue())
+    as_bool(&*value(&flags, flag)?)
 }
 
 pub(crate) fn set_setting_flags<'a>(key: &str, flags: impl IntoIterator<Item = (&'a str, bool)>) {
@@ -326,13 +327,8 @@ fn sidebar_file() -> HashMap<String, Vec<String>> {
     };
     map.keys()
         .filter_map(|key| {
-            let key = key.downcast_ref::<NSString>()?;
-            let list = map.objectForKey(key)?.downcast::<NSArray>().ok()?;
-            let values = list
-                .iter()
-                .filter_map(|value| Some(value.downcast_ref::<NSString>()?.to_string()))
-                .collect();
-            Some((key.to_string(), values))
+            let list = map.objectForKey(&key)?.downcast::<NSArray>().ok()?;
+            Some((as_string(&*key)?, strings(&list)))
         })
         .collect()
 }
@@ -418,16 +414,13 @@ fn finder_pref(key: &str) -> Option<Retained<AnyObject>> {
 }
 
 fn finder_string(key: &str) -> Option<String> {
-    Some(finder_pref(key)?.downcast::<NSString>().ok()?.to_string())
+    as_string(&*finder_pref(key)?)
 }
 
 fn finder_strings(key: &str) -> Vec<String> {
-    let Some(list) = finder_pref(key).and_then(|list| list.downcast::<NSArray>().ok()) else {
-        return Vec::new();
-    };
-    list.iter()
-        .filter_map(|value| Some(value.downcast_ref::<NSString>()?.to_string()))
-        .collect()
+    finder_pref(key)
+        .and_then(|list| list.downcast::<NSArray>().ok())
+        .map_or_else(Vec::new, |list| strings(&list))
 }
 
 pub(crate) fn go_history() -> Vec<String> {
@@ -485,19 +478,15 @@ pub(crate) fn finder_connect_frame() -> Option<[f64; 4]> {
     ])
 }
 
-fn finder_servers(list: &str) -> Vec<String> {
+fn finder_servers(list: &str) -> Option<Vec<String>> {
     let file = crate::home().join(format!(
         "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.{list}.sfl4"
     ));
-    let Some(data) = NSData::dataWithContentsOfFile(&NSString::from_str(&file.to_string_lossy()))
-    else {
-        return Vec::new();
-    };
-    let Ok(archive) = (unsafe {
+    let data = NSData::dataWithContentsOfFile(&NSString::from_str(&file.to_string_lossy()))?;
+    let archive = unsafe {
         NSKeyedUnarchiver::initForReadingFromData_error(NSKeyedUnarchiver::alloc(), &data)
-    }) else {
-        return Vec::new();
-    };
+    }
+    .ok()?;
     // Plain dictionaries, arrays, strings and data: nothing a secure decode would refuse to trust.
     let root = unsafe {
         archive.setRequiresSecureCoding(false);
@@ -505,30 +494,19 @@ fn finder_servers(list: &str) -> Vec<String> {
         archive.finishDecoding();
         root
     };
-    let items = root
-        .and_then(|root| root.downcast::<NSDictionary>().ok())
-        .and_then(|root| value(&root, "items")?.downcast::<NSArray>().ok());
-    let Some(items) = items else {
-        return Vec::new();
+    let root = root?.downcast::<NSDictionary>().ok()?;
+    let items = value(&root, "items")?.downcast::<NSArray>().ok()?;
+    let name = |item: Retained<AnyObject>| {
+        as_string(&*value(&*item.downcast::<NSDictionary>().ok()?, "Name")?)
     };
-    items
-        .iter()
-        .filter_map(|item| {
-            let item = item.downcast::<NSDictionary>().ok()?;
-            Some(
-                value(&item, "Name")?
-                    .downcast::<NSString>()
-                    .ok()?
-                    .to_string(),
-            )
-        })
-        .collect()
+    Some(items.iter().filter_map(name).collect())
 }
 
 pub(crate) fn favorite_servers() -> Vec<String> {
     sidebar_file()
         .remove("servers.favorite")
-        .unwrap_or_else(|| finder_servers("FavoriteServers"))
+        .or_else(|| finder_servers("FavoriteServers"))
+        .unwrap_or_default()
 }
 
 pub(crate) fn set_favorite_servers(servers: &[&str]) {
@@ -538,7 +516,8 @@ pub(crate) fn set_favorite_servers(servers: &[&str]) {
 pub(crate) fn recent_servers() -> Vec<String> {
     sidebar_file()
         .remove("servers.recent")
-        .unwrap_or_else(|| finder_servers("RecentServers"))
+        .or_else(|| finder_servers("RecentServers"))
+        .unwrap_or_default()
 }
 
 pub(crate) fn set_recent_servers(servers: &[&str]) {
@@ -724,8 +703,7 @@ fn look_value(view: usize, folder: &str, key: &str) -> Option<Retained<AnyObject
 }
 
 pub(crate) fn look_number(view: usize, folder: &str, key: &str) -> Option<f64> {
-    let number = look_value(view, folder, key)?;
-    Some(number.downcast_ref::<NSNumber>()?.doubleValue())
+    as_f64(&*look_value(view, folder, key)?)
 }
 
 pub(crate) fn look_on(view: usize, folder: &str, key: &str) -> Option<bool> {
@@ -733,8 +711,7 @@ pub(crate) fn look_on(view: usize, folder: &str, key: &str) -> Option<bool> {
 }
 
 pub(crate) fn look_text(view: usize, folder: &str, key: &str) -> Option<String> {
-    let text = look_value(view, folder, key)?;
-    Some(text.downcast_ref::<NSString>()?.to_string())
+    as_string(&*look_value(view, folder, key)?)
 }
 
 fn put_look(view: usize, home: Option<&str>, key: &str, value: &AnyObject) {
@@ -867,18 +844,14 @@ pub(crate) fn share_folder_looks() {
         if looks.is_empty() {
             continue;
         }
-        let number = |value: &Retained<NSObject>| {
-            value
-                .downcast_ref::<NSNumber>()
-                .map_or(f64::MIN, |number| number.doubleValue())
-        };
         edit_look(view, None, |shared| {
             for (key, values) in looks {
                 let key = NSString::from_str(&key);
                 if shared.objectForKey(&key).is_some() {
                     continue;
                 }
-                if let Some(value) = most_common(values, number) {
+                let value = most_common(values, |value| as_f64(value).unwrap_or(f64::MIN));
+                if let Some(value) = value {
                     let value: &AnyObject = &value;
                     shared.insert(&*key, value);
                 }
@@ -989,15 +962,16 @@ pub(crate) fn icon_spots(folder: &str) -> HashMap<String, (f32, f32)> {
         .keys()
         .filter_map(|name| {
             let at = spots.objectForKey(&name)?.downcast::<NSArray>().ok()?;
+            if at.count() != 2 {
+                return None;
+            }
             let axis = |index| {
                 Some(
                     at.objectAtIndex(index)
-                        .downcast::<NSNumber>()
-                        .ok()?
+                        .downcast_ref::<NSNumber>()?
                         .floatValue(),
                 )
             };
-            (at.count() == 2).then_some(())?;
             Some((name.to_string(), (axis(0)?, axis(1)?)))
         })
         .collect()
@@ -1018,9 +992,7 @@ pub(crate) fn set_icon_spots<'a>(folder: &str, spots: impl Iterator<Item = (&'a 
 
 fn finder_number(group: &str, view: &str, key: &str) -> Option<f64> {
     let all = finder_pref(group)?.downcast::<NSDictionary>().ok()?;
-    let view = value(&all, view)?.downcast::<NSDictionary>().ok()?;
-    let number = value(&view, key)?;
-    Some(number.downcast_ref::<NSNumber>()?.doubleValue())
+    as_f64(&*value(&*dict_in(&all, view)?, key)?)
 }
 
 pub(crate) fn view_option(options: &str, key: &str) -> Option<f64> {

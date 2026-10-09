@@ -53,6 +53,16 @@ const UNSET: Flags = Flags {
     cloud: true,
 };
 
+impl Flags {
+    fn read(flag: impl Fn(&'static str, bool) -> bool) -> Self {
+        Flags {
+            shown: SHOWN.map(|key| flag(key, true)),
+            mixed: MIXED.map(|key| flag(key, false)),
+            cloud: flag(CLOUD, true),
+        }
+    }
+}
+
 /// Finder's settings for its Locations rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct VolumeSettings {
@@ -165,18 +175,13 @@ pub fn listed_favorites() -> Vec<Listed> {
 
 pub fn listed_locations() -> Vec<Listed> {
     let (items, flags) = read(VOLUMES).unwrap_or_else(|| {
-        let item = |special| Item {
+        let items = [Special::Home, Special::AirDrop, Special::Trash].map(|special| Item {
             visible: true,
             path: None,
             name: None,
             special: Some(special),
-        };
-        let items = vec![
-            item(Special::Home),
-            item(Special::AirDrop),
-            item(Special::Trash),
-        ];
-        (items, UNSET)
+        });
+        (items.into(), UNSET)
     });
     let [disks, external, _, network] = flags.shown;
     arrange(&items, [disks, external, network], &volumes::mounted())
@@ -184,17 +189,15 @@ pub fn listed_locations() -> Vec<Listed> {
 
 pub fn volume_settings() -> VolumeSettings {
     let (items, flags) = read(VOLUMES).unwrap_or((Vec::new(), UNSET));
-    let providers = items
-        .iter()
-        .filter(|item| item.special == Some(Special::FileProvider));
-    let (shown, hidden) = providers.fold((0, 0), |(shown, hidden), item| match item.visible {
-        true => (shown + 1, hidden),
-        false => (shown, hidden + 1),
-    });
-    let cloud = match (flags.cloud, shown, hidden) {
-        (false, ..) | (true, 0, 1..) => Some(false),
-        (true, _, 0) => Some(true),
-        (true, ..) => None,
+    let providers = |visible| {
+        items
+            .iter()
+            .any(|item| item.special == Some(Special::FileProvider) && item.visible == visible)
+    };
+    let cloud = match (flags.cloud, providers(true), providers(false)) {
+        (false, ..) | (true, false, true) => Some(false),
+        (true, _, false) => Some(true),
+        (true, true, true) => None,
     };
     VolumeSettings {
         shown: flags.shown,
@@ -212,7 +215,6 @@ pub fn provider_symbol(root: &Path) -> Option<String> {
     crate::servers::bundle_symbol(extension)
 }
 
-/// Finder's sections in its own order, whatever order its list keeps.
 fn arrange(
     items: &[Item],
     [disks, external, network]: [bool; 3],
@@ -239,10 +241,9 @@ fn arrange(
     };
     let mut rows = Vec::new();
     if has(Special::ICloudDrive) {
-        let drive = icloud::drive();
         rows.push(Listed::new(
             "iCloud Drive",
-            drive,
+            icloud::drive(),
             Some(Special::ICloudDrive),
         ));
     }
@@ -296,17 +297,12 @@ fn read(name: &'static str) -> Option<(Vec<Item>, Flags)> {
     let properties = root
         .objectForKey(ns_string!("properties"))
         .and_then(|properties| properties.downcast::<NSDictionary>().ok());
-    let flag = |key: &str, unset: bool| {
+    let flags = Flags::read(|key, unset| {
         properties
             .as_deref()
             .and_then(|properties| number(properties, &NSString::from_str(key)))
             .map_or(unset, |flag| flag.boolValue())
-    };
-    let flags = Flags {
-        shown: SHOWN.map(|key| flag(key, true)),
-        mixed: MIXED.map(|key| flag(key, false)),
-        cloud: flag(CLOUD, true),
-    };
+    });
     Some((items, flags))
 }
 
@@ -321,9 +317,9 @@ fn shared(name: &'static str) -> Option<(Vec<Item>, Flags)> {
         .map(|item| {
             let name = unsafe { item.display_name() }.to_string();
             Item {
-                visible: !unsafe { item.property(&provider_hidden) }
+                visible: unsafe { item.property(&provider_hidden) }
                     .and_then(|value| truthy(&value))
-                    .unwrap_or(false),
+                    != Some(true),
                 path: resolved(&item).map(PathBuf::from),
                 name: (!name.is_empty()).then_some(name),
                 special: unsafe { item.property(&special) }
@@ -332,16 +328,11 @@ fn shared(name: &'static str) -> Option<(Vec<Item>, Flags)> {
             }
         })
         .collect();
-    let flag = |key: &'static str, unset: bool| {
+    let flags = Flags::read(|key, unset| {
         unsafe { list.property(&CFString::from_static_str(key)) }
             .and_then(|value| truthy(&value))
             .unwrap_or(unset)
-    };
-    let flags = Flags {
-        shown: SHOWN.map(|key| flag(key, true)),
-        mixed: MIXED.map(|key| flag(key, false)),
-        cloud: flag(CLOUD, true),
-    };
+    });
     Some((items, flags))
 }
 
@@ -361,10 +352,8 @@ fn snapshot(
 fn resolved(item: &LSSharedFileListItem) -> Option<String> {
     let quiet = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
     let url = unsafe { item.resolved_url(quiet, std::ptr::null_mut()) }?;
-    Some(
-        url.file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle)?
-            .to_string(),
-    )
+    url.file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle)
+        .map(|path| path.to_string())
 }
 
 fn truthy(value: &CFType) -> Option<bool> {
@@ -374,7 +363,7 @@ fn truthy(value: &CFType) -> Option<bool> {
     }
 }
 
-/// The tags Finder's sidebar lists, in its order, each with whether it is pinned there.
+/// Finder's sidebar tags in its order, each with whether it is pinned there.
 #[allow(deprecated)]
 pub(crate) fn tags() -> Option<Vec<(Tag, bool)>> {
     let (_list, items) = snapshot(TAGS)?;
@@ -456,22 +445,23 @@ fn entry(item: &AnyObject) -> Option<Item> {
         .objectForKey(ns_string!("CustomItemProperties"))
         .and_then(|properties| properties.downcast::<NSDictionary>().ok());
     let property = |key: &NSString| properties.as_ref()?.objectForKey(key);
+    let flag = |key: &NSString| {
+        property(key)
+            .and_then(|value| value.downcast::<NSNumber>().ok())
+            .is_some_and(|value| value.boolValue())
+    };
     let special = property(ns_string!(
         "com.apple.LSSharedFileList.SpecialItemIdentifier"
     ))
     .and_then(|value| Special::parse(&value.downcast::<NSString>().ok()?.to_string()))
     .or_else(|| {
-        let provider = property(ns_string!(
+        flag(ns_string!(
             "com.apple.finder.kLSSharedFileListItemIsFileProvider"
-        ))?;
-        let provider = provider.downcast::<NSNumber>().ok()?.boolValue();
-        provider.then_some(Special::FileProvider)
+        ))
+        .then_some(Special::FileProvider)
     });
-    let provider_hidden = property(&NSString::from_str(PROVIDER_HIDDEN))
-        .and_then(|value| value.downcast::<NSNumber>().ok())
-        .is_some_and(|hidden| hidden.boolValue());
     Some(Item {
-        visible: !provider_hidden
+        visible: !flag(&NSString::from_str(PROVIDER_HIDDEN))
             && number(item, ns_string!("visibility"))
                 .is_none_or(|visibility| visibility.integerValue() == 0),
         path: item

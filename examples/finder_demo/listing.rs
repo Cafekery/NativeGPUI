@@ -19,7 +19,7 @@ const INDEXES_HELD: usize = 4;
 const SCANS_BEFORE_MAP: usize = 2;
 
 thread_local! {
-    // ⇧⌘. shows hidden files in every window until quit, as Finder's does; it never writes the setting.
+    // ⇧⌘. toggles every window until quit, as Finder's does, and never writes the setting.
     static HIDDEN: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
@@ -414,15 +414,16 @@ impl FinderDemo {
             taken => self.extended(taken, self.here(), tree, rows),
         }
         .unwrap_or_else(|| self.walked(self.shape(tree).build(&self.held()), rows));
+        let lines = built.lines.clone();
         let mut listings = self.listings();
         match tree {
             true => {
                 listings.edited = listings.expanded;
-                listings.tree = Some(built.clone());
+                listings.tree = Some(built);
             }
-            false => listings.flat = Some(built.clone()),
+            false => listings.flat = Some(built),
         }
-        built.lines
+        lines
     }
 
     pub(crate) fn plain(&self) -> Option<bool> {
@@ -697,15 +698,12 @@ impl FinderDemo {
                 let (mut lines, mut opened) = (Vec::new(), Vec::new());
                 self.shape(false)
                     .collect(&self.held(), folder, 0, 0, &mut lines, &mut opened);
-                let read = vec![folder];
-                self.walked(
-                    Walk {
-                        lines,
-                        opened,
-                        read,
-                    },
-                    rows,
-                )
+                let walk = Walk {
+                    lines,
+                    opened,
+                    read: vec![folder],
+                };
+                self.walked(walk, rows)
             });
         if listings.columns.len() >= COLUMNS_HELD {
             listings.columns.clear();

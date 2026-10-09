@@ -266,33 +266,15 @@ impl Category {
     }
 }
 
-fn conformance(uti: &str) -> u16 {
-    static CONFORMANCE: LazyLock<RwLock<HashMap<String, u16>>> = LazyLock::new(Default::default);
-    if let Some(&bits) = CONFORMANCE.read().unwrap().get(uti) {
-        return bits;
-    }
-    let mut bits = 0;
-    if let Some(ty) = well_known(uti) {
-        for category in Category::ALL {
-            let base = category.identifier().and_then(well_known);
-            if base.is_some_and(|base| ty.conformsToType(&base)) {
-                bits |= 1 << category as u16;
-            }
-        }
-    }
-    CONFORMANCE.write().unwrap().insert(uti.to_owned(), bits);
-    bits
-}
-
 pub fn conforms(uti: &str, category: Category) -> bool {
     match category {
         Category::Any => true,
-        Category::Other => false,
-        _ => conformance(uti) >> category as u16 & 1 == 1,
+        _ => category
+            .identifier()
+            .is_some_and(|wanted| conforms_to(uti, wanted)),
     }
 }
 
-/// Whether `uti` is `wanted` or conforms to it, as Spotlight reads a content type tree.
 pub fn conforms_to(uti: &str, wanted: &str) -> bool {
     type Held = HashMap<String, HashMap<String, bool>>;
     static HELD: LazyLock<RwLock<Held>> = LazyLock::new(Default::default);
@@ -318,13 +300,12 @@ pub fn conforms_to(uti: &str, wanted: &str) -> bool {
     conforms
 }
 
-/// The filename extensions `uti` declares.
 pub fn extensions(uti: &str) -> Vec<String> {
-    let Some(ty) = well_known(uti) else {
-        return Vec::new();
-    };
-    ty.tags()
-        .objectForKey(unsafe { UTTagClassFilenameExtension })
+    well_known(uti)
+        .and_then(|ty| {
+            ty.tags()
+                .objectForKey(unsafe { UTTagClassFilenameExtension })
+        })
         .map_or_else(Vec::new, |exts| {
             exts.iter().map(|ext| ext.to_string()).collect()
         })

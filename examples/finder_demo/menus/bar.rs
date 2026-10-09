@@ -227,7 +227,7 @@ thread_local! {
         seen: (u64::MAX, 0, 0, 0),
         ..Chosen::default()
     }));
-    static LOCATIONS: RefCell<Option<Vec<(String, &'static str)>>> = const { RefCell::new(None) };
+    static LOCATIONS: RefCell<Vec<(String, &'static str)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// (refuse to open, can be shared, all in iCloud Drive) for the chosen items.
@@ -553,24 +553,14 @@ pub(crate) fn install(cx: &mut App) {
     extend_menu(
         MenuSection::App,
         [
+            MenuCommand::new("Settings…", ShowSettings).key("cmd-,"),
+            MenuCommand::separator(),
+            MenuCommand::new("Use Found'er as Default File Browser", ToggleDefaultBrowser),
+            MenuCommand::separator(),
             MenuCommand::new("Empty Trash…", EmptyTrash).key("cmd-shift-backspace"),
             MenuCommand::new("Empty Trash", EmptyTrashNow)
                 .key("cmd-alt-shift-backspace")
                 .option_alternate(),
-        ],
-    );
-    extend_menu(
-        MenuSection::App,
-        [
-            MenuCommand::new("Use Found'er as Default File Browser", ToggleDefaultBrowser),
-            MenuCommand::separator(),
-        ],
-    );
-    extend_menu(
-        MenuSection::App,
-        [
-            MenuCommand::new("Settings…", ShowSettings).key("cmd-,"),
-            MenuCommand::separator(),
         ],
     );
     set_menu("Window", window_rows());
@@ -808,11 +798,7 @@ pub(crate) fn go_rows(recents: &[(&'static str, String)]) -> Vec<MenuCommand> {
     rows
 }
 
-fn locations() -> Vec<(String, &'static str)> {
-    LOCATIONS.with_borrow(|known| known.clone().unwrap_or_default())
-}
-
-/// Listing the locations asks every volume for its capacity, which a share that stopped answering stalls.
+/// Listing locations asks each volume for its capacity, which an unresponsive share stalls.
 fn follow_locations(cx: &mut App) {
     cx.spawn(async move |cx| {
         let found = cx
@@ -826,7 +812,7 @@ fn follow_locations(cx: &mut App) {
             })
             .await;
         cx.update(|cx| {
-            LOCATIONS.set(Some(found));
+            LOCATIONS.set(found);
             let recents = crate::navigate::browser_windows(cx)
                 .first()
                 .and_then(|front| front.read(cx).ok().map(|demo| demo.recents.clone()))
@@ -866,12 +852,20 @@ fn go_head() -> Vec<MenuCommand> {
         MenuCommand::new("Applications", GoApplications).key("cmd-shift-a"),
         MenuCommand::new("Utilities", GoUtilities).key("cmd-shift-u"),
     ];
-    rows.extend(
-        locations()
-            .into_iter()
-            .map(|(title, path)| MenuCommand::new(title, GoLocation(path))),
-    );
+    LOCATIONS.with_borrow(|known| {
+        rows.extend(
+            known
+                .iter()
+                .map(|(title, path)| MenuCommand::new(title.clone(), GoLocation(*path))),
+        );
+    });
     rows
+}
+
+fn run_act<A: Action>(
+    act: Act,
+) -> impl Fn(&mut FinderDemo, &A, &mut Window, &mut Context<FinderDemo>) + 'static {
+    move |this, _, window, cx| this.run_menu(act, window, cx)
 }
 
 impl FinderDemo {
@@ -901,18 +895,9 @@ impl FinderDemo {
             .collect()
     }
 
-    fn ejectable_volume(&self) -> Option<&'static str> {
-        let roots = crate::data::volume_roots();
-        let mut wanted = self.chosen_folders();
-        wanted.push(self.here());
-        wanted
-            .into_iter()
-            .find(|id| *id != "/" && roots.contains(id))
-    }
-
     /// This volume only, not the others on its disk.
     fn eject_only(&mut self) {
-        let Some(volume) = self.ejectable_volume() else {
+        let Some(volume) = self.volumes_in_view().find(|id| *id != "/") else {
             return;
         };
         let url = NSURL::fileURLWithPath(&NSString::from_str(volume));
@@ -948,13 +933,8 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
                 this.open_tab(super::actions::new_window_target(), window, cx);
             }))
-            .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
-                this.run_menu(Act::NewFolder, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &NewFolderWithSelection, _, cx| {
-                this.new_folder_with_selection(cx);
-                cx.notify();
-            }))
+            .on_action(cx.listener(run_act::<NewFolder>(Act::NewFolder)))
+            .on_action(cx.listener(run_act::<NewFolderWithSelection>(Act::NewFolderWith)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 this.paste(Pasting::Copy, cx);
             }))
@@ -964,9 +944,7 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &PasteExactly, _, cx| {
                 this.paste(Pasting::Exactly, cx);
             }))
-            .on_action(cx.listener(|this, _: &OpenSelection, window, cx| {
-                this.run_menu(Act::Open, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<OpenSelection>(Act::Open)))
             .on_action(cx.listener(|this, _: &OpenInNewTab, window, cx| {
                 let mut folders = this.chosen_folders();
                 if folders.is_empty() {
@@ -1001,15 +979,9 @@ impl FinderDemo {
             .on_action(cx.listener(|this, action: &OpenWithOther, _, cx| {
                 crate::openwith::choose_app(this.chosen_files(), action.always, cx);
             }))
-            .on_action(cx.listener(|this, _: &MakeAlias, window, cx| {
-                this.run_menu(Act::MakeAlias, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &Compress, window, cx| {
-                this.run_menu(Act::Compress, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &CompressNamed, window, cx| {
-                this.run_menu(Act::Compress, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<MakeAlias>(Act::MakeAlias)))
+            .on_action(cx.listener(run_act::<Compress>(Act::Compress)))
+            .on_action(cx.listener(run_act::<CompressNamed>(Act::Compress)))
             .on_action(cx.listener(|this, _: &ShowOriginal, window, cx| {
                 this.show_original(window, cx);
             }))
@@ -1059,9 +1031,7 @@ impl FinderDemo {
                 this.search_editing = true;
                 this.run_search(cx);
             }))
-            .on_action(cx.listener(|this, _: &GetInfo, window, cx| {
-                this.run_menu(Act::GetInfo, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<GetInfo>(Act::GetInfo)))
             .on_action(cx.listener(|_, _: &GetSummaryInfo, _, cx| {
                 let demo = cx.entity();
                 cx.defer(move |cx| crate::info::open(&demo, None, true, cx));
@@ -1069,25 +1039,12 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &ShowPreviewOptions, _, cx| {
                 crate::preview::options::toggle(this, cx);
             }))
-            .on_action(cx.listener(|this, _: &ShowInspector, window, cx| {
-                this.run_menu(Act::Inspector, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &RenameSelection, window, cx| {
-                this.run_menu(Act::Rename, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &Duplicate, window, cx| {
-                this.run_menu(Act::Duplicate, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &DuplicateExactly, window, cx| {
-                this.run_menu(Act::Duplicate, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &DeleteImmediately, _, cx| {
-                this.delete_selection(cx);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &Trash, window, cx| {
-                this.run_menu(Act::Trash, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<ShowInspector>(Act::Inspector)))
+            .on_action(cx.listener(run_act::<RenameSelection>(Act::Rename)))
+            .on_action(cx.listener(run_act::<Duplicate>(Act::Duplicate)))
+            .on_action(cx.listener(run_act::<DuplicateExactly>(Act::Duplicate)))
+            .on_action(cx.listener(run_act::<DeleteImmediately>(Act::DeleteNow)))
+            .on_action(cx.listener(run_act::<Trash>(Act::Trash)))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
                 this.copy_pathnames(cx);
             }))
@@ -1107,36 +1064,16 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &ViewGallery, window, cx| {
                 this.pick_view(GALLERY_VIEW, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SortByName, window, cx| {
-                this.run_menu(Act::Sort(Column::Name), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByKind, window, cx| {
-                this.run_menu(Act::Sort(Column::Kind), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByOpened, window, cx| {
-                this.run_menu(Act::Sort(Column::Opened), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByAdded, window, cx| {
-                this.run_menu(Act::Sort(Column::Added), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByModified, window, cx| {
-                this.run_menu(Act::Sort(Column::Modified), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByCreated, window, cx| {
-                this.run_menu(Act::Sort(Column::Created), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortBySize, window, cx| {
-                this.run_menu(Act::Sort(Column::Size), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SortByTags, window, cx| {
-                this.run_menu(Act::Sort(Column::Tags), window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ShowViewOptions, window, cx| {
-                this.run_menu(Act::ViewOptions, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &UseGroups, window, cx| {
-                this.run_menu(Act::Groups, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<SortByName>(Act::Sort(Column::Name))))
+            .on_action(cx.listener(run_act::<SortByKind>(Act::Sort(Column::Kind))))
+            .on_action(cx.listener(run_act::<SortByOpened>(Act::Sort(Column::Opened))))
+            .on_action(cx.listener(run_act::<SortByAdded>(Act::Sort(Column::Added))))
+            .on_action(cx.listener(run_act::<SortByModified>(Act::Sort(Column::Modified))))
+            .on_action(cx.listener(run_act::<SortByCreated>(Act::Sort(Column::Created))))
+            .on_action(cx.listener(run_act::<SortBySize>(Act::Sort(Column::Size))))
+            .on_action(cx.listener(run_act::<SortByTags>(Act::Sort(Column::Tags))))
+            .on_action(cx.listener(run_act::<ShowViewOptions>(Act::ViewOptions)))
+            .on_action(cx.listener(run_act::<UseGroups>(Act::Groups)))
             .on_action(cx.listener(|this, _: &CleanUp, _, cx| {
                 this.clean_up(false, cx);
             }))
@@ -1283,8 +1220,6 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &Share, window, cx| {
                 this.share_selection(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &EditTags, window, cx| {
-                this.run_menu(Act::Swatch, window, cx);
-            }))
+            .on_action(cx.listener(run_act::<EditTags>(Act::Swatch)))
     }
 }

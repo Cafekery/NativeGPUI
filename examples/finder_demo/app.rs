@@ -77,7 +77,7 @@ pub(crate) struct FinderDemo {
     pub(crate) header: Option<Entity<HeaderBand>>,
     pub(crate) header_press: Option<f32>,
     pub(crate) query: Search,
-    /// The query Spotlight would run for it, as Finder's field writes it.
+    /// Spotlight's query for `query`, as Finder's field writes it.
     pub(crate) raw_query: Option<String>,
     pub(crate) search_editing: bool,
     pub(crate) titled: String,

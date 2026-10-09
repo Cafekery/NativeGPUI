@@ -361,10 +361,9 @@ fn info_rows(
     content: f32,
 ) -> (Vec<(&'static str, SharedString)>, bool) {
     let none = Meta::default();
-    let meta = match row.face {
-        Face::Volume => &none,
-        _ => meta.unwrap_or(&none),
-    };
+    let meta = meta
+        .filter(|_| !matches!(row.face, Face::Volume))
+        .unwrap_or(&none);
     let size = |(w, h): (u64, u64)| SharedString::from(format!("{w}{BY}{h}"));
     let value = |name: &str| {
         meta.values
@@ -440,10 +439,11 @@ pub(crate) fn duration(seconds: f64) -> Option<SharedString> {
 
 fn attr_text(name: &str, text: String) -> SharedString {
     match name {
-        "kMDItemAudioSampleRate" => match text.parse().ok().and_then(kilohertz) {
-            Some(rate) => rate,
-            None => text.into(),
-        },
+        "kMDItemAudioSampleRate" => text
+            .parse()
+            .ok()
+            .and_then(kilohertz)
+            .unwrap_or_else(|| text.into()),
         "kMDItemAudioChannelCount" if text == "1" => "Mono".into(),
         "kMDItemAudioChannelCount" if text == "2" => "Stereo".into(),
         // Finder lists Spotlight's codecs last first.
@@ -640,46 +640,40 @@ impl FinderDemo {
     }
 
     fn many_card(&self) -> Card {
-        let hero = match self.stats.as_ref() {
-            Some(stats) => Hero::Stack(stats.head.clone()),
-            None => Hero::Blank,
-        };
-        let actions = Some(offered(&self.chosen_faces()));
-        let Some(stats) = self.fresh_stats() else {
-            return Card {
-                hero,
-                title: format!("{} items", self.selected.len()).into(),
-                subtitle: CALCULATING.into(),
-                rows: vec![
-                    ("Created", CALCULATING.into()),
-                    ("Modified", CALCULATING.into()),
-                ],
-                show_more: false,
-                tags: Vec::new(),
-                show_tags: true,
-                many: true,
-                actions,
-            };
-        };
-        let files = stats.items - stats.folders;
-        let kinds = match (files, stats.folders) {
-            (0, n) => format!("{n} folders"),
-            (n, 0) => format!("{n} documents"),
-            (f, d) => format!("{f} documents, {d} folders"),
+        let (count, subtitle, [created, modified], tags) = match self.fresh_stats() {
+            Some(stats) => {
+                let kinds = match (stats.items - stats.folders, stats.folders) {
+                    (0, n) => format!("{n} folders"),
+                    (n, 0) => format!("{n} documents"),
+                    (f, d) => format!("{f} documents, {d} folders"),
+                };
+                (
+                    stats.items,
+                    format!("{kinds} - {}", byte_string(stats.bytes)).into(),
+                    [span(stats.created), span(stats.modified)],
+                    stats.tags.clone(),
+                )
+            }
+            None => (
+                self.selected.len(),
+                CALCULATING.into(),
+                [CALCULATING.into(), CALCULATING.into()],
+                Vec::new(),
+            ),
         };
         Card {
-            hero,
-            title: format!("{} items", stats.items).into(),
-            subtitle: format!("{kinds} - {}", byte_string(stats.bytes)).into(),
-            rows: vec![
-                ("Created", span(stats.created)),
-                ("Modified", span(stats.modified)),
-            ],
+            hero: match &self.stats {
+                Some(stats) => Hero::Stack(stats.head.clone()),
+                None => Hero::Blank,
+            },
+            title: format!("{count} items").into(),
+            subtitle,
+            rows: vec![("Created", created), ("Modified", modified)],
             show_more: false,
-            tags: stats.tags.clone(),
+            tags,
             show_tags: true,
             many: true,
-            actions,
+            actions: Some(offered(&self.chosen_faces())),
         }
     }
 
@@ -710,7 +704,6 @@ fn stack_thumbs(lines: &[Line], content: f32, scale: f32) -> Vec<Option<Arc<Rend
         .collect()
 }
 
-/// `last` is the stack this holder showed last, which stands in until this one is made.
 fn stack_hero(
     lines: &[Line],
     content: f32,
@@ -733,12 +726,15 @@ fn stack_hero(
             .child(artwork(&first.row, content))
             .into_any_element();
     }
-    let image = match stacked(images, (content * scale).round() as u32) {
-        Some(image) => Some(last.borrow_mut().insert(image).clone()),
-        None => last.borrow().clone(),
-    };
+    if let Some(image) = stacked(images, (content * scale).round() as u32) {
+        *last.borrow_mut() = Some(image);
+    }
     square(content)
-        .children(image.map(|image| img(image).w(px(content)).h(px(content))))
+        .children(
+            last.borrow()
+                .clone()
+                .map(|image| img(image).w(px(content)).h(px(content))),
+        )
         .into_any_element()
 }
 
@@ -805,84 +801,88 @@ impl Shown {
             .text_color(ink.kind)
             .child(card.subtitle.clone());
 
-        let mut content_column = div().flex_none().flex().flex_col().px(px(INSET));
-        let mut lower = div().flex_none().flex().flex_col();
-        if self.view == GALLERY_VIEW {
-            content_column = content_column
-                .child(div().h(px(GAP_HEADER)).flex_none())
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_start()
-                        .gap(px(GAP_HEADER_ICON))
-                        .child(hero)
-                        .child(
-                            div()
-                                .pt(px(GAP_HEADER_NAME))
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(name)
-                                .child(kind),
-                        ),
-                );
-            lower = lower.mt(px(GAP_HEADER_HEAD - GAP_KIND_HEAD));
-        } else {
-            content_column = content_column
-                .child(div().h(px(GAP_TOP)).flex_none())
-                .child(
-                    div()
-                        .w(px(content))
-                        .h(px(hero_h(self.pane_h, content)))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .overflow_hidden()
-                        .child(hero),
-                );
-            lower = lower.mt(px(GAP_HERO_TEXT)).child(name).child(kind);
-        }
-        lower = lower.child(
+        let heading = |top: f32| {
             div()
-                .mt(px(GAP_KIND_HEAD))
-                .flex()
-                .items_baseline()
-                .justify_between()
+                .mt(px(top))
                 .line_height(px(LINE_H))
                 .text_size(body)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ink.heading)
-                .child("Information")
-                .when(card.show_more, |heading| {
-                    heading.child(
+        };
+        let column = div().flex_none().flex().flex_col().px(px(INSET));
+        let lower = div().flex_none().flex().flex_col();
+        let (column, lower, head) = if self.view == GALLERY_VIEW {
+            let column = column.child(div().h(px(GAP_HEADER)).flex_none()).child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_start()
+                    .gap(px(GAP_HEADER_ICON))
+                    .child(hero)
+                    .child(
                         div()
-                            .line_height(px(SMALL_H))
-                            .text_size(small)
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(system_color(SystemColor::Link))
-                            .on_mouse_down(MouseButton::Left, {
-                                let finder = finder.clone();
-                                move |_: &MouseDownEvent, _, cx| {
-                                    finder.update(cx, |this, cx| {
-                                        this.preview_expanded = !this.preview_expanded;
-                                        crate::prefs::set_preview_info_expanded(
-                                            this.preview_expanded,
-                                        );
-                                        cx.notify();
-                                    })
-                                }
-                            })
-                            .child(if self.expanded {
-                                "Show Less"
-                            } else {
-                                "Show More"
-                            }),
-                    )
-                }),
-        );
+                            .pt(px(GAP_HEADER_NAME))
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(name)
+                            .child(kind),
+                    ),
+            );
+            (
+                column,
+                lower.mt(px(GAP_HEADER_HEAD - GAP_KIND_HEAD)),
+                GAP_HEADER + HEADER_ICON + GAP_HEADER_HEAD - GAP_KIND_HEAD,
+            )
+        } else {
+            let hero_h = hero_h(self.pane_h, content);
+            let column = column.child(div().h(px(GAP_TOP)).flex_none()).child(
+                div()
+                    .w(px(content))
+                    .h(px(hero_h))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(hero),
+            );
+            (
+                column,
+                lower.mt(px(GAP_HERO_TEXT)).child(name).child(kind),
+                GAP_TOP + hero_h + GAP_HERO_TEXT + NAME_H + GAP_NAME_KIND + LINE_H,
+            )
+        };
+        let info = heading(GAP_KIND_HEAD)
+            .flex()
+            .items_baseline()
+            .justify_between()
+            .child("Information")
+            .when(card.show_more, |info| {
+                info.child(
+                    div()
+                        .line_height(px(SMALL_H))
+                        .text_size(small)
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(system_color(SystemColor::Link))
+                        .on_mouse_down(MouseButton::Left, {
+                            let finder = finder.clone();
+                            move |_: &MouseDownEvent, _, cx| {
+                                finder.update(cx, |this, cx| {
+                                    this.preview_expanded = !this.preview_expanded;
+                                    crate::prefs::set_preview_info_expanded(this.preview_expanded);
+                                    cx.notify();
+                                })
+                            }
+                        })
+                        .child(if self.expanded {
+                            "Show Less"
+                        } else {
+                            "Show More"
+                        }),
+                )
+            });
 
         let mut block = div().mt(px(GAP_HEAD_ROWS)).flex().flex_col();
         for (index, (label, value)) in card.rows.iter().enumerate() {
@@ -917,49 +917,42 @@ impl Shown {
                     ),
             );
         }
-        lower = lower.child(block).when(card.show_tags, |lower| {
-            lower.child(
-                div()
-                    .mt(px(GAP_ROWS_TAGS))
+        let lower = lower
+            .child(info)
+            .child(block)
+            .when(card.show_tags, |lower| {
+                let tags = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
                     .line_height(px(LINE_H))
-                    .text_size(body)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(ink.heading)
-                    .child(finder_fs::words::say("Tags").into_owned()),
-            )
-        });
-
-        let tags = div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .line_height(px(LINE_H))
-            .text_size(body);
-        let tags = match (card.many, card.tags.first()) {
-            (false, Some(tag)) => tags
-                .child(tag_dot(tag.color))
-                .child(div().text_color(palette.label).child(tag.name.clone())),
-            (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
-            (true, _) => tags
-                .children(card.tags.iter().map(|tag| tag_pill(tag, palette.label)))
-                .child(
-                    div()
-                        .ml(px(3.))
-                        .text_color(system_color(SystemColor::Link))
-                        .child("Add Tag"),
-                ),
-        };
-        lower = lower.when(card.show_tags, |lower| {
-            lower.child(
-                div()
-                    .mt(px(GAP_TAGS_ADD))
-                    .flex_none()
-                    .h(px(TAGS_WELL_H))
-                    .w_full()
-                    .pt(px(TAGS_TEXT_TOP))
-                    .child(tags),
-            )
-        });
+                    .text_size(body);
+                let tags = match (card.many, card.tags.first()) {
+                    (false, Some(tag)) => tags
+                        .child(tag_dot(tag.color))
+                        .child(div().text_color(palette.label).child(tag.name.clone())),
+                    (false, None) => tags.text_color(palette.tertiary).child("Add Tags…"),
+                    (true, _) => tags
+                        .children(card.tags.iter().map(|tag| tag_pill(tag, palette.label)))
+                        .child(
+                            div()
+                                .ml(px(3.))
+                                .text_color(system_color(SystemColor::Link))
+                                .child("Add Tag"),
+                        ),
+                };
+                lower
+                    .child(heading(GAP_ROWS_TAGS).child(finder_fs::words::say("Tags").into_owned()))
+                    .child(
+                        div()
+                            .mt(px(GAP_TAGS_ADD))
+                            .flex_none()
+                            .h(px(TAGS_WELL_H))
+                            .w_full()
+                            .pt(px(TAGS_TEXT_TOP))
+                            .child(tags),
+                    )
+            });
 
         let actions = div()
             .flex_none()
@@ -1035,18 +1028,7 @@ impl Shown {
                         }
                     }),
             );
-        let head = match self.view == GALLERY_VIEW {
-            true => GAP_HEADER + HEADER_ICON + GAP_HEADER_HEAD - GAP_KIND_HEAD,
-            false => {
-                GAP_TOP
-                    + hero_h(self.pane_h, content)
-                    + GAP_HERO_TEXT
-                    + NAME_H
-                    + GAP_NAME_KIND
-                    + LINE_H
-            }
-        };
-        let content = content_column.child(lower);
+        let column = column.child(lower);
         let tall = head + GAP_KIND_HEAD + LINE_H + GAP_HEAD_ROWS + rows as f32 * (ROW_H + ROW_GAP)
             - ROW_GAP
             + if card.show_tags {
@@ -1064,7 +1046,7 @@ impl Shown {
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(content)
+                .child(column)
                 .child(div().flex_1())
                 .child(actions.pb(px(COLUMN_BOTTOM)))
                 .into_any_element();
@@ -1081,7 +1063,7 @@ impl Shown {
                     .right_0()
                     .bottom(px(band - RESIZE_EDGE))
                     .overflow_y_scroll()
-                    .child(content.pb(px(BOTTOM_PAD))),
+                    .child(column.pb(px(BOTTOM_PAD))),
             )
             .when(tall > self.pane_h + RESIZE_EDGE - band, |pane| {
                 pane.child(

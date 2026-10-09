@@ -1,6 +1,4 @@
-//! The toolbar's search field. With the private API it is Finder's own: the
-//! token field Finder takes from Suggestions.framework, which draws the
-//! suggestions menu and the tokens and turns a picked suggestion into one.
+//! The toolbar's search field; with the private API, Finder's own token field from Suggestions.framework.
 
 use gpui::Window;
 use objc2::rc::Retained;
@@ -55,7 +53,6 @@ mod finder {
         unsafe { msg_send![class, performSelector: selector] }
     }
 
-    /// Finder's field, which asks Spotlight for its suggestions as Finder's does.
     pub(super) fn field() -> Option<Retained<NSSearchField>> {
         if !*LOADED {
             return None;
@@ -101,8 +98,7 @@ fn string(object: &AnyObject, selector: Sel) -> Option<String> {
     Some(value?.downcast::<NSString>().ok()?.to_string())
 }
 
-/// What the field holds and the query Spotlight would run for it: its tokens
-/// and the text typed after them. A plain field holds only `text`.
+/// The field's search, and the query Spotlight would run for it.
 pub(crate) fn typed(window: &Window, text: &str) -> (Search, Option<String>) {
     field(window)
         .filter(|field| field.respondsToSelector(sel!(suggestions)))
@@ -117,16 +113,13 @@ fn read(field: &NSSearchField) -> (Search, Option<String>) {
     let terms = tokens
         .iter()
         .flat_map(|tokens| tokens.iter())
-        .filter_map(|token| term(&token));
+        .filter_map(|token| term(&token))
+        .collect();
     let text = field
         .cell()
         .and_then(|cell| string(&cell, sel!(untokenizedStringValue)))
         .unwrap_or_else(|| field.stringValue().to_string());
-    let search = Search {
-        terms: terms.collect(),
-        text,
-    };
-    (search, string(field, sel!(queryString)))
+    (Search { terms, text }, string(field, sel!(queryString)))
 }
 
 fn term(token: &AnyObject) -> Option<Term> {
@@ -152,8 +145,7 @@ fn term(token: &AnyObject) -> Option<Term> {
     })
 }
 
-/// A date token's range, which Spotlight's query writes as two local
-/// `$time.iso(...)` stamps.
+/// Spotlight's query writes a date token's range as two local `$time.iso(...)` stamps.
 fn dates(query: &str) -> Option<(f64, f64)> {
     let formatter = NSDateFormatter::new();
     formatter.setLocale(Some(&NSLocale::localeWithLocaleIdentifier(ns_string!(

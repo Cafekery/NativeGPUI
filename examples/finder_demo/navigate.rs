@@ -96,7 +96,6 @@ pub(crate) fn browser_windows(cx: &App) -> Vec<WindowHandle<FinderDemo>> {
         .collect()
 }
 
-/// Selects `items` in the frontmost window on their folder, or a new one, and brings it forward.
 pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
     let mut folders: Vec<(&'static str, Vec<SharedString>)> = Vec::new();
     for item in items.iter().map(|item| stored(item)) {
@@ -125,7 +124,7 @@ pub(crate) fn reveal(items: &[PathBuf], cx: &mut App) {
     }
 }
 
-fn showing(
+pub(crate) fn showing(
     folder: &str,
     windows: &[WindowHandle<FinderDemo>],
     cx: &App,
@@ -136,8 +135,7 @@ fn showing(
         .copied()
 }
 
-/// The folder `item` is selected in, and its key there: its own folder, unless no window shows
-/// that one and another lists the item.
+/// `item`'s own folder, unless no window shows that one and another lists the item.
 fn shown_at(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
     let folder = folder_at_path(&item.parent()?.to_string_lossy())?;
     let key = Path::new(folder).join(item.file_name()?);
@@ -148,8 +146,7 @@ fn shown_at(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
     Some(listed(item, cx).unwrap_or((folder, key)))
 }
 
-/// NSWorkspace sends a symlinked item as its target, so Safari arrives from its cryptex: it shows
-/// where a window, or else /Applications, lists a symlink to it under the same name.
+/// NSWorkspace sends a symlinked item as its target, so Safari arrives from its cryptex.
 fn listed(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
     let name = item.file_name()?.to_string_lossy();
     let real = std::fs::canonicalize(item).ok()?;

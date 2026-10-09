@@ -189,7 +189,6 @@ impl FinderDemo {
         overflows(self.list_content_w(), self.list_room)
     }
 
-    /// The icon area as Finder measures it, from the sidebar to the pane, in a window this wide.
     pub(crate) fn icon_room(&self, width: f32) -> Size<f32> {
         let pane = match self.preview_shown() {
             true => self.preview_w,
@@ -213,7 +212,7 @@ impl FinderDemo {
     pub(crate) fn columns(&self, window: &Window) -> usize {
         let fits = self.fits(window);
         let sorted = matches!(self.arrangement(), Some(Arrangement::By(_)));
-        // Finder arranges a folder when its items first show, not while the window is still opening.
+        // Finder arranges a folder when its items first show, not while its window opens.
         match sorted || self.metrics() == SidebarMetrics::default() || self.lines(false).is_empty()
         {
             true => fits,
