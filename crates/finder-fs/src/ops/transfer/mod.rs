@@ -67,12 +67,23 @@ impl Request {
         conflict: Conflict,
         on_error: OnError,
     ) -> Request {
-        let items = sources
+        let pairs = sources.into_iter().map(|source| {
+            let dest = into.join(source.file_name().unwrap_or_default());
+            (source, dest)
+        });
+        Request::each(kind, pairs, conflict, on_error)
+    }
+
+    /// Each source to a destination of its own, as a put back or a duplicate names it.
+    pub fn each(
+        kind: Kind,
+        pairs: impl IntoIterator<Item = (PathBuf, PathBuf)>,
+        conflict: Conflict,
+        on_error: OnError,
+    ) -> Request {
+        let items = pairs
             .into_iter()
-            .map(|source| Item {
-                dest: into.join(source.file_name().unwrap_or_default()),
-                source,
-            })
+            .map(|(source, dest)| Item { source, dest })
             .collect();
         Request {
             kind,
@@ -80,6 +91,17 @@ impl Request {
             conflict,
             on_error,
         }
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Each source with the destination it is aimed at.
+    pub fn items(&self) -> impl ExactSizeIterator<Item = (&Path, &Path)> {
+        self.items
+            .iter()
+            .map(|item| (item.source.as_path(), item.dest.as_path()))
     }
 }
 
@@ -231,11 +253,34 @@ impl Transfer {
         self.shared.unpaused.notify_all();
     }
 
-    /// What has landed stays; a file caught halfway is removed.
+    /// What has landed stays; a file caught halfway is removed. A cancel before `run` holds too.
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::SeqCst);
         let _paused = self.shared.paused.lock();
         self.shared.unpaused.notify_all();
+    }
+
+    /// Work done item by item outside the engine reports through the same handle.
+    pub(crate) fn begin_steps(&self, items: u64) {
+        self.shared.begin();
+        self.shared
+            .counts
+            .items_total
+            .store(items, Ordering::Relaxed);
+        self.shared.status.lock().counting = false;
+    }
+
+    /// Holds while paused; false once cancelled.
+    pub(crate) fn next_step(&self) -> bool {
+        self.shared.wait_while_paused();
+        !self.shared.halted()
+    }
+
+    pub(crate) fn step_done(&self) {
+        self.shared
+            .counts
+            .items_done
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn run(&self, request: Request) -> Outcome {
@@ -329,7 +374,6 @@ fn refused(shared: &Shared, item: &Item, error: io::Error) -> Outcome {
 
 impl Shared {
     fn begin(&self) {
-        self.cancelled.store(false, Ordering::SeqCst);
         self.stopped.store(false, Ordering::SeqCst);
         let counts = &self.counts;
         for count in [
@@ -785,7 +829,7 @@ impl<'a> Job<'a> {
             let _ = copy::settle_dir(self, &made.source, &made.dest);
         }
         self.swap(&mut record);
-        if self.shared.counts.items_done.load(Ordering::Relaxed) > 0 {
+        if self.allocated_done.load(Ordering::Relaxed) > 0 {
             if let Err(error) = self.volume.flush() {
                 let into = request.items.first().map(|item| item.dest.clone());
                 let into = into.unwrap_or_default();

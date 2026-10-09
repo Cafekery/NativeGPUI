@@ -231,9 +231,13 @@ fn remove_at(dir: &OwnedFd, name: &CStr) -> io::Result<()> {
     unlink_at(dir, name, libc::AT_REMOVEDIR)
 }
 
-pub(super) fn identity(path: &Path) -> io::Result<(u64, u64)> {
+pub(super) fn stat(path: &Path) -> io::Result<libc::stat> {
     let (dir, name) = split(path)?;
-    let meta = stat_at(&open_dir(dir)?, &name)?;
+    stat_at(&open_dir(dir)?, &name)
+}
+
+pub(super) fn identity(path: &Path) -> io::Result<(u64, u64)> {
+    let meta = stat(path)?;
     Ok((meta.st_dev as u64, meta.st_ino))
 }
 
@@ -259,7 +263,10 @@ pub(super) fn transfer(src: &Path, dst: &Path, is_move: bool) -> io::Result<()> 
         return Ok(());
     }
     if let Err(err) = copy_at(&sdir, &sname, &ddir, &dname) {
-        let _ = remove_at(&ddir, &dname);
+        // EEXIST comes from the first create: whatever holds the name was there before.
+        if err.raw_os_error() != Some(libc::EEXIST) {
+            let _ = remove_at(&ddir, &dname);
+        }
         return Err(err);
     }
     if is_move {

@@ -11,8 +11,8 @@ use objc2_foundation::NSFileManager;
 
 use super::{Gate, Item, Job, Swap, Task, What, copy, volume};
 use crate::ops::{
-    Conflict, NAME_MAX, duplicate_path, free_path, place_one, real_dir, same_item, staging_path,
-    taken,
+    Conflict, NAME_MAX, deep, duplicate_path, free_path, place_one, real_dir, same_item,
+    staging_path, taken,
 };
 
 /// A folder past this length could hold a name that takes its path past `PATH_MAX`.
@@ -70,13 +70,13 @@ fn plan(
 ) -> io::Result<()> {
     let meta = fs::symlink_metadata(&item.source)?;
     let into = item.dest.parent().unwrap_or(Path::new("/"));
-    let into_meta = fs::metadata(into)?;
-    if job.is_move() && meta.dev() == into_meta.dev() {
+    let (into_dev, into_gid) = folder(into)?;
+    if job.is_move() && meta.dev() == into_dev {
         job.shared.wait_while_paused();
         if job.halted() {
             return Ok(());
         }
-        let placed = place_one(fm, &item.source, item.dest.clone(), job.conflict, true)?;
+        let placed = place_one(fm, &item.source, item.dest.clone(), job.conflict)?;
         if let Some(dest) = &placed.dest {
             job.resolved(root, dest);
         }
@@ -99,9 +99,21 @@ fn plan(
         Landing::Fresh(at) | Landing::Over(at) | Landing::Into(at) => at,
     };
     job.resolved(root, at);
-    let gate = Gate::open(into_meta.gid());
+    let gate = Gate::open(into_gid);
     place(&walk, &item.source, &meta, landing, &gate, true, true);
     Ok(())
+}
+
+/// Past `PATH_MAX` a folder is reached a component at a time.
+fn folder(path: &Path) -> io::Result<(u64, u32)> {
+    match fs::metadata(path) {
+        Ok(meta) => Ok((meta.dev(), meta.gid())),
+        Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG) => {
+            let meta = deep::stat(path)?;
+            Ok((meta.st_dev as u64, meta.st_gid))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn resolve(job: &Job, source: &Path, dest: &Path, meta: &Metadata) -> Option<Landing> {
@@ -180,6 +192,9 @@ fn place(
         Landing::Fresh(dest) => (dest, false),
         Landing::Over(dest) | Landing::Into(dest) => (dest, true),
     };
+    if long(source) || long(&dest) {
+        return walk.queue(task(What::Deep, dest, 0, over));
+    }
     if meta.is_symlink() {
         return walk.queue(task(What::Link, dest, 0, over));
     }

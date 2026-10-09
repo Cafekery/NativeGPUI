@@ -89,6 +89,21 @@ fn available_at(values: &Values, path: &Path) -> u64 {
         .unwrap_or_else(|| statfs_available(path))
 }
 
+/// Counts purgeable space as free, as Finder does.
+pub(crate) fn available(path: &Path) -> u64 {
+    let keys = unsafe {
+        NSArray::from_slice(&[
+            NSURLVolumeAvailableCapacityForImportantUsageKey,
+            NSURLVolumeAvailableCapacityKey,
+        ])
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    match url.resourceValuesForKeys_error(&keys) {
+        Ok(values) => available_at(&values, path),
+        Err(_) => statfs_available(path),
+    }
+}
+
 fn statfs(path: &Path) -> Option<libc::statfs> {
     let path = crate::c_path(path).ok()?;
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };

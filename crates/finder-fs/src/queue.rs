@@ -1,13 +1,14 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashMap;
 use std::io;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
 
-use crate::ops::{self, Conflict, Done, Op, Unfinished};
+use parking_lot::Mutex;
+
+use crate::ops::transfer::{Kind, OnError, Progress, Transfer};
+use crate::ops::{self, Carried, Conflict, Done, Op, Unfinished};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct JobId(u64);
@@ -20,14 +21,6 @@ impl JobId {
 
 #[derive(Debug)]
 pub enum Event {
-    Started(JobId),
-    Progress {
-        job: JobId,
-        done_bytes: u64,
-        total_bytes: u64,
-        bytes_per_sec: f64,
-        item: PathBuf,
-    },
     Finished(JobId, io::Result<Done>),
     Failed {
         job: JobId,
@@ -35,180 +28,89 @@ pub enum Event {
         error: io::Error,
         left: Option<Op>,
     },
-    Paused,
-    Resumed,
     Cancelled {
         job: JobId,
         done: Done,
     },
-}
-
-struct Job {
-    id: JobId,
-    op: Op,
-    conflict: Conflict,
-}
-
-struct State {
-    jobs: VecDeque<Job>,
-    paused: bool,
-    shutdown: bool,
+    /// A move, copy, duplicate or put back, which carries on past the items that fail.
+    Carried(JobId, Carried),
 }
 
 struct Shared {
-    state: Mutex<State>,
-    cond: Condvar,
-    cancelled: Mutex<HashSet<JobId>>,
-    pending: AtomicUsize,
+    running: Mutex<HashMap<JobId, Transfer>>,
     next_id: AtomicU64,
     on_event: Mutex<Box<dyn Fn(Event) + Send>>,
 }
 
-impl Shared {
-    fn emit(&self, event: Event) {
-        (self.on_event.lock().unwrap())(event);
-    }
-
-    fn drop_unstarted(&self, job: JobId) {
-        self.pending.fetch_sub(1, Ordering::SeqCst);
-        self.emit(Event::Cancelled {
-            job,
-            done: Done::default(),
-        });
-    }
-
-    fn take_cancel(&self, job: JobId) -> bool {
-        self.cancelled.lock().unwrap().remove(&job)
-    }
-
-    fn wait_while_paused(&self) {
-        let mut state = self.state.lock().unwrap();
-        while state.paused && !state.shutdown {
-            state = self.cond.wait(state).unwrap();
-        }
-    }
-}
-
+/// Every job starts at once on a thread of its own, and is paused, cancelled and read by its id.
 #[derive(Clone)]
 pub struct Queue {
     shared: Arc<Shared>,
-    _alive: Arc<Alive>,
-}
-
-/// The worker holds `Shared` too, so the last `Queue` dropped tells it to exit.
-struct Alive(Arc<Shared>);
-
-impl Drop for Alive {
-    fn drop(&mut self) {
-        self.0.state.lock().unwrap().shutdown = true;
-        self.0.cond.notify_all();
-    }
 }
 
 impl Queue {
     pub fn new(on_event: impl Fn(Event) + Send + 'static) -> Queue {
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State {
-                jobs: VecDeque::new(),
-                paused: false,
-                shutdown: false,
-            }),
-            cond: Condvar::new(),
-            cancelled: Mutex::new(HashSet::new()),
-            pending: AtomicUsize::new(0),
-            next_id: AtomicU64::new(1),
-            on_event: Mutex::new(Box::new(on_event)),
-        });
-        let worker = shared.clone();
-        thread::spawn(move || work(&worker));
         Queue {
-            _alive: Arc::new(Alive(shared.clone())),
-            shared,
+            shared: Arc::new(Shared {
+                running: Mutex::new(HashMap::new()),
+                next_id: AtomicU64::new(1),
+                on_event: Mutex::new(Box::new(on_event)),
+            }),
         }
     }
 
     pub fn submit(&self, op: Op, conflict: Conflict) -> JobId {
-        let id = JobId(self.shared.next_id.fetch_add(1, Ordering::SeqCst));
-        self.shared.pending.fetch_add(1, Ordering::SeqCst);
-        self.shared
-            .state
-            .lock()
-            .unwrap()
-            .jobs
-            .push_back(Job { id, op, conflict });
-        self.shared.cond.notify_all();
+        let id = JobId(self.shared.next_id.fetch_add(1, Ordering::Relaxed));
+        let transfer = Transfer::default();
+        self.shared.running.lock().insert(id, transfer.clone());
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let event = run(id, op, conflict, &transfer);
+            shared.running.lock().remove(&id);
+            (shared.on_event.lock())(event);
+        });
         id
     }
 
-    pub fn pause(&self) {
-        self.shared.state.lock().unwrap().paused = true;
-        self.shared.emit(Event::Paused);
+    /// `None` once the job has ended.
+    pub fn progress(&self, job: JobId) -> Option<Progress> {
+        self.shared.running.lock().get(&job).map(Transfer::progress)
     }
 
-    pub fn resume(&self) {
-        self.shared.state.lock().unwrap().paused = false;
-        self.shared.cond.notify_all();
-        self.shared.emit(Event::Resumed);
+    pub fn pause(&self, job: JobId) {
+        if let Some(transfer) = self.transfer(job) {
+            transfer.pause();
+        }
     }
 
-    /// A job already running finishes its current item first.
+    pub fn resume(&self, job: JobId) {
+        if let Some(transfer) = self.transfer(job) {
+            transfer.resume();
+        }
+    }
+
+    /// What has landed stays.
     pub fn cancel(&self, job: JobId) {
-        let mut state = self.shared.state.lock().unwrap();
-        match state.jobs.iter().position(|j| j.id == job) {
-            Some(pos) => {
-                state.jobs.remove(pos);
-                drop(state);
-                self.shared.drop_unstarted(job);
-            }
-            None => {
-                drop(state);
-                self.shared.cancelled.lock().unwrap().insert(job);
-            }
+        if let Some(transfer) = self.transfer(job) {
+            transfer.cancel();
         }
     }
 
     pub fn pending(&self) -> usize {
-        self.shared.pending.load(Ordering::SeqCst)
+        self.shared.running.lock().len()
+    }
+
+    fn transfer(&self, job: JobId) -> Option<Transfer> {
+        self.shared.running.lock().get(&job).cloned()
     }
 }
 
-fn next_job(shared: &Shared) -> Option<Job> {
-    loop {
-        let mut state = shared.state.lock().unwrap();
-        while !state.shutdown && (state.paused || state.jobs.is_empty()) {
-            state = shared.cond.wait(state).unwrap();
-        }
-        if state.paused {
-            return None;
-        }
-        let job = state.jobs.pop_front()?;
-        if !shared.take_cancel(job.id) {
-            return Some(job);
-        }
-        drop(state);
-        shared.drop_unstarted(job.id);
-    }
-}
-
-fn work(shared: &Shared) {
-    while let Some(job) = next_job(shared) {
-        shared.emit(Event::Started(job.id));
-        let outcome = run(shared, job);
-        shared.pending.fetch_sub(1, Ordering::SeqCst);
-        shared.emit(outcome);
-    }
-}
-
-fn run(
-    shared: &Shared,
-    Job {
-        id,
-        mut op,
-        conflict,
-    }: Job,
-) -> Event {
+fn run(id: JobId, op: Op, conflict: Conflict, transfer: &Transfer) -> Event {
+    let mut op = match ops::carry(op, conflict, OnError::Continue, transfer) {
+        Ok(carried) => return Event::Carried(id, carried),
+        Err(op) => op,
+    };
     let Some(items) = items_mut(&mut op).map(std::mem::take) else {
-        shared.wait_while_paused();
         return match ops::perform(op, conflict).map_err(Unfinished::from_error) {
             Ok(done) => Event::Finished(id, Ok(done)),
             Err(Ok(unfinished)) => Event::Failed {
@@ -220,35 +122,21 @@ fn run(
             Err(Err(error)) => Event::Finished(id, Err(error)),
         };
     };
-    let sized = moves_bytes(&op, &items);
-    let total_bytes = match sized {
-        true => total_size(items.clone(), Duration::from_millis(100)),
-        false => 0,
-    };
-    let mut meter = Meter::new();
+    transfer.begin_steps(items.len() as u64);
     let mut results = Vec::with_capacity(items.len());
     let mut undos = Vec::with_capacity(items.len());
     for (at, item) in items.iter().enumerate() {
-        shared.wait_while_paused();
-        if shared.take_cancel(id) {
+        if !transfer.next_step() {
             return Event::Cancelled {
                 job: id,
                 done: batch_done(results, undos),
             };
         }
-        let size = if sized { ops::walk_size(item) } else { 0 };
         match ops::perform(with_items(&op, vec![item.clone()]), conflict) {
             Ok(done) => {
                 results.extend(done.results);
                 undos.extend(done.undo);
-                let bytes_per_sec = meter.tick(size);
-                shared.emit(Event::Progress {
-                    job: id,
-                    done_bytes: meter.done_bytes,
-                    total_bytes,
-                    bytes_per_sec,
-                    item: item.clone(),
-                });
+                transfer.step_done();
             }
             Err(error) => {
                 let error = match Unfinished::from_error(error) {
@@ -280,23 +168,23 @@ fn batch_done(results: Vec<PathBuf>, mut undos: Vec<Op>) -> Done {
     Done { results, undo }
 }
 
+/// The ops run one item at a time, so a cancel lands between items.
 fn items_mut(op: &mut Op) -> Option<&mut Vec<PathBuf>> {
     match op {
-        Op::Move { items, .. }
-        | Op::Copy { items, .. }
-        | Op::CopyExactly { items, .. }
-        | Op::Duplicate(items)
-        | Op::MakeAlias(items)
-        | Op::Trash(items)
-        | Op::DeleteImmediately(items) => Some(items),
+        Op::Trash(items) | Op::DeleteImmediately(items) | Op::MakeAlias(items) => Some(items),
         // One archive comes out of the whole selection, so it is never split into item jobs.
         Op::Compress(_)
         | Op::Rename { .. }
         | Op::NewFolder { .. }
         | Op::NewFile { .. }
-        | Op::PutBack(_)
         | Op::Quick(_)
-        | Op::Batch(_) => None,
+        | Op::Batch(_)
+        | Op::Move { .. }
+        | Op::Copy { .. }
+        | Op::CopyExactly { .. }
+        | Op::Duplicate(_)
+        | Op::PutBack(_)
+        | Op::Retry(_) => None,
     }
 }
 
@@ -306,62 +194,6 @@ fn with_items(op: &Op, items: Vec<PathBuf>) -> Op {
         *slot = items;
     }
     op
-}
-
-fn moves_bytes(op: &Op, items: &[PathBuf]) -> bool {
-    let device = |path: &Path| std::fs::symlink_metadata(path).map(|meta| meta.dev()).ok();
-    match op {
-        Op::Copy { .. } | Op::CopyExactly { .. } | Op::Duplicate(_) => true,
-        Op::Move { into, .. } => items.iter().any(|item| device(item) != device(into)),
-        _ => false,
-    }
-}
-
-fn total_size(items: Vec<PathBuf>, budget: Duration) -> u64 {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(items.iter().map(|p| ops::walk_size(p)).sum::<u64>());
-    });
-    rx.recv_timeout(budget).unwrap_or(0)
-}
-
-struct Meter {
-    start: Instant,
-    done_bytes: u64,
-    window: VecDeque<(Instant, u64)>,
-}
-
-impl Meter {
-    fn new() -> Meter {
-        Meter {
-            start: Instant::now(),
-            done_bytes: 0,
-            window: VecDeque::new(),
-        }
-    }
-
-    fn tick(&mut self, added: u64) -> f64 {
-        self.done_bytes += added;
-        let now = Instant::now();
-        self.window.push_back((now, self.done_bytes));
-        while self
-            .window
-            .front()
-            .is_some_and(|&(t, _)| now.duration_since(t) > Duration::from_secs(1))
-        {
-            self.window.pop_front();
-        }
-        let (t0, b0) = match self.window.len() {
-            2.. => self.window[0],
-            _ => (self.start, 0),
-        };
-        let dt = now.duration_since(t0).as_secs_f64();
-        if dt > 0.0 {
-            (self.done_bytes - b0) as f64 / dt
-        } else {
-            0.0
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -441,37 +273,51 @@ impl Journal {
 
 fn label_for(op: &Op) -> String {
     match op {
-        Op::Move { items, .. } => describe("Move", items.iter()),
-        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items.iter()),
-        Op::Duplicate(items) => describe("Duplicate", items.iter()),
-        Op::MakeAlias(items) => describe("Make Alias", items.iter()),
-        Op::Compress(items) => describe("Compress", items.iter()),
-        Op::Trash(items) => format!("{} to Trash", describe("Move", items.iter())),
-        Op::DeleteImmediately(items) => describe("Delete", items.iter()),
+        Op::Move { items, .. } => describe("Move", items),
+        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items),
+        Op::Duplicate(items) => describe("Duplicate", items),
+        Op::MakeAlias(items) => describe("Make Alias", items),
+        Op::Compress(items) => describe("Compress", items),
+        Op::Trash(items) => format!("{} to Trash", describe("Move", items)),
+        Op::DeleteImmediately(items) => describe("Delete", items),
         Op::Rename { .. } => "Rename".to_string(),
         Op::NewFolder { .. } => "New Folder".to_string(),
         Op::NewFile { .. } => "New File".to_string(),
-        Op::PutBack(items) => describe("Put Back", items.iter().map(|restore| &restore.to)),
+        Op::PutBack(items) => {
+            let back: Vec<&Path> = items.iter().map(|restore| restore.to.as_path()).collect();
+            describe("Put Back", &back)
+        }
+        Op::Retry(request) => {
+            let verb = match request.kind() {
+                Kind::Move => "Move",
+                Kind::Copy | Kind::CopyExactly => "Copy",
+            };
+            let sources: Vec<&Path> = request.items().map(|(source, _)| source).collect();
+            describe(verb, &sources)
+        }
         Op::Quick(quick) => quick.label().to_string(),
         Op::Batch(ops) => ops.first().map(label_for).unwrap_or_default(),
     }
 }
 
-fn describe<'a>(verb: &str, mut items: impl ExactSizeIterator<Item = &'a PathBuf>) -> String {
-    match (items.len(), items.next()) {
-        (1, Some(only)) => {
-            let name = only.file_name().unwrap_or_default().to_string_lossy();
-            format!("{verb} of \u{201c}{name}\u{201d}")
+fn describe(verb: &str, items: &[impl AsRef<Path>]) -> String {
+    match items {
+        [only] => {
+            let name = only.as_ref().file_name().unwrap_or_default();
+            format!("{verb} of \u{201c}{}\u{201d}", name.to_string_lossy())
         }
-        (count, _) => format!("{verb} of {count} Items"),
+        _ => format!("{verb} of {} Items", items.len()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::transfer::End;
     use std::fs;
     use std::process::Command;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     /// An HFS+ RAM disk: an APFS-to-APFS copy is a `copyfile(3)` clone, not a byte copy.
     struct RamDisk {
@@ -522,6 +368,14 @@ mod tests {
         dir
     }
 
+    fn listen() -> (Queue, mpsc::Receiver<Event>) {
+        let (tx, rx) = mpsc::channel();
+        let queue = Queue::new(move |event| {
+            let _ = tx.send(event);
+        });
+        (queue, rx)
+    }
+
     fn expect(
         rx: &mpsc::Receiver<Event>,
         timeout: Duration,
@@ -539,20 +393,20 @@ mod tests {
         }
     }
 
-    fn expect_finished(rx: &mpsc::Receiver<Event>, id: JobId) -> Done {
+    fn carried(rx: &mpsc::Receiver<Event>, id: JobId) -> Carried {
         match expect(
             rx,
-            Duration::from_secs(10),
-            |e| matches!(e, Event::Finished(job, _) if *job == id),
+            Duration::from_secs(20),
+            |e| matches!(e, Event::Carried(job, _) if *job == id),
         ) {
-            Event::Finished(_, result) => result.unwrap(),
+            Event::Carried(_, carried) => carried,
             _ => unreachable!(),
         }
     }
 
     #[test]
-    fn submits_and_finishes_jobs_in_order() {
-        let dir = temp_dir("order");
+    fn every_job_ends_with_its_own_event() {
+        let dir = temp_dir("each");
         let src = dir.join("src");
         let dst = dir.join("dst");
         fs::create_dir_all(&src).unwrap();
@@ -565,12 +419,8 @@ mod tests {
             })
             .collect();
 
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
-
-        let ids: Vec<JobId> = files
+        let (queue, rx) = listen();
+        let mut running: Vec<JobId> = files
             .iter()
             .map(|f| {
                 queue.submit(
@@ -583,178 +433,126 @@ mod tests {
             })
             .collect();
 
-        for id in &ids {
-            expect_finished(&rx, *id);
+        while !running.is_empty() {
+            let event = rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("every job ends");
+            let Event::Carried(job, carried) = event else {
+                panic!("a copy ends carried: {event:?}");
+            };
+            assert!(carried.failures.is_empty(), "{:?}", carried.failures);
+            assert_eq!(carried.end, End::Finished);
+            running.retain(|id| *id != job);
         }
         for file in &files {
             assert!(dst.join(file.file_name().unwrap()).exists());
         }
+        assert_eq!(queue.pending(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn pause_blocks_the_next_job_until_resume() {
-        let dir = temp_dir("pause");
-        let src = dir.join("src");
-        let dst = dir.join("dst");
-        fs::create_dir_all(&src).unwrap();
-        fs::create_dir_all(&dst).unwrap();
-        let a = src.join("a.txt");
-        let b = src.join("b.txt");
-        fs::write(&a, "1").unwrap();
-        fs::write(&b, "1").unwrap();
-
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
-
-        let id1 = queue.submit(
-            Op::Copy {
-                items: vec![a.clone()],
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-        expect_finished(&rx, id1);
-
-        queue.pause();
-        expect(&rx, Duration::from_secs(1), |e| matches!(e, Event::Paused));
-
-        let id2 = queue.submit(
-            Op::Copy {
-                items: vec![b.clone()],
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-        match rx.recv_timeout(Duration::from_millis(300)) {
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            other => panic!("expected no activity while paused, got {other:?}"),
-        }
-        assert!(!dst.join("b.txt").exists());
-
-        queue.resume();
-        expect(&rx, Duration::from_secs(1), |e| matches!(e, Event::Resumed));
-        expect_finished(&rx, id2);
-        assert!(dst.join("b.txt").exists());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn cancel_skips_a_pending_job() {
-        let dir = temp_dir("cancel");
-        let src = dir.join("src");
-        let dst = dir.join("dst");
-        fs::create_dir_all(&src).unwrap();
-        fs::create_dir_all(&dst).unwrap();
-        let a = src.join("a.txt");
-        let b = src.join("b.txt");
-        fs::write(&a, "1").unwrap();
-        fs::write(&b, "1").unwrap();
-
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
-        queue.pause();
-        expect(&rx, Duration::from_secs(1), |e| matches!(e, Event::Paused));
-
-        let id1 = queue.submit(
-            Op::Copy {
-                items: vec![a.clone()],
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-        let id2 = queue.submit(
-            Op::Copy {
-                items: vec![b.clone()],
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-        queue.cancel(id2);
-        expect(
-            &rx,
-            Duration::from_secs(1),
-            |e| matches!(e, Event::Cancelled { job, .. } if *job == id2),
-        );
-        assert_eq!(queue.pending(), 1);
-
-        queue.resume();
-        expect(&rx, Duration::from_secs(1), |e| matches!(e, Event::Resumed));
-        expect_finished(&rx, id1);
-
-        assert!(dst.join("a.txt").exists());
-        assert!(!dst.join("b.txt").exists());
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_cancelled_copy_keeps_what_landed() {
-        if !crate::trash_reachable() {
+    fn a_held_job_lets_the_next_one_run_and_cancels_whole() {
+        let Some(ram) = RamDisk::new(300, &format!("QueueHeld{}", std::process::id())) else {
+            eprintln!("skipping: could not create a RAM disk for a non-cloned copy");
             return;
+        };
+        let dir = temp_dir("held");
+        let big = dir.join("big.bin");
+        fs::File::create(&big).unwrap().set_len(200 << 20).unwrap();
+        let small = dir.join("small.txt");
+        fs::write(&small, "small").unwrap();
+
+        let (queue, rx) = listen();
+        let held = queue.submit(
+            Op::Copy {
+                items: vec![big.clone()],
+                into: ram.mount.clone(),
+            },
+            Conflict::KeepBoth,
+        );
+        queue.pause(held);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let progress = queue.progress(held).expect("a held job is still running");
+            if progress.paused && progress.bytes_done > 0 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no file started: {progress:?}");
+            thread::sleep(Duration::from_millis(2));
         }
-        let dir = temp_dir("cancel-landed");
-        let src = dir.join("src");
-        let dst = dir.join("dst");
-        fs::create_dir_all(&src).unwrap();
-        fs::create_dir_all(&dst).unwrap();
-        let files: Vec<PathBuf> = (0..200)
+
+        let next = queue.submit(
+            Op::Copy {
+                items: vec![small.clone()],
+                into: ram.mount.clone(),
+            },
+            Conflict::KeepBoth,
+        );
+        let ran = carried(&rx, next);
+        assert_eq!(
+            ran.done.results,
+            vec![ram.mount.join("small.txt")],
+            "the next job waited for the held one"
+        );
+        assert!(queue.progress(held).is_some_and(|progress| progress.paused));
+
+        queue.cancel(held);
+        let cancelled = carried(&rx, held);
+        assert_eq!(cancelled.end, End::Cancelled);
+        assert!(cancelled.done.results.is_empty());
+        assert!(
+            queue.progress(held).is_none(),
+            "an ended job reports nothing"
+        );
+        let left: Vec<_> = fs::read_dir(&ram.mount)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("big") || name.starts_with(".finder-fs-"))
+            .collect();
+        assert!(left.is_empty(), "a cancelled copy left {left:?}");
+        assert_eq!(fs::metadata(&big).unwrap().len(), 200 << 20);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancel_lands_between_items() {
+        let dir = temp_dir("steps");
+        let items: Vec<PathBuf> = (0..3)
             .map(|i| {
-                let path = src.join(format!("f{i:03}.txt"));
+                let path = dir.join(format!("f{i}.txt"));
                 fs::write(&path, "x").unwrap();
                 path
             })
             .collect();
 
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
-        let id = queue.submit(
-            Op::Copy {
-                items: files.clone(),
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-
-        expect(
-            &rx,
-            Duration::from_secs(10),
-            |e| matches!(e, Event::Progress { job, .. } if *job == id),
-        );
+        let (queue, rx) = listen();
+        let id = queue.submit(Op::MakeAlias(items.clone()), Conflict::KeepBoth);
+        queue.pause(id);
         queue.cancel(id);
-        let event = expect(
+        let Event::Cancelled { done, .. } = expect(
             &rx,
             Duration::from_secs(10),
             |e| matches!(e, Event::Cancelled { job, .. } if *job == id),
-        );
-        let Event::Cancelled { done, .. } = event else {
+        ) else {
             unreachable!()
         };
         assert!(
-            !done.results.is_empty(),
-            "the items that landed before the cancel are still results"
+            done.results.len() < items.len(),
+            "every item ran past the cancel"
         );
-        for landed in &done.results {
-            assert!(landed.exists() && landed.starts_with(&dst));
+        for alias in &done.results {
+            assert!(alias.exists(), "a result that never landed: {alias:?}");
         }
-        let undo = done.undo.expect("what landed is still undoable");
-        let back = ops::perform(undo, Conflict::Replace).unwrap();
-        assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
 
-        crate::purge(&back.results);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_batch_that_fails_keeps_what_landed() {
+    fn a_copy_that_fails_keeps_what_landed() {
         if !crate::trash_reachable() {
             return;
         }
@@ -767,32 +565,24 @@ mod tests {
         fs::write(&good, "landed").unwrap();
         let missing = src.join("missing.txt");
 
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
+        let (queue, rx) = listen();
         let id = queue.submit(
             Op::Copy {
-                items: vec![good.clone(), missing.clone()],
+                items: vec![missing.clone(), good.clone()],
                 into: dst.clone(),
             },
             Conflict::Replace,
         );
 
-        let event = expect(
-            &rx,
-            Duration::from_secs(10),
-            |e| matches!(e, Event::Failed { job, .. } if *job == id),
-        );
-        let Event::Failed { done, .. } = event else {
-            unreachable!()
-        };
+        let carried = carried(&rx, id);
+        assert_eq!(carried.failures.len(), 1);
+        assert_eq!(carried.failures[0].source, missing);
         assert_eq!(
-            done.results,
+            carried.done.results,
             vec![dst.join("good.txt")],
-            "the item that landed is still a result"
+            "the item after the one that failed still landed"
         );
-        let undo = done.undo.expect("what landed is still undoable");
+        let undo = carried.done.undo.expect("what landed is still undoable");
         let back = ops::perform(undo, Conflict::Replace).unwrap();
         assert!(!dst.join("good.txt").exists());
 
@@ -853,72 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn throughput_is_within_30_percent_of_wall_clock() {
-        let Some(ram) = RamDisk::new(320, &format!("QueueThroughput{}", std::process::id())) else {
-            eprintln!("skipping: could not create a RAM disk for a non-cloned copy");
-            return;
-        };
-        let dir = temp_dir("throughput");
-        let src = dir.join("src");
-        fs::create_dir_all(&src).unwrap();
-        let dst = ram.mount.clone();
-        let file = src.join("big.bin");
-        fs::write(&file, vec![0u8; 200 * 1024 * 1024]).unwrap();
-
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |e| {
-            let _ = tx.send(e);
-        });
-        let start = Instant::now();
-        let id = queue.submit(
-            Op::Copy {
-                items: vec![file.clone()],
-                into: dst.clone(),
-            },
-            Conflict::Replace,
-        );
-
-        let mut measured = None;
-        loop {
-            match rx.recv_timeout(Duration::from_secs(30)).expect("event") {
-                Event::Progress {
-                    job, bytes_per_sec, ..
-                } if job == id => measured = Some(bytes_per_sec),
-                Event::Finished(job, result) if job == id => {
-                    result.unwrap();
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let elapsed = start.elapsed().as_secs_f64();
-        let wall_rate = (200.0 * 1024.0 * 1024.0) / elapsed;
-        let measured = measured.expect("a progress event carried a rate");
-        let ratio = measured / wall_rate;
-        assert!(
-            (0.7..1.3).contains(&ratio),
-            "measured {measured} B/s vs wall clock {wall_rate} B/s (ratio {ratio})"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_dropped_queue_lets_its_worker_go() {
-        let queue = Queue::new(|_| {});
-        let shared = Arc::downgrade(&queue.shared);
-        drop(queue);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while shared.upgrade().is_some() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            shared.upgrade().is_none(),
-            "the worker thread still holds the queue"
-        );
-    }
-
-    #[test]
     fn an_undo_that_stops_partway_hands_back_what_is_left() {
         let dir = temp_dir("undo-left");
         let item = dir.join("item.txt");
@@ -932,22 +656,11 @@ mod tests {
             item: item.clone(),
             to: dest.clone(),
         };
-        let (tx, rx) = mpsc::channel();
-        let queue = Queue::new(move |event| {
-            let _ = tx.send(event);
-        });
+        let (queue, rx) = listen();
         let id = queue.submit(Op::PutBack(vec![missing, real]), Conflict::KeepBoth);
-        match expect(
-            &rx,
-            Duration::from_secs(10),
-            |e| matches!(e, Event::Failed { job, .. } if *job == id),
-        ) {
-            Event::Failed { done, left, .. } => {
-                assert_eq!(done.results, vec![dest.clone()]);
-                assert!(matches!(left, Some(Op::PutBack(left)) if left.len() == 1));
-            }
-            _ => unreachable!(),
-        }
+        let carried = carried(&rx, id);
+        assert_eq!(carried.done.results, vec![dest.clone()]);
+        assert!(matches!(carried.left, Some(Op::PutBack(left)) if left.len() == 1));
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -4,10 +4,6 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use objc2_foundation::{
-    NSArray, NSNumber, NSString, NSURL, NSURLVolumeAvailableCapacityForImportantUsageKey,
-};
-
 const SYNC_VOLUME_FULLSYNC: c_int = 0x01;
 const SYNC_VOLUME_WAIT: c_int = 0x02;
 
@@ -33,8 +29,17 @@ pub(super) struct Volume {
 
 impl Volume {
     pub fn of(dir: &Path) -> io::Result<Volume> {
+        // No mount point lies past `PATH_MAX`, so the nearest ancestor that resolves shares the volume.
+        let resolves = |(_, meta): &(&Path, io::Result<std::fs::Metadata>)| !matches!(meta, Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG));
+        let found = dir
+            .ancestors()
+            .map(|at| (at, std::fs::metadata(at)))
+            .find(resolves);
+        let Some((dir, meta)) = found else {
+            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+        };
+        let dev = meta?.dev();
         let path = crate::c_path(dir)?;
-        let dev = std::fs::metadata(dir)?.dev() as u64;
         let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
         crate::check(unsafe { libc::statfs(path.as_ptr(), &mut stat) })?;
         // SAFETY: the kernel NUL-terminates both names.
@@ -65,27 +70,7 @@ impl Volume {
 
     /// Counts purgeable space as free, as Finder does.
     pub fn available(&self) -> u64 {
-        let key = unsafe { NSURLVolumeAvailableCapacityForImportantUsageKey };
-        let url = NSURL::fileURLWithPath(&NSString::from_str(&self.mount.to_string_lossy()));
-        let important = url
-            .resourceValuesForKeys_error(&NSArray::from_slice(&[key]))
-            .ok()
-            .and_then(|values| values.objectForKey(key))
-            .and_then(|value| value.downcast::<NSNumber>().ok())
-            .map(|number| number.longLongValue().max(0) as u64)
-            .filter(|&free| free > 0);
-        important.unwrap_or_else(|| self.statfs_available())
-    }
-
-    fn statfs_available(&self) -> u64 {
-        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-        let Ok(path) = crate::c_path(&self.mount) else {
-            return 0;
-        };
-        match unsafe { libc::statfs(path.as_ptr(), &mut stat) } {
-            0 => stat.f_bavail.saturating_mul(u64::from(stat.f_bsize)),
-            _ => 0,
-        }
+        crate::volumes::available(&self.mount)
     }
 
     /// A network volume is never synced whole: `sync_volume_np` on an SMB mount can hang for minutes.

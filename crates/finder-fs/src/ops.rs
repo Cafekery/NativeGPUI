@@ -24,6 +24,8 @@ pub mod transfer;
 
 pub use quick::{ImageFormat, ImageSize, Quick};
 
+use transfer::{End, Failure, Kind, OnError, Request, Transfer};
+
 const NAME_MAX: usize = 255;
 
 #[derive(Clone, Debug)]
@@ -60,6 +62,8 @@ pub enum Op {
         name: String,
     },
     PutBack(Vec<Restore>),
+    /// A transfer with every destination already chosen, as a retry runs it again.
+    Retry(Request),
     Quick(Quick),
     Batch(Vec<Op>),
 }
@@ -88,22 +92,129 @@ pub struct Done {
 }
 
 pub fn perform(op: Op, conflict: Conflict) -> io::Result<Done> {
+    let op = match carry(op, conflict, OnError::Stop, &Transfer::default()) {
+        Ok(carried) => return carried.into_done(),
+        Err(op) => op,
+    };
     match op {
-        Op::Move { items, into } => move_or_copy(items, into, conflict, Carry::Move),
-        Op::Copy { items, into } => move_or_copy(items, into, conflict, Carry::Copy),
-        Op::CopyExactly { items, into } => move_or_copy(items, into, conflict, Carry::CopyExactly),
         Op::Trash(items) => trash(items),
         Op::DeleteImmediately(items) => delete(items),
         Op::Rename { path, name } => rename(path, name, conflict),
-        Op::Duplicate(items) => duplicate(items),
         Op::MakeAlias(items) => make_alias(items),
         Op::Compress(items) => compress(items),
         Op::NewFolder { into, name } => new_item(into, name, true),
         Op::NewFile { into, name } => new_item(into, name, false),
-        Op::PutBack(items) => put_back(items),
         Op::Quick(quick) => quick::perform(quick),
         Op::Batch(ops) => batch(ops, conflict),
+        Op::Move { .. }
+        | Op::Copy { .. }
+        | Op::CopyExactly { .. }
+        | Op::Duplicate(_)
+        | Op::PutBack(_)
+        | Op::Retry(_) => unreachable!("carried above"),
     }
+}
+
+/// What a move, copy, duplicate or put back did, and the items it could not carry.
+#[derive(Debug)]
+pub struct Carried {
+    pub done: Done,
+    pub failures: Vec<Failure>,
+    pub end: End,
+    /// The failed items again, merged into what landed.
+    pub left: Option<Op>,
+}
+
+impl Carried {
+    fn into_done(self) -> io::Result<Done> {
+        let cause = self
+            .failures
+            .into_iter()
+            .next()
+            .map(|failure| failure.error);
+        let left = self.left.unwrap_or(Op::Batch(Vec::new()));
+        Unfinished::check(self.done, left, cause)
+    }
+}
+
+/// Runs a move, copy, duplicate or put back on the transfer engine, whose progress `transfer`
+/// reports meanwhile; any other op comes back as it was.
+pub fn carry(
+    op: Op,
+    conflict: Conflict,
+    on_error: OnError,
+    transfer: &Transfer,
+) -> Result<Carried, Op> {
+    let (kind, items, into) = match op {
+        Op::Move { items, into } => (Kind::Move, items, into),
+        Op::Copy { items, into } => (Kind::Copy, items, into),
+        Op::CopyExactly { items, into } => (Kind::CopyExactly, items, into),
+        Op::Duplicate(items) => return Ok(duplicate(items, on_error, transfer)),
+        Op::PutBack(items) => return Ok(put_back(items, transfer)),
+        Op::Retry(request) => return Ok(run_all(vec![request], transfer)),
+        op => return Err(op),
+    };
+    let request = Request::new(kind, items, &into, conflict, on_error);
+    let outcome = transfer.run(request);
+    Ok(Carried {
+        left: outcome.retry().map(Op::Retry),
+        done: outcome.done,
+        failures: outcome.failures,
+        end: outcome.end,
+    })
+}
+
+/// One request per destination volume, which the engine reads once; a destination that cannot
+/// be read stands alone, so its refusal names it.
+fn by_volume(
+    kind: Kind,
+    pairs: Vec<(PathBuf, PathBuf)>,
+    conflict: Conflict,
+    on_error: OnError,
+) -> Vec<Request> {
+    let mut groups: Vec<(Option<u64>, Vec<(PathBuf, PathBuf)>)> = Vec::new();
+    for (source, dest) in pairs {
+        let volume = std::fs::metadata(dir_of(&dest)).ok().map(|meta| meta.dev());
+        match volume.and_then(|volume| groups.iter().position(|(at, _)| *at == Some(volume))) {
+            Some(at) => groups[at].1.push((source, dest)),
+            None => groups.push((volume, vec![(source, dest)])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, pairs)| Request::each(kind, pairs, conflict, on_error))
+        .collect()
+}
+
+/// Runs each request in turn on the one handle; with more than one, the undo is the caller's.
+fn run_all(requests: Vec<Request>, transfer: &Transfer) -> Carried {
+    let mut carried = Carried {
+        done: Done::default(),
+        failures: Vec::new(),
+        end: End::Finished,
+        left: None,
+    };
+    let mut again = Vec::new();
+    let mut requests = requests.into_iter();
+    for request in requests.by_ref() {
+        let outcome = transfer.run(request);
+        again.extend(outcome.retry().map(Op::Retry));
+        carried.done.results.extend(outcome.done.results);
+        carried.done.undo = outcome.done.undo;
+        carried.failures.extend(outcome.failures);
+        carried.end = outcome.end;
+        if outcome.end != End::Finished {
+            break;
+        }
+    }
+    if carried.end != End::Cancelled {
+        again.extend(requests.map(Op::Retry));
+    }
+    carried.left = match again.len() {
+        0 | 1 => again.pop(),
+        _ => Some(Op::Batch(again)),
+    };
+    carried
 }
 
 #[derive(Debug)]
@@ -539,18 +650,15 @@ fn real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
-fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> io::Result<Placed> {
+fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf) -> io::Result<Placed> {
     let staged = staging_path(&dest);
-    if let Err(err) = transfer(fm, src, &staged, is_move) {
+    if let Err(err) = transfer(fm, src, &staged, true) {
         let _ = remove_path(fm, &staged);
         return Err(err);
     }
     if let Err(err) = exchange(&staged, &dest) {
         // A moved item's only copy is the staged one; it goes back where it came from.
-        let _ = match is_move {
-            true => transfer(fm, &staged, src, true),
-            false => remove_path(fm, &staged),
-        };
+        let _ = transfer(fm, &staged, src, true);
         return Err(err);
     }
     let displaced = match trash_as(fm, &staged, &dest) {
@@ -569,52 +677,45 @@ fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf, is_move: bool) -> i
     })
 }
 
+/// Moves an item within its volume.
 fn place_one(
     fm: &NSFileManager,
     src: &Path,
     dest: PathBuf,
     conflict: Conflict,
-    is_move: bool,
 ) -> io::Result<Placed> {
     if !taken(&dest) {
-        transfer(fm, src, &dest, is_move)?;
+        transfer(fm, src, &dest, true)?;
         return Ok(Placed::at(src, dest));
     }
     if same_item(src, &dest) {
-        if is_move {
-            return Ok(Placed::at(src, dest));
-        }
-        let dest = duplicate_path(&dest);
-        transfer(fm, src, &dest, false)?;
         return Ok(Placed::at(src, dest));
     }
     match conflict {
         Conflict::Skip => Ok(Placed::default()),
         Conflict::KeepBoth => {
             let dest = free_path(&dest);
-            transfer(fm, src, &dest, is_move)?;
+            transfer(fm, src, &dest, true)?;
             Ok(Placed::at(src, dest))
         }
-        Conflict::Replace => replace_at(fm, src, dest, is_move),
+        Conflict::Replace => replace_at(fm, src, dest),
         Conflict::Merge if real_dir(src) && real_dir(&dest) => {
             let (mut landed, mut displaced) = (Vec::new(), Vec::new());
             for entry in std::fs::read_dir(src)? {
                 let entry = entry?;
                 let child_dest = dest.join(entry.file_name());
-                let placed = place_one(fm, &entry.path(), child_dest, Conflict::Merge, is_move)?;
+                let placed = place_one(fm, &entry.path(), child_dest, Conflict::Merge)?;
                 landed.extend(placed.landed);
                 displaced.extend(placed.displaced);
             }
-            if is_move {
-                std::fs::remove_dir(src)?;
-            }
+            std::fs::remove_dir(src)?;
             Ok(Placed {
                 dest: Some(dest),
                 landed,
                 displaced,
             })
         }
-        Conflict::Merge => replace_at(fm, src, dest, is_move),
+        Conflict::Merge => replace_at(fm, src, dest),
     }
 }
 
@@ -633,61 +734,6 @@ fn refuse_into_itself(item: &Path, into: &Path, is_move: bool) -> io::Result<()>
     ))
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Carry {
-    Move,
-    Copy,
-    CopyExactly,
-}
-
-/// Only root may give an item away; any user may pass on a group they belong to.
-fn keep_owner(src: &Path, dest: &Path) {
-    let Ok(meta) = std::fs::symlink_metadata(src) else {
-        return;
-    };
-    if std::os::unix::fs::lchown(dest, Some(meta.uid()), Some(meta.gid())).is_err() {
-        let _ = std::os::unix::fs::lchown(dest, None, Some(meta.gid()));
-    }
-    if !meta.is_dir() {
-        return;
-    }
-    for entry in std::fs::read_dir(src).into_iter().flatten().flatten() {
-        keep_owner(&entry.path(), &dest.join(entry.file_name()));
-    }
-}
-
-fn move_or_copy(
-    items: Vec<PathBuf>,
-    into: PathBuf,
-    conflict: Conflict,
-    carry: Carry,
-) -> io::Result<Done> {
-    let is_move = carry == Carry::Move;
-    let fm = NSFileManager::defaultManager();
-    let mut results = Vec::with_capacity(items.len());
-    let mut home = Vec::with_capacity(items.len());
-    let mut displaced = Vec::new();
-    for item in &items {
-        refuse_into_itself(item, &into, is_move)?;
-    }
-    for item in &items {
-        let name = item
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "item has no file name"))?;
-        let placed = place_one(&fm, item, into.join(name), conflict, is_move)?;
-        if carry == Carry::CopyExactly {
-            for landed in &placed.landed {
-                keep_owner(&landed.to, &landed.item);
-            }
-        }
-        results.extend(placed.dest);
-        home.extend(placed.landed);
-        displaced.extend(placed.displaced);
-    }
-    let undo = undo_of_transfer(is_move, home, displaced);
-    Ok(Done { results, undo })
-}
-
 fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) -> Option<Op> {
     let landed = (!is_move && !home.is_empty())
         .then(|| Op::Trash(home.iter().map(|placed| placed.item.clone()).collect()));
@@ -700,38 +746,27 @@ fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) 
     }
 }
 
-fn put_back(items: Vec<Restore>) -> io::Result<Done> {
-    let fm = NSFileManager::defaultManager();
-    let mut results = Vec::with_capacity(items.len());
-    let (mut left, mut cause) = (Vec::new(), None);
-    for restore in items {
-        match put_one(&fm, &restore) {
-            Ok(dest) => results.extend(dest),
-            Err(error) => {
-                cause.get_or_insert(error);
-                left.push(restore);
-            }
-        }
+/// Keeps going past an item that refuses, and leaves only what refused to be put back again.
+fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
+    for restore in &items {
+        let _ = std::fs::create_dir_all(dir_of(&restore.to));
     }
-    let done = Done {
-        results,
-        undo: None,
+    let pairs = items
+        .iter()
+        .map(|restore| (restore.item.clone(), restore.to.clone()))
+        .collect();
+    let requests = by_volume(Kind::Move, pairs, Conflict::KeepBoth, OnError::Continue);
+    let mut carried = run_all(requests, transfer);
+    let refused = |restore: &Restore| {
+        carried
+            .failures
+            .iter()
+            .any(|failure| failure.source.starts_with(&restore.item))
     };
-    Unfinished::check(done, Op::PutBack(left), cause)
-}
-
-fn put_one(fm: &NSFileManager, restore: &Restore) -> io::Result<Option<PathBuf>> {
-    if let Some(parent) = restore.to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let placed = place_one(
-        fm,
-        &restore.item,
-        restore.to.clone(),
-        Conflict::KeepBoth,
-        true,
-    )?;
-    Ok(placed.dest)
+    let left: Vec<Restore> = items.into_iter().filter(refused).collect();
+    carried.left = (!left.is_empty()).then_some(Op::PutBack(left));
+    carried.done.undo = None;
+    carried
 }
 
 fn batch(ops: Vec<Op>, conflict: Conflict) -> io::Result<Done> {
@@ -815,7 +850,7 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
         transfer(&fm, &path, &dest, true)?;
         Placed::at(&path, dest)
     } else {
-        place_one(&fm, &path, dest, conflict, true)?
+        place_one(&fm, &path, dest, conflict)?
     };
     let Some(dest) = placed.dest else {
         return Ok(Done::default());
@@ -834,18 +869,20 @@ fn rename(path: PathBuf, name: String, conflict: Conflict) -> io::Result<Done> {
     })
 }
 
-fn duplicate(items: Vec<PathBuf>) -> io::Result<Done> {
-    let fm = NSFileManager::defaultManager();
-    let results = items
-        .iter()
+/// Undone by deleting the copies outright, never by a trip to the Trash.
+fn duplicate(items: Vec<PathBuf>, on_error: OnError, transfer: &Transfer) -> Carried {
+    let pairs = items
+        .into_iter()
         .map(|item| {
-            let dest = duplicate_path(item);
-            transfer(&fm, item, &dest, false)?;
-            Ok(dest)
+            let dest = duplicate_path(&item);
+            (item, dest)
         })
-        .collect::<io::Result<Vec<_>>>()?;
-    let undo = (!results.is_empty()).then(|| Op::DeleteImmediately(results.clone()));
-    Ok(Done { results, undo })
+        .collect();
+    let requests = by_volume(Kind::Copy, pairs, Conflict::KeepBoth, on_error);
+    let mut carried = run_all(requests, transfer);
+    let results = &carried.done.results;
+    carried.done.undo = (!results.is_empty()).then(|| Op::DeleteImmediately(results.clone()));
+    carried
 }
 
 /// `ditto` is what Archive Utility runs; it keeps resource forks and extended attributes.
@@ -1764,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deep_copy_that_fails_leaves_nothing_behind() {
+    fn a_deep_copy_that_fails_keeps_what_landed_for_its_undo() {
         if unsafe { libc::geteuid() } == 0 {
             eprintln!("skipping: root walks into a directory whatever its mode says");
             return;
@@ -1776,7 +1813,7 @@ mod tests {
         deep_tree(&tree, 300);
         deep_sh(&tree, 249, "chmod 000 d250");
 
-        perform(
+        let error = perform(
             Op::Copy {
                 items: vec![tree.clone()],
                 into: dst.clone(),
@@ -1784,12 +1821,20 @@ mod tests {
             Conflict::KeepBoth,
         )
         .expect_err("a directory that cannot be read cannot be copied");
+        let unfinished = Unfinished::from_error(error).expect("the error says what landed");
+        assert_eq!(unfinished.done.results, vec![dst.join("Deep")]);
         assert!(
-            !taken(&dst.join("Deep")),
-            "a copy that failed left a part of the tree behind"
+            matches!(&unfinished.done.undo, Some(Op::Trash(items)) if items == &[dst.join("Deep")]),
+            "what landed is undone whole: {:?}",
+            unfinished.done.undo
+        );
+        deep_sh(&tree, 249, "chmod 700 d250");
+        assert_eq!(
+            deep_sh(&tree, 300, "cat leaf.txt"),
+            "leaf",
+            "the source is still whole"
         );
 
-        deep_sh(&tree, 249, "chmod 700 d250");
         remove_deep(&dir);
     }
 
