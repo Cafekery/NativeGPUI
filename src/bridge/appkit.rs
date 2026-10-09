@@ -7,7 +7,9 @@ use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Imp, NSObjectProtocol, Sel};
 use objc2::{ClassType, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_app_kit::{NSAccessibilityUnignoredChildren, NSAutoresizingMaskOptions, NSView};
+use objc2_app_kit::{
+    NSAccessibilityUnignoredChildren, NSAutoresizingMaskOptions, NSView, NSWindow,
+};
 use objc2_foundation::{MainThreadMarker, NSArray, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -58,6 +60,12 @@ pub fn gpui_view(window: &Window) -> Retained<NSView> {
     };
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
         .expect("gpui's AppKit handle always carries the live NSView it renders into")
+}
+
+pub(crate) fn gpui_window(window: &Window) -> Retained<NSWindow> {
+    gpui_view(window)
+        .window()
+        .expect("gpui's view is always in a window")
 }
 
 /// gpui draws and presents this frame now; never call it while gpui holds its `App`.

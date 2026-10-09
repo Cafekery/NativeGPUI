@@ -1,13 +1,11 @@
 use std::cell::{Cell, RefCell};
-use std::panic::Location;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use gpui::{
-    AnyElement, App, AsyncWindowContext, Bounds, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Size, Window, px,
+    AnyElement, App, AsyncWindowContext, Bounds, IntoElement, Pixels, Size, Window, px, size,
 };
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -22,8 +20,9 @@ use objc2_foundation::{
     NSRectEdge, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
-use crate::bridge::appkit::{Container, gpui_view};
+use crate::bridge::appkit::{Container, gpui_window};
 use crate::bridge::host::{Layer, NativeHost, Target, defer};
+use crate::bridge::root::wrapper_element;
 use crate::chrome::window_chrome::{chrome_host, native_rect};
 
 #[derive(Clone, Default)]
@@ -91,50 +90,8 @@ pub struct NativeAnchor {
     child: AnyElement,
 }
 
-impl Element for NativeAnchor {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+impl NativeAnchor {
+    fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         self.anchor.0.bounds.set(Some(bounds));
         let mask = window.content_mask().bounds;
         self.anchor.0.mask.set(Some(mask));
@@ -154,13 +111,7 @@ impl Element for NativeAnchor {
     }
 }
 
-impl IntoElement for NativeAnchor {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
+wrapper_element!(NativeAnchor);
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum SurfaceEdge {
@@ -173,13 +124,13 @@ pub enum SurfaceEdge {
 
 impl SurfaceEdge {
     fn rect_edge(self) -> NSRectEdge {
-        // MinX = 0, MinY = 1, MaxX = 2, MaxY = 3, and every positioning view here is flipped.
-        NSRectEdge(match self {
-            Self::Left => 0,
-            Self::Above => 1,
-            Self::Right => 2,
-            Self::Below => 3,
-        })
+        // Every positioning view here is flipped: `MinY` is the top edge.
+        match self {
+            Self::Left => NSRectEdge::MinX,
+            Self::Above => NSRectEdge::MinY,
+            Self::Right => NSRectEdge::MaxX,
+            Self::Below => NSRectEdge::MaxY,
+        }
     }
 }
 
@@ -274,7 +225,7 @@ pub struct PopoverOptions {
 impl Default for PopoverOptions {
     fn default() -> Self {
         Self {
-            size: gpui::size(px(240.), px(110.)),
+            size: size(px(240.), px(110.)),
             edge: SurfaceEdge::Above,
             behavior: PopoverBehavior::default(),
             animates: true,
@@ -427,9 +378,7 @@ pub fn present_sheet(
     on_end: impl Fn(SheetResponse, &mut Window, &mut App) + 'static,
 ) -> NativeSheet {
     let mtm = MainThreadMarker::new().expect("gpui runs its windows on the main thread");
-    let parent = gpui_view(window)
-        .window()
-        .expect("gpui's view is always in a window");
+    let parent = gpui_window(window);
     let actions = SurfaceActions::new(window, cx);
     let sheet = build(mtm, &actions);
 
