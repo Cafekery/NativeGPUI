@@ -627,6 +627,25 @@ fn the_speed_settles_and_the_time_left_waits_for_the_count() {
 }
 
 #[test]
+fn the_wait_for_the_first_byte_does_not_read_as_a_slow_start() {
+    let mut meter = Meter::new();
+    let start = Instant::now();
+    let rate = 100.0 * 1024.0 * 1024.0;
+    for tick in 0..=8 {
+        let secs = f64::from(tick) * 0.25;
+        let done = ((secs - 0.6).max(0.0) * rate) as u64;
+        let at = start + Duration::from_secs_f64(secs);
+        meter.sample(at, done, false, &left(1 << 40, 10, 2, true));
+        let speed = meter.bytes_per_sec();
+        assert!(
+            speed == 0.0 || (speed / rate - 1.0).abs() < 0.01,
+            "{speed} at {secs}s"
+        );
+    }
+    assert!(meter.bytes_per_sec() > 0.0, "no speed once copying");
+}
+
+#[test]
 fn many_small_files_are_timed_by_the_item() {
     let mut meter = Meter::new();
     let start = Instant::now();

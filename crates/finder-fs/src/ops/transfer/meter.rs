@@ -30,13 +30,14 @@ impl Meter {
         }
     }
 
-    /// A paused stretch is skipped, so a resume does not read as a stall.
+    /// A paused stretch is skipped, so a resume does not read as a stall, and so is the one in
+    /// which copying began, which would read as a slow start.
     pub fn sample(&mut self, now: Instant, bytes: u64, paused: bool, left: &Left) {
         let Some((then, before)) = self.last.replace((now, bytes)) else {
             return;
         };
         let dt = now.duration_since(then);
-        if paused || dt.is_zero() {
+        if paused || dt.is_zero() || before == 0 {
             return;
         }
         let secs = dt.as_secs_f64();
