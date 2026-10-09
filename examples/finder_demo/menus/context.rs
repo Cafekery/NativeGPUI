@@ -83,7 +83,8 @@ pub(crate) fn background(demo: &FinderDemo) -> Menu {
 
 pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let chosen = selected.len();
-    let many = chosen > 1 && selected.contains(&line.key);
+    let in_selection = selected.contains(&line.key);
+    let many = chosen > 1 && in_selection;
     let symlink = line.row.uti == "public.symlink";
     let original = symlink || line.row.uti == "com.apple.alias-file";
     let folder = folder_behind(line);
@@ -201,7 +202,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
         menu.item(MenuEntry::item("Share…"), Act::Share);
         menu.separator();
     }
-    let carried: Vec<Vec<RowTag>> = match selected.contains(&line.key) {
+    let carried: Vec<Vec<RowTag>> = match in_selection {
         true => selected
             .iter()
             .map(|key| crate::tags::row_tags(key))
@@ -219,7 +220,7 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     };
     menu.item(MenuEntry::item(options), Act::PreviewOptions);
     menu.separator();
-    let faces: Vec<_> = match selected.contains(&line.key) {
+    let faces: Vec<_> = match in_selection {
         true => selected_lines(selected).map(|line| line.row.face).collect(),
         false => vec![line.row.face],
     };
@@ -508,7 +509,7 @@ fn icon_rows(menu: &mut Menu, demo: &FinderDemo) {
         ),
         (MenuEntry::separator(), Act::Nothing),
     ];
-    sorts.extend(crate::data::SORT_KEYS.iter().map(|column| {
+    sorts.extend(SORT_KEYS.iter().map(|column| {
         (
             MenuEntry::item(column_title(*column)).checked(arranged == Arrangement::By(*column)),
             Act::Arrange(Arrangement::By(*column)),

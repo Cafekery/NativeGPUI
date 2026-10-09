@@ -315,13 +315,17 @@ impl FinderDemo {
     }
 
     pub(crate) fn eject_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(volume) = self.volumes_in_view().next() {
+            self.eject(volume, window, cx);
+        }
+    }
+
+    pub(super) fn volumes_in_view(&self) -> impl Iterator<Item = &'static str> {
         let roots = crate::data::volume_roots();
-        let mut wanted = self.chosen_folders();
-        wanted.push(self.here());
-        let Some(volume) = wanted.into_iter().find(|id| roots.contains(id)) else {
-            return;
-        };
-        self.eject(volume, window, cx);
+        self.chosen_folders()
+            .into_iter()
+            .chain([self.here()])
+            .filter(move |id| roots.contains(id))
     }
 
     pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
@@ -448,7 +452,7 @@ impl FinderDemo {
     pub(crate) fn open_tab(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) {
         let host = window.window_handle();
         let bounds = window.window_bounds();
-        let start = self.listing_start(id);
+        let start = if is_listing(id) { self.here() } else { id };
         cx.defer(move |cx| {
             let tab = open_finder_tab(start, bounds, cx);
             tab.update(cx, |demo: &mut FinderDemo, tab, cx| {
@@ -462,21 +466,12 @@ impl FinderDemo {
     }
 
     pub(crate) fn open_new_window(&self, cx: &mut Context<Self>) {
-        let target = new_window_target();
-        let window = open_finder_window(self.listing_start(target), cx);
-        if target == RECENTS {
-            window
-                .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))
-                .ok();
-        }
+        open_target_window(self.here(), cx);
     }
+}
 
-    fn listing_start(&self, id: &'static str) -> &'static str {
-        match id.starts_with("tag:") || id == RECENTS {
-            true => self.here(),
-            false => id,
-        }
-    }
+fn is_listing(id: &str) -> bool {
+    id.starts_with("tag:") || id == RECENTS
 }
 
 pub(super) fn open_windows(ids: impl IntoIterator<Item = &'static str>, cx: &mut App) {
@@ -485,15 +480,14 @@ pub(super) fn open_windows(ids: impl IntoIterator<Item = &'static str>, cx: &mut
     }
 }
 
-/// The window New Finder Window opens when no window is left to ask, at home for a listing.
 pub(crate) fn open_first_window(cx: &mut App) -> WindowHandle<FinderDemo> {
+    open_target_window(intern_path(&home()), cx)
+}
+
+fn open_target_window(here: &'static str, cx: &mut App) -> WindowHandle<FinderDemo> {
     let target = new_window_target();
-    let listing = target.starts_with("tag:") || target == RECENTS;
-    let start = match listing {
-        true => intern_path(&home()),
-        false => target,
-    };
-    let window = open_finder_window(start, cx);
+    let listing = is_listing(target);
+    let window = open_finder_window(if listing { here } else { target }, cx);
     if listing {
         window
             .update(cx, |demo, window, cx| demo.show_tag(target, window, cx))

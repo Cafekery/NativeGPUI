@@ -81,6 +81,20 @@ pub(super) fn remember(demo: &FinderDemo) {
     });
 }
 
+fn last_change<R>(redo: bool, read: impl FnOnce(Option<&str>) -> R) -> R {
+    match crate::icon_well::history() {
+        Some((undo, next)) => read(if redo { next } else { undo }),
+        None => HISTORY.with_borrow(|history| {
+            let label = if redo { &history.redo } else { &history.undo };
+            read(label.as_deref())
+        }),
+    }
+}
+
+fn labelled(verb: &'static str, label: Option<&str>) -> SharedString {
+    label.map_or_else(|| verb.into(), |label| format!("{verb} {label}").into())
+}
+
 fn counted(
     count: usize,
     none: &str,
@@ -96,17 +110,10 @@ fn counted(
 }
 
 pub(super) fn enabled(action: &dyn Action, chosen: &Chosen) -> Option<bool> {
-    let icons = crate::icon_well::history();
     let on = if action.partial_eq(&UndoOp) {
-        icons.map_or_else(
-            || HISTORY.with_borrow(|history| history.undo.is_some()),
-            |(undo, _)| undo.is_some(),
-        )
+        last_change(false, |label| label.is_some())
     } else if action.partial_eq(&RedoOp) {
-        icons.map_or_else(
-            || HISTORY.with_borrow(|history| history.redo.is_some()),
-            |(_, redo)| redo.is_some(),
-        )
+        last_change(true, |label| label.is_some())
     } else if action.partial_eq(&Cut) || action.partial_eq(&CopyLink) {
         false
     } else if action.partial_eq(&CopyNames) || action.partial_eq(&DeselectAll) {
@@ -124,22 +131,10 @@ pub(super) fn enabled(action: &dyn Action, chosen: &Chosen) -> Option<bool> {
 }
 
 pub(super) fn titled(action: &dyn Action, chosen: &Chosen) -> Option<SharedString> {
-    let labelled = |verb: &'static str, label: &Option<SharedString>| {
-        label
-            .as_ref()
-            .map_or_else(|| verb.into(), |label| format!("{verb} {label}").into())
-    };
-    let icons = crate::icon_well::history();
     let title = if action.partial_eq(&UndoOp) {
-        match icons {
-            Some((undo, _)) => labelled("Undo", &undo.map(SharedString::new_static)),
-            None => HISTORY.with_borrow(|history| labelled("Undo", &history.undo)),
-        }
+        last_change(false, |label| labelled("Undo", label))
     } else if action.partial_eq(&RedoOp) {
-        match icons {
-            Some((_, redo)) => labelled("Redo", &redo.map(SharedString::new_static)),
-            None => HISTORY.with_borrow(|history| labelled("Redo", &history.redo)),
-        }
+        last_change(true, |label| labelled("Redo", label))
     } else if action.partial_eq(&CopyNames) {
         counted(
             chosen.count,
