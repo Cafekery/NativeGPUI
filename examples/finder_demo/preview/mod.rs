@@ -60,8 +60,7 @@ pub(crate) struct PreviewWindow {
 struct Handed {
     key: RefCell<Option<card::CardKey>>,
     shown: RefCell<Option<card::Shown>>,
-    /// `icons::landed()` as of the pane's last stand-in icon.
-    waiting: Cell<Option<u64>>,
+    stand_in: Cell<Option<u64>>,
     held: Cell<Option<Instant>>,
     stack: RefCell<Option<Arc<RenderImage>>>,
 }
@@ -171,8 +170,7 @@ pub(crate) fn keep_a_key_window() {
             if app.keyWindow().is_some() || !app.isActive() {
                 return;
             }
-            let windows = app.orderedWindows();
-            if let Some(window) = windows.iter().find(|window| {
+            if let Some(window) = app.orderedWindows().iter().find(|window| {
                 window.isVisible()
                     && !window.isKindOfClass(NSPanel::class())
                     && window.canBecomeKeyWindow()
@@ -220,7 +218,7 @@ impl Render for PreviewPane {
             None => (div().into_any_element(), 0.),
         };
         self.handed
-            .waiting
+            .stand_in
             .set((crate::icons::asks() != asked).then(crate::icons::landed));
         crate::icons::start_wanted(&finder, cx);
         native_root(
@@ -416,7 +414,7 @@ impl FinderDemo {
         let card = Some(self.card_key(content, key));
         let handed = &pane.handed;
         let landed = handed
-            .waiting
+            .stand_in
             .get()
             .is_some_and(|at| crate::icons::landed() != at);
         if *handed.key.borrow() != card || landed {
@@ -438,7 +436,7 @@ impl FinderDemo {
             handed.held.set(None);
             *handed.shown.borrow_mut() = self.shown(self.cursor_line().as_ref(), content);
             *handed.key.borrow_mut() = card;
-            handed.waiting.set(None);
+            handed.stand_in.set(None);
             App::notify(cx, pane.pane);
         }
     }
