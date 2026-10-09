@@ -66,7 +66,7 @@ const EJECT: Tool = (
     "eject",
     "Eject",
     "Eject disks and unmount servers",
-    |this, window, cx| this.eject_selection(window, cx),
+    FinderDemo::eject_selection,
 );
 const NEW_FOLDER: Tool = (
     "com.apple.finder.NFLD",
@@ -103,7 +103,7 @@ const QUICK_LOOK: Tool = (
     "eye",
     "Quick Look",
     "Show items with Quick Look or as an instant slideshow",
-    |this, window, cx| this.toggle_quick_look(window, cx),
+    FinderDemo::toggle_quick_look,
 );
 const PREVIEW: Tool = (
     "com.apple.finder.PTGL",
@@ -117,7 +117,7 @@ const ICLOUD: Tool = (
     "person.badge.plus",
     "iCloud",
     "Share the selected items using iCloud Drive",
-    |this, window, cx| this.share_selection(window, cx),
+    FinderDemo::share_selection,
 );
 
 static CUSTOMIZATION: LazyLock<ToolbarCustomization> = LazyLock::new(|| {
@@ -140,7 +140,6 @@ const VIEWS: [(&str, &str, &str); 4] = [
     ("squares.below.rectangle", "as Gallery", "gallery view"),
 ];
 const SEARCH_W: f32 = 240.;
-/// The toolbar capsules' 18 pt radius plus their 8 pt inset from the window's edges.
 const WINDOW_RADIUS: f64 = 26.;
 /// AppKit 27's own radius for every titled window, panel and sheet but alerts.
 pub(crate) const SYSTEM_RADIUS: f64 = 16.;
@@ -178,10 +177,6 @@ pub(crate) fn titled_height(content: f32, mtm: MainThreadMarker) -> Pixels {
     px(frame.size.height as f32)
 }
 
-fn airdrop_glyph() -> Option<Retained<NSImage>> {
-    system_symbol("airdrop").or_else(airdrop_art)
-}
-
 fn airdrop_art() -> Option<Retained<NSImage>> {
     let art = system_template("SidebarAirDrop", px(AIRDROP_ART))?;
     // `RcBlock`, never `StackBlock`: the image re-runs the handler on every appearance change.
@@ -203,10 +198,11 @@ fn airdrop_art() -> Option<Retained<NSImage>> {
 }
 
 fn group_glyph() -> Retained<NSImage> {
-    let handler = RcBlock::new(move |_: NSRect| -> Bool {
+    let handler = RcBlock::new(|_: NSRect| -> Bool {
         let inset = (GRID_BOX_W - GRID_W) / 2.;
-        NSColor::blackColor().setStroke();
-        NSColor::blackColor().setFill();
+        let black = NSColor::blackColor();
+        black.setStroke();
+        black.setFill();
         for y in [GRID_ROWS[0], GRID_ROWS[2]] {
             NSBezierPath::fillRect(NSRect::new(
                 NSPoint::new(inset, y),
@@ -241,7 +237,7 @@ fn group_glyph() -> Retained<NSImage> {
 
 thread_local! {
     static GLYPHS: (Option<Retained<NSImage>>, Retained<NSImage>) =
-        (airdrop_glyph(), group_glyph());
+        (system_symbol("airdrop").or_else(airdrop_art), group_glyph());
 }
 
 fn finish_item(item: &NSToolbarItem) {
@@ -385,9 +381,7 @@ impl FinderDemo {
             .enabled(!airdrop)
             // Automatic, not Expanded: the capsule has to collapse when the search field opens.
             .group_width(ToolbarGroupWidth::Automatic)
-            .on_select(select(&this, |this, index, window, cx| {
-                this.pick_view(index, window, cx);
-            })),
+            .on_select(select(&this, Self::pick_view)),
             ToolbarItem::menu(ACTION_ID, "ellipsis", "Action", rows.entries)
                 .tool_tip("Perform tasks with the selected items")
                 .enabled(!airdrop)
@@ -427,7 +421,7 @@ impl FinderDemo {
             ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
                 .tool_tip("Edit Tags")
                 .enabled(picked)
-                .on_click(click(&this, |this, window, cx| this.edit_tags(window, cx))),
+                .on_click(click(&this, Self::edit_tags)),
             tool(PREVIEW, true),
             ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
                 .tool_tip("Share the selected items using AirDrop")

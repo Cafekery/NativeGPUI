@@ -94,16 +94,8 @@ fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
     }
 }
 
-impl Row {
-    /// Never stat a path to decide: a row can name a share that stopped answering.
-    fn dropping(mut self) -> Row {
-        self.drops = true;
-        self
-    }
-}
-
 fn glyph_of(path: &Path) -> Glyph {
-    use finder_fs::volumes::Standard::*;
+    use Standard::*;
     let standard = [
         (Applications, APPLICATIONS),
         (Desktop, Glyph::Symbol("menubar.dock.rectangle")),
@@ -169,8 +161,8 @@ fn provider_glyph(root: Option<&Path>) -> Glyph {
     Glyph::Symbol(named.map_or("externaldrive.badge.icloud", |name| intern(&name)))
 }
 
-fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row> {
-    use finder_fs::sidebar::Special::*;
+fn listed_row(listed: Listed, location: bool) -> Option<Row> {
+    use Special::*;
     let id = match (&listed.path, listed.special) {
         (Some(path), _) => intern_path(path),
         (None, Some(AirDrop)) => crate::locations::AIRDROP,
@@ -198,13 +190,14 @@ fn listed_row(listed: finder_fs::sidebar::Listed, location: bool) -> Option<Row>
     };
     Some(Row {
         eject: listed.ejectable,
+        // Never stat: a row can name a share that stopped answering.
         drops: listed.path.is_some(),
         muted: location,
         ..row(id, title, glyph)
     })
 }
 
-fn listed_rows(listed: Vec<finder_fs::sidebar::Listed>, location: bool) -> Vec<Row> {
+fn listed_rows(listed: Vec<Listed>, location: bool) -> Vec<Row> {
     listed
         .into_iter()
         .filter_map(|listed| listed_row(listed, location))
@@ -251,7 +244,10 @@ fn key(shown: Shown) -> String {
 }
 
 /// Finder's own list may name the account's folder rather than the fixture home's.
-fn is_standard(path: &Path, which: Standard) -> bool {
+fn is_standard(listed: &Listed, which: Standard) -> bool {
+    let Some(path) = listed.path.as_deref() else {
+        return false;
+    };
     let Some(standard) = finder_fs::volumes::standard(which) else {
         return false;
     };
@@ -271,13 +267,10 @@ fn visibility(
     let [recents, shared] = finder_fs::sidebar::top_rows_shown();
     let [disks, external, media, servers] = volumes.shown;
     let folders = FOLDERS.iter().map(|&(shown, which)| {
-        let listed = favourites.iter().any(|listed| {
-            listed
-                .path
-                .as_deref()
-                .is_some_and(|it| is_standard(it, which))
-        });
-        (shown, listed)
+        (
+            shown,
+            favourites.iter().any(|listed| is_standard(listed, which)),
+        )
     });
     let recent_tags = prefs::setting_on("ShowRecentTags", true);
     let finder = [
@@ -417,12 +410,7 @@ pub(crate) fn groups() -> Vec<Group> {
     );
     let shows = |shown| on(shown).1;
     for &(shown, which) in &FOLDERS {
-        let here = |listed: &Listed| {
-            listed
-                .path
-                .as_deref()
-                .is_some_and(|it| is_standard(it, which))
-        };
+        let here = |listed: &Listed| is_standard(listed, which);
         match shows(shown) {
             false => favourites.retain(|listed| !here(listed)),
             true if !favourites.iter().any(here) => {
@@ -529,13 +517,13 @@ pub(crate) fn groups() -> Vec<Group> {
         .iter()
         .filter(|tag| !recent.contains(&tag.name))
         .map(|tag| Row {
+            drops: true,
             muted: tag_system_color(tag.color).is_none(),
             ..row(
                 intern(&format!("tag:{}", tag.name)),
                 tag.name.clone(),
                 Glyph::Tag(tag.color),
             )
-            .dropping()
         })
         .collect();
     tags.push(Row {
@@ -619,7 +607,6 @@ pub(crate) fn stored_rows(groups: &[Group]) -> Vec<Vec<&'static str>> {
         .collect()
 }
 
-/// The rows a window took last: a new window shows them while it asks for its own.
 pub(crate) fn last_groups() -> Vec<Group> {
     LAST.with_borrow(Clone::clone)
 }
@@ -635,8 +622,9 @@ pub(crate) fn reload_sidebars(cx: &mut App) {
         .filter_map(|window| window.downcast::<FinderDemo>())
         .collect();
     cx.spawn(async move |cx| {
+        let groups = cx.background_executor().spawn(async { groups() }).await;
         for window in windows {
-            let groups = cx.background_executor().spawn(async { groups() }).await;
+            let groups = groups.clone();
             window
                 .update(cx, |this, _, cx| {
                     this.sidebar_took(groups);
@@ -683,13 +671,10 @@ impl FinderDemo {
     }
 
     fn update_sidebar(&self) {
-        if let Some(sidebar) = &self.sidebar {
-            sidebar.update(&self.sidebar_items());
-            self.disclose_sections(sidebar);
-        }
-    }
-
-    fn disclose_sections(&self, sidebar: &NativeSidebar) {
+        let Some(sidebar) = &self.sidebar else {
+            return;
+        };
+        sidebar.update(&self.sidebar_items());
         for group in &self.sidebar_groups {
             sidebar.set_expanded(group.id, !self.closed_sections.contains(&group.id));
         }
@@ -700,9 +685,13 @@ impl FinderDemo {
             return;
         };
         let target = self.target();
-        let shown = (self.sidebar_groups.iter().zip(&self.sidebar_rows)).any(|(group, rows)| {
-            !self.closed_sections.contains(&group.id) && rows.contains(&target)
-        });
+        let shown = self
+            .sidebar_groups
+            .iter()
+            .zip(&self.sidebar_rows)
+            .any(|(group, rows)| {
+                !self.closed_sections.contains(&group.id) && rows.contains(&target)
+            });
         sidebar.set_selected(shown.then_some(target));
     }
 
@@ -711,12 +700,11 @@ impl FinderDemo {
             return;
         };
         self.closed_sections.retain(|closed| *closed != group);
-        if !toggled.expanded {
-            self.closed_sections.push(group);
-        }
         prefs::set_setting_on(key, toggled.expanded);
         if toggled.expanded {
             self.sidebar_follow();
+        } else {
+            self.closed_sections.push(group);
         }
     }
 
@@ -778,7 +766,6 @@ impl FinderDemo {
                 Some(onto) if Some(Path::new(onto)) == trash_path().as_deref() => {
                     this.run_op(Op::Trash(dropped.paths.clone()), After::Nothing, cx)
                 }
-                // Any other row that reported itself is a folder: only those take drops.
                 Some(onto) => {
                     let keys: Vec<SharedString> = dropped
                         .paths
@@ -801,19 +788,17 @@ impl FinderDemo {
         sidebar.on_menu(
             |id| crate::menus::sidebar(id).entries,
             move |id, index, window, cx| {
-                let picked = crate::menus::sidebar(id).acts.get(index).copied();
-                let Some(act) = picked else {
+                let Some(&act) = crate::menus::sidebar(id).acts.get(index) else {
                     return;
                 };
                 demo.update(cx, |this: &mut FinderDemo, cx| {
-                    this.run_menu(act, window, cx);
+                    this.run_menu(act, window, cx)
                 })
                 .ok();
             },
         );
-        sidebar.update(&self.sidebar_items());
-        self.disclose_sections(&sidebar);
         self.sidebar = Some(sidebar);
+        self.update_sidebar();
         self.sidebar_follow();
         self.retitle(window);
         window.focus(&self.focus, cx);
@@ -883,11 +868,9 @@ impl FinderDemo {
     }
 
     fn pin(&mut self, dropped: &SidebarDrop, cx: &mut Context<Self>) {
-        let group = match dropped.group.as_ref() {
-            id @ (FAVOURITES | LOCATIONS) => id,
-            _ => return,
-        };
-        let Some(at) = self.sidebar_groups.iter().position(|it| it.id == group) else {
+        let Some(at) = self.sidebar_groups.iter().position(|it| {
+            matches!(it.id, FAVOURITES | LOCATIONS) && it.id == dropped.group.as_ref()
+        }) else {
             return;
         };
         let folders: Vec<&'static str> = dropped
