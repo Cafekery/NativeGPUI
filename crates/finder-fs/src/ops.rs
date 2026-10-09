@@ -748,12 +748,13 @@ fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
     for restore in &items {
         let _ = std::fs::create_dir_all(dir_of(&restore.to));
     }
-    let pairs = items
+    let (into, beside): (Vec<_>, Vec<_>) = items
         .iter()
         .map(|restore| (restore.item.clone(), restore.to.clone()))
-        .collect();
-    let requests = by_volume(Kind::Move, pairs, Conflict::KeepBoth, OnError::Continue);
-    let mut carried = run_all(requests, transfer);
+        .partition(|(item, to)| real_dir(item) && real_dir(to) && apart(item, to));
+    let merge = by_volume(Kind::Move, into, Conflict::Merge, OnError::Continue);
+    let keep = by_volume(Kind::Move, beside, Conflict::KeepBoth, OnError::Continue);
+    let mut carried = run_all(merge.into_iter().chain(keep).collect(), transfer);
     let refused = |restore: &Restore| {
         carried
             .failures
@@ -764,6 +765,19 @@ fn put_back(items: Vec<Restore>, transfer: &Transfer) -> Carried {
     carried.left = (!left.is_empty()).then_some(Op::PutBack(left));
     carried.done.undo = None;
     carried
+}
+
+/// The halves of a move that failed partway share no names but their folders'.
+fn apart(item: &Path, into: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(item) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        let (here, there) = (entry.path(), into.join(entry.file_name()));
+        entry.file_name() == ".DS_Store"
+            || !taken(&there)
+            || (real_dir(&here) && real_dir(&there) && apart(&here, &there))
+    })
 }
 
 fn batch(ops: Vec<Op>, conflict: Conflict) -> io::Result<Done> {
@@ -2378,6 +2392,54 @@ mod tests {
         };
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].to, dir.join("gone.txt"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_put_back_beside_what_its_move_left_merges_into_it() {
+        let dir = temp_dir("put-back-merge");
+        let (left, landed) = (dir.join("Folder"), dir.join("dest").join("Folder"));
+        for folder in [left.join("inner"), landed.join("inner")] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&left.join("inner").join("kept.txt"), "kept");
+        touch(&landed.join("moved.txt"), "moved");
+        touch(&landed.join("inner").join("also.txt"), "also");
+        let restore = Restore {
+            item: landed.clone(),
+            to: left.clone(),
+        };
+        perform(Op::PutBack(vec![restore]), Conflict::KeepBoth).unwrap();
+        for (name, text) in [
+            ("moved.txt", "moved"),
+            ("inner/also.txt", "also"),
+            ("inner/kept.txt", "kept"),
+        ] {
+            let read = fs::read_to_string(left.join(name)).ok();
+            assert_eq!(read.as_deref(), Some(text), "{name}");
+        }
+        assert!(!landed.exists(), "the carried half stayed");
+        assert!(!dir.join("Folder 2").exists(), "the halves stayed apart");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_put_back_over_a_namesake_keeps_both() {
+        let dir = temp_dir("put-back-both");
+        let (there, back) = (dir.join("Folder"), dir.join("dest").join("Folder"));
+        for folder in [&there, &back] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        touch(&there.join("same.txt"), "there");
+        touch(&back.join("same.txt"), "back");
+        let restore = Restore {
+            item: back,
+            to: there.clone(),
+        };
+        perform(Op::PutBack(vec![restore]), Conflict::KeepBoth).unwrap();
+        assert_eq!(fs::read_to_string(there.join("same.txt")).unwrap(), "there");
+        let kept = fs::read_to_string(dir.join("Folder 2").join("same.txt")).unwrap();
+        assert_eq!(kept, "back");
         let _ = fs::remove_dir_all(&dir);
     }
 }
