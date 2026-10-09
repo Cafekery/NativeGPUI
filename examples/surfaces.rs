@@ -1,6 +1,6 @@
 use gpui::{
-    App, Bounds, Context, MouseButton, MouseDownEvent, Render, Window, WindowBounds, div, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, MouseButton, MouseDownEvent, Render, SharedString, Window, WindowBounds,
+    div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::surfaces::{
     NativePopover, NativeSheet, PopoverOptions, ShareItem, SharePicker, SharePickerEvent,
@@ -27,6 +27,7 @@ fn push_button(mtm: MainThreadMarker, title: &str, frame: NSRect) -> Retained<NS
     button
 }
 
+#[derive(Default)]
 struct Surfaces {
     anchor: SurfaceAnchor,
     popover: Option<NativePopover>,
@@ -182,11 +183,11 @@ impl Surfaces {
 
 impl Render for Surfaces {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (swatch, response) = match self.last_response {
-            Some(SheetResponse::OK) => (rgb(0x30d158), "OK".to_owned()),
-            Some(SheetResponse::CANCEL) => (rgb(0xff9f0a), "Cancel".to_owned()),
-            Some(other) => (rgb(0x0a84ff), other.0.to_string()),
-            None => (rgb(0x48484a), "-".to_owned()),
+        let (swatch, response): (_, SharedString) = match self.last_response {
+            Some(SheetResponse::OK) => (rgb(0x30d158), "OK".into()),
+            Some(SheetResponse::CANCEL) => (rgb(0xff9f0a), "Cancel".into()),
+            Some(other) => (rgb(0x0a84ff), other.0.to_string().into()),
+            None => (rgb(0x48484a), "-".into()),
         };
         let status = format!(
             "sheet_ends={} last={response} popover_switch={} services={} shared={}",
@@ -292,18 +293,7 @@ fn main() {
                 })),
                 ..window_options()
             },
-            |_, cx| {
-                cx.new(|_| Surfaces {
-                    anchor: SurfaceAnchor::new(),
-                    popover: None,
-                    sheet: None,
-                    popover_says: None,
-                    sheet_ends: 0,
-                    last_response: None,
-                    services: None,
-                    shared: None,
-                })
-            },
+            |_, cx| cx.new(|_| Surfaces::default()),
         )
         .unwrap();
         cx.activate(true);

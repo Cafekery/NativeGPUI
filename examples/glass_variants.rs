@@ -28,6 +28,8 @@ const ROWS: usize = 5;
 
 const W: f32 = 2. * MARGIN_X + COLS as f32 * PITCH_X;
 const H: f32 = 2. * MARGIN_Y + ROWS as f32 * PITCH_Y;
+const PANEL_W: f32 = PITCH_X - 2. * INSET_X;
+const PANEL_H: f32 = PITCH_Y - 2. * INSET_Y;
 
 #[derive(Clone, Copy)]
 enum Slot {
@@ -135,13 +137,13 @@ impl Render for Catalogue {
         }
 
         let panels = SLOTS.into_iter().enumerate().map(|(index, (key, slot))| {
-            let (x, y) = cell_origin(index);
+            let (x, y) = panel_origin(index);
             let panel = div()
                 .absolute()
-                .left(px(x + INSET_X))
-                .top(px(y + INSET_Y))
-                .w(px(PITCH_X - 2. * INSET_X))
-                .h(px(PITCH_Y - 2. * INSET_Y));
+                .left(px(x))
+                .top(px(y))
+                .w(px(PANEL_W))
+                .h(px(PANEL_H));
             match slot {
                 Slot::Bare => panel,
                 Slot::Public { clear } => panel.child(glass(key).clear(clear)),
@@ -167,11 +169,11 @@ impl Render for Catalogue {
     }
 }
 
-fn cell_origin(index: usize) -> (f32, f32) {
+fn panel_origin(index: usize) -> (f32, f32) {
     let (col, row) = (index % COLS, index / COLS);
     (
-        MARGIN_X + col as f32 * PITCH_X,
-        MARGIN_Y + row as f32 * PITCH_Y,
+        MARGIN_X + INSET_X + col as f32 * PITCH_X,
+        MARGIN_Y + INSET_Y + row as f32 * PITCH_Y,
     )
 }
 
@@ -195,14 +197,8 @@ impl Catalogue {
             cg_y,
         );
         for (index, (key, _)) in SLOTS.into_iter().enumerate() {
-            let (x, y) = cell_origin(index);
-            println!(
-                "GLASS-CELL {key} x={:.0} y={:.0} w={:.0} h={:.0}",
-                x + INSET_X,
-                y + INSET_Y,
-                PITCH_X - 2. * INSET_X,
-                PITCH_Y - 2. * INSET_Y,
-            );
+            let (x, y) = panel_origin(index);
+            println!("GLASS-CELL {key} x={x:.0} y={y:.0} w={PANEL_W:.0} h={PANEL_H:.0}");
         }
         for variant in GlassVariant::ALL {
             let accepted: Vec<&str> = variant

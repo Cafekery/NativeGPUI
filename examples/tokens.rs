@@ -2,13 +2,13 @@ use std::ptr;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, Hsla, MouseButton, Render, RenderImage, Rgba, Window, WindowBounds,
-    WindowOptions, div, img, point, prelude::*, px, size,
+    App, Bounds, Context, FontWeight, Hsla, MouseButton, Render, RenderImage, Rgba, Window,
+    WindowBounds, WindowOptions, div, img, point, prelude::*, px, size,
 };
 use image::{Frame, RgbaImage};
 use native_gpui::tokens::{
     self, Appearance, SymbolColor, SystemColor, SystemTheme, cache_stats, current_appearance,
-    sf_symbol_colored, small_system_font_size, system_font, system_font_family,
+    sf_symbol_colored, small_system_font_size, system_color, system_font, system_font_family,
     system_font_metrics, system_font_size, text_font_family,
 };
 use native_gpui::{ControlSize, native_root, native_switch};
@@ -214,7 +214,7 @@ impl Tokens {
             .map(|(n, s)| format!("{n}={:.0}pt", f32::from(tokens::system_font_size_for(s))))
             .join("  ")
         );
-        let w = gpui::FontWeight::NORMAL;
+        let w = FontWeight::NORMAL;
         let m = system_font_metrics(system_font_size(), w);
         println!(
             "metrics at {:.0}pt: asc={:+.3} desc={:+.3} lead={:.3} cap={:.3} x={:.3}  face={}",
@@ -302,14 +302,14 @@ impl Tokens {
                                     .flex_shrink_0()
                                     .w(px(24.))
                                     .h(px(11.))
-                                    .bg(tokens::system_color(c))
+                                    .bg(system_color(c))
                                     .border_1()
-                                    .border_color(tokens::system_color(SystemColor::Separator)),
+                                    .border_color(system_color(SystemColor::Separator)),
                             )
                             .child(
                                 div()
                                     .text_size(px(8.))
-                                    .text_color(tokens::system_color(SystemColor::SecondaryLabel))
+                                    .text_color(system_color(SystemColor::SecondaryLabel))
                                     .child(c.objc_name().trim_end_matches("Color")),
                             )
                     }))
@@ -331,22 +331,15 @@ impl Tokens {
                         div()
                             .w(px(26.))
                             .text_size(px(8.))
-                            .text_color(tokens::system_color(SystemColor::TertiaryLabel))
+                            .text_color(system_color(SystemColor::TertiaryLabel))
                             .child(format!("{:.0}pt", strip.size)),
                     )
-                    .child(
-                        div()
-                            .w(px(230.))
-                            .font(system_font(gpui::FontWeight::NORMAL))
-                            .text_size(px(strip.size))
-                            .text_color(tokens::system_color(SystemColor::Label))
-                            .child(SAMPLE),
-                    )
+                    .child(div().w(px(230.)).text_size(px(strip.size)).child(SAMPLE))
                     .child(img(strip.image.clone()).w(px(strip.w)).h(px(strip.h)))
                     .child(
                         div()
                             .text_size(px(8.))
-                            .text_color(tokens::system_color(SystemColor::TertiaryLabel))
+                            .text_color(system_color(SystemColor::TertiaryLabel))
                             .child("< GPUI | AppKit >"),
                     )
             }))
@@ -367,16 +360,10 @@ impl Tokens {
                     .items_center()
                     .gap(px(3.))
                     .children(
-                        sf_symbol_colored(name, size, gpui::FontWeight::NORMAL, &color())
+                        sf_symbol_colored(name, size, FontWeight::NORMAL, &color())
                             .map(|symbol| symbol.img()),
                     )
-                    .child(
-                        div()
-                            .font(system_font(gpui::FontWeight::NORMAL))
-                            .text_size(size)
-                            .text_color(tokens::system_color(SystemColor::Label))
-                            .child(name),
-                    )
+                    .child(div().child(name))
             }))
     }
 }
@@ -389,15 +376,15 @@ impl Render for Tokens {
         }
         let theme = *cx.global::<SystemTheme>();
         let stats = cache_stats();
-        let secondary = tokens::system_color(SystemColor::SecondaryLabel);
+        let secondary = system_color(SystemColor::SecondaryLabel);
 
         native_root(
             div()
                 .size_full()
-                .bg(tokens::system_color(SystemColor::WindowBackground))
-                .font(system_font(gpui::FontWeight::NORMAL))
+                .bg(system_color(SystemColor::WindowBackground))
+                .font(system_font(FontWeight::NORMAL))
                 .text_size(system_font_size())
-                .text_color(tokens::system_color(SystemColor::Label))
+                .text_color(system_color(SystemColor::Label))
                 .child(
                     div()
                         .flex()
@@ -440,9 +427,9 @@ impl Render for Tokens {
                                         .px(px(5.))
                                         .py(px(1.))
                                         .rounded(px(4.))
-                                        .bg(tokens::system_color(SystemColor::ControlAccent))
+                                        .bg(system_color(SystemColor::ControlAccent))
                                         .text_size(px(9.))
-                                        .text_color(tokens::system_color(
+                                        .text_color(system_color(
                                             SystemColor::AlternateSelectedControlText,
                                         ))
                                         .child("follow system")

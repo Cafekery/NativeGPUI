@@ -46,10 +46,7 @@ macro_rules! wlog {
 }
 
 fn bounds_of(r: [f32; 4]) -> Bounds<Pixels> {
-    Bounds {
-        origin: point(px(r[0]), px(r[1])),
-        size: size(px(r[2]), px(r[3])),
-    }
+    Bounds::new(point(px(r[0]), px(r[1])), size(px(r[2]), px(r[3])))
 }
 
 fn fmt(r: NSRect) -> String {
@@ -288,7 +285,7 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
         "search" => {
             let active = arg != "off";
             set_toolbar_search_active(window, "ng.search", active);
-            wlog!("SEARCH active={}", active);
+            wlog!("SEARCH active={active}");
         }
         "resize" => {
             if let Ok(width) = arg.parse::<f64>() {
@@ -399,7 +396,6 @@ fn exec(line: &str, window: &mut Window, cx: &mut App) {
             );
             wlog!("PROBE flags={:?}", window_flags(window));
         }
-        // Cursor rects only apply to a key, active app.
         "activate" => {
             let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
             #[allow(deprecated)]

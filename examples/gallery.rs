@@ -32,7 +32,7 @@ struct Gallery {
 }
 
 impl Gallery {
-    fn controls(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = system_color(SystemColor::Label);
         let row = |name: &'static str| {
             div()
@@ -127,7 +127,7 @@ impl Gallery {
             )
     }
 
-    fn scroll_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn scroll_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = system_color(SystemColor::Label);
         let separator = system_color(SystemColor::Separator);
 
