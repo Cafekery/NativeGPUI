@@ -97,8 +97,7 @@ impl FinderDemo {
     ) {
         let landed = results.iter().filter_map(|path| path.parent());
         for dir in touched.iter().map(PathBuf::as_path).chain(landed) {
-            let id = intern_path(dir);
-            self.read_folder(id, cx);
+            self.read_folder(intern_path(dir), cx);
         }
         if after == After::Reveal {
             cx.defer(move |cx| crate::navigate::reveal(&results, cx));
@@ -189,7 +188,6 @@ impl FinderDemo {
         };
         let this = cx.entity().downgrade();
         let async_cx = cx.to_async();
-        // `RcBlock`: AppKit holds the handler until the sheet ends, long after this returns.
         let handler = RcBlock::new(move |response: NSModalResponse| {
             if response == accept {
                 let mut cx = async_cx.clone();
