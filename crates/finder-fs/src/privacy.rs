@@ -12,7 +12,6 @@ pub fn off_limits(path: &Path, home: &Path) -> bool {
         || simulator(path)
 }
 
-/// Opening a photo or media library's package puts a privacy prompt on the user's screen.
 fn guarded(path: &Path) -> bool {
     path.extension().is_some_and(|extension| {
         matches!(
@@ -42,7 +41,6 @@ fn sandboxed(path: &Path, home: &Path) -> bool {
     in_a_home(path, home) && path.file_name().unwrap_or_default().as_bytes() == b"Library"
 }
 
-/// The folders macOS prompts about on first access.
 fn private(path: &Path, home: &Path) -> bool {
     in_a_home(path, home)
         && matches!(
@@ -51,7 +49,6 @@ fn private(path: &Path, home: &Path) -> bool {
         )
 }
 
-/// A guarded read blocks in `opendir` behind a consent prompt no one answers.
 fn in_a_home(path: &Path, home: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
