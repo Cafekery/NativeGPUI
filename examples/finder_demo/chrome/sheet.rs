@@ -18,6 +18,7 @@ use objc2::{ClassType, msg_send, sel};
 use objc2_app_kit::NSWindow;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
+use super::strs;
 use crate::app::FinderDemo;
 use crate::data::intern_path;
 use crate::frame::ns_window;
@@ -49,7 +50,6 @@ const PATH_X: f32 = 15.;
 const PATH_RIGHT: f32 = 11.;
 const HEADING_FONT: f32 = 12.;
 const CLEAR_GLYPH: f32 = 14.;
-/// Our field is 29pt tall to Finder's 22, which sets its text this much higher.
 const FIELD_DROP: f32 = 3.5;
 const PICK_INSET: f32 = 10.;
 const PICK_RADIUS: f32 = 8.;
@@ -79,15 +79,6 @@ pub(crate) struct GoPanel {
     selected: Option<usize>,
     scroll: UniformListScrollHandle,
     unshown: Option<AnyWindowHandle>,
-}
-
-impl GoPanel {
-    fn chosen(&self) -> Option<&str> {
-        match self.lines.get(self.selected?)? {
-            GoLine::Path(path) => Some(path),
-            GoLine::Heading(_) => None,
-        }
-    }
 }
 
 fn expanded(typed: &str) -> String {
@@ -142,8 +133,7 @@ fn ghost(sheet: &GoPanel) -> Option<String> {
     }
 }
 
-/// Which of the leaf's characters spell out `typed` in order: the ones Finder sets in bold.
-fn marks(typed: &str, leaf: &str) -> Option<Vec<usize>> {
+fn bold_marks(typed: &str, leaf: &str) -> Option<Vec<usize>> {
     let mut wanted = typed.chars().flat_map(char::to_lowercase).peekable();
     let mut hits = Vec::new();
     for (at, ch) in leaf.chars().enumerate() {
@@ -167,27 +157,24 @@ fn section(heading: &'static str, paths: Vec<String>) -> Vec<GoLine> {
         .collect()
 }
 
-/// A bare name lists matches here and among recents; a path, or a name found in neither, completes.
 fn go_lines(typed: &str, here: &str) -> Vec<GoLine> {
-    let bare = !typed.contains('/') && !typed.starts_with('~');
-    if !bare {
-        return section("Go to:", go_rows(typed));
+    if !typed.contains('/') && !typed.starts_with('~') {
+        let nearby: Vec<String> = if here.starts_with('/') {
+            completions(&format!("{}/{typed}", here.trim_end_matches('/'))).collect()
+        } else {
+            Vec::new()
+        };
+        let recent: Vec<String> = prefs::go_history()
+            .into_iter()
+            .filter(|path| !nearby.contains(path) && bold_marks(typed, leaf(path)).is_some())
+            .collect();
+        if !nearby.is_empty() || !recent.is_empty() {
+            let mut lines = section("Go to folder in current location", nearby);
+            lines.extend(section("Recents", recent));
+            return lines;
+        }
     }
-    let nearby: Vec<String> = if here.starts_with('/') {
-        completions(&format!("{}/{typed}", here.trim_end_matches('/'))).collect()
-    } else {
-        Vec::new()
-    };
-    let recent: Vec<String> = prefs::go_history()
-        .into_iter()
-        .filter(|path| !nearby.contains(path) && marks(typed, leaf(path)).is_some())
-        .collect();
-    if nearby.is_empty() && recent.is_empty() {
-        return section("Go to:", go_rows(typed));
-    }
-    let mut lines = section("Go to folder in current location", nearby);
-    lines.extend(section("Recents", recent));
-    lines
+    section("Go to:", go_rows(typed))
 }
 
 fn go_heading(at: usize, heading: &'static str) -> AnyElement {
@@ -236,7 +223,6 @@ fn go_row(
                     .left(px(PICK_INSET))
                     .right(px(PICK_INSET))
                     .child(
-                        // Finder's panel keeps the accent highlight while its field has focus.
                         native_rule("ng.finder.go.pick")
                             .tint(tokens::system_color(SystemColor::SelectedContentBackground))
                             .corner_radius(PICK_RADIUS),
@@ -279,7 +265,7 @@ fn remember_go(path: &str) {
     history.retain(|seen| seen != path);
     history.insert(0, path.to_string());
     history.truncate(HISTORY);
-    prefs::set_go_history(&history.iter().map(String::as_str).collect::<Vec<_>>());
+    prefs::set_go_history(&strs(&history));
 }
 
 impl FinderDemo {
@@ -373,6 +359,13 @@ extern "C" fn place_sheet(
 }
 
 impl GoPanel {
+    fn chosen(&self) -> Option<&str> {
+        match self.lines.get(self.selected?)? {
+            GoLine::Path(path) => Some(path),
+            GoLine::Heading(_) => None,
+        }
+    }
+
     fn typing(&mut self, text: String, cx: &mut Context<Self>) {
         self.typed = text.clone();
         cx.notify();
@@ -448,9 +441,7 @@ impl GoPanel {
 
     /// Off the main thread: a path on a volume that stopped answering must not hang the window.
     fn submit(&mut self, typed: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let typed = self
-            .chosen()
-            .map_or_else(|| typed.to_string(), str::to_string);
+        let typed = self.chosen().unwrap_or(typed).to_string();
         if typed.trim().is_empty() {
             return;
         }
@@ -601,7 +592,7 @@ impl Render for GoPanel {
                     .map(|at| match &panel.lines[at] {
                         GoLine::Heading(heading) => go_heading(at, heading),
                         GoLine::Path(path) => {
-                            let bold = marks(tail, leaf(path)).unwrap_or_default();
+                            let bold = bold_marks(tail, leaf(path)).unwrap_or_default();
                             go_row(at, path, panel.selected == Some(at), bold, this.clone())
                         }
                     })
@@ -693,7 +684,7 @@ impl FinderDemo {
                     .overflow_hidden()
                     .shadow_lg()
                     .block_mouse_except_scroll()
-                    // Native and Above, like the Go panel: the header band covers all of GPUI.
+                    // Above, like the Go panel: the header band covers all of GPUI.
                     .child(
                         material("ng.finder.save.glass", Material::Popover)
                             .layer(Layer::Above)

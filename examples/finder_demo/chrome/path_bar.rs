@@ -25,38 +25,31 @@ use crate::search::RECENTS;
 use crate::view::COLUMN_VIEW;
 
 pub(crate) const PATH_H: f32 = 28.;
-
-const TRAIL_INSET: f32 = 6.;
-
-const TRAIL_ROOM: f32 = 16.;
-
-const ICON_LEAD: f32 = 5.;
-
-const CRUMB_ICON: f32 = 16.;
-
-// Finder's small NSPathControl draws each component's image in a 14pt square.
 pub(crate) const CRUMB_ART: f32 = 14.;
-
 // An NSTextField label draws its text 2pt inside its frame.
 pub(crate) const LABEL_INSET: f32 = 2.;
-
-const LABEL_LEAD: f32 = 1.;
-
-const CHEVRON_LEAD: f32 = 1.;
-
-const CRUMB_CHROME: f32 = 29.;
-
-const LAST_CHROME: f32 = 24.;
-
-const DROP_RADIUS: f32 = 7.;
-
 pub(crate) const EDGE_ROW: f32 = 0.5;
+const TRAIL_INSET: f32 = 6.;
+const TRAIL_ROOM: f32 = 16.;
+const ICON_LEAD: f32 = 5.;
+const CRUMB_ICON: f32 = 16.;
+const LABEL_LEAD: f32 = 1.;
+const CHEVRON_LEAD: f32 = 1.;
+const CRUMB_CHROME: f32 = 29.;
+const LAST_CHROME: f32 = 24.;
+const DROP_RADIUS: f32 = 7.;
+const KEPT: usize = 256;
+const ICLOUD_ART: &str = "iCloudDriveNode";
 
-fn is_alt_click(event: &ClickEvent) -> bool {
-    matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt)
+type Art = HashMap<(&'static str, bool, bool), FileType<'static>>;
+type Attributes = Retained<NSDictionary<NSString, AnyObject>>;
+
+thread_local! {
+    static LABEL_W: RefCell<HashMap<String, f32>> = RefCell::default();
+    static LABEL_ATTRS: RefCell<Option<(f64, Attributes)>> = RefCell::default();
+    static ART: RefCell<(u64, Art)> = RefCell::default();
 }
 
-// No stand-in: Finder's first frame already has each crumb's own icon.
 fn crumb_art(id: impl Into<ElementId>, kind: Option<FileType<'static>>) -> AnyElement {
     let raster = kind.and_then(|kind| crate::icons::icon(kind, CRUMB_ART));
     div()
@@ -69,19 +62,7 @@ fn crumb_art(id: impl Into<ElementId>, kind: Option<FileType<'static>>) -> AnyEl
         .into_any_element()
 }
 
-const KEPT: usize = 256;
-
-type Art = HashMap<(&'static str, bool, bool), FileType<'static>>;
-
-type Attributes = Retained<NSDictionary<NSString, AnyObject>>;
-
-thread_local! {
-    static LABEL_W: RefCell<HashMap<String, f32>> = RefCell::default();
-    static LABEL_ATTRS: RefCell<Option<(f64, Attributes)>> = RefCell::default();
-    static ART: RefCell<(u64, Art)> = RefCell::default();
-}
-
-// Finder's path bar draws a folder as `iconForFile:` gives it: plain, whatever it holds.
+// The path bar draws a folder as `iconForFile:` does: plain, whatever it holds.
 fn plain(kind: FileType<'static>) -> FileType<'static> {
     match kind {
         FileType::FullFolder => FileType::Folder,
@@ -102,8 +83,6 @@ fn crumb_artwork(path: &'static str, holds: bool, landed: u64) -> FileType<'stat
             .or_insert_with(|| plain(folder_artwork(path, holds)))
     })
 }
-
-const ICLOUD_ART: &str = "iCloudDriveNode";
 
 pub(crate) fn icloud_art() -> FileType<'static> {
     thread_local! {
@@ -315,7 +294,7 @@ impl FinderDemo {
             let segment = segment.when_some(target, |crumb_row, id| {
                 let crumb_row =
                     crumb_row.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if is_alt_click(event) {
+                        if matches!(event, ClickEvent::Mouse(mouse) if mouse.up.modifiers.alt) {
                             crate::open_finder_window(id, cx);
                             window.remove_window();
                         } else {

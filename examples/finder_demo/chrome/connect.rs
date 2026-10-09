@@ -18,6 +18,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
+use super::strs;
 use crate::app::FinderDemo;
 use crate::data::intern_path;
 use crate::frame::ns_window;
@@ -178,7 +179,7 @@ fn remember(address: &str) {
     recents.retain(|seen| seen != address);
     recents.insert(0, address.to_string());
     recents.truncate(RECENTS);
-    prefs::set_recent_servers(&recents.iter().map(String::as_str).collect::<Vec<_>>());
+    prefs::set_recent_servers(&strs(&recents));
 }
 
 impl FinderDemo {
@@ -224,13 +225,7 @@ impl Connect {
     }
 
     fn store_favorites(&mut self, cx: &mut Context<Self>) {
-        prefs::set_favorite_servers(
-            &self
-                .favorites
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        );
+        prefs::set_favorite_servers(&strs(&self.favorites));
         cx.notify();
     }
 

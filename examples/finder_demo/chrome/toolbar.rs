@@ -41,15 +41,15 @@ const GRID_GAP: f64 = 1.5;
 const GRID_ROWS: [f64; 4] = [0., 3., 9.5, 12.5];
 const GRID_BOX_W: f64 = 22.;
 
-pub(crate) const NAV_ID: &str = "com.apple.finder.BACK";
-pub(crate) const AIRDROP_ID: &str = "com.apple.finder.AirD";
-pub(crate) const VIEW_ID: &str = "com.apple.finder.SWCH";
-pub(crate) const GROUP_ID: &str = "com.apple.finder.ARNG";
-pub(crate) const SHARE_ID: &str = "com.apple.finder.SHAR";
-pub(crate) const TAG_ID: &str = "com.apple.finder.LABL";
-pub(crate) const ACTION_ID: &str = "com.apple.finder.ACTN";
 pub(crate) const SEARCH_ID: &str = "com.apple.finder.SRCH";
-pub(crate) const JOBS_ID: &str = "ng.finder.jobs";
+const NAV_ID: &str = "com.apple.finder.BACK";
+const AIRDROP_ID: &str = "com.apple.finder.AirD";
+const VIEW_ID: &str = "com.apple.finder.SWCH";
+const GROUP_ID: &str = "com.apple.finder.ARNG";
+const SHARE_ID: &str = "com.apple.finder.SHAR";
+const TAG_ID: &str = "com.apple.finder.LABL";
+const ACTION_ID: &str = "com.apple.finder.ACTN";
+const JOBS_ID: &str = "ng.finder.jobs";
 const PATH_ID: &str = "com.apple.finder.PATH";
 const SPACE_ID: &str = "NSToolbarSpaceItem";
 
@@ -153,7 +153,6 @@ pub(crate) fn concentric_corners() {
     unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
 }
 
-/// Only the browser windows take the override; every other window keeps AppKit's own radius.
 pub(crate) fn system_corners(window: &Window) {
     if let Some(window) = crate::frame::ns_window(window) {
         system_corners_of(&window);
@@ -514,9 +513,12 @@ impl FinderDemo {
             Some(_) => None,
             None => Some(self.sort),
         };
-        let grouping = |entry: MenuEntry| match self.view == GALLERY_VIEW {
-            true => entry.disabled(),
-            false => entry,
+        let grouping = |entry: MenuEntry| {
+            if self.view == GALLERY_VIEW {
+                entry.disabled()
+            } else {
+                entry
+            }
         };
         let unsorted = MenuEntry::item("None")
             .checked(arranged == Some(Arrangement::Free))
@@ -541,9 +543,10 @@ impl FinderDemo {
             let sorts = MenuEntry::item(title)
                 .checked(sorted == Some(column))
                 .option_alternate();
-            rows.push(match column != Column::Application {
-                true => (sorts, Act::Sort(column)),
-                false => (sorts.disabled(), Act::Nothing),
+            rows.push(if column == Column::Application {
+                (sorts.disabled(), Act::Nothing)
+            } else {
+                (sorts, Act::Sort(column))
             });
         }
         rows

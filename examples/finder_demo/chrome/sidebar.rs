@@ -13,21 +13,23 @@ use native_gpui::{CheckState, Material};
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
 
+use super::strs;
 use crate::app::FinderDemo;
 use crate::data::{intern, intern_path, is_volume_root, server_symbol};
 use crate::ops::After;
 use crate::prefs;
 use crate::tags::tag_system_color;
 
-pub(crate) const SIDEBAR_W: f32 = 216.;
-pub(crate) const FAVOURITES: &str = "g-favourites";
-pub(crate) const LOCATIONS: &str = "g-locations";
+const SIDEBAR_W: f32 = 216.;
+const FAVOURITES: &str = "g-favourites";
+const LOCATIONS: &str = "g-locations";
+const TAGS: &str = "g-tags";
 
-// Finder's own keys, its spelling of the Tags one included.
+// Finder's own keys, typo included.
 const SECTIONS: [(&str, &str); 3] = [
     (FAVOURITES, "SidebarPlacesSectionDisclosedState"),
     (LOCATIONS, "SidebarDevicesSectionDisclosedState"),
-    ("g-tags", "SidebarTagsSctionDisclosedState"),
+    (TAGS, "SidebarTagsSctionDisclosedState"),
 ];
 
 pub(crate) fn closed_sections() -> Vec<&'static str> {
@@ -43,7 +45,7 @@ thread_local! {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum Glyph {
+enum Glyph {
     Symbol(&'static str),
     SymbolOr(&'static str, &'static str),
     Tag(u8),
@@ -51,8 +53,8 @@ pub(crate) enum Glyph {
 }
 
 impl Glyph {
-    fn icon(&self) -> SidebarIcon {
-        match *self {
+    fn icon(self) -> SidebarIcon {
+        match self {
             Glyph::Symbol(name) => SidebarIcon::Symbol(name.into()),
             Glyph::SymbolOr(name, art) => SidebarIcon::SymbolOrResource(name.into(), art.into()),
             Glyph::Tag(color) => match tag_system_color(color) {
@@ -67,20 +69,20 @@ impl Glyph {
 const APPLICATIONS: Glyph = Glyph::SymbolOr("appstore", "SidebarApplicationsFolder");
 
 #[derive(Clone)]
-pub(crate) struct Row {
-    pub(crate) id: &'static str,
-    pub(crate) title: SharedString,
-    pub(crate) glyph: Glyph,
-    pub(crate) eject: bool,
-    pub(crate) drops: bool,
-    pub(crate) muted: bool,
+struct Row {
+    id: &'static str,
+    title: SharedString,
+    glyph: Glyph,
+    eject: bool,
+    drops: bool,
+    muted: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct Group {
-    pub(crate) id: &'static str,
-    pub(crate) title: &'static str,
-    pub(crate) rows: Vec<Row>,
+    id: &'static str,
+    title: &'static str,
+    rows: Vec<Row>,
 }
 
 fn row(id: &'static str, title: impl Into<SharedString>, glyph: Glyph) -> Row {
@@ -147,10 +149,6 @@ fn pinned_glyph(path: &Path) -> Glyph {
         Some(_) if finder_fs::kind::is_package_name(&name) => Glyph::Symbol("questionmark.square"),
         _ => Glyph::Symbol("folder"),
     }
-}
-
-fn trash_path() -> Option<PathBuf> {
-    finder_fs::volumes::standard(Standard::Trash)
 }
 
 fn provider_glyph(root: Option<&Path>) -> Glyph {
@@ -364,10 +362,9 @@ pub(crate) fn set_row_shown(shown: Shown, on: bool) {
     prefs::set_setting_on(&key(shown), on);
 }
 
-/// A tag row's Settings ▸ Tags checkbox: mixed while it shows only as a recent tag.
 pub(crate) fn tag_shown(id: &str) -> CheckState {
     let name = id.strip_prefix("tag:").unwrap_or(id);
-    if prefs::removed("g-tags").iter().any(|gone| gone == id) {
+    if prefs::removed(TAGS).iter().any(|gone| gone == id) {
         CheckState::Off
     } else if finder_fs::tags::recent()
         .iter()
@@ -380,13 +377,16 @@ pub(crate) fn tag_shown(id: &str) -> CheckState {
 }
 
 pub(crate) fn show_tag_row(id: &str, on: bool) {
-    let mut removed = prefs::removed("g-tags");
+    let mut removed = prefs::removed(TAGS);
     removed.retain(|gone| gone != id);
     if !on {
         removed.push(id.to_owned());
     }
-    let keep: Vec<&str> = removed.iter().map(String::as_str).collect();
-    prefs::set_removed("g-tags", &keep);
+    prefs::set_removed(TAGS, &strs(&removed));
+}
+
+fn trash_path() -> Option<PathBuf> {
+    finder_fs::volumes::standard(Standard::Trash)
 }
 
 fn listed(title: String, path: Option<PathBuf>, special: Option<Special>) -> Listed {
@@ -546,7 +546,7 @@ pub(crate) fn groups() -> Vec<Group> {
             rows: locations,
         },
         Group {
-            id: "g-tags",
+            id: TAGS,
             title: "Tags",
             rows: tags,
         },
@@ -637,7 +637,7 @@ pub(crate) fn reload_sidebars(cx: &mut App) {
 }
 
 impl FinderDemo {
-    pub(crate) fn sidebar_items(&self) -> Vec<SidebarItem> {
+    fn sidebar_items(&self) -> Vec<SidebarItem> {
         self.sidebar_groups
             .iter()
             .zip(&self.sidebar_rows)
@@ -658,7 +658,7 @@ impl FinderDemo {
             .collect()
     }
 
-    pub(crate) fn refresh_sidebar(&mut self) {
+    fn refresh_sidebar(&mut self) {
         self.sidebar_took(groups());
     }
 
@@ -824,8 +824,7 @@ impl FinderDemo {
         {
             let mut removed = prefs::removed(group.id);
             removed.push(id.to_owned());
-            let keep: Vec<&str> = removed.iter().map(String::as_str).collect();
-            prefs::set_removed(group.id, &keep);
+            prefs::set_removed(group.id, &strs(&removed));
         }
         for rows in &mut self.sidebar_rows {
             rows.retain(|row| *row != id);
@@ -889,8 +888,7 @@ impl FinderDemo {
                 pinned.push((*id).to_owned());
             }
         }
-        let keep: Vec<&str> = pinned.iter().map(String::as_str).collect();
-        prefs::set_pinned(group, &keep);
+        prefs::set_pinned(group, &strs(&pinned));
         let removed = prefs::removed(group);
         let back: Vec<&str> = removed
             .iter()

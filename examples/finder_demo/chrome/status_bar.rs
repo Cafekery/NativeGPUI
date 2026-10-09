@@ -11,7 +11,7 @@ use crate::frame::ns_window;
 use crate::view::{GALLERY_VIEW, ICON_VIEW};
 use crate::views::icon::{SIZE_STEPS, size_slider, slider_size};
 
-pub(crate) const BAR_H: f32 = 28.;
+const BAR_H: f32 = 28.;
 
 const TEXT_TRAIL: f32 = 12.;
 const SIDE_W: f32 = 120.;
@@ -33,7 +33,6 @@ impl FinderDemo {
             .detach();
     }
 
-    /// Finder sets a window's status bar from the setting each time it goes somewhere, without resizing it.
     pub(crate) fn follow_status_bar(&mut self) {
         self.status_bar_shown = crate::prefs::shows_status_bar();
     }
@@ -62,12 +61,13 @@ impl FinderDemo {
                 None => picked,
             }
         };
-        let text = match self.airdrop_shown() {
-            true => String::new(),
-            false => words::fill(
+        let text = if self.airdrop_shown() {
+            String::new()
+        } else {
+            words::fill(
                 &words::finder("SB1", "^0, ^1 available"),
                 &[&what, &available],
-            ),
+            )
         };
         let slider = matches!(self.view, ICON_VIEW | GALLERY_VIEW);
         let paint = BarPaint::now();

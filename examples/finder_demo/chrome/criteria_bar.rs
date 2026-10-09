@@ -120,7 +120,8 @@ impl Node {
             "kind" => Node::Kind,
             "name" => Node::Name,
             "is" => Node::Is,
-            _ => (at("kind:").map(Node::Category))
+            _ => at("kind:")
+                .map(Node::Category)
                 .or_else(|| at("test:").map(Node::Test))
                 .unwrap_or(Node::Text),
         }
