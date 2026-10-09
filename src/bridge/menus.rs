@@ -3,8 +3,7 @@ use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::controls::menu::set_state;
-use crate::controls::{CheckState, MenuView};
+use crate::controls::{CheckState, MenuView, menu::set_state};
 use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
@@ -142,7 +141,6 @@ impl MenuCommand {
         self
     }
 
-    /// `Mixed` draws AppKit's dash, as a row whose submenu is partly chosen does.
     pub fn checked<S: Into<CheckState>>(mut self, state: S) -> Self {
         self.checked = state.into();
         self
@@ -189,7 +187,7 @@ impl MenuCommand {
         self
     }
 
-    /// While text is being typed in or an image view edits its image, the row is `text`'s: its stock title, the responder's to allow and to do.
+    /// While text or an editable image view is being edited, the row acts as `text`'s stock row.
     pub fn edits_text(mut self, text: TextCommand) -> Self {
         self.text = Some(text);
         self
@@ -710,7 +708,6 @@ fn editing_text() -> bool {
     first_responder().is_some_and(|responder| responder.isKindOfClass(NSText::class()))
 }
 
-/// Text being typed in, or an image view that cuts, copies and pastes its own image.
 fn editing_natively() -> bool {
     first_responder().is_some_and(|responder| {
         responder.isKindOfClass(NSText::class())
@@ -774,8 +771,8 @@ fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
 
 type MenuState = dyn Fn(&dyn Action) -> Option<CheckState>;
 
-/// Each `Some` is that row's state, a `bool` or a [`CheckState`]; a submenu's row gets one too
-/// when it has an action. Runs while gpui holds its `App`: read state of your own.
+/// Each `Some` is that row's state, a submenu's row included when it has an action. Runs while
+/// gpui holds its `App`: read state of your own.
 pub fn on_menu_state<S: Into<CheckState>>(check: impl Fn(&dyn Action) -> Option<S> + 'static) {
     STATE
         .with_borrow_mut(|slot| *slot = Some(Rc::new(move |action| check(action).map(Into::into))));
@@ -883,9 +880,10 @@ define_class!(
                 return Bool::new(text_allows(item, text));
             }
             refresh_view(item);
-            if let Some(on) = STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
+            if let Some(state) =
+                STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
             {
-                set_state(item, on);
+                set_state(item, state);
             }
             if let Some(title) = TITLE.with_borrow(|slot| slot.clone()).and_then(|t| t(&*action)) {
                 item.setTitle(&worded(&title));
