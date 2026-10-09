@@ -362,6 +362,17 @@ impl FinderDemo {
                     )
                 },
             )
+            .when(banded && scope_h > 0., |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top(top + header_h)
+                        .left(metrics.left)
+                        .right_0()
+                        .h(px(0.5))
+                        .child(native_rule("ng.finder.header.rule")),
+                )
+            })
             .children(search_bars.map(|(scope, criteria)| {
                 div()
                     .absolute()
