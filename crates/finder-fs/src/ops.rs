@@ -20,6 +20,7 @@ use crate::volumes;
 
 mod deep;
 mod quick;
+pub mod transfer;
 
 pub use quick::{ImageFormat, ImageSize, Quick};
 
