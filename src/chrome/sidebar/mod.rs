@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use block2::StackBlock;
+use block2::{RcBlock, StackBlock};
 use gpui::{AnyWindowHandle, App, AsyncWindowContext, Global, Pixels, SharedString, Window, px};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
@@ -360,17 +360,12 @@ impl Shared {
     }
 
     fn quietly(&self, change: impl FnOnce()) {
-        self.suppress.set(self.suppress.get() + 1);
-        change();
-        self.suppress.set(self.suppress.get() - 1);
+        raised(&self.suppress, change)
     }
 
     // The outline view tells its delegate of `expandItem:` exactly as of a click on a disclosure.
     fn expanding<R>(&self, change: impl FnOnce() -> R) -> R {
-        self.expanding.set(self.expanding.get() + 1);
-        let changed = change();
-        self.expanding.set(self.expanding.get() - 1);
-        changed
+        raised(&self.expanding, change)
     }
 
     fn defer(&self, run: impl FnOnce(&mut Window, &mut App) + 'static) {
@@ -380,6 +375,13 @@ impl Shared {
             })
             .detach();
     }
+}
+
+fn raised<R>(depth: &Cell<u32>, change: impl FnOnce() -> R) -> R {
+    depth.set(depth.get() + 1);
+    let result = change();
+    depth.set(depth.get() - 1);
+    result
 }
 
 struct Views {
@@ -430,6 +432,29 @@ impl Drop for SidebarState {
 }
 
 // Only a divider the user drags posts its index, telling a drag shut from an asked collapse.
+fn observe_divider(
+    split: &NSSplitViewController,
+    resized: impl Fn(Option<NSInteger>) + 'static,
+) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let key = NSString::from_str("NSSplitViewDividerIndex");
+    let block = RcBlock::new(move |note: NonNull<NSNotification>| {
+        let dragged = unsafe { note.as_ref() }.userInfo().and_then(|info| {
+            let index: Option<Retained<AnyObject>> =
+                unsafe { msg_send![&*info, objectForKey: &*key] };
+            index.map(|index| unsafe { msg_send![&*index, integerValue] })
+        });
+        resized(dragged);
+    });
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSSplitViewDidResizeSubviewsNotification),
+            Some(&split.splitView()),
+            None,
+            &block,
+        )
+    }
+}
+
 fn observe_inspector(
     split: &NSSplitViewController,
     item: &NSSplitViewItem,
@@ -439,31 +464,16 @@ fn observe_inspector(
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
     let (item, view) = (item.retain(), view.retain());
     let (resized, sliding) = (resized.clone(), sliding.clone());
-    let key = NSString::from_str("NSSplitViewDividerIndex");
-    let block = StackBlock::new(move |note: NonNull<NSNotification>| {
+    observe_divider(split, move |dragged| {
         if sliding.get() {
             return;
         }
-        let dragged = unsafe { note.as_ref() }.userInfo().is_some_and(|info| {
-            let index: Option<Retained<AnyObject>> =
-                unsafe { msg_send![&*info, objectForKey: &*key] };
-            index.is_some()
-        });
         match item.isCollapsed() {
-            true if dragged => resized.set(Some(0.)),
+            true if dragged.is_some() => resized.set(Some(0.)),
             true => {}
             false => resized.set(Some(view.frame().size.width)),
         }
     })
-    .copy();
-    unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(objc2_app_kit::NSSplitViewDidResizeSubviewsNotification),
-            Some(&split.splitView()),
-            None,
-            &block,
-        )
-    }
 }
 
 fn observe_sidebar(
@@ -475,34 +485,14 @@ fn observe_sidebar(
 ) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
     let (item, view) = (item.retain(), view.retain());
     let (resized, moving) = (resized.clone(), moving.clone());
-    let key = NSString::from_str("NSSplitViewDividerIndex");
-    let block = StackBlock::new(move |note: NonNull<NSNotification>| {
-        if moving.get() || item.isCollapsed() {
+    observe_divider(split, move |dragged| {
+        if moving.get() || item.isCollapsed() || dragged != Some(0) {
             return;
         }
-        let dragged = unsafe { note.as_ref() }.userInfo().is_some_and(|info| {
-            let index: Option<Retained<AnyObject>> =
-                unsafe { msg_send![&*info, objectForKey: &*key] };
-            index.is_some_and(|index| {
-                let index: NSInteger = unsafe { msg_send![&*index, integerValue] };
-                index == 0
-            })
-        });
-        if dragged {
-            // The item's wrapper: the view inside it lags a divider move by a turn.
-            let host = unsafe { view.superview() }.unwrap_or_else(|| view.clone());
-            resized.set(Some(host.frame().size.width));
-        }
+        // The item's wrapper: the view inside it lags a divider move by a turn.
+        let host = unsafe { view.superview() }.unwrap_or_else(|| view.clone());
+        resized.set(Some(host.frame().size.width));
     })
-    .copy();
-    unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(objc2_app_kit::NSSplitViewDidResizeSubviewsNotification),
-            Some(&split.splitView()),
-            None,
-            &block,
-        )
-    }
 }
 
 fn observe_key_state(
