@@ -163,7 +163,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    /// The failed items again, or after a stop everything not yet done, merged into what landed.
+    /// The failed items again, or each item a stop or a failed move left, merged into what landed.
     pub fn retry(&self) -> Option<Request> {
         self.retry.clone()
     }
@@ -904,12 +904,8 @@ impl<'a> Job<'a> {
             (false, true) => End::Stopped,
             (false, false) => End::Finished,
         };
-        let again: Vec<Item> = match end {
-            End::Cancelled => Vec::new(),
-            End::Stopped => request
-                .items
-                .iter()
-                .zip(&record.resolved)
+        let unfinished = || {
+            (request.items.iter().zip(&record.resolved))
                 .filter_map(|(item, resolved)| {
                     let dest = resolved.clone()?;
                     taken(&item.source).then(|| Item {
@@ -917,7 +913,13 @@ impl<'a> Job<'a> {
                         dest,
                     })
                 })
-                .collect(),
+                .collect()
+        };
+        let again: Vec<Item> = match end {
+            End::Cancelled => Vec::new(),
+            End::Stopped => unfinished(),
+            // A move goes again whole, so the folders it empties go with it.
+            End::Finished if self.is_move() && !failures.is_empty() => unfinished(),
             End::Finished => failures
                 .iter()
                 .filter(|failure| failure.source != failure.dest && taken(&failure.source))

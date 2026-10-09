@@ -448,6 +448,49 @@ fn failures_are_collected_while_the_rest_lands() {
 }
 
 #[test]
+fn a_retried_move_takes_the_folders_it_empties() {
+    if root_user() {
+        return;
+    }
+    let Some(disk) = RamDisk::new(40, "HFS+", &volume_name("R")) else {
+        return;
+    };
+    let dir = temp_dir("retried-move");
+    let folder = dir.join("Folder");
+    let secret = folder.join("inner").join("secret.txt");
+    write(&folder.join("fine.txt"), b"fine");
+    write(&secret, b"secret");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let outcome = Transfer::default().run(Request::new(
+        Kind::Move,
+        vec![folder.clone()],
+        &disk.mount,
+        Conflict::KeepBoth,
+        OnError::Continue,
+    ));
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
+    assert!(secret.exists(), "the source of what failed went");
+    let landed = disk.mount.join("Folder");
+    assert_eq!(fs::read(landed.join("fine.txt")).unwrap(), b"fine");
+
+    let again = Transfer::default().run(outcome.retry().expect("the folder to try again"));
+    assert!(again.failures.is_empty(), "{:?}", again.failures);
+    assert_eq!(
+        fs::read(landed.join("inner").join("secret.txt")).unwrap(),
+        b"secret"
+    );
+    assert!(
+        !taken(&disk.mount.join("Folder 2")),
+        "a retry lands where the first try did"
+    );
+    assert!(!folder.exists(), "the emptied source folders stayed");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_merge_leaves_files_that_already_match() {
     if !crate::trash_reachable() {
         return;
