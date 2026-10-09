@@ -51,7 +51,8 @@ fn open(focus: bool, cx: &mut App) {
         let Some(mtm) = MainThreadMarker::new().filter(|_| !shown()) else {
             return;
         };
-        let tall = height(&row_heights(&demos(cx), cx), mtm);
+        let rows = row_heights(&demos(cx), cx);
+        let tall = height(&rows, mtm);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -73,7 +74,7 @@ fn open(focus: bool, cx: &mut App) {
                         watched: HashSet::new(),
                         watching: Vec::new(),
                         tall,
-                        had_rows: false,
+                        had_rows: !rows.is_empty(),
                         ticking: false,
                     }
                 })
@@ -109,7 +110,8 @@ struct Progress {
     watched: HashSet<EntityId>,
     watching: Vec<Subscription>,
     tall: Pixels,
-    /// Closes itself once its last row has gone, but not when opened with nothing in it.
+    /// Closes itself once its last row has gone, but not when opened with nothing in it. It
+    /// checks when a job changes rather than on draw, since a covered window never draws.
     had_rows: bool,
     ticking: bool,
 }
@@ -136,6 +138,15 @@ impl Progress {
         })
         .detach();
     }
+
+    fn jobs_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = !row_heights(&demos(cx), cx).is_empty();
+        if self.had_rows && !shown {
+            cx.defer_in(window, |_, window, _| window.remove_window());
+        }
+        self.had_rows |= shown;
+        cx.notify();
+    }
 }
 
 impl Render for Progress {
@@ -143,7 +154,10 @@ impl Render for Progress {
         let demos = demos(cx);
         for demo in &demos {
             if self.watched.insert(demo.entity_id()) {
-                self.watching.push(cx.observe(demo, |_, _, cx| cx.notify()));
+                self.watching
+                    .push(cx.observe_in(demo, window, |this, _, window, cx| {
+                        this.jobs_changed(window, cx)
+                    }));
             }
         }
         let mut running = false;
@@ -155,9 +169,6 @@ impl Render for Progress {
                 heights.push(job.height());
                 rows.push(progress_row(job, demo));
             }
-        }
-        if rows.is_empty() && self.had_rows {
-            cx.defer_in(window, |_, window, _| window.remove_window());
         }
         self.had_rows |= !rows.is_empty();
         if running && !self.ticking {
