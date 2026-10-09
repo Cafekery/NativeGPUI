@@ -16,9 +16,8 @@ use finder_fs::meta::Meta;
 use finder_fs::permissions::{self, Grant, Privilege};
 use finder_fs::tags::Tag;
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Entity, FontWeight, Render, RenderImage, SharedString,
-    Stateful, Task, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point,
-    prelude::*, px, size,
+    AnyElement, App, Bounds, Context, Entity, FontWeight, Render, RenderImage, SharedString, Task,
+    WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, img, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{FileType, SystemColor, system_color};
 use native_gpui::{
@@ -33,18 +32,16 @@ use objc2::{
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSButton, NSColor, NSControlSize,
     NSFocusRingType, NSFont, NSFontWeightRegular, NSImage, NSImageScaling,
-    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse,
-    NSModalResponseOK, NSOpenPanel, NSPathControl, NSPathControlItem, NSResponder, NSScrollView,
-    NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl, NSText, NSTextAlignment,
-    NSTextField, NSTextView, NSView, NSWindow, NSWindowButton, NSWindowDidResizeNotification,
-    NSWindowTitleVisibility, NSWorkspace,
+    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSModalResponse, NSPathControl,
+    NSPathControlItem, NSResponder, NSScrollView, NSSegmentStyle, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSText, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
+    NSWindowButton, NSWindowDidResizeNotification, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSBundleExecutableArchitectureARM64,
     NSBundleExecutableArchitectureX86_64, NSDate, NSDateFormatter, NSDateFormatterStyle,
     NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSObject, NSPoint, NSRect,
-    NSRunLoop, NSSize, NSString, NSURL, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey,
-    ns_string,
+    NSSize, NSString, NSURLHasHiddenExtensionKey, NSURLIsUserImmutableKey, ns_string,
 };
 
 use crate::app::FinderDemo;
@@ -55,7 +52,8 @@ use crate::data::{
 use crate::fold::{self, Fold, Part};
 use crate::form::{
     BODY, BOTTOM, Flip, Form, GAP, INSET, KEPT, LINE, MARGIN, ROW, SECTION, STACK, TITLE, TITLEBAR,
-    hugging, key_of, labelled, lines_height, page, remembered, switch_row, text_height, text_width,
+    choose_file, hugging, key_of, labelled, lines_height, page, remembered, resize_later,
+    switch_row, text_height, text_width,
 };
 use crate::frame::ns_window;
 use crate::icon_well::{self, IconWell};
@@ -127,6 +125,17 @@ impl Pane {
             Pane::Comments => "Comments",
             Pane::OpenWith => "OpenWith",
             Pane::Privileges => "Privileges",
+        }
+    }
+
+    fn section(self) -> (&'static str, &'static str) {
+        match self {
+            Pane::General => ("ng.finder.info.general", "General"),
+            Pane::MetaData => ("ng.finder.info.more", "More Info"),
+            Pane::Name => ("ng.finder.info.name", "Name & Extension"),
+            Pane::Comments => ("ng.finder.info.comments", "Comments"),
+            Pane::OpenWith => ("ng.finder.info.openwith", "Open with"),
+            Pane::Privileges => ("ng.finder.info.privileges", "Sharing & Permissions"),
         }
     }
 }
@@ -285,28 +294,24 @@ fn aspect(image: &RenderImage) -> f32 {
     u32::from(size.height) as f32 / u32::from(size.width).max(1) as f32
 }
 
-fn formatter(date: NSDateFormatterStyle, time: NSDateFormatterStyle) -> Retained<NSDateFormatter> {
-    let formatter = NSDateFormatter::new();
-    formatter.setDateStyle(date);
-    formatter.setTimeStyle(time);
-    formatter
-}
-
-fn format_date(formatter: &NSDateFormatter, seconds: f64) -> String {
-    formatter
-        .stringFromDate(&NSDate::dateWithTimeIntervalSinceReferenceDate(seconds))
-        .to_string()
-}
-
 fn long_date(seconds: f64, room: f32) -> String {
     use NSDateFormatterStyle as Style;
     thread_local! {
         static STYLES: [Retained<NSDateFormatter>; 4] =
-            [Style::FullStyle, Style::LongStyle, Style::MediumStyle, Style::ShortStyle]
-                .map(|style| formatter(style, Style::ShortStyle));
+            [Style::FullStyle, Style::LongStyle, Style::MediumStyle, Style::ShortStyle].map(
+                |style| {
+                    let formatter = NSDateFormatter::new();
+                    formatter.setDateStyle(style);
+                    formatter.setTimeStyle(Style::ShortStyle);
+                    formatter
+                },
+            );
     }
+    let date = NSDate::dateWithTimeIntervalSinceReferenceDate(seconds);
     STYLES.with(|styles| {
-        let mut texts = styles.iter().map(|style| format_date(style, seconds));
+        let mut texts = styles
+            .iter()
+            .map(|style| style.stringFromDate(&date).to_string());
         let mut text = texts.next().unwrap_or_default();
         while text_width(&text) > room {
             let Some(shorter) = texts.next() else { break };
@@ -370,10 +375,6 @@ fn writable(path: &Path) -> bool {
         return false;
     };
     unsafe { access(path.as_ptr(), W_OK) == 0 }
-}
-
-fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
-    NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
 fn hosted<V: Message + AsRef<NSView> + 'static>(
@@ -473,20 +474,13 @@ fn icon_view(row: &Row, scale: f32) -> AnyElement {
 }
 
 fn icon_file(path: &'static str) -> impl IntoElement {
-    image_view(key_of(("ng.finder.info.icon_file", path)), move || {
-        NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))
-    })
-}
-
-fn image_view(
-    key: u64,
-    image: impl Fn() -> Option<Retained<NSImage>> + 'static,
-) -> impl IntoElement {
     hosted(
-        key,
+        key_of(("ng.finder.info.icon_file", path)),
         move |mtm, _| {
             let view = NSImageView::new(mtm);
-            view.setImage(image().as_deref());
+            let image =
+                NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path));
+            view.setImage(image.as_deref());
             view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             view
         },
@@ -540,16 +534,12 @@ fn fits(form: &Form, label: &str, value: &str) -> bool {
     label == WHERE || text_width(value) <= form.room(label)
 }
 
-fn value_height(form: &Form, label: &str, value: &str) -> f32 {
-    match fits(form, label, value) {
-        true => ROW,
-        false => ROW + 8. + lines_height(value, form.inner),
-    }
-}
-
 fn values_height(form: &Form, rows: &[(&str, SharedString)]) -> f32 {
     rows.iter()
-        .map(|(label, value)| value_height(form, label, value))
+        .map(|(label, value)| match fits(form, label, value) {
+            true => ROW,
+            false => ROW + 8. + lines_height(value, form.inner),
+        })
         .sum()
 }
 
@@ -658,18 +648,9 @@ fn bound(window: &Window, tall: f32) {
         ns.setContentMaxSize(max);
     }
     let wanted = follows.then_some(f64::from(tall));
-    if refit(&ns, wanted).is_some() {
-        // Resized inside gpui's update, the window keeps drawing at its old size.
-        let block = RcBlock::new(move || {
-            if let Some(frame) = refit(&ns, wanted) {
-                ns.setFrame_display(frame, true);
-            }
-        });
-        unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
-    }
+    resize_later(ns, move |ns| refit(ns, wanted));
 }
 
-/// Within its limits at the content height wanted, its top edge fixed and never grown off screen.
 fn refit(ns: &NSWindow, wanted: Option<f64>) -> Option<NSRect> {
     let content = ns.contentRectForFrameRect(ns.frame());
     let (min, max) = (ns.contentMinSize(), ns.contentMaxSize());
@@ -1281,24 +1262,20 @@ impl Info {
         rows
     }
 
-    fn general_height(&self, form: &Form) -> f32 {
+    fn default_height(&self, width: f32) -> f32 {
+        let form = Form::new(width, 1.);
+        let head = header_height(
+            &form,
+            &self.line.row.display,
+            !self.summary().is_empty(),
+            self.tags.is_some(),
+        );
         let toggles = match self.checks().len() {
             0 => 0.,
             checks => STACK + checks as f32 * ROW,
         };
-        SECTION + TITLE + values_height(form, &self.general_rows(form)) + toggles
-    }
-
-    fn default_height(&self, width: f32) -> f32 {
-        let form = Form::new(width, 1.);
-        let row = &self.line.row;
-        let head = header_height(
-            &form,
-            &row.display,
-            !self.summary().is_empty(),
-            self.tags.is_some(),
-        );
-        TITLEBAR + head + self.general_height(&form) + BOTTOM
+        let general = SECTION + TITLE + values_height(&form, &self.general_rows(&form)) + toggles;
+        TITLEBAR + head + general + BOTTOM
     }
 
     fn shown(&self, scale: f32) -> Shown {
@@ -1376,16 +1353,17 @@ impl Info {
 
     fn pane(
         &self,
-        (form, this): (&Form, &WeakEntity<Self>),
+        form: &Form,
+        this: &WeakEntity<Self>,
         pane: Pane,
-        (id, title): (&'static str, &str),
         parts: Vec<(f32, Part)>,
-    ) -> Stateful<Div> {
+    ) -> AnyElement {
         let this = this.clone();
         let toggle = move |_: &mut Window, cx: &mut App| {
             this.update(cx, |info, cx| info.fold(pane, cx)).ok();
         };
-        fold::section(form, id, title, &self.folds[pane as usize], toggle, parts)
+        let (id, title) = pane.section();
+        fold::section(form, id, title, &self.folds[pane as usize], toggle, parts).into_any_element()
     }
 
     fn fold(&mut self, pane: Pane, cx: &mut Context<Self>) {
@@ -1395,7 +1373,7 @@ impl Info {
         cx.notify();
     }
 
-    fn general(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
+    fn general(&self, form: &Form, this: &WeakEntity<Self>) -> AnyElement {
         let toggles: Vec<AnyElement> = self
             .checks()
             .into_iter()
@@ -1409,20 +1387,18 @@ impl Info {
         if !toggles.is_empty() {
             parts.push(card("toggles", toggles));
         }
-        let names = ("ng.finder.info.general", "General");
-        self.pane((form, this), Pane::General, names, parts)
+        self.pane(form, this, Pane::General, parts)
     }
 
-    fn more_info(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
+    fn more_info(&self, form: &Form, this: &WeakEntity<Self>) -> Option<AnyElement> {
         let rows = self.more_rows(form);
         (!rows.is_empty()).then(|| {
             let parts = vec![card("values", values(form, &rows))];
-            let names = ("ng.finder.info.more", "More Info");
-            self.pane((form, this), Pane::MetaData, names, parts)
+            self.pane(form, this, Pane::MetaData, parts)
         })
     }
 
-    fn name_section(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
+    fn name_section(&self, form: &Form, this: &WeakEntity<Self>) -> AnyElement {
         let renamable = self.renamable && !self.locked;
         let field = div().w_full().h(px(LINE)).child(name_field(
             self.line.row.path.clone(),
@@ -1434,11 +1410,10 @@ impl Info {
             labelled("Name", SystemColor::Label, field),
             switch_row("Hide extension", self.hidden_extension, hide),
         ];
-        let names = ("ng.finder.info.name", "Name & Extension");
-        self.pane((form, this), Pane::Name, names, vec![card("card", rows)])
+        self.pane(form, this, Pane::Name, vec![card("card", rows)])
     }
 
-    fn comments(&self, form: &Form, this: &WeakEntity<Self>) -> Stateful<Div> {
+    fn comments(&self, form: &Form, this: &WeakEntity<Self>) -> AnyElement {
         let editable = self.renamable && !self.locked && writable(self.path());
         let text = div().p(px(INSET)).child(
             div()
@@ -1446,11 +1421,10 @@ impl Info {
                 .child(comment_box(self.line.row.path.clone(), editable)),
         );
         let parts = vec![card("card", vec![text.into_any_element()])];
-        let names = ("ng.finder.info.comments", "Comments");
-        self.pane((form, this), Pane::Comments, names, parts)
+        self.pane(form, this, Pane::Comments, parts)
     }
 
-    fn open_with(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
+    fn open_with(&self, form: &Form, this: &WeakEntity<Self>) -> Option<AnyElement> {
         let opener = self.opener.as_ref()?;
         let rows = opener.rows();
         let chosen = rows
@@ -1498,16 +1472,10 @@ impl Info {
             labelled("Application", SystemColor::Label, popup),
             all.into_any_element(),
         ];
-        let names = ("ng.finder.info.openwith", "Open with");
-        Some(self.pane(
-            (form, this),
-            Pane::OpenWith,
-            names,
-            vec![card("card", rows)],
-        ))
+        Some(self.pane(form, this, Pane::OpenWith, vec![card("card", rows)]))
     }
 
-    fn privileges(&self, form: &Form, this: &WeakEntity<Self>) -> Option<Stateful<Div>> {
+    fn privileges(&self, form: &Form, this: &WeakEntity<Self>) -> Option<AnyElement> {
         let access = self.access.as_ref()?;
         let path = &self.line.row.path;
         let folder = matches!(self.subject, Subject::Folder | Subject::Volume);
@@ -1543,8 +1511,7 @@ impl Info {
             )
             .child(div().size(px(18.)).child(icon_file(LOCK_ICON)));
         parts.push((STACK, Part::Plain(controls.into_any_element())));
-        let names = ("ng.finder.info.privileges", "Sharing & Permissions");
-        Some(self.pane((form, this), Pane::Privileges, names, parts))
+        Some(self.pane(form, this, Pane::Privileges, parts))
     }
 
     fn grant(&mut self, row: usize, privilege: Privilege, cx: &mut Context<Self>) {
@@ -1600,7 +1567,16 @@ impl Info {
                 opener.chosen = Some(app);
             }
             Some(Pick::Store) => crate::openwith::app_store(&[path]),
-            Some(Pick::Other) => choose_other(path, cx),
+            Some(Pick::Other) => choose_file(cx, Some("/Applications"), move |info, app, cx| {
+                crate::openwith::set_default(std::slice::from_ref(&path), &app);
+                let mut opener = Opener::of(&path);
+                if !opener.apps.contains(&app) {
+                    opener.apps.push(app.clone());
+                }
+                opener.chosen = Some(app);
+                info.opener = Some(opener);
+                cx.notify();
+            }),
             Some(Pick::Separator) | None => {}
         }
         cx.notify();
@@ -1618,16 +1594,11 @@ impl Info {
             "Are you sure you want to change all similar documents to open with the application \u{201c}{}\u{201d}?",
             finder_fs::name::of_path(&app)
         );
-        let detail = match self.path().extension() {
-            Some(extension) => format!(
-                "This change will apply to all documents with extension \u{201c}{}\u{201d}.",
-                extension.to_string_lossy()
-            ),
-            None => format!(
-                "This change will apply to all documents with type \u{201c}{}\u{201d}.",
-                self.line.row.kind
-            ),
+        let kind = match self.path().extension() {
+            Some(extension) => format!("extension \u{201c}{}\u{201d}", extension.to_string_lossy()),
+            None => format!("type \u{201c}{}\u{201d}", self.line.row.kind),
         };
+        let detail = format!("This change will apply to all documents with {kind}.");
         let this = cx.weak_entity();
         let async_cx = cx.to_async();
         confirm(
@@ -1672,25 +1643,13 @@ impl Render for Info {
         self.title(window);
         let this = cx.weak_entity();
         let form = Form::new(width, 1. / scale);
-        let mut content = vec![
-            self.head(&form, scale),
-            self.general(&form, &this).into_any_element(),
-        ];
+        let mut content = vec![self.head(&form, scale), self.general(&form, &this)];
         if self.subject != Subject::Place {
-            content.extend(
-                self.more_info(&form, &this)
-                    .map(IntoElement::into_any_element),
-            );
-            content.push(self.name_section(&form, &this).into_any_element());
-            content.push(self.comments(&form, &this).into_any_element());
-            content.extend(
-                self.open_with(&form, &this)
-                    .map(IntoElement::into_any_element),
-            );
-            content.extend(
-                self.privileges(&form, &this)
-                    .map(IntoElement::into_any_element),
-            );
+            content.extend(self.more_info(&form, &this));
+            content.push(self.name_section(&form, &this));
+            content.push(self.comments(&form, &this));
+            content.extend(self.open_with(&form, &this));
+            content.extend(self.privileges(&form, &this));
         }
         if self.folds.iter().any(Fold::moving) {
             window.request_animation_frame();
@@ -1719,20 +1678,24 @@ fn confirm(
     alert.beginSheetModalForWindow_completionHandler(window, Some(&handler));
 }
 
+fn bare_field(field: &NSTextField) {
+    field.setBezeled(false);
+    field.setBordered(false);
+    field.setDrawsBackground(false);
+    if let Some(cell) = field.cell() {
+        cell.setSendsActionOnEndEditing(true);
+    }
+}
+
 fn tags_field(path: SharedString, tags: Rc<[Tag]>) -> impl IntoElement {
     let key = key_of(("ng.finder.info.tags", &path));
     hosted(
         key,
         move |mtm, target| {
             let field = tag_field(mtm, NSRect::ZERO, &tags);
-            field.setBezeled(false);
-            field.setBordered(false);
-            field.setDrawsBackground(false);
+            bare_field(&field);
             field.setFocusRingType(NSFocusRingType::None);
             field.setPlaceholderString(Some(ns_string!("Add Tags…")));
-            if let Some(cell) = field.cell() {
-                cell.setSendsActionOnEndEditing(true);
-            }
             wire(&field, target, key);
             field
         },
@@ -1764,17 +1727,15 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
         key,
         move |mtm, target| {
             let field = NSTextField::new(mtm);
-            field.setBezeled(false);
-            field.setBordered(false);
-            field.setDrawsBackground(false);
+            bare_field(&field);
             field.setAlignment(NSTextAlignment::Right);
             field.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
             if let Some(name) = Path::new(path.as_ref()).file_name() {
-                let name = finder_fs::name::display(&name.to_string_lossy()).into_owned();
-                field.setStringValue(&NSString::from_str(&name));
+                let name = name.to_string_lossy();
+                let shown = NSString::from_str(&finder_fs::name::display(&name));
+                field.setStringValue(&shown);
             }
             if let Some(cell) = field.cell() {
-                cell.setSendsActionOnEndEditing(true);
                 cell.setScrollable(true);
             }
             wire(&field, target, key);
@@ -2093,7 +2054,7 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
         move |mtm, _| {
             let scroll = NSScrollView::initWithFrame(
                 NSScrollView::alloc(mtm),
-                rect(0., 0., 100., COMMENT.into()),
+                NSRect::new(NSPoint::ZERO, NSSize::new(100., COMMENT.into())),
             );
             scroll.setHasVerticalScroller(true);
             scroll.setAutohidesScrollers(true);
@@ -2130,39 +2091,6 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
             }
         },
     )
-}
-
-/// Runs from a task: the open panel's modal loop would re-enter GPUI's borrow.
-fn choose_other(path: PathBuf, cx: &mut Context<Info>) {
-    cx.spawn(async move |this, cx| {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let panel = NSOpenPanel::openPanel(mtm);
-        crate::chrome::toolbar::system_corners_of(&panel);
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(false);
-        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(ns_string!("/Applications"))));
-        if panel.runModal() != NSModalResponseOK {
-            return;
-        }
-        let Some(app) = panel.URL().and_then(|url| url.path()) else {
-            return;
-        };
-        let app = PathBuf::from(app.to_string());
-        crate::openwith::set_default(std::slice::from_ref(&path), &app);
-        this.update(cx, |info, cx| {
-            let mut opener = Opener::of(&path);
-            if !opener.apps.contains(&app) {
-                opener.apps.push(app.clone());
-            }
-            opener.chosen = Some(app);
-            info.opener = Some(opener);
-            cx.notify();
-        })
-        .ok();
-    })
-    .detach();
 }
 
 pub(crate) fn where_of(id: &str) -> Option<String> {
@@ -2351,10 +2279,11 @@ impl Render for Combined {
             .map(|weight| byte_string(weight.bytes))
             .unwrap_or_default();
         let this = cx.weak_entity();
+        let (id, title) = Pane::General.section();
         let general = fold::section(
             &form,
-            "ng.finder.info.general",
-            "General",
+            id,
+            title,
             &self.general,
             move |_, cx| {
                 this.update(cx, |combined, cx| combined.fold(cx)).ok();

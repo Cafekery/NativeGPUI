@@ -14,12 +14,11 @@ use native_gpui::{
     native_popup, native_segmented, native_slider, native_symbol, window_options,
 };
 use objc2::msg_send;
-use objc2_app_kit::{NSModalResponseOK, NSOpenPanel, NSWindowStyleMask, NSWindowTitleVisibility};
-use objc2_foundation::MainThreadMarker;
+use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 
 use crate::app::FinderDemo;
 use crate::data::{Column, GROUP_KEYS, SORT_KEYS, SORT_TITLES};
-use crate::form::{COMPACT, Flip, Row, Sheet};
+use crate::form::{COMPACT, Flip, Row, Sheet, choose_file};
 use crate::frame::ns_window;
 use crate::prefs;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, ICON_VIEW, LIST_VIEW};
@@ -150,7 +149,6 @@ impl Build<'_> {
         Row::new(COMPACT.labelled(title, SystemColor::Label, control))
     }
 
-    /// The label and its value over a slider that spans the card, its ends showing the extremes.
     fn slider(
         &self,
         title: &str,
@@ -455,7 +453,14 @@ impl Build<'_> {
         );
         let choose = native_button("ng.finder.options.picture.choose", "Choose\u{2026}")
             .control_size(COMPACT.controls())
-            .on_click(move |_, _, cx| demo.update(cx, |_, cx| choose_picture(cx)));
+            .on_click(move |_, _, cx| {
+                demo.update(cx, |_, cx| {
+                    choose_file(cx, None, |this, path, cx| {
+                        let picture = Background::Picture(path.to_string_lossy().into_owned());
+                        set_background(this, picture, cx)
+                    })
+                })
+            });
         let value = div()
             .w_full()
             .flex()
@@ -608,27 +613,6 @@ impl Build<'_> {
             ],
         );
     }
-}
-
-fn choose_picture(cx: &mut Context<FinderDemo>) {
-    // From a task, outside GPUI's borrow of the app, which the modal loop would re-enter.
-    cx.spawn(async move |this, cx| {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let panel = NSOpenPanel::openPanel(mtm);
-        crate::chrome::toolbar::system_corners_of(&panel);
-        if panel.runModal() != NSModalResponseOK {
-            return;
-        }
-        let Some(path) = panel.URL().and_then(|url| url.path()) else {
-            return;
-        };
-        let picture = Background::Picture(path.to_string());
-        this.update(cx, |this, cx| set_background(this, picture, cx))
-            .ok();
-    })
-    .detach();
 }
 
 fn sheet(demo: &Entity<FinderDemo>, state: &FinderDemo, width: f32, hair: f32) -> Sheet {

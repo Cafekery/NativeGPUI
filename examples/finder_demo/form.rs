@@ -1,18 +1,25 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread::LocalKey;
 
 use block2::RcBlock;
-use gpui::{AnyElement, App, Div, FontWeight, Stateful, Window, canvas, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, Div, FontWeight, Stateful, Window, canvas, div, prelude::*, px,
+};
 use native_gpui::tokens::{SystemColor, ns_font, system_color, system_font_family};
 use native_gpui::{
     ControlSize, NativeLabel, native_label, native_root, native_rule, native_switch,
 };
+use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadOnly};
-use objc2_app_kit::{NSControlSize, NSFont, NSImage, NSPopUpButton, NSTextField, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
+use objc2_app_kit::{
+    NSControlSize, NSFont, NSImage, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSTextField,
+    NSWindow,
+};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSRunLoop, NSSize, NSString, NSURL};
 
 use crate::chrome::toolbar::SYSTEM_RADIUS;
 use crate::frame::ns_window;
@@ -98,7 +105,6 @@ pub(crate) fn lines_height(text: &str, width: f32) -> f32 {
         * LINE
 }
 
-/// A form's row height, spacing and type size.
 #[derive(Copy, Clone, PartialEq)]
 pub(crate) struct Density {
     pub(crate) row: f32,
@@ -126,8 +132,6 @@ pub(crate) const REGULAR: Density = Density {
     indent: 20.,
 };
 
-/// A utility panel's: the small system font, small controls and the rows they need, its cards
-/// concentric with the panel's corners.
 pub(crate) const COMPACT: Density = Density {
     row: 26.,
     inset: 8.,
@@ -201,7 +205,6 @@ impl Density {
         self.labelled(title, color, switch)
     }
 
-    /// A borderless pop-up's width at this density's font, hugging its chevron.
     pub(crate) fn hugging(self, title: &str) -> f32 {
         hug(title, false, (self != REGULAR).then_some(self.font))
     }
@@ -282,7 +285,6 @@ impl Form {
         self.ruled(rows.into_iter().map(|row| (0., row)))
     }
 
-    /// The hairline under a row starts where that row's own content does.
     fn ruled(
         &self,
         rows: impl ExactSizeIterator<Item = (f32, AnyElement)>,
@@ -365,7 +367,6 @@ pub(crate) fn page(
     )
 }
 
-/// A row of a panel's card at its own height, indented when it is an option of the row above.
 pub(crate) struct Row {
     content: AnyElement,
     tall: f32,
@@ -392,7 +393,6 @@ impl Row {
     }
 }
 
-/// A utility panel's cards, summed up as they are added so the panel opens at its content's height.
 pub(crate) struct Sheet {
     form: Form,
     parts: Vec<AnyElement>,
@@ -408,7 +408,6 @@ impl Sheet {
         }
     }
 
-    /// A titled card opens a section; an untitled one sits just under the card above it.
     pub(crate) fn card(&mut self, id: &'static str, title: Option<&str>, rows: Vec<Row>) {
         let above = match (self.parts.is_empty(), title) {
             (true, _) => COMPACT.margin,
@@ -436,7 +435,6 @@ impl Sheet {
         );
     }
 
-    /// The panel's own button, trailing, under every card.
     pub(crate) fn button(&mut self, button: impl IntoElement, tall: f32) {
         self.tall += COMPACT.margin + tall;
         self.parts.push(
@@ -459,21 +457,53 @@ impl Sheet {
     }
 }
 
-/// As tall as its content, or as its screen where that is shorter, and never below the screen.
 fn fit_panel(window: &Window, tall: f32) {
-    let Some(ns) = ns_window(window) else {
-        return;
-    };
-    if panel_frame(&ns, tall).is_none() {
+    if let Some(ns) = ns_window(window) {
+        resize_later(ns, move |ns| panel_frame(ns, tall));
+    }
+}
+
+/// Resized inside gpui's update, the window keeps drawing at its old size.
+pub(crate) fn resize_later(
+    ns: Retained<NSWindow>,
+    frame: impl Fn(&NSWindow) -> Option<NSRect> + 'static,
+) {
+    if frame(&ns).is_none() {
         return;
     }
-    // Resized inside gpui's update, the window keeps drawing at its old size.
     let block = RcBlock::new(move || {
-        if let Some(frame) = panel_frame(&ns, tall) {
-            ns.setFrame_display(frame, true);
+        if let Some(fitted) = frame(&ns) {
+            ns.setFrame_display(fitted, true);
         }
     });
     unsafe { NSRunLoop::mainRunLoop().performBlock(&block) };
+}
+
+/// Runs from a task: the open panel's modal loop would re-enter GPUI's borrow.
+pub(crate) fn choose_file<V: 'static>(
+    cx: &mut Context<V>,
+    from: Option<&'static str>,
+    chosen: impl FnOnce(&mut V, PathBuf, &mut Context<V>) + 'static,
+) {
+    cx.spawn(async move |this, cx| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let panel = NSOpenPanel::openPanel(mtm);
+        crate::chrome::toolbar::system_corners_of(&panel);
+        if let Some(from) = from {
+            panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&NSString::from_str(from))));
+        }
+        if panel.runModal() != NSModalResponseOK {
+            return;
+        }
+        let Some(path) = panel.URL().and_then(|url| url.path()) else {
+            return;
+        };
+        let path = PathBuf::from(path.to_string());
+        this.update(cx, |view, cx| chosen(view, path, cx)).ok();
+    })
+    .detach();
 }
 
 fn panel_frame(ns: &NSWindow, tall: f32) -> Option<NSRect> {

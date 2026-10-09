@@ -71,27 +71,26 @@ fn followed(demo: &FinderDemo, cx: &Context<FinderDemo>) -> (EntityId, u64, u64,
 
 fn subject(demo: &FinderDemo) -> Vec<Line> {
     let chosen = demo.chosen_lines();
-    match chosen.is_empty() {
-        true => path_line(demo.here()).into_iter().collect(),
-        false => chosen,
+    if chosen.is_empty() {
+        return path_line(demo.here()).into_iter().collect();
     }
+    chosen
 }
 
 fn show(lines: Vec<Line>, demo: WeakEntity<FinderDemo>, cx: &mut App) {
     let Some(first) = lines.first() else {
         return;
     };
-    let title = match lines.len() {
-        1 => format!("{} Info", first.row.display),
-        _ => "Multiple Item Info".to_owned(),
-    };
     let where_ = where_of(&first.key).unwrap_or_default().into();
-    let shown: AnyView = match lines.len() {
-        1 => {
-            let line = first.clone();
-            cx.new(|_| Info::new(line, where_, demo).in_panel()).into()
-        }
-        _ => cx.new(|_| Combined::new(lines, where_)).into(),
+    let (title, shown): (String, AnyView) = match <[Line; 1]>::try_from(lines) {
+        Ok([line]) => (
+            format!("{} Info", line.row.display),
+            cx.new(|_| Info::new(line, where_, demo).in_panel()).into(),
+        ),
+        Err(lines) => (
+            "Multiple Item Info".to_owned(),
+            cx.new(|_| Combined::new(lines, where_)).into(),
+        ),
     };
     if let Some(open) = OPEN.get() {
         let retitled = open.update(cx, |inspector, window, cx| {
