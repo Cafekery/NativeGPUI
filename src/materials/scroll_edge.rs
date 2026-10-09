@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use gpui::{App, ElementId, Pixels, Size, Style, Window, px};
+use gpui::{App, ElementId, Pixels, Style, Window, px};
 use objc2::rc::Retained;
 #[cfg(feature = "private-api")]
 use objc2::runtime::{AnyClass, NSObjectProtocol};
@@ -16,7 +16,7 @@ use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSPoint, NSRect, NSS
 
 #[cfg(feature = "private-api")]
 use super::private_api;
-use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::bridge::host::{Layer, Slot, full_size, hosted_element};
 
 /// AppKit's scroll edge effect over GPUI content scrolled under the titlebar; size it to that area.
 pub fn scroll_edge_effect(id: impl Into<ElementId>) -> ScrollEdgeEffect {
@@ -47,10 +47,7 @@ impl ScrollEdgeEffect {
     }
 
     fn layout(&self) -> Style {
-        Style {
-            size: Size::full(),
-            ..Default::default()
-        }
+        full_size()
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {

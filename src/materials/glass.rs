@@ -19,7 +19,7 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect};
 #[cfg(feature = "private-api")]
 use super::glass_private::{GlassInteractionState, GlassSubvariant, GlassVariant, Private};
 use crate::bridge::appkit::{Container, rects_equal, to_rect};
-use crate::bridge::host::{Layer, NativeHost, Slot, element_key, hosted_element};
+use crate::bridge::host::{Layer, NativeHost, Slot, element_key, full_size, hosted_element};
 use crate::system::color::to_nscolor;
 
 fn tint_color(color: Hsla) -> Retained<NSColor> {
@@ -97,10 +97,7 @@ impl Glass {
     }
 
     fn layout(&self) -> Style {
-        Style {
-            size: Size::full(),
-            ..Default::default()
-        }
+        full_size()
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {

@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::ffi::CStr;
 use std::sync::LazyLock;
 
-use gpui::{App, ElementId, Hsla, Pixels, Point, Size, Style, Window, point};
+use gpui::{App, ElementId, Hsla, Pixels, Point, Style, Window, point};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
@@ -12,7 +12,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::{CALayer, CATransaction, kCACornerCurveContinuous};
 
-use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::bridge::host::{Layer, Slot, full_size, hosted_element};
 use crate::system::color::to_nscolor;
 
 pub const INERT_INPUTS: [&str; 8] = [
@@ -273,10 +273,7 @@ impl CustomGlass {
     }
 
     fn layout(&self) -> Style {
-        Style {
-            size: Size::full(),
-            ..Default::default()
-        }
+        full_size()
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -504,18 +501,16 @@ fn private_layer(name: &CStr) -> Option<Retained<CALayer>> {
 }
 
 fn set_number(object: &impl Message, key: &NSString, value: f32) {
-    let value = NSNumber::new_f32(value);
-    unsafe { msg_send![object, setValue: &*value, forKey: key] }
+    set_object(object, key, Some(&*NSNumber::new_f32(value)));
 }
 
 fn set_bool(object: &impl Message, key: &NSString, value: bool) {
-    let value = NSNumber::new_bool(value);
-    unsafe { msg_send![object, setValue: &*value, forKey: key] }
+    set_object(object, key, Some(&*NSNumber::new_bool(value)));
 }
 
 fn set_size(object: &impl Message, key: &NSString, value: Point<f32>) {
     let value = unsafe { NSValue::valueWithSize(NSSize::new(value.x as f64, value.y as f64)) };
-    unsafe { msg_send![object, setValue: &*value, forKey: key] }
+    set_object(object, key, Some(&*value));
 }
 
 fn set_object(object: &impl Message, key: &NSString, value: Option<&impl Message>) {
