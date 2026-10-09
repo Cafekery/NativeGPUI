@@ -22,15 +22,11 @@ pub(crate) fn meta(path: &SharedString) -> Option<Arc<Meta>> {
 }
 
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
-    let wanted: Vec<SharedString> = WANTED.with_borrow_mut(|wanted| wanted.drain().collect());
+    let wanted = WANTED.take();
     if wanted.is_empty() {
         return;
     }
-    META.with_borrow_mut(|map| {
-        for path in &wanted {
-            map.insert(path.clone(), None);
-        }
-    });
+    META.with_borrow_mut(|map| map.extend(wanted.iter().map(|path| (path.clone(), None))));
     let demo = demo.downgrade();
     cx.spawn(async move |cx| {
         for path in wanted {

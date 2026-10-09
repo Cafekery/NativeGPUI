@@ -20,12 +20,11 @@ pub(crate) fn menu_ring(
     colour: Hsla,
     (inset_x, inset_y): (f32, f32),
     radius: f32,
-    run: (bool, bool),
+    (above, below): (bool, bool),
     on_selection: bool,
 ) -> Div {
     let step = if on_selection { RING_INSET } else { 0. };
     let corner = px((radius - step).max(0.));
-    let (above, below) = run;
     div()
         .absolute()
         .left(px(inset_x + step))
@@ -57,7 +56,7 @@ pub(crate) fn pick_on_click(
     let line = line.clone();
     move |event, window, cx| {
         let (extend, toggle, twice) = click_kind(event);
-        this.update(cx, |this: &mut FinderDemo, cx| {
+        this.update(cx, |this, cx| {
             this.pick(&line, extend, toggle);
             match line
                 .row
@@ -88,7 +87,7 @@ pub(crate) fn pick_on_press(
         if event.modifiers.shift || event.modifiers.platform {
             return;
         }
-        this.update(cx, |this: &mut FinderDemo, cx| {
+        this.update(cx, |this, cx| {
             if !this.selected.contains(&line.key) {
                 this.pick(&line, false, false);
                 cx.notify();

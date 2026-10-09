@@ -177,18 +177,12 @@ define_class!(
 
         #[unsafe(method(undo:))]
         fn undo(&self, _sender: Option<&AnyObject>) {
-            match self.can_paste().then(undo).flatten() {
-                Some(paths) => self.send(Event::Changed(paths)),
-                None => NSBeep(),
-            }
+            self.history_step(undo);
         }
 
         #[unsafe(method(redo:))]
         fn redo(&self, _sender: Option<&AnyObject>) {
-            match self.can_paste().then(redo).flatten() {
-                Some(paths) => self.send(Event::Changed(paths)),
-                None => NSBeep(),
-            }
+            self.history_step(redo);
         }
 
         #[unsafe(method(draggingEntered:))]
@@ -315,7 +309,10 @@ impl IconWell {
 
     fn can_change(&self) -> bool {
         let paths = &self.ivars().paths;
-        !paths.is_empty() && paths.iter().all(|path| changeable(path))
+        !paths.is_empty()
+            && paths
+                .iter()
+                .all(|path| path.is_absolute() && custom_icon::can_change(path))
     }
 
     fn can_copy(&self) -> bool {
@@ -337,6 +334,13 @@ impl IconWell {
         }
     }
 
+    fn history_step(&self, step: fn() -> Option<Vec<PathBuf>>) {
+        match self.can_paste().then(step).flatten() {
+            Some(paths) => self.send(Event::Changed(paths)),
+            None => NSBeep(),
+        }
+    }
+
     fn highlight(&self, on: bool) {
         if let Some(cell) = self.cell() {
             cell.highlight_withFrame_inView(on, self.bounds(), self);
@@ -345,22 +349,9 @@ impl IconWell {
 
     fn shape(&self) -> NSRect {
         let bounds = self.bounds();
-        let Some(image) = self.image() else {
-            return bounds;
-        };
-        let size = image.size();
-        if size.width <= 0. || size.height <= 0. {
-            return bounds;
-        }
-        let fit = (bounds.size.width / size.width).min(bounds.size.height / size.height);
-        let (wide, tall) = (size.width * fit, size.height * fit);
-        NSRect::new(
-            NSPoint::new(
-                bounds.origin.x + (bounds.size.width - wide) / 2.,
-                bounds.origin.y + (bounds.size.height - tall) / 2.,
-            ),
-            NSSize::new(wide, tall),
-        )
+        self.image()
+            .and_then(|image| centred(image.size(), bounds))
+            .unwrap_or(bounds)
     }
 }
 
@@ -383,7 +374,7 @@ pub(crate) fn handle(event: Event, cx: &mut App) {
     }
 }
 
-pub(crate) fn refresh(paths: &[PathBuf], cx: &mut App) {
+fn refresh(paths: &[PathBuf], cx: &mut App) {
     GENERATION.set(GENERATION.get() + 1);
     for path in paths {
         let key = SharedString::from(path.to_string_lossy().into_owned());
@@ -396,7 +387,6 @@ pub(crate) fn refresh(paths: &[PathBuf], cx: &mut App) {
     cx.defer(crate::read::notify_windows);
 }
 
-/// Undo and Redo of the key window's icon well, when the well itself isn't first responder.
 pub(crate) fn history() -> Option<(Option<&'static str>, Option<&'static str>)> {
     in_key_window().then(labels)
 }
@@ -506,10 +496,6 @@ fn set_icon(path: &Path, image: Option<&NSImage>) -> bool {
     )
 }
 
-fn changeable(path: &Path) -> bool {
-    path.is_absolute() && custom_icon::can_change(path)
-}
-
 fn custom(path: &Path) -> bool {
     path.is_absolute() && has_custom_icon(path)
 }
@@ -522,7 +508,6 @@ fn copied(path: &Path) -> Option<Vec<u8>> {
     stored(path).or_else(|| drawn(path))
 }
 
-/// The icon as shown, drawn as an icns: what Finder copies of an icon that isn't custom.
 fn drawn(path: &Path) -> Option<Vec<u8>> {
     let path = NSString::from_str(&path.to_string_lossy());
     in_aqua(|| icns_of(&NSWorkspace::sharedWorkspace().iconForFile(&path)))
@@ -545,7 +530,7 @@ fn first_file(board: &NSPasteboard) -> Option<Retained<NSURL>> {
         .and_then(|url| NSURL::URLWithString(&url))
 }
 
-/// Finder's order: an image file's own picture, then icns data, then any image the pasteboard holds.
+/// Finder's order.
 fn pasted(board: &NSPasteboard) -> Option<Retained<NSImage>> {
     let picture = first_file(board)
         .filter(|url| conforms(url, IMAGE))
@@ -564,7 +549,6 @@ fn pasted(board: &NSPasteboard) -> Option<Retained<NSImage>> {
         .or_else(|| pictured(board))
 }
 
-/// One dragged file gives its icns, its picture or its own icon; anything else, its image.
 fn dropped(board: &NSPasteboard) -> Option<Retained<NSImage>> {
     let Some(url) = first_file(board) else {
         return pictured(board);
@@ -617,11 +601,24 @@ fn fitted(image: &NSImage) -> Option<Retained<NSImage>> {
     Some(icon)
 }
 
-fn rendered(image: &NSImage, points: f64, scale: f64) -> Option<Retained<NSBitmapImageRep>> {
-    let size = image.size();
+fn centred(size: NSSize, frame: NSRect) -> Option<NSRect> {
     if size.width <= 0. || size.height <= 0. {
         return None;
     }
+    let fit = (frame.size.width / size.width).min(frame.size.height / size.height);
+    let (wide, tall) = (size.width * fit, size.height * fit);
+    Some(NSRect::new(
+        NSPoint::new(
+            frame.origin.x + (frame.size.width - wide) / 2.,
+            frame.origin.y + (frame.size.height - tall) / 2.,
+        ),
+        NSSize::new(wide, tall),
+    ))
+}
+
+fn rendered(image: &NSImage, points: f64, scale: f64) -> Option<Retained<NSBitmapImageRep>> {
+    let side = NSSize::new(points, points);
+    let target = centred(image.size(), NSRect::new(NSPoint::new(0., 0.), side))?;
     let pixels = (points * scale).round() as isize;
     let rep = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
@@ -639,17 +636,12 @@ fn rendered(image: &NSImage, points: f64, scale: f64) -> Option<Retained<NSBitma
             32,
         )
     }?;
-    rep.setSize(NSSize::new(points, points));
-    let fit = points / size.width.max(size.height);
-    let (wide, tall) = (size.width * fit, size.height * fit);
+    rep.setSize(side);
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&context));
     image.drawInRect_fromRect_operation_fraction(
-        NSRect::new(
-            NSPoint::new((points - wide) / 2., (points - tall) / 2.),
-            NSSize::new(wide, tall),
-        ),
+        target,
         NSRect::ZERO,
         NSCompositingOperation::SourceOver,
         1.,
@@ -703,7 +695,7 @@ fn put(board: &NSPasteboard, icns: &[u8]) {
     board.setData_forType(Some(&NSData::with_bytes(icns)), &NSString::from_str(ICNS));
 }
 
-/// Whether every path shows one icon, compared as drawn; Finder looks at no more than 100.
+/// Finder compares no more than 100.
 pub(crate) fn same_icons(paths: &[PathBuf]) -> bool {
     if paths.len() > SAME_AT_MOST || !paths.iter().all(|path| path.is_absolute()) {
         return false;

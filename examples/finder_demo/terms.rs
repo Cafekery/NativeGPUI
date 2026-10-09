@@ -1,5 +1,3 @@
-//! A search as Finder's field holds it: tokens, then the text typed after them.
-
 use std::fmt::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +11,6 @@ use crate::smart::escape;
 pub(crate) enum Term {
     Name(String),
     Everything(String),
-    /// A content type, matched with everything that conforms to it.
     Kind(String),
     Tag(String),
     /// Seconds since 1970, the end excluded.
@@ -75,9 +72,10 @@ fn kind_filter(uti: &str) -> String {
         return (*filter).to_owned();
     }
     let exts = finder_fs::kind::extensions(uti);
-    match exts.is_empty() {
-        true => String::new(),
-        false => format!("ext:{}", exts.join(",")),
+    if exts.is_empty() {
+        String::new()
+    } else {
+        format!("ext:{}", exts.join(","))
     }
 }
 
@@ -137,7 +135,6 @@ impl Search {
         query
     }
 
-    /// The words Finder also looks for inside files.
     pub(crate) fn contents(&self) -> Vec<String> {
         self.terms
             .iter()
@@ -241,7 +238,6 @@ impl Matcher {
             })
     }
 
-    /// `held(word)` answers whether the row's content holds an everything word.
     pub(crate) fn admits_found(&self, row: &Row, held: impl Fn(&str) -> bool) -> bool {
         self.names.iter().all(|name| folds_to(&row.name, name))
             && self

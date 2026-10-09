@@ -17,7 +17,7 @@ use objc2_core_foundation::{
 };
 use objc2_foundation::{
     NSAppleEventDescriptor, NSAppleEventManager, NSArray, NSBundle, NSData, NSNotification,
-    NSNotificationCenter, NSObject, NSString, NSURL, NSURLPathKey,
+    NSNotificationCenter, NSNotificationName, NSObject, NSString, NSURL, NSURLPathKey,
 };
 
 use crate::data::intern_path;
@@ -58,8 +58,9 @@ pub(crate) fn take_open_documents() {
         return;
     };
     let opener: Retained<Opener> = unsafe { msg_send![Opener::alloc(mtm), init] };
+    let launching = unsafe { NSApplicationWillFinishLaunchingNotification };
     // AppKit installs its handlers whenever it finishes launching, before it posts this.
-    let install = StackBlock::new(move |_: NonNull<NSNotification>| {
+    observe(launching, move || {
         let manager = NSAppleEventManager::sharedAppleEventManager();
         let _: () = unsafe {
             msg_send![
@@ -70,14 +71,17 @@ pub(crate) fn take_open_documents() {
                 andEventID: OPEN_DOCUMENTS
             ]
         };
-    })
-    .copy();
+    });
+}
+
+fn observe(name: &NSNotificationName, run: impl Fn() + Clone + 'static) {
+    let block = StackBlock::new(move |_: NonNull<NSNotification>| run()).copy();
     let observer = unsafe {
         NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSApplicationWillFinishLaunchingNotification),
+            Some(name),
             None,
             None,
-            &install,
+            &block,
         )
     };
     std::mem::forget(observer);
@@ -134,9 +138,10 @@ fn bookmarked(data: &NSData) -> Option<PathBuf> {
 /// A file URL item holds its URL's text, or by its documentation the bare path.
 fn named(bytes: &[u8]) -> Option<PathBuf> {
     let text = std::str::from_utf8(bytes).ok()?;
-    match text.starts_with('/') {
-        true => Some(PathBuf::from(text)),
-        false => file_path(text),
+    if text.starts_with('/') {
+        Some(PathBuf::from(text))
+    } else {
+        file_path(text)
     }
 }
 
@@ -196,17 +201,9 @@ pub(crate) fn follow(restored: bool, cx: &mut App) {
         settle();
         return;
     }
+    let launched = unsafe { NSApplicationDidFinishLaunchingNotification };
     // gpui runs the launch callback before AppKit takes the launch Apple Event, whose open request arrives first.
-    let block = StackBlock::new(move |_: NonNull<NSNotification>| settle()).copy();
-    let observer = unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSApplicationDidFinishLaunchingNotification),
-            None,
-            None,
-            &block,
-        )
-    };
-    std::mem::forget(observer);
+    observe(launched, settle);
 }
 
 fn file_path(url: &str) -> Option<PathBuf> {
@@ -257,18 +254,15 @@ fn show_folder(folder: &'static str, cx: &mut App) {
             .ok();
         return;
     }
-    match windows
+    if let Some(front) = windows
         .first()
         .filter(|_| crate::prefs::opens_folders_in_tabs())
     {
-        Some(front) => {
-            front
-                .update(cx, |demo, window, cx| demo.open_tab(folder, window, cx))
-                .ok();
-        }
-        None => {
-            open_finder_window(folder, cx);
-        }
+        front
+            .update(cx, |demo, window, cx| demo.open_tab(folder, window, cx))
+            .ok();
+    } else {
+        open_finder_window(folder, cx);
     }
 }
 

@@ -5,8 +5,7 @@ use finder_fs::ops::{ImageFormat, ImageSize, Op, Quick};
 use gpui::Context;
 use native_gpui::MenuEntry;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSButton, NSControlStateValueOn, NSModalResponseCancel,
@@ -194,7 +193,11 @@ fn label(mtm: MainThreadMarker, text: &str, frame: NSRect) -> Retained<NSTextFie
     field
 }
 
-fn popup(mtm: MainThreadMarker, titles: &[&str], frame: NSRect) -> Retained<NSPopUpButton> {
+fn popup(
+    mtm: MainThreadMarker,
+    titles: impl IntoIterator<Item = &'static str>,
+    frame: NSRect,
+) -> Retained<NSPopUpButton> {
     let button = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), frame, false);
     for title in titles {
         button.addItemWithTitle(&NSString::from_str(title));
@@ -257,7 +260,7 @@ fn push_button(
     title: &str,
     key: &str,
     target: &Dialog,
-    action: objc2::runtime::Sel,
+    action: Sel,
     frame: NSRect,
 ) -> Retained<NSButton> {
     let button = unsafe {
@@ -287,13 +290,16 @@ fn convert_choice(mtm: MainThreadMarker) -> Option<(ImageFormat, ImageSize, bool
     crate::chrome::toolbar::system_corners_of(&window);
     window.setTitle(&NSString::from_str("Convert Image"));
     let view = window.contentView()?;
-    let formats: Vec<&str> = ImageFormat::ALL
-        .iter()
-        .map(|format| format.title())
-        .collect();
-    let sizes: Vec<&str> = ImageSize::ALL.iter().map(|size| size.title()).collect();
-    let format_popup = popup(mtm, &formats, rect(100., 141., 302., 26.));
-    let size_popup = popup(mtm, &sizes, rect(100., 109., 302., 26.));
+    let format_popup = popup(
+        mtm,
+        ImageFormat::ALL.map(ImageFormat::title),
+        rect(100., 141., 302., 26.),
+    );
+    let size_popup = popup(
+        mtm,
+        ImageSize::ALL.map(ImageSize::title),
+        rect(100., 109., 302., 26.),
+    );
     let keep = unsafe {
         NSButton::checkboxWithTitle_target_action(
             &NSString::from_str("Preserve Metadata"),

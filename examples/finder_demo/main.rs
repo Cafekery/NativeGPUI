@@ -105,7 +105,7 @@ fn main() {
             KeyBinding::new("cmd--", ZoomOut, Some(LIST_CONTEXT)),
         ]);
         navigate::arrive_on_keys(cx);
-        // Like Finder it outlives its windows, and AppKit ends a windowless app that allows automatic termination.
+        // AppKit ends a windowless app that allows automatic termination.
         NSProcessInfo::processInfo().disableAutomaticTermination(&NSString::from_str(
             "Found'er keeps running without windows",
         ));

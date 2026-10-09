@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use finder_fs::ops::Op;
 use gpui::{
-    App, Context, Div, DragMoveEvent, ExternalPaths, Hsla, IntoElement, Pixels, Point, Render,
-    SharedString, Stateful, WeakEntity, Window, div, prelude::*, px,
+    App, Div, DragMoveEvent, ExternalPaths, Hsla, Pixels, Point, SharedString, Stateful,
+    WeakEntity, Window, div, prelude::*, px,
 };
 use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
@@ -162,10 +162,8 @@ pub(crate) fn drop_lands<D: Grabbed>(
             }
             let keys = grab.keys(&carried);
             this.update(cx, |demo: &mut FinderDemo, cx| {
-                if matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key) {
-                    return;
-                }
-                if !grab.wandered(window, demo.pressed_at) {
+                let elsewhere = matches!(lit, Lit::Drawn) && demo.drop_row() != Some(&key);
+                if elsewhere || !grab.wandered(window, demo.pressed_at) {
                     return;
                 }
                 demo.drop_into(into, &keys, window, cx);

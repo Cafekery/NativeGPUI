@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -30,7 +31,7 @@ fn engine() -> Option<&'static Engine> {
             // Opening a consent-gated folder this app hasn't been let into puts up a privacy prompt.
             let skip = ::fsearch::gated(&home_str)
                 .into_iter()
-                .map(|p| PathBuf::from(std::ffi::OsStr::from_bytes(&p)))
+                .map(|p| PathBuf::from(OsStr::from_bytes(&p)))
                 .filter(|p| !let_in(p, &home))
                 .collect();
             Engine::start(Options {
@@ -198,7 +199,7 @@ pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec
                 found.extend(
                     r.files
                         .into_iter()
-                        .map(|f| PathBuf::from(std::ffi::OsStr::from_bytes(&f.path))),
+                        .map(|f| PathBuf::from(OsStr::from_bytes(&f.path))),
                 );
             }
             None => found.extend(engine.search(&q).ok()?.into_iter().map(|f| f.path)),
@@ -264,10 +265,10 @@ fn let_in(gate: &Path, home: &Path) -> bool {
 
 #[cfg(feature = "private-api")]
 fn granted(service: &'static str) -> bool {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     use std::time::Instant;
     static SEEN: Mutex<Vec<(&str, bool, Instant)>> = Mutex::new(Vec::new());
-    let mut seen = SEEN.lock().unwrap();
+    let mut seen = SEEN.lock();
     if let Some(&(_, granted, at)) = seen.iter().find(|(known, ..)| *known == service) {
         if granted || at.elapsed() < Duration::from_secs(3) {
             return granted;

@@ -13,11 +13,10 @@ use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
 use objc2_foundation::{NSNotification, NSNotificationCenter};
 
 use crate::app::FinderDemo;
-use crate::chrome::criteria_bar::Criterion;
+use crate::chrome::criteria_bar::{self, Criterion};
+use crate::chrome::scope_bar;
 use crate::chrome::toolbar::SEARCH_ID;
-use crate::chrome::{criteria_bar, scope_bar};
-use crate::data;
-use crate::data::Row;
+use crate::data::{self, Row};
 use crate::listing::next_rev;
 use crate::terms::Search;
 use crate::{fsearch, prefs};

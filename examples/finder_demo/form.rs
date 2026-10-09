@@ -6,9 +6,7 @@ use std::rc::Rc;
 use std::thread::LocalKey;
 
 use block2::RcBlock;
-use gpui::{
-    AnyElement, App, Context, Div, FontWeight, Stateful, Window, canvas, div, prelude::*, px,
-};
+use gpui::{AnyElement, App, Div, FontWeight, Stateful, Window, canvas, div, prelude::*, px};
 use native_gpui::tokens::{SystemColor, ns_font, system_color, system_font_family};
 use native_gpui::{
     ControlSize, NativeLabel, native_label, native_root, native_rule, native_switch,
@@ -107,11 +105,11 @@ pub(crate) fn lines_height(text: &str, width: f32) -> f32 {
 
 #[derive(Copy, Clone, PartialEq)]
 pub(crate) struct Density {
-    pub(crate) row: f32,
+    row: f32,
     pub(crate) inset: f32,
-    pub(crate) margin: f32,
+    margin: f32,
     radius: f32,
-    pub(crate) gap: f32,
+    gap: f32,
     pub(crate) font: f32,
     pub(crate) line: f32,
     section: f32,
@@ -119,7 +117,7 @@ pub(crate) struct Density {
     indent: f32,
 }
 
-pub(crate) const REGULAR: Density = Density {
+const REGULAR: Density = Density {
     row: ROW,
     inset: INSET,
     margin: MARGIN,

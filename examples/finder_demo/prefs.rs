@@ -29,7 +29,7 @@ const SORT_KEYS: [&str; 5] = [
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
 
-fn defaults() -> Retained<NSUserDefaults> {
+pub(crate) fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
 }
 

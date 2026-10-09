@@ -18,7 +18,6 @@ use objc2_foundation::{MainThreadMarker, NSNumber, NSObject, NSPoint, NSRect, NS
 
 use crate::form::{Form, INSET, MARGIN, SECTION, key_of};
 
-/// A critically damped spring, twice as quick as SwiftUI's `.smooth`.
 const RESPONSE: f32 = 0.25;
 const SETTLED: Duration = Duration::from_millis(380);
 const CHEVRON: f64 = 11.2;
@@ -57,7 +56,6 @@ impl Fold {
         self.state().1
     }
 
-    /// How open it is, 0 to 1, and whether it is still moving.
     fn state(&self) -> (f32, bool) {
         let to = f32::from(u8::from(self.open));
         let since = self.moved.map(|moved| moved.elapsed());
@@ -230,9 +228,10 @@ define_class!(
             let space = event
                 .charactersIgnoringModifiers()
                 .is_some_and(|keys| keys.to_string() == " ");
-            match space {
-                true => unsafe { self.performClick(None) },
-                false => unsafe { msg_send![super(self), keyDown: event] },
+            if space {
+                unsafe { self.performClick(None) }
+            } else {
+                unsafe { msg_send![super(self), keyDown: event] }
             }
         }
     }

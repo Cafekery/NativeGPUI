@@ -33,10 +33,6 @@ fn path_of(url: &NSURL) -> Option<PathBuf> {
     Some(PathBuf::from(url.path()?.to_string()))
 }
 
-fn paths(urls: impl IntoIterator<Item = Retained<NSURL>>) -> Vec<PathBuf> {
-    urls.into_iter().filter_map(|url| path_of(&url)).collect()
-}
-
 fn version_of(bundle: &Path) -> Option<String> {
     let bundle = NSBundle::bundleWithPath(&NSString::from_str(bundle.to_str()?))?;
     let version =
@@ -51,7 +47,11 @@ pub(crate) fn apps_for_all(files: &[PathBuf]) -> Vec<App> {
         let Some(url) = url(file) else {
             return Vec::new();
         };
-        let apps = paths(workspace.URLsForApplicationsToOpenURL(&url));
+        let apps: Vec<PathBuf> = workspace
+            .URLsForApplicationsToOpenURL(&url)
+            .into_iter()
+            .filter_map(|url| path_of(&url))
+            .collect();
         common = Some(match common {
             Some(kept) => kept.into_iter().filter(|app| apps.contains(app)).collect(),
             None => apps,
@@ -222,9 +222,10 @@ define_class!(
             let Some(path) = path_of(url) else {
                 return Bool::NO;
             };
-            Bool::new(match path.extension().is_some_and(|ext| ext == "app") {
-                true => self.ivars().all.get() || self.ivars().recommended.contains(&path),
-                false => path.is_dir(),
+            Bool::new(if path.extension().is_some_and(|ext| ext == "app") {
+                self.ivars().all.get() || self.ivars().recommended.contains(&path)
+            } else {
+                path.is_dir()
             })
         }
     }
@@ -283,9 +284,10 @@ fn accessory(
         )
     };
     keep.setFrame(frame(100., 8., 240., 18.));
-    keep.setState(match always {
-        true => NSControlStateValueOn,
-        false => NSControlStateValueOff,
+    keep.setState(if always {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
     });
     view.addSubview(&label);
     view.addSubview(&pick);

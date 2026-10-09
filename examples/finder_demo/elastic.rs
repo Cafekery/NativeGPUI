@@ -137,7 +137,6 @@ impl Elastic {
             now,
         };
         let (offset, max, size) = (handle.offset(), handle.max_offset(), handle.bounds().size);
-        // Sideways, only content wider than its scroller stretches.
         let x = match max.x > px(0.) {
             true => px(self.x.follow(offset.x, max.x, size.width, turn)),
             false => offset.x.clamp(-max.x, px(0.)),

@@ -82,7 +82,6 @@ pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
     finder_fs::list::is_dir(&path).then(|| intern_path(&stored(&path)))
 }
 
-/// Found'er's browser windows, front to back.
 pub(crate) fn browser_windows(cx: &App) -> Vec<WindowHandle<FinderDemo>> {
     let mut windows = cx.window_stack().unwrap_or_default();
     for window in cx.windows() {
@@ -135,7 +134,6 @@ pub(crate) fn showing(
         .copied()
 }
 
-/// `item`'s own folder, unless no window shows that one and another lists the item.
 fn shown_at(item: &Path, cx: &App) -> Option<(&'static str, SharedString)> {
     let folder = folder_at_path(&item.parent()?.to_string_lossy())?;
     let key = Path::new(folder).join(item.file_name()?);

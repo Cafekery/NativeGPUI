@@ -3,12 +3,13 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::list::Identity;
 use gpui::{App, BackgroundExecutor, Context, SharedString, Task, Window};
+use parking_lot::Mutex;
 
 use crate::app::FinderDemo;
 use crate::chrome::path_bar::CRUMB_ART;
@@ -34,8 +35,6 @@ enum Trouble {
 
 type Sorted = (Vec<Arc<Row>>, Option<(bool, Vec<Line>)>);
 
-type Resorted = (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk);
-
 struct Listed {
     first: Option<(Vec<Arc<Row>>, (bool, Vec<Line>))>,
     rest: Task<Result<Sorted, Trouble>>,
@@ -56,7 +55,7 @@ fn remember(id: &'static str) {
     let dir = Path::new(id);
     if let Some(found) = finder_fs::list::identity(dir) {
         let parent = dir.parent().and_then(finder_fs::list::identity);
-        IDENTITIES.lock().unwrap().insert(id, (found, parent));
+        IDENTITIES.lock().insert(id, (found, parent));
     }
 }
 
@@ -68,7 +67,7 @@ fn trouble(id: &'static str, error: io::Error) -> Trouble {
         return Trouble::Refused(error);
     }
     let dir = Path::new(id);
-    let was = IDENTITIES.lock().unwrap().get(id).copied();
+    let was = IDENTITIES.lock().get(id).copied();
     let renamed = was.and_then(|(found, parent)| {
         let now = finder_fs::list::path_of(found)?;
         let above = now.parent()?;
@@ -436,8 +435,7 @@ fn indexed_screen(
     count: usize,
 ) -> Option<Vec<Entry>> {
     let dir = Path::new(id);
-    let seconds =
-        |at: std::time::SystemTime| Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs());
+    let seconds = |at: SystemTime| Some(at.duration_since(UNIX_EPOCH).ok()?.as_secs());
     let named = by_name(order);
     let known = match named {
         true => {
@@ -563,13 +561,13 @@ pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<
         let (mut seen, mut seen_tags) = (0, 0);
         loop {
             seen = EVENTS.after(seen).await;
-            let changed = std::mem::take(&mut *changes.lock().unwrap());
+            let changed = std::mem::take(&mut *changes.lock());
             let tags = crate::tags::tags_landed();
             let tagged = std::mem::replace(&mut seen_tags, tags) != tags;
             if this
                 .update(cx, |this, cx| {
                     this.changed(changed, cx);
-                    let events = std::mem::take(&mut *this.queue_events.lock().unwrap());
+                    let events = std::mem::take(&mut *this.queue_events.lock());
                     this.handle_queue_events(events, cx);
                     if tagged {
                         cx.notify();
@@ -924,7 +922,7 @@ impl FinderDemo {
         &mut self,
         by: Order,
         was: &[(&'static str, usize)],
-        (mut folders, shape, walk): Resorted,
+        (mut folders, shape, walk): (HashMap<&'static str, Vec<Arc<Row>>>, Shape, Walk),
         cx: &mut Context<Self>,
     ) {
         let wanted = self.view_sort(self.pending_view.unwrap_or(self.view));
@@ -976,10 +974,7 @@ impl FinderDemo {
         for &id in &wanted {
             self.weigh_folders(id, cx);
         }
-        IDENTITIES
-            .lock()
-            .unwrap()
-            .retain(|id, _| wanted.contains(id));
+        IDENTITIES.lock().retain(|id, _| wanted.contains(id));
         // An FSEvents stream reports its whole subtree, so only the outermost folders are watched.
         let inside = |id: &str| {
             Path::new(id)

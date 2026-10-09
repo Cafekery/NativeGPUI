@@ -30,7 +30,8 @@ struct Tile {
 
 fn tile(path: &Path) -> Option<Tile> {
     let folder = path.is_dir();
-    let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path.to_str()?), folder);
+    let file = NSString::from_str(path.to_str()?);
+    let url = NSURL::fileURLWithPath_isDirectory(&file, folder);
     let address = url.absoluteString()?.to_string();
     let app = folder && path.extension().is_some_and(|ext| ext == "app");
     let label = match app {
@@ -49,21 +50,19 @@ fn tile(path: &Path) -> Option<Tile> {
         ),
         ("file-label", Value::Text(label)),
     ];
-    if let Some(book) = url
+    if let Ok(book) = url
         .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
             NSURLBookmarkCreationOptions::empty(),
             None,
             None,
         )
-        .ok()
     {
         data.push(("book", Value::Data(book.to_vec())));
     }
     let (shelf, kind) = match (app, folder) {
         (true, _) => {
             data.push(("file-type", Value::Number(41)));
-            let id = NSBundle::bundleWithPath(&NSString::from_str(path.to_str()?))
-                .and_then(|bundle| bundle.bundleIdentifier());
+            let id = NSBundle::bundleWithPath(&file).and_then(|bundle| bundle.bundleIdentifier());
             if let Some(id) = id {
                 data.push(("bundle-identifier", Value::Text(id.to_string())));
             }

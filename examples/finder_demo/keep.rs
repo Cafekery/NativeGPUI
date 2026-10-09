@@ -13,12 +13,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSArray, NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSProcessInfo, NSString,
-    NSUserDefaults,
 };
 
 use crate::app::FinderDemo;
 use crate::data::intern;
 use crate::frame::ns_window;
+use crate::prefs::defaults;
 use crate::{finder_window, open_finder_tab};
 
 const KEPT: &str = "ng.finder.kept";
@@ -39,10 +39,8 @@ struct Kept {
 pub(crate) fn skip_appkit_restore() {
     let key = NSString::from_str("ApplePersistenceIgnoreState");
     let yes = NSNumber::new_bool(true);
-    let defaults = defaults();
-    unsafe {
-        defaults.registerDefaults(&NSDictionary::from_slices(&[&*key], &[&*yes as &AnyObject]))
-    };
+    let ignore = NSDictionary::from_slices(&[&*key], &[&*yes as &AnyObject]);
+    unsafe { defaults().registerDefaults(&ignore) };
 }
 
 /// Quit's ⌥ alternate, added by AppKit, inverts `NSQuitAlwaysKeepsWindows` and sends `terminate:`.
@@ -244,8 +242,4 @@ fn clear() {
     let defaults = defaults();
     defaults.removeObjectForKey(&NSString::from_str(KEPT));
     defaults.synchronize();
-}
-
-fn defaults() -> Retained<NSUserDefaults> {
-    NSUserDefaults::standardUserDefaults()
 }
