@@ -21,7 +21,6 @@ pub(super) struct Left {
 }
 
 impl Meter {
-    /// Skips a paused stretch and the one copying began in: neither is the copy's speed.
     pub fn sample(&mut self, now: Instant, bytes: u64, paused: bool, left: &Left) {
         let Some((then, before)) = self.last.replace((now, bytes)) else {
             return;

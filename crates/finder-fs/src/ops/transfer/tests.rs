@@ -56,7 +56,6 @@ fn run(kind: Kind, items: Vec<PathBuf>, into: &Path) -> Outcome {
     Transfer::default().run(request(kind, items, into))
 }
 
-/// A second volume, so a move is a copy and a delete, and a copy is no clone.
 pub(crate) struct RamDisk {
     device: String,
     pub(crate) mount: PathBuf,

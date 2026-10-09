@@ -37,7 +37,7 @@ use objc2_foundation::{
     NSData, NSDictionary, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString,
 };
 
-/// Background QoS measured three times the CPU of utility for the same walk.
+/// Not background: background QoS spends more CPU than utility on the same walk.
 pub(crate) fn utility_qos() {
     unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
 }

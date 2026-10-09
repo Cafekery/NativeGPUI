@@ -166,7 +166,7 @@ struct Rect {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 struct Affine {
     a: f64,
     b: f64,

@@ -739,7 +739,7 @@ fn undo_of_transfer(is_move: bool, home: Vec<Restore>, displaced: Vec<Restore>) 
     let (landed, mut put_back) = match is_move {
         true => (Vec::new(), home),
         false => (
-            home.into_iter().map(|placed| placed.item).collect(),
+            home.into_iter().map(|restore| restore.item).collect(),
             Vec::new(),
         ),
     };
@@ -1009,7 +1009,7 @@ mod tests {
 
     fn displaced(op: &Op) -> Vec<PathBuf> {
         match op {
-            Op::PutBack(items) => items.iter().map(|item| item.item.clone()).collect(),
+            Op::PutBack(items) => items.iter().map(|restore| restore.item.clone()).collect(),
             Op::Batch(ops) => ops.iter().flat_map(displaced).collect(),
             _ => Vec::new(),
         }

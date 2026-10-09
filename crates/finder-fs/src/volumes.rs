@@ -165,9 +165,10 @@ pub fn mounted() -> Vec<Volume> {
 pub(crate) fn holding(path: &Path) -> Option<Volume> {
     mount_table()
         .iter()
-        .filter(|stats| path.starts_with(mount_path(stats)))
-        .max_by_key(|stats| mount_path(stats).as_os_str().len())
-        .map(volume_from)
+        .map(|stats| (stats, mount_path(stats)))
+        .filter(|(_, mount)| path.starts_with(mount))
+        .max_by_key(|(_, mount)| mount.as_os_str().len())
+        .map(|(stats, _)| volume_from(stats))
 }
 
 fn volume_from(stats: &libc::statfs) -> Volume {

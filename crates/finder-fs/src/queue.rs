@@ -41,7 +41,7 @@ struct Shared {
     on_event: Mutex<Box<dyn Fn(Event) + Send>>,
 }
 
-/// Every job starts at once on a thread of its own, and is paused, cancelled and read by its id.
+/// Every job starts at once, on a thread of its own.
 #[derive(Clone)]
 pub struct Queue {
     shared: Arc<Shared>,
@@ -298,40 +298,36 @@ impl Journal {
 
 fn label_for(op: &Op) -> String {
     match op {
-        Op::Move { items, .. } => describe("Move", items),
-        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items),
-        Op::Duplicate(items) => describe("Duplicate", items),
-        Op::MakeAlias(items) => describe("Make Alias", items),
-        Op::Compress(items) => describe("Compress", items),
-        Op::Trash(items) => format!("{} to Trash", describe("Move", items)),
-        Op::DeleteImmediately(items) => describe("Delete", items),
+        Op::Move { items, .. } => describe("Move", items.iter()),
+        Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items.iter()),
+        Op::Duplicate(items) => describe("Duplicate", items.iter()),
+        Op::MakeAlias(items) => describe("Make Alias", items.iter()),
+        Op::Compress(items) => describe("Compress", items.iter()),
+        Op::Trash(items) => format!("{} to Trash", describe("Move", items.iter())),
+        Op::DeleteImmediately(items) => describe("Delete", items.iter()),
         Op::Rename { .. } => "Rename".to_string(),
         Op::NewFolder { .. } => "New Folder".to_string(),
         Op::NewFile { .. } => "New File".to_string(),
-        Op::PutBack(items) => {
-            let back: Vec<&Path> = items.iter().map(|restore| restore.to.as_path()).collect();
-            describe("Put Back", &back)
-        }
+        Op::PutBack(items) => describe("Put Back", items.iter().map(|restore| &restore.to)),
         Op::Retry(request) => {
             let verb = match request.kind() {
                 Kind::Move => "Move",
                 Kind::Copy | Kind::CopyExactly => "Copy",
             };
-            let sources: Vec<&Path> = request.items().map(|(source, _)| source).collect();
-            describe(verb, &sources)
+            describe(verb, request.items().map(|(source, _)| source))
         }
         Op::Quick(quick) => quick.label().to_string(),
         Op::Batch(ops) => ops.first().map(label_for).unwrap_or_default(),
     }
 }
 
-fn describe(verb: &str, items: &[impl AsRef<Path>]) -> String {
-    match items {
-        [only] => {
+fn describe(verb: &str, mut items: impl ExactSizeIterator<Item = impl AsRef<Path>>) -> String {
+    match (items.len(), items.next()) {
+        (1, Some(only)) => {
             let name = only.as_ref().file_name().unwrap_or_default();
             format!("{verb} of \u{201c}{}\u{201d}", name.to_string_lossy())
         }
-        _ => format!("{verb} of {} Items", items.len()),
+        (count, _) => format!("{verb} of {count} Items"),
     }
 }
 

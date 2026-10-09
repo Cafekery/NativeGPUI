@@ -78,7 +78,7 @@ fn texts(table: &NSDictionary) -> impl Iterator<Item = (String, String)> + '_ {
 
 static REWORDING: LazyLock<Option<Rewording>> = LazyLock::new(|| {
     let first = FINDER.as_ref()?.preferredLocalizations().firstObject()?;
-    if first.to_string() == "en" {
+    if *first == *ns_string!("en") {
         return None;
     }
     let bundles: Vec<_> = SOURCES.iter().map(|(path, _, _)| bundle(path)).collect();

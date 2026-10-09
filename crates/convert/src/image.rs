@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::BufWriter;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use image::buffer::ConvertBuffer;
@@ -50,12 +50,11 @@ fn encode(job: &Job, probe: &Probe, planned: &Planned) -> Result<Report> {
 
 fn pixels(job: &Job, probe: &Probe, max_edge: Option<u32>) -> Result<RgbaImage> {
     let rgba = if probe.format == Format::Heic {
-        let dir = temp_dir()?;
-        let png = dir.join("decode.png");
-        sips_convert(&job.source, &png, "png", None)?;
-        let img = image::open(&png)?;
-        let _ = fs::remove_dir_all(dir);
-        img.to_rgba8()
+        in_temp_dir(|dir| {
+            let png = dir.join("decode.png");
+            sips_convert(&job.source, &png, "png", None)?;
+            Ok(image::open(&png)?.to_rgba8())
+        })?
     } else {
         image::ImageReader::open(&job.source)?
             .with_guessed_format()?
@@ -124,11 +123,11 @@ fn encode_heic(
 ) -> Result<Report> {
     if max_edge.is_some() {
         let rgba = pixels(job, probe, max_edge)?;
-        let dir = temp_dir()?;
-        let png = dir.join("resized.png");
-        rgba.save(&png)?;
-        sips_convert(&png, &job.dest, "heic", Some(job.intent))?;
-        let _ = fs::remove_dir_all(&dir);
+        in_temp_dir(|dir| {
+            let png = dir.join("resized.png");
+            rgba.save(&png)?;
+            sips_convert(&png, &job.dest, "heic", Some(job.intent))
+        })?;
     } else {
         sips_convert(&job.source, &job.dest, "heic", Some(job.intent))?;
     }
@@ -145,20 +144,20 @@ fn encode_avif(
         return Err(Error::new("AVIF needs avifenc (libavif) on PATH"));
     }
     let rgba = pixels(job, probe, max_edge)?;
-    let dir = temp_dir()?;
-    let png = dir.join("in.png");
-    rgba.save(&png)?;
     let q = match job.intent {
         Intent::Archive | Intent::VisuallyLossless => "12",
         Intent::High => "28",
         Intent::Web => "40",
     };
-    let status = Command::new("avifenc")
-        .args(["-q", q, "--min", "0", "--max", "63"])
-        .arg(&png)
-        .arg(&job.dest)
-        .status()?;
-    let _ = fs::remove_dir_all(dir);
+    let status = in_temp_dir(|dir| {
+        let png = dir.join("in.png");
+        rgba.save(&png)?;
+        Ok(Command::new("avifenc")
+            .args(["-q", q, "--min", "0", "--max", "63"])
+            .arg(&png)
+            .arg(&job.dest)
+            .status()?)
+    })?;
     if !status.success() {
         return Err(Error::new("avifenc failed"));
     }
@@ -200,7 +199,7 @@ fn sips_convert(src: &Path, dest: &Path, format: &str, intent: Option<Intent>) -
     Ok(())
 }
 
-fn temp_dir() -> Result<PathBuf> {
+fn in_temp_dir<T>(work: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -208,5 +207,7 @@ fn temp_dir() -> Result<PathBuf> {
         .join(format!("ng-convert-{}", std::process::id()))
         .join(nanos.to_string());
     fs::create_dir_all(&dir)?;
-    Ok(dir)
+    let result = work(&dir);
+    let _ = fs::remove_dir_all(&dir);
+    result
 }

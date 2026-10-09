@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
-use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
+use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
 
 use crate::{
     Format, Intent, Job, Kind, Outline, PathTaken, Probe, convert, ffmpeg_available, plan, probe,
@@ -26,21 +26,14 @@ fn job(source: PathBuf, dest: PathBuf, target: Format, intent: Intent) -> Job {
 }
 
 fn write_png(path: &Path, w: u32, h: u32) {
-    let mut img = RgbaImage::new(w, h);
-    for y in 0..h {
-        for x in 0..w {
-            img.put_pixel(
-                x,
-                y,
-                Rgba([
-                    (x * 255 / w.max(1)) as u8,
-                    (y * 255 / h.max(1)) as u8,
-                    80,
-                    255,
-                ]),
-            );
-        }
-    }
+    let img = RgbaImage::from_fn(w, h, |x, y| {
+        Rgba([
+            (x * 255 / w.max(1)) as u8,
+            (y * 255 / h.max(1)) as u8,
+            80,
+            255,
+        ])
+    });
     let file = std::fs::File::create(path).unwrap();
     PngEncoder::new(file)
         .write_image(img.as_raw(), w, h, ExtendedColorType::Rgba8)
@@ -48,18 +41,12 @@ fn write_png(path: &Path, w: u32, h: u32) {
 }
 
 fn write_jpeg(path: &Path, w: u32, h: u32, quality: u8) {
-    let mut rgb = vec![0u8; (w * h * 3) as usize];
-    for y in 0..h {
-        for x in 0..w {
-            let i = ((y * w + x) * 3) as usize;
-            rgb[i] = (x * 255 / w.max(1)) as u8;
-            rgb[i + 1] = (y * 255 / h.max(1)) as u8;
-            rgb[i + 2] = 40;
-        }
-    }
+    let img = RgbImage::from_fn(w, h, |x, y| {
+        Rgb([(x * 255 / w.max(1)) as u8, (y * 255 / h.max(1)) as u8, 40])
+    });
     let file = std::fs::File::create(path).unwrap();
-    let mut enc = JpegEncoder::new_with_quality(file, quality);
-    enc.encode(&rgb, w, h, image::ColorType::Rgb8.into())
+    JpegEncoder::new_with_quality(file, quality)
+        .encode(img.as_raw(), w, h, ExtendedColorType::Rgb8)
         .unwrap();
 }
 
@@ -89,9 +76,8 @@ fn sine(n: usize) -> Vec<i16> {
     (0..n)
         .map(|i| {
             let t = i as f64 / 44100.0;
-            (t * 440.0 * std::f64::consts::TAU).sin() * 16000.0
+            ((t * 440.0 * std::f64::consts::TAU).sin() * 16000.0) as i16
         })
-        .map(|v| v as i16)
         .collect()
 }
 
@@ -197,12 +183,8 @@ fn web_intent_resizes() {
     let dest = tmp("wide.web.webp");
     write_png(&src, 2400, 100);
     let report = convert(&Job {
-        source: src,
-        dest,
-        target: Format::Webp,
-        intent: Intent::Web,
-        max_edge: None,
         keep_metadata: false,
+        ..job(src, dest, Format::Webp, Intent::Web)
     })
     .unwrap();
     assert_eq!(report.width_out, Some(1920));
