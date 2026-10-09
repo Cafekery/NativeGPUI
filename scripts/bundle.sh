@@ -166,9 +166,8 @@ if [ -z "$identity" ]; then
     echo "warning: codesign failed" >&2
 fi
 
-# An app whose .app directory carries com.apple.provenance tags every file it writes, and ExFAT and
-# FAT keep each tag in a ._ file beside it. A tagged shell cannot remove the attribute, and a bundle
-# that already ran tagged can stay tracked once it is gone, so launchd strips this one before launch.
+# A provenance-tagged app leaves a ._ file per write on ExFAT/FAT. A tagged shell can't strip the
+# tag and a bundle that ran tagged stays tracked, so launchd strips it before the first launch.
 provenance() { xattr -r "$app" 2>/dev/null | grep -c ': com\.apple\.provenance$'; }
 if [ "$(provenance)" != 0 ]; then
   label="dev.cafekery.nativegpui.bundle.$$"
