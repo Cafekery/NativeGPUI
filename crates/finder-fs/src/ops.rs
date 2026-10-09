@@ -152,6 +152,9 @@ pub fn carry(
         Op::Duplicate(items) => return Ok(duplicate(items, on_error, transfer)),
         Op::PutBack(items) => return Ok(put_back(items, transfer)),
         Op::Retry(request) => return Ok(run_all(vec![request], transfer)),
+        Op::Batch(ops) if !ops.is_empty() && ops.iter().all(carried_alone) => {
+            return Ok(carry_each(ops, conflict, on_error, transfer));
+        }
         op => return Err(op),
     };
     let request = Request::new(kind, items, &into, conflict, on_error);
@@ -162,6 +165,58 @@ pub fn carry(
         failures: outcome.failures,
         end: outcome.end,
     })
+}
+
+fn carried_alone(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Move { .. }
+            | Op::Copy { .. }
+            | Op::CopyExactly { .. }
+            | Op::Duplicate(_)
+            | Op::PutBack(_)
+            | Op::Retry(_)
+    )
+}
+
+/// Carries each op in turn on the one handle, so a folded undo shows its progress like any other;
+/// one that stops leaves itself and the rest to try again.
+fn carry_each(ops: Vec<Op>, conflict: Conflict, on_error: OnError, transfer: &Transfer) -> Carried {
+    let mut carried = Carried {
+        done: Done::default(),
+        failures: Vec::new(),
+        end: End::Finished,
+        left: None,
+    };
+    let (mut undos, mut again) = (Vec::new(), Vec::new());
+    let mut ops = ops.into_iter();
+    for op in ops.by_ref() {
+        let Ok(step) = carry(op, conflict, on_error, transfer) else {
+            unreachable!("only carried ops are batched here");
+        };
+        carried.done.results.extend(step.done.results);
+        undos.extend(step.done.undo);
+        again.extend(step.left);
+        carried.failures.extend(step.failures);
+        carried.end = step.end;
+        if step.end != End::Finished {
+            break;
+        }
+    }
+    if carried.end != End::Cancelled {
+        again.extend(ops);
+    }
+    undos.reverse();
+    carried.done.undo = one_or_batch(undos);
+    carried.left = one_or_batch(again);
+    carried
+}
+
+fn one_or_batch(mut ops: Vec<Op>) -> Option<Op> {
+    match ops.len() {
+        0 | 1 => ops.pop(),
+        _ => Some(Op::Batch(ops)),
+    }
 }
 
 /// One request per destination volume, which the engine reads once; a destination that cannot
@@ -210,10 +265,7 @@ fn run_all(requests: Vec<Request>, transfer: &Transfer) -> Carried {
     if carried.end != End::Cancelled {
         again.extend(requests.map(Op::Retry));
     }
-    carried.left = match again.len() {
-        0 | 1 => again.pop(),
-        _ => Some(Op::Batch(again)),
-    };
+    carried.left = one_or_batch(again);
     carried
 }
 

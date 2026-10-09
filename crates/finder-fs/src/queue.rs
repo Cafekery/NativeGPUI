@@ -201,12 +201,14 @@ pub struct Undoable {
     pub label: String,
     pub undo: Op,
     pub redo: Op,
+    serial: u64,
 }
 
 #[derive(Default)]
 pub struct Journal {
     undo_stack: Vec<Undoable>,
     redo_stack: Vec<Undoable>,
+    recorded: u64,
 }
 
 impl Journal {
@@ -214,16 +216,18 @@ impl Journal {
         Journal::default()
     }
 
-    pub fn record(&mut self, done: &Done, original: &Op) {
-        let Some(undo) = done.undo.clone() else {
-            return;
-        };
+    /// Names the entry, for a retry of the same job to fold into.
+    pub fn record(&mut self, done: &Done, original: &Op) -> Option<u64> {
+        let undo = done.undo.clone()?;
+        self.recorded += 1;
         self.undo_stack.push(Undoable {
             label: label_for(original),
             undo,
             redo: original.clone(),
+            serial: self.recorded,
         });
         self.redo_stack.clear();
+        Some(self.recorded)
     }
 
     pub fn undo_label(&self) -> Option<&str> {
@@ -264,10 +268,33 @@ impl Journal {
     }
 
     /// A redo lands its items afresh, so undoing it again starts from where they are now.
-    pub fn redone(&mut self, at: usize, done: &Done) {
-        if let (Some(entry), Some(undo)) = (self.undo_stack.get_mut(at), done.undo.clone()) {
+    pub fn redone(&mut self, at: usize, done: &Done) -> Option<u64> {
+        let entry = self.undo_stack.get_mut(at)?;
+        if let Some(undo) = done.undo.clone() {
             entry.undo = undo;
         }
+        Some(entry.serial)
+    }
+
+    /// A retry finishes the job it retries, so one undo takes both back, its own half first, and
+    /// one redo runs the whole job again. False once that job's entry can no longer be undone.
+    pub fn retried(&mut self, serial: u64, done: &Done) -> bool {
+        let Some(entry) = (self.undo_stack.iter_mut()).find(|entry| entry.serial == serial) else {
+            return false;
+        };
+        if let Some(undo) = done.undo.clone() {
+            let earlier = std::mem::replace(&mut entry.undo, Op::Batch(Vec::new()));
+            let mut steps = Vec::new();
+            for step in [undo, earlier] {
+                match step {
+                    Op::Batch(ops) => steps.extend(ops),
+                    op => steps.push(op),
+                }
+            }
+            entry.undo = Op::Batch(steps);
+        }
+        self.redo_stack.clear();
+        true
     }
 }
 
@@ -615,6 +642,82 @@ mod tests {
             matches!(undo, Op::Move { ref items, .. } if items == &[PathBuf::from("/Trash/x 2.pdf")]),
             "the undo still names the first run's path"
         );
+    }
+
+    #[test]
+    fn a_retried_move_undoes_and_redoes_as_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(ram) = RamDisk::new(64, &format!("QueueRetried{}", std::process::id())) else {
+            eprintln!("skipping: could not create a RAM disk for a move across volumes");
+            return;
+        };
+        let src = temp_dir("retried");
+        let tree = src.join("tree");
+        let solo = src.join("solo.txt");
+        let names = [
+            "tree/a/one.txt",
+            "tree/a/two.txt",
+            "tree/b/three.txt",
+            "tree/b/locked.txt",
+            "solo.txt",
+        ];
+        for name in names {
+            let file = src.join(name);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, name).unwrap();
+        }
+        let lock = |mode| {
+            for locked in [tree.join("b/locked.txt"), solo.clone()] {
+                fs::set_permissions(locked, fs::Permissions::from_mode(mode)).unwrap();
+            }
+        };
+        lock(0o000);
+
+        let (queue, rx) = listen();
+        let run = |op: Op, conflict| carried(&rx, queue.submit(op, conflict));
+        let mut journal = Journal::new();
+        let original = Op::Move {
+            items: vec![tree.clone(), solo.clone()],
+            into: ram.mount.clone(),
+        };
+        let first = run(original.clone(), Conflict::KeepBoth);
+        assert_eq!(first.failures.len(), 2, "{:?}", first.failures);
+        let entry = journal
+            .record(&first.done, &original)
+            .expect("what moved can be undone");
+        lock(0o644);
+        let retried = run(first.left.expect("the locked files wait"), Conflict::Merge);
+        assert!(retried.failures.is_empty(), "{:?}", retried.failures);
+        assert!(journal.retried(entry, &retried.done));
+        assert_eq!(journal.undo_len(), 1, "the retry folds into the move");
+        assert!(
+            !tree.exists() && !solo.exists(),
+            "the retry finished the move"
+        );
+
+        let undo = journal.pop_undo().unwrap().undo;
+        let back = run(undo, Conflict::KeepBoth);
+        assert!(back.failures.is_empty(), "{:?}", back.failures);
+        for name in names {
+            assert_eq!(fs::read_to_string(src.join(name)).unwrap(), name);
+        }
+        for name in ["tree", "solo.txt"] {
+            let landed = ram.mount.join(name);
+            assert!(!landed.exists(), "one undo left {landed:?}");
+        }
+        assert!(!src.join("tree 2").exists());
+
+        let redo = journal.pop_redo().unwrap().redo;
+        let again = run(redo, Conflict::KeepBoth);
+        assert!(again.failures.is_empty(), "{:?}", again.failures);
+        journal.redone(journal.undo_len() - 1, &again.done);
+        for name in names {
+            assert!(!src.join(name).exists(), "{name} stayed");
+            assert!(ram.mount.join(name).exists(), "{name} did not land");
+        }
+        assert_eq!((journal.undo_len(), journal.redo_len()), (1, 0));
+
+        let _ = fs::remove_dir_all(&src);
     }
 
     #[test]

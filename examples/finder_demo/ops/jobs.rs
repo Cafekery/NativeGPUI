@@ -49,6 +49,8 @@ pub(crate) enum Record {
     New,
     Undo(usize),
     Redo(usize),
+    /// Folds into the journal entry of the job it retries.
+    Retry(u64),
 }
 
 pub(crate) struct JobRow {
@@ -66,6 +68,8 @@ pub(crate) struct JobRow {
 struct Failed {
     failures: Vec<Failure>,
     retry: Option<Op>,
+    /// The journal entry holding what the job did carry.
+    entry: Option<u64>,
 }
 
 impl Failed {
@@ -362,11 +366,14 @@ impl FinderDemo {
         running
     }
 
-    fn note(&mut self, row: &JobRow, done: &Done) {
+    /// Returns the journal entry that now holds what the job did.
+    fn note(&mut self, row: &JobRow, done: &Done) -> Option<u64> {
         match row.record {
             Record::New => self.journal.record(done, &row.op),
             Record::Redo(at) => self.journal.redone(at, done),
-            Record::Undo(_) => {}
+            Record::Retry(entry) if self.journal.retried(entry, done) => Some(entry),
+            Record::Retry(_) => self.journal.record(done, &row.op),
+            Record::Undo(_) => None,
         }
     }
 
@@ -443,13 +450,14 @@ impl FinderDemo {
         if let Some(left) = left.clone().filter(|_| !failures.is_empty()) {
             self.undo_left(&row, left);
         }
-        self.finish(&row, done, cx);
+        let entry = self.finish(&row, done, cx);
         if failures.is_empty() || end == End::Cancelled {
             return;
         }
         row.failed = Some(Failed {
             failures,
             retry: left,
+            entry,
         });
         self.jobs.push(row);
         cx.defer(crate::progress_window::reveal);
@@ -460,26 +468,27 @@ impl FinderDemo {
         Some(self.jobs.remove(at))
     }
 
-    fn finish(&mut self, row: &JobRow, done: Done, cx: &mut Context<Self>) {
-        self.note(row, &done);
+    fn finish(&mut self, row: &JobRow, done: Done, cx: &mut Context<Self>) -> Option<u64> {
+        let entry = self.note(row, &done);
         self.settled(super::touched(&row.op), done.results, row.after, cx);
+        entry
     }
 
     fn retry_job(&mut self, job: JobId, cx: &mut Context<Self>) {
         let Some(row) = self.take_job(job) else {
             return;
         };
-        match row.failed.and_then(|failed| failed.retry) {
-            Some(retry) => self.submit(
-                retry,
-                Conflict::Merge,
-                row.after,
-                Record::New,
-                row.sound,
-                cx,
-            ),
-            None => cx.notify(),
-        }
+        let Some(Failed {
+            retry: Some(retry),
+            entry,
+            ..
+        }) = row.failed
+        else {
+            cx.notify();
+            return;
+        };
+        let record = entry.map_or(Record::New, Record::Retry);
+        self.submit(retry, Conflict::Merge, row.after, record, row.sound, cx);
     }
 
     fn show_failures(&self, job: JobId, cx: &mut Context<Self>) {
@@ -794,6 +803,7 @@ mod tests {
                 Conflict::Merge,
                 OnError::Stop,
             ))),
+            entry: None,
         };
         assert_eq!(failed_title(&op, &failed), "2 items couldn't be copied");
         assert_eq!(failed.reason().as_deref(), Some(why));
