@@ -42,7 +42,6 @@ pub struct Meta {
     pub values: Vec<(String, String)>,
 }
 
-/// An owned CoreFoundation reference.
 struct Cf(NonNull<c_void>);
 
 impl Drop for Cf {
@@ -61,11 +60,8 @@ impl Cf {
         Self::new(unsafe { MDItemCreate(std::ptr::null(), (&*path as *const NSString).cast()) })
     }
 
-    fn attribute(&self, name: &str) -> Option<Self> {
-        let key = NSString::from_str(name);
-        Self::new(unsafe {
-            MDItemCopyAttribute(self.0.as_ptr(), (&*key as *const NSString).cast())
-        })
+    fn attribute(&self, name: &NSString) -> Option<Self> {
+        Self::new(unsafe { MDItemCopyAttribute(self.0.as_ptr(), std::ptr::from_ref(name).cast()) })
     }
 
     fn is(&self, id: usize) -> bool {
@@ -116,18 +112,12 @@ impl Cf {
         (!words.is_empty()).then(|| words.join(", "))
     }
 
-    fn strings(&self) -> Vec<String> {
-        if !self.is(unsafe { CFArrayGetTypeID() }) {
-            return Vec::new();
-        }
-        self.cast::<NSArray<NSString>>()
-            .iter()
-            .map(|text| text.to_string())
-            .collect()
+    fn strings(&self) -> Option<&NSArray<NSString>> {
+        self.is(unsafe { CFArrayGetTypeID() }).then(|| self.cast())
     }
 }
 
-fn pair(item: &Cf, width: &str, height: &str) -> Option<(u64, u64)> {
+fn pair(item: &Cf, width: &NSString, height: &NSString) -> Option<(u64, u64)> {
     let width = item.attribute(width)?.number()?;
     let height = item.attribute(height)?.number()?;
     (width > 0. && height > 0.).then_some((width as u64, height as u64))
@@ -135,11 +125,15 @@ fn pair(item: &Cf, width: &str, height: &str) -> Option<(u64, u64)> {
 
 /// Spotlight makes this up from the modification date where it has not indexed the item.
 pub fn last_used(path: &Path) -> Option<f64> {
-    Cf::item(path)?.attribute("kMDItemLastUsedDate")?.date()
+    Cf::item(path)?
+        .attribute(ns_string!("kMDItemLastUsedDate"))?
+        .date()
 }
 
 pub(crate) fn kind(path: &Path) -> Option<String> {
-    Cf::item(path)?.attribute("kMDItemKind")?.string()
+    Cf::item(path)?
+        .attribute(ns_string!("kMDItemKind"))?
+        .string()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,10 +144,10 @@ pub enum Sharer {
 
 pub fn sharer(path: &Path) -> Option<Sharer> {
     let item = Cf::item(path)?;
-    let string = |name| item.attribute(name)?.string();
+    let string = |name: &NSString| item.attribute(name)?.string();
     sharer_of(
-        string("kMDItemSharedItemCurrentUserRole").as_deref(),
-        string("kMDItemOwnerName"),
+        string(ns_string!("kMDItemSharedItemCurrentUserRole")).as_deref(),
+        string(ns_string!("kMDItemOwnerName")),
     )
 }
 
@@ -181,40 +175,56 @@ pub fn meta(path: &Path) -> Meta {
     let Some(item) = Cf::item(path) else {
         return Meta::default();
     };
-    let string = |name| item.attribute(name)?.string();
-    let number = |name| item.attribute(name)?.number();
-    let date = |name| item.attribute(name)?.date();
+    let string = |name: &NSString| item.attribute(name)?.string();
+    let number = |name: &NSString| item.attribute(name)?.number();
+    let date = |name: &NSString| item.attribute(name)?.date();
     Meta {
-        content_created: date("kMDItemContentCreationDate"),
-        last_used: date("kMDItemLastUsedDate"),
-        pixels: pair(&item, "kMDItemPixelWidth", "kMDItemPixelHeight"),
-        color_space: string("kMDItemColorSpace"),
-        color_profile: string("kMDItemProfileName"),
-        version: string("kMDItemVersion"),
-        pages: number("kMDItemNumberOfPages").map(|pages| pages as u64),
-        page: pair(&item, "kMDItemPageWidth", "kMDItemPageHeight"),
-        security: string("kMDItemSecurityMethod"),
+        content_created: date(ns_string!("kMDItemContentCreationDate")),
+        last_used: date(ns_string!("kMDItemLastUsedDate")),
+        pixels: pair(
+            &item,
+            ns_string!("kMDItemPixelWidth"),
+            ns_string!("kMDItemPixelHeight"),
+        ),
+        color_space: string(ns_string!("kMDItemColorSpace")),
+        color_profile: string(ns_string!("kMDItemProfileName")),
+        version: string(ns_string!("kMDItemVersion")),
+        pages: number(ns_string!("kMDItemNumberOfPages")).map(|pages| pages as u64),
+        page: pair(
+            &item,
+            ns_string!("kMDItemPageWidth"),
+            ns_string!("kMDItemPageHeight"),
+        ),
+        security: string(ns_string!("kMDItemSecurityMethod")),
         encoders: item
-            .attribute("kMDItemEncodingApplications")
-            .map(|value| value.strings())
+            .attribute(ns_string!("kMDItemEncodingApplications"))
+            .and_then(|value| {
+                Some(
+                    value
+                        .strings()?
+                        .iter()
+                        .map(|text| text.to_string())
+                        .collect(),
+                )
+            })
             .unwrap_or_default(),
-        category: string("kMDItemAppStoreCategory"),
-        duration: number("kMDItemDurationSeconds"),
+        category: string(ns_string!("kMDItemAppStoreCategory")),
+        duration: number(ns_string!("kMDItemDurationSeconds")),
         values: values(&item),
     }
 }
 
 fn values(item: &Cf) -> Vec<(String, String)> {
-    let Some(names) = Cf::new(unsafe { MDItemCopyAttributeNames(item.0.as_ptr()) }) else {
+    let names = Cf::new(unsafe { MDItemCopyAttributeNames(item.0.as_ptr()) });
+    let Some(names) = names.as_ref().and_then(Cf::strings) else {
         return Vec::new();
     };
     names
-        .strings()
-        .into_iter()
+        .iter()
         .filter_map(|name| {
             let value = item.attribute(&name)?;
             let text = value.string().or_else(|| value.text())?;
-            Some((name, text))
+            Some((name.to_string(), text))
         })
         .collect()
 }

@@ -261,7 +261,6 @@ fn symbol_name(icon: &AnyObject) -> Option<String> {
     name.map(|name| name.to_string())
 }
 
-/// IconServices' symbol for a type is the one Finder draws.
 fn type_symbol(kind: &UTType) -> Option<String> {
     let class = icon_class(c"ISTypeIcon", sel!(initWithType:))?;
     let icon: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
@@ -308,10 +307,12 @@ impl Sharing {
     fn load() -> Option<Self> {
         let path = c"/System/Library/PrivateFrameworks/Sharing.framework/Sharing";
         let lib = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+        if lib.is_null() {
+            return None;
+        }
         fn find<T>(lib: *mut c_void, name: &CStr) -> Option<T> {
             let found = unsafe { libc::dlsym(lib, name.as_ptr()) };
-            (!lib.is_null() && !found.is_null())
-                .then(|| unsafe { std::mem::transmute_copy(&found) })
+            (!found.is_null()).then(|| unsafe { std::mem::transmute_copy(&found) })
         }
         Some(Sharing {
             create: find(lib, c"SFBrowserCreate")?,

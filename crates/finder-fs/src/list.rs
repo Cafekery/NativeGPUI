@@ -253,7 +253,6 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     let returned_file = u32::from_ne_bytes(read(record, &mut p));
     p += 4;
 
-    let mut name = None;
     let mut objtype = VREG;
     let mut created = SystemTime::UNIX_EPOCH;
     let mut modified = SystemTime::UNIX_EPOCH;
@@ -267,15 +266,16 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     if returned_common & ATTR_CMN_ERROR != 0 && i32::from_ne_bytes(read(record, &mut p)) != 0 {
         return None;
     }
-    if returned_common & libc::ATTR_CMN_NAME != 0 {
-        let at = p;
-        let offset = i32::from_ne_bytes(read(record, &mut p));
-        let length = u32::from_ne_bytes(read(record, &mut p)) as usize;
-        let start = (at as i64 + offset as i64) as usize;
-        let raw = &record[start..start + length];
-        let raw = raw.split(|&b| b == 0).next().unwrap_or(raw);
-        name = Some(String::from_utf8_lossy(raw).into_owned());
+    if returned_common & libc::ATTR_CMN_NAME == 0 {
+        return None;
     }
+    let at = p;
+    let offset = i32::from_ne_bytes(read(record, &mut p));
+    let length = u32::from_ne_bytes(read(record, &mut p)) as usize;
+    let start = (at as i64 + offset as i64) as usize;
+    let raw = &record[start..start + length];
+    let raw = raw.split(|&b| b == 0).next().unwrap_or(raw);
+    let name = String::from_utf8_lossy(raw).into_owned();
     if returned_common & libc::ATTR_CMN_OBJTYPE != 0 {
         objtype = u32::from_ne_bytes(read(record, &mut p));
     }
@@ -314,7 +314,6 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
         0
     };
 
-    let name = name?;
     let kind = match objtype {
         VREG => EntryKind::File,
         VDIR => EntryKind::Directory,
@@ -362,7 +361,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
-    use std::path::PathBuf;
 
     fn by_name(entries: &[Entry]) -> BTreeMap<&str, &Entry> {
         entries.iter().map(|e| (e.name.as_str(), e)).collect()

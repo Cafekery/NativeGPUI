@@ -68,12 +68,13 @@ pub fn show_all_extensions(show: Option<bool>) {
 
 fn launch_services(path: &Path) -> String {
     let path = NSString::from_str(&path.to_string_lossy());
-    display(
-        &NSFileManager::defaultManager()
-            .displayNameAtPath(&path)
-            .to_string(),
-    )
-    .into_owned()
+    let name = NSFileManager::defaultManager()
+        .displayNameAtPath(&path)
+        .to_string();
+    if let Cow::Owned(mapped) = display(&name) {
+        return mapped;
+    }
+    name
 }
 
 /// Counts an application's extension as hidden.

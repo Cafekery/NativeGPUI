@@ -63,7 +63,6 @@ impl Flags {
     }
 }
 
-/// Finder's settings for its Locations rows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct VolumeSettings {
     /// Hard disks, External disks, CDs, DVDs, and iOS Devices, Connected servers.
@@ -118,7 +117,6 @@ impl Item {
     }
 }
 
-/// A sidebar row as Finder shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed {
     pub title: String,

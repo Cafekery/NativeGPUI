@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{CStr, CString, OsStr};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
@@ -119,9 +120,9 @@ fn to_completion(path: PathBuf, is_dir: bool) -> Completion {
     Completion { path, display }
 }
 
-fn expand_tilde(typed: &str) -> String {
+fn expand_tilde(typed: &str) -> Cow<'_, str> {
     let Some(rest) = typed.strip_prefix('~') else {
-        return typed.to_string();
+        return Cow::Borrowed(typed);
     };
     let (user, tail) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let home = if user.is_empty() {
@@ -129,10 +130,10 @@ fn expand_tilde(typed: &str) -> String {
     } else {
         user_home(user)
     };
-    home.map_or_else(
-        || typed.to_string(),
-        |home| format!("{}{tail}", home.display()),
-    )
+    match home {
+        Some(home) => Cow::Owned(format!("{}{tail}", home.display())),
+        None => Cow::Borrowed(typed),
+    }
 }
 
 fn user_home(user: &str) -> Option<PathBuf> {

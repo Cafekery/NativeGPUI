@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_foundation::{NSDictionary, NSFileManager, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSFileManager, NSNumber, NSString, NSURL, ns_string};
 
 const CLOUD_DOCS: &str = "com~apple~CloudDocs";
 
@@ -77,15 +77,12 @@ fn published(id: &str) -> Option<String> {
         .into_iter()
         .filter_map(|value| value.downcast::<NSDictionary>().ok())
         .find_map(|entry| {
-            // SAFETY: property-list dictionary keys are always strings.
-            let entry: Retained<NSDictionary<NSString, AnyObject>> =
-                unsafe { Retained::cast_unchecked(entry) };
             let public = entry
-                .objectForKey(&NSString::from_str("BRContainerIsDocumentScopePublic"))?
+                .objectForKey(ns_string!("BRContainerIsDocumentScopePublic"))?
                 .downcast::<NSNumber>()
                 .ok()?;
             let name = entry
-                .objectForKey(&NSString::from_str("BRContainerName"))?
+                .objectForKey(ns_string!("BRContainerName"))?
                 .downcast::<NSString>()
                 .ok()?;
             public.boolValue().then(|| name.to_string())
@@ -102,7 +99,7 @@ pub fn placeholder_name(name: &str) -> Option<&str> {
 
 pub fn placeholder_size(path: &Path) -> Option<u64> {
     let size = read_plist(path)?
-        .objectForKey(&NSString::from_str("NSURLFileSizeKey"))?
+        .objectForKey(ns_string!("NSURLFileSizeKey"))?
         .downcast::<NSNumber>()
         .ok()?;
     Some(size.unsignedLongLongValue())

@@ -9,21 +9,17 @@ fn make_files(dir: &Path, count: usize) {
     }
 }
 
-fn median(mut times: Vec<Duration>) -> Duration {
-    times.sort();
-    times[times.len() / 2]
-}
-
 fn time_it(f: impl Fn()) -> Duration {
     f();
-    let runs: Vec<Duration> = (0..5)
+    let mut runs: Vec<Duration> = (0..5)
         .map(|_| {
             let start = Instant::now();
             f();
             start.elapsed()
         })
         .collect();
-    median(runs)
+    runs.sort();
+    runs[runs.len() / 2]
 }
 
 fn read_dir_baseline(dir: &Path) {
@@ -49,7 +45,7 @@ fn main() {
     let root = std::env::temp_dir().join("finder-fs-list-bench");
     let _ = fs::remove_dir_all(&root);
 
-    for &count in &[20_000usize, 100_000] {
+    for count in [20_000usize, 100_000] {
         let dir = root.join(count.to_string());
         make_files(&dir, count);
         bench(&dir, count);
