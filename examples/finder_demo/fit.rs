@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use gpui::{
     Context, Font, FontWeight, Pixels, ShapedLine, SharedString, TextRun, WindowTextSystem, hsla,
 };
 use native_gpui::tokens;
+use parking_lot::Mutex;
 
 const SLACK: f32 = 0.5;
 const TABLE: u128 = 1 << 14;
@@ -117,7 +118,7 @@ pub(crate) fn widest<T>(
     text: impl Fn(&T) -> SharedString,
     total: impl Fn(&T, f32) -> f32,
 ) -> f32 {
-    let mut all = ADVANCES.lock().unwrap();
+    let mut all = ADVANCES.lock();
     let advances = all
         .entry((font.clone(), f32::from(size).to_bits()))
         .or_default();

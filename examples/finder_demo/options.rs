@@ -226,7 +226,8 @@ impl Build<'_> {
 
     fn group(&self) -> Row {
         let here = self.state.here();
-        let keys: Vec<Column> = (GROUP_KEYS.into_iter())
+        let keys: Vec<Column> = GROUP_KEYS
+            .into_iter()
             .filter(|key| key.offered_at(here))
             .collect();
         let grouped = self

@@ -65,9 +65,10 @@ impl FinderDemo {
 }
 
 pub(crate) fn item_art(row: &Row, size: f32, scale: f32, previews: bool) -> AnyElement {
-    match previews {
-        true => row_art(row, size, scale, true),
-        false => artwork(row, size),
+    if previews {
+        row_art(row, size, scale, true)
+    } else {
+        artwork(row, size)
     }
 }
 
@@ -107,16 +108,12 @@ impl Art {
 }
 
 pub(crate) fn list_art(row: &Row, size: f32, scale: f32, previews: bool) -> Art {
-    let picture = (previews && matches!(row.face, Face::Image | Face::Movie))
+    (previews && matches!(row.face, Face::Image | Face::Movie))
         .then(|| thumb(row, size, scale, true, true))
-        .flatten();
-    match picture {
-        Some(image) => Art::Picture(image),
-        None => match type_symbol(kind_of(row), row.face, size) {
-            Some(symbol) => Art::Icon(symbol),
-            None => Art::Glyph(row.face),
-        },
-    }
+        .flatten()
+        .map(Art::Picture)
+        .or_else(|| type_symbol(kind_of(row), row.face, size).map(Art::Icon))
+        .unwrap_or(Art::Glyph(row.face))
 }
 
 pub(crate) fn poster_art(
@@ -148,13 +145,11 @@ pub(crate) fn picture_art(
 
 /// Only an alias's icon wears the badge: its poster draws what it points at.
 fn poster_kind(row: &Row) -> Option<FileType<'static>> {
-    match (row.uti == "public.symlink")
+    (row.uti == "public.symlink")
         .then(|| std::fs::canonicalize(row.path.as_ref()).ok())
         .flatten()
-    {
-        Some(target) => Some(FileType::Path(crate::data::intern_path(&target))),
-        None => kind_of(row),
-    }
+        .map(|target| FileType::Path(crate::data::intern_path(&target)))
+        .or_else(|| kind_of(row))
 }
 
 pub(crate) fn square(side: f32) -> Div {
@@ -250,8 +245,7 @@ pub(crate) fn art_at(art: AnyElement, size: f32, anchor: Option<Anchor>) -> AnyE
     };
     div()
         .flex_none()
-        .w(px(size))
-        .h(px(size))
+        .size(px(size))
         .child(native_anchor(&anchor, art))
         .into_any_element()
 }
@@ -282,9 +276,10 @@ pub(crate) fn custom_folder(row: &Row) -> bool {
 }
 
 fn folder_kind(row: &Row, custom: fn(&SharedString) -> bool) -> Option<FileType<'static>> {
-    match has_folder_art(row) && custom(&row.path) {
-        true => Some(FileType::Path(crate::data::intern(&row.path))),
-        false => row.artwork,
+    if has_folder_art(row) && custom(&row.path) {
+        Some(FileType::Path(crate::data::intern(&row.path)))
+    } else {
+        row.artwork
     }
 }
 

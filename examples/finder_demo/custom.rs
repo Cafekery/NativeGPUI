@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use gpui::{App, Entity, SharedString};
+use parking_lot::Mutex;
 
 use crate::app::FinderDemo;
 
@@ -18,25 +19,24 @@ fn has_custom_icon(path: &SharedString) -> bool {
 }
 
 pub(crate) fn custom_icon(path: &SharedString) -> bool {
-    if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
+    if let Some(found) = SEEN.lock().get(path).copied() {
         return found;
     }
     WANTED.with_borrow_mut(|wanted| wanted.insert(path.clone()));
     false
 }
 
-/// Off the main thread: asks the file now.
 pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
-    if let Some(found) = SEEN.lock().unwrap().get(path).copied() {
+    if let Some(found) = SEEN.lock().get(path).copied() {
         return found;
     }
     let found = has_custom_icon(path);
-    SEEN.lock().unwrap().insert(path.clone(), found);
+    SEEN.lock().insert(path.clone(), found);
     found
 }
 
 pub(crate) fn set_custom_icon(path: &SharedString, custom: bool) {
-    SEEN.lock().unwrap().insert(path.clone(), custom);
+    SEEN.lock().insert(path.clone(), custom);
 }
 
 pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
@@ -45,7 +45,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
         return;
     }
     {
-        let mut seen = SEEN.lock().unwrap();
+        let mut seen = SEEN.lock();
         for path in &wanted {
             seen.entry(path.clone()).or_insert(false);
         }
@@ -66,7 +66,7 @@ pub(crate) fn fetch_wanted(demo: &Entity<FinderDemo>, cx: &mut App) {
             .await;
         let any = found.iter().any(|(_, custom)| *custom);
         demo.update(cx, |_, cx| {
-            SEEN.lock().unwrap().extend(found);
+            SEEN.lock().extend(found);
             if any {
                 cx.notify();
             }

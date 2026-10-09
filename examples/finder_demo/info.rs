@@ -140,7 +140,6 @@ impl Pane {
     }
 }
 
-/// Finder's choice until Found'er saves its own; a pane neither names stays open.
 fn panes_open() -> [bool; 6] {
     PANES.map(|pane| prefs::setting_flag(EXPANDED_KEY, pane.key()).unwrap_or(true))
 }
@@ -534,8 +533,7 @@ fn icon_file(path: &'static str) -> impl IntoElement {
     )
 }
 
-/// With no `image` the well lies over a picture: it keeps its menu, keys, drops and focus ring
-/// but paints nothing.
+/// With no `image` the well paints nothing but keeps its menu, keys, drops and focus ring.
 fn icon_well(
     paths: Vec<PathBuf>,
     same: bool,
@@ -1119,14 +1117,14 @@ impl Info {
             return;
         }
         self.icon_seen = generation;
-        let path = self.path().to_path_buf();
-        self.custom_icon = path.is_absolute() && native_gpui::tokens::has_custom_icon(&path);
+        let path = Path::new(self.line.row.path.as_ref());
+        self.custom_icon = path.is_absolute() && native_gpui::tokens::has_custom_icon(path);
         let proxy = ns_window(window)
             .filter(|_| !self.panel && path.is_absolute())
             .and_then(|ns| ns.standardWindowButton(NSWindowButton::DocumentIconButton));
         if let Some(proxy) = proxy {
             let icon = NSWorkspace::sharedWorkspace()
-                .iconForFile(&NSString::from_str(&path.to_string_lossy()));
+                .iconForFile(&NSString::from_str(&self.line.row.path));
             proxy.setImage(Some(&icon));
         }
     }
@@ -1478,17 +1476,13 @@ impl Info {
             .position(|row| matches!(row, Pick::App(app) if opener.chosen.as_ref() == Some(app)))
             .unwrap_or(0);
         let default = opener.default.as_deref();
-        let shown = rows
-            .get(chosen)
-            .map_or(String::new(), |row| row.title(default));
+        let picked = rows.get(chosen);
+        let shown = picked.map(|row| row.title(default)).unwrap_or_default();
         let pick = this.clone();
         let popup = native_popup("popup", chosen)
             .entries(rows.iter().map(|row| row.entry(default)))
             .bordered(false)
-            .width(px(hugging(
-                &shown,
-                matches!(rows.get(chosen), Some(Pick::App(_))),
-            )))
+            .width(px(hugging(&shown, matches!(picked, Some(Pick::App(_))))))
             .on_change(move |&row, _, cx| {
                 pick.update(cx, |info, cx| info.pick(row, cx)).ok();
             });
@@ -1778,8 +1772,7 @@ fn name_field(path: SharedString, enabled: bool, this: WeakEntity<Info>) -> impl
             field.setFont(Some(&NSFont::systemFontOfSize(BODY.into())));
             if let Some(name) = Path::new(path.as_ref()).file_name() {
                 let name = name.to_string_lossy();
-                let shown = NSString::from_str(&finder_fs::name::display(&name));
-                field.setStringValue(&shown);
+                field.setStringValue(&NSString::from_str(&finder_fs::name::display(&name)));
             }
             if let Some(cell) = field.cell() {
                 cell.setScrollable(true);
@@ -2005,13 +1998,12 @@ fn grant_tools(
             if control.isEnabledForSegment(2) != editable {
                 control.setEnabled_forSegment(editable, 2);
             }
-            if let Some(revert_item) = control
+            if let Some(item) = control
                 .menuForSegment(2)
                 .and_then(|menu| menu.itemWithTag(revert as isize))
+                .filter(|item| item.isEnabled() != changed)
             {
-                if revert_item.isEnabled() != changed {
-                    revert_item.setEnabled(changed);
-                }
+                item.setEnabled(changed);
             }
             let to_revert = this.clone();
             on_action(
@@ -2129,11 +2121,12 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
             scroll
         },
         move |scroll, _| {
-            let text = scroll.documentView();
-            if let Some(text) = text.and_then(|text| text.downcast::<NSTextView>().ok()) {
-                if text.isEditable() != editable {
-                    text.setEditable(editable);
-                }
+            if let Some(text) = scroll
+                .documentView()
+                .and_then(|text| text.downcast::<NSTextView>().ok())
+                .filter(|text| text.isEditable() != editable)
+            {
+                text.setEditable(editable);
             }
         },
     )
@@ -2337,12 +2330,12 @@ impl Render for Combined {
             vec![card("values", values(&form, &self.rows()))],
         );
         let paths = self.paths();
-        let first = paths.first().cloned();
         let same = self.same == Some(true);
+        let first = paths.first().filter(|_| same).cloned();
         let well = icon_well(
             paths,
             same,
-            Some(move || match first.as_ref().filter(|_| same) {
+            Some(move || match &first {
                 Some(first) => icon_of(&first.to_string_lossy()),
                 None => NSImage::initWithContentsOfFile(
                     NSImage::alloc(),

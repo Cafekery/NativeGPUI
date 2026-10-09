@@ -1,12 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{App, RenderImage, SharedString, px};
 use native_gpui::thumbnails;
+use parking_lot::Mutex;
 
 use crate::data::{Face, Row};
 use crate::signal::Signal;
@@ -59,14 +60,13 @@ pub(crate) fn collect_thumbnails() {
     for ask in HELD.take().into_iter().rev() {
         send(ask);
     }
-    let landed = std::mem::take(&mut *LANDED.lock().unwrap());
+    let landed = std::mem::take(&mut *LANDED.lock());
     for (key, image) in landed {
         let Some(image) = image else {
             retry(&key);
             continue;
         };
-        keep(&key, &image);
-        THUMBS.with_borrow_mut(|thumbs| thumbs.insert(key, image));
+        keep(key, image);
     }
     sweep_thumbnails();
 }
@@ -84,17 +84,16 @@ fn retry(key: &Thumb) {
     }
 }
 
-fn keep(key: &Thumb, image: &Arc<RenderImage>) {
+fn keep(key: Thumb, image: Arc<RenderImage>) {
     LARGEST.with_borrow_mut(|largest| {
-        largest
+        let held = largest
             .entry((key.0.clone(), key.2))
-            .and_modify(|held| {
-                if held.0 < key.1 {
-                    *held = (key.1, image.clone());
-                }
-            })
             .or_insert_with(|| (key.1, image.clone()));
+        if held.0 < key.1 {
+            *held = (key.1, image.clone());
+        }
     });
+    THUMBS.with_borrow_mut(|thumbs| thumbs.insert(key, image));
 }
 
 fn largest(path: &SharedString, icon: bool) -> Option<Arc<RenderImage>> {
@@ -187,8 +186,7 @@ pub(crate) fn thumb(
         .ok()
         .map(|since| UNIX_EPOCH + since);
     if let Some(image) = thumbnails::cached_thumbnail(path, modified, px(size), scale, icon) {
-        keep(&key, &image);
-        THUMBS.with_borrow_mut(|thumbs| thumbs.insert(key, image.clone()));
+        keep(key, image.clone());
         return Some(image);
     }
     ask(path, modified, key, size, scale);
@@ -216,7 +214,7 @@ fn ask(path: &Path, modified: Option<SystemTime>, key: Thumb, size: f32, scale: 
 fn send((path, modified, key, size, scale): Ask) {
     INFLIGHT.fetch_add(1, Ordering::Relaxed);
     thumbnails::thumbnail(&path, modified, px(size), scale, key.2, move |image| {
-        LANDED.lock().unwrap().push((key, image));
+        LANDED.lock().push((key, image));
         INFLIGHT.fetch_sub(1, Ordering::Relaxed);
         LANDING.ring();
     });

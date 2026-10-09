@@ -88,7 +88,6 @@ fn plist(raw: &str, folders: &[String]) -> String {
             folders.iter().map(|folder| string(folder)).collect(),
         ),
     };
-    let raw = string(raw);
     format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -115,7 +114,7 @@ fn plist(raw: &str, folders: &[String]) -> String {
             "</dict>",
             "</dict></plist>\n",
         ),
-        raw = raw,
+        raw = string(raw),
         scopes = scopes,
         code = code,
         paths = paths,
@@ -207,8 +206,9 @@ impl FinderDemo {
         let raw = raw_query(self.raw_query.as_deref(), &self.query.text, &self.criteria);
         match save(name, &raw, &folders) {
             Ok(file) => {
-                self.pin_favourite(vec![file.clone()], cx);
-                self.go(intern_path(&file), window, cx);
+                let at = intern_path(&file);
+                self.pin_favourite(vec![file], cx);
+                self.go(at, window, cx);
             }
             Err(error) => self.complain(&error),
         }

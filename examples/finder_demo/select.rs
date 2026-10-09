@@ -110,12 +110,13 @@ impl FinderDemo {
             return;
         }
         let shut: HashSet<&SharedString> = folders.iter().map(|(key, _)| key).collect();
-        let under: HashSet<&str> = match deep {
-            true => folders
+        let under: HashSet<&str> = if deep {
+            folders
                 .iter()
                 .map(|(_, into)| into.trim_end_matches('/'))
-                .collect(),
-            false => HashSet::new(),
+                .collect()
+        } else {
+            HashSet::new()
         };
         let inside = |path: &str| {
             let mut rest = path;
@@ -242,17 +243,17 @@ impl FinderDemo {
         self.typed_at = Some(now);
         let lines = self.focused_lines();
         let typed = self.typed.as_str();
-        let prefix = lines
-            .iter()
-            .find(|line| match typed.is_ascii() && line.row.name.is_ascii() {
-                true => line
-                    .row
+        let prefix = lines.iter().find(|line| {
+            if typed.is_ascii() && line.row.name.is_ascii() {
+                line.row
                     .name
                     .as_bytes()
                     .get(..typed.len())
-                    .is_some_and(|head| head.eq_ignore_ascii_case(typed.as_bytes())),
-                false => finder_fs::sort::starts_with(&line.row.name, typed),
-            });
+                    .is_some_and(|head| head.eq_ignore_ascii_case(typed.as_bytes()))
+            } else {
+                finder_fs::sort::starts_with(&line.row.name, typed)
+            }
+        });
         match prefix {
             Some(line) => {
                 self.type_filter = None;

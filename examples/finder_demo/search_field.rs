@@ -1,5 +1,3 @@
-//! The toolbar's search field; with the private API, Finder's own token field from Suggestions.framework.
-
 use gpui::Window;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
@@ -98,7 +96,6 @@ fn string(object: &AnyObject, selector: Sel) -> Option<String> {
     Some(value?.downcast::<NSString>().ok()?.to_string())
 }
 
-/// The field's search, and the query Spotlight would run for it.
 pub(crate) fn typed(window: &Window, text: &str) -> (Search, Option<String>) {
     field(window)
         .filter(|field| field.respondsToSelector(sel!(suggestions)))

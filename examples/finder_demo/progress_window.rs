@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui::{
@@ -50,7 +50,11 @@ fn open(focus: bool, cx: &mut App) {
         let Some(mtm) = MainThreadMarker::new().filter(|_| !shown()) else {
             return;
         };
-        let rows = row_heights(&demos(cx), cx);
+        let rows: Vec<f32> = demos(cx)
+            .iter()
+            .flat_map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()))
+            .map(|job| job.height())
+            .collect();
         let tall = height(&rows, mtm);
         let opened = cx.open_window(
             WindowOptions {
@@ -70,8 +74,7 @@ fn open(focus: bool, cx: &mut App) {
                 cx.new(|cx| {
                     cx.on_release(|_, _| OPEN.set(None)).detach();
                     Progress {
-                        watched: HashSet::new(),
-                        watching: Vec::new(),
+                        watching: HashMap::new(),
                         tall,
                         had_rows: !rows.is_empty(),
                         ticking: false,
@@ -79,9 +82,7 @@ fn open(focus: bool, cx: &mut App) {
                 })
             },
         );
-        if let Ok(opened) = opened {
-            OPEN.set(Some(opened));
-        }
+        OPEN.set(opened.ok());
     });
 }
 
@@ -92,22 +93,13 @@ fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
         .collect()
 }
 
-fn row_heights(demos: &[Entity<FinderDemo>], cx: &App) -> Vec<f32> {
-    demos
-        .iter()
-        .flat_map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()))
-        .map(|job| job.height())
-        .collect()
-}
-
 fn height(rows: &[f32], mtm: MainThreadMarker) -> Pixels {
     let content = rows.iter().sum::<f32>() - (ROW_H - LAST_ROW_H);
     titled_height(content.max(LAST_ROW_H), mtm)
 }
 
 struct Progress {
-    watched: HashSet<EntityId>,
-    watching: Vec<Subscription>,
+    watching: HashMap<EntityId, Subscription>,
     tall: Pixels,
     /// Checked when a job changes, not on draw: a covered window never draws.
     had_rows: bool,
@@ -149,18 +141,15 @@ impl Progress {
 impl Render for Progress {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let demos = demos(cx);
-        for demo in &demos {
-            if self.watched.insert(demo.entity_id()) {
-                self.watching
-                    .push(cx.observe_in(demo, window, |this, _, window, cx| {
-                        this.jobs_changed(window, cx)
-                    }));
-            }
-        }
         let mut running = false;
         let mut rows = Vec::new();
         let mut heights = Vec::new();
         for demo in &demos {
+            self.watching.entry(demo.entity_id()).or_insert_with(|| {
+                cx.observe_in(demo, window, |this, _, window, cx| {
+                    this.jobs_changed(window, cx)
+                })
+            });
             for job in demo.read(cx).jobs.iter().filter(|job| job.shown()) {
                 running |= job.running();
                 heights.push(job.height());

@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use finder_fs::queue::{self, Journal, Queue};
@@ -17,6 +17,7 @@ use gpui::{
 use native_gpui::sidebar::NativeSidebar;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
+use parking_lot::Mutex;
 
 use crate::art::{Anchor, Previews};
 use crate::chrome::sheet::GoPanel;
@@ -95,7 +96,7 @@ pub(crate) struct FinderDemo {
     pub(crate) cache: RefCell<Listings>,
     pub(crate) stats: Option<preview::Stats>,
     pub(crate) stats_pending: Option<(u64, usize)>,
-    pub(crate) stats_stale: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) stats_stale: Arc<AtomicBool>,
     pub(crate) followed: Option<(u64, &'static str, &'static str, usize)>,
     pub(crate) stack: RefCell<Option<Arc<RenderImage>>>,
     pub(crate) typed: String,
@@ -199,13 +200,13 @@ impl FinderDemo {
                 sidebar::last_groups()
             }
         };
-        let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let changes: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
         let sink = changes.clone();
         read::follow_events(changes, cx);
-        let queue_events: Arc<Mutex<Vec<queue::Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let queue_events: Arc<Mutex<Vec<queue::Event>>> = Arc::default();
         let queue_sink = queue_events.clone();
         let queue = Queue::new(move |event| {
-            queue_sink.lock().unwrap().push(event);
+            queue_sink.lock().push(event);
             read::EVENTS.ring();
         });
         let kept = prefs::opens_in(start);
@@ -257,7 +258,7 @@ impl FinderDemo {
             stats_pending: None,
             stats_stale: Arc::default(),
             followed: None,
-            stack: RefCell::new(None),
+            stack: RefCell::default(),
             typed: String::new(),
             typed_at: None,
             type_filter: None,
@@ -309,7 +310,7 @@ impl FinderDemo {
             viewport: Size::default(),
             window_min_w: f32::NAN,
             watcher: Watcher::new(move |dirs| {
-                sink.lock().unwrap().extend(dirs);
+                sink.lock().extend(dirs);
                 read::EVENTS.ring();
             }),
             watching: HashSet::new(),

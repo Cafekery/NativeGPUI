@@ -7,21 +7,18 @@ use gpui::{
     relative,
 };
 use native_gpui::sidebar::SidebarMetrics;
-use native_gpui::tokens;
-use native_gpui::{NativeScrollBars, native_root, native_rule, native_scroll_bars};
+use native_gpui::{NativeScrollBars, native_root, native_rule, native_scroll_bars, tokens};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSWindow};
 use objc2_foundation::NSSize;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-use crate::app::FinderDemo;
-use crate::app::LIST_CONTEXT;
+use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::chrome::path_bar::PATH_H;
 use crate::chrome::surface::{band_edge, toolbar_rule};
 use crate::dragdrop::RowDrag;
 use crate::elastic::stretching;
-use crate::menus;
-use crate::menus::{ZoomIn, ZoomOut};
+use crate::menus::{self, ZoomIn, ZoomOut};
 use crate::palette::Palette;
 use crate::preview::LIST_MIN_W;
 use crate::ui::axis_locked;
@@ -243,23 +240,25 @@ impl FinderDemo {
         }
     }
 
-    /// Icon and column view run on under the bars, beneath a soft scroll edge only private-api shows.
     pub(crate) fn soft_edge(&self) -> bool {
         cfg!(feature = "private-api")
             && matches!(self.view, ICON_VIEW | COLUMN_VIEW)
             && !self.airdrop_shown()
     }
 
+    pub(crate) fn scope_h(&self) -> f32 {
+        if self.in_search() {
+            self.search_bars_h()
+        } else {
+            0.
+        }
+    }
+
     pub(crate) fn under_bars(&self) -> Pixels {
         if !self.soft_edge() {
             return px(0.);
         }
-        let scope_h = if self.in_search() {
-            self.search_bars_h()
-        } else {
-            0.
-        };
-        self.metrics().top + px(scope_h)
+        self.metrics().top + px(self.scope_h())
     }
 
     fn list_column(
@@ -271,11 +270,7 @@ impl FinderDemo {
         metrics: SidebarMetrics,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let scope_h = if self.in_search() {
-            self.search_bars_h()
-        } else {
-            0.
-        };
+        let scope_h = self.scope_h();
         let search_bars = (scope_h > 0.).then(|| (self.scope_bar(cx), self.criteria_bar(cx)));
         let above = metrics.top;
         let top = above + px(scope_h);
@@ -346,9 +341,10 @@ impl FinderDemo {
             })
             // A Layer::Above view blurs only what is painted before it: the rows and the header.
             .when(banded || soft || scope_h > 0., |column| {
-                let scrolled = match soft && icons {
-                    true => -self.icons.scroll.offset().y,
-                    false => px(0.),
+                let scrolled = if soft && icons {
+                    -self.icons.scroll.offset().y
+                } else {
+                    px(0.)
                 };
                 column.child(band_edge(top + header_h, px(scope_h) + header_h, scrolled))
             })
@@ -385,7 +381,6 @@ impl FinderDemo {
                     .bottom_0()
                     .left_0()
                     .right_0()
-                    // Only the list view reaches here unshifted; the others are already inset.
                     .when(banded, |bar_row| bar_row.pl(metrics.left))
                     .child(bar)
             }))

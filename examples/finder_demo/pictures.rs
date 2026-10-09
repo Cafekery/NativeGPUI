@@ -269,8 +269,7 @@ fn bgra(image: &AnyObject) -> Option<Arc<RenderImage>> {
             }
         }
     }
-    let raster = RgbaImage::from_raw(w as u32, h as u32, bytes)?;
-    Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
+    rendered(w as u32, h as u32, bytes)
 }
 
 /// Quick Look's icon mode pads a picture with a drop shadow: the opaque part is the picture.
@@ -286,15 +285,19 @@ fn opaque(thumb: &RenderImage) -> Option<Arc<RenderImage>> {
     let column = |x: usize| (0..h).any(|y| solid(x, y));
     let (top, bottom) = ((0..h).position(row)?, (0..h).rposition(row)?);
     let (left, right) = ((0..w).position(column)?, (0..w).rposition(column)?);
-    let picture: Vec<u8> = (top..=bottom)
+    let picture = (top..=bottom)
         .flat_map(|y| &bytes[(y * w + left) * 4..(y * w + right + 1) * 4])
         .copied()
         .collect();
-    let raster = RgbaImage::from_raw(
+    rendered(
         (right - left + 1) as u32,
         (bottom - top + 1) as u32,
         picture,
-    )?;
+    )
+}
+
+fn rendered(width: u32, height: u32, bytes: Vec<u8>) -> Option<Arc<RenderImage>> {
+    let raster = RgbaImage::from_raw(width, height, bytes)?;
     Some(Arc::new(RenderImage::new(vec![Frame::new(raster)])))
 }
 

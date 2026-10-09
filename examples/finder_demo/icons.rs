@@ -3,11 +3,12 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, mpsc};
+use std::sync::{Arc, LazyLock, mpsc};
 use std::time::{Duration, Instant};
 
 use gpui::{App, Entity, Priority, RenderImage, WeakEntity, px, size};
 use native_gpui::tokens::{FileType, Symbol, draw_file_icon, generation};
+use parking_lot::Mutex;
 
 use crate::app::FinderDemo;
 use crate::data::{Line, Row};
@@ -54,11 +55,9 @@ struct State {
     kept_changed: Vec<Key>,
     sizes: HashMap<FileType<'static>, Vec<u32>>,
     per_file_bytes: usize,
-    /// Stand-ins painted: (frame, ask order).
     asked: HashMap<Key, (u64, usize)>,
     asks: usize,
     waited: u64,
-    /// Keys a lane is drawing: whether for a row on screen.
     busy: HashMap<Key, bool>,
     lanes: usize,
     ahead: Ahead,
@@ -149,7 +148,7 @@ pub(crate) fn redraw(path: &str) -> Vec<Arc<RenderImage>> {
 /// Drawing an app's icon checks App Management; every check before TCC answers the first asks again.
 pub(crate) fn ask_app_management(apps: impl IntoIterator<Item = PathBuf>) {
     static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
-    let mut asked = ASKED.lock().unwrap();
+    let mut asked = ASKED.lock();
     if asked.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
         return;
     }
@@ -161,8 +160,8 @@ pub(crate) fn ask_app_management(apps: impl IntoIterator<Item = PathBuf>) {
 
 pub(crate) fn installed_apps() -> impl Iterator<Item = PathBuf> {
     let apps = Path::new("/Applications");
-    let listed = finder_fs::list::list_dir(apps).unwrap_or_default();
-    listed
+    finder_fs::list::list_dir(apps)
+        .unwrap_or_default()
         .into_iter()
         .filter(|entry| entry.package)
         .map(|entry| apps.join(entry.name))
@@ -194,8 +193,8 @@ pub(crate) fn begin(kinds: impl IntoIterator<Item = FileType<'static>>, size: f3
         }
     }
     {
-        let kept = KEPT.lock().unwrap();
-        let prepared = PREPARED.lock().unwrap();
+        let kept = KEPT.lock();
+        let prepared = PREPARED.lock();
         keys.retain(|key| !kept.contains(key) && prepared.iter().all(|(held, _)| held != key));
     }
     let until = Instant::now() + PREPARE;
@@ -232,7 +231,7 @@ fn lane(keys: &[Key], next: &AtomicUsize, drawn: &mpsc::Sender<()>, until: Insta
             break;
         };
         let icon = draw(*key);
-        PREPARED.lock().unwrap().push((*key, icon));
+        PREPARED.lock().push((*key, icon));
         drawn.send(()).ok();
     }
 }
@@ -396,7 +395,7 @@ impl State {
             .asked
             .iter()
             .filter(|(key, _)| self.busy.get(key) != Some(&true))
-            .map(|(key, stamp)| (*key, *stamp))
+            .map(|(&key, &stamp)| (key, stamp))
             .collect();
         let job = match shown.is_empty() {
             false => {
@@ -482,7 +481,7 @@ impl State {
     }
 
     fn sync_kept(&mut self) {
-        let Ok(mut kept) = KEPT.try_lock() else {
+        let Some(mut kept) = KEPT.try_lock() else {
             return;
         };
         if std::mem::take(&mut self.kept_cleared) {
@@ -548,8 +547,8 @@ impl State {
 
 impl Ahead {
     fn follow(&mut self, folder: &'static str, lines: &Arc<Vec<Line>>, size: f32) {
-        let id = Arc::as_ptr(lines) as usize;
-        if id == self.lines && size.to_bits() == self.size {
+        let (id, size) = (Arc::as_ptr(lines) as usize, size.to_bits());
+        if id == self.lines && size == self.size {
             return;
         }
         if folder != self.folder {
@@ -557,11 +556,11 @@ impl Ahead {
             self.center = 0;
         }
         self.lines = id;
-        self.size = size.to_bits();
+        self.size = size;
         self.keys.clear();
         self.at.clear();
         for kind in lines.iter().filter_map(|line| line.row.artwork) {
-            let key = (kind, size.to_bits());
+            let key = (kind, size);
             if !self.at.contains_key(&key) {
                 self.at.insert(key, self.keys.len());
                 self.keys.push(key);

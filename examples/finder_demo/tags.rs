@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock};
 
 use block2::RcBlock;
 use finder_fs::tags::Tag;
@@ -14,6 +14,7 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSBezierPath, NSColor, NSColorSpace, NSImage};
 use objc2_core_foundation::CGFloat;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+use parking_lot::{Mutex, RwLock};
 
 use crate::app::FinderDemo;
 use crate::prefs;
@@ -39,11 +40,11 @@ static FAVOURITES: LazyLock<RwLock<Arc<[Tag]>>> =
 static LISTED: LazyLock<RwLock<Arc<[Tag]>>> = LazyLock::new(|| RwLock::new(listed().into()));
 
 pub(crate) fn tags() -> Arc<[Tag]> {
-    FAVOURITES.read().unwrap().clone()
+    FAVOURITES.read().clone()
 }
 
 pub(crate) fn all() -> Arc<[Tag]> {
-    LISTED.read().unwrap().clone()
+    LISTED.read().clone()
 }
 
 fn listed() -> Vec<Tag> {
@@ -83,8 +84,8 @@ fn favourites(listed: &[Tag]) -> Vec<Tag> {
 
 fn reread_lists() {
     let listed = listed();
-    *FAVOURITES.write().unwrap() = favourites(&listed).into();
-    *LISTED.write().unwrap() = listed.into();
+    *FAVOURITES.write() = favourites(&listed).into();
+    *LISTED.write() = listed.into();
 }
 
 pub(crate) fn set_order(names: &[impl AsRef<str>]) {
@@ -340,16 +341,6 @@ pub(crate) fn held_tags(path: &Path) -> Vec<Tag> {
     tags
 }
 
-fn read_row_tags(path: &str) -> Vec<RowTag> {
-    held_tags(Path::new(path))
-        .into_iter()
-        .map(|tag| RowTag {
-            name: tag.name.into(),
-            color: tag.color,
-        })
-        .collect()
-}
-
 struct Held {
     tags: Vec<RowTag>,
     stale: bool,
@@ -430,18 +421,32 @@ static READER: LazyLock<Sender<String>> = LazyLock::new(|| {
     let (send, paths) = channel::<String>();
     std::thread::spawn(move || {
         for path in paths {
-            let tags = read_row_tags(&path);
-            KNOWN.lock().unwrap().insert(&path, tags);
-            LANDED.fetch_add(1, Ordering::Release);
-            crate::read::EVENTS.ring();
+            reread(&path);
+            land();
         }
     });
     send
 });
 
+fn reread(path: &str) {
+    let tags = held_tags(Path::new(path))
+        .into_iter()
+        .map(|tag| RowTag {
+            name: tag.name.into(),
+            color: tag.color,
+        })
+        .collect();
+    KNOWN.lock().insert(path, tags);
+}
+
+fn land() {
+    LANDED.fetch_add(1, Ordering::Release);
+    crate::read::EVENTS.ring();
+}
+
 /// Never reads the disk, which a stalled share would hang.
 pub(crate) fn row_tags(path: &str) -> Vec<RowTag> {
-    let mut known = KNOWN.lock().unwrap();
+    let mut known = KNOWN.lock();
     let tags = match known.get_mut(path) {
         Some(held) if !held.stale => return held.tags.clone(),
         Some(held) => {
@@ -462,7 +467,7 @@ pub(crate) fn tags_landed() -> u64 {
 }
 
 pub(crate) fn tags_changed_in(dir: &Path) {
-    KNOWN.lock().unwrap().stale(dir);
+    KNOWN.lock().stale(dir);
 }
 
 pub(crate) fn retag(
@@ -474,12 +479,9 @@ pub(crate) fn retag(
         .spawn(async move {
             write(&paths);
             for path in &paths {
-                let key = path.to_string_lossy();
-                let tags = read_row_tags(&key);
-                KNOWN.lock().unwrap().insert(&key, tags);
+                reread(&path.to_string_lossy());
             }
-            LANDED.fetch_add(1, Ordering::Release);
-            crate::read::EVENTS.ring();
+            land();
         })
         .detach();
 }
@@ -492,7 +494,7 @@ impl FinderDemo {
                 .spawn(async move {
                     finder_fs::sidebar::recolor_tag(name, color).map(|()| {
                         reread_lists();
-                        KNOWN.lock().unwrap().stale_all();
+                        KNOWN.lock().stale_all();
                     })
                 })
                 .await;

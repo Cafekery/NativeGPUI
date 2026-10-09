@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use gpui::{
-    Bounds, Context, KeyDownEvent, Keystroke, Modifiers, Pixels, SharedString, Window, prelude::*,
-};
+use gpui::{Bounds, KeyDownEvent, Keystroke, Modifiers, Pixels, SharedString, Window, prelude::*};
 use native_gpui::{
     QuickLookKey, quick_look, quick_look_close, quick_look_full_screen, quick_look_update,
     quick_look_visible,

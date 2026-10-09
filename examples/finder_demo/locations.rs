@@ -45,19 +45,15 @@ extern "C" {
 }
 
 fn sysctl(name: &CStr) -> Option<Vec<u8>> {
-    let mut size = 0;
-    let asked = unsafe { sysctlbyname(name.as_ptr(), ptr::null_mut(), &mut size, ptr::null(), 0) };
-    let mut value = vec![0; size];
-    let read = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            value.as_mut_ptr().cast(),
-            &mut size,
-            ptr::null(),
-            0,
-        )
+    let read = |value: *mut c_void, size: &mut usize| unsafe {
+        sysctlbyname(name.as_ptr(), value, size, ptr::null(), 0) == 0
     };
-    (asked == 0 && read == 0).then(|| {
+    let mut size = 0;
+    if !read(ptr::null_mut(), &mut size) {
+        return None;
+    }
+    let mut value = vec![0; size];
+    read(value.as_mut_ptr().cast(), &mut size).then(|| {
         value.truncate(size);
         value
     })
@@ -145,7 +141,6 @@ pub(crate) fn place(id: &str) -> Option<(&'static str, Option<&'static str>)> {
 }
 
 thread_local! {
-    /// Finder's Network list as sharingd last sent it, and the channel it sends the next on.
     static NETWORKED: RefCell<(Option<Receiver<Vec<Computer>>>, Vec<Computer>)> =
         const { RefCell::new((None, Vec::new())) };
 }

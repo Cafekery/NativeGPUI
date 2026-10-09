@@ -275,8 +275,7 @@ pub(crate) fn apply_names() {
 
 impl FinderDemo {
     pub(crate) fn reread_folders(&mut self, cx: &mut Context<Self>) {
-        let held: Vec<&'static str> = self.folders.held().into_iter().map(|(id, _)| id).collect();
-        for id in held {
+        for (id, _) in self.folders.held() {
             if self.folders.shown(id) {
                 self.read_folder(id, cx);
             } else {
