@@ -9,6 +9,7 @@ struct Smoke {
 
 impl Render for Smoke {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let light = if self.on { 0x30d158 } else { 0xff453a };
         native_root(
             div()
                 .size_full()
@@ -17,11 +18,7 @@ impl Render for Smoke {
                 .items_center()
                 .justify_center()
                 .gap_4()
-                .child(div().size(px(44.)).rounded_lg().bg(if self.on {
-                    rgb(0x30d158)
-                } else {
-                    rgb(0xff453a)
-                }))
+                .child(div().size(px(44.)).rounded_lg().bg(rgb(light)))
                 .child(native_switch("wifi", self.on).on_change(cx.listener(
                     |this, on: &bool, _, cx| {
                         this.on = *on;

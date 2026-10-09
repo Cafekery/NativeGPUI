@@ -7,11 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gpui::{App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, size};
+use objc2::Message;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{ClassType, msg_send};
 use objc2_app_kit::{NSSwitch, NSView};
-use objc2_foundation::NSObjectProtocol;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use native_gpui::{native_root, native_switch, tokens, window_options};
@@ -48,16 +46,13 @@ fn gpui_ns_view(window: &Window) -> Retained<NSView> {
 }
 
 fn find_switch(view: &NSView) -> Option<Retained<NSSwitch>> {
-    if view.isKindOfClass(NSSwitch::class()) {
-        let raw = (view as *const NSView).cast::<NSSwitch>().cast_mut();
-        return unsafe { Retained::retain(raw) };
+    match view.downcast_ref::<NSSwitch>() {
+        Some(switch) => Some(switch.retain()),
+        None => view.subviews().iter().find_map(|sub| find_switch(&sub)),
     }
-    let subviews = view.subviews();
-    (0..subviews.count()).find_map(|index| find_switch(&subviews.objectAtIndex(index)))
 }
 
 fn report(counters: &Counters, elapsed: f64) -> ! {
-    use std::io::Write;
     let frame = counters.frame.load(Ordering::Relaxed);
     let armed = counters.at_click_one.load(Ordering::Relaxed);
     let cleared = counters.fires.load(Ordering::Relaxed).saturating_sub(armed);
@@ -80,7 +75,6 @@ fn report(counters: &Counters, elapsed: f64) -> ! {
         "NG-DISPATCH frames={frame} t={elapsed:.2}s armed_fires={armed} \
          cleared_fires={cleared} verdict={verdict}"
     );
-    std::io::stdout().flush().ok();
     std::process::exit(code)
 }
 
@@ -107,10 +101,7 @@ impl Render for Probe {
             let root = gpui_ns_view(window);
             let content = unsafe { root.superview() }.expect("gpui's view sits in a content view");
             match find_switch(&content) {
-                Some(switch) => {
-                    let _: bool =
-                        unsafe { msg_send![&*switch, performClick: std::ptr::null::<AnyObject>()] };
-                }
+                Some(switch) => unsafe { switch.performClick(None) },
                 None => println!("NG-DISPATCH ABORT: no hosted NSSwitch in the window"),
             }
         }

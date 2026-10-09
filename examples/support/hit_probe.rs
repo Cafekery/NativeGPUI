@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -34,9 +35,9 @@ pub fn gpui_view(window: &Window) -> Retained<NSView> {
         .expect("the AppKit handle always carries a live NSView")
 }
 
-pub fn class_of(view: &NSView) -> String {
+pub fn class_of(view: &NSView) -> Cow<'static, str> {
     let obj: &AnyObject = view.as_ref();
-    obj.class().name().to_string_lossy().into_owned()
+    obj.class().name().to_string_lossy()
 }
 
 /// By ancestry, not name: AppKit's private hosting view carries the container's name in its own.
@@ -95,7 +96,7 @@ pub fn hit_rows(
         // `hitTest:` takes its point in the receiver's superview space.
         let hit: *mut NSView = unsafe { objc2::msg_send![gpui, hitTest: at] };
         let name = if hit.is_null() {
-            "nil".to_string()
+            "nil".into()
         } else {
             class_of(unsafe { &*hit })
         };
@@ -104,14 +105,13 @@ pub fn hit_rows(
         } else {
             within(hit, want)
         };
-        let verdict = match (ok, exact) {
-            (true, _) => "ok".to_string(),
-            (false, true) => format!("WRONG: wanted exactly {}", class_of(want)),
-            (false, false) => format!("WRONG: wanted {}", class_of(want)),
-        };
-        if !ok {
+        let verdict = if ok {
+            "ok".into()
+        } else {
             FAILED.store(true, Ordering::Relaxed);
-        }
+            let exactly = if exact { "exactly " } else { "" };
+            Cow::Owned(format!("WRONG: wanted {exactly}{}", class_of(want)))
+        };
         println!(
             "{what:<row_w$} {:<16} {name:<hit_w$} {verdict}",
             format!("{:.0},{:.0}", at.x, at.y),

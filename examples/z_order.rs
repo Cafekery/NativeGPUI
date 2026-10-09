@@ -2,7 +2,7 @@
 //! Exits 0 pass, 1 fail.
 
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gpui::{
@@ -53,7 +53,6 @@ const SCRIPT: [Phase; 5] = [
 ];
 
 struct Reading {
-    phase: usize,
     stack: Vec<u64>,
     chain: Vec<u64>,
 }
@@ -61,7 +60,6 @@ struct Reading {
 struct Probe {
     phase: usize,
     readings: Vec<Reading>,
-    done: bool,
 }
 
 impl Render for Probe {
@@ -69,7 +67,6 @@ impl Render for Probe {
         let host = NativeHost::get(window, cx);
         if self.phase > 0 {
             self.readings.push(Reading {
-                phase: self.phase - 1,
                 stack: host.stacking(Layer::Above),
                 chain: host.key_loop(),
             });
@@ -103,15 +100,14 @@ impl Render for Probe {
         self.phase += 1;
         if self.phase > SCRIPT.len() {
             report(&self.readings);
-            self.done = true;
         }
 
         native_root(div().size_full())
     }
 }
 
-static FAILED: AtomicU8 = AtomicU8::new(0);
-static REPORTED: AtomicU8 = AtomicU8::new(0);
+static FAILED: AtomicBool = AtomicBool::new(false);
+static REPORTED: AtomicBool = AtomicBool::new(false);
 
 fn keys(list: &[u64]) -> String {
     list.iter()
@@ -121,17 +117,16 @@ fn keys(list: &[u64]) -> String {
 }
 
 fn report(readings: &[Reading]) {
-    REPORTED.store(1, Ordering::Relaxed);
+    REPORTED.store(true, Ordering::Relaxed);
     println!(
         "{:<26} {:<16} {:<16} {:<16} VERDICT",
         "PHASE", "PAINT ORDER", "SUBVIEWS", "KEY LOOP"
     );
-    for reading in readings {
-        let phase = &SCRIPT[reading.phase];
+    for (phase, reading) in SCRIPT.iter().zip(readings) {
         let stacked = reading.stack == phase.order;
         let chained = reading.chain == phase.order;
         if !stacked || !chained {
-            FAILED.store(1, Ordering::Relaxed);
+            FAILED.store(true, Ordering::Relaxed);
         }
         println!(
             "{:<26} {:<16} {:<16} {:<16} {}",
@@ -146,10 +141,6 @@ fn report(readings: &[Reading]) {
                 (false, false) => "WRONG STACK + KEY LOOP",
             }
         );
-    }
-    if readings.len() != SCRIPT.len() {
-        println!("only {} of {} phases ran", readings.len(), SCRIPT.len());
-        FAILED.store(1, Ordering::Relaxed);
     }
 }
 
@@ -170,7 +161,6 @@ fn main() -> ExitCode {
                     cx.new(|_| Probe {
                         phase: 0,
                         readings: Vec::new(),
-                        done: false,
                     })
                 },
             )
@@ -182,17 +172,12 @@ fn main() -> ExitCode {
                 cx.background_executor()
                     .timer(Duration::from_millis(20))
                     .await;
-                let done = window
-                    .update(cx, |probe, _, cx| {
-                        cx.notify();
-                        probe.done
-                    })
-                    .unwrap_or(true);
-                if done {
+                let open = window.update(cx, |_, _, cx| cx.notify()).is_ok();
+                if !open || REPORTED.load(Ordering::Relaxed) {
                     break;
                 }
             }
-            if REPORTED.load(Ordering::Relaxed) == 0 {
+            if !REPORTED.load(Ordering::Relaxed) {
                 println!(
                     "FAIL: no phase was reported — the window painted fewer than {} times, so no \
                      paint order was ever read",
