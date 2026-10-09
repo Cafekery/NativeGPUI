@@ -37,12 +37,10 @@ use crate::palette::Palette;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
 pub(crate) const PREVIEW_W: f32 = 288.;
-
+pub(crate) const LIST_MIN_W: f32 = 316.;
+pub(crate) const INSET: f32 = 10.;
 const MIN_W: f32 = 240.;
 const MAX_W: f32 = 480.;
-pub(crate) const LIST_MIN_W: f32 = 316.;
-
-pub(crate) const INSET: f32 = 10.;
 const RESIZE_EDGE: f32 = 6.;
 const HOLD: Duration = Duration::from_millis(120);
 /// The split view takes a click within 2pt of its divider for itself.

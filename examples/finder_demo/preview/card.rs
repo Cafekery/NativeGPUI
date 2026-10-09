@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use finder_fs::meta::Meta;
 use gpui::{
     AnyElement, App, Entity, FontWeight, Hsla, MouseButton, MouseDownEvent, RenderImage,
     SharedString, div, hsla, img, prelude::*, px,
@@ -23,15 +24,13 @@ use super::stats::{CALCULATING, span};
 use super::{INSET, RESIZE_EDGE};
 use crate::app::FinderDemo;
 use crate::art::{Poster, artwork, poster_art, row_art, square};
-use crate::signal::Signal;
-use crate::thumbs::{awaited, thumb};
-use finder_fs::meta::Meta;
-
 use crate::data::{Face, Line, Row, byte_string, date_text, small_text_width, stamp, volume_at};
 use crate::menus::Act;
 use crate::palette::Palette;
 use crate::quick_actions::{QuickAct, menu_rows, offered};
+use crate::signal::Signal;
 use crate::tags::{RowTag, row_tags, tag_dot, tag_pill};
+use crate::thumbs::{awaited, thumb};
 use crate::ui::rename_field;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW};
 
@@ -70,6 +69,9 @@ const ACTION_SLOT_W: f32 = 76.;
 const ACTION_ICON_SIZE: f32 = 14.;
 const COLUMN_BOTTOM: f32 = 16.;
 const STACK_ICON: f32 = 0.62;
+const STACKS_KEPT: usize = 4;
+const ACTION_BUTTONS: usize = 2;
+const BY: &str = "\u{200a}\u{d7}\u{200a}";
 
 pub(super) const STACK_LAYERS: [(f32, f32, f32, f32); 3] = [
     (-10., 0.03, -0.025, 0.9),
@@ -113,8 +115,7 @@ pub(crate) struct Shown {
 /// Vibrant text over the pane's glass, which no `NSColor` names.
 struct Ink {
     name: Hsla,
-    heading: Hsla,
-    value: Hsla,
+    text: Hsla,
     title: Hsla,
     kind: Hsla,
     rule: Hsla,
@@ -128,8 +129,7 @@ impl Ink {
                 let white = |a| hsla(0., 0., 1., a);
                 Self {
                     name: white(0.9),
-                    heading: white(0.9),
-                    value: white(0.9),
+                    text: white(0.9),
                     title: white(0.36),
                     kind: white(0.18),
                     rule: white(0.138),
@@ -143,8 +143,7 @@ impl Ink {
                 let under = |depth: f32| hsla(0., 0., (glass - depth) / 255., 1.);
                 Self {
                     name: black(0.7),
-                    heading: under(178.5),
-                    value: under(178.5),
+                    text: under(178.5),
                     title: under(102.),
                     kind: under(51.5),
                     rule: black(0.094),
@@ -159,8 +158,7 @@ impl Ink {
         let secondary = system_color(SystemColor::SecondaryLabel);
         Self {
             name: label,
-            heading: label,
-            value: label,
+            text: label,
             title: secondary,
             kind: secondary,
             rule: system_color(SystemColor::Separator),
@@ -244,8 +242,6 @@ struct Stacks {
     making: bool,
     oldest_first: Vec<Stacked>,
 }
-
-const STACKS_KEPT: usize = 4;
 
 static STACKS: Mutex<Stacks> = Mutex::new(Stacks {
     making: false,
@@ -413,8 +409,6 @@ fn label_width(label: &'static str) -> f32 {
     })
 }
 
-const BY: &str = "\u{200a}\u{d7}\u{200a}";
-
 pub(crate) fn duration(seconds: f64) -> Option<SharedString> {
     thread_local! {
         static FORMATTER: Retained<NSDateComponentsFormatter> = {
@@ -464,8 +458,6 @@ fn kilohertz(hertz: f64) -> Option<SharedString> {
         .with(|formatter| formatter.stringFromNumber(&NSNumber::new_f64(hertz / 1000.)))
         .map(|number| format!("{number} kHz").into())
 }
-
-const ACTION_BUTTONS: usize = 2;
 
 fn action_slots(
     acts: Option<&[QuickAct]>,
@@ -518,7 +510,7 @@ impl FinderDemo {
                     false => Hero::Poster(row.clone()),
                 },
                 title: row.display.clone(),
-                subtitle: kind_line(row, self.weighed()),
+                subtitle: kind_line(row, self.fresh_stats().map(|stats| stats.bytes)),
                 rows,
                 show_more,
                 tags: row_tags(&line.key),
@@ -606,7 +598,7 @@ impl FinderDemo {
     }
 
     /// Asked before the cursor's own, which the newest-first service then makes first.
-    pub(crate) fn ask_beside_cursor(&self, side: f32) {
+    fn ask_beside_cursor(&self, side: f32) {
         let Some(cursor) = self.cursor.as_ref() else {
             return;
         };
@@ -633,10 +625,6 @@ impl FinderDemo {
         self.stats
             .as_ref()
             .filter(|stats| stats.key == self.stats_key())
-    }
-
-    fn weighed(&self) -> Option<u64> {
-        self.fresh_stats().map(|stats| stats.bytes)
     }
 
     fn many_card(&self) -> Card {
@@ -711,7 +699,7 @@ fn stack_hero(
     last: &RefCell<Option<Arc<RenderImage>>>,
 ) -> AnyElement {
     let Some(first) = lines.first() else {
-        return div().w(px(content)).h(px(content)).into_any_element();
+        return div().size(px(content)).into_any_element();
     };
     let size = content * STACK_ICON;
     let images: Vec<Arc<RenderImage>> = stack_thumbs(lines, content, scale)
@@ -744,7 +732,10 @@ impl Shown {
     }
 
     fn hero(&self, last: &RefCell<Option<Arc<RenderImage>>>) -> AnyElement {
-        let content = self.content;
+        let (content, side) = (
+            self.content,
+            stack_side(self.view, self.pane_h, self.content),
+        );
         match &self.card.hero {
             Hero::Row(row) => row_art(row, HEADER_ICON, self.scale, true),
             Hero::Poster(row) => poster_art(
@@ -754,14 +745,8 @@ impl Shown {
                 self.scale,
                 Poster::Card,
             ),
-            Hero::Stack(lines) => {
-                let side = stack_side(self.view, self.pane_h, content);
-                stack_hero(lines, side, self.scale, last)
-            }
-            Hero::Blank => {
-                let side = stack_side(self.view, self.pane_h, content);
-                div().w(px(side)).h(px(side)).into_any_element()
-            }
+            Hero::Stack(lines) => stack_hero(lines, side, self.scale, last),
+            Hero::Blank => div().size(px(side)).into_any_element(),
         }
     }
 
@@ -807,7 +792,7 @@ impl Shown {
                 .line_height(px(LINE_H))
                 .text_size(body)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(ink.heading)
+                .text_color(ink.text)
         };
         let column = div().flex_none().flex().flex_col().px(px(INSET));
         let lower = div().flex_none().flex().flex_col();
@@ -912,7 +897,7 @@ impl Shown {
                             .overflow_hidden()
                             .text_ellipsis()
                             .text_right()
-                            .text_color(ink.value)
+                            .text_color(ink.text)
                             .child(value.clone()),
                     ),
             );

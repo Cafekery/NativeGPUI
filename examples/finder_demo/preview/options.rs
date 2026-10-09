@@ -406,27 +406,21 @@ pub(crate) fn close(cx: &mut App) {
 }
 
 pub(crate) fn follow(demo: &FinderDemo, window: &Window, cx: &mut Context<FinderDemo>) {
-    if OPEN.get().is_none() || !window.is_window_active() {
-        return;
-    }
-    if FOLLOWED.get() != Some(followed(demo, cx)) {
+    if is_open() && window.is_window_active() && FOLLOWED.get() != Some(followed(demo, cx)) {
         show_for(demo, cx);
     }
 }
 
 fn show_for(demo: &FinderDemo, cx: &mut Context<FinderDemo>) {
     FOLLOWED.set(Some(followed(demo, cx)));
-    let kind = subject(demo);
+    let kind = demo
+        .cursor_line()
+        .map_or(&FOLDER, |line| kind_of(&line.row));
     cx.defer(move |cx| show(kind, cx));
 }
 
 fn followed(demo: &FinderDemo, cx: &Context<FinderDemo>) -> (EntityId, u64, &'static str) {
     (cx.entity_id(), demo.selected.rev(), demo.here())
-}
-
-fn subject(demo: &FinderDemo) -> &'static Kind {
-    demo.cursor_line()
-        .map_or(&FOLDER, |line| kind_of(&line.row))
 }
 
 fn show(kind: &'static Kind, cx: &mut App) {

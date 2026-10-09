@@ -41,6 +41,7 @@ pub(crate) fn summarize<'a>(
         head: Vec::new(),
     };
     let mut weighed = HashMap::new();
+    let widen = |(lo, hi): (f64, f64), at: f64| (lo.min(at), hi.max(at));
     for line in picked.into_iter().take(STATS_CAP) {
         if stale.load(Ordering::Relaxed) {
             return None;
@@ -50,14 +51,8 @@ pub(crate) fn summarize<'a>(
         stats.folders += usize::from(row.face == Face::Folder);
         stats.bytes += total_bytes(row, &mut weighed, stale)?;
         stats.flat_bytes += row.bytes;
-        stats.created = (
-            stats.created.0.min(row.created_at),
-            stats.created.1.max(row.created_at),
-        );
-        stats.modified = (
-            stats.modified.0.min(row.modified_at),
-            stats.modified.1.max(row.modified_at),
-        );
+        stats.created = widen(stats.created, row.created_at);
+        stats.modified = widen(stats.modified, row.modified_at);
         if stats.head.len() < STACK_LAYERS.len() {
             stats.head.push(line.clone());
         }
