@@ -10,14 +10,14 @@
 //! is stored once with its char mask, and queries score unique names, not
 //! entries.
 
-use crate::walk::{KIND_DIR, Listing, NONE};
+use crate::walk::{FLAG_HARDLINK, FLAG_MOUNT, KIND_DIR, Listing, NONE};
 use memmap2::{Mmap, MmapMut};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"FSIDX007";
+const MAGIC: &[u8; 8] = b"FSIDX008";
 
 #[derive(Clone, Copy)]
 enum Sec {
@@ -28,6 +28,7 @@ enum Sec {
     Kind,
     Parent,
     Size,
+    Alloc,
     Mtime,
     DirEntry,
     DirStart,
@@ -35,10 +36,13 @@ enum Sec {
     DirEnd,
     DirPrior,
     DirParent,
+    DirBytes,
+    DirAlloc,
     NameEntsOff,
     NameEnts,
+    Big,
 }
-const NSEC: usize = 16;
+const NSEC: usize = 20;
 
 pub struct Index {
     map: Mmap,
@@ -54,8 +58,10 @@ pub struct Index {
     /// If FSEvents history from `event_id` is gone, folders changed since
     /// then are what needs relisting.
     pub synced_at: u32,
+    nbig: usize,
     off: [usize; NSEC],
     plan: std::sync::OnceLock<MemoPlan>,
+    marked: std::sync::OnceLock<Vec<u32>>,
 }
 
 /// How to fold per-dir data down the tree in parallel (see `memo_plan`).
@@ -84,11 +90,12 @@ impl Index {
     sec!(name_off, Sec::NameOff, u32, u1);
     sec!(names, Sec::Names, u8, names_len);
     // Per entry: its name id, kind (walk::KIND_* | walk::FLAG_*), dir id of
-    // its parent, size (see size_of), mtime.
+    // its parent, size and allocation (see size_of, alloc_of), mtime.
     sec!(ent_name, Sec::EntName, u32, n);
     sec!(kind, Sec::Kind, u8, n);
     sec!(parent, Sec::Parent, u32, n);
     sec!(size_raw, Sec::Size, u32, n);
+    sec!(alloc_raw, Sec::Alloc, u32, n);
     sec!(mtime, Sec::Mtime, u32, n);
     // Per dir: entry index (ascending, so parents precede children), block
     // of children, end of the whole subtree range, location prior.
@@ -98,10 +105,15 @@ impl Index {
     sec!(dir_end, Sec::DirEnd, u32, d);
     sec!(dir_prior, Sec::DirPrior, i8, d);
     sec!(dir_parent, Sec::DirParent, u32, d);
+    // Per dir: exact bytes and allocation of its whole subtree, as built.
+    sec!(dir_bytes, Sec::DirBytes, u64, d);
+    sec!(dir_alloc, Sec::DirAlloc, u64, d);
     // Per distinct name, the entries carrying it (ascending): a selective
     // query visits only these instead of every entry on disk.
     sec!(name_ents_off, Sec::NameEntsOff, u32, u1);
     sec!(name_ents, Sec::NameEnts, u32, n);
+    // Exact values too large for their 4-byte slot (see `pack`).
+    sec!(big, Sec::Big, u64, nbig);
 
     pub fn uname(&self, id: u32) -> &[u8] {
         let o = self.name_off();
@@ -113,7 +125,16 @@ impl Index {
     }
 
     pub fn size_of(&self, i: usize) -> u64 {
-        dec_size(self.size_raw()[i])
+        self.unpack(self.size_raw()[i], 1)
+    }
+
+    /// Bytes allocated on disk.
+    pub fn alloc_of(&self, i: usize) -> u64 {
+        self.unpack(self.alloc_raw()[i], ALLOC_UNIT)
+    }
+
+    fn unpack(&self, v: u32, unit: u64) -> u64 {
+        if v & BIG == 0 { v as u64 * unit } else { self.big()[(v & !BIG) as usize] }
     }
 
     pub fn dir_of(&self, entry: u32) -> Option<u32> {
@@ -158,6 +179,12 @@ impl Index {
             p.chunks.sort_by_key(|c| c.1.start);
             p
         })
+    }
+
+    /// Entries that are mount points or hard links, ascending: rare enough
+    /// that a folder's totals visit the ones inside it one by one.
+    pub fn marked(&self) -> &[u32] {
+        self.marked.get_or_init(|| (0..self.n as u32).filter(|&i| self.kind()[i as usize] & (FLAG_MOUNT | FLAG_HARDLINK) != 0).collect())
     }
 
     pub fn path(&self, i: usize, out: &mut Vec<u8>) {
@@ -223,6 +250,7 @@ impl Index {
         let mut kind = vec![0u8; n_max];
         let mut parent = vec![0u32; n_max];
         let mut size = vec![0u64; n_max];
+        let mut alloc = vec![0u64; n_max];
         let mut mtime = vec![0u32; n_max];
         let mut names = Vec::with_capacity(names_max);
         kind[0] = KIND_DIR;
@@ -240,6 +268,7 @@ impl Index {
                 names.extend_from_slice(&l.names[r.name_off as usize..][..r.name_len as usize]);
                 kind[pos] = r.kind;
                 size[pos] = r.size;
+                alloc[pos] = r.alloc;
                 mtime[pos] = r.mtime;
                 parent[pos] = e; // entry index for now, converted below
                 if let Some(&li) = by_id.get(r.child as usize).filter(|&&li| li != NONE) {
@@ -281,7 +310,9 @@ impl Index {
         drop(ids);
         let mut umask = vec![0u64; u];
         umask.par_iter_mut().enumerate().for_each(|(k, m)| *m = name_mask(&unames[uoff[k] as usize..uoff[k + 1] as usize]));
-        let enc: Vec<u32> = size[..n].iter().map(|&s| enc_size(s)).collect();
+        let mut big = Vec::new();
+        let size_raw: Vec<u32> = size[..n].iter().map(|&s| pack(s, 1, &mut big)).collect();
+        let alloc_raw: Vec<u32> = alloc[..n].iter().map(|&a| pack(a, ALLOC_UNIT, &mut big)).collect();
         // Entries grouped by name (counting sort keeps them ascending).
         let mut ne_off = vec![0u32; u + 1];
         for &id in &ent_name {
@@ -298,12 +329,17 @@ impl Index {
         }
         drop(fill);
 
-        // Subtree end: own block end, folded upward (children have larger ids).
+        // Subtree end and totals: own block, folded upward (children have
+        // larger ids).
         let dir_entry: Vec<u32> = blocks.iter().map(|b| b.0).collect();
         let mut end: Vec<u32> = blocks.iter().map(|b| b.1 + b.2).collect();
+        let own = |v: &[u64]| -> Vec<u64> { blocks.iter().map(|b| v[b.1 as usize..(b.1 + b.2) as usize].iter().sum()).collect() };
+        let (mut bytes, mut allocated) = (own(&size), own(&alloc));
         for k in (1..d).rev() {
             let p = parent[dir_entry[k] as usize] as usize;
             end[p] = end[p].max(end[k]);
+            bytes[p] += bytes[k];
+            allocated[p] += allocated[k];
         }
         let comps: Vec<&[u8]> = home.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
         let mut prior = vec![0i8; d];
@@ -328,7 +364,7 @@ impl Index {
         }
 
         // Write the blob.
-        let (off, total) = layout(&section_lens(n, d, u, unames.len()));
+        let (off, total) = layout(&section_lens(n, d, u, unames.len(), big.len()));
         let mut m = MmapMut::map_anon(total).expect("anon map");
         let mut put = |s: Sec, v: &[u8]| m[off[s as usize]..][..v.len()].copy_from_slice(v);
         put(Sec::NameMask, as_bytes(&umask));
@@ -337,7 +373,8 @@ impl Index {
         put(Sec::EntName, as_bytes(&ent_name));
         put(Sec::Kind, &kind[..n]);
         put(Sec::Parent, as_bytes(&parent[..n]));
-        put(Sec::Size, as_bytes(&enc));
+        put(Sec::Size, as_bytes(&size_raw));
+        put(Sec::Alloc, as_bytes(&alloc_raw));
         put(Sec::Mtime, as_bytes(&mtime[..n]));
         put(Sec::DirEntry, as_bytes(&dir_entry));
         put(Sec::DirStart, as_bytes(&blocks.iter().map(|b| b.1).collect::<Vec<_>>()));
@@ -345,15 +382,18 @@ impl Index {
         put(Sec::DirEnd, as_bytes(&end));
         put(Sec::DirPrior, as_bytes(&prior));
         put(Sec::DirParent, as_bytes(&dir_entry.iter().map(|&e| parent[e as usize]).collect::<Vec<_>>()));
+        put(Sec::DirBytes, as_bytes(&bytes));
+        put(Sec::DirAlloc, as_bytes(&allocated));
         put(Sec::NameEntsOff, as_bytes(&ne_off));
         put(Sec::NameEnts, as_bytes(&ne));
-        m[..HDR].copy_from_slice(&header(MAGIC, &[n as u64, d as u64, u as u64, unames.len() as u64, event_id, synced_at as u64]));
+        put(Sec::Big, as_bytes(&big));
+        m[..HDR].copy_from_slice(&header(MAGIC, &[n as u64, d as u64, u as u64, unames.len() as u64, event_id, synced_at as u64, big.len() as u64]));
         Index::from_map(m.make_read_only().unwrap()).unwrap()
     }
 
     fn from_map(map: Mmap) -> Option<Index> {
-        let [n, d, u, names_len, event_id, synced_at] = fields(&map, MAGIC)?.map(|v| v as usize);
-        let (off, total) = layout(&section_lens(n, d, u, names_len));
+        let [n, d, u, names_len, event_id, synced_at, nbig] = fields(&map, MAGIC)?.map(|v| v as usize);
+        let (off, total) = layout(&section_lens(n, d, u, names_len, nbig));
         if map.len() < total {
             return None;
         }
@@ -365,9 +405,11 @@ impl Index {
             names_len,
             event_id: event_id as u64,
             synced_at: synced_at as u32,
+            nbig,
             off,
             map,
             plan: std::sync::OnceLock::new(),
+            marked: std::sync::OnceLock::new(),
         })
     }
 
@@ -375,7 +417,10 @@ impl Index {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let tmp = path.with_extension("tmp");
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&header(MAGIC, &[self.n as u64, self.d as u64, self.u as u64, self.names_len as u64, self.event_id, self.synced_at as u64]))?;
+        f.write_all(&header(
+            MAGIC,
+            &[self.n as u64, self.d as u64, self.u as u64, self.names_len as u64, self.event_id, self.synced_at as u64, self.nbig as u64],
+        ))?;
         f.write_all(&self.map[HDR..])?;
         f.sync_data()?;
         std::fs::rename(tmp, path)
@@ -384,9 +429,9 @@ impl Index {
     /// The event id a saved index is current as of, from its header alone.
     pub fn saved_event_id(path: &Path) -> Option<u64> {
         use std::io::Read;
-        let mut h = [0u8; 56];
+        let mut h = [0u8; 64];
         std::fs::File::open(path).ok()?.read_exact(&mut h).ok()?;
-        fields::<6>(&h, MAGIC).map(|f| f[4])
+        fields::<7>(&h, MAGIC).map(|f| f[4])
     }
 
     pub fn load(path: &Path) -> Option<Index> {
@@ -446,17 +491,27 @@ pub(crate) fn as_bytes<T: Copy>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-fn section_lens(n: usize, d: usize, u: usize, names_len: usize) -> [usize; NSEC] {
-    [u * 8, (u + 1) * 4, names_len, n * 4, n, n * 4, n * 4, n * 4, d * 4, d * 4, d * 4, d * 4, d, d * 4, (u + 1) * 4, n * 4]
+#[rustfmt::skip]
+fn section_lens(n: usize, d: usize, u: usize, names_len: usize, big: usize) -> [usize; NSEC] {
+    [
+        u * 8, (u + 1) * 4, names_len, n * 4, n, n * 4, n * 4, n * 4, n * 4,
+        d * 4, d * 4, d * 4, d * 4, d, d * 4, d * 8, d * 8,
+        (u + 1) * 4, n * 4, big * 8,
+    ]
 }
 
-/// Sizes in 4 bytes: exact below 2 GiB, 2 MiB granularity above.
-pub fn enc_size(s: u64) -> u32 {
-    if s < 1 << 31 { s as u32 } else { (1 << 31) | (s >> 21).min((1 << 31) - 1) as u32 }
-}
+/// Marks a 4-byte size that is an index into `big` rather than the size.
+const BIG: u32 = 1 << 31;
+const ALLOC_UNIT: u64 = 4096;
 
-pub fn dec_size(v: u32) -> u64 {
-    if v & (1 << 31) == 0 { v as u64 } else { ((v & !(1 << 31)) as u64) << 21 }
+/// A size in 4 bytes, exact: in `unit`s when it fits, else the index of the
+/// whole value appended to `big`.
+fn pack(v: u64, unit: u64, big: &mut Vec<u64>) -> u32 {
+    if v % unit == 0 && v / unit < BIG as u64 {
+        return (v / unit) as u32;
+    }
+    big.push(v);
+    BIG | (big.len() - 1) as u32
 }
 
 /// FxHash: interning 7.5M names wants a hasher cheaper than SipHash.

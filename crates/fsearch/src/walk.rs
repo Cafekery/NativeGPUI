@@ -34,6 +34,8 @@ pub const KIND_OTHER: u8 = 3;
 pub const FLAG_HIDDEN: u8 = 1 << 2;
 /// Directory that is a mount point we did not descend into.
 pub const FLAG_MOUNT: u8 = 1 << 3;
+/// Entry flag bit: a file with more than one hard link.
+pub const FLAG_HARDLINK: u8 = 1 << 4;
 
 #[derive(Clone, Copy)]
 pub struct RawEnt {
@@ -42,6 +44,8 @@ pub struct RawEnt {
     /// kind in the low 2 bits, FLAG_* above.
     pub kind: u8,
     pub size: u64,
+    /// Bytes allocated on disk.
+    pub alloc: u64,
     pub mtime: u32,
     /// Temp id of the listing for this directory, or NONE.
     pub child: u32,
@@ -167,7 +171,7 @@ fn list_fd(fd: i32, l: &mut Listing) {
     al.commonattr =
         libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_NAME | ATTR_CMN_ERROR | libc::ATTR_CMN_OBJTYPE | libc::ATTR_CMN_MODTIME | libc::ATTR_CMN_FLAGS;
     al.dirattr = libc::ATTR_DIR_MOUNTSTATUS;
-    al.fileattr = libc::ATTR_FILE_DATALENGTH;
+    al.fileattr = libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_ALLOCSIZE | libc::ATTR_FILE_DATALENGTH;
     BUF.with_borrow_mut(|buf| {
         loop {
             let n = unsafe { libc::getattrlistbulk(fd, &mut al as *mut _ as *mut libc::c_void, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
@@ -227,13 +231,23 @@ fn parse_entry(b: &[u8], l: &mut Listing) {
         }
         f += 4;
     }
-    let mut size = 0u64;
+    let (mut size, mut alloc) = (0u64, 0u64);
+    if fileattr & libc::ATTR_FILE_LINKCOUNT != 0 {
+        if rd32(b, f) > 1 {
+            kind |= FLAG_HARDLINK;
+        }
+        f += 4;
+    }
+    if fileattr & libc::ATTR_FILE_ALLOCSIZE != 0 {
+        alloc = rd64(b, f);
+        f += 8;
+    }
     if fileattr & libc::ATTR_FILE_DATALENGTH != 0 {
         size = rd64(b, f);
     }
     if name.is_empty() || name.len() > u16::MAX as usize {
         return;
     }
-    l.ents.push(RawEnt { name_off: l.names.len() as u32, name_len: name.len() as u16, kind, size, mtime, child: NONE });
+    l.ents.push(RawEnt { name_off: l.names.len() as u32, name_len: name.len() as u16, kind, size, alloc, mtime, child: NONE });
     l.names.extend_from_slice(name);
 }

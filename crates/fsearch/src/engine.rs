@@ -5,7 +5,7 @@
 use crate::content::{self, Content, Grep, GrepResult};
 use crate::fsevents::{self, HISTORY_DONE, KERNEL_DROPPED, MUST_SCAN_SUBDIRS, USER_DROPPED};
 use crate::index::Index;
-use crate::live::{Applied, Live};
+use crate::live::{Applied, Live, Totals, to_path};
 use crate::query::{Query, Searcher};
 use crate::walk;
 use std::collections::HashMap;
@@ -292,6 +292,64 @@ impl Engine {
     pub fn save(&self) {
         self.s.save_requested.store(true, Ordering::Relaxed);
         let _ = self.s.wake.send(Vec::new());
+    }
+
+    /// What the folder at `path` holds, as of now. `None` until the index is
+    /// loaded, or if it doesn't list `path` as a folder.
+    pub fn totals(&self, path: &Path) -> Option<Totals> {
+        self.s.live.read().unwrap().as_ref()?.totals(path.as_os_str().as_bytes())
+    }
+
+    /// The totals of each folder directly in `dir`.
+    pub fn folder_totals(&self, dir: &Path) -> Option<Vec<(PathBuf, Totals)>> {
+        let found = self.s.live.read().unwrap().as_ref()?.folder_totals(dir.as_os_str().as_bytes())?;
+        Some(found.into_iter().map(|(p, t)| (to_path(p), t)).collect())
+    }
+
+    /// Paths of the hard-linked entries below `path`, to count each file once.
+    pub fn hardlinks(&self, path: &Path) -> Vec<PathBuf> {
+        let g = self.s.live.read().unwrap();
+        g.as_ref().map_or_else(Vec::new, |l| l.hardlinks(path.as_os_str().as_bytes()).into_iter().map(to_path).collect())
+    }
+
+    /// What the index holds directly in the folder `dir` (score 0).
+    pub fn children(&self, dir: &Path) -> Option<Vec<Found>> {
+        let kids = self.s.live.read().unwrap().as_ref()?.children(dir.as_os_str().as_bytes())?;
+        Some(kids.into_iter().map(|(p, kind, size, mtime)| Found { path: to_path(p), kind, size, mtime, score: 0 }).collect())
+    }
+
+    /// The index's record of one path (score 0).
+    pub fn entry(&self, path: &Path) -> Option<Found> {
+        let (kind, size, mtime) = self.s.live.read().unwrap().as_ref()?.entry(path.as_os_str().as_bytes())?;
+        Some(Found { path: path.to_path_buf(), kind, size, mtime, score: 0 })
+    }
+
+    /// One file per extension on disk, the most common first.
+    pub fn extensions(&self, limit: usize) -> Vec<PathBuf> {
+        let g = self.s.live.read().unwrap();
+        g.as_ref().map_or_else(Vec::new, |l| l.extensions(limit).into_iter().map(to_path).collect())
+    }
+
+    /// Bring folders the index lists up to date now, for a caller that
+    /// heard of a change first; their FSEvents follow and change nothing.
+    pub fn refresh(&self, dirs: &[PathBuf]) {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                no_materialize();
+                for dir in dirs.iter().map(|d| d.as_os_str().as_bytes()) {
+                    let f = {
+                        let g = self.s.live.read().unwrap();
+                        match g.as_ref() {
+                            Some(live) if live.lists(dir) => live.fetch(dir, false),
+                            _ => continue,
+                        }
+                    };
+                    if let Some(live) = self.s.live.write().unwrap().as_mut() {
+                        live.apply(f);
+                    }
+                }
+            });
+        });
     }
 }
 

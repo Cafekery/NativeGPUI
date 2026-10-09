@@ -6,14 +6,19 @@
 //! replaying history, duplicate events, and events that race a compaction
 //! are all harmless.
 
-use crate::index::{Index, enc_size};
-use crate::walk::{self, FLAG_MOUNT, KIND_DIR, Listing, NONE, RawEnt};
+use crate::index::Index;
+use crate::walk::{self, FLAG_HARDLINK, FLAG_HIDDEN, FLAG_MOUNT, KIND_DIR, Listing, NONE, RawEnt};
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy)]
 pub struct OEnt {
     pub kind: u8,
     pub size: u64,
+    /// Bytes allocated on disk.
+    pub alloc: u64,
     pub mtime: u32,
     /// `index::name_mask` of the entry's name, so a search rejects most of
     /// the overlay with one AND.
@@ -24,9 +29,9 @@ pub struct OEnt {
 
 impl OEnt {
     /// `path` may be the whole path or just the name.
-    pub fn new(path: &[u8], kind: u8, size: u64, mtime: u32) -> OEnt {
+    pub fn new(path: &[u8], kind: u8, size: u64, alloc: u64, mtime: u32) -> OEnt {
         let name = &path[path.iter().rposition(|&b| b == b'/').map_or(0, |p| p + 1)..];
-        OEnt { kind, size, mtime, mask: crate::index::name_mask(name), prior: 0 }
+        OEnt { kind, size, alloc, mtime, mask: crate::index::name_mask(name), prior: 0 }
     }
 }
 
@@ -46,6 +51,9 @@ pub struct Live {
     pub synced_at: u32,
     /// Overlay folder -> prior of its nearest base folder.
     priors: HashMap<Vec<u8>, i8>,
+    /// Base folders whose own entry (kind flags, mtime) changed since the
+    /// base was built: a folder stays in place while its contents change.
+    dirs: HashMap<u32, (u8, u32)>,
 }
 
 /// What `Live::fetch` read from disk for one folder update.
@@ -64,6 +72,24 @@ pub enum Applied {
     Rebuild,
 }
 
+/// What a folder holds, as the index has it now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    /// Logical bytes of everything below it (folders count 0).
+    pub bytes: u64,
+    /// Bytes allocated on disk for them.
+    pub allocated: u64,
+    /// Entries below it, at any depth.
+    pub items: u64,
+    /// Its children that are neither dot-named nor hidden.
+    pub visible: u64,
+    /// Entries below it with another hard link; each link counts above.
+    pub hardlinks: u64,
+    /// Folders below it the index never lists (skipped, or other volumes):
+    /// nothing inside them counts above.
+    pub unindexed: Vec<PathBuf>,
+}
+
 impl Live {
     pub fn new(base: Index) -> Live {
         base.prefault();
@@ -80,6 +106,7 @@ impl Live {
             names_cache: Default::default(),
             synced_at,
             priors: HashMap::new(),
+            dirs: HashMap::new(),
         }
     }
 
@@ -115,6 +142,25 @@ impl Live {
         if *w & (1 << (i & 63)) == 0 {
             *w |= 1 << (i & 63);
             self.dead_count += 1;
+        }
+    }
+
+    /// A base entry's kind, as it is now.
+    pub fn kind_of(&self, i: u32) -> u8 {
+        self.dirs.get(&i).map_or(self.base.kind()[i as usize], |d| d.0)
+    }
+
+    /// A base entry's mtime, as it is now.
+    pub fn mtime_of(&self, i: u32) -> u32 {
+        self.dirs.get(&i).map_or(self.base.mtime()[i as usize], |d| d.1)
+    }
+
+    /// Record a base folder's own entry as it is now.
+    fn redate(&mut self, i: u32, kind: u8, mtime: u32) {
+        if (kind, mtime) == (self.base.kind()[i as usize], self.base.mtime()[i as usize]) {
+            self.dirs.remove(&i);
+        } else {
+            self.dirs.insert(i, (kind, mtime));
         }
     }
 
@@ -177,10 +223,8 @@ impl Live {
             }
             return f;
         }
-        let Some(listing) = walk::list_one(&f.path) else {
-            f.attrs = lstat(&f.path);
-            return f;
-        };
+        f.attrs = lstat(&f.path);
+        let Some(listing) = walk::list_one(&f.path) else { return f };
         // Children that will be added as folders get their subtree scanned now.
         let cur = self.current_children(&f.path);
         for r in &listing.ents {
@@ -251,7 +295,7 @@ impl Live {
         for r in &listing.ents {
             let name = &listing.names[r.name_off as usize..][..r.name_len as usize];
             let child = join(&p, name);
-            let now = OEnt::new(name, r.kind, r.size, r.mtime);
+            let now = OEnt::new(name, r.kind, r.size, r.alloc, r.mtime);
             match cur.remove(name) {
                 None => {
                     let scan = f.scans.remove(&child);
@@ -264,7 +308,11 @@ impl Live {
                         self.kill_subtree(c as u32);
                         let scan = f.scans.remove(&child);
                         self.add_new(child, now, scan);
-                    } else if now.kind & 3 != KIND_DIR && (self.base.size_raw()[c] != enc_size(now.size) || self.base.mtime()[c] != now.mtime) {
+                    } else if now.kind & 3 == KIND_DIR {
+                        self.redate(c as u32, now.kind, now.mtime);
+                    } else if (was_kind, self.base.size_of(c), self.base.alloc_of(c), self.base.mtime()[c])
+                        != (now.kind, now.size, now.alloc, now.mtime)
+                    {
                         self.kill(c as u32);
                         self.put(child, now);
                     }
@@ -275,7 +323,7 @@ impl Live {
                         self.drop_over_subtree(&child);
                         let scan = f.scans.remove(&child);
                         self.add_new(child, now, scan);
-                    } else if (old.kind, old.size, old.mtime) != (now.kind, now.size, now.mtime) {
+                    } else if (old.kind, old.size, old.alloc, old.mtime) != (now.kind, now.size, now.alloc, now.mtime) {
                         self.put(child, now);
                     }
                 }
@@ -298,6 +346,18 @@ impl Live {
                 }
             }
         }
+        // The folder's own entry: what it holds moves its date, and FSEvents
+        // names only the folder, not its parent.
+        if let Some(a) = f.attrs {
+            match self.base_alive(&p) {
+                Some(e) => self.redate(e, (self.kind_of(e) & !FLAG_HIDDEN) | (a.kind & FLAG_HIDDEN), a.mtime),
+                None => {
+                    if let Some(o) = self.over.get_mut(&p) {
+                        o.mtime = a.mtime;
+                    }
+                }
+            }
+        }
         Applied::Done
     }
 
@@ -312,7 +372,7 @@ impl Live {
         self.trees.push(path.clone());
         let ls = scan.unwrap_or_else(|| walk::scan(&path, 4));
         for_each_path(&ls, &path, |p, r| {
-            let e = OEnt::new(&p, r.kind, r.size, r.mtime);
+            let e = OEnt::new(&p, r.kind, r.size, r.alloc, r.mtime);
             self.put(p, e);
         });
     }
@@ -362,8 +422,8 @@ impl Live {
         let mut next = 1u32;
         while let Some((bd, path, id)) = stack.pop() {
             let mut l = Listing { id, names: Vec::new(), ents: Vec::new() };
-            let mut push = |l: &mut Listing, name: &[u8], kind: u8, size: u64, mtime: u32, child_path: Option<Vec<u8>>, bdir: Option<u32>| {
-                let child = match child_path {
+            let mut push = |l: &mut Listing, name: &[u8], kind: u8, size: u64, alloc: u64, mtime: u32, cp: Option<Vec<u8>>, bdir: Option<u32>| {
+                let child = match cp {
                     Some(cp) => {
                         let c = next;
                         next += 1;
@@ -372,7 +432,7 @@ impl Live {
                     }
                     None => NONE,
                 };
-                l.ents.push(RawEnt { name_off: l.names.len() as u32, name_len: name.len() as u16, kind, size, mtime, child });
+                l.ents.push(RawEnt { name_off: l.names.len() as u32, name_len: name.len() as u16, kind, size, alloc, mtime, child });
                 l.names.extend_from_slice(name);
             };
             if let Some(d) = bd {
@@ -381,21 +441,214 @@ impl Live {
                         continue;
                     }
                     let name = self.base.name(c);
-                    let k = self.base.kind()[c];
+                    let k = self.kind_of(c as u32);
                     let sub = self.base.dir_of(c as u32);
                     let cp = sub.map(|_| join(&path, name));
-                    push(&mut l, name, k, self.base.size_of(c), self.base.mtime()[c], cp, sub);
+                    push(&mut l, name, k, self.base.size_of(c), self.base.alloc_of(c), self.mtime_of(c as u32), cp, sub);
                 }
             }
             if let Some(kids) = by_parent.get(path.as_slice()) {
                 for &(name, o) in kids {
                     let descend = o.kind & 3 == KIND_DIR && o.kind & FLAG_MOUNT == 0;
-                    push(&mut l, name, o.kind, o.size, o.mtime, descend.then(|| join(&path, name)), None);
+                    push(&mut l, name, o.kind, o.size, o.alloc, o.mtime, descend.then(|| join(&path, name)), None);
                 }
             }
             out.push(l);
         }
         out
+    }
+
+    /// A folder the index lists: Some(its base dir id), or Some(None) if
+    /// only the overlay holds it. Paths are absolute: "" would be the root.
+    fn folder(&self, p: &[u8]) -> Option<Option<u32>> {
+        if !p.starts_with(b"/") {
+            return None;
+        }
+        if let Some(e) = self.base_alive(p) {
+            return self.base.dir_of(e).map(Some);
+        }
+        let o = self.over.get(p)?;
+        (o.kind & 3 == KIND_DIR && o.kind & FLAG_MOUNT == 0 && !walk::blocked(p)).then_some(None)
+    }
+
+    /// Whether the index lists `path` as a folder.
+    pub fn lists(&self, path: &[u8]) -> bool {
+        self.folder(&normalize(path)).is_some()
+    }
+
+    /// What the folder at `path` holds, if the index lists it.
+    pub fn totals(&self, path: &[u8]) -> Option<Totals> {
+        let p = normalize(path);
+        let k = self.folder(&p)?;
+        Some(self.total(&p, k))
+    }
+
+    /// The totals of each folder directly in `dir` that the index lists.
+    pub fn folder_totals(&self, dir: &[u8]) -> Option<Vec<(Vec<u8>, Totals)>> {
+        let p = normalize(dir);
+        let k = self.folder(&p)?;
+        let mut out = Vec::new();
+        for c in k.map(|k| self.base.children(k)).into_iter().flatten() {
+            let Some(ck) = self.base.dir_of(c as u32).filter(|_| !self.is_dead(c as u32)) else { continue };
+            let cp = join(&p, self.base.name(c));
+            let t = self.total(&cp, Some(ck));
+            out.push((cp, t));
+        }
+        let (lo, hi) = subtree_bounds(&p);
+        for (cp, o) in self.over.range(lo.clone()..hi) {
+            if !cp[lo.len()..].contains(&b'/') && o.kind & 3 == KIND_DIR && o.kind & FLAG_MOUNT == 0 && !walk::blocked(cp) {
+                out.push((cp.clone(), self.total(cp, None)));
+            }
+        }
+        Some(out)
+    }
+
+    /// Base dir `k`'s totals as built, less what died since; then the
+    /// overlay below `p`.
+    fn total(&self, p: &[u8], k: Option<u32>) -> Totals {
+        let mut t = Totals::default();
+        if let Some(k) = k {
+            let (s, e) = (self.base.dir_start()[k as usize], self.base.dir_end()[k as usize]);
+            t.bytes = self.base.dir_bytes()[k as usize];
+            t.allocated = self.base.dir_alloc()[k as usize];
+            t.items = (e - s) as u64;
+            self.each_dead(s, e, |i| {
+                t.bytes -= self.base.size_of(i);
+                t.allocated -= self.base.alloc_of(i);
+                t.items -= 1;
+            });
+            t.visible = self.base.children(k).filter(|&c| !self.is_dead(c as u32) && shown(self.base.name(c), self.kind_of(c as u32))).count() as u64;
+            for &i in self.marked_in(s, e).iter().filter(|&&i| !self.is_dead(i)) {
+                let kind = self.base.kind()[i as usize];
+                t.hardlinks += (kind & FLAG_HARDLINK != 0) as u64;
+                if kind & FLAG_MOUNT != 0 {
+                    let mut b = Vec::new();
+                    self.base.path(i as usize, &mut b);
+                    t.unindexed.push(to_path(b));
+                }
+            }
+        }
+        let (lo, hi) = subtree_bounds(p);
+        for (key, o) in self.over.range(lo.clone()..hi) {
+            t.bytes += o.size;
+            t.allocated += o.alloc;
+            t.items += 1;
+            let rest = &key[lo.len()..];
+            t.visible += (!rest.contains(&b'/') && shown(rest, o.kind)) as u64;
+            t.hardlinks += (o.kind & FLAG_HARDLINK != 0) as u64;
+            if o.kind & FLAG_MOUNT != 0 {
+                t.unindexed.push(to_path(key.clone()));
+            }
+        }
+        for s in walk::SKIP.get().into_iter().flatten() {
+            if s.starts_with(&lo) && (self.base_alive(s).is_some() || self.over.contains_key(s)) {
+                t.unindexed.push(to_path(s.clone()));
+            }
+        }
+        t
+    }
+
+    /// Dead base entries in `s..e`, a bitset word at a time.
+    fn each_dead(&self, s: u32, e: u32, mut f: impl FnMut(usize)) {
+        if self.dead_count == 0 {
+            return;
+        }
+        let (s, e) = (s as usize, e as usize);
+        let mut at = s & !63;
+        while at < e {
+            let mut bits = self.dead[at >> 6];
+            if at < s {
+                bits &= !0 << (s - at);
+            }
+            if e - at < 64 {
+                bits &= (1 << (e - at)) - 1;
+            }
+            while bits != 0 {
+                f(at + bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+            at += 64;
+        }
+    }
+
+    /// Marked base entries (see `Index::marked`) in `s..e`, dead or alive.
+    fn marked_in(&self, s: u32, e: u32) -> &[u32] {
+        let m = self.base.marked();
+        &m[m.partition_point(|&i| i < s)..m.partition_point(|&i| i < e)]
+    }
+
+    /// Paths of the hard-linked entries below the folder at `path`.
+    pub fn hardlinks(&self, path: &[u8]) -> Vec<Vec<u8>> {
+        let p = normalize(path);
+        let Some(k) = self.folder(&p) else { return Vec::new() };
+        let mut out = Vec::new();
+        if let Some(k) = k {
+            let (s, e) = (self.base.dir_start()[k as usize], self.base.dir_end()[k as usize]);
+            for &i in self.marked_in(s, e) {
+                if !self.is_dead(i) && self.base.kind()[i as usize] & FLAG_HARDLINK != 0 {
+                    let mut b = Vec::new();
+                    self.base.path(i as usize, &mut b);
+                    out.push(b);
+                }
+            }
+        }
+        let (lo, hi) = subtree_bounds(&p);
+        out.extend(self.over.range(lo..hi).filter(|(_, o)| o.kind & FLAG_HARDLINK != 0).map(|(k, _)| k.clone()));
+        out
+    }
+
+    /// What the index holds directly in the folder `dir`: (path, kind, size,
+    /// mtime) each.
+    pub fn children(&self, dir: &[u8]) -> Option<Vec<(Vec<u8>, u8, u64, u32)>> {
+        let p = normalize(dir);
+        let k = self.folder(&p)?;
+        let mut out = Vec::new();
+        for c in k.map(|k| self.base.children(k)).into_iter().flatten() {
+            if !self.is_dead(c as u32) {
+                out.push((join(&p, self.base.name(c)), self.kind_of(c as u32), self.base.size_of(c), self.mtime_of(c as u32)));
+            }
+        }
+        let (lo, hi) = subtree_bounds(&p);
+        out.extend(
+            self.over.range(lo.clone()..hi).filter(|(cp, _)| !cp[lo.len()..].contains(&b'/')).map(|(cp, o)| (cp.clone(), o.kind, o.size, o.mtime)),
+        );
+        Some(out)
+    }
+
+    /// The index's record of one path: (kind, size, mtime).
+    pub fn entry(&self, path: &[u8]) -> Option<(u8, u64, u32)> {
+        let p = normalize(path);
+        if !p.starts_with(b"/") {
+            return None;
+        }
+        match self.base_alive(&p) {
+            Some(e) => Some((self.kind_of(e), self.base.size_of(e as usize), self.mtime_of(e))),
+            None => self.over.get(&p).map(|o| (o.kind, o.size, o.mtime)),
+        }
+    }
+
+    /// One file per extension in the base, the most common first.
+    pub fn extensions(&self, limit: usize) -> Vec<Vec<u8>> {
+        let (off, ents) = (self.base.name_ents_off(), self.base.name_ents());
+        let mut by_ext: HashMap<&[u8], (usize, u32)> = HashMap::new();
+        for k in 0..self.base.u {
+            let name = self.base.uname(k as u32);
+            let Some(dot) = name.iter().rposition(|&b| b == b'.').filter(|&dot| dot > 0 && (2..=13).contains(&(name.len() - dot))) else { continue };
+            let carrying = &ents[off[k] as usize..off[k + 1] as usize];
+            let Some(&i) = carrying.iter().find(|&&i| self.base.kind()[i as usize] & 3 != KIND_DIR && !self.is_dead(i)) else { continue };
+            by_ext.entry(&name[dot + 1..]).or_insert((0, i)).0 += carrying.len();
+        }
+        let mut common: Vec<(usize, u32)> = by_ext.into_values().collect();
+        common.sort_unstable_by_key(|c| std::cmp::Reverse(c.0));
+        common
+            .into_iter()
+            .take(limit)
+            .map(|(_, i)| {
+                let mut p = Vec::new();
+                self.base.path(i as usize, &mut p);
+                p
+            })
+            .collect()
     }
 }
 
@@ -449,17 +702,182 @@ fn subtree_bounds(path: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (lo, hi)
 }
 
+/// Not dot-named and not hidden: how the Finder decides what a folder shows.
+fn shown(name: &[u8], kind: u8) -> bool {
+    !name.starts_with(b".") && kind & FLAG_HIDDEN == 0
+}
+
+pub(crate) fn to_path(bytes: Vec<u8>) -> PathBuf {
+    PathBuf::from(OsString::from_vec(bytes))
+}
+
 pub fn lstat(path: &[u8]) -> Option<OEnt> {
     let c = std::ffi::CString::new(path).ok()?;
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::lstat(c.as_ptr(), &mut st) } != 0 {
         return None;
     }
-    let kind = match st.st_mode & libc::S_IFMT {
+    let mut kind = match st.st_mode & libc::S_IFMT {
         libc::S_IFREG => walk::KIND_FILE,
         libc::S_IFDIR => KIND_DIR,
         libc::S_IFLNK => walk::KIND_LINK,
         _ => walk::KIND_OTHER,
     };
-    Some(OEnt::new(path, kind, st.st_size as u64, st.st_mtime.clamp(0, u32::MAX as i64) as u32))
+    if st.st_flags & libc::UF_HIDDEN != 0 {
+        kind |= FLAG_HIDDEN;
+    }
+    if kind & 3 != KIND_DIR && st.st_nlink > 1 {
+        kind |= FLAG_HARDLINK;
+    }
+    Some(OEnt::new(path, kind, st.st_size as u64, st.st_blocks as u64 * 512, st.st_mtime.clamp(0, u32::MAX as i64) as u32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::macos::fs::MetadataExt as _;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+
+    fn fixture(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fsearch-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::canonicalize(dir).unwrap()
+    }
+
+    fn bytes(p: &Path) -> &[u8] {
+        p.as_os_str().as_bytes()
+    }
+
+    fn write(p: &Path, len: usize) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, vec![b'x'; len]).unwrap();
+    }
+
+    fn hide(p: &Path) {
+        let c = std::ffi::CString::new(bytes(p)).unwrap();
+        assert_eq!(unsafe { libc::chflags(c.as_ptr(), libc::UF_HIDDEN) }, 0);
+    }
+
+    /// The tree at `root`, under its real path: each folder above it holds
+    /// just the entry leading down.
+    fn live_of(root: &Path) -> Live {
+        let comps: Vec<&[u8]> = bytes(root).split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
+        let above = comps.len() as u32;
+        let mut ls = walk::scan(bytes(root), 2);
+        for l in &mut ls {
+            l.id += above;
+            for r in l.ents.iter_mut().filter(|r| r.child != NONE) {
+                r.child += above;
+            }
+        }
+        for (i, name) in comps.iter().enumerate() {
+            let ent = RawEnt { name_off: 0, name_len: name.len() as u16, kind: KIND_DIR, size: 0, alloc: 0, mtime: 0, child: i as u32 + 1 };
+            ls.push(Listing { id: i as u32, names: name.to_vec(), ents: vec![ent] });
+        }
+        Live::new(Index::build(ls, 0, 0, b""))
+    }
+
+    /// What lstat finds below `dir`, counted the way `Live::totals` counts.
+    fn weighed(dir: &Path, skip: &[PathBuf]) -> Totals {
+        let mut t = Totals::default();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(d) = pending.pop() {
+            for e in fs::read_dir(&d).unwrap() {
+                let path = e.unwrap().path();
+                let m = fs::symlink_metadata(&path).unwrap();
+                let name = path.file_name().unwrap().as_bytes();
+                t.items += 1;
+                t.allocated += m.blocks() * 512;
+                t.hardlinks += (m.nlink() > 1 && !m.is_dir()) as u64;
+                t.visible += (d == dir && !name.starts_with(b".") && m.st_flags() & libc::UF_HIDDEN == 0) as u64;
+                match m.is_dir() {
+                    true if skip.contains(&path) => t.unindexed.push(path),
+                    true => pending.push(path),
+                    false => t.bytes += m.len(),
+                }
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn totals_count_everything_below_a_folder_exactly() {
+        let root = fixture("totals");
+        write(&root.join("a.txt"), 100);
+        write(&root.join(".dot"), 10);
+        write(&root.join("shy.txt"), 20);
+        hide(&root.join("shy.txt"));
+        // Past what 4 bytes hold exactly; sparse, so it costs no disk.
+        let big = root.join("sub/big.bin");
+        fs::create_dir_all(big.parent().unwrap()).unwrap();
+        fs::File::create(&big).unwrap().set_len((3 << 30) + 12345).unwrap();
+        write(&root.join("sub/deep/x"), 1 << 20);
+        std::os::unix::fs::symlink("../../a.txt", root.join("sub/deep/link")).unwrap();
+        write(&root.join("linked/one"), 4097);
+        fs::hard_link(root.join("linked/one"), root.join("linked/two")).unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        let skipped = root.join("skipped");
+        write(&skipped.join("inside"), 50);
+        walk::SKIP.set(vec![bytes(&skipped).to_vec()]).unwrap();
+
+        let live = live_of(&root);
+        let skip = [skipped.clone()];
+        for dir in [&root, &root.join("sub"), &root.join("sub/deep"), &root.join("linked"), &root.join("empty")] {
+            assert_eq!(live.totals(bytes(dir)), Some(weighed(dir, &skip)), "{dir:?}");
+        }
+        let t = live.totals(bytes(&root)).unwrap();
+        assert_eq!((t.visible, t.hardlinks, t.unindexed), (5, 2, vec![skipped.clone()]));
+        assert_eq!(live.entry(bytes(&big)).map(|e| e.1), Some((3 << 30) + 12345));
+        assert_eq!(live.totals(bytes(&skipped)), None);
+        assert_eq!(live.totals(bytes(&root.join("a.txt"))), None);
+        let mut links = live.hardlinks(bytes(&root));
+        links.sort();
+        assert_eq!(links, [bytes(&root.join("linked/one")).to_vec(), bytes(&root.join("linked/two")).to_vec()]);
+        let mut folders = live.folder_totals(bytes(&root)).unwrap();
+        folders.sort_by(|a, b| a.0.cmp(&b.0));
+        let names: Vec<&[u8]> = folders.iter().map(|(p, _)| &p[bytes(&root).len() + 1..]).collect();
+        assert_eq!(names, [&b"empty"[..], b"linked", b"sub"]);
+        for (p, t) in &folders {
+            assert_eq!(Some(t), live.totals(p).as_ref());
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn totals_follow_changes_and_survive_compaction() {
+        let root = fixture("changes");
+        for i in 0..150 {
+            write(&root.join(format!("many/{i}")), i);
+        }
+        write(&root.join("keep/a"), 10);
+        write(&root.join("gone/deep/b"), 20);
+        write(&root.join("grow"), 5);
+        fs::File::create(root.join("keep/big.bin")).unwrap().set_len((5 << 30) + 1).unwrap();
+        let mut live = live_of(&root);
+        assert_eq!(live.totals(bytes(&root)), Some(weighed(&root, &[])));
+
+        for i in (0..150).step_by(7) {
+            fs::remove_file(root.join(format!("many/{i}"))).unwrap();
+        }
+        fs::remove_dir_all(root.join("gone")).unwrap();
+        write(&root.join("grow"), 5000);
+        write(&root.join("fresh/inner/c"), 300);
+        fs::hard_link(root.join("keep/a"), root.join("keep/b")).unwrap();
+        hide(&root.join("keep"));
+        for dir in [root.clone(), root.join("many"), root.join("keep")] {
+            live.apply_dir(bytes(&dir), false);
+        }
+        let check = |live: &Live| {
+            for dir in [&root, &root.join("many"), &root.join("keep"), &root.join("fresh")] {
+                assert_eq!(live.totals(bytes(dir)), Some(weighed(dir, &[])), "{dir:?}");
+            }
+        };
+        check(&live);
+        check(&Live::new(Index::build(live.to_listings(), 0, 0, b"")));
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

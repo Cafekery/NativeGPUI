@@ -924,7 +924,7 @@ impl Scan<'_> {
             return None;
         }
         if q.size != (0, u64::MAX) {
-            let sz = crate::index::dec_size(idx.size_raw()[i]);
+            let sz = idx.size_of(i);
             if sz < q.size.0 || sz > q.size.1 {
                 return None;
             }
