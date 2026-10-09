@@ -579,7 +579,6 @@ impl<'a> Job<'a> {
         counts.bytes_done.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Once halted the counts stand, so a stopping job's row never shrinks.
     fn forget(&self, task: &Task, partial: u64) {
         if self.halted() {
             return;
@@ -647,8 +646,13 @@ impl<'a> Job<'a> {
             [only] => Some(name_of(&only.source)),
             _ => None,
         };
-        let needed = self.needed();
-        refusal_message(refusal, item.as_deref(), dest, self.is_move(), needed)
+        refusal_message(
+            refusal,
+            item.as_deref(),
+            dest,
+            self.is_move(),
+            self.needed(),
+        )
     }
 
     fn fail(&self, source: &Path, dest: &Path, error: io::Error) {
@@ -907,7 +911,6 @@ impl<'a> Job<'a> {
         let again: Vec<Item> = match end {
             End::Cancelled => Vec::new(),
             End::Stopped => unfinished(),
-            // A move goes again whole, so the folders it empties go with it.
             End::Finished if self.is_move() && !failures.is_empty() => unfinished(),
             End::Finished => failures
                 .iter()

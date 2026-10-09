@@ -47,7 +47,6 @@ impl Walk<'_, '_> {
     }
 }
 
-/// Holds tasks for `PLAN_FOR`, so a total known not to fit is refused before anything is written.
 struct Outbox {
     tasks: Sender<Task>,
     held: RefCell<Option<Vec<Task>>>,
