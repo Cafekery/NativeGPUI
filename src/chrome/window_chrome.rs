@@ -2082,16 +2082,15 @@ fn place_remembered(window: &NSWindow, name: &NSString) {
 /// it was saved on has changed, as a Dock moving between displays changes it.
 fn saved_frame(name: &NSString) -> Option<NSRect> {
     let key = NSString::from_str(&format!("NSWindow Frame {name}"));
-    let saved = NSUserDefaults::standardUserDefaults().stringForKey(&key)?;
-    let numbers: Vec<f64> = (saved.to_string().split_whitespace())
-        .take(4)
-        .map(str::parse)
-        .collect::<Result<_, _>>()
-        .ok()?;
-    let [x, y, width, height] = numbers[..] else {
-        return None;
-    };
-    Some(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)))
+    let saved = NSUserDefaults::standardUserDefaults()
+        .stringForKey(&key)?
+        .to_string();
+    let mut numbers = saved.split_whitespace().map(str::parse);
+    let mut next = || numbers.next()?.ok();
+    Some(NSRect::new(
+        NSPoint::new(next()?, next()?),
+        NSSize::new(next()?, next()?),
+    ))
 }
 
 /// Saves the frame under `name` whenever the window moves, resizes or closes.
