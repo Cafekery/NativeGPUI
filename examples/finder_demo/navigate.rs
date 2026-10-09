@@ -83,8 +83,12 @@ pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn browser_windows(cx: &App) -> Vec<WindowHandle<FinderDemo>> {
-    let mut windows = cx.window_stack().unwrap_or_default();
-    for window in cx.windows() {
+    let open = cx.windows();
+    // AppKit keeps a closed window in its ordered list until it is freed, and gpui's stack still names it.
+    let mut windows: Vec<_> = (cx.window_stack().unwrap_or_default().into_iter())
+        .filter(|window| open.contains(window))
+        .collect();
+    for window in open {
         if !windows.contains(&window) {
             windows.push(window);
         }
