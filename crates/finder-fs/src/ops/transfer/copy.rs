@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd as _;
 use std::os::macos::fs::MetadataExt as _;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, lchown};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -11,8 +12,10 @@ use std::sync::mpsc::Receiver;
 use objc2_foundation::NSFileManager;
 use parking_lot::Mutex;
 
-use super::{Job, Kind, Slot, Task, What};
-use crate::ops::{Conflict, deep, exchange, free_path, name_of, staging_path, taken, trash_as};
+use super::{Gate, Job, Kind, Slot, Task, What};
+use crate::ops::{
+    Conflict, Refusal, deep, exchange, free_path, name_of, staging_path, taken, trash_as,
+};
 
 const LOCKS: u32 = libc::UF_IMMUTABLE | libc::UF_APPEND;
 const ALL: u32 = libc::COPYFILE_METADATA | libc::COPYFILE_DATA;
@@ -27,8 +30,7 @@ const KEPT: [&[u8]; 4] = [
 
 pub(super) fn work(job: &Job, queue: &Mutex<Receiver<Task>>, slot: &Slot) {
     loop {
-        let next = queue.lock().recv();
-        let Ok(task) = next else {
+        let Ok(task) = queue.lock().recv() else {
             return;
         };
         run(job, task, slot);
@@ -36,8 +38,7 @@ pub(super) fn work(job: &Job, queue: &Mutex<Receiver<Task>>, slot: &Slot) {
 }
 
 fn run(job: &Job, task: Task, slot: &Slot) {
-    let ready = task.parent.wait(job.shared);
-    if !ready || job.halted() {
+    if !task.parent.wait(job.shared) || job.halted() {
         if let What::Dir(gate) = &task.what {
             gate.settle(false, u32::MAX);
         }
@@ -65,7 +66,7 @@ fn run(job: &Job, task: Task, slot: &Slot) {
     }
 }
 
-fn make_dir(job: &Job, task: &Task, gate: &super::Gate) -> io::Result<()> {
+fn make_dir(job: &Job, task: &Task, gate: &Gate) -> io::Result<()> {
     if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&task.dest) {
         gate.settle(false, u32::MAX);
         return Err(error);
@@ -98,7 +99,6 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
             return Err(error);
         }
     };
-    slot.done.store(0, Ordering::Relaxed);
     let Some(at) = at else {
         return Ok(());
     };
@@ -149,8 +149,7 @@ fn has_kept(source: &File) -> bool {
         .any(|name| KEPT.contains(&name))
 }
 
-/// Copies into `temp` and checks that every byte arrived; returns the lock flags to set once
-/// the copy has its name, since a locked file cannot be renamed.
+/// Returns the lock flags to set once the copy has its name: a locked file cannot be renamed.
 fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Option<u32>> {
     let source = OpenOptions::new()
         .read(true)
@@ -162,23 +161,15 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
         .create_new(true)
         .mode(0o600)
         .open(temp)?;
-    let mut status = Status {
-        job,
-        slot,
-        filter: !job.volume.xattrs,
-        copied: 0,
-    };
     let carry = libc::COPYFILE_DATA | attributes(job, &source);
-    let state = State::new(&mut status)?;
-    let copied = unsafe { libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state.0, carry) };
-    let error = io::Error::last_os_error();
-    drop(state);
-    if copied != 0 {
-        return Err(match job.halted() {
+    let copied = State::new()?
+        .call(job, slot, |state| unsafe {
+            libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state, carry)
+        })
+        .map_err(|error| match job.halted() {
             true => io::Error::from_raw_os_error(libc::ECANCELED),
             false => error,
-        });
-    }
+        })?;
     let after = source.metadata()?;
     if (after.len(), after.mtime(), after.mtime_nsec())
         != (before.len(), before.mtime(), before.mtime_nsec())
@@ -187,7 +178,7 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
         return Err(because(job, &task.source, io::ErrorKind::InvalidData, why));
     }
     let written = out.metadata()?;
-    if written.len() != before.len() || status.copied != before.len() {
+    if written.len() != before.len() || copied != before.len() {
         let why = "not all of it could be written";
         return Err(because(job, &task.source, io::ErrorKind::InvalidData, why));
     }
@@ -211,7 +202,6 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
     Ok(Some(flags))
 }
 
-/// Gives `temp` its name, or for a replace swaps it with what was there and trashes that.
 fn commit(job: &Job, task: &Task, temp: &Path) -> io::Result<Option<PathBuf>> {
     if task.over {
         return replace(job, temp, &task.dest).map(|()| Some(task.dest.clone()));
@@ -246,8 +236,6 @@ fn replace(job: &Job, temp: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Never over a name taken since the walk; where the volume cannot refuse that itself, it is
-/// checked just before.
 fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     let (a, b) = (crate::c_path(from)?, crate::c_path(to)?);
     if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_EXCL) } == 0 {
@@ -281,7 +269,6 @@ fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
     Ok(())
 }
 
-/// Folders take their metadata last, once nothing more is written into them.
 pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()> {
     let open = |path: &Path| {
         OpenOptions::new()
@@ -292,15 +279,8 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
     let (from, into) = (open(source)?, open(dest)?);
     let carry = attributes(job, &from);
     if carry != 0 {
-        let mut status = Status {
-            job,
-            slot: &Slot::default(),
-            filter: !job.volume.xattrs,
-            copied: 0,
-        };
-        let state = State::new(&mut status)?;
-        crate::check(unsafe {
-            libc::fcopyfile(from.as_raw_fd(), into.as_raw_fd(), state.0, carry)
+        State::new()?.call(job, &Slot::default(), |state| unsafe {
+            libc::fcopyfile(from.as_raw_fd(), into.as_raw_fd(), state, carry)
         })?;
     }
     if lean(job) {
@@ -312,34 +292,27 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
     Ok(())
 }
 
-/// `copyfile` makes the link itself and carries its attributes through the same filter.
 fn make_link(job: &Job, source: &Path, dest: &Path) -> io::Result<()> {
     let (from, to) = (crate::c_path(source)?, crate::c_path(dest)?);
-    let mut status = Status {
-        job,
-        slot: &Slot::default(),
-        filter: !job.volume.xattrs,
-        copied: 0,
-    };
-    let state = State::new(&mut status)?;
     let flags = ALL | libc::COPYFILE_NOFOLLOW | libc::COPYFILE_EXCL;
-    crate::check(unsafe { libc::copyfile(from.as_ptr(), to.as_ptr(), state.0, flags) })
+    State::new()?.call(job, &Slot::default(), |state| unsafe {
+        libc::copyfile(from.as_ptr(), to.as_ptr(), state, flags)
+    })?;
+    Ok(())
 }
 
-/// A plain copy belongs to the group of the folder it lands in, as a new file does.
 fn regroup(file: &File, gid: u32) {
     if gid != u32::MAX {
         unsafe { libc::fchown(file.as_raw_fd(), u32::MAX, gid) };
     }
 }
 
-/// Only root may give an item away; any user may pass on a group they belong to.
 fn keep_owner(source: &Path, dest: &Path) {
     let Ok(meta) = fs::symlink_metadata(source) else {
         return;
     };
-    if std::os::unix::fs::lchown(dest, Some(meta.uid()), Some(meta.gid())).is_err() {
-        let _ = std::os::unix::fs::lchown(dest, None, Some(meta.gid()));
+    if lchown(dest, Some(meta.uid()), Some(meta.gid())).is_err() {
+        let _ = lchown(dest, None, Some(meta.gid()));
     }
 }
 
@@ -367,7 +340,7 @@ fn set_times(file: &File, times: &fs::Metadata) {
     unsafe {
         libc::fsetattrlist(
             file.as_raw_fd(),
-            (&mut wanted as *mut libc::attrlist).cast(),
+            (&raw mut wanted).cast(),
             values.as_mut_ptr().cast(),
             std::mem::size_of_val(&values),
             0,
@@ -375,43 +348,51 @@ fn set_times(file: &File, times: &fs::Metadata) {
     };
 }
 
-struct Status<'s, 'j, 'a> {
-    job: &'j Job<'a>,
+struct Status<'s, 'a> {
+    job: &'s Job<'a>,
     slot: &'s Slot,
-    filter: bool,
     copied: u64,
 }
 
 struct State(libc::copyfile_state_t);
 
 impl State {
-    fn new(status: &mut Status) -> io::Result<State> {
+    fn new() -> io::Result<State> {
         let state = unsafe { libc::copyfile_state_alloc() };
-        if state.is_null() {
-            return Err(io::Error::last_os_error());
+        match state.is_null() {
+            true => Err(io::Error::last_os_error()),
+            false => Ok(State(state)),
         }
-        let callback: extern "C" fn(
-            c_int,
-            c_int,
-            libc::copyfile_state_t,
-            *const c_char,
-            *const c_char,
-            *mut c_void,
-        ) -> c_int = status_callback;
-        let context: *mut Status = status;
+    }
+
+    fn call(
+        &self,
+        job: &Job,
+        slot: &Slot,
+        copy: impl FnOnce(libc::copyfile_state_t) -> c_int,
+    ) -> io::Result<u64> {
+        let mut status = Status {
+            job,
+            slot,
+            copied: 0,
+        };
+        let context: *mut Status = &mut status;
         unsafe {
             libc::copyfile_state_set(
-                state,
+                self.0,
                 libc::COPYFILE_STATE_STATUS_CB as u32,
-                callback as *const c_void,
+                status_callback as *const c_void,
             );
             libc::copyfile_state_set(
-                state,
+                self.0,
                 libc::COPYFILE_STATE_STATUS_CTX as u32,
                 context.cast_const().cast(),
             );
         }
-        Ok(State(state))
+        match copy(self.0) {
+            0 => Ok(status.copied),
+            _ => Err(io::Error::last_os_error()),
+        }
     }
 }
 
@@ -421,8 +402,7 @@ impl Drop for State {
     }
 }
 
-/// Runs on the copying thread for every chunk written, which is where a pause holds and a
-/// cancel lands.
+/// Runs on the copying thread for every chunk, so a pause holds and a cancel lands here.
 extern "C" fn status_callback(
     what: c_int,
     stage: c_int,
@@ -436,7 +416,7 @@ extern "C" fn status_callback(
     match (what, stage) {
         (libc::COPYFILE_COPY_DATA, libc::COPYFILE_PROGRESS) => {
             let mut copied: libc::off_t = 0;
-            let at = (&mut copied as *mut libc::off_t).cast();
+            let at = (&raw mut copied).cast();
             unsafe { libc::copyfile_state_get(state, libc::COPYFILE_STATE_COPIED as u32, at) };
             let copied = copied.max(0) as u64;
             status.job.bytes_done(copied.saturating_sub(status.copied));
@@ -448,13 +428,12 @@ extern "C" fn status_callback(
                 false => libc::COPYFILE_CONTINUE,
             }
         }
-        // Answering a failed write with CONTINUE makes copyfile try it again, forever on a full
-        // disk; an attribute that will not take is left out rather than costing the file.
+        // CONTINUE would make copyfile retry a failed write forever on a full disk.
         (libc::COPYFILE_COPY_DATA, libc::COPYFILE_ERR) => libc::COPYFILE_QUIT,
         (libc::COPYFILE_COPY_XATTR, libc::COPYFILE_ERR) => libc::COPYFILE_SKIP,
-        (libc::COPYFILE_COPY_XATTR, libc::COPYFILE_START) if status.filter => {
+        (libc::COPYFILE_COPY_XATTR, libc::COPYFILE_START) if !status.job.volume.xattrs => {
             let mut name: *const c_char = std::ptr::null();
-            let at = (&mut name as *mut *const c_char).cast();
+            let at = (&raw mut name).cast();
             unsafe { libc::copyfile_state_get(state, libc::COPYFILE_STATE_XATTRNAME as u32, at) };
             // SAFETY: copyfile hands over a NUL-terminated name for as long as the callback runs.
             let kept =
@@ -468,26 +447,24 @@ extern "C" fn status_callback(
     }
 }
 
-/// Worded the way Finder words it, naming the item rather than the call that failed; an error
-/// that is already a sentence passes through.
 pub(super) fn worded(error: io::Error, source: &Path, dest: &Path, job: &Job) -> io::Error {
     let Some(code) = error.raw_os_error() else {
         return error;
     };
     let refusal = match code {
-        libc::ENOSPC | libc::EDQUOT => job.no_space_message(dest),
-        libc::EROFS => job.read_only_message(dest),
+        libc::ENOSPC | libc::EDQUOT => job.refusal(Refusal::NoSpace, dest),
+        libc::EROFS => job.refusal(Refusal::ReadOnly, dest),
         _ => None,
     };
     if let Some(message) = refusal {
         return io::Error::new(error.kind(), message);
     }
-    let why = match code {
-        libc::EFBIG => "it's too large for the volume's format".to_string(),
-        libc::EACCES | libc::EPERM => "you don't have permission".to_string(),
-        libc::ENOENT => "it can't be found".to_string(),
-        libc::ENAMETOOLONG => "its name is too long".to_string(),
-        code => reason(code),
+    let why: Cow<str> = match code {
+        libc::EFBIG => "it's too large for the volume's format".into(),
+        libc::EACCES | libc::EPERM => "you don't have permission".into(),
+        libc::ENOENT => "it can't be found".into(),
+        libc::ENAMETOOLONG => "its name is too long".into(),
+        code => reason(code).into(),
     };
     because(job, source, error.kind(), &why)
 }
@@ -503,11 +480,11 @@ pub(super) fn because(job: &Job, source: &Path, kind: io::ErrorKind, why: &str) 
 
 pub(super) fn not_removed(error: io::Error, source: &Path) -> io::Error {
     let item = name_of(source);
-    let why = match error.raw_os_error() {
-        Some(libc::EPERM) => "it's locked".to_string(),
-        Some(libc::EACCES) => "you don't have permission".to_string(),
-        Some(code) => reason(code),
-        None => error.to_string(),
+    let why: Cow<str> = match error.raw_os_error() {
+        Some(libc::EPERM) => "it's locked".into(),
+        Some(libc::EACCES) => "you don't have permission".into(),
+        Some(code) => reason(code).into(),
+        None => error.to_string().into(),
     };
     io::Error::new(
         error.kind(),

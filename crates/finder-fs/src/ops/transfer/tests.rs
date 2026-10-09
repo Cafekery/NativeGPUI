@@ -24,7 +24,6 @@ fn write(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
 }
 
-/// A file of zeros that takes no space where it sits.
 fn sparse(path: &Path, len: u64) {
     File::create(path).unwrap().set_len(len).unwrap();
 }
@@ -37,7 +36,6 @@ fn root_user() -> bool {
     root
 }
 
-/// What a transfer leaves half-written under a name of its own.
 fn staged_in(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .map(|entries| {
@@ -50,18 +48,22 @@ fn staged_in(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn copy(items: Vec<PathBuf>, into: &Path, conflict: Conflict, on_error: OnError) -> Outcome {
-    Transfer::default().run(Request::new(Kind::Copy, items, into, conflict, on_error))
+fn request(kind: Kind, items: Vec<PathBuf>, into: &Path) -> Request {
+    Request::new(kind, items, into, Conflict::KeepBoth, OnError::Continue)
+}
+
+fn run(kind: Kind, items: Vec<PathBuf>, into: &Path) -> Outcome {
+    Transfer::default().run(request(kind, items, into))
 }
 
 /// A second volume, so a move is a copy and a delete, and a copy is no clone.
-struct RamDisk {
+pub(crate) struct RamDisk {
     device: String,
-    mount: PathBuf,
+    pub(crate) mount: PathBuf,
 }
 
 impl RamDisk {
-    fn new(mb: u64, format: &str, name: &str) -> Option<RamDisk> {
+    pub(crate) fn new(mb: u64, format: &str, name: &str) -> Option<RamDisk> {
         let out = Command::new("hdiutil")
             .args(["attach", "-nomount", &format!("ram://{}", mb * 2048)])
             .output()
@@ -71,14 +73,14 @@ impl RamDisk {
             eprintln!("skipping: no RAM disk");
             return None;
         }
-        let erased = Command::new("diskutil")
-            .args(["eraseVolume", format, name, &device])
-            .output()
-            .is_ok_and(|out| out.status.success());
         let disk = RamDisk {
             device,
             mount: PathBuf::from(format!("/Volumes/{name}")),
         };
+        let erased = Command::new("diskutil")
+            .args(["eraseVolume", format, name, &disk.device])
+            .output()
+            .is_ok_and(|out| out.status.success());
         if !erased {
             eprintln!("skipping: could not format a RAM disk as {format}");
             return None;
@@ -99,7 +101,6 @@ fn volume_name(tag: &str) -> String {
     format!("XF{}{tag}", std::process::id() % 100_000)
 }
 
-/// Runs `request` paused, and returns once the first file is part written and held there.
 fn held_mid_file(transfer: &Transfer, request: Request) -> thread::JoinHandle<Outcome> {
     transfer.pause();
     let running = transfer.clone();
@@ -129,14 +130,11 @@ fn a_copy_lands_every_item_and_counts_it() {
     fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
 
     let transfer = Transfer::default();
-    let request = Request::new(
+    let outcome = transfer.run(request(
         Kind::Copy,
         vec![folder.clone(), src.join("f.txt")],
         &dst,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
-    let outcome = transfer.run(request);
+    ));
     let landed = dst.join("Folder");
     fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -185,14 +183,10 @@ fn copying_starts_before_the_walk_ends() {
     }
 
     let transfer = Transfer::default();
-    let request = Request::new(
-        Kind::Copy,
-        vec![big.clone(), dir.join("many")],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
+    let handle = held_mid_file(
+        &transfer,
+        request(Kind::Copy, vec![big, dir.join("many")], &disk.mount),
     );
-    let handle = held_mid_file(&transfer, request);
     let early = transfer.progress();
     transfer.resume();
     let outcome = handle.join().unwrap();
@@ -228,14 +222,7 @@ fn a_cancel_leaves_no_part_written_file_and_the_source_whole() {
 
     for kind in [Kind::Copy, Kind::Move] {
         let transfer = Transfer::default();
-        let request = Request::new(
-            kind,
-            vec![big.clone()],
-            &disk.mount,
-            Conflict::KeepBoth,
-            OnError::Continue,
-        );
-        let handle = held_mid_file(&transfer, request);
+        let handle = held_mid_file(&transfer, request(kind, vec![big.clone()], &disk.mount));
         let caught = transfer.progress().bytes_done;
         transfer.cancel();
         let outcome = handle.join().unwrap();
@@ -280,14 +267,10 @@ fn a_move_removes_each_source_only_once_its_copy_is_whole() {
     sparse(&big, 64 << 20);
 
     let transfer = Transfer::default();
-    let request = Request::new(
-        Kind::Move,
-        vec![big.clone(), folder.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
+    let handle = held_mid_file(
+        &transfer,
+        request(Kind::Move, vec![big.clone(), folder.clone()], &disk.mount),
     );
-    let handle = held_mid_file(&transfer, request);
     File::options()
         .append(true)
         .open(&big)
@@ -353,13 +336,7 @@ fn a_move_keeps_a_locked_source_it_cannot_remove() {
     };
     lock("uchg");
 
-    let outcome = Transfer::default().run(Request::new(
-        Kind::Move,
-        vec![file.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    ));
+    let outcome = run(Kind::Move, vec![file.clone()], &disk.mount);
     let landed = disk.mount.join("locked.txt");
     let still_locked = crate::ops::locked(&landed);
     let _ = Command::new("chflags").arg("nouchg").arg(&landed).status();
@@ -400,12 +377,7 @@ fn a_full_volume_hidden_from_browsing_is_the_one_named() {
     let big = dir.join("big.bin");
     sparse(&big, 32 << 20);
 
-    let outcome = copy(
-        vec![big],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
+    let outcome = run(Kind::Copy, vec![big], &disk.mount);
 
     let message = outcome.failures.first().map(|f| f.error.to_string());
     let message = message.unwrap_or_default();
@@ -435,18 +407,14 @@ fn failures_are_collected_while_the_rest_lands() {
     };
     shut(0o000);
 
-    let stopped = copy(
+    let stopped = Transfer::default().run(Request::new(
+        Kind::Copy,
         vec![src.clone()],
         &dir.join("stopped"),
         Conflict::KeepBoth,
         OnError::Stop,
-    );
-    let outcome = copy(
-        vec![src.clone()],
-        &dst,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
+    ));
+    let outcome = run(Kind::Copy, vec![src.clone()], &dst);
     shut(0o700);
 
     assert_eq!(stopped.end, End::Stopped);
@@ -500,13 +468,7 @@ fn a_retried_move_takes_the_folders_it_empties() {
     write(&secret, b"secret");
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
 
-    let outcome = Transfer::default().run(Request::new(
-        Kind::Move,
-        vec![folder.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    ));
+    let outcome = run(Kind::Move, vec![folder.clone()], &disk.mount);
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
     assert!(secret.exists(), "the source of what failed went");
@@ -552,7 +514,13 @@ fn a_merge_leaves_files_that_already_match() {
         .unwrap()
         .ino();
 
-    let outcome = copy(vec![src.clone()], &dst, Conflict::Merge, OnError::Continue);
+    let outcome = Transfer::default().run(Request::new(
+        Kind::Copy,
+        vec![src],
+        &dst,
+        Conflict::Merge,
+        OnError::Continue,
+    ));
 
     assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
     let merged = dst.join("Folder");
@@ -588,12 +556,7 @@ fn a_volume_without_room_stops_before_it_fills() {
     let big = dir.join("big.bin");
     sparse(&big, 64 << 20);
 
-    let outcome = copy(
-        vec![big.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
+    let outcome = run(Kind::Copy, vec![big], &disk.mount);
 
     assert_eq!(outcome.end, End::Stopped);
     assert!(!outcome.failures.is_empty());
@@ -628,13 +591,7 @@ fn a_total_known_not_to_fit_is_refused_before_anything_moves() {
         write(path, b"view settings");
     }
 
-    let outcome = Transfer::default().run(Request::new(
-        Kind::Move,
-        vec![tree.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    ));
+    let outcome = run(Kind::Move, vec![tree.clone()], &disk.mount);
 
     assert_eq!(outcome.end, End::Stopped);
     assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
@@ -692,7 +649,7 @@ fn several_items_that_cannot_fit_are_refused_by_the_volume_not_the_first_item() 
         sparse(item, 20 << 20);
     }
 
-    let outcome = copy(items, &disk.mount, Conflict::KeepBoth, OnError::Continue);
+    let outcome = run(Kind::Copy, items, &disk.mount);
 
     assert_eq!(outcome.end, End::Stopped);
     let message = outcome.failures[0].error.to_string();
@@ -717,14 +674,7 @@ fn a_file_being_written_holds_its_room_without_stopping_the_job() {
     sparse(&big, 200 << 20);
 
     let transfer = Transfer::default();
-    let request = Request::new(
-        Kind::Copy,
-        vec![big.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
-    let handle = held_mid_file(&transfer, request);
+    let handle = held_mid_file(&transfer, request(Kind::Copy, vec![big], &disk.mount));
     thread::sleep(SPACE_EVERY + TICK * 2);
     let held = transfer.progress();
     transfer.resume();
@@ -765,7 +715,7 @@ fn a_stop_keeps_the_counts_its_row_showed() {
     let running = transfer.clone();
     let request = Request::new(
         Kind::Copy,
-        vec![folder.clone()],
+        vec![folder],
         &into,
         Conflict::KeepBoth,
         OnError::Stop,
@@ -818,12 +768,7 @@ fn a_fat_volume_gets_neither_oversized_files_nor_finder_litter() {
         assert!(ok.unwrap().success());
     }
 
-    let outcome = copy(
-        vec![folder.clone()],
-        &disk.mount,
-        Conflict::KeepBoth,
-        OnError::Continue,
-    );
+    let outcome = run(Kind::Copy, vec![folder], &disk.mount);
 
     assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
     let message = outcome.failures[0].error.to_string();
@@ -860,7 +805,7 @@ fn left(bytes: u64, items: u64, items_done: u64, counting: bool) -> Left {
 
 #[test]
 fn the_speed_settles_and_the_time_left_waits_for_the_count() {
-    let mut meter = Meter::new();
+    let mut meter = Meter::default();
     let start = Instant::now();
     let rate = 100.0 * 1024.0 * 1024.0;
     let total = 2u64 << 30;
@@ -899,7 +844,7 @@ fn the_speed_settles_and_the_time_left_waits_for_the_count() {
 
 #[test]
 fn the_wait_for_the_first_byte_does_not_read_as_a_slow_start() {
-    let mut meter = Meter::new();
+    let mut meter = Meter::default();
     let start = Instant::now();
     let rate = 100.0 * 1024.0 * 1024.0;
     for tick in 0..=8 {
@@ -918,7 +863,7 @@ fn the_wait_for_the_first_byte_does_not_read_as_a_slow_start() {
 
 #[test]
 fn many_small_files_are_timed_by_the_item() {
-    let mut meter = Meter::new();
+    let mut meter = Meter::default();
     let start = Instant::now();
     for tick in 0..=20 {
         let secs = f64::from(tick) * 0.25;

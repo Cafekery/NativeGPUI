@@ -17,10 +17,8 @@ use crate::ops::{
     staging_path, taken,
 };
 
-/// A folder past this length could hold a name that takes its path past `PATH_MAX`.
 const PATH_ROOM: usize = libc::PATH_MAX as usize - NAME_MAX - 2;
 
-/// Finder's own bookkeeping at the top of a volume, which a copy of the whole volume leaves out.
 const VOLUME_LITTER: [&[u8]; 5] = [
     b".Spotlight-V100",
     b".fseventsd",
@@ -31,23 +29,25 @@ const VOLUME_LITTER: [&[u8]; 5] = [
 
 enum Landing {
     Fresh(PathBuf),
-    /// Something is there and is replaced.
     Over(PathBuf),
-    /// A folder is there and this one merges into it.
     Into(PathBuf),
 }
 
-/// What every task queued for one top-level item shares.
 struct Walk<'j, 'a> {
     job: &'j Job<'a>,
     outbox: &'j Outbox,
     root: usize,
-    /// Without native attributes the source shows each file's `._` companion as a file of its own.
     source_xattrs: bool,
     clone: bool,
 }
 
-/// Holds the tasks back until the walk ends or `PLAN_FOR` passes, then sends them on as found.
+impl Walk<'_, '_> {
+    fn queue(&self, task: Task) {
+        self.outbox.send(self.job, task);
+    }
+}
+
+/// Holds tasks for `PLAN_FOR`, so a total known not to fit is refused before anything is written.
 struct Outbox {
     tasks: Sender<Task>,
     held: RefCell<Option<Vec<Task>>>,
@@ -69,7 +69,6 @@ impl Outbox {
         }
     }
 
-    /// Nothing held goes out once the total counted so far is known not to fit.
     fn release(&self, job: &Job) {
         let Some(held) = self.held.borrow_mut().take() else {
             return;
@@ -81,7 +80,6 @@ impl Outbox {
         }
     }
 
-    /// A paused walk stops between items, with what it holds already on its way.
     fn wait_while_paused(&self, job: &Job) {
         if *job.shared.paused.lock() {
             self.release(job);
@@ -90,7 +88,6 @@ impl Outbox {
     }
 }
 
-/// Queues every item as it is found, so the copying of a long walk starts before the counting ends.
 pub(super) fn walk(job: &Job, items: &[Item], tasks: Sender<Task>) {
     let fm = NSFileManager::defaultManager();
     let outbox = Outbox {
@@ -155,7 +152,6 @@ fn plan(
     Ok(())
 }
 
-/// Past `PATH_MAX` a folder is reached a component at a time.
 fn folder(path: &Path) -> io::Result<(u64, u32)> {
     match fs::metadata(path) {
         Ok(meta) => Ok((meta.dev(), meta.gid())),
@@ -184,7 +180,6 @@ fn resolve(job: &Job, source: &Path, dest: &Path, meta: &Metadata) -> Option<Lan
     }
 }
 
-/// `top` marks an item that lands where nothing of this transfer was before it.
 fn place(
     walk: &Walk,
     source: &Path,
@@ -208,8 +203,8 @@ fn place(
         clone: walk.clone,
     };
     if meta.is_dir() {
-        let (dest, merging) = match landing {
-            Landing::Fresh(dest) => (dest, false),
+        let dest = match landing {
+            Landing::Fresh(dest) => dest,
             Landing::Into(dest) => {
                 if is_root {
                     job.result(walk.root, &dest);
@@ -237,7 +232,7 @@ fn place(
         }
         let gate = Gate::pending();
         walk.queue(task(What::Dir(gate.clone()), dest.clone(), 0, false));
-        return children(walk, source, &dest, &gate, merging);
+        return children(walk, source, &dest, &gate, false);
     }
     let (dest, over) = match landing {
         Landing::Fresh(dest) => (dest, false),
@@ -268,13 +263,6 @@ fn place(
     walk.queue(task(What::File, dest, size, over));
 }
 
-impl Walk<'_, '_> {
-    fn queue(&self, task: Task) {
-        self.outbox.send(self.job, task);
-    }
-}
-
-/// Inside a merge a file that matches by size and date is taken as already there, as `rsync` does.
 fn identical(source: &Metadata, dest: &Path) -> bool {
     fs::symlink_metadata(dest).is_ok_and(|dest| {
         dest.is_file() && dest.len() == source.len() && dest.mtime().abs_diff(source.mtime()) <= 1
@@ -325,9 +313,8 @@ fn children(walk: &Walk, source: &Path, dest: &Path, gate: &Arc<Gate>, merging: 
     }
 }
 
-/// Junk a copy never carries: `._` companions the source volume already shows as attributes,
-/// Finder's `.DS_Store` where Finder does not keep it, and a volume's own bookkeeping.
 fn left_behind(walk: &Walk, name: &[u8], volume_root: bool) -> bool {
+    // Without native attributes a volume already shows a `._` file as its companion's attributes.
     (!walk.source_xattrs && name.starts_with(b"._"))
         || (!walk.job.volume.apple && name == b".DS_Store")
         || (volume_root && VOLUME_LITTER.contains(&name))

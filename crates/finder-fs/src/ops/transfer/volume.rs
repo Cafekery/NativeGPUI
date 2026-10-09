@@ -1,8 +1,9 @@
-use std::ffi::{CStr, OsStr, c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::io;
-use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
+
+use crate::volumes;
 
 const SYNC_VOLUME_FULLSYNC: c_int = 0x01;
 const SYNC_VOLUME_WAIT: c_int = 0x02;
@@ -11,14 +12,10 @@ unsafe extern "C" {
     fn sync_volume_np(path: *const c_char, flags: c_int) -> c_int;
 }
 
-/// What a destination volume can take, read once per transfer.
-#[derive(Clone, Debug)]
 pub(super) struct Volume {
     pub dev: u64,
     pub mount: PathBuf,
-    /// APFS or Mac OS Extended, where Finder's own `.DS_Store` files belong.
     pub apple: bool,
-    /// Without native extended attributes every attribute written lands in a `._` file.
     pub xattrs: bool,
     pub clones: bool,
     pub network: bool,
@@ -29,12 +26,13 @@ pub(super) struct Volume {
 
 impl Volume {
     pub fn of(dir: &Path) -> io::Result<Volume> {
-        // No mount point lies past `PATH_MAX`, so the nearest ancestor that resolves shares the volume.
-        let resolves = |(_, meta): &(&Path, io::Result<std::fs::Metadata>)| !matches!(meta, Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG));
+        // No mount point lies past `PATH_MAX`: the nearest ancestor that resolves is on the volume.
         let found = dir
             .ancestors()
             .map(|at| (at, std::fs::metadata(at)))
-            .find(resolves);
+            .find(|(_, meta)| {
+                !matches!(meta, Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG))
+            });
         let Some((dir, meta)) = found else {
             return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
         };
@@ -42,14 +40,12 @@ impl Volume {
         let path = crate::c_path(dir)?;
         let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
         crate::check(unsafe { libc::statfs(path.as_ptr(), &mut stat) })?;
-        // SAFETY: the kernel NUL-terminates both names.
-        let kind = unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) };
-        let mount = unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) };
+        let kind = volumes::statfs_str(&stat.f_fstypename);
         let interfaces = interfaces(&path);
         let bits = unsafe { libc::pathconf(path.as_ptr(), libc::_PC_FILESIZEBITS) };
         Ok(Volume {
             dev,
-            mount: PathBuf::from(OsStr::from_bytes(mount.to_bytes())),
+            mount: volumes::mount_path(&stat),
             apple: matches!(kind.to_bytes(), b"apfs" | b"hfs"),
             xattrs: interfaces & libc::VOL_CAP_INT_EXTENDED_ATTR != 0,
             clones: interfaces & libc::VOL_CAP_INT_CLONE != 0,
@@ -63,17 +59,15 @@ impl Volume {
         })
     }
 
-    /// What `len` bytes take up once the volume rounds them to its allocation block.
     pub fn allocated(&self, len: u64) -> u64 {
         len.div_ceil(self.block) * self.block
     }
 
-    /// Counts purgeable space as free, as Finder does.
     pub fn available(&self) -> u64 {
-        crate::volumes::available(&self.mount)
+        volumes::available(&self.mount)
     }
 
-    /// A network volume is never synced whole: `sync_volume_np` on an SMB mount can hang for minutes.
+    /// Never a network volume: `sync_volume_np` on an SMB mount can hang for minutes.
     pub fn flush(&self) -> io::Result<()> {
         if self.network {
             return Ok(());
@@ -108,8 +102,8 @@ fn interfaces(path: &CStr) -> u32 {
     let got = unsafe {
         libc::getattrlist(
             path.as_ptr(),
-            (&mut wanted as *mut libc::attrlist).cast(),
-            (&mut reply as *mut Reply).cast(),
+            (&raw mut wanted).cast(),
+            (&raw mut reply).cast(),
             std::mem::size_of::<Reply>(),
             0,
         )
