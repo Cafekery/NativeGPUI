@@ -228,7 +228,7 @@ impl Index {
 
     pub fn visible_children(&self, dir: &Path) -> Option<usize> {
         let tree = self.read();
-        // Asked while a frame draws, so never of the disk: a share that stopped answering would stall it.
+        // Asked mid-frame, so never of the disk: a share that stopped answering would stall it.
         visible(&tree, tree.find(dir)?)
     }
 
@@ -322,8 +322,7 @@ impl Index {
         let home = home();
         let now = Instant::now();
         for dir in dirs.iter().filter(|dir| crawl::open_to_us(dir, &home)) {
-            let put_off = self.pending.lock().unwrap().put_off(dir, now);
-            if !put_off {
+            if !self.pending.lock().unwrap().put_off(dir, now) {
                 self.refresh_cooled(dir.clone(), &home);
             }
         }
