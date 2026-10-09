@@ -1,22 +1,25 @@
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, EntityId, Pixels, Subscription, Window, WindowBounds,
     WindowHandle, WindowOptions, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
-use native_gpui::{LabelAlign, native_label, native_root, titlebar_band, window_options};
+use native_gpui::{
+    LabelAlign, native_label, native_root, remember_frame, titlebar_band, window_options,
+};
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSWindowStyleMask;
 
 use crate::app::FinderDemo;
 use crate::chrome::toolbar::{system_corners, titled_height};
-use crate::frame::ns_window;
 use crate::menus::ShowProgressWindow;
 use crate::ops::jobs::{ROW_H, progress_row};
 
-const WIDTH: f32 = 399.;
+const WIDTH: f32 = 404.;
+const TICK: Duration = Duration::from_millis(100);
+const FRAME: &str = "ng.finder.progress";
 
 thread_local! {
     static OPEN: Cell<Option<WindowHandle<Progress>>> = const { Cell::new(None) };
@@ -27,36 +30,51 @@ pub(crate) fn shown() -> bool {
 }
 
 pub(crate) fn toggle(_: &ShowProgressWindow, cx: &mut App) {
-    if let Some(open) = OPEN.get() {
-        open.update(cx, |_, window, _| window.remove_window()).ok();
-        return;
+    match OPEN.get() {
+        Some(open) => {
+            open.update(cx, |_, window, _| window.remove_window()).ok();
+        }
+        None => open(true, cx),
     }
-    // Deferred: the first draw reads every Finder window, and the menu fires inside one's update.
-    cx.defer(|cx| {
-        let Some(mtm) = MainThreadMarker::new() else {
+}
+
+/// Opens for a job that runs a while, leaving the key window where it is.
+pub(crate) fn reveal(cx: &mut App) {
+    if !shown() {
+        open(false, cx);
+    }
+}
+
+fn open(focus: bool, cx: &mut App) {
+    // Deferred: the first draw reads every Finder window, and callers are inside one's update.
+    cx.defer(move |cx| {
+        let Some(mtm) = MainThreadMarker::new().filter(|_| !shown()) else {
             return;
         };
-        let rows = rows_shown(&demos(cx), cx);
+        let tall = height(rows_shown(&demos(cx), cx), mtm);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: point(px(160.), px(160.)),
-                    size: size(px(WIDTH), height(rows, mtm)),
+                    size: size(px(WIDTH), tall),
                 })),
+                focus,
+                is_resizable: false,
                 ..window_options()
             },
             |window, cx| {
-                window.set_window_title("");
+                window.set_window_title("Copy");
                 system_corners(window);
-                if let Some(ns) = ns_window(window) {
-                    ns.setStyleMask(ns.styleMask() & !NSWindowStyleMask::Closable);
-                }
+                remember_frame(window, FRAME);
+                window.resize(size(px(WIDTH), tall));
                 cx.new(|cx| {
                     cx.on_release(|_, _| OPEN.set(None)).detach();
                     Progress {
                         watched: HashSet::new(),
                         watching: Vec::new(),
-                        rows,
+                        tall,
+                        had_rows: false,
+                        ticking: false,
                     }
                 })
             },
@@ -77,19 +95,45 @@ fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
 fn rows_shown(demos: &[Entity<FinderDemo>], cx: &App) -> usize {
     demos
         .iter()
-        .map(|demo| demo.read(cx).jobs.len())
-        .sum::<usize>()
-        .max(1)
+        .map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()).count())
+        .sum()
 }
 
 fn height(rows: usize, mtm: MainThreadMarker) -> Pixels {
-    titled_height(rows as f32 * ROW_H, mtm)
+    titled_height(rows.max(1) as f32 * ROW_H, mtm)
 }
 
 struct Progress {
     watched: HashSet<EntityId>,
     watching: Vec<Subscription>,
-    rows: usize,
+    tall: Pixels,
+    /// Closes itself once its last row has gone, but not when opened with nothing in it.
+    had_rows: bool,
+    ticking: bool,
+}
+
+impl Progress {
+    /// Reads the running jobs ten times a second, and stops once none is left.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                let running = this.update(cx, |this, cx| {
+                    let running = demos(cx).into_iter().fold(false, |running, demo| {
+                        demo.update(cx, |demo, _| demo.poll_jobs()) || running
+                    });
+                    this.ticking = running;
+                    cx.notify();
+                    running
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
 }
 
 impl Render for Progress {
@@ -100,23 +144,31 @@ impl Render for Progress {
                 self.watching.push(cx.observe(demo, |_, _, cx| cx.notify()));
             }
         }
-        let rows = rows_shown(&demos, cx);
-        if let Some(mtm) = MainThreadMarker::new().filter(|_| rows != self.rows) {
-            self.rows = rows;
-            let tall = height(rows, mtm);
-            cx.defer_in(window, move |_, window, _| {
-                window.resize(size(window.bounds().size.width, tall));
-            });
+        let mut running = false;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for demo in &demos {
+            for job in demo.read(cx).jobs.iter().filter(|job| job.shown()) {
+                running |= job.running();
+                rows.push(progress_row(job, demo));
+            }
         }
-        let jobs: Vec<AnyElement> = demos
-            .iter()
-            .flat_map(|demo| {
-                demo.read(cx)
-                    .jobs
-                    .iter()
-                    .map(|job| progress_row(job, demo.clone()))
-            })
-            .collect();
+        if rows.is_empty() && self.had_rows {
+            cx.defer_in(window, |_, window, _| window.remove_window());
+        }
+        self.had_rows |= !rows.is_empty();
+        if running && !self.ticking {
+            self.tick(cx);
+        }
+        if let Some(mtm) = MainThreadMarker::new() {
+            let tall = height(rows.len(), mtm);
+            if tall != self.tall {
+                self.tall = tall;
+                cx.defer_in(window, move |_, window, _| {
+                    window.resize(size(window.bounds().size.width, tall));
+                });
+            }
+        }
+        let last = rows.len().saturating_sub(1);
         native_root(
             div()
                 .size_full()
@@ -124,7 +176,7 @@ impl Render for Progress {
                 .pt(titlebar_band(window))
                 .flex()
                 .flex_col()
-                .when(jobs.is_empty(), |body| {
+                .when(rows.is_empty(), |body| {
                     body.child(
                         div().h(px(ROW_H)).flex().items_center().child(
                             native_label("ng.finder.progress.none", "No operations in progress")
@@ -134,7 +186,19 @@ impl Render for Progress {
                         ),
                     )
                 })
-                .children(jobs),
+                .children(rows.into_iter().enumerate().map(|(at, row)| {
+                    div().relative().child(row).when(at < last, |row| {
+                        row.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(1.))
+                                .bg(system_color(SystemColor::Separator)),
+                        )
+                    })
+                })),
         )
     }
 }

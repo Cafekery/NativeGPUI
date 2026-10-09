@@ -433,10 +433,9 @@ impl FinderDemo {
             items.push(
                 ToolbarItem::symbol(JOBS_ID, "clock.arrow.circlepath", "Progress")
                     .tool_tip("See the progress of file operations")
-                    .on_click(click(&this, |this, _, cx| {
-                        this.jobs_open = !this.jobs_open;
-                        cx.notify();
-                    })),
+                    .on_click(|_, cx| {
+                        crate::progress_window::toggle(&crate::menus::ShowProgressWindow, cx)
+                    }),
             );
         }
         set_customizable_toolbar(window, cx, ToolbarStyle::Unified, &items, &CUSTOMIZATION);

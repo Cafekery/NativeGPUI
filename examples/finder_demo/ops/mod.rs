@@ -52,6 +52,11 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
             .flat_map(|restore| [&restore.item, &restore.to])
             .filter_map(|path| path.parent().map(PathBuf::from))
             .collect(),
+        Op::Retry(request) => request
+            .items()
+            .flat_map(|(item, dest)| [item, dest])
+            .filter_map(|path| path.parent().map(PathBuf::from))
+            .collect(),
         Op::Batch(ops) => ops.iter().flat_map(touched).collect(),
     }
 }

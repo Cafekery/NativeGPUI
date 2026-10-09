@@ -44,7 +44,8 @@ impl Sound {
             | Op::CopyExactly { .. }
             | Op::Duplicate(_)
             | Op::Compress(_)
-            | Op::PutBack(_) => Some(Sound::Done),
+            | Op::PutBack(_)
+            | Op::Retry(_) => Some(Sound::Done),
             Op::Batch(ops) => Sound::of(ops.first()?, undoing),
             _ => None,
         }

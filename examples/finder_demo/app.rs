@@ -168,7 +168,6 @@ pub(crate) struct FinderDemo {
     pub(crate) queue_events: Arc<Mutex<Vec<queue::Event>>>,
     pub(crate) conflict: Option<conflicts::Sheet>,
     pub(crate) jobs: Vec<jobs::JobRow>,
-    pub(crate) jobs_open: bool,
     pub(crate) weighing: HashMap<&'static str, gpui::Task<()>>,
 }
 
@@ -330,7 +329,6 @@ impl FinderDemo {
             queue_events,
             conflict: None,
             jobs: Vec::new(),
-            jobs_open: false,
             weighing: HashMap::new(),
         };
         this.set_order(this.view_sort(this.view));

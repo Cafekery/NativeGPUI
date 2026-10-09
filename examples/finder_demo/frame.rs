@@ -122,7 +122,6 @@ impl Render for FinderDemo {
             .conflict
             .is_some()
             .then(|| self.conflict_sheet(&palette, cx));
-        let jobs_popover = self.jobs_open.then(|| self.jobs_popover(cx));
         self.pump(window, cx);
         self.sync_quick_look(window);
         let root =
@@ -183,8 +182,7 @@ impl Render for FinderDemo {
                                 status_bar.map(|bar| div().flex_none().pl(metrics.left).child(bar)),
                             )
                             .children(save_sheet)
-                            .children(conflict_sheet)
-                            .children(jobs_popover),
+                            .children(conflict_sheet),
                     ),
             );
         trace_frame(self, began);
