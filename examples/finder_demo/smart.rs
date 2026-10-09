@@ -27,10 +27,9 @@ pub(crate) fn file_of(listing: &str) -> Option<&str> {
     listing.strip_prefix(PREFIX)
 }
 
-/// `field` is the search field's own clause, else its text is matched against names.
-fn raw_query(field: Option<&str>, text: &str, criteria: &[Criterion]) -> String {
+fn raw_query(field_clause: Option<&str>, text: &str, criteria: &[Criterion]) -> String {
     let text = text.trim();
-    let clauses: Vec<String> = field
+    let clauses: Vec<String> = field_clause
         .map(str::to_owned)
         .or_else(|| (!text.is_empty()).then(|| name_clause("*", text, "*")))
         .into_iter()
