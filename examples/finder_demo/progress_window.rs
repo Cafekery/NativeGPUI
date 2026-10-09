@@ -8,16 +8,16 @@ use gpui::{
 };
 use native_gpui::tokens::{self, SystemColor, system_color};
 use native_gpui::{
-    LabelAlign, native_label, native_root, remember_frame, titlebar_band, window_options,
+    LabelAlign, RawMaterial, material, native_label, native_root, remember_frame, titlebar_band,
+    window_options,
 };
 use objc2::MainThreadMarker;
 
 use crate::app::FinderDemo;
 use crate::chrome::toolbar::{system_corners, titled_height};
 use crate::menus::ShowProgressWindow;
-use crate::ops::jobs::{ROW_H, progress_row};
+use crate::ops::jobs::{HAIRLINE_Y, LAST_ROW_H, ROW_H, WIDTH, progress_row};
 
-const WIDTH: f32 = 404.;
 const TICK: Duration = Duration::from_millis(100);
 const FRAME: &str = "ng.finder.progress";
 
@@ -51,7 +51,7 @@ fn open(focus: bool, cx: &mut App) {
         let Some(mtm) = MainThreadMarker::new().filter(|_| !shown()) else {
             return;
         };
-        let tall = height(rows_shown(&demos(cx), cx), mtm);
+        let tall = height(&row_heights(&demos(cx), cx), mtm);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -92,15 +92,17 @@ fn demos(cx: &App) -> Vec<Entity<FinderDemo>> {
         .collect()
 }
 
-fn rows_shown(demos: &[Entity<FinderDemo>], cx: &App) -> usize {
+fn row_heights(demos: &[Entity<FinderDemo>], cx: &App) -> Vec<f32> {
     demos
         .iter()
-        .map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()).count())
-        .sum()
+        .flat_map(|demo| demo.read(cx).jobs.iter().filter(|job| job.shown()))
+        .map(|job| job.height())
+        .collect()
 }
 
-fn height(rows: usize, mtm: MainThreadMarker) -> Pixels {
-    titled_height(rows.max(1) as f32 * ROW_H, mtm)
+fn height(rows: &[f32], mtm: MainThreadMarker) -> Pixels {
+    let content = rows.iter().sum::<f32>() - (ROW_H - LAST_ROW_H);
+    titled_height(content.max(LAST_ROW_H), mtm)
 }
 
 struct Progress {
@@ -146,9 +148,11 @@ impl Render for Progress {
         }
         let mut running = false;
         let mut rows: Vec<AnyElement> = Vec::new();
+        let mut heights: Vec<f32> = Vec::new();
         for demo in &demos {
             for job in demo.read(cx).jobs.iter().filter(|job| job.shown()) {
                 running |= job.running();
+                heights.push(job.height());
                 rows.push(progress_row(job, demo));
             }
         }
@@ -160,7 +164,7 @@ impl Render for Progress {
             self.tick(cx);
         }
         if let Some(mtm) = MainThreadMarker::new() {
-            let tall = height(rows.len(), mtm);
+            let tall = height(&heights, mtm);
             if tall != self.tall {
                 self.tall = tall;
                 cx.defer_in(window, move |_, window, _| {
@@ -172,33 +176,48 @@ impl Render for Progress {
         native_root(
             div()
                 .size_full()
-                .bg(system_color(SystemColor::WindowBackground))
-                .pt(titlebar_band(window))
-                .flex()
-                .flex_col()
-                .when(rows.is_empty(), |body| {
-                    body.child(
-                        div().h(px(ROW_H)).flex().items_center().child(
-                            native_label("ng.finder.progress.none", "No operations in progress")
-                                .font_size(tokens::small_system_font_size())
-                                .color(SystemColor::SecondaryLabel)
-                                .align(LabelAlign::Center),
-                        ),
+                .relative()
+                .child(
+                    material(
+                        "ng.finder.progress.background",
+                        RawMaterial::WindowBackground,
                     )
-                })
-                .children(rows.into_iter().enumerate().map(|(at, row)| {
-                    div().relative().child(row).when(at < last, |row| {
-                        row.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .h(px(1.))
-                                .bg(system_color(SystemColor::Separator)),
-                        )
-                    })
-                })),
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(
+                    div()
+                        .size_full()
+                        .pt(titlebar_band(window))
+                        .flex()
+                        .flex_col()
+                        .when(rows.is_empty(), |body| {
+                            body.child(
+                                div().h(px(LAST_ROW_H)).flex().items_center().child(
+                                    native_label(
+                                        "ng.finder.progress.none",
+                                        "No operations in progress",
+                                    )
+                                    .font_size(tokens::small_system_font_size())
+                                    .color(SystemColor::SecondaryLabel)
+                                    .align(LabelAlign::Center),
+                                ),
+                            )
+                        })
+                        .children(rows.into_iter().enumerate().map(|(at, row)| {
+                            div().relative().child(row).when(at < last, |row| {
+                                row.child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(px(HAIRLINE_Y))
+                                        .h(px(1.))
+                                        .bg(system_color(SystemColor::Separator)),
+                                )
+                            })
+                        })),
+                ),
         )
     }
 }

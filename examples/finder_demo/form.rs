@@ -70,7 +70,7 @@ pub(crate) fn text_width(text: &str) -> f32 {
     text_width_at(text, BODY)
 }
 
-fn text_width_at(text: &str, size: f32) -> f32 {
+pub(crate) fn text_width_at(text: &str, size: f32) -> f32 {
     thread_local! {
         static SEEN: RefCell<HashMap<u64, f32>> = RefCell::default();
     }

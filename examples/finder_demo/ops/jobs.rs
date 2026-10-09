@@ -8,23 +8,39 @@ use finder_fs::queue::{Event, JobId, Queue};
 use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, Window, div, prelude::*, px};
 use native_gpui::tokens::{self, FileType, SystemColor};
 use native_gpui::{
-    ControlSize, native_button, native_image, native_label, native_progress, native_raster,
+    ControlSize, NativeImage, native_button, native_label, native_progress, native_raster,
     native_symbol,
 };
 
 use super::After;
 use crate::app::FinderDemo;
 use crate::data::{byte_string, count};
+use crate::form::{text_height, text_width_at};
 use crate::sound::Sound;
 
 /// A job that ends sooner never shows its progress.
 const SHOW_AFTER: Duration = Duration::from_millis(500);
-pub(crate) const ROW_H: f32 = 75.;
+pub(crate) const WIDTH: f32 = 404.;
+/// Finder's rows are 61 pt apart with a hairline 54 pt below each row's top, and its window ends
+/// 56 pt below the last one's.
+pub(crate) const ROW_H: f32 = 61.;
+pub(crate) const LAST_ROW_H: f32 = 56.;
+pub(crate) const HAIRLINE_Y: f32 = 54.;
 const ICON: f32 = 32.;
+const ICON_X: f32 = 17.;
+const ICON_Y: f32 = 8.;
+const TEXT_X: f32 = 60.;
+const BAR_X: f32 = 62.;
+const TITLE_Y: f32 = 1.5;
+const BAR_Y: f32 = 16.;
+const BAR_H: f32 = 16.;
+const REASON_Y: f32 = 18.;
+const CAPTION_Y: f32 = 33.;
+/// A circle symbol is as wide as its point size; Finder's is 11 pt.
 const GLYPH: f32 = 11.;
+const GLYPH_HIT: f32 = 20.;
 const GLYPH_GAP: f32 = 9.;
 const EDGE: f32 = 13.;
-const TEXT_X: f32 = 62.;
 const DASH: &str = " \u{2013} ";
 
 #[derive(Clone, Copy)]
@@ -89,6 +105,14 @@ impl JobRow {
 
     pub(crate) fn running(&self) -> bool {
         self.failed.is_none()
+    }
+
+    /// A failure's reason wraps, and its row grows by the lines past the first.
+    pub(crate) fn height(&self) -> f32 {
+        let extra = self.failed.as_ref().map_or(0., |failed| {
+            reason_height(&failed.reason().unwrap_or_default()) - reason_height("")
+        });
+        ROW_H + extra
     }
 
     fn carries_bytes(&self) -> bool {
@@ -502,18 +526,20 @@ fn on_queue(
     })
 }
 
+/// `right` is the circle's own inset; the click target around it is wider than the circle.
 fn glyph(
     id: (&'static str, u64),
     right: f32,
-    image: impl IntoElement,
+    image: NativeImage,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let pad = (GLYPH_HIT - GLYPH) / 2.;
     div()
         .id(id)
         .absolute()
-        .right(px(right))
-        .top(px(23.5))
-        .size(px(GLYPH))
+        .right(px(right - pad))
+        .top(px(BAR_Y + (BAR_H - GLYPH_HIT) / 2.))
+        .size(px(GLYPH_HIT))
         .flex()
         .items_center()
         .justify_center()
@@ -522,9 +548,14 @@ fn glyph(
         .into_any_element()
 }
 
+fn symbol(id: (&'static str, u64), name: &str) -> NativeImage {
+    native_symbol(id, name, GLYPH, FontWeight::NORMAL).tint(SystemColor::SecondaryLabel)
+}
+
 fn text(
     id: (&'static str, u64),
     text: &str,
+    left: f32,
     top: f32,
     right: f32,
     size: gpui::Pixels,
@@ -532,11 +563,27 @@ fn text(
 ) -> AnyElement {
     div()
         .absolute()
-        .left(px(TEXT_X))
+        .left(px(left))
         .right(px(right))
         .top(px(top))
         .child(native_label(id, text).font_size(size).color(color))
         .into_any_element()
+}
+
+fn reason_height(reason: &str) -> f32 {
+    let width = WIDTH - TEXT_X - (EDGE + GLYPH + GLYPH_GAP);
+    let small = f32::from(tokens::small_system_font_size());
+    let line = text_height("Ag", small, FontWeight::NORMAL, width);
+    text_height(reason, small, FontWeight::NORMAL, width).max(line)
+}
+
+/// The file in flight, when the title does not already name it and it is a sizable part of the
+/// job, so the caption is not a blur of small names.
+fn current_file(job: &JobRow, progress: &Progress, left: Option<u64>) -> Option<String> {
+    let current = progress.current.as_ref()?;
+    let named = left.is_none_or(|left| left <= 1) && sources(&job.op).len() == 1;
+    let sizable = current.bytes_total.saturating_mul(20) >= progress.bytes_total;
+    (progress.phase == Phase::Copying && !named && sizable).then(|| name_of(&current.path))
 }
 
 /// One job, laid out as Finder lays out its copy window's rows.
@@ -545,26 +592,24 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
     let small = tokens::small_system_font_size();
     let icon = subject(&job.op)
         .and_then(|path| tokens::file_icon(FileType::Path(&path.to_string_lossy()), px(ICON)));
-    let stop = native_image(
-        ("ng.finder.progress.stop.glyph", id),
-        "NSStopProgressFreestandingTemplate",
-    )
-    .tint(SystemColor::SecondaryLabel);
+    let stop = symbol(("ng.finder.progress.stop.glyph", id), "xmark.circle.fill");
     let row = div()
         .relative()
         .flex_none()
-        .h(px(ROW_H))
+        .h(px(job.height()))
         .when_some(icon, |row, icon| {
             row.child(
                 div()
                     .absolute()
-                    .left(px(17.))
-                    .top(px(13.))
+                    .left(px(ICON_X))
+                    .top(px(ICON_Y))
                     .child(native_raster(("ng.finder.progress.icon", id), icon)),
             )
         });
+    let beside_glyph = EDGE + GLYPH + GLYPH_GAP;
     if let Some(failed) = &job.failed {
-        let reason = failed.reason();
+        let reason = failed.reason().unwrap_or_default();
+        let reason_h = reason_height(&reason);
         let button = |key: &'static str, title: &str| {
             native_button((key, id), title.to_owned()).control_size(ControlSize::Small)
         };
@@ -572,8 +617,9 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             .child(text(
                 ("ng.finder.progress.label", id),
                 &failed_title(&job.op, failed),
-                5.,
-                EDGE + GLYPH + GLYPH_GAP,
+                TEXT_X,
+                TITLE_Y,
+                beside_glyph,
                 tokens::system_font_size(),
                 SystemColor::Label,
             ))
@@ -586,19 +632,25 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
                     cx.notify();
                 }),
             ))
-            .child(text(
-                ("ng.finder.progress.reason", id),
-                reason.as_deref().unwrap_or_default(),
-                22.,
-                EDGE + GLYPH + GLYPH_GAP,
-                small,
-                SystemColor::SecondaryLabel,
-            ))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(TEXT_X))
+                    .right(px(beside_glyph))
+                    .top(px(REASON_Y))
+                    .h(px(reason_h))
+                    .child(
+                        native_label(("ng.finder.progress.reason", id), &reason)
+                            .font_size(small)
+                            .color(SystemColor::SecondaryLabel)
+                            .wraps(true),
+                    ),
+            )
             .child(
                 div()
                     .absolute()
                     .right(px(EDGE))
-                    .top(px(44.))
+                    .top(px(CAPTION_Y + reason_h - reason_height("")))
                     .flex()
                     .gap(px(8.))
                     .child(button("ng.finder.progress.show", "Show").on_click({
@@ -624,20 +676,21 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
         .map(|progress| progress.items_total.saturating_sub(progress.items_done));
     let paused = progress.is_some_and(|progress| progress.paused);
     let pausable = job.carries_bytes();
-    let bar_right = EDGE + GLYPH + GLYPH_GAP + if pausable { GLYPH + GLYPH_GAP } else { 0. };
+    let bar_right = beside_glyph + if pausable { GLYPH + GLYPH_GAP } else { 0. };
     let bar = match fraction(progress) {
         Some(done) => native_progress(("ng.finder.progress.bar", id), done),
         None => native_progress(("ng.finder.progress.bar", id), 0.).indeterminate(true),
     };
+    let caption = caption(progress);
+    let current_x = TEXT_X + text_width_at(&caption, f32::from(small)) - 1.;
     let current = progress
-        .and_then(|progress| progress.current.as_ref())
-        .filter(|_| progress.is_some_and(|progress| progress.phase == Phase::Copying))
-        .map(|current| name_of(&current.path))
-        .unwrap_or_default();
+        .and_then(|progress| current_file(job, progress, left))
+        .filter(|_| WIDTH - EDGE - current_x >= 48.);
     row.child(text(
         ("ng.finder.progress.label", id),
         &describe(&job.op, left),
-        5.,
+        TEXT_X,
+        TITLE_Y,
         EDGE,
         tokens::system_font_size(),
         SystemColor::Label,
@@ -645,16 +698,16 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
     .child(
         div()
             .absolute()
-            .left(px(TEXT_X))
+            .left(px(BAR_X))
             .right(px(bar_right))
-            .top(px(21.))
-            .h(px(16.))
+            .top(px(BAR_Y))
+            .h(px(BAR_H))
             .flex()
             .items_center()
             .child(bar),
     )
     .when(pausable, |row| {
-        let symbol = if paused {
+        let name = if paused {
             "play.circle.fill"
         } else {
             "pause.circle.fill"
@@ -662,14 +715,8 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
         let run: fn(&Queue, JobId) = if paused { Queue::resume } else { Queue::pause };
         row.child(glyph(
             ("ng.finder.progress.pause", id),
-            EDGE + GLYPH + GLYPH_GAP,
-            native_symbol(
-                ("ng.finder.progress.pause.glyph", id),
-                symbol,
-                GLYPH + 2.,
-                FontWeight::NORMAL,
-            )
-            .tint(SystemColor::SecondaryLabel),
+            beside_glyph,
+            symbol(("ng.finder.progress.pause.glyph", id), name),
             on_queue(demo, job.id, run),
         ))
     })
@@ -681,20 +728,24 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
     ))
     .child(text(
         ("ng.finder.progress.caption", id),
-        &caption(progress),
-        38.,
+        &caption,
+        TEXT_X,
+        CAPTION_Y,
         EDGE,
         small,
         SystemColor::SecondaryLabel,
     ))
-    .child(text(
-        ("ng.finder.progress.current", id),
-        &current,
-        54.,
-        EDGE,
-        px(10.),
-        SystemColor::TertiaryLabel,
-    ))
+    .when_some(current, |row, name| {
+        row.child(text(
+            ("ng.finder.progress.current", id),
+            &format!("\u{2013} {name}"),
+            current_x,
+            CAPTION_Y,
+            EDGE,
+            small,
+            SystemColor::TertiaryLabel,
+        ))
+    })
     .into_any_element()
 }
 
