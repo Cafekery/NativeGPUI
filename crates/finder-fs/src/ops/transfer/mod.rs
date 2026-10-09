@@ -324,7 +324,9 @@ impl Transfer {
         thread::scope(|scope| {
             scope.spawn(|| {
                 plan::walk(&job, &request.items, tasks);
-                shared.status.lock().counting = false;
+                if !job.halted() {
+                    shared.status.lock().counting = false;
+                }
                 leave();
             });
             for slot in &slots {
@@ -611,8 +613,12 @@ impl<'a> Job<'a> {
         counts.bytes_done.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Takes back what a task that never landed was counted for, partial bytes included.
+    /// Takes back what a task that never landed was counted for, partial bytes included. Once the
+    /// transfer halts the counts stay as they stood, so its row does not shrink before it ends.
     fn forget(&self, task: &Task, partial: u64) {
+        if self.halted() {
+            return;
+        }
         let counts = &self.shared.counts;
         counts.items_total.fetch_sub(1, Ordering::Relaxed);
         counts.bytes_total.fetch_sub(task.size, Ordering::Relaxed);
@@ -751,8 +757,15 @@ impl<'a> Job<'a> {
     }
 
     fn tick(&self, meter: &mut Meter) {
+        if !self.halted() {
+            self.measure(meter);
+            self.check_space();
+        }
+        self.release_sources(false);
+    }
+
+    fn measure(&self, meter: &mut Meter) {
         let counts = &self.shared.counts;
-        let now = Instant::now();
         let paused = *self.shared.paused.lock();
         let bytes_done = counts.bytes_done.load(Ordering::Relaxed);
         let bytes_total = counts.bytes_total.load(Ordering::Relaxed);
@@ -765,23 +778,19 @@ impl<'a> Job<'a> {
             items_done,
             counting,
         };
-        meter.sample(now, bytes_done, paused, &left);
-        {
-            let mut status = self.shared.status.lock();
-            status.bytes_per_sec = meter.bytes_per_sec();
-            status.eta = meter.eta().filter(|_| !paused);
-        }
-        self.check_space(now);
-        self.release_sources(false);
+        meter.sample(Instant::now(), bytes_done, paused, &left);
+        let mut status = self.shared.status.lock();
+        status.bytes_per_sec = meter.bytes_per_sec();
+        status.eta = meter.eta().filter(|_| !paused);
     }
 
-    fn check_space(&self, now: Instant) {
+    fn check_space(&self) {
         {
             let mut checked = self.space_checked.lock();
-            if checked.is_some_and(|at| now.duration_since(at) < SPACE_EVERY) {
+            if checked.is_some_and(|at| at.elapsed() < SPACE_EVERY) {
                 return;
             }
-            *checked = Some(now);
+            *checked = Some(Instant::now());
         }
         // Room is read on both sides of the count: a file claims before it takes space and gives
         // its space back before its claim, so one reading alone can see a file twice.
@@ -827,7 +836,7 @@ impl<'a> Job<'a> {
     }
 
     fn finish(&self, request: &Request) -> Outcome {
-        {
+        if !self.halted() {
             let mut status = self.shared.status.lock();
             status.phase = Phase::Finishing;
             status.counting = false;

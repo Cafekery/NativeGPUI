@@ -644,6 +644,58 @@ fn a_file_being_written_holds_its_room_without_stopping_the_job() {
 }
 
 #[test]
+fn a_stop_keeps_the_counts_its_row_showed() {
+    if root_user() {
+        return;
+    }
+    let dir = temp_dir("stop-counts");
+    let folder = dir.join("Folder");
+    for i in 0..30 {
+        write(&folder.join(format!("{i}.txt")), &[1; 10_000]);
+    }
+    let secret = folder.join("secret.txt");
+    write(&secret, &[2; 10_000]);
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+    let into = dir.join("into");
+    fs::create_dir_all(&into).unwrap();
+
+    let transfer = Transfer::default();
+    transfer.pause();
+    let running = transfer.clone();
+    let request = Request::new(
+        Kind::Copy,
+        vec![folder.clone()],
+        &into,
+        Conflict::KeepBoth,
+        OnError::Stop,
+    );
+    let handle = thread::spawn(move || running.run(request));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let planned = loop {
+        let progress = transfer.progress();
+        if progress.items_total > 0 && !progress.counting {
+            break progress;
+        }
+        assert!(Instant::now() < deadline, "the walk never ended");
+        thread::sleep(Duration::from_millis(2));
+    };
+    transfer.resume();
+    let outcome = handle.join().unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    let ended = transfer.progress();
+
+    assert_eq!(outcome.end, End::Stopped);
+    assert_eq!((planned.items_total, planned.bytes_total), (32, 310_000));
+    assert_eq!(
+        (ended.items_total, ended.bytes_total),
+        (planned.items_total, planned.bytes_total),
+        "the totals shrank while the stop wound down"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_fat_volume_gets_neither_oversized_files_nor_finder_litter() {
     let Some(disk) = RamDisk::new(100, "MS-DOS FAT32", &volume_name("F")) else {
         return;

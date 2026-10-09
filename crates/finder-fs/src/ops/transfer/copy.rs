@@ -57,10 +57,10 @@ fn run(job: &Job, task: Task, slot: &Slot) {
     match done {
         Ok(()) => job.item_done(),
         Err(error) => {
-            job.forget(&task, partial);
             if !job.halted() || error.raw_os_error() != Some(libc::ECANCELED) {
                 job.fail(&task.source, &task.dest, error);
             }
+            job.forget(&task, partial);
         }
     }
 }
