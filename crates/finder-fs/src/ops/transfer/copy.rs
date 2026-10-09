@@ -86,6 +86,7 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     }
     let temp = staging_path(&task.dest);
     *slot.file.lock() = Some((task.source.clone(), task.size));
+    job.claim(task);
     let copied = copy_into(job, task, &temp, slot);
     *slot.file.lock() = None;
     let landed = copied.and_then(|relock| Ok((relock, commit(job, task, &temp)?)));
@@ -93,6 +94,7 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
         Ok(landed) => landed,
         Err(error) => {
             let _ = fs::remove_file(&temp);
+            job.unclaim(task);
             return Err(error);
         }
     };
@@ -103,7 +105,6 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     if let Some(flags) = relock {
         let _ = set_flags(&at, flags);
     }
-    job.file_done(task);
     job.landed(task, &at);
     job.release(task, &at);
     Ok(())

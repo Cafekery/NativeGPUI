@@ -635,14 +635,21 @@ impl<'a> Job<'a> {
             .fetch_add(bytes, Ordering::Relaxed);
     }
 
-    fn file_done(&self, task: &Task) {
+    /// A file takes its room as it starts: the destination may reserve all of it at once.
+    fn claim(&self, task: &Task) {
         self.allocated_done
-            .fetch_add(self.allocation(task), Ordering::Relaxed);
+            .fetch_add(self.allocation(task), Ordering::SeqCst);
     }
 
+    fn unclaim(&self, task: &Task) {
+        self.allocated_done
+            .fetch_sub(self.allocation(task), Ordering::SeqCst);
+    }
+
+    /// The room the files not yet started still need.
     fn needed(&self) -> u64 {
-        let total = self.allocated_total.load(Ordering::Relaxed);
-        total.saturating_sub(self.allocated_done.load(Ordering::Relaxed))
+        let total = self.allocated_total.load(Ordering::SeqCst);
+        total.saturating_sub(self.allocated_done.load(Ordering::SeqCst))
     }
 
     fn fail(&self, source: &Path, dest: &Path, error: io::Error) {
@@ -776,8 +783,11 @@ impl<'a> Job<'a> {
             }
             *checked = Some(now);
         }
+        // Room is read on both sides of the count: a file claims before it takes space and gives
+        // its space back before its claim, so one reading alone can see a file twice.
+        let room = self.volume.available();
         let needed = self.needed();
-        if self.halted() || needed == 0 || needed <= self.volume.available() {
+        if self.halted() || needed == 0 || needed <= room || needed <= self.volume.available() {
             return;
         }
         let record = self.record.lock();

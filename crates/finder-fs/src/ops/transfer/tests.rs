@@ -607,6 +607,43 @@ fn a_volume_without_room_stops_before_it_fills() {
 }
 
 #[test]
+fn a_file_being_written_holds_its_room_without_stopping_the_job() {
+    let Some(disk) = RamDisk::new(300, "HFS+", &volume_name("P")) else {
+        return;
+    };
+    let dir = temp_dir("held-room");
+    let big = dir.join("big.bin");
+    sparse(&big, 200 << 20);
+
+    let transfer = Transfer::default();
+    let request = Request::new(
+        Kind::Copy,
+        vec![big.clone()],
+        &disk.mount,
+        Conflict::KeepBoth,
+        OnError::Continue,
+    );
+    let handle = held_mid_file(&transfer, request);
+    thread::sleep(SPACE_EVERY + TICK * 2);
+    let held = transfer.progress();
+    transfer.resume();
+    let outcome = handle.join().unwrap();
+
+    assert!(
+        held.phase == Phase::Copying && held.failures == 0,
+        "a space check counted the file in flight twice: {:?}",
+        outcome.failures
+    );
+    assert_eq!(outcome.end, End::Finished, "{:?}", outcome.failures);
+    assert_eq!(
+        fs::metadata(disk.mount.join("big.bin")).unwrap().len(),
+        200 << 20
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_fat_volume_gets_neither_oversized_files_nor_finder_litter() {
     let Some(disk) = RamDisk::new(100, "MS-DOS FAT32", &volume_name("F")) else {
         return;
