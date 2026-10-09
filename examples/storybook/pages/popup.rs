@@ -12,8 +12,8 @@ pub struct State {
     pub picked: Option<String>,
 }
 
-const COLOURS: &[&str] = &["Graphite", "Blue", "Purple", "Green"];
-const EDITS: &[&str] = &["Cut", "Copy", "Paste"];
+const COLOURS: [&str; 4] = ["Graphite", "Blue", "Purple", "Green"];
+const EDITS: [&str; 3] = ["Cut", "Copy", "Paste"];
 
 fn tools() -> Vec<MenuEntry> {
     vec![
@@ -73,10 +73,9 @@ fn title_of(entries: &[MenuEntry], index: usize) -> String {
 }
 
 fn name_of(names: &[&str], index: usize) -> String {
-    names.get(index).map_or_else(
-        || format!("(out of range: {index})"),
-        |name| name.to_string(),
-    )
+    names
+        .get(index)
+        .map_or_else(|| format!("(out of range: {index})"), ToString::to_string)
 }
 
 fn target(label: &'static str) -> AnyElement {
@@ -109,12 +108,12 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             "pop up",
             vec![
                 native_popup("colour", colour)
-                    .items(COLOURS.iter().copied())
+                    .items(COLOURS)
                     .on_change(set(cx, |d, index| d.popup.colour = index))
                     .into_any_element(),
-                mono(format!("{colour} — {}", name_of(COLOURS, colour))),
+                mono(format!("{colour} — {}", name_of(&COLOURS, colour))),
                 native_popup("colour-off", colour)
-                    .items(COLOURS.iter().copied())
+                    .items(COLOURS)
                     .enabled(false)
                     .into_any_element(),
             ],
@@ -166,10 +165,10 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                         "ctx-corner",
                         target("Right-click: menu opens at the corner"),
                     )
-                    .items(EDITS.iter().copied())
+                    .items(EDITS)
                     .origin(MenuOrigin::ElementTopLeft)
                     .on_select(set(cx, |d, index: usize| {
-                        d.popup.picked = Some(format!("{index} — {}", name_of(EDITS, index)));
+                        d.popup.picked = Some(format!("{index} — {}", name_of(&EDITS, index)));
                     }))
                     .into_any_element(),
                 ),

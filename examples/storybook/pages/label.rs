@@ -92,15 +92,19 @@ fn header_glass(id: &'static str) -> Div {
     )
 }
 
-fn hero(hosted: bool) -> AnyElement {
-    let left = div()
+fn column(left: f32) -> Div {
+    div()
         .absolute()
-        .left(px(12.))
+        .left(px(left))
         .top(px(10.))
         .w(px(HALF))
         .flex()
         .flex_col()
         .gap_1()
+}
+
+fn hero(hosted: bool) -> AnyElement {
+    let left = column(12.)
         .child(caption("gpui text · under the material"))
         .children(
             SPECIMENS
@@ -110,14 +114,7 @@ fn hero(hosted: bool) -> AnyElement {
         .child(gpui_hairline());
 
     let right_ids = ["hero.a", "hero.b", "hero.c"];
-    let right = div()
-        .absolute()
-        .left(px(BAND_W - HALF - 12.))
-        .top(px(10.))
-        .w(px(HALF))
-        .flex()
-        .flex_col()
-        .gap_1()
+    let right = column(BAND_W - HALF - 12.)
         .child(caption(if hosted {
             "native_label · over the material"
         } else {
