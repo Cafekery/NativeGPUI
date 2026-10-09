@@ -377,7 +377,7 @@ impl FinderDemo {
             },
             focused: palette.focused,
             dates: DATES.with(Font::clone),
-            searching: self.results(),
+            searching: self.flat_results(),
             columns: self.shown_columns(),
             bleed: self.list_bleeds(),
             day: today(),
@@ -799,7 +799,9 @@ fn shell(drawn: &Drawn, pixels: Div, window: &Window) -> AnyElement {
             look.label
         })
         .child(pixels)
-        .children((line.row.discloses && line.row.readable).then(|| twist(drawn)))
+        .children(
+            (line.row.discloses && line.row.readable && !look.searching).then(|| twist(drawn)),
+        )
         .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
         .on_click(pick_on_click(line, this.clone()))
         .on_drag(

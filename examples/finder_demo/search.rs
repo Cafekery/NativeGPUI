@@ -206,6 +206,10 @@ impl FinderDemo {
         self.tag_listing.is_some() || (!self.filtered.is_empty() && !self.hits.is_empty())
     }
 
+    pub(crate) fn flat_results(&self) -> bool {
+        self.in_search() || self.results()
+    }
+
     /// `raw` is Spotlight's query for the same search, which a saved search keeps.
     pub(crate) fn search(&mut self, search: Search, raw: Option<String>, cx: &mut Context<Self>) {
         self.raw_query = raw;
