@@ -350,7 +350,6 @@ fn flip(kind: &'static Kind, keys: Vec<&'static str>) -> Flip {
     Rc::new(move |on, cx| choose(kind, &keys, on, cx))
 }
 
-/// A group's switch is on while any of its fields shows, and its fields can change only then.
 fn sheet(kind: &'static Kind, width: f32, hair: f32) -> Sheet {
     let alone = |key: &'static str| {
         form::Row::new(COMPACT.switch_row(key, shows(kind, key), Some(flip(kind, vec![key]))))
@@ -430,13 +429,9 @@ fn subject(demo: &FinderDemo) -> &'static Kind {
         .map_or(&FOLDER, |line| kind_of(&line.row))
 }
 
-fn height(kind: &'static Kind) -> f32 {
-    sheet(kind, WIDTH, 1.).height()
-}
-
 fn show(kind: &'static Kind, cx: &mut App) {
     let title = format!("Preview Options - {}", kind.name);
-    let tall = height(kind);
+    let tall = sheet(kind, WIDTH, 1.).height();
     if let Some(open) = OPEN.get() {
         let shown = open.update(cx, |panel, window, cx| {
             window.set_window_title(&title);

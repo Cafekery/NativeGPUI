@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::thread::LocalKey;
 
 use block2::StackBlock;
 use finder_fs::custom_icon;
@@ -138,15 +139,17 @@ define_class!(
 
         #[unsafe(method(cut:))]
         fn cut(&self, _sender: Option<&AnyObject>) {
-            let Some(path) = self.ivars().paths.first() else {
+            let Some(path) = self
+                .ivars()
+                .paths
+                .first()
+                .filter(|_| self.can_copy() && self.can_clear())
+            else {
                 return NSBeep();
             };
-            if !self.can_copy() || !self.can_clear() {
-                return NSBeep();
-            }
             let board = NSPasteboard::generalPasteboard();
             board.clearContents();
-            if let Some(icns) = stored(path).or_else(|| drawn(path)) {
+            if let Some(icns) = copied(path) {
                 put(&board, &icns);
             }
             self.change(None, "Cut");
@@ -286,8 +289,6 @@ impl IconWell {
         this
     }
 
-    /// `image` runs only when an icon changed since the last call, or `same` did, or the well
-    /// came out from over a picture or went back over one, where it paints nothing.
     pub(crate) fn sync(
         &self,
         same: bool,
@@ -363,7 +364,6 @@ impl IconWell {
     }
 }
 
-/// Runs in gpui after the well's AppKit action returned.
 pub(crate) fn handle(event: Event, cx: &mut App) {
     match event {
         Event::Changed(paths) => refresh(&paths, cx),
@@ -439,37 +439,37 @@ fn titled(verb: &str, label: Option<&str>) -> Retained<NSString> {
 }
 
 fn undo() -> Option<Vec<PathBuf>> {
-    let change = UNDO.with_borrow_mut(Vec::pop)?;
-    let paths = restore(&change.before);
-    REDO.with_borrow_mut(|redo| redo.push(change));
-    Some(paths)
+    replay(&UNDO, &REDO, |change| &change.before)
 }
 
 fn redo() -> Option<Vec<PathBuf>> {
-    let change = REDO.with_borrow_mut(Vec::pop)?;
-    let paths = restore(&change.after);
-    UNDO.with_borrow_mut(|undo| undo.push(change));
-    Some(paths)
+    replay(&REDO, &UNDO, |change| &change.after)
 }
 
-fn restore(icons: &Icons) -> Vec<PathBuf> {
-    let mut failed = false;
-    for (path, icns) in icons {
-        let image = icns.as_deref().and_then(icns_image);
-        failed |= !set_icon(path, image.as_deref());
-    }
-    if failed {
+type Stack = LocalKey<RefCell<Vec<Change>>>;
+
+fn replay(
+    from: &'static Stack,
+    to: &'static Stack,
+    side: fn(&Change) -> &Icons,
+) -> Option<Vec<PathBuf>> {
+    let change = from.with_borrow_mut(Vec::pop)?;
+    let icons = side(&change);
+    let set = icons
+        .iter()
+        .filter(|(path, icns)| set_icon(path, icns.as_deref().and_then(icns_image).as_deref()))
+        .count();
+    if set < icons.len() {
         NSBeep();
     }
-    icons.iter().map(|(path, _)| path.clone()).collect()
+    let paths = icons.iter().map(|(path, _)| path.clone()).collect();
+    to.with_borrow_mut(|stack| stack.push(change));
+    Some(paths)
 }
 
 fn apply(paths: &[PathBuf], image: Option<&NSImage>, label: &'static str) -> bool {
     let before = snapshot(paths);
-    let mut set = 0;
-    for path in paths {
-        set += usize::from(set_icon(path, image));
-    }
+    let set = paths.iter().filter(|path| set_icon(path, image)).count();
     if set < paths.len() {
         NSBeep();
     }
@@ -492,7 +492,7 @@ fn snapshot(paths: &[PathBuf]) -> Icons {
     paths
         .iter()
         .map(|path| {
-            let kept = custom(path).then(|| stored(path).or_else(|| drawn(path)));
+            let kept = custom(path).then(|| custom_icon::stored(path).or_else(|| drawn(path)));
             (path.clone(), kept.flatten())
         })
         .collect()
@@ -516,6 +516,10 @@ fn custom(path: &Path) -> bool {
 
 fn stored(path: &Path) -> Option<Vec<u8>> {
     custom(path).then(|| custom_icon::stored(path)).flatten()
+}
+
+fn copied(path: &Path) -> Option<Vec<u8>> {
+    stored(path).or_else(|| drawn(path))
 }
 
 /// The icon as shown, drawn as an icns: what Finder copies of an icon that isn't custom.
@@ -545,17 +549,17 @@ fn first_file(board: &NSPasteboard) -> Option<Retained<NSURL>> {
 fn pasted(board: &NSPasteboard) -> Option<Retained<NSImage>> {
     let picture = first_file(board)
         .filter(|url| conforms(url, IMAGE))
-        .and_then(|url| match conforms(&url, ICNS) {
-            true => NSImage::initWithContentsOfURL(NSImage::alloc(), &url),
-            false => {
-                NSImage::initWithContentsOfURL(NSImage::alloc(), &url).and_then(|i| fitted(&i))
+        .and_then(|url| {
+            let image = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)?;
+            match conforms(&url, ICNS) {
+                true => Some(image),
+                false => fitted(&image),
             }
         });
     picture
         .or_else(|| {
-            board
-                .dataForType(&NSString::from_str(ICNS))
-                .and_then(|data| icns_image(&data.to_vec()))
+            let icns = board.dataForType(&NSString::from_str(ICNS))?;
+            NSImage::initWithData(NSImage::alloc(), &icns)
         })
         .or_else(|| pictured(board))
 }
@@ -570,7 +574,8 @@ fn dropped(board: &NSPasteboard) -> Option<Retained<NSImage>> {
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("icns"))
     {
-        return NSData::dataWithContentsOfURL(&url).and_then(|data| icns_image(&data.to_vec()));
+        let icns = NSData::dataWithContentsOfURL(&url)?;
+        return NSImage::initWithData(NSImage::alloc(), &icns);
     }
     conforms(&url, IMAGE)
         .then(|| NSImage::initWithContentsOfURL(NSImage::alloc(), &url).and_then(|i| fitted(&i)))
@@ -704,19 +709,14 @@ pub(crate) fn same_icons(paths: &[PathBuf]) -> bool {
         return false;
     }
     let workspace = NSWorkspace::sharedWorkspace();
-    let mut first: Option<Vec<u8>> = None;
-    for path in paths {
+    let mut icons = paths.iter().map(|path| {
         let icon = workspace.iconForFile(&NSString::from_str(&path.to_string_lossy()));
-        let Some(pixels) = in_aqua(|| pixels_of(&icon)) else {
-            return false;
-        };
-        match &first {
-            Some(seen) if *seen != pixels => return false,
-            Some(_) => {}
-            None => first = Some(pixels),
-        }
-    }
-    true
+        in_aqua(|| pixels_of(&icon))
+    });
+    let Some(first) = icons.next() else {
+        return true;
+    };
+    first.is_some() && icons.all(|pixels| pixels == first)
 }
 
 fn pixels_of(image: &NSImage) -> Option<Vec<u8>> {
@@ -739,7 +739,7 @@ define_class!(
     impl Promise {
         #[unsafe(method(pasteboard:provideDataForType:))]
         fn provide(&self, board: &NSPasteboard, kind: &NSString) {
-            if let Some(icns) = stored(self.ivars()).or_else(|| drawn(self.ivars())) {
+            if let Some(icns) = copied(self.ivars()) {
                 board.setData_forType(Some(&NSData::with_bytes(&icns)), kind);
             }
         }

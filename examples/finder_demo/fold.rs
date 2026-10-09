@@ -26,7 +26,6 @@ const BOX: f32 = 16.;
 const REACH: f32 = 4.;
 const RING: f64 = 6.;
 
-/// A section's open state, and the fold under way since `moved` from `from`.
 pub(crate) struct Fold {
     open: bool,
     from: f32,
@@ -77,14 +76,11 @@ fn spring(seconds: f32) -> f32 {
     1. - (1. + at) * (-at).exp()
 }
 
-/// What a section folds away, each under its own gap.
 pub(crate) enum Part {
     Card(&'static str, Vec<AnyElement>),
     Plain(AnyElement),
 }
 
-/// A titled section whose title row folds the rest away. One edge springs down its parts and
-/// clips each at it, a card keeping its corners, while what they hold fades on the same spring.
 pub(crate) fn section(
     form: &Form,
     id: &'static str,
@@ -101,9 +97,8 @@ pub(crate) fn section(
         .flex()
         .flex_col()
         .child(header(id, title, openness, fold.open, toggle))
-        .children(match fold.open || moving {
-            true => body(form, fold, openness, moving, parts),
-            false => Vec::new(),
+        .when(fold.open || moving, |section| {
+            section.children(body(form, fold, openness, moving, parts))
         })
 }
 
