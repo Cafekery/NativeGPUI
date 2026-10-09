@@ -27,11 +27,11 @@ pub(crate) const ROW_H: f32 = 61.;
 pub(crate) const LAST_ROW_H: f32 = 56.;
 pub(crate) const HAIRLINE_Y: f32 = 54.;
 const ICON: f32 = 32.;
-const ICON_X: f32 = 17.;
+const ICON_X: f32 = 18.;
 const ICON_Y: f32 = 8.;
 const TEXT_X: f32 = 60.;
 const BAR_X: f32 = 62.;
-const TITLE_Y: f32 = 1.5;
+const TITLE_Y: f32 = 2.;
 const BAR_Y: f32 = 16.;
 const BAR_H: f32 = 16.;
 const REASON_Y: f32 = 18.;
@@ -552,13 +552,13 @@ fn symbol(id: (&'static str, u64), name: &str) -> NativeImage {
     native_symbol(id, name, GLYPH, FontWeight::NORMAL).tint(SystemColor::SecondaryLabel)
 }
 
+/// Finder sets every line of a row, title included, in the small system font.
 fn text(
     id: (&'static str, u64),
     text: &str,
     left: f32,
     top: f32,
     right: f32,
-    size: gpui::Pixels,
     color: SystemColor,
 ) -> AnyElement {
     div()
@@ -566,7 +566,11 @@ fn text(
         .left(px(left))
         .right(px(right))
         .top(px(top))
-        .child(native_label(id, text).font_size(size).color(color))
+        .child(
+            native_label(id, text)
+                .font_size(tokens::small_system_font_size())
+                .color(color),
+        )
         .into_any_element()
 }
 
@@ -590,8 +594,11 @@ fn current_file(job: &JobRow, progress: &Progress, left: Option<u64>) -> Option<
 pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElement {
     let id = job.id.raw();
     let small = tokens::small_system_font_size();
-    let icon = subject(&job.op)
-        .and_then(|path| tokens::file_icon(FileType::Path(&path.to_string_lossy()), px(ICON)));
+    let icon = match sources(&job.op).as_slice() {
+        [_, _, ..] => tokens::file_icon(FileType::Named("NSMultipleDocuments"), px(ICON)),
+        _ => subject(&job.op)
+            .and_then(|path| tokens::file_icon(FileType::Path(&path.to_string_lossy()), px(ICON))),
+    };
     let stop = symbol(("ng.finder.progress.stop.glyph", id), "xmark.circle.fill");
     let row = div()
         .relative()
@@ -620,7 +627,6 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
                 TEXT_X,
                 TITLE_Y,
                 beside_glyph,
-                tokens::system_font_size(),
                 SystemColor::Label,
             ))
             .child(glyph(
@@ -692,7 +698,6 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
         TEXT_X,
         TITLE_Y,
         EDGE,
-        tokens::system_font_size(),
         SystemColor::Label,
     ))
     .child(
@@ -732,7 +737,6 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
         TEXT_X,
         CAPTION_Y,
         EDGE,
-        small,
         SystemColor::SecondaryLabel,
     ))
     .when_some(current, |row, name| {
@@ -742,7 +746,6 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             current_x,
             CAPTION_Y,
             EDGE,
-            small,
             SystemColor::TertiaryLabel,
         ))
     })
