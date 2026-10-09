@@ -268,9 +268,12 @@ impl Shape {
             .filter(|row| matcher.admits(row))
             .filter(|row| type_filter.is_empty() || folds_to(&row.name, &type_filter));
         for row in rows {
-            let open = row
-                .opens
-                .filter(|_| self.tree && self.expanded.contains(&row.path));
+            let open = row.opens.filter(|_| {
+                self.tree
+                    && !self.results
+                    && self.stamp.query.is_empty()
+                    && self.expanded.contains(&row.path)
+            });
             out.push(line(row, depth));
             if let Some(into) = open {
                 opened.push((out.len() - 1, into));

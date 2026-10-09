@@ -81,7 +81,6 @@ impl ColumnSpec {
 
 pub(crate) fn columns_for(folder: &str) -> Vec<ColumnSpec> {
     prefs::list_columns(folder)
-        .unwrap_or_else(|| prefs::finder().columns.clone())
         .into_iter()
         .filter(|column| column.offered_at(folder))
         .map(ColumnSpec::of)
@@ -361,8 +360,15 @@ impl FinderDemo {
         cx.notify();
     }
 
+    fn columns_home(&self) -> &'static str {
+        match self.in_search() {
+            true => prefs::SEARCH_RESULTS,
+            false => self.here(),
+        }
+    }
+
     fn persist_column_widths(&self) {
-        let here = self.here();
+        let here = self.columns_home();
         prefs::set_list_column_width(here, Column::Name, self.name_w);
         for spec in &self.list_columns {
             prefs::set_list_column_width(here, spec.column, spec.width);
@@ -371,11 +377,11 @@ impl FinderDemo {
 
     fn persist_columns(&self) {
         let columns: Vec<Column> = self.list_columns.iter().map(|spec| spec.column).collect();
-        prefs::set_list_columns(self.here(), &columns);
+        prefs::set_list_columns(self.columns_home(), &columns);
     }
 
     pub(crate) fn load_columns(&mut self) {
-        let here = self.here();
+        let here = self.columns_home();
         self.list_columns = columns_for(here);
         for spec in &mut self.list_columns {
             spec.width = prefs::list_column_width(here, spec.column)
@@ -420,12 +426,12 @@ impl FinderDemo {
             return self.fitted(index, column, date_fit(look.text, look.relative), cx);
         }
         let rows = self.fit_rows(column);
-        let here = self.here();
+        let here = self.columns_home();
         fit::in_background(
             cx,
             move |texts| fit_width(texts, column, &rows, look.text, look.icon),
             move |this, width, cx| {
-                if this.here() == here && this.column_at(index) == Some(column) {
+                if this.columns_home() == here && this.column_at(index) == Some(column) {
                     this.fitted(index, column, width, cx);
                 }
             },
@@ -447,7 +453,7 @@ impl FinderDemo {
 
     fn fitted(&mut self, index: usize, column: Column, width: f32, cx: &mut Context<Self>) {
         self.set_column_w(index, width);
-        prefs::set_list_column_width(self.here(), column, width);
+        prefs::set_list_column_width(self.columns_home(), column, width);
         cx.notify();
     }
 }

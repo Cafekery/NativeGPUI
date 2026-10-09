@@ -14,9 +14,7 @@ use native_gpui::tokens::{self, SystemColor};
 
 use crate::app::FinderDemo;
 use crate::art::{Anchor, Art, art_at, list_art, small_glyph};
-use crate::data::{
-    Column, Line, Row, date_style, enclosing_name, intern, kind_text, list_date, today,
-};
+use crate::data::{Column, Line, Row, date_style, intern, kind_text, list_date, today};
 use crate::dragdrop::{DragGhost, RowDrag, flashed};
 use crate::elastic::{shifted, stretching};
 use crate::listing::Slot;
@@ -377,7 +375,7 @@ impl FinderDemo {
             },
             focused: palette.focused,
             dates: DATES.with(Font::clone),
-            searching: self.results(),
+            searching: self.flat_results(),
             columns: self.shown_columns(),
             bleed: self.list_bleeds(),
             day: today(),
@@ -653,9 +651,6 @@ fn detail_cell(spec: &ColumnSpec, line: &Line, look: &Look, detail: Hsla) -> Div
                                 }),
                         )
                 }
-                Column::Kind if look.searching => {
-                    cell.text_ellipsis().child(enclosing_name(&line.key))
-                }
                 Column::Kind => cell.text_ellipsis_middle().child(kind_text(
                     &line.row.kind,
                     spec.width - 20.,
@@ -799,7 +794,9 @@ fn shell(drawn: &Drawn, pixels: Div, window: &Window) -> AnyElement {
             look.label
         })
         .child(pixels)
-        .children((line.row.discloses && line.row.readable).then(|| twist(drawn)))
+        .children(
+            (line.row.discloses && line.row.readable && !look.searching).then(|| twist(drawn)),
+        )
         .on_mouse_down(MouseButton::Left, pick_on_press(line, this.clone()))
         .on_click(pick_on_click(line, this.clone()))
         .on_drag(

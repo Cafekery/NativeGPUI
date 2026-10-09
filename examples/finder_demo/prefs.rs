@@ -28,6 +28,7 @@ const SORT_KEYS: [&str; 5] = [
 ];
 const PANE: &str = "ng.finder.pane";
 const GALLERY_PANE: &str = "ng.finder.pane.gallery";
+pub(crate) const SEARCH_RESULTS: &str = "search";
 
 pub(crate) fn defaults() -> Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -43,6 +44,7 @@ pub(crate) struct Finder {
     pub(crate) sort: (Column, bool),
     pub(crate) pane_widths: (Option<f32>, Option<f32>),
     pub(crate) columns: Vec<Column>,
+    pub(crate) search_columns: Vec<Column>,
     pub(crate) arranged: (Column, Column),
     pub(crate) icon_options: IconOptions,
     pub(crate) group: Column,
@@ -113,27 +115,38 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
         .and_then(|all| dict_in(all, "ExtendedListViewSettingsV2"));
     let number = |key: &str| as_f64(&*value(list.as_deref()?, key)?);
     let sort_id = list.as_deref().and_then(|list| text(list, "sortColumn"));
-    let listed: Vec<Retained<NSDictionary>> = list
-        .as_deref()
-        .and_then(|list| value(list, "columns")?.downcast::<NSArray>().ok())
-        .map_or_else(Vec::new, |columns| {
-            columns
-                .iter()
-                .filter_map(|column| column.downcast::<NSDictionary>().ok())
-                .collect()
-        });
+    let listed_in = |list: Option<&NSDictionary>| -> Vec<Retained<NSDictionary>> {
+        list.and_then(|list| value(list, "columns")?.downcast::<NSArray>().ok())
+            .map_or_else(Vec::new, |columns| {
+                columns
+                    .iter()
+                    .filter_map(|column| column.downcast::<NSDictionary>().ok())
+                    .collect()
+            })
+    };
+    let shown = |listed: &[Retained<NSDictionary>], unset: &[Column]| -> Vec<Column> {
+        if listed.is_empty() {
+            return unset.to_vec();
+        }
+        listed
+            .iter()
+            .filter(|column| flagged(column, "visible") == Some(true))
+            .filter_map(|column| Column::from_id(&text(column, "identifier")?))
+            .filter(|column| *column != Column::Name)
+            .collect()
+    };
+    let listed = listed_in(list.as_deref());
+    let searched = listed_in(
+        dict("SearchViewSettings")
+            .and_then(|all| dict_in(&all, "ExtendedListViewSettingsV2"))
+            .as_deref(),
+    );
     let ascending = sort_id.as_deref().and_then(|id| {
         listed
             .iter()
             .filter(|column| text(column, "identifier").as_deref() == Some(id))
             .find_map(|column| flagged(column, "ascending"))
     });
-    let columns: Vec<Column> = listed
-        .iter()
-        .filter(|column| flagged(column, "visible") == Some(true))
-        .filter_map(|column| Column::from_id(&text(column, "identifier")?))
-        .filter(|column| *column != Column::Name)
-        .collect();
     let flag = |key: &str| read(key).and_then(|on| as_bool(&*on)) == Some(true);
     let width = |key: &str| Some(as_f64(&*read(key)?)? as f32);
     Finder {
@@ -156,10 +169,8 @@ static FINDER: LazyLock<Finder> = LazyLock::new(|| {
                 (column, ascending.unwrap_or(true))
             }),
         pane_widths: (width("PreviewPaneWidth"), width("PreviewPaneGalleryWidth")),
-        columns: match listed.is_empty() {
-            true => vec![Column::Modified, Column::Size, Column::Kind],
-            false => columns,
-        },
+        columns: shown(&listed, &[Column::Modified, Column::Size, Column::Kind]),
+        search_columns: shown(&searched, &[Column::Kind, Column::Opened]),
         arranged: (
             dict("StandardViewOptions")
                 .and_then(|all| text(&*dict_in(&all, "ColumnViewOptions")?, "ArrangeBy"))
@@ -890,14 +901,26 @@ pub(crate) fn icon_defaults() -> IconOptions {
     read_icon_options(None)
 }
 
-pub(crate) fn list_columns(folder: &str) -> Option<Vec<Column>> {
-    let ids = read_text(&columns_key(Some(folder))).or_else(|| read_text(&columns_key(None)))?;
-    Some(ids.split(',').filter_map(Column::from_id).collect())
+pub(crate) fn list_columns(folder: &str) -> Vec<Column> {
+    let own = read_text(&columns_key(Some(folder)));
+    let ids = match folder {
+        SEARCH_RESULTS => own,
+        _ => own.or_else(|| read_text(&columns_key(None))),
+    };
+    match ids {
+        Some(ids) => ids.split(',').filter_map(Column::from_id).collect(),
+        None if folder == SEARCH_RESULTS => finder().search_columns.clone(),
+        None => finder().columns.clone(),
+    }
 }
 
 pub(crate) fn set_list_columns(folder: &str, columns: &[Column]) {
     let ids: Vec<&str> = columns.iter().map(|column| column.id()).collect();
-    set_setting_text(&columns_key(look_home(LIST_VIEW, folder)), &ids.join(","));
+    let home = match folder {
+        SEARCH_RESULTS => Some(folder),
+        _ => look_home(LIST_VIEW, folder),
+    };
+    set_setting_text(&columns_key(home), &ids.join(","));
 }
 
 pub(crate) fn arranged(view: usize) -> Option<Column> {

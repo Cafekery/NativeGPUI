@@ -277,6 +277,9 @@ impl FinderDemo {
         let bar = if path_bar.is_some() { PATH_H } else { 0. };
         let banded = headers.is_some();
         let header_h = px(if banded { HEADER_H } else { 0. });
+        let toolbar_ruled = matches!(self.view, LIST_VIEW | COLUMN_VIEW) && !self.airdrop_shown();
+        let header_ruled = banded && scope_h > 0.;
+        let ruled = header_ruled || (toolbar_ruled && !banded && scope_h == 0.);
         let width = metrics.left + px(self.list_room.max(self.list_content_w()));
         let sideways = self.bands.sideways.shown().x;
         let scroll_sideways = |scroller: Stateful<Div>, band: Div, cx: &mut Context<Self>| {
@@ -346,22 +349,30 @@ impl FinderDemo {
                 } else {
                     px(0.)
                 };
-                column.child(band_edge(top + header_h, px(scope_h) + header_h, scrolled))
+                column.child(band_edge(top + header_h, px(scope_h) + header_h, scrolled, ruled))
             })
-            .when(
-                matches!(self.view, LIST_VIEW | COLUMN_VIEW) && !self.airdrop_shown(),
-                |column| {
-                    column.child(
-                        div()
-                            .absolute()
-                            .top(above)
-                            .left(if banded { metrics.left } else { px(0.) })
-                            .right_0()
-                            .h(px(0.5))
-                            .child(native_rule("ng.finder.toolbar.rule")),
-                    )
-                },
-            )
+            .when(toolbar_ruled, |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top(above)
+                        .left(if banded { metrics.left } else { px(0.) })
+                        .right_0()
+                        .h(px(0.5))
+                        .child(native_rule("ng.finder.toolbar.rule")),
+                )
+            })
+            .when(header_ruled, |column| {
+                column.child(
+                    div()
+                        .absolute()
+                        .top(top + header_h)
+                        .left(metrics.left)
+                        .right_0()
+                        .h(px(0.5))
+                        .child(native_rule("ng.finder.header.rule")),
+                )
+            })
             .children(search_bars.map(|(scope, criteria)| {
                 div()
                     .absolute()

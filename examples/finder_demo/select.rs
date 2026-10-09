@@ -30,6 +30,9 @@ impl FinderDemo {
     }
 
     pub(crate) fn disclose_selected(&mut self, open: bool, deep: bool) {
+        if self.flat_results() {
+            return;
+        }
         let lines = self.lines(true);
         let chosen = self.selected.snapshot();
         let one = match chosen.len() {

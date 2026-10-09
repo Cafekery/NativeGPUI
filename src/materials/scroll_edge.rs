@@ -24,6 +24,7 @@ pub fn scroll_edge_effect(id: impl Into<ElementId>) -> ScrollEdgeEffect {
         id: id.into(),
         header: px(0.),
         scrolled: px(0.),
+        separator: true,
     }
 }
 
@@ -31,6 +32,7 @@ pub struct ScrollEdgeEffect {
     id: ElementId,
     header: Pixels,
     scrolled: Pixels,
+    separator: bool,
 }
 
 impl ScrollEdgeEffect {
@@ -46,6 +48,12 @@ impl ScrollEdgeEffect {
         self
     }
 
+    /// Whether AppKit may rule the edge off, which an inactive window does even at rest.
+    pub fn separator(mut self, shown: bool) -> Self {
+        self.separator = shown;
+        self
+    }
+
     fn layout(&self) -> Style {
         full_size()
     }
@@ -55,6 +63,7 @@ impl ScrollEdgeEffect {
         let edge = slot.place(Layer::Above, |mtm, _| Edge::new(mtm));
         edge.set_header(size);
         edge.set_scrolled(f64::from(f32::from(self.scrolled).max(0.)));
+        edge.set_separator(self.separator);
     }
 }
 
@@ -65,6 +74,7 @@ struct Ivars {
     document: Retained<Document>,
     header_size: Cell<NSSize>,
     rest: Cell<Option<(f64, f64)>>,
+    separator: Cell<bool>,
 }
 
 define_class!(
@@ -100,10 +110,15 @@ define_class!(
             let Some(pocket) = AnyClass::get(c"NSScrollPocket") else {
                 return;
             };
+            let separator = self.ivars().separator.get();
             for view in self.subviews().iter() {
-                if view.isKindOfClass(pocket)
-                    && private_api::read_bool(&*view, sel!(_hidesTitlebarElements)) == Some(true)
-                {
+                if !view.isKindOfClass(pocket) {
+                    continue;
+                }
+                if private_api::read_bool(&*view, sel!(allowsSeparator)) != Some(separator) {
+                    private_api::send_bool(&*view, sel!(setAllowsSeparator:), separator);
+                }
+                if private_api::read_bool(&*view, sel!(_hidesTitlebarElements)) == Some(true) {
                     private_api::send_isize(&*view, sel!(_setSemanticContext:), 7);
                     private_api::send_string(
                         &*view,
@@ -177,6 +192,7 @@ impl Edge {
             document,
             header_size: Cell::new(NSSize::new(-1., -1.)),
             rest: Cell::new(None),
+            separator: Cell::new(true),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
         this.setDrawsBackground(false);
@@ -210,5 +226,11 @@ impl Edge {
         document.setFrameSize(document.frame().size);
         clip.scrollToPoint(NSPoint::new(0., origin));
         self.reflectScrolledClipView(&clip);
+    }
+
+    fn set_separator(&self, shown: bool) {
+        if self.ivars().separator.replace(shown) != shown {
+            self.setNeedsLayout(true);
+        }
     }
 }

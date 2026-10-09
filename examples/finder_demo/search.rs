@@ -68,6 +68,7 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
 fn hit_rows(
     paths: &[&Path],
     admit: impl Fn(&Row) -> bool + Sync,
+    extras: bool,
     stale: &(impl Fn() -> bool + Sync),
 ) -> Option<Vec<Arc<Row>>> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
@@ -82,6 +83,7 @@ fn hit_rows(
                         if stale() {
                             return None;
                         }
+                        let from = rows.len();
                         rows.extend(
                             chunk
                                 .iter()
@@ -91,6 +93,9 @@ fn hit_rows(
                                 })
                                 .filter(|row| admit(row)),
                         );
+                        if extras {
+                            data::read_extras(&mut rows[from..]);
+                        }
                     }
                     Some(rows)
                 })
@@ -148,6 +153,7 @@ fn gather(
     limit: usize,
     spotlit: bool,
     criteria: &[Criterion],
+    extras: bool,
     stale: &(impl Fn() -> bool + Sync),
 ) -> Option<(Vec<Arc<Row>>, bool)> {
     let matcher = search.matcher();
@@ -178,7 +184,12 @@ fn gather(
         .collect();
     let complete = named.len() < limit && found.len() < limit;
     let criteria = |row: &Row| criteria.iter().all(|it| it.holds(row));
-    let mut rows = hit_rows(&named, |row| matcher.fits(row) && criteria(row), stale)?;
+    let mut rows = hit_rows(
+        &named,
+        |row| matcher.fits(row) && criteria(row),
+        extras,
+        stale,
+    )?;
     let held = |row: &Row, word: &str| {
         contents
             .get(word)
@@ -187,6 +198,7 @@ fn gather(
     rows.extend(hit_rows(
         &found,
         |row| matcher.admits_found(row, |word| held(row, word)) && criteria(row),
+        extras,
         stale,
     )?);
     rows.truncate(limit);
@@ -206,6 +218,10 @@ impl FinderDemo {
         self.tag_listing.is_some() || (!self.filtered.is_empty() && !self.hits.is_empty())
     }
 
+    pub(crate) fn flat_results(&self) -> bool {
+        self.in_search() || self.results()
+    }
+
     /// `raw` is Spotlight's query for the same search, which a saved search keeps.
     pub(crate) fn search(&mut self, search: Search, raw: Option<String>, cx: &mut Context<Self>) {
         self.raw_query = raw;
@@ -213,10 +229,18 @@ impl FinderDemo {
             return;
         }
         self.arrive_now(cx);
-        if !self.in_search() && !search.is_empty() {
+        let searching = self.in_search();
+        if !searching && !search.is_empty() {
             self.scope = prefs::search_scope();
         }
         self.query = search;
+        if self.in_search() != searching {
+            let read = self.wants_extras();
+            self.load_columns();
+            if !read && self.wants_extras() {
+                self.sort_held(self.view_sort(self.view), cx);
+            }
+        }
         self.run_search(cx);
     }
 
@@ -227,6 +251,7 @@ impl FinderDemo {
         let generation = live.fetch_add(1, Ordering::Relaxed) + 1;
         let wanted = self.query.clone();
         let criteria = self.criteria.clone();
+        let extras = self.wants_extras();
         let indexed = self.scope != scope_bar::NETWORK;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
@@ -244,7 +269,8 @@ impl FinderDemo {
                             return Some((Vec::new(), true));
                         }
                         let stale = || pass.load(Ordering::Relaxed) != generation;
-                        let gathered = || gather(&search, &under, limit, last, &criteria, &stale);
+                        let gathered =
+                            || gather(&search, &under, limit, last, &criteria, extras, &stale);
                         let mut hits = gathered();
                         if hits.is_none() && fsearch::loading() && !stale() {
                             if !last {
@@ -308,7 +334,11 @@ impl FinderDemo {
         self.arriving = None;
         self.deselect();
         crate::search_field::clear(window);
+        let searching = self.in_search();
         self.query = Search::default();
+        if searching {
+            self.load_columns();
+        }
         self.criteria.clear();
         self.hits.clear();
         self.hits_rev = next_rev();

@@ -1,11 +1,6 @@
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{LazyLock, RwLock};
-
-use gpui::SharedString;
-
-const SEEN_MAX: usize = 4096;
 
 pub(crate) fn intern(text: &str) -> &'static str {
     static POOL: LazyLock<RwLock<HashSet<&'static str>>> = LazyLock::new(Default::default);
@@ -35,23 +30,4 @@ pub(crate) fn join(dir: &str, name: &str) -> String {
 pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
     let (dir, name) = key.rsplit_once('/')?;
     Some((intern(if dir.is_empty() { "/" } else { dir }), name))
-}
-
-pub(crate) fn enclosing_name(key: &str) -> SharedString {
-    thread_local! {
-        static SEEN: RefCell<HashMap<String, SharedString>> = RefCell::new(HashMap::new());
-    }
-    let parent = Path::new(key).parent().unwrap_or(Path::new("/"));
-    let text = parent.to_string_lossy();
-    SEEN.with_borrow_mut(|seen| {
-        if let Some(name) = seen.get(text.as_ref()) {
-            return name.clone();
-        }
-        if seen.len() >= SEEN_MAX {
-            seen.clear();
-        }
-        let name = SharedString::from(finder_fs::name::of_path(parent));
-        seen.insert(text.into_owned(), name.clone());
-        name
-    })
 }
