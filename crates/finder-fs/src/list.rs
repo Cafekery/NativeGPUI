@@ -308,9 +308,10 @@ fn parse_entry(record: &[u8], dir: &Path) -> Option<Entry> {
     }
     let children = (returned_dir & libc::ATTR_DIR_ENTRYCOUNT != 0)
         .then(|| u32::from_ne_bytes(read(record, &mut p)));
-    let mut size = match returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
-        true => u64::from_ne_bytes(read(record, &mut p)),
-        false => 0,
+    let mut size = if returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
+        u64::from_ne_bytes(read(record, &mut p))
+    } else {
+        0
     };
 
     let name = name?;
@@ -381,6 +382,7 @@ mod tests {
         fs::remove_dir_all(&base).unwrap();
         assert_eq!(path_of(found), None);
     }
+
     #[test]
     fn reads_every_kind_of_entry() {
         let dir = std::env::temp_dir().join(format!("finder-fs-list-{}", std::process::id()));
