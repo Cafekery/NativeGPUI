@@ -241,11 +241,12 @@ impl FinderDemo {
             return poster_art(row, size, size, scale, Poster::Hero);
         }
         let stand_in = || thumb_side.and_then(|side| thumb(row, side, scale, true, true));
-        match pictures::hero(row, stand_in) {
-            Hero::Picture(image) => picture_art(row, Some(image), size, size, scale, Poster::Hero),
-            Hero::Waiting => picture_art(row, None, size, size, scale, Poster::Hero),
-            Hero::QuickLook => poster_art(row, size, size, scale, Poster::Hero),
-        }
+        let image = match pictures::hero(row, stand_in) {
+            Hero::Picture(image) => Some(image),
+            Hero::Waiting => None,
+            Hero::QuickLook => return poster_art(row, size, size, scale, Poster::Hero),
+        };
+        picture_art(row, image, size, size, scale, Poster::Hero)
     }
 
     pub(crate) fn strip_reveal(&self, index: usize) {

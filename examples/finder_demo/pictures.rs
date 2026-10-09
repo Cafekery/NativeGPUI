@@ -48,7 +48,6 @@ const BGRA: u32 = 2 | 2 << 12;
 const WORKERS: usize = 2;
 const KEPT: usize = 24;
 const KEPT_BYTES: usize = 192 << 20;
-/// A window being resized decodes again only once it outgrows its picture by this much.
 const RESIZE_STEP: u32 = 256;
 
 pub(crate) enum Hero {
@@ -65,15 +64,12 @@ struct Key {
 
 struct Kept {
     key: Key,
-    /// `u32::MAX` once nothing sharper can be had.
     pixels: u32,
     image: Option<Arc<RenderImage>>,
 }
 
 struct Pictures {
-    /// Least recently wanted first.
     kept: Vec<Kept>,
-    /// Most wanted first.
     wanted: Vec<(Key, u32)>,
     making: Vec<Key>,
     workers: usize,
@@ -136,7 +132,6 @@ pub(crate) fn decodes(row: &Row) -> bool {
     row.face == Face::Image && !row.dataless
 }
 
-/// Decodes `rows`, most wanted first, at `pixels` on their longer side.
 pub(crate) fn want(rows: &[&Row], pixels: u32) {
     let pixels = pixels.div_ceil(RESIZE_STEP) * RESIZE_STEP;
     let wanted: Vec<(Key, u32)> = rows.iter().map(|row| (key(row), pixels)).collect();
@@ -158,7 +153,6 @@ pub(crate) fn want(rows: &[&Row], pixels: u32) {
     }
 }
 
-/// The best picture of `row` so far, standing in its filmstrip thumbnail until one is decoded.
 pub(crate) fn hero(row: &Row, thumb: impl FnOnce() -> Option<Arc<RenderImage>>) -> Hero {
     let key = key(row);
     let mut pictures = PICTURES.lock();
@@ -288,10 +282,10 @@ fn opaque(thumb: &RenderImage) -> Option<Arc<RenderImage>> {
     );
     let bytes = thumb.as_bytes(0)?;
     let solid = |x: usize, y: usize| bytes[(y * w + x) * 4 + 3] == 255;
-    let rows: Vec<usize> = (0..h).filter(|&y| (0..w).any(|x| solid(x, y))).collect();
-    let columns: Vec<usize> = (0..w).filter(|&x| (0..h).any(|y| solid(x, y))).collect();
-    let (top, bottom) = (*rows.first()?, *rows.last()?);
-    let (left, right) = (*columns.first()?, *columns.last()?);
+    let row = |y: usize| (0..w).any(|x| solid(x, y));
+    let column = |x: usize| (0..h).any(|y| solid(x, y));
+    let (top, bottom) = ((0..h).position(row)?, (0..h).rposition(row)?);
+    let (left, right) = ((0..w).position(column)?, (0..w).rposition(column)?);
     let picture: Vec<u8> = (top..=bottom)
         .flat_map(|y| &bytes[(y * w + left) * 4..(y * w + right + 1) * 4])
         .copied()
