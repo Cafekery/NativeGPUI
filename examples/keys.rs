@@ -396,6 +396,12 @@ impl Suite {
         focus_at(cx, &self.controls.window, &self.controls.alpha, caret).await;
     }
 
+    async fn focus(&self, cx: &AsyncApp, responder: Option<&NSResponder>) -> bool {
+        let took = self.controls.window.makeFirstResponder(responder);
+        sleep(cx, POLL).await;
+        took
+    }
+
     async fn run_script(&mut self, cx: &mut AsyncApp, script: String) -> String {
         self.seq += 1;
         let scpt = self.dir.join("req.applescript");
@@ -804,8 +810,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     suite.note("env.menu_bar_from_os", os_menu_bar);
 
     suite.arm(cx, "abcdef", 6).await;
-    suite.controls.window.makeFirstResponder(None);
-    sleep(cx, POLL).await;
+    suite.focus(cx, None).await;
     let pre = suite.responder();
     let sent = suite
         .click(cx, "click alpha", suite.point_of(&suite.controls.alpha))
@@ -1118,11 +1123,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     );
 
     suite.arm(cx, "abcdef", 6).await;
-    suite
-        .controls
-        .window
-        .makeFirstResponder(Some(&suite.controls.beta));
-    sleep(cx, POLL).await;
+    suite.focus(cx, Some(&suite.controls.beta)).await;
     let pre = focus_state(&suite);
     let sent = suite
         .press(cx, "shift-tab", "kd:shift kp:tab ku:shift")
@@ -1136,11 +1137,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         &sent,
     );
 
-    suite
-        .controls
-        .window
-        .makeFirstResponder(Some(&suite.controls.beta));
-    sleep(cx, POLL).await;
+    suite.focus(cx, Some(&suite.controls.beta)).await;
     let pre = suite.responder();
     let sent = suite.press(cx, "tab", "kp:tab").await;
     let post = suite.responder();
@@ -1148,11 +1145,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
 
     // Named, not `expect_change`: a key loop closed into a ring among the hosted views must fail.
     suite.arm(cx, "abcdef", 0).await;
-    suite
-        .controls
-        .window
-        .makeFirstResponder(Some(&suite.controls.alpha));
-    sleep(cx, POLL).await;
+    suite.focus(cx, Some(&suite.controls.alpha)).await;
     let pre = suite.responder();
     let sent = suite
         .press(cx, "shift-tab", "kd:shift kp:tab ku:shift")
@@ -1191,14 +1184,9 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         key_window_after: true,
         residual_modifiers: String::new(),
     };
-    suite.controls.window.makeFirstResponder(None);
-    sleep(cx, POLL).await;
+    suite.focus(cx, None).await;
     let pre = suite.responder();
-    let took = suite
-        .controls
-        .window
-        .makeFirstResponder(Some(&suite.controls.toggle));
-    sleep(cx, POLL).await;
+    let took = suite.focus(cx, Some(&suite.controls.toggle)).await;
     let post = suite.responder();
     suite.note("control.switch_makeFirstResponder", took);
     suite.expect("control.switch_takes_focus", &pre, &post, "switch", &no_key);
@@ -1217,14 +1205,9 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
         &sent,
     );
 
-    suite.controls.window.makeFirstResponder(None);
-    sleep(cx, POLL).await;
+    suite.focus(cx, None).await;
     let pre = suite.responder();
-    let took = suite
-        .controls
-        .window
-        .makeFirstResponder(Some(&suite.controls.slider));
-    sleep(cx, POLL).await;
+    let took = suite.focus(cx, Some(&suite.controls.slider)).await;
     let post = suite.responder();
     suite.note("control.slider_makeFirstResponder", took);
     suite.expect("control.slider_takes_focus", &pre, &post, "slider", &no_key);
@@ -1234,8 +1217,7 @@ async fn drive(cx: &mut AsyncApp, handle: WindowHandle<Keys>, dir: PathBuf) {
     let post = format!("{:.4}", suite.controls.slider.doubleValue());
     suite.expect_change("control.arrow_moves_slider", &pre, &post, &sent);
 
-    suite.controls.window.makeFirstResponder(None);
-    sleep(cx, POLL).await;
+    suite.focus(cx, None).await;
     let default_before = suite.model(cx, |keys, _| keys.default_clicks);
     let sent = suite.press(cx, "return", "kp:return").await;
     let default_after = suite.model(cx, |keys, _| keys.default_clicks);
