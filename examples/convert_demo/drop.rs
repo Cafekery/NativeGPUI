@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::Window;
@@ -9,10 +8,11 @@ use objc2::runtime::{Bool, ProtocolObject};
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSDragOperation, NSDraggingInfo, NSPasteboard, NSPasteboardNameDrag,
-    NSPasteboardTypeFileURL, NSView, NSWindow, NSWindowButton, NSWindowOrderingMode,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSPasteboardTypeFileURL, NSView, NSWindowButton, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowTitleVisibility,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSPoint, NSRect, NSSize, NSURL};
+use parking_lot::Mutex;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::open::url_path;
@@ -21,15 +21,17 @@ static PENDING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 pub fn take_dropped() -> Vec<PathBuf> {
-    std::mem::take(&mut *PENDING.lock().unwrap())
+    std::mem::take(&mut *PENDING.lock())
 }
 
 pub fn has_dropped() -> bool {
-    !PENDING.lock().unwrap().is_empty()
+    !PENDING.lock().is_empty()
 }
 
-pub fn hide_traffic_lights(window: &Window) {
-    let Some(ns_window) = ns_window(window) else {
+pub fn prepare(window: &Window) {
+    let view = gpui_view(window);
+    install(&view);
+    let Some(ns_window) = view.window() else {
         return;
     };
     for button in [
@@ -42,12 +44,6 @@ pub fn hide_traffic_lights(window: &Window) {
         }
     }
     ns_window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
-}
-
-pub fn enable_resize(window: &Window) {
-    let Some(ns_window) = ns_window(window) else {
-        return;
-    };
     let mut style = ns_window.styleMask();
     if !style.contains(NSWindowStyleMask::Resizable) {
         style.insert(NSWindowStyleMask::Resizable);
@@ -59,21 +55,20 @@ pub fn enable_resize(window: &Window) {
     }
 }
 
-pub fn install(window: &Window) {
+fn install(view: &NSView) {
     if INSTALLED.load(Ordering::Relaxed) {
         return;
     }
-    let view = gpui_view(window);
     let Some(parent) = (unsafe { view.superview() }) else {
         return;
     };
-    let mtm = MainThreadMarker::from(&*view);
+    let mtm = MainThreadMarker::from(view);
     let drop = DropView::new(mtm, parent.bounds());
     drop.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     drop.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
-    parent.addSubview_positioned_relativeTo(&drop, NSWindowOrderingMode::Above, Some(&view));
+    parent.addSubview_positioned_relativeTo(&drop, NSWindowOrderingMode::Above, Some(view));
     INSTALLED.store(true, Ordering::Relaxed);
 }
 
@@ -85,10 +80,6 @@ fn gpui_view(window: &Window) -> Retained<NSView> {
     };
     unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
         .expect("gpui's AppKit handle always carries the live NSView it renders into")
-}
-
-fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
-    gpui_view(window).window()
 }
 
 fn drag_has_files() -> bool {
@@ -147,7 +138,7 @@ define_class!(
             if paths.is_empty() {
                 return false.into();
             }
-            PENDING.lock().unwrap().extend(paths);
+            PENDING.lock().extend(paths);
             true.into()
         }
     }

@@ -81,9 +81,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                 demo(
                     "re-read",
                     momentary("reread", "Re-read NSApp.mainMenu")
-                        .on_change(cx.listener(|_: &mut Demo, _: &usize, _, cx| {
-                            cx.notify();
-                        }))
+                        .on_change(set(cx, |_, _: usize| {}))
                         .into_any_element(),
                 ),
             ],
@@ -287,10 +285,9 @@ fn count<A: gpui::Action>(
 }
 
 fn read_bar() -> Vec<(String, Vec<BarRow>)> {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return Vec::new();
-    };
-    let Some(bar) = NSApplication::sharedApplication(mtm).mainMenu() else {
+    let Some(bar) =
+        MainThreadMarker::new().and_then(|mtm| NSApplication::sharedApplication(mtm).mainMenu())
+    else {
         return Vec::new();
     };
     bar.itemArray()
@@ -400,13 +397,7 @@ fn bar_row_line(row: BarRow) -> AnyElement {
                             row.title
                         }),
                 )
-                .child(
-                    div()
-                        .font_family("SF Mono")
-                        .text_xs()
-                        .text_color(system_color(SystemColor::SecondaryLabel))
-                        .child(row.chord),
-                ),
+                .child(mono(row.chord)),
         )
         .child(
             div()

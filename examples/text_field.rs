@@ -2,8 +2,8 @@ use gpui::{
     App, Bounds, Context, Render, Window, WindowBounds, div, point, prelude::*, px, rgb, size,
 };
 use native_gpui::{
-    install_menus, native_root, native_search_field, native_secure_field, native_text_field,
-    window_options,
+    NativeTextField, install_menus, native_root, native_search_field, native_secure_field,
+    native_text_field, window_options,
 };
 
 #[derive(Default)]
@@ -14,13 +14,30 @@ struct Demo {
     submitted: String,
 }
 
-fn row(label: &'static str, field: impl IntoElement) -> gpui::Div {
+fn row(
+    label: &'static str,
+    field: NativeTextField,
+    text: fn(&mut Demo) -> &mut String,
+    cx: &Context<Demo>,
+) -> gpui::Div {
     div()
         .flex()
         .items_center()
         .gap_3()
         .child(div().w(px(56.)).text_size(px(11.)).child(label))
-        .child(div().w(px(240.)).child(field))
+        .child(
+            div().w(px(240.)).child(
+                field
+                    .on_change(cx.listener(move |this, value: &String, _, cx| {
+                        text(this).clone_from(value);
+                        cx.notify();
+                    }))
+                    .on_submit(cx.listener(move |this, value: &String, _, cx| {
+                        this.submitted = format!("{label}={value}");
+                        cx.notify();
+                    })),
+            ),
+        )
 }
 
 impl Render for Demo {
@@ -36,42 +53,21 @@ impl Render for Demo {
                 .gap_4()
                 .child(row(
                     "plain",
-                    native_text_field("plain", &self.plain)
-                        .placeholder("your name")
-                        .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.plain.clone_from(text);
-                            cx.notify();
-                        }))
-                        .on_submit(cx.listener(|this, text: &String, _, cx| {
-                            this.submitted = format!("plain={text}");
-                            cx.notify();
-                        })),
+                    native_text_field("plain", &self.plain).placeholder("your name"),
+                    |demo| &mut demo.plain,
+                    cx,
                 ))
                 .child(row(
                     "secure",
-                    native_secure_field("secure", &self.secure)
-                        .placeholder("password")
-                        .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.secure.clone_from(text);
-                            cx.notify();
-                        }))
-                        .on_submit(cx.listener(|this, text: &String, _, cx| {
-                            this.submitted = format!("secure={text}");
-                            cx.notify();
-                        })),
+                    native_secure_field("secure", &self.secure).placeholder("password"),
+                    |demo| &mut demo.secure,
+                    cx,
                 ))
                 .child(row(
                     "search",
-                    native_search_field("search", &self.search)
-                        .placeholder("search")
-                        .on_change(cx.listener(|this, text: &String, _, cx| {
-                            this.search.clone_from(text);
-                            cx.notify();
-                        }))
-                        .on_submit(cx.listener(|this, text: &String, _, cx| {
-                            this.submitted = format!("search={text}");
-                            cx.notify();
-                        })),
+                    native_search_field("search", &self.search).placeholder("search"),
+                    |demo| &mut demo.search,
+                    cx,
                 ))
                 .child(div().text_size(px(11.)).child(format!(
                     "plain={:?} secure={:?} search={:?}",

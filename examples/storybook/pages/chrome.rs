@@ -16,8 +16,16 @@ use native_gpui::{
 const ORIGIN: (f32, f32) = (300., 240.);
 const EXTENT: (f32, f32) = (640., 470.);
 
-const TOOLBARS: [&str; 3] = ["none", "unified", "compact"];
-const APPEARANCES: [&str; 3] = ["system", "light", "dark"];
+const TOOLBARS: [(&str, Option<ToolbarStyle>); 3] = [
+    ("none", None),
+    ("unified", Some(ToolbarStyle::Unified)),
+    ("compact", Some(ToolbarStyle::UnifiedCompact)),
+];
+const APPEARANCES: [(&str, Option<Appearance>); 3] = [
+    ("system", None),
+    ("light", Some(Appearance::Light)),
+    ("dark", Some(Appearance::Dark)),
+];
 
 const LEVELS: [(&str, WindowLevel); 7] = [
     ("Normal", WindowLevel::Normal),
@@ -92,11 +100,7 @@ impl State {
 
     fn apply(&self, demo: &WeakEntity<Demo>, window: &mut Window, cx: &mut App) {
         set_corner_radius(window, self.corner_radius());
-        let toolbar = match self.toolbar {
-            1 => Some(ToolbarStyle::Unified),
-            2 => Some(ToolbarStyle::UnifiedCompact),
-            _ => None,
-        };
+        let toolbar = TOOLBARS.get(self.toolbar).and_then(|(_, style)| *style);
         set_toolbar(window, cx, toolbar, &toolbar_items(demo));
 
         let current = window_flags(window);
@@ -105,11 +109,7 @@ impl State {
             movable_by_background: self.movable_by_background,
             alpha: self.alpha as f32,
             level: window_level(self.level().1),
-            appearance: match self.appearance {
-                1 => Some(Appearance::Light),
-                2 => Some(Appearance::Dark),
-                _ => None,
-            },
+            appearance: APPEARANCES.get(self.appearance).and_then(|(_, a)| *a),
             ..current
         };
         // `setAppearance:` with an equal-but-fresh NSAppearance re-announces the change every frame.
@@ -126,7 +126,6 @@ impl State {
         }
     }
 
-    // The knobs are re-read from the window, or the next `push` would undo the restore.
     fn restore(&mut self, cx: &mut App) {
         let Some(handle) = self.window else { return };
         let Ok(flags) = handle.update(cx, |_, window, cx| {
@@ -143,11 +142,10 @@ impl State {
             .iter()
             .position(|(_, level)| window_level(*level) == flags.level)
             .unwrap_or(0);
-        self.appearance = match flags.appearance {
-            None => 0,
-            Some(Appearance::Light) => 1,
-            Some(Appearance::Dark) => 2,
-        };
+        self.appearance = APPEARANCES
+            .iter()
+            .position(|(_, a)| *a == flags.appearance)
+            .unwrap_or(0);
     }
 }
 
@@ -434,9 +432,9 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 ),
                 knob(
                     "toolbar",
-                    TOOLBARS[toolbar.min(2)],
+                    TOOLBARS[toolbar.min(2)].0,
                     native_segmented("chrome.toolbar", toolbar)
-                        .segments(TOOLBARS)
+                        .segments(TOOLBARS.map(|(name, _)| name))
                         .on_change(change(cx, |state, value| state.toolbar = value))
                         .into_any_element(),
                 ),
@@ -464,9 +462,9 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
                 ),
                 knob(
                     "window appearance",
-                    APPEARANCES[appearance.min(2)],
+                    APPEARANCES[appearance.min(2)].0,
                     native_segmented("chrome.appearance", appearance)
-                        .segments(APPEARANCES)
+                        .segments(APPEARANCES.map(|(name, _)| name))
                         .on_change(change(cx, |state, value| state.appearance = value))
                         .into_any_element(),
                 ),
@@ -601,7 +599,7 @@ pub fn render(d: &mut Demo, window: &mut Window, cx: &mut Context<Demo>) -> AnyE
             ),
             (
                 "set_toolbar(.., Option<ToolbarStyle>, &[ToolbarItem])",
-                TOOLBARS[toolbar.min(2)].into(),
+                TOOLBARS[toolbar.min(2)].0.into(),
             ),
             (
                 "ToolbarItem::symbol / flexible_space / space",

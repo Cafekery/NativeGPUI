@@ -1,6 +1,6 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Window, prelude::*, px};
+use gpui::{AnyElement, Context, SharedString, Window, prelude::*, px};
 use native_gpui::tokens::{SystemColor, system_color};
 use native_gpui::{
     Blending, Layer, NativeMaterial, RawMaterial, material, native_popup, native_segmented,
@@ -45,10 +45,10 @@ fn over_checker(m: NativeMaterial) -> AnyElement {
 }
 
 fn catalogue_tile(m: RawMaterial) -> AnyElement {
-    let label = if m.is_deprecated() {
-        format!("{} · deprecated", m.title())
+    let label: SharedString = if m.is_deprecated() {
+        format!("{} · deprecated", m.title()).into()
     } else {
-        m.title().to_string()
+        m.title().into()
     };
     tile(label, SPECIMEN, over_checker(material(m.title(), m)))
 }

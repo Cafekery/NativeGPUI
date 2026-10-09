@@ -1,57 +1,43 @@
 //! Gate: `system_font_tabular` shapes digits to equal advances. Exits 0 pass, non-zero fail.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use gpui::{
-    App, AsyncApp, Bounds, Context, Font, FontFeatures, FontWeight, Pixels, Render, TextRun,
-    Window, WindowBounds, div, hsla, point, prelude::*, px, size,
+    App, AsyncApp, Bounds, Context, Font, FontFeatures, FontWeight, Pixels, Render, SharedString,
+    TextRun, Window, WindowBounds, div, point, prelude::*, px, size,
 };
 use native_gpui::tokens::{system_font, system_font_tabular};
 use native_gpui::window_options;
 
 const REPEATS: usize = 10;
+const SIZE: Pixels = px(14.);
 const APPKIT_TABULAR_WIDTH: f32 = 86.68;
 const EQUAL: f32 = 0.01;
 
 static FAILED: AtomicU8 = AtomicU8::new(0);
 static RAN: AtomicU8 = AtomicU8::new(0);
 
-fn shaped_width(window: &Window, font: &Font, size: Pixels, text: &str) -> f32 {
+fn shaped_width(window: &Window, font: &Font, text: SharedString) -> f32 {
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
-        color: hsla(0., 0., 0., 1.),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
+        ..Default::default()
     };
-    f32::from(
-        window
-            .text_system()
-            .shape_line(text.to_string().into(), size, &[run], None)
-            .width,
-    )
+    let line = window.text_system().shape_line(text, SIZE, &[run], None);
+    f32::from(line.width)
 }
 
-enum Want {
-    Tabular,
-    Proportional,
-}
-
-fn row(window: &Window, label: &str, font: &Font, size: Pixels, want: Want) {
-    let widths: Vec<f32> = ('0'..='9')
-        .map(|d| shaped_width(window, font, size, &d.to_string().repeat(REPEATS)))
-        .collect();
+fn row(window: &Window, label: &str, font: &Font, want_tabular: bool) {
+    let widths: [f32; 10] =
+        std::array::from_fn(|d| shaped_width(window, font, d.to_string().repeat(REPEATS).into()));
     let spread = widths.iter().copied().fold(f32::MIN, f32::max)
         - widths.iter().copied().fold(f32::MAX, f32::min);
     RAN.fetch_add(1, Ordering::Relaxed);
     let tabular = spread < EQUAL;
-    let ok = match want {
-        Want::Tabular => tabular,
-        Want::Proportional => !tabular,
-    };
+    let ok = tabular == want_tabular;
     if !ok {
         FAILED.fetch_add(1, Ordering::Relaxed);
     }
@@ -69,57 +55,35 @@ struct Probe {
 }
 
 impl Render for Probe {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         if !self.done {
             self.done = true;
-            let size = px(14.);
-
             println!(
                 "{:<44} {:>9} {:>9} {:>9}  {:<12} VERDICT",
                 "FONT", "'1'x10", "'4'x10", "SPREAD", "FIGURES"
             );
 
             let plain = system_font(FontWeight::NORMAL);
-            row(
-                window,
-                "Menlo, no features [instrument positive]",
-                &Font {
-                    family: "Menlo".into(),
-                    ..plain.clone()
-                },
-                size,
-                Want::Tabular,
-            );
-            row(
-                window,
-                "system_font(NORMAL) [instrument negative]",
-                &plain,
-                size,
-                Want::Proportional,
-            );
-
-            row(
-                window,
-                "system face + zzzz=1 [tag is not arbitrary]",
-                &Font {
-                    features: FontFeatures(std::sync::Arc::new(vec![("zzzz".to_string(), 1)])),
-                    ..plain.clone()
-                },
-                size,
-                Want::Proportional,
-            );
-
+            let menlo = Font {
+                family: "Menlo".into(),
+                ..plain.clone()
+            };
+            let zzzz = Font {
+                features: FontFeatures(Arc::new(vec![("zzzz".to_owned(), 1)])),
+                ..plain.clone()
+            };
             let tabular = system_font_tabular(FontWeight::NORMAL);
-            row(
-                window,
-                "system_font_tabular(NORMAL) [the subject]",
-                &tabular,
-                size,
-                Want::Tabular,
-            );
+            for (label, font, want_tabular) in [
+                ("Menlo, no features [instrument positive]", &menlo, true),
+                ("system_font(NORMAL) [instrument negative]", &plain, false),
+                ("system face + zzzz=1 [tag is not arbitrary]", &zzzz, false),
+                ("system_font_tabular(NORMAL) [the subject]", &tabular, true),
+            ] {
+                row(window, label, font, want_tabular);
+            }
 
             // "1", not "0": SF's proportional 0 is already tabular width, so would pass either way.
-            let width = shaped_width(window, &tabular, size, &"1".repeat(REPEATS));
+            let width = shaped_width(window, &tabular, "1".repeat(REPEATS).into());
             let off = (width - APPKIT_TABULAR_WIDTH).abs();
             RAN.fetch_add(1, Ordering::Relaxed);
             let matches = off < 0.05;
@@ -132,22 +96,23 @@ impl Render for Probe {
                 if matches { "ok" } else { "WRONG" }
             );
 
-            let jitter = |font: &Font| {
-                let a = shaped_width(window, font, size, "11:11\u{202F}AM");
-                let b = shaped_width(window, font, size, "10:00\u{202F}AM");
-                (a, b, (a - b).abs())
-            };
-            for (label, font) in [("system_font", &plain), ("system_font_tabular", &tabular)] {
-                let (a, b, shift) = jitter(font);
+            for (label, font, gated) in [
+                ("system_font", &plain, false),
+                ("system_font_tabular", &tabular, true),
+            ] {
+                let a = shaped_width(window, font, "11:11\u{202F}AM".into());
+                let b = shaped_width(window, font, "10:00\u{202F}AM".into());
+                let shift = (a - b).abs();
                 println!(
                     "{label:<22} \"11:11 AM\" {a:>6.2}   \"10:00 AM\" {b:>6.2}   jitter {shift:>5.2}pt"
                 );
-            }
-            let (_, _, shift) = jitter(&tabular);
-            RAN.fetch_add(1, Ordering::Relaxed);
-            if shift >= EQUAL {
-                FAILED.fetch_add(1, Ordering::Relaxed);
-                println!("WRONG: a tabular column still shifts by {shift:.2}pt");
+                if gated {
+                    RAN.fetch_add(1, Ordering::Relaxed);
+                    if shift >= EQUAL {
+                        FAILED.fetch_add(1, Ordering::Relaxed);
+                        println!("WRONG: a tabular column still shifts by {shift:.2}pt");
+                    }
+                }
             }
         }
         div().size_full()

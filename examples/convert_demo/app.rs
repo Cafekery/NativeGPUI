@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,15 +6,14 @@ use std::time::Duration;
 
 use convert::{Format, Intent, Kind, Probe, Report, ffmpeg_available, probe, relevant_targets};
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, FontWeight, Hsla, MouseButton, Render, SharedString,
-    TextAlign, WeakEntity, Window, WindowBounds, div, hsla, img, point, prelude::*, px, relative,
-    size, uniform_list,
+    AnyElement, Context, Div, FontWeight, Hsla, MouseButton, Render, SharedString, TextAlign,
+    Window, div, hsla, img, prelude::*, px, relative, uniform_list,
 };
 use native_gpui::tokens::{FileType, SystemColor, file_icon, system_color};
 use native_gpui::{
-    ButtonBezel, CheckState, ControlSize, NativeButton, glass, native_button, native_checkbox,
-    native_popup, native_progress, native_root, native_segmented, set_corner_radius,
-    set_window_flags, window_flags,
+    ButtonBezel, CheckState, ControlSize, NativeButton, NativePopup, glass, native_button,
+    native_checkbox, native_popup, native_progress, native_root, native_segmented,
+    set_corner_radius, set_window_flags, window_flags,
 };
 
 use crate::{drop, jobs, open, thumbs};
@@ -319,11 +319,7 @@ impl ConvertDemo {
                 None => format!("Saved {files} next to the originals"),
             });
         }
-        if saved > 0 {
-            parts.push(format!("{} smaller", format_bytes(saved as u64)));
-        } else if saved < 0 {
-            parts.push(format!("{} larger", format_bytes(saved.unsigned_abs())));
-        }
+        parts.extend(size_change(saved));
         if failed > 0 {
             parts.push(format!("{failed} didn’t convert"));
         }
@@ -368,15 +364,20 @@ fn folder_name(dir: &Path) -> String {
     )
 }
 
+fn file_name(path: &Path) -> SharedString {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .into()
+}
+
 fn caption(text: impl IntoElement, color: Hsla) -> Div {
     div().text_size(px(11.)).text_color(color).child(text)
 }
 
 impl Render for ConvertDemo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        drop::install(window);
-        drop::hide_traffic_lights(window);
-        drop::enable_resize(window);
+        drop::prepare(window);
         if !self.is_window_styled {
             window.set_window_title("Convert");
             let mut flags = window_flags(window);
@@ -437,6 +438,13 @@ fn well(
         native_button("well.choose", count_noun(n, "file", "files"))
             .trailing_symbol("chevron.right")
     };
+    let centered = |text: SharedString, color| {
+        div()
+            .mb_2()
+            .flex()
+            .justify_center()
+            .child(caption(text, color))
+    };
 
     div()
         .relative()
@@ -469,21 +477,9 @@ fn well(
                         .child(stack_art(demo, window.scale_factor(), secondary)),
                 )
                 .when_some(demo.notice.clone(), |d, note| {
-                    d.child(
-                        div()
-                            .mb_2()
-                            .flex()
-                            .justify_center()
-                            .child(caption(note, system_color(SystemColor::SystemOrange))),
-                    )
+                    d.child(centered(note, system_color(SystemColor::SystemOrange)))
                 })
-                .child(
-                    div()
-                        .mb_2()
-                        .flex()
-                        .justify_center()
-                        .child(caption(well_caption(demo), secondary)),
-                )
+                .child(centered(well_caption(demo), secondary))
                 .child(
                     button
                         .bezel_style(ButtonBezel::Glass)
@@ -597,7 +593,6 @@ fn browse(
     window: &Window,
     cx: &mut Context<ConvertDemo>,
 ) -> AnyElement {
-    let scale = window.scale_factor();
     let is_busy = demo.is_busy;
 
     div()
@@ -664,15 +659,9 @@ fn browse(
                     d.child(caption(summary, secondary))
                 })
                 .child(if demo.is_grid {
-                    grid_body(
-                        demo,
-                        scale,
-                        f32::from(window.viewport_size().width),
-                        secondary,
-                        cx,
-                    )
+                    grid_body(demo, secondary, window, cx)
                 } else {
-                    list_body(demo, scale, secondary, cx)
+                    list_body(demo, secondary, cx)
                 })
                 .child(browse_footer(demo, secondary, cx)),
         )
@@ -747,6 +736,15 @@ fn browse_footer(demo: &ConvertDemo, secondary: Hsla, cx: &mut Context<ConvertDe
         let plural = if n == 1 { "" } else { "s" };
         format!("Save {n} file{plural} as {}", demo.target.label())
     };
+    let popup = |control: NativePopup| {
+        div().flex_1().child(
+            control
+                .bezel_style(ButtonBezel::Glass)
+                .control_size(ControlSize::Large)
+                .width(relative(1.))
+                .enabled(!is_busy),
+        )
+    };
 
     div()
         .flex()
@@ -767,38 +765,26 @@ fn browse_footer(demo: &ConvertDemo, secondary: Hsla, cx: &mut Context<ConvertDe
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(
-                    div().flex_1().child(
-                        native_popup("format", demo.target_index())
-                            .items(targets.iter().map(|format| format.label()))
-                            .bezel_style(ButtonBezel::Glass)
-                            .control_size(ControlSize::Large)
-                            .width(relative(1.))
-                            .enabled(!is_busy)
-                            .on_change(cx.listener(move |this, index: &usize, _, cx| {
-                                if let Some(format) = targets.get(*index) {
-                                    this.target = *format;
-                                }
-                                cx.notify();
-                            })),
-                    ),
-                )
-                .child(
-                    div().flex_1().child(
-                        native_popup("intent", intent_index)
-                            .items(Intent::all().iter().map(|intent| intent.label()))
-                            .bezel_style(ButtonBezel::Glass)
-                            .control_size(ControlSize::Large)
-                            .width(relative(1.))
-                            .enabled(!is_busy)
-                            .on_change(cx.listener(|this, index: &usize, _, cx| {
-                                if let Some(intent) = Intent::all().get(*index) {
-                                    this.intent = *intent;
-                                }
-                                cx.notify();
-                            })),
-                    ),
-                ),
+                .child(popup(
+                    native_popup("format", demo.target_index())
+                        .items(targets.iter().map(|format| format.label()))
+                        .on_change(cx.listener(move |this, index: &usize, _, cx| {
+                            if let Some(format) = targets.get(*index) {
+                                this.target = *format;
+                            }
+                            cx.notify();
+                        })),
+                ))
+                .child(popup(
+                    native_popup("intent", intent_index)
+                        .items(Intent::all().iter().map(|intent| intent.label()))
+                        .on_change(cx.listener(|this, index: &usize, _, cx| {
+                            if let Some(intent) = Intent::all().get(*index) {
+                                this.intent = *intent;
+                            }
+                            cx.notify();
+                        })),
+                )),
         )
         .when(demo.target.kind() != Kind::Font, |d| {
             d.child(
@@ -867,109 +853,88 @@ fn can_convert(item: &Item, target: Format) -> bool {
 
 fn grid_body(
     demo: &ConvertDemo,
-    scale: f32,
-    viewport_w: f32,
     secondary: Hsla,
-    cx: &mut Context<ConvertDemo>,
+    window: &Window,
+    cx: &Context<ConvertDemo>,
 ) -> AnyElement {
-    let this = cx.entity().downgrade();
-    let items = item_views(demo, false);
-    let hover = demo.hover;
-    let (cols, cell, thumb_h) = grid_metrics(viewport_w);
-    let rows = items.len().max(1).div_ceil(cols);
+    let (cols, cell, thumb_h) = grid_metrics(f32::from(window.viewport_size().width));
     let row_h = thumb_h + GRID_LABEL + GRID_ROW_GAP;
-    uniform_list("grid", rows, move |range, _, _| {
-        range
-            .map(|row| {
-                div()
-                    .h(px(row_h))
-                    .flex()
-                    .gap(px(GRID_GAP))
-                    .pb(px(GRID_ROW_GAP))
-                    .children((row * cols..(row + 1) * cols).map(|i| {
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .children(items.get(i).map(|item| {
-                                grid_cell(
-                                    item,
-                                    cell,
-                                    thumb_h,
-                                    scale,
-                                    secondary,
-                                    hover == Some(item.index),
-                                    this.clone(),
-                                )
-                            }))
-                    }))
-            })
-            .collect()
-    })
+    uniform_list(
+        "grid",
+        demo.items.len().max(1).div_ceil(cols),
+        cx.processor(move |demo, range: Range<usize>, window, cx| {
+            let scale = window.scale_factor();
+            range
+                .map(|row| {
+                    div()
+                        .h(px(row_h))
+                        .flex()
+                        .gap(px(GRID_GAP))
+                        .pb(px(GRID_ROW_GAP))
+                        .children((row * cols..(row + 1) * cols).map(|index| {
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .when(index < demo.items.len(), |d| {
+                                    d.child(grid_cell(
+                                        demo, index, cell, thumb_h, scale, secondary, cx,
+                                    ))
+                                })
+                        }))
+                })
+                .collect::<Vec<_>>()
+        }),
+    )
     .flex_1()
     .into_any_element()
 }
 
-fn list_body(
-    demo: &ConvertDemo,
-    scale: f32,
-    secondary: Hsla,
-    cx: &mut Context<ConvertDemo>,
-) -> AnyElement {
-    let this = cx.entity().downgrade();
-    let items = item_views(demo, true);
-    let hover = demo.hover;
-    uniform_list("list", items.len(), move |range, _, _| {
-        items[range]
-            .iter()
-            .map(|item| {
-                list_row(
-                    item,
-                    scale,
-                    secondary,
-                    hover == Some(item.index),
-                    this.clone(),
-                )
-            })
-            .collect()
-    })
+fn list_body(demo: &ConvertDemo, secondary: Hsla, cx: &Context<ConvertDemo>) -> AnyElement {
+    uniform_list(
+        "list",
+        demo.items.len(),
+        cx.processor(move |demo, range: Range<usize>, window, cx| {
+            let scale = window.scale_factor();
+            range
+                .map(|index| list_row(demo, index, scale, secondary, cx))
+                .collect::<Vec<_>>()
+        }),
+    )
     .flex_1()
     .into_any_element()
 }
 
 fn watch_hover(
-    this: WeakEntity<ConvertDemo>,
     index: usize,
-) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
-    move |hovered, _, cx| {
-        this.update(cx, |demo, cx| {
-            if *hovered {
-                demo.hover = Some(index);
-            } else if demo.hover == Some(index) {
-                demo.hover = None;
-            }
-            cx.notify();
-        })
-        .ok();
+) -> impl Fn(&mut ConvertDemo, &bool, &mut Window, &mut Context<ConvertDemo>) + 'static {
+    move |demo, hovered, _, cx| {
+        if *hovered {
+            demo.hover = Some(index);
+        } else if demo.hover == Some(index) {
+            demo.hover = None;
+        }
+        cx.notify();
     }
 }
 
 fn grid_cell(
-    item: &ItemView,
+    demo: &ConvertDemo,
+    index: usize,
     cell: f32,
     thumb_h: f32,
     scale: f32,
     secondary: Hsla,
-    hovered: bool,
-    this: WeakEntity<ConvertDemo>,
-) -> AnyElement {
+    cx: &Context<ConvertDemo>,
+) -> impl IntoElement {
+    let item = &demo.items[index];
     div()
         .flex()
         .flex_col()
         .items_center()
         .gap_1()
-        .id(("grid.cell", item.index))
-        .on_hover(watch_hover(this.clone(), item.index))
-        .child(thumb_with_save(item, cell, thumb_h, scale, hovered, this))
+        .id(("grid.cell", index))
+        .on_hover(cx.listener(watch_hover(index)))
+        .child(thumb_with_save(demo, index, cell, thumb_h, scale, cx))
         .child(
             div()
                 .w(px(cell))
@@ -979,29 +944,29 @@ fn grid_cell(
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .overflow_hidden()
-                .child(item.name.clone()),
+                .child(file_name(&item.path)),
         )
-        .children(meta_lines(item, secondary, Some(cell)))
-        .into_any_element()
+        .children(meta_lines(demo, item, false, secondary, Some(cell)))
 }
 
 fn list_row(
-    item: &ItemView,
+    demo: &ConvertDemo,
+    index: usize,
     scale: f32,
     secondary: Hsla,
-    hovered: bool,
-    this: WeakEntity<ConvertDemo>,
-) -> AnyElement {
+    cx: &Context<ConvertDemo>,
+) -> impl IntoElement {
+    let item = &demo.items[index];
     div()
         .flex()
         .items_center()
         .gap_3()
         .h(px(LIST_ROW))
         .w_full()
-        .id(("list.row", item.index))
-        .on_hover(watch_hover(this.clone(), item.index))
+        .id(("list.row", index))
+        .on_hover(cx.listener(watch_hover(index)))
         .child(thumb_with_save(
-            item, LIST_ICON, LIST_ICON, scale, hovered, this,
+            demo, index, LIST_ICON, LIST_ICON, scale, cx,
         ))
         .child(
             div()
@@ -1015,52 +980,64 @@ fn list_row(
                         .text_ellipsis()
                         .whitespace_nowrap()
                         .overflow_hidden()
-                        .child(item.name.clone()),
+                        .child(file_name(&item.path)),
                 )
-                .children(meta_lines(item, secondary, None)),
+                .children(meta_lines(demo, item, true, secondary, None)),
         )
-        .into_any_element()
 }
 
 fn thumb_with_save(
-    item: &ItemView,
+    demo: &ConvertDemo,
+    index: usize,
     width: f32,
     height: f32,
     scale: f32,
-    hovered: bool,
-    this: WeakEntity<ConvertDemo>,
-) -> AnyElement {
-    let index = item.index;
+    cx: &Context<ConvertDemo>,
+) -> impl IntoElement {
+    let item = &demo.items[index];
+    let can_save = demo.hover == Some(index) && !demo.is_busy && can_convert(item, demo.target);
     div()
         .relative()
         .flex_none()
-        .on_mouse_down(MouseButton::Left, {
-            let this = this.clone();
-            move |_, _, cx| {
-                this.read_with(cx, |demo, _| {
-                    if let Some(item) = demo.items.get(index) {
-                        open::reveal(item.revealed());
-                    }
-                })
-                .ok();
-            }
-        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |demo, _, _, _| {
+                if let Some(item) = demo.items.get(index) {
+                    open::reveal(item.revealed());
+                }
+            }),
+        )
         .child(poster_thumb(&item.path, width, height, scale, false))
-        .when(hovered && item.can_save, |d| {
+        .when(can_save, |d| {
+            let title = if item.error.is_some() {
+                "Try again"
+            } else {
+                "Save"
+            };
             d.child(
-                div()
-                    .absolute()
-                    .top(px(6.))
-                    .right(px(6.))
-                    .child(item_save(item, this)),
+                div().absolute().top(px(6.)).right(px(6.)).child(
+                    native_button(("item.save", index), title)
+                        .bezel_style(ButtonBezel::Glass)
+                        .control_size(ControlSize::Large)
+                        .on_click(cx.listener(move |demo, _, _, cx| {
+                            jobs::start(demo, cx, Some(index));
+                            cx.notify();
+                        })),
+                ),
             )
         })
-        .into_any_element()
 }
 
-fn meta_lines(item: &ItemView, secondary: Hsla, width: Option<f32>) -> impl Iterator<Item = Div> {
-    let line = move |text: &SharedString, color| {
-        let line = caption(text.clone(), color)
+fn meta_lines(
+    demo: &ConvertDemo,
+    item: &Item,
+    should_show_plan: bool,
+    secondary: Hsla,
+    width: Option<f32>,
+) -> impl Iterator<Item = Div> {
+    let (from, to, change) = item_copy(item, demo.target, demo.intent, should_show_plan);
+    let line = move |text: SharedString, color| {
+        let line = caption(text, color)
             .text_ellipsis()
             .whitespace_nowrap()
             .overflow_hidden();
@@ -1069,59 +1046,8 @@ fn meta_lines(item: &ItemView, secondary: Hsla, width: Option<f32>) -> impl Iter
             None => line,
         }
     };
-    let to = (!item.to.is_empty()).then(|| line(&item.to, item.change));
-    std::iter::once(line(&item.from, secondary)).chain(to)
-}
-
-fn item_save(item: &ItemView, this: WeakEntity<ConvertDemo>) -> NativeButton {
-    let index = item.index;
-    let title = if item.is_retry { "Try again" } else { "Save" };
-    native_button(("item.save", index), title)
-        .bezel_style(ButtonBezel::Glass)
-        .control_size(ControlSize::Large)
-        .on_click(move |_, _, cx| {
-            this.update(cx, |demo, cx| {
-                jobs::start(demo, cx, Some(index));
-                cx.notify();
-            })
-            .ok();
-        })
-}
-
-struct ItemView {
-    index: usize,
-    path: PathBuf,
-    name: SharedString,
-    from: SharedString,
-    to: SharedString,
-    change: Hsla,
-    can_save: bool,
-    is_retry: bool,
-}
-
-fn item_views(demo: &ConvertDemo, should_show_plan: bool) -> Vec<ItemView> {
-    demo.items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let (from, to, change) = item_copy(item, demo.target, demo.intent, should_show_plan);
-            ItemView {
-                index,
-                path: item.path.clone(),
-                name: item
-                    .path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-                    .into(),
-                from,
-                to,
-                change,
-                can_save: can_convert(item, demo.target) && !demo.is_busy,
-                is_retry: item.error.is_some() && item.report.is_none(),
-            }
-        })
-        .collect()
+    let to = (!to.is_empty()).then(|| line(to, change));
+    std::iter::once(line(from, secondary)).chain(to)
 }
 
 fn item_copy(
@@ -1148,18 +1074,13 @@ fn item_copy(
             format_bytes(report.bytes_in),
             format_bytes(report.bytes_out)
         );
-        let (mut bits, change) = if report.grew() {
-            let delta = format_bytes(report.bytes_out - report.bytes_in);
-            (vec![format!("{delta} larger")], orange)
-        } else if report.bytes_out < report.bytes_in {
-            let delta = format_bytes(report.bytes_in - report.bytes_out);
-            (
-                vec![format!("{delta} smaller")],
-                system_color(SystemColor::SystemGreen),
-            )
-        } else {
-            (Vec::new(), label)
+        let saved = report.bytes_in as i64 - report.bytes_out as i64;
+        let change = match saved.signum() {
+            1 => system_color(SystemColor::SystemGreen),
+            -1 => orange,
+            _ => label,
         };
+        let mut bits: Vec<String> = size_change(saved).into_iter().collect();
         if let (Some(w), Some(h)) = (report.width_out, report.height_out) {
             bits.push(format!("{w}×{h}"));
         }
@@ -1210,6 +1131,14 @@ fn item_before(probe: Option<&Probe>) -> SharedString {
     }
 }
 
+fn size_change(saved: i64) -> Option<String> {
+    match saved.signum() {
+        1 => Some(format!("{} smaller", format_bytes(saved as u64))),
+        -1 => Some(format!("{} larger", format_bytes(saved.unsigned_abs()))),
+        _ => None,
+    }
+}
+
 fn scaled_edge(width: u32, height: u32, max_edge: Option<u32>) -> (u32, u32) {
     let long = width.max(height);
     match max_edge {
@@ -1235,11 +1164,4 @@ fn format_bytes(n: u64) -> String {
     } else {
         format!("{n:.0} B")
     }
-}
-
-pub fn window_bounds() -> WindowBounds {
-    WindowBounds::Windowed(Bounds {
-        origin: point(px(240.), px(160.)),
-        size: size(px(500.), px(620.)),
-    })
 }

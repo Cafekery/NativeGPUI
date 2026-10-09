@@ -227,7 +227,6 @@ fn appearance_section(pinned: bool, cx: &mut Context<Demo>) -> AnyElement {
 
 fn color_section(differing: usize) -> AnyElement {
     let total = SystemColor::ALL.len();
-    let tiles: Vec<AnyElement> = SystemColor::ALL.iter().copied().map(color_tile).collect();
 
     let (light_refused, dark_refused) = (refused(Appearance::Light), refused(Appearance::Dark));
     let pattern = srgb(&NSColor::scrubberTexturedBackgroundColor());
@@ -240,7 +239,7 @@ fn color_section(differing: usize) -> AnyElement {
                  {differing} of {total} differ between the two, so a swatch is only meaningful \
                  with its appearance stated."
             )),
-            grid(tiles),
+            grid(SystemColor::ALL.iter().copied().map(color_tile).collect()),
             demo(
                 "colours that refuse sRGB conversion",
                 stack(vec![
@@ -256,10 +255,7 @@ fn color_section(differing: usize) -> AnyElement {
                     )),
                     mono(format!(
                         "srgb(NSColor.scrubberTexturedBackgroundColor) = {}",
-                        match pattern {
-                            Some(c) => hex(c),
-                            None => "None".into(),
-                        }
+                        pattern.map_or_else(|| "None".into(), hex)
                     )),
                     note(
                         "The pattern colour on the second line is the control: an empty refusal \

@@ -610,19 +610,15 @@ fn edge_step(edge: &mut Edge, sidebar: &NativeSidebar, window: &mut Window, cx: 
             let draw = draw_origin(sidebar);
             let at = window_to_global(sidebar, draw.0 + EDGE_ANIM_AIM.0, draw.1 + EDGE_ANIM_AIM.1);
             let (x, y) = EDGE_ANIM_AIM;
-            if edge.phase == 6 {
-                println!(
-                    "--- collapsing; async click queued at global ({:.1},{:.1}) for logical ({:.1},{:.1}) ---",
-                    at.x, at.y, x, y
-                );
-                edge.state = "collapsing";
+            edge.state = if edge.phase == 6 {
+                "collapsing"
             } else {
-                println!(
-                    "--- expanding; async click queued at global ({:.1},{:.1}) for logical ({:.1},{:.1}) ---",
-                    at.x, at.y, x, y
-                );
-                edge.state = "expanding";
-            }
+                "expanding"
+            };
+            println!(
+                "--- {}; async click queued at global ({:.1},{:.1}) for logical ({:.1},{:.1}) ---",
+                edge.state, at.x, at.y, x, y
+            );
             edge.anim_frames = 0;
             click_async(at, 60);
             sidebar.toggle();
@@ -724,8 +720,7 @@ struct Demo {
     click_tries: u32,
     click_seen: usize,
     click_wait: u64,
-    row_click_rows: Vec<isize>,
-    row_click_expect: Vec<String>,
+    row_clicks: Vec<(isize, String)>,
     row_click_index: usize,
     row_click_tries: u32,
     state_frames: u64,
@@ -774,13 +769,12 @@ impl Demo {
         let diff = sidebar.update(&self.items());
         let frame = sidebar.window_frame();
         println!(
-            "WINDOW id={} frame=({:.0},{:.0},{:.0},{:.0}) scale={:.1}",
+            "WINDOW id={} frame=({:.0},{:.0},{:.0},{:.0}) scale=2.0",
             sidebar.window_number(),
             frame.origin.x,
             frame.origin.y,
             frame.size.width,
             frame.size.height,
-            2.0,
         );
         println!("SCREEN height={:.0}", sidebar.screen_height());
         println!("first update: {diff:?}");
@@ -1316,7 +1310,7 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         return;
     }
 
-    if demo.knobs.state && demo.row_click_index >= demo.row_click_rows.len() {
+    if demo.knobs.state && demo.row_click_index >= demo.row_clicks.len() {
         demo.state_frames += 1;
         let n = demo.state_frames;
         if n == 5 {
@@ -1349,13 +1343,13 @@ fn script(demo: &mut Demo, sidebar: &NativeSidebar, window: &mut Window, cx: &mu
         }
     }
 
-    if let Some(&row) = demo.row_click_rows.get(demo.row_click_index) {
+    if let Some((row, expect)) = demo.row_clicks.get(demo.row_click_index) {
+        let row = *row;
         if demo.click_wait > 0 {
             demo.click_wait -= 1;
             return;
         }
-        let expect = demo.row_click_expect[demo.row_click_index].as_str();
-        if sidebar.selected().as_deref() == Some(expect) {
+        if sidebar.selected().as_deref() == Some(expect.as_str()) {
             println!(
                 "ROWCLICK row {row} -> sidebar.selected()={:?} gpui state={:?} after {} attempt(s)",
                 sidebar.selected(),
@@ -1437,17 +1431,14 @@ fn main() {
                 click_tries: 0,
                 click_seen: 0,
                 click_wait: 45,
-                row_click_rows: env::var("NG_ROWCLICK")
+                row_clicks: env::var("NG_ROWCLICK")
                     .map(|spec| {
                         spec.split(',')
-                            .filter_map(|r| r.split(':').next()?.trim().parse().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                row_click_expect: env::var("NG_ROWCLICK")
-                    .map(|spec| {
-                        spec.split(',')
-                            .map(|r| r.split(':').nth(1).unwrap_or("").trim().to_string())
+                            .filter_map(|r| {
+                                let mut it = r.split(':');
+                                let row = it.next()?.trim().parse().ok()?;
+                                Some((row, it.next().unwrap_or("").trim().to_owned()))
+                            })
                             .collect()
                     })
                     .unwrap_or_default(),

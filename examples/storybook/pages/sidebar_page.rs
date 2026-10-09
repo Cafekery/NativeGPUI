@@ -1,7 +1,8 @@
 use crate::ui::*;
 use crate::{Demo, popout};
 use gpui::{
-    AnyElement, App, Context, Render, SharedString, Window, WindowHandle, div, prelude::*, px,
+    AnyElement, App, Context, Render, SharedString, WeakEntity, Window, WindowHandle, div,
+    prelude::*, px,
 };
 use native_gpui::sidebar::{
     NativeSidebar, PaneAlign, SidebarItem, SidebarMove, SidebarOptions, SidebarProbe,
@@ -147,32 +148,16 @@ impl SidebarWindow {
         let entity = cx.entity().downgrade();
         let selecting = entity.clone();
         sidebar.on_select(move |id, _, cx| {
-            let Some(id) = id.clone() else { return };
-            selecting
-                .update(cx, |this: &mut SidebarWindow, cx| {
-                    this.selected = id;
-                    cx.notify();
-                })
-                .ok();
+            if let Some(id) = id.clone() {
+                update(&selecting, cx, |this| this.selected = id);
+            }
         });
         let reordering = entity.clone();
         sidebar.on_reorder(move |moved, _, cx| {
-            let moved = moved.clone();
-            reordering
-                .update(cx, |this: &mut SidebarWindow, cx| {
-                    this.moved = Some(moved);
-                    cx.notify();
-                })
-                .ok();
+            update(&reordering, cx, |this| this.moved = Some(moved.clone()));
         });
         sidebar.on_eject(move |id, _, cx| {
-            let id = id.clone();
-            entity
-                .update(cx, |this: &mut SidebarWindow, cx| {
-                    this.ejected = Some(id);
-                    cx.notify();
-                })
-                .ok();
+            update(&entity, cx, |this| this.ejected = Some(id.clone()));
         });
         self.sidebar = Some(sidebar);
     }
@@ -219,8 +204,30 @@ impl SidebarWindow {
     }
 }
 
+fn update(
+    entity: &WeakEntity<SidebarWindow>,
+    cx: &mut App,
+    apply: impl FnOnce(&mut SidebarWindow),
+) {
+    entity
+        .update(cx, |this, cx| {
+            apply(this);
+            cx.notify();
+        })
+        .ok();
+}
+
 fn parent_of(moved: &SidebarMove) -> &str {
-    moved.parent.as_ref().map_or("(root)", |id| id.as_ref())
+    moved.parent.as_deref().unwrap_or("(root)")
+}
+
+fn reorder_line(m: &SidebarMove) -> String {
+    format!(
+        "on_reorder: {} → index {} in {}",
+        m.id,
+        m.index,
+        parent_of(m)
+    )
 }
 
 impl Render for SidebarWindow {
@@ -291,12 +298,7 @@ impl Render for SidebarWindow {
                         ))
                     }))
                     .child(line(match &self.moved {
-                        Some(m) => format!(
-                            "on_reorder: {} → index {} in {}",
-                            m.id,
-                            m.index,
-                            parent_of(m)
-                        ),
+                        Some(m) => reorder_line(m),
                         None => "on_reorder: nothing dragged yet".into(),
                     }))
                     .child(line(match &self.ejected {
@@ -631,12 +633,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
                      Locations is ejectable(true) — click its eject affordance.",
                 ),
                 caption(match &moved {
-                    Some(m) => format!(
-                        "on_reorder: {} → index {} in {}",
-                        m.id,
-                        m.index,
-                        parent_of(m)
-                    ),
+                    Some(m) => reorder_line(m),
                     None if reorderable => "on_reorder: nothing dragged yet".into(),
                     None => "on_reorder: reorderable is off, so nothing can be dragged".into(),
                 }),

@@ -1,6 +1,6 @@
 use crate::Demo;
 use crate::ui::*;
-use gpui::{AnyElement, Context, Hsla, Window, div, hsla, prelude::*, px};
+use gpui::{AnyElement, Context, Hsla, Window, div, hsla, prelude::*};
 use native_gpui::{
     ColorWellStyle, DateElements, DatePickerStyle, PathStyle, native_color_well,
     native_date_picker, native_path_control, native_stepper,
@@ -270,17 +270,16 @@ fn stepper_row(label: &'static str, value: String, control: AnyElement) -> AnyEl
         .flex()
         .items_center()
         .gap_3()
-        .child(div().w(px(320.)).child(caption(label)))
+        .child(sized(320., caption(label)))
         .child(control)
-        .child(div().w(px(60.)).child(mono(value)))
+        .child(sized(60., mono(value)))
         .into_any_element()
 }
 
 fn now_seconds() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs_f64())
-        .unwrap_or(0.)
+        .map_or(0., |since| since.as_secs_f64())
 }
 
 // Hinnant's civil_from_days.

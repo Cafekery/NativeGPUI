@@ -1,6 +1,6 @@
 use gpui::{
-    App, Bounds, Context, Render, SharedString, Window, WindowBounds, WindowOptions, div, point,
-    prelude::*, px, rgb, rgba, size,
+    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, point, prelude::*, px,
+    rgb, rgba, size,
 };
 use native_gpui::{Material, RawMaterial, material, native_root, window_options};
 
@@ -60,8 +60,10 @@ struct Demo {
 impl Demo {
     fn button(
         id: &'static str,
-        label: impl Into<SharedString>,
+        label: String,
         ink: gpui::Rgba,
+        cx: &Context<Self>,
+        toggle: fn(&mut Self),
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -74,7 +76,11 @@ impl Demo {
             .text_color(ink)
             .text_size(px(11.))
             .cursor_pointer()
-            .child(label.into())
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                toggle(this);
+                cx.notify();
+            }))
     }
 
     fn swatch(
@@ -136,45 +142,27 @@ impl Render for Demo {
                                 .text_size(px(13.))
                                 .child("Library")
                                 .child("All Items")
-                                .child(
-                                    Self::button(
-                                        "btn-card",
-                                        format!("card {card_name}"),
-                                        rgb(0x0a84ff),
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.card = (this.card + 1) % CYCLE.len();
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    Self::button(
-                                        "btn-radius",
-                                        format!("radius {radius}"),
-                                        rgb(0x30d158),
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.rounded = !this.rounded;
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                                .child(
-                                    Self::button(
-                                        "btn-emph",
-                                        format!("emphasized {}", self.emphasized),
-                                        rgb(0xbf5af2),
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.emphasized = !this.emphasized;
-                                            cx.notify();
-                                        },
-                                    )),
-                                ),
+                                .child(Self::button(
+                                    "btn-card",
+                                    format!("card {card_name}"),
+                                    rgb(0x0a84ff),
+                                    cx,
+                                    |this| this.card = (this.card + 1) % CYCLE.len(),
+                                ))
+                                .child(Self::button(
+                                    "btn-radius",
+                                    format!("radius {radius}"),
+                                    rgb(0x30d158),
+                                    cx,
+                                    |this| this.rounded = !this.rounded,
+                                ))
+                                .child(Self::button(
+                                    "btn-emph",
+                                    format!("emphasized {}", self.emphasized),
+                                    rgb(0xbf5af2),
+                                    cx,
+                                    |this| this.emphasized = !this.emphasized,
+                                )),
                         )
                         .child(
                             material("content", Material::WindowBackground)

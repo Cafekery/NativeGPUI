@@ -62,60 +62,53 @@ fn caption(index: usize, text: &'static str) -> Div {
         .child(text)
 }
 
-fn row(band: f32) -> [Div; COUNT] {
+fn row(band: f32) -> impl Iterator<Item = Div> {
     let regular = GlassRecipe::regular();
     let key = |name: &'static str| (name, band as u32);
     let tuned = move |name: &'static str, recipe: GlassRecipe| {
-        custom_glass(key(name)).recipe(GlassRecipe {
-            corner_radius: RADIUS,
-            ..recipe
-        })
+        custom_glass(key(name))
+            .recipe(GlassRecipe {
+                corner_radius: RADIUS,
+                ..recipe
+            })
+            .into_any_element()
     };
 
     [
-        slot(0, band, glass(key("stock")).corner_radius(px(RADIUS))),
-        slot(1, band, tuned("regular", regular)),
-        slot(2, band, tuned("clear", GlassRecipe::clear())),
-        slot(
-            3,
-            band,
-            tuned(
-                "blur",
-                GlassRecipe {
-                    blur_radius: 40.,
-                    ..regular
-                },
-            ),
+        glass(key("stock"))
+            .corner_radius(px(RADIUS))
+            .into_any_element(),
+        tuned("regular", regular),
+        tuned("clear", GlassRecipe::clear()),
+        tuned(
+            "blur",
+            GlassRecipe {
+                blur_radius: 40.,
+                ..regular
+            },
         ),
-        slot(
-            4,
-            band,
-            tuned(
-                "saturation",
-                GlassRecipe {
-                    face_saturation: 3.,
-                    ..regular
-                },
-            ),
+        tuned(
+            "saturation",
+            GlassRecipe {
+                face_saturation: 3.,
+                ..regular
+            },
         ),
-        slot(
-            5,
-            band,
-            tuned(
-                "refraction",
-                GlassRecipe {
-                    inner_refraction_amount: -300.,
-                    inner_refraction_height: 60.,
-                    ..regular
-                },
-            ),
+        tuned(
+            "refraction",
+            GlassRecipe {
+                inner_refraction_amount: -300.,
+                inner_refraction_height: 60.,
+                ..regular
+            },
         ),
-        slot(
-            6,
-            band,
-            custom_glass(key("blob")).recipe(GlassRecipe::blob()),
-        ),
+        custom_glass(key("blob"))
+            .recipe(GlassRecipe::blob())
+            .into_any_element(),
     ]
+    .into_iter()
+    .enumerate()
+    .map(move |(index, panel)| slot(index, band, panel))
 }
 
 const LABELS: [&str; COUNT] = [

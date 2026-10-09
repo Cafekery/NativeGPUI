@@ -247,10 +247,8 @@ pub struct Demo {
 impl Demo {
     fn new() -> Self {
         Self {
-            selected: std::env::var("NG_PAGE")
-                .ok()
-                .map(|id| page_of(&id).id)
-                .unwrap_or("switch")
+            selected: page_of(&std::env::var("NG_PAGE").unwrap_or_default())
+                .id
                 .into(),
             ..Default::default()
         }
@@ -283,26 +281,19 @@ impl Demo {
     fn install_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let sidebar = NativeSidebar::install(window, cx, SidebarOptions::default());
 
-        let mut groups: Vec<&'static str> = Vec::new();
-        for page in PAGES {
-            if !groups.contains(&page.group) {
-                groups.push(page.group);
-            }
-        }
-        let items: Vec<_> = groups
-            .iter()
-            .map(|group| {
-                sidebar_group(*group, *group).children(
-                    PAGES
+        let items: Vec<_> = PAGES
+            .chunk_by(|a, b| a.group == b.group)
+            .map(|pages| {
+                sidebar_group(pages[0].group, pages[0].group).children(
+                    pages
                         .iter()
-                        .filter(|page| page.group == *group)
                         .map(|page| sidebar_item(page.id, page.title).symbol(page.symbol)),
                 )
             })
             .collect();
 
         // Before `update`: a selection made while building the rows is dropped if nothing listens.
-        let entity = cx.entity().downgrade();
+        let entity = cx.weak_entity();
         sidebar.on_select(move |id, _, cx| {
             let Some(id) = id.clone() else { return };
             entity
@@ -412,17 +403,8 @@ fn main() {
             }
         })
         .detach();
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: point(px(1180.), px(140.)),
-                    size: size(px(1100.), px(760.)),
-                })),
-                ..window_options()
-            },
-            |_, cx| cx.new(|_| Demo::new()),
-        )
-        .expect("the storybook window opens");
+        popout(cx, (1180., 140.), (1100., 760.), |_, _| Demo::new())
+            .expect("the storybook window opens");
         cx.activate(true);
     });
 }

@@ -222,12 +222,9 @@ fn responder_for(window: &NSWindow, selector: Sel) -> Option<String> {
     if app.respondsToSelector(selector) {
         return Some("NSApplication".into());
     }
-    if let Some(delegate) = app.delegate() {
-        if delegate.respondsToSelector(selector) {
-            return Some(class_name(delegate.as_ref()));
-        }
-    }
-    None
+    app.delegate()
+        .filter(|delegate| delegate.respondsToSelector(selector))
+        .map(|delegate| class_name(delegate.as_ref()))
 }
 
 fn cmd_chord(window: &NSWindow, key: &str, key_code: u16) -> Option<Retained<NSEvent>> {
@@ -681,7 +678,6 @@ fn main() {
                         origin: point(px(1400.), px(40.)),
                         size: size(px(200.), px(120.)),
                     })),
-                    // Keyed within the app, not activated: what a window action resolves against.
                     focus: false,
                     ..window_options()
                 },
