@@ -26,13 +26,13 @@ pub(crate) enum After {
     Reveal,
 }
 
+fn parents<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Vec<PathBuf> {
+    (paths.into_iter())
+        .filter_map(|path| path.as_ref().parent().map(PathBuf::from))
+        .collect()
+}
+
 pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
-    let parents = |items: &[PathBuf]| {
-        items
-            .iter()
-            .filter_map(|item| item.parent().map(PathBuf::from))
-            .collect::<Vec<_>>()
-    };
     match op {
         Op::Move { items, into } | Op::Copy { items, into } | Op::CopyExactly { items, into } => {
             let mut dirs = parents(items);
@@ -45,18 +45,14 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
         | Op::MakeAlias(items)
         | Op::Compress(items) => parents(items),
         Op::Quick(quick) => parents(quick.items()),
-        Op::Rename { path, .. } => parents(std::slice::from_ref(path)),
+        Op::Rename { path, .. } => parents([path]),
         Op::NewFolder { into, .. } | Op::NewFile { into, .. } => vec![into.clone()],
-        Op::PutBack(items) => items
-            .iter()
-            .flat_map(|restore| [&restore.item, &restore.to])
-            .filter_map(|path| path.parent().map(PathBuf::from))
-            .collect(),
-        Op::Retry(request) => request
-            .items()
-            .flat_map(|(item, dest)| [item, dest])
-            .filter_map(|path| path.parent().map(PathBuf::from))
-            .collect(),
+        Op::PutBack(items) => parents(
+            items
+                .iter()
+                .flat_map(|restore| [&restore.item, &restore.to]),
+        ),
+        Op::Retry(request) => parents(request.items().flat_map(|(item, dest)| [item, dest])),
         Op::Batch(ops) => ops.iter().flat_map(touched).collect(),
     }
 }
@@ -116,7 +112,9 @@ impl FinderDemo {
         if after == After::Nothing || !visible {
             return;
         }
-        self.choose(results.iter().map(PathBuf::as_path).map(key_of));
+        self.choose(
+            (results.iter()).map(|path| SharedString::from(path.to_string_lossy().into_owned())),
+        );
         if after == After::Rename {
             self.renaming = self.cursor.clone();
         }
@@ -334,8 +332,4 @@ fn ask_unlock(item: &Path, deleting: bool, offer_all: bool) -> (bool, bool) {
             .suppressionButton()
             .is_some_and(|button| button.state() == NSControlStateValueOn);
     (answer == NSAlertFirstButtonReturn, all)
-}
-
-fn key_of(path: &Path) -> SharedString {
-    SharedString::from(path.to_string_lossy().into_owned())
 }

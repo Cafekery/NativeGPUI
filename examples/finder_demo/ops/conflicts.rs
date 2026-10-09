@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use finder_fs::ops::{Conflict, Op, locked};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
@@ -11,7 +10,7 @@ use native_gpui::{CheckState, Material, material, native_button, native_checkbox
 use super::After;
 use crate::app::FinderDemo;
 use crate::chrome::toolbar::ALERT_RADIUS;
-use crate::data::byte_string;
+use crate::data::{byte_string, day_string, reference_seconds};
 use crate::palette::Palette;
 
 const SHEET_W: f32 = 460.;
@@ -62,7 +61,7 @@ pub(crate) struct Sheet {
     dest: PathBuf,
     remaining: VecDeque<PathBuf>,
     total: usize,
-    pub(crate) apply_to_all: bool,
+    apply_to_all: bool,
 }
 
 impl Sheet {
@@ -162,17 +161,8 @@ fn rename_split(path: PathBuf, name: String) -> Split {
     ))
 }
 
-fn modified_seconds(path: &Path) -> f64 {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|since_epoch| since_epoch.as_secs_f64() - 978_307_200.)
-        .unwrap_or(0.)
-}
-
 fn item_icon(path: &Path, size: f32) -> AnyElement {
-    let text = path.to_string_lossy().into_owned();
+    let text = path.to_string_lossy();
     tokens::file_icon(FileType::Path(&text), px(size))
         .map(|symbol| symbol.img().into_any_element())
         .unwrap_or_else(|| div().into_any_element())
@@ -190,7 +180,8 @@ fn compare_row(path: &Path, caption: &str, palette: &Palette) -> AnyElement {
         .filter(|meta| meta.is_file())
         .map(|meta| byte_string(meta.len()))
         .unwrap_or_else(|| "--".into());
-    let modified = crate::data::day_string(modified_seconds(path));
+    let modified = meta.as_ref().and_then(|meta| meta.modified().ok());
+    let modified = day_string(modified.map_or(0., reference_seconds));
     div()
         .flex_1()
         .flex()
@@ -350,7 +341,7 @@ impl FinderDemo {
             cx.notify();
             return;
         };
-        let mut items = vec![sheet.current.clone()];
+        let mut items = vec![std::mem::take(&mut sheet.current)];
         if sheet.apply_to_all {
             items.extend(sheet.remaining.drain(..));
         }

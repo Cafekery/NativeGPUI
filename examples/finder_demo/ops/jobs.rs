@@ -50,11 +50,11 @@ pub(crate) enum Record {
 }
 
 pub(crate) struct JobRow {
-    pub(crate) id: JobId,
-    pub(crate) op: Op,
-    pub(crate) after: After,
-    pub(crate) record: Record,
-    pub(crate) sound: Option<Sound>,
+    id: JobId,
+    op: Op,
+    after: After,
+    record: Record,
+    sound: Option<Sound>,
     began: Instant,
     progress: Option<Progress>,
     failed: Option<Failed>,
@@ -84,19 +84,6 @@ impl Failed {
 }
 
 impl JobRow {
-    fn new(id: JobId, op: Op, after: After, record: Record, sound: Option<Sound>) -> Self {
-        Self {
-            id,
-            op,
-            after,
-            record,
-            sound,
-            began: Instant::now(),
-            progress: None,
-            failed: None,
-        }
-    }
-
     pub(crate) fn shown(&self) -> bool {
         self.failed.is_some() || self.began.elapsed() >= SHOW_AFTER
     }
@@ -326,7 +313,16 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         let id = self.queue.submit(op.clone(), conflict);
-        self.jobs.push(JobRow::new(id, op, after, record, sound));
+        self.jobs.push(JobRow {
+            id,
+            op,
+            after,
+            record,
+            sound,
+            began: Instant::now(),
+            progress: None,
+            failed: None,
+        });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SHOW_AFTER).await;
             this.update(cx, |this, cx| {
@@ -431,8 +427,8 @@ impl FinderDemo {
         if let Some(sound) = row.sound.filter(|_| clean && !done.results.is_empty()) {
             sound.play();
         }
-        if let Some(left) = left.clone().filter(|_| !failures.is_empty()) {
-            self.undo_left(&row, left);
+        if let Some(left) = left.as_ref().filter(|_| !failures.is_empty()) {
+            self.undo_left(&row, left.clone());
         }
         let entry = self.finish(&row, done, cx);
         if failures.is_empty() || end == End::Cancelled {
