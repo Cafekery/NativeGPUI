@@ -1602,7 +1602,7 @@ mod tests {
 
     #[test]
     fn a_replace_that_fails_keeps_the_moved_item() {
-        let dir = temp_dir("replace-fails");
+        let dir = temp_dir("replace-fails-move");
         let (from, into) = (dir.join("from"), dir.join("into"));
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&into).unwrap();

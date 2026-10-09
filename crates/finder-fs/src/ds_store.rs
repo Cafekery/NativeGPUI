@@ -649,7 +649,7 @@ mod tests {
         let raws: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
         let store = arena(&raws, &FRESH_TAIL).unwrap();
         let levels = u32::from_be_bytes(store[0x28..0x2c].try_into().unwrap());
-        let dir = folder("deep", Some(&store));
+        let dir = folder("deep-store", Some(&store));
         let first = comments(&dir);
         set_comment(&dir, "item 300.txt", "changed").unwrap();
         let once = std::fs::read(dir.join(".DS_Store")).unwrap();
