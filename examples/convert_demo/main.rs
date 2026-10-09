@@ -4,10 +4,10 @@ mod jobs;
 mod open;
 mod thumbs;
 
-use gpui::{App, WindowOptions, actions, prelude::*, px, size};
+use gpui::{App, Bounds, WindowBounds, WindowOptions, actions, point, prelude::*, px, size};
 use native_gpui::{MenuCommand, MenuSection, install_menus, prepend_menu, tokens, window_options};
 
-use crate::app::{ConvertDemo, window_bounds};
+use crate::app::ConvertDemo;
 
 actions!(convert_demo, [OpenFiles, ConvertNow]);
 
@@ -24,7 +24,10 @@ fn main() {
         );
         cx.open_window(
             WindowOptions {
-                window_bounds: Some(window_bounds()),
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(240.), px(160.)),
+                    size: size(px(500.), px(620.)),
+                })),
                 titlebar: None,
                 is_minimizable: false,
                 is_resizable: true,
