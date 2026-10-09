@@ -17,13 +17,13 @@ use super::paths::intern;
 use crate::app::FinderDemo;
 use crate::signal::Signal;
 
-#[derive(PartialEq)]
-struct Mounted {
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct Mounted {
     mount: &'static str,
-    name: &'static str,
-    available: u64,
-    capacity: u64,
-    format: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) available: u64,
+    pub(crate) capacity: u64,
+    pub(crate) format: &'static str,
     network: bool,
 }
 
@@ -248,27 +248,12 @@ pub(crate) fn available_bytes(id: &str) -> u64 {
     holding(&seen(), id).map_or(0, |volume| volume.available)
 }
 
-pub(crate) struct VolumeInfo {
-    pub(crate) name: &'static str,
-    pub(crate) capacity: u64,
-    pub(crate) available: u64,
-    pub(crate) format: &'static str,
-}
-
-pub(crate) fn volume_at(id: &str) -> Option<VolumeInfo> {
-    let info = seen()
-        .iter()
-        .find(|volume| volume.mount == id)
-        .map(|volume| VolumeInfo {
-            name: volume.name,
-            capacity: volume.capacity,
-            available: volume.available,
-            format: volume.format,
-        });
-    if info.is_some() {
+pub(crate) fn volume_at(id: &str) -> Option<Mounted> {
+    let volume = seen().iter().find(|volume| volume.mount == id).copied();
+    if volume.is_some() {
         fresh();
     }
-    info
+    volume
 }
 
 pub(super) fn special() -> &'static HashSet<String> {
