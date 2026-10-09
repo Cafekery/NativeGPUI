@@ -5,7 +5,6 @@ use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use finder_fs::entry::{Entry, EntryKind};
-use finder_fs::index::Index;
 use finder_fs::kind;
 use finder_fs::volumes::{Standard, standard};
 use gpui::SharedString;
@@ -197,12 +196,9 @@ impl Row {
 
 pub(crate) type Facts = (Option<u64>, Option<usize>);
 
-fn indexed_row(dir: &'static str, entry: &Entry, index: &Index) -> Row {
+fn indexed_row(dir: &'static str, entry: &Entry) -> Row {
     let facts = match entry.kind {
-        EntryKind::Directory => {
-            let path = Path::new(dir).join(&entry.name);
-            (index.folder_size(&path), index.visible_children(&path))
-        }
+        EntryKind::Directory => crate::fsearch::facts(&Path::new(dir).join(&entry.name)),
         _ => (None, None),
     };
     row_of(dir, entry, facts)
@@ -260,7 +256,7 @@ pub(crate) fn folder_artwork(path: &'static str, holds: bool) -> FileType<'stati
     if crate::custom::custom_icon(&SharedString::new_static(path)) {
         return FileType::Path(path);
     }
-    let seen = crate::index().visible_children(Path::new(path));
+    let seen = crate::fsearch::visible(Path::new(path));
     folder_kind(path, seen.map_or(holds, |seen| seen > 0))
 }
 
@@ -440,12 +436,8 @@ pub(crate) fn read_sharers(rows: &mut [Arc<Row>]) {
     }
 }
 
-pub(crate) fn hit_row(path: &Path, entry: &Entry, index: &Index) -> Arc<Row> {
-    Arc::new(indexed_row(
-        path.parent().map_or("/", intern_path),
-        entry,
-        index,
-    ))
+pub(crate) fn hit_row(path: &Path, entry: &Entry) -> Arc<Row> {
+    Arc::new(indexed_row(path.parent().map_or("/", intern_path), entry))
 }
 
 fn mdfind(args: &[&OsStr]) -> String {
@@ -455,18 +447,18 @@ fn mdfind(args: &[&OsStr]) -> String {
     }
 }
 
-pub(crate) fn tagged_rows(tag: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
+pub(crate) fn tagged_rows(tag: &str, limit: usize) -> Vec<Arc<Row>> {
     let query = match tag.is_empty() {
         true => "kMDItemUserTags == '*'".to_string(),
         false => format!("kMDItemUserTags == '{tag}'"),
     };
     let found = mdfind(&["-onlyin".as_ref(), "/".as_ref(), query.as_ref()]);
-    let mut rows = rows_at(found.lines().take(limit), index);
+    let mut rows = rows_at(found.lines().take(limit));
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     rows
 }
 
-pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<Row>> {
+pub(crate) fn recent_rows(home: &Path, limit: usize) -> Vec<Arc<Row>> {
     const QUERY: &str = r#"(kMDItemLastUsedDate = "*") && ((kMDItemContentTypeTree = public.content) || (kMDItemContentTypeTree = "com.microsoft.*"cdw) || (kMDItemContentTypeTree = public.archive))"#;
     let found = mdfind(&[
         "-onlyin".as_ref(),
@@ -481,10 +473,10 @@ pub(crate) fn recent_rows(home: &Path, index: &Index, limit: usize) -> Vec<Arc<R
         .filter_map(|line| line.split_once("   kMDItemLastUsedDate = "))
         .collect();
     used.sort_by(|a, b| b.1.cmp(a.1));
-    rows_at(used.into_iter().take(limit).map(|(path, _)| path), index)
+    rows_at(used.into_iter().take(limit).map(|(path, _)| path))
 }
 
-pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -> Vec<Arc<Row>> {
+pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<Arc<Row>> {
     let mut wanted: HashMap<&'static str, HashSet<String>> = HashMap::new();
     for path in paths {
         let path = Path::new(path);
@@ -502,7 +494,7 @@ pub(crate) fn rows_at<'a>(paths: impl Iterator<Item = &'a str>, index: &Index) -
             entries
                 .into_iter()
                 .filter(move |entry| names.contains(&entry.name))
-                .map(move |entry| Arc::new(indexed_row(dir, &entry, index)))
+                .map(move |entry| Arc::new(indexed_row(dir, &entry)))
         })
         .collect()
 }
@@ -534,7 +526,7 @@ fn volume_row(id: &'static str) -> Option<Row> {
     })
 }
 
-pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
+pub(crate) fn icloud_rows() -> Vec<Arc<Row>> {
     finder_fs::icloud::app_folders()
         .into_iter()
         .filter_map(|folder| {
@@ -543,7 +535,7 @@ pub(crate) fn icloud_rows(index: &Index) -> Vec<Arc<Row>> {
                 .ok()?
                 .into_iter()
                 .find(|entry| entry.name == "Documents")?;
-            let mut row = indexed_row(dir, &entry, index);
+            let mut row = indexed_row(dir, &entry);
             row.name = folder.name.clone().into();
             row.display = folder.name.into();
             Some(Arc::new(row))
@@ -556,7 +548,7 @@ pub(crate) fn path_line(id: &'static str) -> Option<Line> {
         Some(row) => Arc::new(row),
         None => {
             let path = Path::new(id);
-            hit_row(path, &finder_fs::list::entry_at(path).ok()?, crate::index())
+            hit_row(path, &finder_fs::list::entry_at(path).ok()?)
         }
     };
     Some(Line {

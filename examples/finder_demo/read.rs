@@ -17,7 +17,7 @@ use crate::listing::{Shape, Walk};
 use crate::signal::Signal;
 use crate::view::{COLUMN_VIEW, GALLERY_VIEW, LIST_VIEW};
 use crate::views::list::ListLook;
-use crate::{icons, index, listing, preview};
+use crate::{fsearch, icons, listing, preview};
 
 const BATCH: usize = 64;
 const TICK: Duration = Duration::from_millis(120);
@@ -346,7 +346,7 @@ fn read_batches(
             .into_iter()
             .filter(|entry| !listed.contains(entry.name.as_str()))
             .collect();
-        let facts = Arc::new(index().folders_in(Path::new(system)));
+        let facts = Arc::new(fsearch::folders_in(Path::new(system)));
         batches.push(batch(system, apps, facts, extras, executor));
     }
     remember(id);
@@ -400,7 +400,7 @@ async fn finish(
         all[at] = row;
     }
     if finder_fs::icloud::is_drive(Path::new(id)) {
-        all.extend(data::icloud_rows(index()));
+        all.extend(data::icloud_rows());
     }
     data::weigh_packages(&mut all);
     data::weighed_folders(&mut all);
@@ -436,19 +436,18 @@ fn indexed_screen(
     count: usize,
 ) -> Option<Vec<Entry>> {
     let dir = Path::new(id);
-    let index = index();
     let seconds =
         |at: std::time::SystemTime| Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs());
     let named = by_name(order);
     let known = match named {
         true => {
             let now = std::fs::metadata(dir).ok()?.modified().ok()?;
-            (seconds(index.modified(dir)?)? == seconds(now)?).then_some(())?;
-            index.children(dir)?
+            (seconds(fsearch::modified(dir)?)? == seconds(now)?).then_some(())?;
+            fsearch::children(dir)?
         }
         false => {
-            (index.visible_children(dir)? >= BIG).then_some(())?;
-            index.current_children(dir)?
+            (fsearch::visible(dir)? >= BIG).then_some(())?;
+            fsearch::current_children(dir)?
         }
     };
     let coarse = order.sort == Column::Modified;
@@ -488,7 +487,7 @@ fn list(
     executor: BackgroundExecutor,
 ) -> Result<Listed, Trouble> {
     let count = screen.0;
-    let folders = Arc::new(index().folders_in(Path::new(id)));
+    let folders = Arc::new(fsearch::folders_in(Path::new(id)));
     let icloud = finder_fs::icloud::is_drive(Path::new(id));
     let twin = system_twin(id);
     let read = {
@@ -535,7 +534,7 @@ fn list(
             let rows = match twin {
                 None => rows_in(id, &folders, true),
                 Some(twin) => {
-                    let facts = index().folders_in(Path::new(twin));
+                    let facts = fsearch::folders_in(Path::new(twin));
                     let mut ours = rows_in(id, &folders, true).into_iter();
                     let mut theirs = rows_in(twin, &facts, false).into_iter();
                     chosen
@@ -1015,6 +1014,23 @@ impl FinderDemo {
         data::unweigh(&dirs);
         for dir in &dirs {
             crate::tags::tags_changed_in(dir);
+        }
+        cx.spawn(async move |this, cx| {
+            let dirs = cx
+                .background_executor()
+                .spawn(async move {
+                    fsearch::note_changed(&dirs);
+                    dirs
+                })
+                .await;
+            this.update(cx, |this, cx| this.read_changed(&dirs, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn read_changed(&mut self, dirs: &[PathBuf], cx: &mut Context<Self>) {
+        for dir in dirs {
             if let Some(id) = self.folders.known(&dir.to_string_lossy()) {
                 match self.folders.shown(id) {
                     true => self.read_folder(id, cx),
@@ -1029,8 +1045,5 @@ impl FinderDemo {
                 self.read_folder(id, cx);
             }
         }
-        cx.background_executor()
-            .spawn(async move { index().note_changed(&dirs) })
-            .detach();
     }
 }

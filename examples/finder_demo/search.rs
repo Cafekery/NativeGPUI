@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use block2::StackBlock;
-use finder_fs::index::Index;
 use finder_fs::sort::fold;
 use gpui::{App, Context, Window};
 use objc2_app_kit::{NSControl, NSControlTextDidEndEditingNotification};
@@ -21,7 +20,7 @@ use crate::data;
 use crate::data::Row;
 use crate::listing::next_rev;
 use crate::terms::Search;
-use crate::{fsearch, index, prefs};
+use crate::{fsearch, prefs};
 
 const HITS: usize = 200;
 const ALL_HITS: usize = 10_000;
@@ -69,7 +68,6 @@ pub(crate) fn follow_search_fields(cx: &mut App) {
 
 fn hit_rows(
     paths: &[&Path],
-    index: &Index,
     admit: impl Fn(&Row) -> bool + Sync,
     stale: &(impl Fn() -> bool + Sync),
 ) -> Option<Vec<Arc<Row>>> {
@@ -89,10 +87,8 @@ fn hit_rows(
                             chunk
                                 .iter()
                                 .filter_map(|&path| {
-                                    let entry = index
-                                        .entry(path)
-                                        .or_else(|| finder_fs::list::listed_entry_at(path).ok())?;
-                                    Some(data::hit_row(path, &entry, index))
+                                    let entry = finder_fs::list::listed_entry_at(path).ok()?;
+                                    Some(data::hit_row(path, &entry))
                                 })
                                 .filter(|row| admit(row)),
                         );
@@ -156,7 +152,6 @@ fn gather(
     criteria: &[Criterion],
     stale: &(impl Fn() -> bool + Sync),
 ) -> Option<(Vec<Arc<Row>>, bool)> {
-    let index = index();
     let matcher = search.matcher();
     let mut contents: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     let mut found = Vec::new();
@@ -185,12 +180,7 @@ fn gather(
         .collect();
     let complete = named.len() < limit && found.len() < limit;
     let criteria = |row: &Row| criteria.iter().all(|it| it.holds(row));
-    let mut rows = hit_rows(
-        &named,
-        index,
-        |row| matcher.fits(row) && criteria(row),
-        stale,
-    )?;
+    let mut rows = hit_rows(&named, |row| matcher.fits(row) && criteria(row), stale)?;
     let held = |row: &Row, word: &str| {
         contents
             .get(word)
@@ -198,7 +188,6 @@ fn gather(
     };
     rows.extend(hit_rows(
         &found,
-        index,
         |row| matcher.admits_found(row, |word| held(row, word)) && criteria(row),
         stale,
     )?);
@@ -240,11 +229,9 @@ impl FinderDemo {
         let generation = live.fetch_add(1, Ordering::Relaxed) + 1;
         let wanted = self.query.clone();
         let criteria = self.criteria.clone();
-        let everywhere = self.scope == scope_bar::THIS_MAC;
         let daemon = self.scope != scope_bar::NETWORK;
         let under: Vec<PathBuf> = match self.scope {
             scope_bar::THIS_MAC => Vec::new(),
-            scope_bar::NETWORK => data::network_roots().iter().map(PathBuf::from).collect(),
             _ => vec![PathBuf::from(self.here())],
         };
         let spotlit = !wanted.contents().is_empty() || wanted.tagged().is_some();
@@ -255,49 +242,21 @@ impl FinderDemo {
                 let found = cx
                     .background_executor()
                     .spawn(async move {
-                        if search.is_empty() {
+                        if search.is_empty() || !daemon {
                             return Some((Vec::new(), true));
                         }
                         let stale = || pass.load(Ordering::Relaxed) != generation;
-                        let gathered = daemon
-                            .then(|| gather(&search, &under, limit, last, &criteria, &stale))
-                            .flatten();
-                        if let Some(found) = gathered {
-                            return Some(found);
-                        }
-                        if stale() {
-                            return None;
-                        }
-                        let index = index();
-                        let matcher = search.matcher();
-                        let mut found = match everywhere {
-                            true => index.search(&search.text, None, limit),
-                            false => under
-                                .iter()
-                                .flat_map(|root| index.search(&search.text, Some(root), limit))
-                                .collect(),
-                        };
-                        let complete = found.len() < limit;
-                        found.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-                        let mut rows = Vec::new();
-                        for hits in found.chunks(CHUNK) {
-                            if stale() {
-                                return None;
+                        let gathered = || gather(&search, &under, limit, last, &criteria, &stale);
+                        let mut hits = gathered();
+                        if hits.is_none() && fsearch::loading() && !stale() {
+                            if !last {
+                                return Some((Vec::new(), false));
                             }
-                            rows.extend(
-                                hits.iter()
-                                    .map(|hit| data::hit_row(&hit.path, &hit.entry, index))
-                                    .filter(|row| {
-                                        matcher.admits_found(row, |_| false)
-                                            && criteria.iter().all(|it| it.holds(row))
-                                    }),
-                            );
-                            if rows.len() >= limit {
-                                rows.truncate(limit);
-                                break;
+                            if fsearch::wait_ready_unless(&stale) {
+                                hits = gathered();
                             }
                         }
-                        Some((rows, complete))
+                        hits.or_else(|| (!stale()).then(|| (Vec::new(), true)))
                     })
                     .await;
                 let Some((hits, complete)) = found else {
@@ -365,9 +324,9 @@ impl FinderDemo {
                 .background_executor()
                 .spawn(async move {
                     match (id == RECENTS, crate::smart::file_of(id)) {
-                        (true, _) => data::recent_rows(&crate::home(), index(), HITS),
-                        (_, Some(file)) => crate::smart::rows(file, index(), HITS),
-                        _ => data::tagged_rows(tag, index(), HITS),
+                        (true, _) => data::recent_rows(&crate::home(), HITS),
+                        (_, Some(file)) => crate::smart::rows(file, HITS),
+                        _ => data::tagged_rows(tag, HITS),
                     }
                 })
                 .await;

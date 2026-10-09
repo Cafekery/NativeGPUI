@@ -54,12 +54,8 @@ mod ui;
 mod view;
 mod views;
 
-use std::env;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::path::PathBuf;
 
-use finder_fs::index::Index;
 use finder_fs::volumes;
 use gpui::{
     App, Bounds, KeyBinding, WindowBounds, WindowHandle, WindowOptions, point, prelude::*, px, size,
@@ -71,12 +67,8 @@ use objc2_foundation::{NSProcessInfo, NSString};
 use crate::app::{FinderDemo, LIST_CONTEXT};
 use crate::menus::{Back, Forward, ZoomIn, ZoomOut};
 
-/// Each save rewrites the whole snapshot; a launch replays the events since the last one.
-const SAVE_EVERY: Duration = Duration::from_secs(3600);
-
 const KINDS_WARM: usize = 400;
-/// gpui gives shutdown handlers about 200 ms.
-const QUIT_WAIT: Duration = Duration::from_millis(150);
+const RETIRED_INDEX: [&str; 3] = ["index.bin", "index.lock", "index.tmp"];
 pub(crate) const WINDOW_W: f32 = 1200.;
 const FRAME: &str = "ng.finder.window";
 
@@ -117,11 +109,13 @@ fn main() {
             "Found'er keeps running without windows",
         ));
         let warm = cx.background_executor().clone();
+        warm.spawn(async { fsearch::start() }).detach();
         warm.spawn(async {
-            index().warm();
+            for name in RETIRED_INDEX {
+                std::fs::remove_file(store().join(name)).ok();
+            }
         })
         .detach();
-        warm.spawn(async { fsearch::start() }).detach();
         warm.spawn(async { icons::ask_app_management(icons::installed_apps()) })
             .detach();
         warm.spawn(async {
@@ -132,7 +126,8 @@ fn main() {
         warm.spawn(async {
             let table = store().join("kinds-2.tsv");
             finder_fs::kind::load_kinds(&table);
-            for path in index().extensions(KINDS_WARM) {
+            fsearch::wait_ready();
+            for path in fsearch::extensions(KINDS_WARM) {
                 finder_fs::kind::kind_of_path(&path);
             }
             finder_fs::kind::save_kinds(&table);
@@ -146,7 +141,7 @@ fn main() {
         let restored = keep::reopen(cx);
         file_viewer::follow(restored, cx);
         keep::follow_quit(cx);
-        crawl(cx);
+        reread_once_indexed(cx);
         thumbs::follow_thumbnails(cx);
         preview::follow_stacks(cx);
         preview::keep_a_key_window();
@@ -166,55 +161,16 @@ pub(crate) fn store() -> PathBuf {
     store
 }
 
-pub(crate) fn index() -> &'static Arc<Index> {
-    static INDEX: OnceLock<Arc<Index>> = OnceLock::new();
-    INDEX.get_or_init(|| Index::open(&store().join("index.bin")))
-}
-
-fn crawl(cx: &mut App) {
-    if env::var_os("NG_NO_CRAWL").is_none() {
-        static FOLLOWING: OnceLock<finder_fs::watch::Watcher> = OnceLock::new();
-        cx.background_executor()
-            .spawn(async move {
-                let mut roots = vec![home(), PathBuf::from("/Applications"), PathBuf::from("/")];
-                // A network share is sealed below a root already; as a root it is walked remotely.
-                roots.extend(
-                    volumes::mounted()
-                        .into_iter()
-                        .filter(|volume| !volume.network)
-                        .map(|volume| volume.path)
-                        .filter(|path| path != Path::new("/")),
-                );
-                FOLLOWING.get_or_init(|| index().follow(roots.clone()));
-                // TCC-gated folders join once a visit has listed them, so no prompt is raised.
-                index().sync(roots, |progress| {
-                    let index = index();
-                    if !progress.done {
-                        return;
-                    }
-                    let granted: Vec<PathBuf> = ["Desktop", "Documents", "Downloads"]
-                        .iter()
-                        .map(|name| home().join(name))
-                        .filter(|dir| index.children(dir).is_some())
-                        .collect();
-                    if !granted.is_empty() {
-                        index.crawl(granted, |_| {});
-                    }
-                })
-            })
-            .detach();
-    }
-    let ticker = cx.background_executor().clone();
-    cx.background_executor()
-        .spawn(async move {
-            loop {
-                ticker.timer(SAVE_EVERY).await;
-                index().save();
-            }
-        })
-        .detach();
-    cx.on_app_quit(|_| async { index().settle(QUIT_WAIT) })
-        .detach();
+fn reread_once_indexed(cx: &mut App) {
+    let indexed = cx
+        .background_executor()
+        .spawn(async { fsearch::wait_ready() });
+    cx.spawn(async move |cx| {
+        if indexed.await {
+            cx.update(|cx| settings::each_window(cx, |this, cx| this.reread_folders(cx)));
+        }
+    })
+    .detach();
 }
 
 pub(crate) fn open_finder_window(start: &'static str, cx: &mut App) -> WindowHandle<FinderDemo> {

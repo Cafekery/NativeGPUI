@@ -248,7 +248,7 @@ fn applied(key: &str, cx: &mut App) {
     match key {
         "AppleShowAllExtensions" => {
             apply_names();
-            each_window(cx, |this, cx| this.reread_names(cx));
+            each_window(cx, |this, cx| this.reread_folders(cx));
         }
         "_FXSortFoldersFirst" => {
             each_window(cx, |this, cx| this.resort((this.sort, this.ascending), cx));
@@ -258,7 +258,10 @@ fn applied(key: &str, cx: &mut App) {
     crate::read::notify_windows(cx);
 }
 
-fn each_window(cx: &mut App, mut run: impl FnMut(&mut FinderDemo, &mut Context<FinderDemo>)) {
+pub(crate) fn each_window(
+    cx: &mut App,
+    mut run: impl FnMut(&mut FinderDemo, &mut Context<FinderDemo>),
+) {
     for window in cx.windows() {
         if let Some(demo) = window.downcast::<FinderDemo>() {
             demo.update(cx, |this, _, cx| run(this, cx)).ok();
@@ -271,7 +274,7 @@ pub(crate) fn apply_names() {
 }
 
 impl FinderDemo {
-    fn reread_names(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reread_folders(&mut self, cx: &mut Context<Self>) {
         let held: Vec<&'static str> = self.folders.held().into_iter().map(|(id, _)| id).collect();
         for id in held {
             if self.folders.shown(id) {

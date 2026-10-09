@@ -24,7 +24,7 @@ use crate::frame::ns_window;
 use crate::navigate::{folder_at_path, typed_path};
 use crate::prefs;
 use crate::ui::{focus_gpui, key_to_parent, native_text_field, text_width};
-use crate::{home, index};
+use crate::{fsearch, home};
 
 const SHEET_W: f32 = 520.;
 const PANEL_W: f32 = 460.;
@@ -107,7 +107,7 @@ fn go_rows(typed: &str) -> Vec<String> {
 }
 
 fn completions(typed: &str) -> impl Iterator<Item = String> {
-    finder_fs::complete::complete(typed, Some(index()), CHOICES)
+    finder_fs::complete::complete(typed, fsearch::folders_named, CHOICES)
         .into_iter()
         .map(|found| found.path.to_string_lossy().into_owned())
 }

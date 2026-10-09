@@ -4,9 +4,17 @@ use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ::fsearch::{Engine, Grep, Options, Query};
+use ::fsearch::{Engine, Found, Grep, Options, Query, Totals, walk};
+use finder_fs::entry::{Entry, EntryKind};
 use finder_fs::index::off_limits;
+
+use crate::data::Facts;
+
+const READY_POLL: Duration = Duration::from_millis(50);
+/// fseventsd answers a history query only after several milliseconds.
+const PROBE_WAIT: Duration = Duration::from_millis(25);
 
 pub(crate) fn start() {
     engine();
@@ -35,6 +43,147 @@ fn engine() -> Option<&'static Engine> {
             .ok()
         })
         .as_ref()
+}
+
+/// Blocks until the engine holds its index; false at once without an engine.
+pub(crate) fn wait_ready() -> bool {
+    wait_ready_unless(|| false)
+}
+
+/// `wait_ready`, false as soon as `gone` says the answer is no longer wanted.
+pub(crate) fn wait_ready_unless(gone: impl Fn() -> bool) -> bool {
+    let Some(engine) = engine() else {
+        return false;
+    };
+    while !engine.status().ready {
+        if gone() {
+            return false;
+        }
+        std::thread::sleep(READY_POLL);
+    }
+    true
+}
+
+/// The engine is still loading or building its index.
+pub(crate) fn loading() -> bool {
+    engine().is_some_and(|engine| !engine.status().ready)
+}
+
+pub(crate) fn totals(path: &Path) -> Option<Totals> {
+    engine()?.totals(path)
+}
+
+pub(crate) fn hardlinks(path: &Path) -> Vec<PathBuf> {
+    engine().map_or_else(Vec::new, |engine| engine.hardlinks(path))
+}
+
+/// A folder's size and visible children; reached through a symlink, its size alone.
+pub(crate) fn facts(path: &Path) -> Facts {
+    let Some(engine) = engine() else {
+        return (None, None);
+    };
+    if let Some(held) = engine.totals(path) {
+        return (Some(held.bytes), Some(held.visible as usize));
+    }
+    let real = std::fs::canonicalize(path).ok();
+    let held = real.and_then(|real| engine.totals(&real));
+    (held.map(|held| held.bytes), None)
+}
+
+/// Asked mid-frame, so never of the disk: a share that stopped answering would stall it.
+pub(crate) fn visible(path: &Path) -> Option<usize> {
+    Some(totals(path)?.visible as usize)
+}
+
+/// `facts` of each folder in `dir`, by name.
+pub(crate) fn folders_in(dir: &Path) -> HashMap<String, Facts> {
+    let Some(engine) = engine() else {
+        return HashMap::new();
+    };
+    let found = engine
+        .folder_totals(dir)
+        .map(|found| (found, true))
+        .or_else(|| {
+            let real = std::fs::canonicalize(dir).ok()?;
+            Some((engine.folder_totals(&real)?, false))
+        });
+    let Some((found, exact)) = found else {
+        return HashMap::new();
+    };
+    found
+        .into_iter()
+        .filter_map(|(path, held)| {
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let seen = exact.then_some(held.visible as usize);
+            Some((name, (Some(held.bytes), seen)))
+        })
+        .collect()
+}
+
+pub(crate) fn modified(dir: &Path) -> Option<SystemTime> {
+    Some(time_of(engine()?.entry(dir)?.mtime))
+}
+
+/// What the index holds in `dir`, with only what it records of each entry.
+pub(crate) fn children(dir: &Path) -> Option<Vec<Entry>> {
+    let held = engine()?.children(dir)?;
+    Some(held.into_iter().map(entry_of).collect())
+}
+
+/// `children`, while FSEvents has no change for `dir` that the index has yet to apply.
+pub(crate) fn current_children(dir: &Path) -> Option<Vec<Entry>> {
+    let engine = engine()?;
+    let real = std::fs::canonicalize(dir).ok()?;
+    let applied = engine.status().event_id;
+    let held = engine.children(dir)?;
+    let changed = finder_fs::watch::changed_since(&real, applied, PROBE_WAIT);
+    (!changed).then(|| held.into_iter().map(entry_of).collect())
+}
+
+fn entry_of(found: Found) -> Entry {
+    let name = (found.path.file_name().unwrap_or_default())
+        .to_string_lossy()
+        .into_owned();
+    let kind = match found.kind & 3 {
+        walk::KIND_FILE => EntryKind::File,
+        walk::KIND_DIR => EntryKind::Directory,
+        walk::KIND_LINK => EntryKind::Symlink,
+        _ => EntryKind::Other,
+    };
+    let hidden = name.starts_with('.') || found.kind & walk::FLAG_HIDDEN != 0;
+    let package = kind == EntryKind::Directory && finder_fs::kind::is_package_name(&name);
+    Entry {
+        name,
+        kind,
+        size: found.size,
+        modified: time_of(found.mtime),
+        created: UNIX_EPOCH,
+        added: None,
+        hidden,
+        package,
+        ext_hidden: false,
+        alias: false,
+        custom_icon: false,
+        dataless: false,
+        readable: true,
+        file_id: 0,
+        children: None,
+    }
+}
+
+fn time_of(seconds: u32) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(seconds.into())
+}
+
+/// Re-lists now those of `dirs` the index lists, so what is read next counts their change.
+pub(crate) fn note_changed(dirs: &[PathBuf]) {
+    if let Some(engine) = engine() {
+        engine.refresh(dirs);
+    }
+}
+
+pub(crate) fn extensions(limit: usize) -> Vec<PathBuf> {
+    engine().map_or_else(Vec::new, |engine| engine.extensions(limit))
 }
 
 /// `None` while fsearch can't answer: still loading, or a query it doesn't parse.
@@ -66,6 +215,27 @@ pub(crate) fn search(query: &str, under: &[PathBuf], limit: usize) -> Option<Vec
         }
     }
     Some(reachable_only(found))
+}
+
+/// Folders named like `text`, best first.
+pub(crate) fn folders_named(text: &str, limit: usize) -> Vec<PathBuf> {
+    let ranked = || {
+        let engine = engine()?;
+        let mut query = Query::parse(text, engine.home()).ok()?;
+        query.filter("kind", "dir", engine.home()).ok()?;
+        query.limit = limit.saturating_mul(4).max(64);
+        engine.search(&query).ok()
+    };
+    let folders = (ranked().unwrap_or_default().into_iter())
+        .map(|found| found.path)
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            !finder_fs::kind::is_package_name(&name)
+        })
+        .collect();
+    let mut folders = reachable_only(folders);
+    folders.truncate(limit);
+    folders
 }
 
 pub(crate) fn reachable_only(found: Vec<PathBuf>) -> Vec<PathBuf> {

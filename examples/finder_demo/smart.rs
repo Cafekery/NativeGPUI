@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use finder_fs::index::Index;
 use gpui::{Context, Window};
 use objc2_foundation::{NSNumber, NSString, NSURL, NSURLHasHiddenExtensionKey};
 
@@ -135,7 +134,7 @@ fn unxml(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-pub(crate) fn rows(file: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
+pub(crate) fn rows(file: &str, limit: usize) -> Vec<Arc<Row>> {
     let file = Path::new(file);
     let Some(raw) = plutil(file, "RawQuery", "raw") else {
         return Vec::new();
@@ -158,7 +157,7 @@ pub(crate) fn rows(file: &str, index: &Index, limit: usize) -> Vec<Arc<Row>> {
     }
     found.sort();
     found.dedup();
-    data::rows_at(found.iter().take(limit).map(String::as_str), index)
+    data::rows_at(found.iter().take(limit).map(String::as_str))
 }
 
 fn roots(file: &Path) -> Vec<PathBuf> {

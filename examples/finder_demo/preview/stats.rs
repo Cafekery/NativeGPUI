@@ -94,10 +94,10 @@ fn total_bytes(row: &Row, weighed: &mut Weighed, stale: &AtomicBool) -> Option<u
     ) {
         (Some(dir), Some(name)) => weighed
             .entry(dir)
-            .or_insert_with(|| crate::index().folders_in(dir))
+            .or_insert_with(|| crate::fsearch::folders_in(dir))
             .get(name)
             .and_then(|(size, _)| *size),
-        _ => crate::index().folder_size(path),
+        _ => crate::fsearch::totals(path).map(|totals| totals.bytes),
     };
     match size {
         Some(size) => Some(size),
