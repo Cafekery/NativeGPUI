@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -48,6 +49,23 @@ pub(crate) struct JobRow {
 struct Failed {
     failures: Vec<Failure>,
     retry: Option<Op>,
+}
+
+impl Failed {
+    /// A full or read-only volume turns down every item still left, not one file.
+    fn refusal(&self) -> Option<&Failure> {
+        self.failures.iter().find(|failure| {
+            matches!(
+                failure.error.kind(),
+                ErrorKind::StorageFull | ErrorKind::QuotaExceeded | ErrorKind::ReadOnlyFilesystem
+            )
+        })
+    }
+
+    fn reason(&self) -> Option<String> {
+        let first = self.refusal().or(self.failures.first());
+        first.map(|failure| failure.error.to_string())
+    }
 }
 
 impl JobRow {
@@ -143,7 +161,7 @@ fn describe(op: &Op, left: Option<u64>) -> String {
     }
 }
 
-fn failed_title(op: &Op, failures: &[Failure]) -> String {
+fn failed_title(op: &Op, failed: &Failed) -> String {
     let verb = match op {
         Op::Move { .. } | Op::Trash(_) => "moved",
         Op::Retry(request) if request.kind() == Kind::Move => "moved",
@@ -151,12 +169,29 @@ fn failed_title(op: &Op, failures: &[Failure]) -> String {
         Op::Duplicate(_) => "duplicated",
         _ => "copied",
     };
-    match failures {
+    if failed.refusal().is_some() {
+        let left = sources(failed.retry.as_ref().unwrap_or(op));
+        let left: Vec<PathBuf> = left.into_iter().map(Path::to_path_buf).collect();
+        return format!("{} couldn't be {verb}", named(&left, None));
+    }
+    match failed.failures.as_slice() {
         [only] => format!(
             "\u{201c}{}\u{201d} couldn't be {verb}",
             name_of(&only.source)
         ),
-        _ => format!("{} items couldn't be {verb}", count(failures.len())),
+        failures => format!("{} items couldn't be {verb}", count(failures.len())),
+    }
+}
+
+fn sources(op: &Op) -> Vec<&Path> {
+    match op {
+        Op::Move { items, .. }
+        | Op::Copy { items, .. }
+        | Op::CopyExactly { items, .. }
+        | Op::Duplicate(items) => items.iter().map(PathBuf::as_path).collect(),
+        Op::Retry(request) => request.items().map(|(item, _)| item).collect(),
+        Op::PutBack(items) => items.iter().map(|item| item.item.as_path()).collect(),
+        _ => subject(op).into_iter().collect(),
     }
 }
 
@@ -421,20 +456,27 @@ impl FinderDemo {
     }
 
     fn show_failures(&self, job: JobId, cx: &mut Context<Self>) {
-        let Some(failed) = (self.jobs.iter())
+        let Some((op, failed)) = (self.jobs.iter())
             .find(|row| row.id == job)
-            .and_then(|row| row.failed.as_ref())
+            .and_then(|row| Some((&row.op, row.failed.as_ref()?)))
         else {
             return;
         };
-        let items: Vec<PathBuf> = (failed.failures.iter())
-            .flat_map(|failure| [&failure.source, &failure.dest])
-            .find(|path| path.exists())
-            .into_iter()
-            .chain(failed.failures.iter().map(|failure| &failure.source))
-            .filter(|path| path.exists())
-            .cloned()
-            .collect();
+        let items: Vec<PathBuf> = match failed.refusal() {
+            Some(_) => sources(failed.retry.as_ref().unwrap_or(op))
+                .into_iter()
+                .filter(|path| path.exists())
+                .map(Path::to_path_buf)
+                .collect(),
+            None => (failed.failures.iter())
+                .flat_map(|failure| [&failure.source, &failure.dest])
+                .find(|path| path.exists())
+                .into_iter()
+                .chain(failed.failures.iter().map(|failure| &failure.source))
+                .filter(|path| path.exists())
+                .cloned()
+                .collect(),
+        };
         cx.defer(move |cx| crate::navigate::reveal(&items, cx));
     }
 }
@@ -522,17 +564,14 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             )
         });
     if let Some(failed) = &job.failed {
-        let reason = failed
-            .failures
-            .first()
-            .map(|failure| failure.error.to_string());
+        let reason = failed.reason();
         let button = |key: &'static str, title: &str| {
             native_button((key, id), title.to_owned()).control_size(ControlSize::Small)
         };
         return row
             .child(text(
                 ("ng.finder.progress.label", id),
-                &failed_title(&job.op, &failed.failures),
+                &failed_title(&job.op, failed),
                 5.,
                 EDGE + GLYPH + GLYPH_GAP,
                 tokens::system_font_size(),
@@ -671,6 +710,36 @@ mod tests {
             items_total: 12,
             ..Progress::default()
         }
+    }
+
+    #[test]
+    fn a_full_volume_names_what_is_left_rather_than_the_first_item() {
+        use finder_fs::ops::transfer::{OnError, Request};
+        let items = vec![PathBuf::from("/a/big4.bin"), PathBuf::from("/a/big.bin")];
+        let into = PathBuf::from("/Volumes/Storage");
+        let op = Op::Copy {
+            items: items.clone(),
+            into: into.clone(),
+        };
+        let why = "There isn't enough space on \u{201c}Storage\u{201d} to copy these items.";
+        let left = items
+            .iter()
+            .map(|item| (item.clone(), into.join(name_of(item))));
+        let failed = Failed {
+            failures: vec![Failure {
+                source: items[0].clone(),
+                dest: into.join("big4.bin"),
+                error: std::io::Error::new(ErrorKind::StorageFull, why),
+            }],
+            retry: Some(Op::Retry(Request::each(
+                Kind::Copy,
+                left,
+                Conflict::Merge,
+                OnError::Stop,
+            ))),
+        };
+        assert_eq!(failed_title(&op, &failed), "2 items couldn't be copied");
+        assert_eq!(failed.reason().as_deref(), Some(why));
     }
 
     #[test]

@@ -474,10 +474,9 @@ pub(super) fn worded(error: io::Error, source: &Path, dest: &Path, job: &Job) ->
     let Some(code) = error.raw_os_error() else {
         return error;
     };
-    let item = name_of(source);
     let refusal = match code {
-        libc::ENOSPC | libc::EDQUOT => job.no_space_message(&item, dest),
-        libc::EROFS => job.read_only_message(&item, dest),
+        libc::ENOSPC | libc::EDQUOT => job.no_space_message(dest),
+        libc::EROFS => job.read_only_message(dest),
         _ => None,
     };
     if let Some(message) = refusal {

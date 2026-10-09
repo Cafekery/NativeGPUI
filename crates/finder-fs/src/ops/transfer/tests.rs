@@ -681,6 +681,33 @@ fn a_total_known_not_to_fit_is_refused_before_anything_moves() {
 }
 
 #[test]
+fn several_items_that_cannot_fit_are_refused_by_the_volume_not_the_first_item() {
+    let name = volume_name("V");
+    let Some(disk) = RamDisk::new(24, "HFS+", &name) else {
+        return;
+    };
+    let dir = temp_dir("several");
+    let items = vec![dir.join("first.bin"), dir.join("second.bin")];
+    for item in &items {
+        sparse(item, 20 << 20);
+    }
+
+    let outcome = copy(items, &disk.mount, Conflict::KeepBoth, OnError::Continue);
+
+    assert_eq!(outcome.end, End::Stopped);
+    let message = outcome.failures[0].error.to_string();
+    assert!(
+        message.starts_with(&format!(
+            "There isn't enough space on \u{201c}{name}\u{201d} to copy these items."
+        )) && !message.contains("first.bin"),
+        "{message}"
+    );
+    assert!(staged_in(&disk.mount).is_empty() && !taken(&disk.mount.join("first.bin")));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_file_being_written_holds_its_room_without_stopping_the_job() {
     let Some(disk) = RamDisk::new(300, "HFS+", &volume_name("P")) else {
         return;

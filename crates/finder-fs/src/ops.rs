@@ -333,10 +333,11 @@ fn volume_of(path: &Path) -> Option<volumes::Volume> {
     volumes::holding(path).filter(|volume| !volume.name.is_empty())
 }
 
-/// `NSFileManager`'s own message names the boot volume whatever the destination was.
+/// `NSFileManager`'s own message names the boot volume whatever the destination was. Without an
+/// item it speaks for several.
 fn refusal_message(
     refusal: Refusal,
-    item: &str,
+    item: Option<&str>,
     dest: &Path,
     is_move: bool,
     needed: u64,
@@ -346,19 +347,25 @@ fn refusal_message(
     Some(match refusal {
         Refusal::ReadOnly => {
             let verb = if is_move { "moved" } else { "copied" };
+            let what = match item {
+                Some(item) => format!("The item \u{201c}{item}\u{201d}"),
+                None => "These items".to_string(),
+            };
             format!(
-                "The item \u{201c}{item}\u{201d} can't be {verb} because the volume \u{201c}{name}\u{201d} is read only."
+                "{what} can't be {verb} because the volume \u{201c}{name}\u{201d} is read only."
             )
         }
         Refusal::NoSpace => {
             let verb = if is_move { "move" } else { "copy" };
+            let what = match item {
+                Some(item) => format!("\u{201c}{item}\u{201d}"),
+                None => "these items".to_string(),
+            };
             let short = match needed.saturating_sub(volume.available) {
                 0 => String::new(),
                 short => format!(" You need an additional {}.", byte_string(short)),
             };
-            format!(
-                "There isn't enough space on \u{201c}{name}\u{201d} to {verb} \u{201c}{item}\u{201d}.{short}"
-            )
+            format!("There isn't enough space on \u{201c}{name}\u{201d} to {verb} {what}.{short}")
         }
     })
 }
@@ -418,7 +425,7 @@ fn cocoa_error(code: i32, path: &Path) -> Option<Retained<NSError>> {
 fn volume_refusal(err: &NSError, src: &Path, dest: &Path, is_move: bool) -> Option<io::Error> {
     let message = refusal_message(
         refusal_of(err)?,
-        &name_of(src),
+        Some(&name_of(src)),
         dest,
         is_move,
         walk_size(src),
@@ -1907,7 +1914,7 @@ mod tests {
         );
         assert!(!Path::new("/m.txt").exists());
 
-        let full = refusal_message(Refusal::NoSpace, "m.txt", &dir, false, u64::MAX)
+        let full = refusal_message(Refusal::NoSpace, Some("m.txt"), &dir, false, u64::MAX)
             .expect("the temporary folder is on a mounted volume");
         assert!(
             full.starts_with(&format!(

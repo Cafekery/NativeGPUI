@@ -10,8 +10,8 @@ use objc2_foundation::NSFileManager;
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    Conflict, Done, Placed, Refusal, Restore, deep, exchange, refusal_message, refuse_into_itself,
-    taken, trash_as, undo_of_transfer,
+    Conflict, Done, Placed, Refusal, Restore, deep, exchange, name_of, refusal_message,
+    refuse_into_itself, taken, trash_as, undo_of_transfer,
 };
 use meter::{Left, Meter};
 use volume::Volume;
@@ -686,6 +686,14 @@ impl<'a> Job<'a> {
         false
     }
 
+    /// A refusal is about the whole job, so it names its one item or none.
+    fn subject(&self) -> Option<String> {
+        match self.items {
+            [only] => Some(name_of(&only.source).into_owned()),
+            _ => None,
+        }
+    }
+
     fn fail(&self, source: &Path, dest: &Path, error: io::Error) {
         let fatal = matches!(
             error.raw_os_error(),
@@ -985,12 +993,20 @@ impl<'a> Job<'a> {
         }
     }
 
-    fn no_space_message(&self, item: &str, dest: &Path) -> Option<String> {
-        refusal_message(Refusal::NoSpace, item, dest, self.is_move(), self.needed())
+    fn no_space_message(&self, dest: &Path) -> Option<String> {
+        let item = self.subject();
+        refusal_message(
+            Refusal::NoSpace,
+            item.as_deref(),
+            dest,
+            self.is_move(),
+            self.needed(),
+        )
     }
 
-    fn read_only_message(&self, item: &str, dest: &Path) -> Option<String> {
-        refusal_message(Refusal::ReadOnly, item, dest, self.is_move(), 0)
+    fn read_only_message(&self, dest: &Path) -> Option<String> {
+        let item = self.subject();
+        refusal_message(Refusal::ReadOnly, item.as_deref(), dest, self.is_move(), 0)
     }
 }
 
