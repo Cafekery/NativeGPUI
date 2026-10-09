@@ -166,4 +166,23 @@ if [ -z "$identity" ]; then
     echo "warning: codesign failed" >&2
 fi
 
+# An app whose .app directory carries com.apple.provenance tags every file it writes, and ExFAT and
+# FAT keep each tag in a ._ file beside it. A tagged shell cannot remove the attribute, and a bundle
+# that already ran tagged can stay tracked once it is gone, so launchd strips this one before launch.
+provenance() { xattr -r "$app" 2>/dev/null | grep -c ': com\.apple\.provenance$'; }
+if [ "$(provenance)" != 0 ]; then
+  label="dev.cafekery.nativegpui.bundle.$$"
+  launchctl submit -l "$label" -- /usr/bin/xattr -dr com.apple.provenance "$PWD/$app"
+  for _ in $(seq 1 100); do
+    [ "$(provenance)" = 0 ] && break
+    sleep 0.1
+  done
+  launchctl remove "$label" 2>/dev/null
+  left=$(provenance)
+  if [ "$left" != 0 ]; then
+    echo "error: $left items in $app still carry com.apple.provenance; its copies to ExFAT would leave ._ files" >&2
+    exit 1
+  fi
+fi
+
 echo "$app"
