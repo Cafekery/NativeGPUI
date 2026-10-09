@@ -14,7 +14,7 @@ use gpui::{
     InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Size, Window, px,
 };
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel,
 };
@@ -40,7 +40,7 @@ use objc2_foundation::{
 };
 use objc2_quartz_core::CATransaction;
 
-use crate::bridge::appkit::{Container, draw_now, gpui_view, to_rect};
+use crate::bridge::appkit::{Container, draw_now, gpui_view, gpui_window, to_rect};
 use crate::bridge::host::element_key;
 use crate::controls::menu::{MenuEntry, sync_menu};
 use crate::system::wording::worded;
@@ -164,23 +164,15 @@ define_class!(
             if self.window().is_some_and(|window| window.isKeyWindow()) {
                 return;
             }
-            unsafe {
-                let _: () = msg_send![
-                    self,
-                    performSelector: sel!(ngApplyCursor),
-                    withObject: std::ptr::null::<AnyObject>(),
-                    afterDelay: 0.0,
-                ];
-            }
+            self.perform_later(sel!(ngApplyCursor), 0.0);
         }
 
         #[unsafe(method(ngApplyCursor))]
         fn apply_cursor(&self) {
-            let Some(window) = self.window() else {
+            let Some(point) = self.pointer() else {
                 return;
             };
-            let local = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
-            match self.claim_at(local) {
+            match self.claim_at(point) {
                 Some(claim) => {
                     claim.value.ns().set();
                     self.ivars().cursor_forced.set(true);
@@ -385,25 +377,17 @@ impl ChromeHost {
         match hovered {
             None => self.hide_callout(),
             Some(callout) if shown => self.show_callout(&callout),
-            Some(_) => unsafe {
-                let _: () = msg_send![
-                    self,
-                    performSelector: sel!(ngShowCallout),
-                    withObject: ptr::null::<AnyObject>(),
-                    afterDelay: CALLOUT_DELAY,
-                ];
-            },
+            Some(_) => self.perform_later(sel!(ngShowCallout), CALLOUT_DELAY),
         }
     }
 
     // AppKit calls here can re-enter this host, so no ivar borrow spans one.
     fn show_callout(&self, callout: &Callout) {
-        let mtm = MainThreadMarker::new().expect("AppKit tracking is a main-thread path");
         let view = self
             .ivars()
             .callout
             .borrow_mut()
-            .get_or_insert_with(|| CalloutView::new(mtm))
+            .get_or_insert_with(|| CalloutView::new(self.mtm()))
             .clone();
         view.set_text(&callout.value);
         if let Some(window) = self.window() {
@@ -435,6 +419,17 @@ impl ChromeHost {
                 cancelPreviousPerformRequestsWithTarget: self as &AnyObject,
                 selector: sel!(ngShowCallout),
                 object: ptr::null::<AnyObject>(),
+            ];
+        }
+    }
+
+    fn perform_later(&self, selector: Sel, delay: f64) {
+        unsafe {
+            let _: () = msg_send![
+                self,
+                performSelector: selector,
+                withObject: ptr::null::<AnyObject>(),
+                afterDelay: delay,
             ];
         }
     }
@@ -539,7 +534,6 @@ fn chrome(window: &Window) -> Retained<ChromeHost> {
     {
         return unsafe { Retained::cast_unchecked::<ChromeHost>(host) };
     }
-    let mtm = MainThreadMarker::new().expect("chrome install is a main-thread path");
     let ns_window = view
         .window()
         .expect("GPUI's view is in its window by the time anything paints");
@@ -561,15 +555,9 @@ fn chrome(window: &Window) -> Retained<ChromeHost> {
         appearance: ns_window.appearance(),
     };
 
-    let host = ChromeHost::new(mtm, view.bounds(), corner, baseline);
+    let host = ChromeHost::new(view.mtm(), view.bounds(), corner, baseline);
     view.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Below, None);
     host
-}
-
-pub(crate) fn ns_window_of(window: &Window) -> Retained<NSWindow> {
-    gpui_view(window)
-        .window()
-        .expect("GPUI's view is in its window")
 }
 
 fn read_corner_radius(window: &NSWindow) -> Option<f64> {
@@ -586,7 +574,7 @@ pub fn system_corner_radius(window: &Window) -> Pixels {
     let host = chrome(window);
     let mut corner = host.ivars().corner.get();
     if corner.written.is_none() {
-        if let Some(live) = read_corner_radius(&ns_window_of(window)) {
+        if let Some(live) = read_corner_radius(&gpui_window(window)) {
             corner.system = live;
             host.ivars().corner.set(corner);
         }
@@ -613,7 +601,7 @@ pub fn set_corner_radius(window: &Window, radius: Option<Pixels>) {
     if corner.written == wanted {
         return;
     }
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     unsafe {
         let _: () = msg_send![&*ns_window, _setCornerRadius: wanted.unwrap_or(0.0)];
     }
@@ -622,7 +610,7 @@ pub fn set_corner_radius(window: &Window, radius: Option<Pixels>) {
 }
 
 pub fn corner_radius_readback(window: &Window) -> Option<Pixels> {
-    read_corner_radius(&ns_window_of(window)).map(|radius| px(radius as f32))
+    read_corner_radius(&gpui_window(window)).map(|radius| px(radius as f32))
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -1002,7 +990,7 @@ impl ToolbarItem {
         self
     }
 
-    /// An item AppKit greys out and does not send; a group greys every segment.
+    /// A disabled group greys every segment.
     pub fn enabled(mut self, on: bool) -> Self {
         match &mut self {
             ToolbarItem::Symbol { enabled, .. }
@@ -1114,9 +1102,6 @@ define_class!(
     unsafe impl NSMenuDelegate for ToolbarDelegate {
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
-            let Some(mtm) = MainThreadMarker::new() else {
-                return;
-            };
             let Some(id) = self.menu_owner(menu) else {
                 return;
             };
@@ -1129,7 +1114,7 @@ define_class!(
                 return;
             };
             if let Ok(entries) = self.ivars().cx.clone().update(|window, cx| build(window, cx)) {
-                sync_menu(mtm, menu, &entries, Some((self.as_ref(), sel!(ngToolbarMenu:))));
+                sync_menu(self.mtm(), menu, &entries, Some((self.as_ref(), sel!(ngToolbarMenu:))));
             }
         }
     }
@@ -1242,7 +1227,6 @@ impl Drop for ToolbarIvars {
     }
 }
 
-/// The deepest view outside `content` whose menu is the toolbar's own.
 fn toolbar_menu(
     view: &NSView,
     content: &NSView,
@@ -1404,7 +1388,7 @@ impl ToolbarDelegate {
     }
 
     fn build_item(&self, ident: &NSString, inserted: bool) -> Option<Retained<NSToolbarItem>> {
-        let mtm = MainThreadMarker::new()?;
+        let mtm = self.mtm();
         let wanted = ident.to_string();
         let spec = self.find_item(|item| (item.identifier() == wanted).then(|| item.clone()))?;
 
@@ -1591,19 +1575,14 @@ impl ToolbarDelegate {
                 let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), ident);
                 item.setLabel(&worded(&label));
                 let view = build(mtm);
-                let mut pinned = Vec::new();
-                if size.width > px(0.) {
-                    pinned.push(
-                        view.widthAnchor()
-                            .constraintEqualToConstant(f32::from(size.width) as f64),
-                    );
-                }
-                if size.height > px(0.) {
-                    pinned.push(
-                        view.heightAnchor()
-                            .constraintEqualToConstant(f32::from(size.height) as f64),
-                    );
-                }
+                let pinned: Vec<_> = [
+                    (size.width, view.widthAnchor()),
+                    (size.height, view.heightAnchor()),
+                ]
+                .into_iter()
+                .filter(|(length, _)| *length > px(0.))
+                .map(|(length, anchor)| anchor.constraintEqualToConstant(f32::from(length) as f64))
+                .collect();
                 if !pinned.is_empty() {
                     view.setTranslatesAutoresizingMaskIntoConstraints(false);
                     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&pinned));
@@ -1641,9 +1620,6 @@ impl ToolbarDelegate {
     fn refresh(&self) {
         let items = self.ivars().items.borrow();
         let built = self.ivars().built.borrow();
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
         for spec in items.iter() {
             let id = spec.identifier();
             let Some((_, item)) = built.iter().find(|(found, _)| *found == id) else {
@@ -1717,7 +1693,7 @@ impl ToolbarDelegate {
                         continue;
                     };
                     sync_menu(
-                        mtm,
+                        self.mtm(),
                         &menu_item.menu(),
                         entries,
                         Some((self.as_ref(), sel!(ngToolbarMenu:))),
@@ -1809,7 +1785,7 @@ fn install_toolbar(
     customization: Option<&ToolbarCustomization>,
 ) {
     let host = chrome(window);
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
 
     let Some(style) = style else {
         ns_window.setToolbar(None);
@@ -1818,7 +1794,7 @@ fn install_toolbar(
         return;
     };
 
-    let mtm = MainThreadMarker::new().expect("set_toolbar is a main-thread path");
+    let mtm = host.mtm();
     let identifiers: Vec<String> = items
         .iter()
         .map(|item| item.identifier().into_owned())
@@ -1897,7 +1873,7 @@ fn install_toolbar(
 }
 
 pub fn toolbar_description(window: &Window) -> String {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let Some(toolbar) = ns_window.toolbar() else {
         return String::from("no toolbar");
     };
@@ -1910,47 +1886,50 @@ pub fn toolbar_description(window: &Window) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    let mut lines = Vec::new();
-    for item in toolbar.items().iter() {
-        let id = item.itemIdentifier().to_string();
-        let class = item.class().name().to_string_lossy().into_owned();
-        let shown = if visible.contains(&id) {
-            "visible"
-        } else {
-            "clipped"
-        };
-        let detail = if let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() {
-            format!(
-                " segments={} selected={} representation={:?}",
-                group.subitems().count(),
-                group.selectedIndex(),
-                group.controlRepresentation().0,
-            )
-        } else if let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() {
-            let frame = search.searchField().frame().size;
-            format!(
-                " field={:.0}x{:.0} preferred={:.0}",
-                frame.width,
-                frame.height,
-                search.preferredWidthForSearchField(),
-            )
-        } else if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
-            format!(" rows={}", menu.menu().numberOfItems())
-        } else {
-            item.view()
-                .map(|view| {
-                    let size = view.frame().size;
-                    format!(" view={:.0}x{:.0}", size.width, size.height)
-                })
-                .unwrap_or_default()
-        };
-        lines.push(format!("{id} {class} {shown}{detail}"));
-    }
-    lines.join("\n")
+    toolbar
+        .items()
+        .iter()
+        .map(|item| {
+            let id = item.itemIdentifier().to_string();
+            let class = item.class().name().to_string_lossy();
+            let shown = if visible.contains(&id) {
+                "visible"
+            } else {
+                "clipped"
+            };
+            let detail = if let Some(group) = item.downcast_ref::<NSToolbarItemGroup>() {
+                format!(
+                    " segments={} selected={} representation={:?}",
+                    group.subitems().count(),
+                    group.selectedIndex(),
+                    group.controlRepresentation().0,
+                )
+            } else if let Some(search) = item.downcast_ref::<NSSearchToolbarItem>() {
+                let frame = search.searchField().frame().size;
+                format!(
+                    " field={:.0}x{:.0} preferred={:.0}",
+                    frame.width,
+                    frame.height,
+                    search.preferredWidthForSearchField(),
+                )
+            } else if let Some(menu) = item.downcast_ref::<NSMenuToolbarItem>() {
+                format!(" rows={}", menu.menu().numberOfItems())
+            } else {
+                item.view()
+                    .map(|view| {
+                        let size = view.frame().size;
+                        format!(" view={:.0}x{:.0}", size.width, size.height)
+                    })
+                    .unwrap_or_default()
+            };
+            format!("{id} {class} {shown}{detail}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn toolbar_item(window: &Window, id: &str) -> Option<Retained<NSToolbarItem>> {
-    ns_window_of(window)
+    gpui_window(window)
         .toolbar()?
         .items()
         .iter()
@@ -1983,14 +1962,14 @@ pub fn set_toolbar_search_active(window: &Window, id: &str, active: bool) {
 }
 
 pub fn titlebar_band(window: &Window) -> Pixels {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let frame = ns_window.frame();
     // Not contentRectForFrameRect: under FullSizeContentView that is the whole frame.
     px((frame.size.height - ns_window.contentLayoutRect().size.height) as f32)
 }
 
 pub fn traffic_light_inset(window: &Window) -> Option<Point<Pixels>> {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let button = ns_window.standardWindowButton(NSWindowButton::CloseButton)?;
     let frame = ns_window.frame();
     let in_window = button.convertRect_toView(button.bounds(), None);
@@ -2052,10 +2031,12 @@ thread_local! {
 
 /// Opens at the frame last saved under `name`, cascaded off the front window that saves there too.
 pub fn remember_frame(window: &Window, name: &str) {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let name = NSString::from_str(name);
     // A window AppKit already added to a tab group has that group's frame.
-    let tabbed = (ns_window.tabbedWindows()).is_some_and(|tabs| tabs.count() > 1);
+    let tabbed = ns_window
+        .tabbedWindows()
+        .is_some_and(|tabs| tabs.count() > 1);
     if !tabbed {
         place_remembered(&ns_window, &name);
     }
@@ -2073,13 +2054,12 @@ fn place_remembered(window: &NSWindow, name: &NSString) {
         let next = window.cascadeTopLeftFromPoint(top_left);
         window.cascadeTopLeftFromPoint(next);
     }
-    if let Some(frame) = on_screen(window.frame()) {
+    if let Some(frame) = on_screen(window) {
         window.setFrame_display(frame, false);
     }
 }
 
-/// `setFrameUsingName:` centres the frame on the main screen once the visible frame of the screen
-/// it was saved on has changed, as a Dock moving between displays changes it.
+// `setFrameUsingName:` moves the frame to the main screen once its screen's visible frame changes.
 fn saved_frame(name: &NSString) -> Option<NSRect> {
     let key = NSString::from_str(&format!("NSWindow Frame {name}"));
     let saved = NSUserDefaults::standardUserDefaults()
@@ -2095,12 +2075,11 @@ fn saved_frame(name: &NSString) -> Option<NSRect> {
 
 /// Saves the frame under `name` whenever the window moves, resizes or closes.
 pub fn save_frame(window: &Window, name: &str) {
-    keep_saving(&ns_window_of(window), NSString::from_str(name));
+    keep_saving(&gpui_window(window), NSString::from_str(name));
 }
 
 fn front_saving(name: &NSString, except: &NSWindow) -> Option<Retained<NSWindow>> {
-    let mtm = MainThreadMarker::new()?;
-    let ordered = NSApplication::sharedApplication(mtm).orderedWindows();
+    let ordered = NSApplication::sharedApplication(except.mtm()).orderedWindows();
     SAVING.with_borrow(|saving| {
         ordered.iter().find(|window| {
             **window != *except
@@ -2113,14 +2092,14 @@ fn front_saving(name: &NSString, except: &NSWindow) -> Option<Retained<NSWindow>
     })
 }
 
-/// Inside the visible frame of the screen `frame` lies most on, or of the main screen.
-fn on_screen(frame: NSRect) -> Option<NSRect> {
-    let mtm = MainThreadMarker::new()?;
+fn on_screen(window: &NSWindow) -> Option<NSRect> {
+    let (mtm, frame) = (window.mtm(), window.frame());
     let overlap = |screen: &NSScreen| {
         let shared = NSIntersectionRect(frame, screen.frame());
         shared.size.width * shared.size.height
     };
-    let screen = (NSScreen::screens(mtm).iter())
+    let screen = NSScreen::screens(mtm)
+        .iter()
         .filter(|screen| overlap(screen) > 0.)
         .max_by(|one, other| overlap(one).total_cmp(&overlap(other)))
         .or_else(|| NSScreen::mainScreen(mtm))?;
@@ -2129,11 +2108,11 @@ fn on_screen(frame: NSRect) -> Option<NSRect> {
         frame.size.width.min(visible.size.width),
         frame.size.height.min(visible.size.height),
     );
-    let x = (frame.origin.x).clamp(
+    let x = frame.origin.x.clamp(
         visible.origin.x,
         visible.origin.x + visible.size.width - size.width,
     );
-    let y = (frame.origin.y).clamp(
+    let y = frame.origin.y.clamp(
         visible.origin.y,
         visible.origin.y + visible.size.height - size.height,
     );
@@ -2171,11 +2150,15 @@ fn follow_frames() {
 }
 
 fn save_frame_of(note: &NSNotification, closing: bool) {
-    let Some(window) = (note.object()).and_then(|object| object.downcast::<NSWindow>().ok()) else {
+    let Some(window) = note
+        .object()
+        .and_then(|object| object.downcast::<NSWindow>().ok())
+    else {
         return;
     };
     let name = SAVING.with_borrow_mut(|saving| {
-        let at = (saving.iter())
+        let at = saving
+            .iter()
             .position(|(saved, _)| saved.load().is_some_and(|saved| saved == window))?;
         let name = saving[at].1.clone();
         if closing {
@@ -2193,7 +2176,7 @@ fn save_frame_of(note: &NSNotification, closing: bool) {
 /// Open `sheet` hidden: gpui draws only a window AppKit reports visible, so this draws it first.
 pub fn begin_sheet(window: AnyWindowHandle, sheet: AnyWindowHandle, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let Ok(host) = cx.update_window(window, |_, window, _| ns_window_of(window)) else {
+        let Ok(host) = cx.update_window(window, |_, window, _| gpui_window(window)) else {
             return;
         };
         let Ok(view) = cx.update_window(sheet, |_, sheet, _| gpui_view(sheet)) else {
@@ -2210,7 +2193,7 @@ pub fn begin_sheet(window: AnyWindowHandle, sheet: AnyWindowHandle, cx: &mut App
 }
 
 pub fn window_flags(window: &Window) -> WindowFlags {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let style = ns_window.styleMask();
     WindowFlags {
         has_shadow: ns_window.hasShadow(),
@@ -2227,7 +2210,7 @@ pub fn window_flags(window: &Window) -> WindowFlags {
 }
 
 pub fn set_window_flags(window: &Window, flags: WindowFlags) {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     // Installing the host captures the baseline `restore_window_flags` returns to.
     let _ = chrome(window);
 
@@ -2260,7 +2243,7 @@ pub fn set_window_flags(window: &Window, flags: WindowFlags) {
 pub fn restore_window_flags(window: &Window) {
     let host = chrome(window);
     let baseline = &host.ivars().baseline;
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     ns_window.setHasShadow(baseline.has_shadow);
     ns_window.setOpaque(baseline.is_opaque);
     ns_window.setAlphaValue(baseline.alpha);
@@ -2485,72 +2468,6 @@ pub struct NativeTooltip {
     child: AnyElement,
 }
 
-impl Element for NativeTooltip {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<Bounds<Pixels>>;
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Bounds<Pixels>> {
-        self.child.prepaint(window, cx);
-        visible(bounds, window)
-    }
-
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        visible: &mut Option<Bounds<Pixels>>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.paint(window, cx);
-
-        let Some(id) = id else {
-            return;
-        };
-        let (host, key) = track::<Self>(window, id, ChromeHost::remove_tip);
-        match visible {
-            Some(bounds) => host.set_tip(key, native_rect(*bounds), &self.text),
-            None => host.remove_tip(key),
-        }
-    }
-}
-
-impl IntoElement for NativeTooltip {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 pub fn native_callout(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -2569,71 +2486,78 @@ pub struct NativeCallout {
     child: AnyElement,
 }
 
-impl Element for NativeCallout {
-    type RequestLayoutState = ();
-    type PrepaintState = Option<Bounds<Pixels>>;
+macro_rules! text_region {
+    ($region:ident, $set:ident, $remove:ident) => {
+        impl Element for $region {
+            type RequestLayoutState = ();
+            type PrepaintState = Option<Bounds<Pixels>>;
 
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
+            fn id(&self) -> Option<ElementId> {
+                Some(self.id.clone())
+            }
 
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
+            fn source_location(&self) -> Option<&'static Location<'static>> {
+                None
+            }
 
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
+            fn request_layout(
+                &mut self,
+                _: Option<&GlobalElementId>,
+                _: Option<&InspectorElementId>,
+                window: &mut Window,
+                cx: &mut App,
+            ) -> (LayoutId, ()) {
+                (self.child.request_layout(window, cx), ())
+            }
 
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Bounds<Pixels>> {
-        self.child.prepaint(window, cx);
-        visible(bounds, window)
-    }
+            fn prepaint(
+                &mut self,
+                _: Option<&GlobalElementId>,
+                _: Option<&InspectorElementId>,
+                bounds: Bounds<Pixels>,
+                _: &mut (),
+                window: &mut Window,
+                cx: &mut App,
+            ) -> Option<Bounds<Pixels>> {
+                self.child.prepaint(window, cx);
+                visible(bounds, window)
+            }
 
-    fn paint(
-        &mut self,
-        id: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        visible: &mut Option<Bounds<Pixels>>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.paint(window, cx);
+            fn paint(
+                &mut self,
+                id: Option<&GlobalElementId>,
+                _: Option<&InspectorElementId>,
+                _: Bounds<Pixels>,
+                _: &mut (),
+                visible: &mut Option<Bounds<Pixels>>,
+                window: &mut Window,
+                cx: &mut App,
+            ) {
+                self.child.paint(window, cx);
 
-        let Some(id) = id else {
-            return;
-        };
-        let (host, key) = track::<Self>(window, id, ChromeHost::remove_callout);
-        match visible {
-            Some(bounds) => host.set_callout(key, native_rect(*bounds), &self.text),
-            None => host.remove_callout(key),
+                let Some(id) = id else {
+                    return;
+                };
+                let (host, key) = track::<Self>(window, id, ChromeHost::$remove);
+                match visible {
+                    Some(bounds) => host.$set(key, native_rect(*bounds), &self.text),
+                    None => host.$remove(key),
+                }
+            }
         }
-    }
+
+        impl IntoElement for $region {
+            type Element = Self;
+
+            fn into_element(self) -> Self::Element {
+                self
+            }
+        }
+    };
 }
 
-impl IntoElement for NativeCallout {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
+text_region!(NativeTooltip, set_tip, remove_tip);
+text_region!(NativeCallout, set_callout, remove_callout);
 
 pub fn current_cursor_description() -> String {
     let cursor = NSCursor::currentCursor();
