@@ -1,13 +1,72 @@
-use std::panic::Location;
-
 use gpui::{
-    AnyElement, AnyView, App, Bounds, DispatchPhase, Element, ElementId, EntityId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, MouseDownEvent, Pixels, StyleRefinement, Styled,
-    TitlebarOptions, Window, WindowBackgroundAppearance, WindowOptions,
+    AnyElement, AnyView, App, Bounds, DispatchPhase, EntityId, IntoElement, MouseDownEvent, Pixels,
+    StyleRefinement, Styled, TitlebarOptions, Window, WindowBackgroundAppearance, WindowOptions,
 };
 
 use crate::bridge::appkit::focus_gpui;
 use crate::bridge::host::NativeHost;
+
+macro_rules! wrapper_element {
+    ($ty:ty $(, before_layout: $before:path)?) => {
+        impl gpui::Element for $ty {
+            type RequestLayoutState = ();
+            type PrepaintState = ();
+
+            fn id(&self) -> Option<gpui::ElementId> {
+                None
+            }
+
+            fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+                None
+            }
+
+            fn request_layout(
+                &mut self,
+                _: Option<&gpui::GlobalElementId>,
+                _: Option<&gpui::InspectorElementId>,
+                window: &mut gpui::Window,
+                cx: &mut gpui::App,
+            ) -> (gpui::LayoutId, ()) {
+                $($before(window, cx);)?
+                (self.child.request_layout(window, cx), ())
+            }
+
+            fn prepaint(
+                &mut self,
+                _: Option<&gpui::GlobalElementId>,
+                _: Option<&gpui::InspectorElementId>,
+                _: gpui::Bounds<gpui::Pixels>,
+                _: &mut (),
+                window: &mut gpui::Window,
+                cx: &mut gpui::App,
+            ) {
+                self.child.prepaint(window, cx);
+            }
+
+            fn paint(
+                &mut self,
+                _: Option<&gpui::GlobalElementId>,
+                _: Option<&gpui::InspectorElementId>,
+                bounds: gpui::Bounds<gpui::Pixels>,
+                _: &mut (),
+                _: &mut (),
+                window: &mut gpui::Window,
+                cx: &mut gpui::App,
+            ) {
+                <$ty>::paint(self, bounds, window, cx);
+            }
+        }
+
+        impl gpui::IntoElement for $ty {
+            type Element = Self;
+
+            fn into_element(self) -> Self {
+                self
+            }
+        }
+    };
+}
+pub(crate) use wrapper_element;
 
 pub fn native_root(child: impl IntoElement) -> NativeRoot {
     NativeRoot {
@@ -39,50 +98,8 @@ pub struct NativeCached {
     child: AnyElement,
 }
 
-impl Element for NativeCached {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+impl NativeCached {
+    fn paint(&mut self, _: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let host = NativeHost::get(window, cx);
         let from = host.placed();
         self.child.paint(window, cx);
@@ -90,13 +107,7 @@ impl Element for NativeCached {
     }
 }
 
-impl IntoElement for NativeCached {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
+wrapper_element!(NativeCached);
 
 /// `child` drawn at `opacity`, the AppKit views it hosts faded with it.
 pub fn native_opacity(opacity: f32, child: impl Styled + IntoElement) -> NativeOpacity {
@@ -111,50 +122,8 @@ pub struct NativeOpacity {
     child: AnyElement,
 }
 
-impl Element for NativeOpacity {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+impl NativeOpacity {
+    fn paint(&mut self, _: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let host = NativeHost::get(window, cx);
         let outer = host.alpha();
         host.set_alpha(outer * self.opacity);
@@ -163,63 +132,14 @@ impl Element for NativeOpacity {
     }
 }
 
-impl IntoElement for NativeOpacity {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
+wrapper_element!(NativeOpacity);
 
 pub struct NativeRoot {
     child: AnyElement,
 }
 
-impl Element for NativeRoot {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        NativeHost::get(window, cx);
-        (self.child.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+impl NativeRoot {
+    fn paint(&mut self, _: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         window.on_mouse_event(|_: &MouseDownEvent, phase, window, _| {
             if phase == DispatchPhase::Capture {
                 focus_gpui(window);
@@ -230,13 +150,7 @@ impl Element for NativeRoot {
     }
 }
 
-impl IntoElement for NativeRoot {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
+wrapper_element!(NativeRoot, before_layout: NativeHost::get);
 
 pub fn window_options() -> WindowOptions {
     WindowOptions {

@@ -5,9 +5,9 @@ use gpui::{App, ElementId, Style, Window};
 use objc2_app_kit::NSSlider;
 
 use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, NativeValue, Slot, ValueKind, hosted_element, wire,
+    ControlSize, NativeHandler, NativeValue, Slot, ValueKind, hosted_element,
 };
-use crate::controls::{measured, number_handler, sync_control_size, sync_enabled};
+use crate::controls::{measured, number_handler, place_control, sync_control_size, sync_enabled};
 
 pub fn native_slider(id: impl Into<ElementId>, value: f64) -> NativeSlider {
     NativeSlider {
@@ -79,13 +79,8 @@ impl NativeSlider {
     }
 
     fn layout(&self) -> Style {
-        let class = match (self.vertical, self.ticks > 0) {
-            (false, false) => "NSSlider",
-            (false, true) => "NSSlider/ticks",
-            (true, false) => "NSSlider/vertical",
-            (true, true) => "NSSlider/vertical+ticks",
-        };
-        measured(class, self.control_size, |mtm| {
+        let inputs = (self.control_size, self.vertical, self.ticks > 0);
+        measured("NSSlider", inputs, |mtm| {
             let slider = NSSlider::new(mtm);
             slider.setControlSize(self.control_size.into());
             if self.vertical {
@@ -103,9 +98,8 @@ impl NativeSlider {
             let state = state.unwrap_or_default();
             (state.clone(), state)
         });
-        let slider = slot.place(Layer::Above, |mtm, target| {
+        let slider = place_control(&slot, |mtm| {
             let slider = NSSlider::new(mtm);
-            wire(&slider, target, slot.key);
             slider.setContinuous(true);
             held.0.set(None);
             slider

@@ -14,7 +14,7 @@ use objc2_quick_look_ui::{
     QLPreviewItem, QLPreviewPanel, QLPreviewPanelDataSource, QLPreviewPanelDelegate,
 };
 
-use crate::bridge::appkit::gpui_view;
+use crate::bridge::appkit::gpui_window;
 use crate::system::thumbnails;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -187,14 +187,7 @@ fn handle_key(panel: Option<&QLPreviewPanel>, event: Option<&NSEvent>) -> bool {
     true
 }
 
-fn ns_window_of(window: &Window) -> Retained<NSWindow> {
-    gpui_view(window)
-        .window()
-        .expect("GPUI's view is in its window")
-}
-
-fn screen_rect(window: &Window, bounds: Bounds<Pixels>) -> NSRect {
-    let ns_window = ns_window_of(window);
+fn screen_rect(ns_window: &NSWindow, bounds: Bounds<Pixels>) -> NSRect {
     let frame = ns_window.frame();
     let height = ns_window
         .contentView()
@@ -220,9 +213,9 @@ pub fn quick_look(
     source: Option<Bounds<Pixels>>,
     on_key: impl Fn(QuickLookKey) + 'static,
 ) {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let mtm = MainThreadMarker::from(&*ns_window);
-    let source = source.map(|bounds| screen_rect(window, bounds));
+    let source = source.map(|bounds| screen_rect(&ns_window, bounds));
     STATE.with_borrow_mut(|state| {
         state.items = items;
         state.current = current;
@@ -265,18 +258,18 @@ pub fn quick_look_update(
     current: usize,
     source: Option<Bounds<Pixels>>,
 ) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
     if !quick_look_visible() {
         return;
     }
-    let source = source.map(|bounds| screen_rect(window, bounds));
+    let source = source.map(|bounds| screen_rect(&gpui_window(window), bounds));
     STATE.with_borrow_mut(|state| {
         state.items = items;
         state.current = current;
         state.source = source;
     });
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
     defer(panel(mtm), Job::Reload);
 }
 
@@ -317,11 +310,10 @@ fn defer(panel: Retained<QLPreviewPanel>, job: Job) {
 
 fn run(panel: &QLPreviewPanel, job: Job) {
     let busy = STATE.with_borrow_mut(|state| {
-        let busy = std::mem::replace(&mut state.busy, true);
-        if busy {
+        if state.busy {
             state.pending = Some(job);
         }
-        busy
+        std::mem::replace(&mut state.busy, true)
     });
     if busy {
         return;
@@ -418,11 +410,10 @@ extern "C" fn begin_control(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
 }
 
 extern "C" fn end_control(_: *mut AnyObject, _: Sel, panel: *mut AnyObject) {
-    let Some(panel) = (unsafe { panel.cast::<QLPreviewPanel>().as_ref() }) else {
-        return;
-    };
-    unsafe {
-        panel.setDataSource(None);
-        panel.setDelegate(None);
+    if let Some(panel) = unsafe { panel.cast::<QLPreviewPanel>().as_ref() } {
+        unsafe {
+            panel.setDataSource(None);
+            panel.setDelegate(None);
+        }
     }
 }

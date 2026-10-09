@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{App, ElementId, Pixels, Point, ScrollHandle, Size, Style, Window, point, px};
+use gpui::{App, ElementId, Pixels, Point, ScrollHandle, Style, Window, point, px};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -11,7 +11,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSNotificationCenter, NSObject, NSPoint, NSRect, NSSize};
 
-use crate::bridge::host::{Layer, NativeRead, Slot, Target, hosted_element};
+use crate::bridge::host::{Layer, NativeRead, Slot, Target, full_size, hosted_element};
 
 const FLASH_EVERY: Duration = Duration::from_millis(500);
 
@@ -42,10 +42,7 @@ impl NativeScrollBars {
     }
 
     fn layout(&self) -> Style {
-        Style {
-            size: Size::full(),
-            ..Default::default()
-        }
+        full_size()
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -61,7 +58,7 @@ impl NativeScrollBars {
         );
         bars.show(content, across >= 1., down >= 1., NSPoint::new(x, y));
 
-        let (vertical, horizontal) = (self.vertical.clone(), self.horizontal.clone());
+        let (vertical, horizontal) = (self.vertical.take(), self.horizontal.take());
         slot.on_event(
             read(),
             Some(Rc::new(move |value, window, _| {
@@ -118,7 +115,6 @@ define_class!(
             self.ivars().key as isize
         }
 
-        /// Only the scrollers take the pointer.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, at: NSPoint) -> *mut NSView {
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: at] };
@@ -129,10 +125,7 @@ define_class!(
                 .into_iter()
                 .flatten()
                 .any(|bar| view.isDescendantOf(&bar));
-            match on_a_bar {
-                true => hit,
-                false => std::ptr::null_mut(),
-            }
+            if on_a_bar { hit } else { std::ptr::null_mut() }
         }
 
         #[unsafe(method(scrollWheel:))]

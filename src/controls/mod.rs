@@ -15,12 +15,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{App, Length, Pixels, Style, Window, px, relative, size};
+use objc2::Message;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSControl, NSControlSize, NSFont, NSImage};
+use objc2_app_kit::{NSControl, NSControlSize, NSFont, NSImage, NSView};
 use objc2_foundation::{MainThreadMarker, NSSize, NSString};
 
 use crate::bridge::appkit::fitting_size_keyed;
-use crate::bridge::host::{ControlSize, NativeHandler, NativeValue, Slot};
+use crate::bridge::host::{ControlSize, Layer, NativeHandler, NativeValue, Slot, wire};
 
 pub use button::{
     ButtonBezel, CheckState, NativeButton, NativeCheckbox, NativeRadio, NativeSegmented,
@@ -57,17 +58,18 @@ fn axis(reported: f64) -> Length {
     }
 }
 
-fn fitted(fitting: NSSize) -> Style {
-    Style {
-        size: size(axis(fitting.width), axis(fitting.height)),
-        ..Default::default()
-    }
-}
-
 fn hash_of(value: impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
+}
+
+fn fitting_size_of(
+    class: &'static str,
+    inputs: impl Hash,
+    measure: impl FnOnce(MainThreadMarker) -> NSSize,
+) -> NSSize {
+    fitting_size_keyed(class, hash_of(inputs), measure)
 }
 
 fn measured(
@@ -75,7 +77,11 @@ fn measured(
     inputs: impl Hash,
     measure: impl FnOnce(MainThreadMarker) -> NSSize,
 ) -> Style {
-    fitted(fitting_size_keyed(class, hash_of(inputs), measure))
+    let fitting = fitting_size_of(class, inputs, measure);
+    Style {
+        size: size(axis(fitting.width), axis(fitting.height)),
+        ..Default::default()
+    }
 }
 
 fn with_width(mut style: Style, width: Option<Length>) -> Style {
@@ -89,6 +95,18 @@ fn with_width(mut style: Style, width: Option<Length>) -> Style {
 fn snap_origin(slot: &mut Slot, scale: f32) {
     let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
     slot.bounds.origin = slot.bounds.origin.map(snap);
+}
+
+fn place_control<V>(slot: &Slot, new: impl FnOnce(MainThreadMarker) -> Retained<V>) -> Retained<V>
+where
+    V: Message + AsRef<NSView> + AsRef<NSControl> + 'static,
+{
+    slot.place(Layer::Above, |mtm, target| {
+        let control = new(mtm);
+        let wired: &NSControl = (*control).as_ref();
+        wire(wired, target, slot.key);
+        control
+    })
 }
 
 fn sync_enabled(control: &NSControl, enabled: bool) {

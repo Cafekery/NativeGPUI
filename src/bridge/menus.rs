@@ -1,15 +1,17 @@
+use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::CStr;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::controls::{CheckState, MenuView, menu::set_state};
+use crate::controls::menu::{event_mask, set_state};
+use crate::controls::{CheckState, MenuView};
 use crate::system::wording::worded;
 use block2::RcBlock;
 use gpui::{Action, App, AsyncApp, Keystroke, Menu, MenuItem, SharedString};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
-use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{ClassType, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSImageView, NSMenu,
     NSMenuDelegate, NSMenuItem, NSResponder, NSText, NSWindow,
@@ -30,9 +32,9 @@ pub enum MenuSection {
 }
 
 impl MenuSection {
-    fn title(self) -> String {
+    fn title(self) -> Cow<'static, str> {
         match self {
-            Self::App => app_name(),
+            Self::App => app_name().into(),
             Self::File => "File".into(),
             Self::Edit => "Edit".into(),
             Self::View => "View".into(),
@@ -295,7 +297,6 @@ pub fn install_menus(cx: &mut App) {
         return;
     };
     let app = NSApplication::sharedApplication(mtm);
-    let name = app_name();
     // A bundled app already has a main menu, so only the bar's own title marks it as ours.
     if app
         .mainMenu()
@@ -303,6 +304,7 @@ pub fn install_menus(cx: &mut App) {
     {
         return;
     }
+    let name = app_name();
 
     CommandSink::install(mtm, cx);
     reserve_gpui_menu_slot(cx);
@@ -404,9 +406,7 @@ pub fn add_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
         return;
     };
     let submenu = menu(mtm, title);
-    for command in commands {
-        add_command(mtm, &submenu, submenu.numberOfItems(), command);
-    }
+    insert_commands(mtm, &submenu, 0, commands);
     let before =
         index_of(&bar, &MenuSection::Window.title()).unwrap_or_else(|| bar.numberOfItems());
     bar.insertItem_atIndex(&submenu_row(mtm, title, &submenu), before);
@@ -420,9 +420,7 @@ pub fn set_menu(title: &str, commands: impl IntoIterator<Item = MenuCommand>) {
         return;
     };
     submenu.removeAllItems();
-    for command in commands {
-        add_command(mtm, &submenu, submenu.numberOfItems(), command);
-    }
+    insert_commands(mtm, &submenu, 0, commands);
 }
 
 pub fn prepend_menu(section: MenuSection, commands: impl IntoIterator<Item = MenuCommand>) {
@@ -452,9 +450,7 @@ pub fn replace_edit_rows(commands: impl IntoIterator<Item = MenuCommand>) {
     for row in &stock {
         menu.removeItem(row);
     }
-    for (offset, command) in commands.into_iter().enumerate() {
-        add_command(mtm, &menu, at + offset as isize, command);
-    }
+    insert_commands(mtm, &menu, at, commands);
 }
 
 pub fn replace_about_row(action: impl Action) {
@@ -493,9 +489,7 @@ fn rows_into(section: MenuSection, commands: impl IntoIterator<Item = MenuComman
         }
         (false, _) => menu.numberOfItems(),
     };
-    for (offset, command) in commands.into_iter().enumerate() {
-        add_command(mtm, &menu, start + offset as isize, command);
-    }
+    insert_commands(mtm, &menu, start, commands);
 }
 
 fn bar() -> Option<(MainThreadMarker, Retained<NSMenu>)> {
@@ -513,6 +507,17 @@ fn index_of(bar: &NSMenu, title: &str) -> Option<isize> {
 
 fn submenu_of(bar: &NSMenu, title: &str) -> Option<Retained<NSMenu>> {
     bar.itemAtIndex(index_of(bar, title)?)?.submenu()
+}
+
+fn insert_commands(
+    mtm: MainThreadMarker,
+    menu: &NSMenu,
+    at: isize,
+    commands: impl IntoIterator<Item = MenuCommand>,
+) {
+    for (offset, command) in commands.into_iter().enumerate() {
+        add_command(mtm, menu, at + offset as isize, command);
+    }
 }
 
 fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCommand) {
@@ -558,7 +563,7 @@ fn add_command(mtm: MainThreadMarker, into: &NSMenu, at: isize, command: MenuCom
             // The index lives in `representedObject`, never the tag: see `reserve_gpui_menu_slot`.
             let index = NSNumber::new_isize(CommandSink::register(action, command.text));
             unsafe { row.setRepresentedObject(Some(index.as_ref())) };
-            let Some(sink) = SHARED.with_borrow(|shared| shared.clone()) else {
+            let Some(sink) = SHARED.with_borrow(Option::clone) else {
                 return;
             };
             unsafe { row.setTarget(Some(sink.as_ref())) };
@@ -601,10 +606,9 @@ fn show_view(mtm: MainThreadMarker, row: &NSMenuItem, fill: Rc<ViewFill>) {
     });
 }
 
-fn is_row(view: &ViewRow, row: &NSMenuItem) -> bool {
-    view.row
-        .load()
-        .is_some_and(|known| std::ptr::eq(&*known, row))
+fn holds<T: Message>(weak: &Weak<T>, object: &T) -> bool {
+    weak.load()
+        .is_some_and(|known| std::ptr::eq(&*known, object))
 }
 
 fn refresh_view(row: &NSMenuItem) {
@@ -614,7 +618,7 @@ fn refresh_view(row: &NSMenuItem) {
     let fill = VIEWS.with_borrow(|views| {
         views
             .iter()
-            .find(|view| is_row(view, row))
+            .find(|view| holds(&view.row, row))
             .map(|view| view.fill.clone())
     });
     let Some(fill) = fill else {
@@ -622,7 +626,7 @@ fn refresh_view(row: &NSMenuItem) {
     };
     let fresh = fill();
     let changed = VIEWS.with_borrow_mut(|views| {
-        let view = views.iter_mut().find(|view| is_row(view, row))?;
+        let view = views.iter_mut().find(|view| holds(&view.row, row))?;
         (view.shown != fresh).then(|| view.shown = fresh.clone())
     });
     if changed.is_some() {
@@ -641,11 +645,9 @@ fn nested_row(
     fill: Option<Rc<Fill>>,
 ) -> Retained<NSMenuItem> {
     let inner = menu(mtm, title);
-    for row in rows {
-        add_command(mtm, &inner, inner.numberOfItems(), row);
-    }
+    insert_commands(mtm, &inner, 0, rows);
     if let Some(fill) = fill {
-        if let Some(sink) = SHARED.with_borrow(|shared| shared.clone()) {
+        if let Some(sink) = SHARED.with_borrow(Option::clone) {
             inner.setDelegate(Some(ProtocolObject::from_ref(&*sink)));
         }
         FILLS.with_borrow_mut(|fills| {
@@ -663,16 +665,14 @@ fn refill(menu: &NSMenu) {
     let fill = FILLS.with_borrow(|fills| {
         fills
             .iter()
-            .find(|(weak, _)| weak.load().is_some_and(|known| std::ptr::eq(&*known, menu)))
+            .find(|(weak, _)| holds(weak, menu))
             .map(|(_, fill)| fill.clone())
     });
     let Some(fill) = fill else {
         return;
     };
     menu.removeAllItems();
-    for command in fill() {
-        add_command(mtm, menu, menu.numberOfItems(), command);
-    }
+    insert_commands(mtm, menu, 0, fill());
 }
 
 thread_local! {
@@ -754,38 +754,27 @@ fn equivalent_key(key: &str) -> Option<String> {
 
 fn equivalent(chord: &str) -> Option<(String, NSEventModifierFlags)> {
     let keystroke = Keystroke::parse(chord).ok()?;
-    let mut mask = NSEventModifierFlags::empty();
-    for (held, flag) in [
-        (keystroke.modifiers.platform, NSEventModifierFlags::Command),
-        (keystroke.modifiers.control, NSEventModifierFlags::Control),
-        (keystroke.modifiers.alt, NSEventModifierFlags::Option),
-        (keystroke.modifiers.shift, NSEventModifierFlags::Shift),
-        (keystroke.modifiers.function, NSEventModifierFlags::Function),
-    ] {
-        if held {
-            mask |= flag;
-        }
-    }
-    Some((equivalent_key(&keystroke.key)?, mask))
+    Some((
+        equivalent_key(&keystroke.key)?,
+        event_mask(keystroke.modifiers),
+    ))
 }
 
 type MenuState = dyn Fn(&dyn Action) -> Option<CheckState>;
 
-/// Each `Some` is that row's state, a submenu's row included when it has an action. Runs while
-/// gpui holds its `App`: read state of your own.
+/// Each `Some` is that row's state, an action's submenu row too; runs under gpui's `App` borrow.
 pub fn on_menu_state<S: Into<CheckState>>(check: impl Fn(&dyn Action) -> Option<S> + 'static) {
-    STATE
-        .with_borrow_mut(|slot| *slot = Some(Rc::new(move |action| check(action).map(Into::into))));
+    STATE.set(Some(Rc::new(move |action| check(action).map(Into::into))));
 }
 
 /// Rows it answers `false` for are disabled; the rest stay enabled.
 pub fn on_menu_enabled(check: impl Fn(&dyn Action) -> bool + 'static) {
-    ENABLED.with_borrow_mut(|slot| *slot = Some(Rc::new(check)));
+    ENABLED.set(Some(Rc::new(check)));
 }
 
 /// Rows it names take that title each time they are validated.
 pub fn on_menu_title(title: impl Fn(&dyn Action) -> Option<SharedString> + 'static) {
-    TITLE.with_borrow_mut(|slot| *slot = Some(Rc::new(title)));
+    TITLE.set(Some(Rc::new(title)));
 }
 
 fn command_of(item: &NSMenuItem) -> Option<(Box<dyn Action>, Option<TextCommand>)> {
@@ -881,14 +870,14 @@ define_class!(
             }
             refresh_view(item);
             if let Some(state) =
-                STATE.with_borrow(|slot| slot.clone()).and_then(|check| check(&*action))
+                STATE.with_borrow(Option::clone).and_then(|check| check(&*action))
             {
                 set_state(item, state);
             }
-            if let Some(title) = TITLE.with_borrow(|slot| slot.clone()).and_then(|t| t(&*action)) {
+            if let Some(title) = TITLE.with_borrow(Option::clone).and_then(|t| t(&*action)) {
                 item.setTitle(&worded(&title));
             }
-            let enabled = ENABLED.with_borrow(|slot| slot.clone());
+            let enabled = ENABLED.with_borrow(Option::clone);
             Bool::new(enabled.is_none_or(|enabled| enabled(&*action)))
         }
     }
@@ -950,7 +939,7 @@ impl CommandSink {
     fn install(mtm: MainThreadMarker, cx: &mut App) {
         let this = Self::alloc(mtm).set_ivars(SinkIvars { cx: cx.to_async() });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        SHARED.with_borrow_mut(|shared| *shared = Some(this));
+        SHARED.set(Some(this));
     }
 
     fn register(action: Box<dyn Action>, text: Option<TextCommand>) -> isize {

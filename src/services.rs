@@ -10,7 +10,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSString, NSURL};
 
-use crate::bridge::appkit::gpui_view;
+use crate::bridge::appkit::gpui_window;
 
 struct RequestorIvars {
     files: RefCell<Vec<PathBuf>>,
@@ -52,9 +52,7 @@ thread_local! {
 
 /// The files the Services menu acts on while `window` is key.
 pub fn services_selection(window: &Window, files: Vec<PathBuf>) {
-    let ns_window = gpui_view(window)
-        .window()
-        .expect("GPUI's view is in its window");
+    let ns_window = gpui_window(window);
     offer_files(&ns_window);
     REQUESTORS.with_borrow_mut(|all| {
         all.retain(|(held, _)| held.load().is_some());

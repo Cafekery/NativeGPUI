@@ -15,11 +15,12 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSDate, NSMutableAttributedString, NSRange, NSString, NSURL,
 };
 
-use crate::bridge::appkit::{fitting_size, fitting_size_keyed};
 use crate::bridge::host::{
-    Layer, NativeDispatch, NativeHandler, NativeRead, Slot, ValueKind, hosted_element, wire,
+    NativeDispatch, NativeHandler, NativeRead, Slot, ValueKind, hosted_element,
 };
-use crate::controls::{fitted, nsstring_is, number_handler, sync_enabled};
+use crate::controls::{
+    fitting_size_of, measured, nsstring_is, number_handler, place_control, sync_enabled,
+};
 use crate::system::color::{from_nscolor, to_nscolor};
 
 type Handler<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
@@ -94,17 +95,11 @@ impl NativeStepper {
     }
 
     fn layout(&self) -> Style {
-        fitted(fitting_size("NSStepper", |mtm| {
-            NSStepper::new(mtm).fittingSize()
-        }))
+        measured("NSStepper", (), |mtm| NSStepper::new(mtm).fittingSize())
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let stepper = slot.place(Layer::Above, |mtm, target| {
-            let stepper = NSStepper::new(mtm);
-            wire(&stepper, target, slot.key);
-            stepper
-        });
+        let stepper = place_control(&slot, NSStepper::new);
         // Bounds before value: AppKit clamps `doubleValue` to the range currently set.
         if stepper.minValue() != self.min {
             stepper.setMinValue(self.min);
@@ -193,19 +188,14 @@ impl NativeColorWell {
     }
 
     fn layout(&self) -> Style {
-        let style = self.style;
-        fitted(fitting_size_keyed("NSColorWell", style as u64, |mtm| {
-            NSColorWell::colorWellWithStyle(style.appkit(), mtm).fittingSize()
-        }))
+        measured("NSColorWell", self.style as u8, |mtm| {
+            NSColorWell::colorWellWithStyle(self.style.appkit(), mtm).fittingSize()
+        })
     }
 
     fn paint(&mut self, slot: Slot, window: &mut Window, _: &mut App) {
         let style = self.style.appkit();
-        let well = slot.place(Layer::Above, |mtm, target| {
-            let well = NSColorWell::colorWellWithStyle(style, mtm);
-            wire(&well, target, slot.key);
-            well
-        });
+        let well = place_control(&slot, |mtm| NSColorWell::colorWellWithStyle(style, mtm));
         if well.colorWellStyle() != style {
             well.setColorWellStyle(style);
         }
@@ -318,22 +308,17 @@ impl NativeDatePicker {
     }
 
     fn layout(&self) -> Style {
-        let (appkit_style, elements) = (self.appkit_style(), self.elements);
-        let key = (self.style as u64) << 3 | elements as u64;
-        fitted(fitting_size_keyed("NSDatePicker", key, move |mtm| {
+        let inputs = (self.style as u8, self.elements as u8);
+        measured("NSDatePicker", inputs, |mtm| {
             let picker = NSDatePicker::new(mtm);
-            picker.setDatePickerStyle(appkit_style);
-            picker.setDatePickerElements(elements.appkit());
+            picker.setDatePickerStyle(self.appkit_style());
+            picker.setDatePickerElements(self.elements.appkit());
             picker.fittingSize()
-        }))
+        })
     }
 
     fn paint(&mut self, slot: Slot, window: &mut Window, _: &mut App) {
-        let picker = slot.place(Layer::Above, |mtm, target| {
-            let picker = NSDatePicker::new(mtm);
-            wire(&picker, target, slot.key);
-            picker
-        });
+        let picker = place_control(&slot, NSDatePicker::new);
         let appkit_style = self.appkit_style();
         if picker.datePickerStyle() != appkit_style {
             picker.setDatePickerStyle(appkit_style);
@@ -436,10 +421,9 @@ impl NativePathControl {
     }
 
     fn layout(&self) -> Style {
-        let appkit_style = self.appkit_style();
-        let fitting = fitting_size_keyed("NSPathControl", self.style as u64, move |mtm| {
+        let fitting = fitting_size_of("NSPathControl", self.style as u8, |mtm| {
             let control = NSPathControl::new(mtm);
-            control.setPathStyle(appkit_style);
+            control.setPathStyle(self.appkit_style());
             // With no components the control fits 0x0 and never appears.
             control.setURL(Some(&NSURL::fileURLWithPath(&NSString::from_str("/"))));
             control.fittingSize()
@@ -451,11 +435,7 @@ impl NativePathControl {
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let control = slot.place(Layer::Above, |mtm, target| {
-            let control = NSPathControl::new(mtm);
-            wire(&control, target, slot.key);
-            control
-        });
+        let control = place_control(&slot, NSPathControl::new);
         let appkit_style = self.appkit_style();
         if control.pathStyle() != appkit_style {
             control.setPathStyle(appkit_style);

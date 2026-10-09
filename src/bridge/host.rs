@@ -205,7 +205,7 @@ define_class!(
                 let _: () = msg_send![
                     self,
                     performSelector: sel!(ngHandOff),
-                    withObject: std::ptr::null::<AnyObject>(),
+                    withObject: ptr::null::<AnyObject>(),
                     afterDelay: 0.0,
                 ];
             }
@@ -218,10 +218,7 @@ define_class!(
                 return;
             };
             let holding = window.firstResponder().is_some_and(|responder| {
-                std::ptr::eq(
-                    &*responder as *const _ as *const (),
-                    self as *const _ as *const (),
-                )
+                ptr::eq(Retained::as_ptr(&responder).cast::<Terminus>(), self)
             });
             if holding {
                 window.makeFirstResponder(Some(&self.ivars().gpui));
@@ -381,12 +378,12 @@ impl NativeHost {
     pub fn stacking(&self, layer: Layer) -> Vec<u64> {
         let state = self.0.borrow();
         let subviews = state.layer_view(layer).subviews();
-        (0..subviews.count())
-            .filter_map(|index| {
-                let subview = Retained::as_ptr(&subviews.objectAtIndex(index));
+        subviews
+            .iter()
+            .filter_map(|subview| {
+                let subview = Retained::as_ptr(&subview);
                 state.slots.iter().find_map(|(key, slot)| {
-                    let clip = Retained::as_ptr(&slot.clip).cast::<NSView>();
-                    (clip == subview).then_some(*key)
+                    (Retained::as_ptr(&slot.clip).cast::<NSView>() == subview).then_some(*key)
                 })
             })
             .collect()
@@ -398,7 +395,7 @@ impl NativeHost {
         let mut keys = Vec::new();
         let mut view = unsafe { start.nextKeyView() };
         while let Some(current) = view {
-            if std::ptr::eq(&*current, start) || keys.len() > state.slots.len() {
+            if ptr::eq(&*current, start) || keys.len() > state.slots.len() {
                 break;
             }
             let found = state.slots.iter().find_map(|(key, slot)| {
@@ -793,6 +790,13 @@ macro_rules! hosted_element {
     };
 }
 pub(crate) use hosted_element;
+
+pub(crate) fn full_size() -> gpui::Style {
+    gpui::Style {
+        size: gpui::Size::full(),
+        ..Default::default()
+    }
+}
 
 #[cfg(test)]
 mod tests {

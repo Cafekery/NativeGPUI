@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::mem::transmute;
 
 use gpui::{Action, AnyWindowHandle, App, AppContext, AsyncApp, Window};
 use objc2::rc::Retained;
@@ -10,8 +11,7 @@ use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowOrderingMode, NSWin
 use objc2_foundation::{MainThreadMarker, NSSize};
 use objc2_quartz_core::CATransaction;
 
-use super::window_chrome::ns_window_of;
-use crate::bridge::appkit::{draw_now, gpui_view};
+use crate::bridge::appkit::{draw_now, gpui_view, gpui_window};
 
 thread_local! {
     static NEW_TAB: RefCell<Option<(AsyncApp, Box<dyn Action>)>> = const { RefCell::new(None) };
@@ -21,7 +21,7 @@ thread_local! {
 const INSET_CLASS: &CStr = c"NGTabBarInsetView";
 
 pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let mtm = MainThreadMarker::from(&*ns_window);
     NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
     ns_window.setTabbingMode(NSWindowTabbingMode::Automatic);
@@ -31,7 +31,7 @@ pub fn window_tabs(window: &Window, action: impl Action, cx: &mut App) {
 }
 
 pub fn set_trailing_inset(window: &Window, points: f32) {
-    let ns_window = ns_window_of(window);
+    let ns_window = gpui_window(window);
     let Some(accessory) = tab_bar_accessory(&ns_window) else {
         return;
     };
@@ -44,7 +44,7 @@ pub fn set_trailing_inset(window: &Window, points: f32) {
 }
 
 pub fn tab_bar_height(window: &Window) -> f32 {
-    tab_bar_accessory(&ns_window_of(window))
+    tab_bar_accessory(&gpui_window(window))
         .map_or(0., |accessory| accessory.frame().size.height as f32)
 }
 
@@ -52,7 +52,7 @@ pub fn tab_bar_height(window: &Window) -> f32 {
 pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
     let tab = tab.window_handle();
     cx.spawn(async move |cx: &mut AsyncApp| {
-        let host = cx.update_window(window, |_, window, _| ns_window_of(window));
+        let host = cx.update_window(window, |_, window, _| gpui_window(window));
         let (Ok(host), Ok(view)) = (host, cx.update_window(tab, |_, tab, _| gpui_view(tab))) else {
             return;
         };
@@ -72,10 +72,7 @@ pub fn add_tab(window: AnyWindowHandle, tab: &Window, cx: &mut App) {
 fn restore_appkit_tabs(window: &NSWindow) {
     let base = NSWindow::class();
     let mut class = window.class();
-    while let Some(sup) = class.superclass() {
-        if sup == base {
-            break;
-        }
+    while let Some(sup) = class.superclass().filter(|sup| *sup != base) {
         class = sup;
     }
     for selector in [
@@ -91,32 +88,24 @@ fn restore_appkit_tabs(window: &NSWindow) {
         ) else {
             continue;
         };
-        unsafe {
-            objc2::ffi::method_setImplementation(
-                method as *const _ as *mut _,
-                original.implementation(),
-            );
-        }
+        unsafe { objc2::ffi::method_setImplementation(method, original.implementation()) };
     }
     if let Some(method) = class.instance_method(sel!(toggleTabBar:)) {
-        let imp: extern "C" fn(&AnyObject, Sel, *mut AnyObject) = toggle_tab_bar;
-        unsafe {
-            objc2::ffi::method_setImplementation(
-                method as *const _ as *mut _,
-                std::mem::transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject), Imp>(imp),
-            );
-        }
+        let toggle: extern "C" fn(&AnyObject, Sel, *mut AnyObject) = toggle_tab_bar;
+        unsafe { objc2::ffi::method_setImplementation(method, transmute(toggle)) };
     }
     answer_new_tab(class);
     let validate: extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool = validate_tab_item;
+    unsafe { add_method(class, sel!(validateMenuItem:), transmute(validate), c"B@:@") };
+}
+
+unsafe fn add_method(class: &AnyClass, selector: Sel, imp: Imp, types: &CStr) {
     unsafe {
         objc2::ffi::class_addMethod(
             class as *const AnyClass as *mut AnyClass,
-            sel!(validateMenuItem:),
-            std::mem::transmute::<extern "C" fn(&AnyObject, Sel, *mut AnyObject) -> Bool, Imp>(
-                validate,
-            ),
-            c"B@:@".as_ptr(),
+            selector,
+            imp,
+            types.as_ptr(),
         );
     }
 }
@@ -170,14 +159,7 @@ pub(crate) fn teach_new_tab(mtm: MainThreadMarker) {
 
 fn answer_new_tab(class: &AnyClass) {
     let imp: extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) = new_window_for_tab;
-    unsafe {
-        objc2::ffi::class_addMethod(
-            class as *const AnyClass as *mut AnyClass,
-            sel!(newWindowForTab:),
-            std::mem::transmute::<extern "C" fn(*mut AnyObject, Sel, *mut AnyObject), Imp>(imp),
-            c"v@:@".as_ptr(),
-        );
-    }
+    unsafe { add_method(class, sel!(newWindowForTab:), transmute(imp), c"v@:@") };
 }
 
 extern "C" fn new_window_for_tab(_: *mut AnyObject, _: Sel, _: *mut AnyObject) {

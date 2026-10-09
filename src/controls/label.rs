@@ -7,9 +7,8 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSString};
 
-use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{Layer, Slot, hosted_element};
-use crate::controls::{hash_of, nsstring_is};
+use crate::controls::{fitting_size_of, nsstring_is};
 use crate::system::tokens::{
     SystemColor, ns_font, ns_font_weight, system_font_family, system_font_size,
 };
@@ -112,10 +111,8 @@ impl NativeLabel {
     fn font(&self) -> Retained<NSFont> {
         let size = self.point_size();
         if self.tabular {
-            NSFont::monospacedDigitSystemFontOfSize_weight(
-                f32::from(size) as f64,
-                ns_font_weight(self.weight),
-            )
+            let weight = ns_font_weight(self.weight);
+            NSFont::monospacedDigitSystemFontOfSize_weight(size.to_f64(), weight)
         } else {
             ns_font(system_font_family(), size, self.weight)
                 .expect("the system family always resolves")
@@ -126,8 +123,8 @@ impl NativeLabel {
         let height = if self.wraps {
             relative(1.).into()
         } else {
-            let key = hash_of((self.point_size(), self.weight, self.tabular));
-            let fitting = fitting_size_keyed("NSTextField(label)", key, |mtm| {
+            let inputs = (self.point_size(), self.weight, self.tabular);
+            let fitting = fitting_size_of("NSTextField(label)", inputs, |mtm| {
                 let probe = NSTextField::labelWithString(&NSString::from_str("Ag"), mtm);
                 probe.setFont(Some(&self.font()));
                 probe.fittingSize()

@@ -1,3 +1,4 @@
+use objc2::rc::Retained;
 use objc2_app_kit::NSTableViewAnimationOptions;
 use objc2_foundation::{NSIndexSet, NSInteger, NSMutableIndexSet, NSPoint};
 
@@ -130,14 +131,8 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64], diff: &
     let parent_item = parent.map(|key| state.shared.item(key));
     let parent_item = parent_item.as_deref();
 
-    let doomed = NSMutableIndexSet::new();
-    let mut removed = 0;
-    for (index, key) in was.iter().enumerate() {
-        if !wanted.contains(key) {
-            doomed.addIndex(index);
-            removed += 1;
-        }
-    }
+    let doomed = indexes_missing(was, &wanted);
+    let removed = doomed.count();
     if removed > 0 {
         unsafe {
             outline.removeItemsAtIndexes_inParent_withAnimation(
@@ -179,14 +174,8 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64], diff: &
         moved += 1;
     }
 
-    let fresh = NSMutableIndexSet::new();
-    let mut inserted = 0;
-    for (index, key) in wanted.iter().enumerate() {
-        if !was.contains(key) {
-            fresh.addIndex(index);
-            inserted += 1;
-        }
-    }
+    let fresh = indexes_missing(&wanted, was);
+    let inserted = fresh.count();
     if inserted > 0 {
         unsafe {
             outline.insertItemsAtIndexes_inParent_withAnimation(
@@ -200,6 +189,16 @@ fn diff_children(state: &SidebarState, parent: Option<u64>, was: &[u64], diff: &
     diff.inserted += inserted;
     diff.removed += removed;
     diff.moved += moved;
+}
+
+fn indexes_missing(keys: &[u64], from: &[u64]) -> Retained<NSMutableIndexSet> {
+    let set = NSMutableIndexSet::new();
+    for (index, key) in keys.iter().enumerate() {
+        if !from.contains(key) {
+            set.addIndex(index);
+        }
+    }
+    set
 }
 
 pub(super) fn reveal(state: &SidebarState, key: u64) {

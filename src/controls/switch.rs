@@ -3,10 +3,10 @@ use objc2::MainThreadOnly;
 use objc2_app_kit::{NSBackingStoreType, NSSwitch, NSWindow, NSWindowStyleMask};
 use objc2_foundation::NSRect;
 
-use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, Slot, ValueKind, hosted_element, wire,
+use crate::bridge::host::{ControlSize, NativeHandler, Slot, ValueKind, hosted_element};
+use crate::controls::{
+    CheckState, bool_handler, measured, place_control, sync_control_size, sync_enabled,
 };
-use crate::controls::{CheckState, bool_handler, measured, sync_control_size, sync_enabled};
 
 pub fn native_switch(id: impl Into<ElementId>, on: bool) -> NativeSwitch {
     NativeSwitch {
@@ -65,11 +65,7 @@ impl NativeSwitch {
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let switch = slot.place(Layer::Above, |mtm, target| {
-            let switch = NSSwitch::new(mtm);
-            wire(&switch, target, slot.key);
-            switch
-        });
+        let switch = place_control(&slot, NSSwitch::new);
         let wanted = CheckState::from(self.on).to_native();
         sync_control_size(&switch, self.control_size);
         if switch.state() != wanted {

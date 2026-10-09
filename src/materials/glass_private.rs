@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use objc2::rc::Retained;
-use objc2::runtime::Sel;
 use objc2::sel;
 use objc2_app_kit::NSGlassEffectView;
 use objc2_foundation::NSString;
@@ -205,7 +204,7 @@ impl GlassInteractionState {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Default)]
 pub(super) struct Private {
     pub variant: Option<GlassVariant>,
     pub subvariant: GlassSubvariant,
@@ -234,30 +233,32 @@ impl Private {
             send_string(view, sel!(set_subvariant:), name.as_deref());
         }
 
-        set_state(
-            view,
-            sel!(_interactionState),
-            sel!(set_interactionState:),
-            self.interaction.raw(),
-        );
-        set_state(
-            view,
-            sel!(_subduedState),
-            sel!(set_subduedState:),
-            isize::from(self.subdued),
-        );
-        set_state(
-            view,
-            sel!(_scrimState),
-            sel!(set_scrimState:),
-            isize::from(self.scrim),
-        );
-        set_state(
-            view,
-            sel!(_contentLensing),
-            sel!(set_contentLensing:),
-            2 * isize::from(self.lensing),
-        );
+        for (getter, setter, value) in [
+            (
+                sel!(_interactionState),
+                sel!(set_interactionState:),
+                self.interaction.raw(),
+            ),
+            (
+                sel!(_subduedState),
+                sel!(set_subduedState:),
+                isize::from(self.subdued),
+            ),
+            (
+                sel!(_scrimState),
+                sel!(set_scrimState:),
+                isize::from(self.scrim),
+            ),
+            (
+                sel!(_contentLensing),
+                sel!(set_contentLensing:),
+                2 * isize::from(self.lensing),
+            ),
+        ] {
+            if read_isize(view, getter) != Some(value) {
+                send_isize(view, setter, value);
+            }
+        }
     }
 
     fn effective_subvariant(&self) -> GlassSubvariant {
@@ -265,12 +266,6 @@ impl Private {
             Some(variant) if !variant.accepts(self.subvariant) => GlassSubvariant::None,
             _ => self.subvariant,
         }
-    }
-}
-
-fn set_state(view: &NSGlassEffectView, getter: Sel, setter: Sel, value: isize) {
-    if read_isize(view, getter) != Some(value) {
-        send_isize(view, setter, value);
     }
 }
 

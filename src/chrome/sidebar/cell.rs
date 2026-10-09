@@ -215,11 +215,6 @@ impl EjectButton {
     }
 }
 
-// One identifier per row shape: a recycled cell keeps its subviews and `group`.
-const ID_GROUP: &str = "NGSidebarGroupRow";
-const ID_ICON: &str = "NGSidebarIconRow";
-const ID_PLAIN: &str = "NGSidebarPlainRow";
-
 const EJECT_SLOT: f64 = 18.0;
 const TAG_DOT_DIAMETER: f64 = 12.5;
 const TAG_DOT_LINE: f64 = 1.0;
@@ -228,7 +223,7 @@ const GROUP_BASELINE_DROP: f64 = 2.0;
 const INACTIVE_LABEL_ALPHA: f64 = 0.47;
 
 fn label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+    let field = NSTextField::labelWithString(ns_string!(""), mtm);
     field.setUsesSingleLineMode(true);
     field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     field
@@ -243,7 +238,13 @@ fn srgb((r, g, b): (u8, u8, u8)) -> Retained<NSColor> {
     )
 }
 
-fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Retained<SidebarCell> {
+fn make_cell(
+    mtm: MainThreadMarker,
+    identifier: &NSString,
+    group: bool,
+    with_icon: bool,
+    target: &AnyObject,
+) -> Retained<SidebarCell> {
     let badge = label(mtm);
     badge.setAlignment(NSTextAlignment::Right);
     badge.setFont(Some(&NSFont::systemFontOfSize(
@@ -260,20 +261,20 @@ fn make_cell(mtm: MainThreadMarker, identifier: &str, target: &AnyObject) -> Ret
     }
 
     let this = SidebarCell::alloc(mtm).set_ivars(CellIvars {
-        group: identifier == ID_GROUP,
+        group,
         badge,
         eject,
         tint: RefCell::new(None),
         muted: Cell::new(false),
     });
     let cell: Retained<SidebarCell> = unsafe { msg_send![super(this), init] };
-    cell.setIdentifier(Some(&NSString::from_str(identifier)));
+    cell.setIdentifier(Some(identifier));
 
     let title = label(mtm);
     cell.addSubview(&title);
     unsafe { cell.setTextField(Some(&title)) };
 
-    if identifier == ID_ICON {
+    if with_icon {
         let icon = NSImageView::new(mtm);
         icon.setImageScaling(NSImageScaling::ScaleProportionallyDown);
         icon.setImageAlignment(NSImageAlignment::AlignCenter);
@@ -319,7 +320,7 @@ const PRIVATE_SYMBOLS: &str =
 pub fn system_symbol(name: &str) -> Option<Retained<NSImage>> {
     let name = NSString::from_str(name);
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, None).or_else(|| {
-        let catalog = NSBundle::bundleWithPath(&NSString::from_str(PRIVATE_SYMBOLS))?;
+        let catalog = NSBundle::bundleWithPath(ns_string!(PRIVATE_SYMBOLS))?;
         NSImage::imageWithSymbolName_bundle_variableValue(&name, Some(&catalog), 1.)
     })
 }
@@ -332,7 +333,7 @@ pub fn system_template(resource: &str, points: Pixels) -> Option<Retained<NSImag
 
 /// The drawing nearest `points`, at its own size: Finder draws its 18pt art in a 17pt row.
 fn build_core_types_template(name: &str, points: f64) -> Option<Retained<NSImage>> {
-    let bundle = NSBundle::bundleWithPath(&NSString::from_str(CORE_TYPES_BUNDLE))?;
+    let bundle = NSBundle::bundleWithPath(ns_string!(CORE_TYPES_BUNDLE))?;
     let source = bundle.imageForResource(&NSString::from_str(name))?;
     let reps = source.representations();
     let chosen = nearest_rep_points(reps.iter().map(|rep| rep.size().width), points)?;
@@ -441,11 +442,7 @@ fn tint_cell(cell: &SidebarCell, selected: bool, key: bool) {
         return;
     };
     let fade = label_fades_itself() && !key && !ivars.group;
-    let tint = if selected {
-        ivars.tint.borrow().clone()
-    } else {
-        None
-    };
+    let tint = selected.then(|| ivars.tint.borrow().clone()).flatten();
     let colour = match tint {
         Some(tag) => tag,
         // An explicit colour loses the accent AppKit substitutes on a selected row.
@@ -533,22 +530,21 @@ pub(super) fn row_view(
     item: &AnyObject,
     target: &AnyObject,
 ) -> Option<Retained<NSView>> {
-    let mtm = MainThreadMarker::new().expect("outline view callbacks are main-thread");
     let model = shared.model.borrow();
     let node = model.node(Shared::key_of_item(item))?;
 
+    // One identifier per row shape: a recycled cell keeps its subviews and `group`.
+    let icon = !node.group && node.icon.is_some();
     let identifier = if node.group {
-        ID_GROUP
-    } else if node.icon.is_some() {
-        ID_ICON
+        ns_string!("NGSidebarGroupRow")
+    } else if icon {
+        ns_string!("NGSidebarIconRow")
     } else {
-        ID_PLAIN
+        ns_string!("NGSidebarPlainRow")
     };
-    let name = NSString::from_str(identifier);
-
-    let cell = match unsafe { outline.makeViewWithIdentifier_owner(&name, Some(outline)) } {
+    let cell = match unsafe { outline.makeViewWithIdentifier_owner(identifier, Some(outline)) } {
         Some(view) => unsafe { Retained::cast_unchecked::<SidebarCell>(view) },
-        None => make_cell(mtm, identifier, target),
+        None => make_cell(outline.mtm(), identifier, node.group, icon, target),
     };
     configure_cell(
         &cell,

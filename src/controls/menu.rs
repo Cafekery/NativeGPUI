@@ -30,12 +30,11 @@ use objc2_foundation::{
 use crate::bridge::appkit::Container;
 use crate::bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHost, Slot, ValueKind, element_key, hosted_element,
-    wire,
 };
 use crate::controls::button::{ButtonBezel, CheckState};
 use crate::controls::{
-    hash_of, measured, nsstring_is, symbol_image, sync_control_size, sync_enabled, sync_font_size,
-    with_width,
+    hash_of, measured, nsstring_is, place_control, symbol_image, sync_control_size, sync_enabled,
+    sync_font_size, with_width,
 };
 use crate::system::color::to_nscolor;
 use crate::system::tokens::{FileType, SystemColor, ns_file_icon};
@@ -192,7 +191,6 @@ struct SwatchIvars {
 }
 
 define_class!(
-    /// Picking a dot or the button closes the menu as choosing the row would.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSwatchRow"]
@@ -262,7 +260,6 @@ struct DotIvars {
 }
 
 define_class!(
-    /// A dot as VoiceOver sees it: a radio button that a press picks.
     #[unsafe(super(NSAccessibilityElement, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NGSwatchDot"]
@@ -408,12 +405,7 @@ fn swatch_row_picking(
     button: Option<(&str, &str, bool)>,
     pick: Rc<dyn Fn(Option<usize>)>,
 ) -> Retained<NSView> {
-    let button_height = if button.is_some() {
-        BUTTON_ROW_HEIGHT
-    } else {
-        0.
-    };
-    let row = swatch_row(mtm, colors, enabled);
+    let button_height = button.map_or(0., |_| BUTTON_ROW_HEIGHT);
     let host = SwatchRow::alloc(mtm).set_ivars(SwatchIvars {
         count: colors.len(),
         pick,
@@ -421,15 +413,15 @@ fn swatch_row_picking(
         button_height,
         pressable: button.is_some_and(|(_, _, pressable)| pressable),
     });
-    let mut frame = row.frame();
-    frame.size.height += button_height;
+    let frame = NSRect::new(
+        NSPoint::ZERO,
+        NSSize::new(
+            swatch_row_width(colors.len()),
+            SWATCH_ROW_HEIGHT + button_height,
+        ),
+    );
     let host: Retained<SwatchRow> = unsafe { msg_send![super(host), initWithFrame: frame] };
-    for view in row.subviews().iter() {
-        let mut dot = view.frame();
-        dot.origin.y += button_height;
-        view.setFrame(dot);
-        host.addSubview(&view);
-    }
+    add_dots(mtm, &host, colors, enabled, button_height);
     // The dots stand in for the row's own children, so VoiceOver reads radio buttons, not boxes.
     let parent: &AnyObject = host.as_ref();
     let mut children: Vec<Retained<AnyObject>> = labels
@@ -441,14 +433,12 @@ fn swatch_row_picking(
                 index,
             });
             let dot: Retained<SwatchDot> = unsafe { msg_send![super(dot), init] };
-            let mut frame = dot_frame(index);
-            frame.origin.y += button_height;
             unsafe {
                 dot.setAccessibilityRole(Some(NSAccessibilityRadioButtonRole));
                 dot.setAccessibilityLabel(Some(&NSString::from_str(label)));
                 dot.setAccessibilityEnabled(enabled);
                 dot.setAccessibilityParent(Some(parent));
-                dot.setAccessibilityFrameInParentSpace(frame);
+                dot.setAccessibilityFrameInParentSpace(dot_frame(index, button_height));
                 Retained::cast_unchecked(dot)
             }
         })
@@ -514,9 +504,9 @@ fn title_width(title: &str) -> f64 {
     unsafe { worded(title).sizeWithAttributes(Some(&attributes)) }.width
 }
 
-fn dot_frame(index: usize) -> NSRect {
+fn dot_frame(index: usize, lift: f64) -> NSRect {
     let x = SWATCH_INSET + index as f64 * (SWATCH_DIAMETER + SWATCH_GAP);
-    let y = ((SWATCH_ROW_HEIGHT - SWATCH_DIAMETER) / 2.).round();
+    let y = ((SWATCH_ROW_HEIGHT - SWATCH_DIAMETER) / 2.).round() + lift;
     NSRect::new(
         NSPoint::new(x, y),
         NSSize::new(SWATCH_DIAMETER, SWATCH_DIAMETER),
@@ -524,13 +514,20 @@ fn dot_frame(index: usize) -> NSRect {
 }
 
 fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla], enabled: bool) -> Retained<NSView> {
-    let width = swatch_row_width(colors.len());
     let row = NSView::initWithFrame(
         NSView::alloc(mtm),
-        NSRect::new(NSPoint::ZERO, NSSize::new(width, SWATCH_ROW_HEIGHT)),
+        NSRect::new(
+            NSPoint::ZERO,
+            NSSize::new(swatch_row_width(colors.len()), SWATCH_ROW_HEIGHT),
+        ),
     );
+    add_dots(mtm, &row, colors, enabled, 0.);
+    row
+}
+
+fn add_dots(mtm: MainThreadMarker, row: &NSView, colors: &[Hsla], enabled: bool, lift: f64) {
     for (index, color) in colors.iter().enumerate() {
-        let dot = NSBox::initWithFrame(NSBox::alloc(mtm), dot_frame(index));
+        let dot = NSBox::initWithFrame(NSBox::alloc(mtm), dot_frame(index, lift));
         dot.setBoxType(NSBoxType::Custom);
         dot.setTitlePosition(NSTitlePosition::NoTitle);
         dot.setBorderWidth(0.);
@@ -542,11 +539,6 @@ fn swatch_row(mtm: MainThreadMarker, colors: &[Hsla], enabled: bool) -> Retained
         dot.setFillColor(&fill);
         row.addSubview(&dot);
     }
-    row
-}
-
-fn entries_from_titles(titles: impl IntoIterator<Item = impl Into<String>>) -> Vec<MenuEntry> {
-    titles.into_iter().map(MenuEntry::item).collect()
 }
 
 fn image_key<'a>(
@@ -813,24 +805,17 @@ fn sync_view(mtm: MainThreadMarker, item: &NSMenuItem, view: &MenuView) {
     unsafe { item.setRepresentedObject(Some(key.as_ref())) };
 }
 
-fn event_mask(modifiers: Modifiers) -> NSEventModifierFlags {
-    let mut mask = NSEventModifierFlags::empty();
-    if modifiers.platform {
-        mask |= NSEventModifierFlags::Command;
-    }
-    if modifiers.shift {
-        mask |= NSEventModifierFlags::Shift;
-    }
-    if modifiers.alt {
-        mask |= NSEventModifierFlags::Option;
-    }
-    if modifiers.control {
-        mask |= NSEventModifierFlags::Control;
-    }
-    if modifiers.function {
-        mask |= NSEventModifierFlags::Function;
-    }
-    mask
+pub(crate) fn event_mask(modifiers: Modifiers) -> NSEventModifierFlags {
+    [
+        (modifiers.platform, NSEventModifierFlags::Command),
+        (modifiers.shift, NSEventModifierFlags::Shift),
+        (modifiers.alt, NSEventModifierFlags::Option),
+        (modifiers.control, NSEventModifierFlags::Control),
+        (modifiers.function, NSEventModifierFlags::Function),
+    ]
+    .into_iter()
+    .filter(|(held, _)| *held)
+    .fold(NSEventModifierFlags::empty(), |mask, (_, flag)| mask | flag)
 }
 
 fn new_item(mtm: MainThreadMarker, entry: &MenuEntry) -> Retained<NSMenuItem> {
@@ -875,7 +860,7 @@ pub struct NativePopup {
 
 impl NativePopup {
     pub fn items(mut self, items: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.entries = entries_from_titles(items);
+        self.entries = items.into_iter().map(MenuEntry::item).collect();
         self
     }
 
@@ -976,7 +961,7 @@ impl NativePopup {
     }
 
     fn paint(&mut self, slot: Slot, window: &mut Window, _: &mut App) {
-        let popup = slot.place(Layer::Above, |mtm, target| {
+        let popup = place_control(&slot, |mtm| {
             let popup = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(mtm),
                 NSRect::ZERO,
@@ -984,7 +969,6 @@ impl NativePopup {
             );
             // Left on, validation re-enables every item as the menu opens.
             popup.setAutoenablesItems(false);
-            wire(&popup, target, slot.key);
             popup
         });
 
@@ -1234,7 +1218,7 @@ impl NativeContextMenu {
     }
 
     pub fn items(mut self, items: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.entries = entries_from_titles(items);
+        self.entries = items.into_iter().map(MenuEntry::item).collect();
         self
     }
 
@@ -1348,7 +1332,7 @@ impl Element for NativeContextMenu {
                         (event.position.x - bounds.origin.x).to_f64(),
                         (event.position.y - bounds.origin.y).to_f64(),
                     ),
-                    MenuOrigin::ElementTopLeft => NSPoint::new(0., 0.),
+                    MenuOrigin::ElementTopLeft => NSPoint::ZERO,
                 };
                 let entries = match &build {
                     Some(build) => build(event.position - bounds.origin, window, cx),
