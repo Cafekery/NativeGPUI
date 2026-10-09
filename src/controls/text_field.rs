@@ -8,20 +8,21 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSComboBox, NSComboBoxDelegate, NSControl, NSControlSize, NSControlTextEditingDelegate,
-    NSFocusRingType, NSSearchField, NSSearchFieldDelegate, NSSecureTextField, NSTextField,
-    NSTextFieldDelegate, NSTextView,
+    NSComboBox, NSComboBoxDelegate, NSControl, NSControlTextEditingDelegate, NSFocusRingType,
+    NSSearchField, NSSearchFieldDelegate, NSSecureTextField, NSTextField, NSTextFieldDelegate,
+    NSTextView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSNotification, NSNumber, NSObject, NSRange, NSSize, NSString,
+    MainThreadMarker, NSArray, NSNotification, NSNumber, NSObject, NSRange, NSString,
 };
 
-use crate::bridge::appkit::fitting_size_keyed;
 use crate::bridge::host::{
     ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, Target,
     ValueKind, hosted_element, wire,
 };
-use crate::controls::{fitted, nsstring_is, sync_control_size, sync_enabled, sync_font_size};
+use crate::controls::{
+    measured, nsstring_is, sync_control_size, sync_enabled, sync_font_size, with_width,
+};
 
 const CHANGE_CHANNEL: u64 = 0;
 const SUBMIT_CHANNEL: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -62,23 +63,6 @@ impl Kind {
             Kind::Search => "NSSearchField",
             Kind::Combo => "NSComboBox",
         }
-    }
-
-    fn fitting(
-        self,
-        mtm: MainThreadMarker,
-        control_size: NSControlSize,
-        font_size: Option<f32>,
-    ) -> NSSize {
-        let field: Retained<NSTextField> = match self {
-            Kind::Plain => NSTextField::new(mtm),
-            Kind::Secure => Retained::into_super(NSSecureTextField::new(mtm)),
-            Kind::Search => Retained::into_super(NSSearchField::new(mtm)),
-            Kind::Combo => Retained::into_super(NSComboBox::new(mtm)),
-        };
-        field.setControlSize(control_size);
-        sync_font_size(&field, font_size.map(f64::from));
-        field.fittingSize()
     }
 }
 
@@ -199,15 +183,19 @@ impl NativeTextField {
     }
 
     fn layout(&self) -> Style {
-        let (kind, control_size, font_size) = (self.kind, self.control_size, self.font_size);
-        let key = control_size as u64 | u64::from(font_size.map_or(0, f32::to_bits)) << 8;
-        let mut style = fitted(fitting_size_keyed(kind.class(), key, |mtm| {
-            kind.fitting(mtm, NSControlSize::from(control_size), font_size)
-        }));
-        if self.stretch {
-            style.size.width = relative(1.).into();
-        }
-        style
+        let inputs = (self.control_size, self.font_size.map(f32::to_bits));
+        let style = measured(self.kind.class(), inputs, |mtm| {
+            let field: Retained<NSTextField> = match self.kind {
+                Kind::Plain => NSTextField::new(mtm),
+                Kind::Secure => Retained::into_super(NSSecureTextField::new(mtm)),
+                Kind::Search => Retained::into_super(NSSearchField::new(mtm)),
+                Kind::Combo => Retained::into_super(NSComboBox::new(mtm)),
+            };
+            field.setControlSize(self.control_size.into());
+            sync_font_size(&field, self.font_size.map(f64::from));
+            field.fittingSize()
+        });
+        with_width(style, self.stretch.then(|| relative(1.).into()))
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -386,7 +374,6 @@ fn text_changed(notification: &NSNotification) {
     }
 }
 
-/// Fires the control's action with its tag moved from the submit channel to `channel`.
 fn send_on(control: &NSControl, channel: u64) -> Bool {
     let (Some(action), Some(target)) = (control.action(), control.target()) else {
         return Bool::NO;

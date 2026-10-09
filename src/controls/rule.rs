@@ -1,10 +1,10 @@
-use gpui::{App, ElementId, Hsla, Size, Style, Window};
+use gpui::{App, ElementId, Hsla, Style, Window};
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSBox, NSBoxType, NSResponder, NSTitlePosition, NSView};
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect};
 
-use crate::bridge::host::{Layer, Slot, hosted_element};
+use crate::bridge::host::{Layer, Slot, full_size, hosted_element};
 use crate::system::color::to_nscolor;
 use crate::system::tokens::SystemColor;
 
@@ -41,10 +41,7 @@ impl NativeRule {
     }
 
     fn layout(&self) -> Style {
-        Style {
-            size: Size::full(),
-            ..Default::default()
-        }
+        full_size()
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {

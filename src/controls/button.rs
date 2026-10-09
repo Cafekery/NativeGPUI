@@ -12,12 +12,12 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSString};
 
 use crate::bridge::host::{
-    ControlSize, Layer, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, ValueKind,
-    hosted_element, wire,
+    ControlSize, NativeDispatch, NativeHandler, NativeRead, NativeValue, Slot, ValueKind,
+    hosted_element,
 };
 use crate::controls::{
-    bool_handler, measured, nsstring_is, snap_origin, symbol_image, sync_control_size,
-    sync_enabled, sync_font_size, with_width,
+    bool_handler, measured, nsstring_is, place_control, snap_origin, symbol_image,
+    sync_control_size, sync_enabled, sync_font_size, with_width,
 };
 use crate::system::tokens::{SystemColor, ns_font_weight, system_font_size_for};
 
@@ -36,11 +36,7 @@ fn titled(
 }
 
 fn place_titled(slot: &Slot, make: Titled, title: &str, size: ControlSize) -> Retained<NSButton> {
-    let button = slot.place(Layer::Above, |mtm, target| {
-        let button = titled(mtm, make, title, size);
-        wire(&button, target, slot.key);
-        button
-    });
+    let button = place_control(slot, |mtm| titled(mtm, make, title, size));
     sync_control_size(&button, size);
     button
 }
@@ -55,6 +51,13 @@ fn intrinsic_layout(class: &'static str, make: Titled, title: &str, size: Contro
 fn sync_title(button: &NSButton, wanted: &str) {
     if !nsstring_is(&button.title(), wanted) {
         button.setTitle(&NSString::from_str(wanted));
+    }
+}
+
+fn sync_state(button: &NSButton, state: CheckState) {
+    let wanted = state.to_native();
+    if button.state() != wanted {
+        button.setState(wanted);
     }
 }
 
@@ -188,10 +191,7 @@ impl NativeCheckbox {
         if button.allowsMixedState() != self.allows_mixed {
             button.setAllowsMixedState(self.allows_mixed);
         }
-        let wanted = self.state.to_native();
-        if button.state() != wanted {
-            button.setState(wanted);
-        }
+        sync_state(&button, self.state);
         sync_title(&button, &self.title);
         sync_enabled(&button, self.enabled);
         slot.on_change(ValueKind::Int, self.on_change.take());
@@ -258,10 +258,7 @@ impl NativeRadio {
             &self.title,
             self.control_size,
         );
-        let wanted = CheckState::from(self.selected).to_native();
-        if button.state() != wanted {
-            button.setState(wanted);
-        }
+        sync_state(&button, self.selected.into());
         sync_title(&button, &self.title);
         sync_enabled(&button, self.enabled);
         slot.on_change(ValueKind::Bool, self.on_change.take());
@@ -521,10 +518,7 @@ impl NativeButton {
             if cell.is_some_and(|cell| cell.showsStateBy() != shows) {
                 button.setButtonType(NSButtonType::PushOnPushOff);
             }
-            let wanted = CheckState::from(on).to_native();
-            if button.state() != wanted {
-                button.setState(wanted);
-            }
+            sync_state(&button, on.into());
         }
         if button.showsBorderOnlyWhileMouseInside() != self.border_on_hover {
             button.setShowsBorderOnlyWhileMouseInside(self.border_on_hover);
@@ -695,11 +689,7 @@ impl NativeSegmented {
 
     fn paint(&mut self, mut slot: Slot, window: &mut Window, _: &mut App) {
         snap_origin(&mut slot, window.scale_factor());
-        let control = slot.place(Layer::Above, |mtm, target| {
-            let control = NSSegmentedControl::new(mtm);
-            wire(&control, target, slot.key);
-            control
-        });
+        let control = place_control(&slot, NSSegmentedControl::new);
         fill_segments(&control, &self.segments, &self.symbols);
         let style = self.style.to_native();
         if control.segmentStyle() != style {

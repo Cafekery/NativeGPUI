@@ -4,11 +4,10 @@ use objc2_app_kit::{
     NSProgressIndicatorStyle,
 };
 
-use crate::bridge::appkit::fitting_size_keyed;
-use crate::bridge::host::{
-    ControlSize, Layer, NativeHandler, Slot, ValueKind, hosted_element, wire,
+use crate::bridge::host::{ControlSize, Layer, NativeHandler, Slot, ValueKind, hosted_element};
+use crate::controls::{
+    axis, fitting_size_of, measured, number_handler, place_control, sync_enabled,
 };
-use crate::controls::{axis, fitted, hash_of, number_handler, sync_enabled};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub enum LevelStyle {
@@ -22,10 +21,10 @@ pub enum LevelStyle {
 impl LevelStyle {
     fn appkit(self) -> NSLevelIndicatorStyle {
         match self {
-            LevelStyle::Rating => NSLevelIndicatorStyle::Rating,
-            LevelStyle::ContinuousCapacity => NSLevelIndicatorStyle::ContinuousCapacity,
-            LevelStyle::DiscreteCapacity => NSLevelIndicatorStyle::DiscreteCapacity,
-            LevelStyle::Relevancy => NSLevelIndicatorStyle::Relevancy,
+            Self::Rating => NSLevelIndicatorStyle::Rating,
+            Self::ContinuousCapacity => NSLevelIndicatorStyle::ContinuousCapacity,
+            Self::DiscreteCapacity => NSLevelIndicatorStyle::DiscreteCapacity,
+            Self::Relevancy => NSLevelIndicatorStyle::Relevancy,
         }
     }
 }
@@ -65,11 +64,10 @@ impl NativeProgress {
     }
 
     fn layout(&self) -> Style {
-        let appkit = NSControlSize::from(self.control_size);
-        let fitting = fitting_size_keyed("NSProgressIndicator.bar", appkit.0 as u64, |mtm| {
+        let fitting = fitting_size_of("NSProgressIndicator.bar", self.control_size, |mtm| {
             let bar = NSProgressIndicator::new(mtm);
             bar.setStyle(NSProgressIndicatorStyle::Bar);
-            bar.setControlSize(appkit);
+            bar.setControlSize(self.control_size.into());
             bar.sizeToFit();
             bar.fittingSize()
         });
@@ -136,18 +134,13 @@ impl NativeSpinner {
     }
 
     fn layout(&self) -> Style {
-        let appkit = NSControlSize::from(self.control_size);
-        fitted(fitting_size_keyed(
-            "NSProgressIndicator.spinning",
-            appkit.0 as u64,
-            |mtm| {
-                let spinner = NSProgressIndicator::new(mtm);
-                spinner.setStyle(NSProgressIndicatorStyle::Spinning);
-                spinner.setControlSize(appkit);
-                spinner.sizeToFit();
-                spinner.fittingSize()
-            },
-        ))
+        measured("NSProgressIndicator.spinning", self.control_size, |mtm| {
+            let spinner = NSProgressIndicator::new(mtm);
+            spinner.setStyle(NSProgressIndicatorStyle::Spinning);
+            spinner.setControlSize(self.control_size.into());
+            spinner.sizeToFit();
+            spinner.fittingSize()
+        })
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
@@ -242,13 +235,12 @@ impl NativeLevel {
     }
 
     fn layout(&self) -> Style {
-        let (appkit, min, max) = (self.style.appkit(), self.min, self.max);
-        let key = hash_of((appkit.0, min.to_bits(), max.to_bits()));
-        let fitting = fitting_size_keyed("NSLevelIndicator", key, |mtm| {
+        let inputs = (self.style as u8, self.min.to_bits(), self.max.to_bits());
+        let fitting = fitting_size_of("NSLevelIndicator", inputs, |mtm| {
             let probe = NSLevelIndicator::new(mtm);
-            probe.setLevelIndicatorStyle(appkit);
-            probe.setMinValue(min);
-            probe.setMaxValue(max);
+            probe.setLevelIndicatorStyle(self.style.appkit());
+            probe.setMinValue(self.min);
+            probe.setMaxValue(self.max);
             probe.fittingSize()
         });
         Style {
@@ -261,11 +253,7 @@ impl NativeLevel {
     }
 
     fn paint(&mut self, slot: Slot, _: &mut Window, _: &mut App) {
-        let level = slot.place(Layer::Above, |mtm, target| {
-            let level = NSLevelIndicator::new(mtm);
-            wire(&level, target, slot.key);
-            level
-        });
+        let level = place_control(&slot, NSLevelIndicator::new);
         let style = self.style.appkit();
         if level.levelIndicatorStyle() != style {
             level.setLevelIndicatorStyle(style);

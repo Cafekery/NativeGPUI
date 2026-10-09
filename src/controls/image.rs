@@ -26,11 +26,7 @@ thread_local! {
 }
 
 pub fn native_image(id: impl Into<ElementId>, name: &str) -> NativeImage {
-    NativeImage {
-        id: id.into(),
-        source: Source::Named(name.to_string()),
-        tint: Tint::System(SystemColor::Label),
-    }
+    sourced(id, Source::Named(name.to_string()))
 }
 
 pub fn native_symbol(
@@ -39,17 +35,20 @@ pub fn native_symbol(
     size: f32,
     weight: FontWeight,
 ) -> NativeImage {
-    NativeImage {
-        id: id.into(),
-        source: Source::Symbol((name.to_string(), size.to_bits(), weight.0.to_bits())),
-        tint: Tint::System(SystemColor::Label),
-    }
+    sourced(
+        id,
+        Source::Symbol((name.to_string(), size.to_bits(), weight.0.to_bits())),
+    )
 }
 
 pub fn native_raster(id: impl Into<ElementId>, raster: Symbol) -> NativeImage {
+    sourced(id, Source::Raster(raster))
+}
+
+fn sourced(id: impl Into<ElementId>, source: Source) -> NativeImage {
     NativeImage {
         id: id.into(),
-        source: Source::Raster(raster),
+        source,
         tint: Tint::System(SystemColor::Label),
     }
 }
