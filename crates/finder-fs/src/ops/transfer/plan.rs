@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, Metadata};
 use std::io;
@@ -6,10 +7,11 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 use objc2_foundation::NSFileManager;
 
-use super::{Gate, Item, Job, Swap, Task, What, copy, volume};
+use super::{Gate, Item, Job, PLAN_FOR, Swap, Task, What, copy, volume};
 use crate::ops::{
     Conflict, NAME_MAX, deep, duplicate_path, free_path, place_one, real_dir, same_item,
     staging_path, taken,
@@ -38,27 +40,76 @@ enum Landing {
 /// What every task queued for one top-level item shares.
 struct Walk<'j, 'a> {
     job: &'j Job<'a>,
-    tasks: &'j Sender<Task>,
+    outbox: &'j Outbox,
     root: usize,
     /// Without native attributes the source shows each file's `._` companion as a file of its own.
     source_xattrs: bool,
     clone: bool,
 }
 
-/// Queues every item as it is found, so the copying starts before the counting ends.
+/// Holds the tasks back until the walk ends or `PLAN_FOR` passes, then sends them on as found.
+struct Outbox {
+    tasks: Sender<Task>,
+    held: RefCell<Option<Vec<Task>>>,
+    until: Instant,
+}
+
+impl Outbox {
+    fn send(&self, job: &Job, task: Task) {
+        job.count(&task);
+        let mut held = self.held.borrow_mut();
+        let Some(waiting) = held.as_mut() else {
+            let _ = self.tasks.send(task);
+            return;
+        };
+        waiting.push(task);
+        if Instant::now() >= self.until {
+            drop(held);
+            self.release(job);
+        }
+    }
+
+    /// Nothing held goes out once the total counted so far is known not to fit.
+    fn release(&self, job: &Job) {
+        let Some(held) = self.held.borrow_mut().take() else {
+            return;
+        };
+        if job.fits() {
+            for task in held {
+                let _ = self.tasks.send(task);
+            }
+        }
+    }
+
+    /// A paused walk stops between items, with what it holds already on its way.
+    fn wait_while_paused(&self, job: &Job) {
+        if *job.shared.paused.lock() {
+            self.release(job);
+        }
+        job.shared.wait_while_paused();
+    }
+}
+
+/// Queues every item as it is found, so the copying of a long walk starts before the counting ends.
 pub(super) fn walk(job: &Job, items: &[Item], tasks: Sender<Task>) {
     let fm = NSFileManager::defaultManager();
+    let outbox = Outbox {
+        tasks,
+        held: RefCell::new(Some(Vec::new())),
+        until: Instant::now() + PLAN_FOR,
+    };
     for (root, item) in items.iter().enumerate() {
         if root > 0 {
-            job.shared.wait_while_paused();
+            outbox.wait_while_paused(job);
         }
         if job.halted() {
             return;
         }
-        if let Err(error) = plan(job, &fm, root, item, &tasks) {
+        if let Err(error) = plan(job, &fm, root, item, &outbox) {
             job.fail(&item.source, &item.dest, error);
         }
     }
+    outbox.release(job);
 }
 
 fn plan(
@@ -66,7 +117,7 @@ fn plan(
     fm: &NSFileManager,
     root: usize,
     item: &Item,
-    tasks: &Sender<Task>,
+    outbox: &Outbox,
 ) -> io::Result<()> {
     let meta = fs::symlink_metadata(&item.source)?;
     let into = item.dest.parent().unwrap_or(Path::new("/"));
@@ -90,7 +141,7 @@ fn plan(
     let parent = item.source.parent().unwrap_or(Path::new("/"));
     let walk = Walk {
         job,
-        tasks,
+        outbox,
         root,
         source_xattrs: volume::native_xattrs(parent),
         clone: job.volume.clones && meta.dev() == job.volume.dev,
@@ -219,8 +270,7 @@ fn place(
 
 impl Walk<'_, '_> {
     fn queue(&self, task: Task) {
-        self.job.count(&task);
-        let _ = self.tasks.send(task);
+        self.outbox.send(self.job, task);
     }
 }
 

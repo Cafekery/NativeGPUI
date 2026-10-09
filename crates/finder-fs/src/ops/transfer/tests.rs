@@ -607,6 +607,80 @@ fn a_volume_without_room_stops_before_it_fills() {
 }
 
 #[test]
+fn a_total_known_not_to_fit_is_refused_before_anything_moves() {
+    let name = volume_name("U");
+    let Some(disk) = RamDisk::new(100, "MS-DOS FAT32", &name) else {
+        return;
+    };
+    let ballast = disk.mount.join("ballast.bin");
+    File::create(&ballast).unwrap().set_len(70 << 20).unwrap();
+    let dir = temp_dir("refused");
+    let tree = dir.join("Tree");
+    fs::create_dir_all(tree.join("inner")).unwrap();
+    for i in 0..40 {
+        sparse(&tree.join(format!("{i}.bin")), 1 << 20);
+    }
+    for i in 0..5 {
+        sparse(&tree.join("inner").join(format!("{i}.bin")), 1 << 20);
+    }
+    let litter = [tree.join(".DS_Store"), tree.join("inner").join(".DS_Store")];
+    for path in &litter {
+        write(path, b"view settings");
+    }
+
+    let outcome = Transfer::default().run(Request::new(
+        Kind::Move,
+        vec![tree.clone()],
+        &disk.mount,
+        Conflict::KeepBoth,
+        OnError::Continue,
+    ));
+
+    assert_eq!(outcome.end, End::Stopped);
+    assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
+    let message = outcome.failures[0].error.to_string();
+    assert!(
+        message.starts_with(&format!(
+            "There isn't enough space on \u{201c}{name}\u{201d} to move \u{201c}Tree\u{201d}."
+        )) && message.contains("You need an additional"),
+        "{message}"
+    );
+    assert!(
+        !taken(&disk.mount.join("Tree")) && staged_in(&disk.mount).is_empty(),
+        "something was written before the refusal"
+    );
+    assert_eq!(fs::read_dir(&tree).unwrap().count(), 42, "a source went");
+    assert!(
+        litter.iter().all(|path| path.exists()),
+        "the source lost its view settings"
+    );
+
+    fs::remove_file(&ballast).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while crate::volumes::available(&disk.mount) < 60 << 20 {
+        assert!(
+            Instant::now() < deadline,
+            "the volume never gave the room back"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let again = Transfer::default().run(outcome.retry().expect("the refused move to try again"));
+    assert_eq!(again.end, End::Finished, "{:?}", again.failures);
+    let landed = disk.mount.join("Tree");
+    let named = |dir: &Path| {
+        let entries = fs::read_dir(dir).unwrap().flatten();
+        entries
+            .filter(|entry| !entry.file_name().as_encoded_bytes().starts_with(b"._"))
+            .count()
+    };
+    assert_eq!(named(&landed), 41);
+    assert_eq!(named(&landed.join("inner")), 5);
+    assert!(!tree.exists(), "the moved tree stayed at its source");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_file_being_written_holds_its_room_without_stopping_the_job() {
     let Some(disk) = RamDisk::new(300, "HFS+", &volume_name("P")) else {
         return;

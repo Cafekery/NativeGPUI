@@ -26,6 +26,9 @@ mod tests;
 
 const TICK: Duration = Duration::from_millis(250);
 const SPACE_EVERY: Duration = Duration::from_secs(1);
+/// How long the copying waits for the walk, so that a total known not to fit is refused before
+/// anything is written.
+const PLAN_FOR: Duration = Duration::from_millis(500);
 const RELEASE_BYTES: u64 = 256 << 20;
 const RELEASE_ITEMS: usize = 1000;
 const RELEASE_EVERY: Duration = Duration::from_secs(5);
@@ -537,6 +540,7 @@ struct Release {
 
 struct Job<'a> {
     shared: &'a Shared,
+    items: &'a [Item],
     kind: Kind,
     conflict: Conflict,
     on_error: OnError,
@@ -550,10 +554,11 @@ struct Job<'a> {
 }
 
 impl<'a> Job<'a> {
-    fn new(shared: &'a Shared, request: &Request, volume: Volume) -> Job<'a> {
+    fn new(shared: &'a Shared, request: &'a Request, volume: Volume) -> Job<'a> {
         let count = request.items.len();
         Job {
             shared,
+            items: &request.items,
             kind: request.kind,
             conflict: request.conflict,
             on_error: request.on_error,
@@ -656,6 +661,29 @@ impl<'a> Job<'a> {
     fn needed(&self) -> u64 {
         let total = self.allocated_total.load(Ordering::SeqCst);
         total.saturating_sub(self.allocated_done.load(Ordering::SeqCst))
+    }
+
+    /// Whether what is left fits; when it does not, the job stops for want of room.
+    fn fits(&self) -> bool {
+        if self.halted() {
+            return false;
+        }
+        // Room is read on both sides of the count: a file claims before it takes space and gives
+        // its space back before its claim, so one reading alone can see a file twice.
+        let room = self.volume.available();
+        let needed = self.needed();
+        if needed == 0 || needed <= room || needed <= self.volume.available() {
+            return true;
+        }
+        let first = &self.items[0];
+        let resolved = self.record.lock().resolved[0].clone();
+        let dest = resolved.unwrap_or_else(|| first.dest.clone());
+        self.fail(
+            &first.source,
+            &dest,
+            io::Error::from_raw_os_error(libc::ENOSPC),
+        );
+        false
     }
 
     fn fail(&self, source: &Path, dest: &Path, error: io::Error) {
@@ -792,19 +820,7 @@ impl<'a> Job<'a> {
             }
             *checked = Some(Instant::now());
         }
-        // Room is read on both sides of the count: a file claims before it takes space and gives
-        // its space back before its claim, so one reading alone can see a file twice.
-        let room = self.volume.available();
-        let needed = self.needed();
-        if self.halted() || needed == 0 || needed <= room || needed <= self.volume.available() {
-            return;
-        }
-        let record = self.record.lock();
-        let at = record.resolved.iter().flatten().next().cloned();
-        drop(record);
-        if let Some(at) = at {
-            self.fail(&at, &at, io::Error::from_raw_os_error(libc::ENOSPC));
-        }
+        self.fits();
     }
 
     /// Batches the flush, which on an SD card can take seconds, rather than paying it per file.
@@ -857,7 +873,11 @@ impl<'a> Job<'a> {
         }
         self.release_sources(true);
         if self.is_move() {
-            for emptied in &record.emptied {
+            for emptied in record
+                .emptied
+                .iter()
+                .filter(|emptied| only_junk_in(emptied))
+            {
                 for junk in &emptied.junk {
                     let _ = std::fs::remove_file(junk);
                 }
@@ -972,4 +992,13 @@ impl<'a> Job<'a> {
     fn read_only_message(&self, item: &str, dest: &Path) -> Option<String> {
         refusal_message(Refusal::ReadOnly, item, dest, self.is_move(), 0)
     }
+}
+
+/// A move leaves a folder's junk behind with whatever it could not carry.
+fn only_junk_in(emptied: &Emptied) -> bool {
+    std::fs::read_dir(&emptied.dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .all(|entry| emptied.junk.contains(&entry.path()))
+    })
 }
