@@ -36,6 +36,7 @@ const BAR_Y: f32 = 16.;
 const BAR_H: f32 = 16.;
 const REASON_Y: f32 = 18.;
 const CAPTION_Y: f32 = 33.;
+const BUTTONS_H: f32 = 20.;
 /// A circle symbol is as wide as its point size; Finder's is 11 pt.
 const GLYPH: f32 = 11.;
 const GLYPH_HIT: f32 = 20.;
@@ -107,12 +108,14 @@ impl JobRow {
         self.failed.is_none()
     }
 
-    /// A failure's reason wraps, and its row grows by the lines past the first.
+    /// A failure's reason wraps, and its row grows by the lines past the first and by how far its
+    /// buttons reach below the caption line they replace.
     pub(crate) fn height(&self) -> f32 {
-        let extra = self.failed.as_ref().map_or(0., |failed| {
-            reason_height(&failed.reason().unwrap_or_default()) - reason_height("")
-        });
-        ROW_H + extra
+        let Some(failed) = &self.failed else {
+            return ROW_H;
+        };
+        let line = reason_height("");
+        ROW_H + reason_height(&failed.reason().unwrap_or_default()) - line + BUTTONS_H - line
     }
 
     fn carries_bytes(&self) -> bool {

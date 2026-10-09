@@ -211,7 +211,7 @@ impl Render for Progress {
                                         .absolute()
                                         .left_0()
                                         .right_0()
-                                        .top(px(HAIRLINE_Y))
+                                        .bottom(px(ROW_H - HAIRLINE_Y - 1.))
                                         .h(px(1.))
                                         .bg(system_color(SystemColor::Separator)),
                                 )
