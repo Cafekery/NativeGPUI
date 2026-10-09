@@ -191,7 +191,6 @@ impl FinderDemo {
         name_least(self.list_look.text, self.list_look.icon)
     }
 
-    /// Name absorbs window resizes while the list fits; an overflowing list keeps its widths.
     pub(crate) fn fit_name_column(&mut self) {
         let span = self.list_room;
         let content = self.list_content_w();

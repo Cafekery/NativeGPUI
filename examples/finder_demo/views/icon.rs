@@ -28,7 +28,6 @@ use crate::tags::{RowTag, row_tags, tag_dots, tag_dots_w};
 use crate::ui::{pick_on_click, pick_on_press, rename_field};
 use crate::view::ICON_VIEW;
 
-// Finder's measured icon grid.
 const MARGIN: f32 = 10.;
 const FLOW_INSET: f32 = 4.;
 const FLOW_GAP: f32 = 2.;
@@ -279,15 +278,14 @@ impl Options {
                 let across = (((room.width - 2. * FLOW_INSET + FLOW_GAP) / (cell.width + FLOW_GAP))
                     .floor() as usize)
                     .max(1);
-                let spread = match count > across {
-                    true => ((room.width - 2. * FLOW_INSET - across as f32 * cell.width)
-                        / (across + 1) as f32)
-                        .max(0.),
-                    false => 0.,
-                };
-                let step = match count > across {
-                    true => cell.width + spread,
-                    false => cell.width + FLOW_GAP,
+                let (spread, step) = match count > across {
+                    true => {
+                        let spread = ((room.width - 2. * FLOW_INSET - across as f32 * cell.width)
+                            / (across + 1) as f32)
+                            .max(0.);
+                        (spread, cell.width + spread)
+                    }
+                    false => (0., cell.width + FLOW_GAP),
                 };
                 (
                     FLOW_INSET + spread + at.x + (index % across) as f32 * step,
@@ -466,7 +464,7 @@ impl Places {
         }
     }
 
-    fn spot(&self, name: &SharedString) -> Option<Point<Pixels>> {
+    fn spot(&self, name: &str) -> Option<Point<Pixels>> {
         self.incoming
             .get(name)
             .or_else(|| self.own.get(name))
@@ -562,7 +560,6 @@ impl Grid {
         }
     }
 
-    /// The window width a first layout fits.
     pub(crate) fn first_width(&self, now: f32) -> f32 {
         match self.sized {
             true => now,
@@ -722,16 +719,12 @@ impl Grid {
                 .then(f32::from(at.y).total_cmp(&f32::from(to.y)))
                 .then(f32::from(at.x).total_cmp(&f32::from(to.x)))
         });
-        let moves: Vec<(usize, Point<Pixels>)> = moving
-            .into_iter()
-            .map(|index| {
-                (
-                    index,
-                    claim_nearest(layout.centre(index), &mut taken, options),
-                )
-            })
-            .collect();
-        self.put(moves);
+        self.put(moving.into_iter().map(|index| {
+            (
+                index,
+                claim_nearest(layout.centre(index), &mut taken, options),
+            )
+        }));
     }
 
     fn sort_into(&mut self, column: Column, lanes: usize) {
@@ -819,13 +812,13 @@ impl Grid {
         let Some(places) = self.places.as_mut() else {
             return;
         };
-        if let Some(at) = places.spot(&SharedString::from(from.to_owned())) {
+        if let Some(at) = places.spot(from) {
             places.own.insert(SharedString::from(to.to_owned()), at);
             places.save();
         }
     }
 
-    pub(crate) fn reveal(&self, key: &SharedString, visible: gpui::Size<f32>) {
+    pub(crate) fn reveal(&self, key: &SharedString, visible: Size<f32>) {
         let Some(layout) = &self.layout else {
             return;
         };
@@ -1190,7 +1183,6 @@ impl FinderDemo {
         let dropped = layout.clone();
         let drop_scroll = scroll.clone();
         let this_drop = this.clone();
-        let dropped_lines = lines.clone();
         canvas = canvas.on_drop(move |drag: &TileDrag, window, cx| {
             if !dropped.tiles.iter().any(|(key, _)| key == &drag.key) {
                 return;
@@ -1199,8 +1191,7 @@ impl FinderDemo {
                 - drop_scroll.bounds().origin
                 - drop_scroll.offset()
                 - shift;
-            let under =
-                tile_at(&dropped.tiles, landed, cell).and_then(|index| dropped_lines.get(index));
+            let under = tile_at(&dropped.tiles, landed, cell).and_then(|index| lines.get(index));
             this_drop
                 .update(cx, |this: &mut FinderDemo, cx| {
                     let selected = this.selected.snapshot();
@@ -1242,15 +1233,11 @@ impl FinderDemo {
             demo.lines(false).get(index).cloned()
         };
 
-        let empty = layout;
-        let empty_scroll = scroll;
-        let this_menu = this.clone();
         // Hit-tested by hand: GPUI's drag is a bubble listener and misses a press a tile swallows.
         let canvas =
             canvas.on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                let at =
-                    event.position - empty_scroll.bounds().origin - empty_scroll.offset() - shift;
-                if tile_at(&empty.tiles, at, cell).is_some() {
+                let at = event.position - scroll.bounds().origin - scroll.offset() - shift;
+                if tile_at(&layout.tiles, at, cell).is_some() {
                     return;
                 }
                 this.update(cx, |this: &mut FinderDemo, cx| {
@@ -1259,7 +1246,7 @@ impl FinderDemo {
                 })
                 .ok();
             });
-        tiles_menu("ng.finder.icons.menu", this_menu, hit, canvas).into_any_element()
+        tiles_menu("ng.finder.icons.menu", cx.entity().downgrade(), hit, canvas).into_any_element()
     }
 
     fn keeps_places(&self) -> bool {

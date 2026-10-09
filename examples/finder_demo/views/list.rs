@@ -716,7 +716,6 @@ fn painted(drawn: &Drawn, rename: Option<AnyElement>) -> Div {
             } else {
                 look.selection
             };
-            // The edge-to-edge ring stands a point outside its row.
             let (inset, radius) = edge(look.bleed);
             let outset = if look.bleed { -1. } else { 0. };
             menu_ring(

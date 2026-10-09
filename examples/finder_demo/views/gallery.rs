@@ -95,7 +95,6 @@ impl FinderDemo {
             - f32::from(self.metrics().top)
             - strip.height();
         let size = (room_w.min(room_h) - 2. * HERO_INSET).max(64.);
-        let scale = self.scale;
         let previews = self.previews.gallery;
         let hero = match chosen.as_slice() {
             many if many.len() > 1 => Some(self.stack_hero(many, size)),
@@ -151,7 +150,7 @@ impl FinderDemo {
                     .justify_center()
                     .rounded(px(STRIP_RADIUS))
                     .when(is_selected, |cell| cell.bg(palette.tertiary))
-                    .child(item_art(&line.row, strip.icon, scale, previews))
+                    .child(item_art(&line.row, strip.icon, self.scale, previews))
                     .on_click(pick_on_click(line, this.clone()));
                 native_callout(
                     ("ng.finder.strip.tip", index),

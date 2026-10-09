@@ -1,4 +1,5 @@
 use std::sync::{Arc, LazyLock, Weak};
+use std::time::Instant;
 
 use gpui::{
     AnyElement, ClickEvent, DispatchPhase, ExternalPaths, FontWeight, Hsla, Modifiers, MouseButton,
@@ -213,8 +214,6 @@ impl FinderDemo {
         let row_h = look.row_h();
         let handle = self.column_scrolls[index].clone();
         let this = cx.entity().downgrade();
-        let this_menu = this.clone();
-        let this_drop = this.clone();
         let hit_scroll = handle.clone();
         let stretch = self.bands.columns[index].shown().y;
         let inset = self.under_bars() + px(TOP_GAP);
@@ -406,17 +405,13 @@ impl FinderDemo {
             .border(px(AREA_EDGE))
             .border_color(transparent_black());
         let key = SharedString::from(folder);
-        let area = drop_lands::<RowDrag>(
-            area,
-            key.clone(),
-            folder,
-            Lit::Outline(edge),
-            this_drop.clone(),
-        );
-        let area = drop_lands::<ExternalPaths>(area, key, folder, Lit::Outline(edge), this_drop);
+        let this = cx.entity().downgrade();
+        let area =
+            drop_lands::<RowDrag>(area, key.clone(), folder, Lit::Outline(edge), this.clone());
+        let area = drop_lands::<ExternalPaths>(area, key, folder, Lit::Outline(edge), this.clone());
         let column = div()
             .id(("ng.finder.column", index))
-            .w(px(self.column_width(folder) - GRIP_W))
+            .w(px(content_w))
             .flex_none()
             .relative()
             .flex()
@@ -432,7 +427,7 @@ impl FinderDemo {
                     .right_0()
                     .child(bars),
             );
-        rows_menu(("ng.finder.column.menu", index), this_menu, hit, column).into_any_element()
+        rows_menu(("ng.finder.column.menu", index), this, hit, column).into_any_element()
     }
 
     pub(crate) fn column_open(
@@ -459,7 +454,7 @@ impl FinderDemo {
         cx.notify();
     }
 
-    pub(crate) fn column_width(&self, folder: &'static str) -> f32 {
+    fn column_width(&self, folder: &'static str) -> f32 {
         match self.column_widths.get(folder) {
             Some(Some(width)) => *width,
             _ if self.column_look.fit => {
@@ -664,7 +659,7 @@ impl FinderDemo {
                 }
                 true => {
                     let from = f32::from(self.column_scroll.offset().x);
-                    self.column_reveal = Some((from, std::time::Instant::now()));
+                    self.column_reveal = Some((from, Instant::now()));
                 }
             }
             self.column_depth = depth;
