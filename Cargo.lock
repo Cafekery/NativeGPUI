@@ -1716,6 +1716,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "founder-cli"
+version = "0.1.0"
+dependencies = [
+ "finder-fs",
+ "fsearch",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "freetype-sys"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

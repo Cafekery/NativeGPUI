@@ -126,3 +126,18 @@ Found'er is not affiliated with or endorsed by Apple. Finder and macOS are trade
 ## For developers
 
 The native-gpui crate, the examples and the scripts are described in [docs/native-gpui.md](docs/native-gpui.md). To build, test and send changes, read [CONTRIBUTING.md](CONTRIBUTING.md). To report a security problem, read [SECURITY.md](SECURITY.md).
+
+### `founder`, the file engine from the command line
+
+`crates/founder-cli` builds `founder`, which runs Found'er's file engine without its window: listings and Get Info, every file operation, tags, comments, locks, icons, search, folder totals, and undo through a journal file.
+
+```sh
+cargo build --release -p founder-cli
+target/release/founder help
+target/release/founder copy --conflict merge --journal undo.json ~/Pictures/Trip /Volumes/Card
+target/release/founder undo undo.json
+```
+
+`--json` prints progress and the result as JSON lines. Control-C cancels through the engine. Exit codes: 0 done, 1 partly failed, 2 refused, 3 cancelled, 64 usage. It is a developer tool and is not part of the app bundle.
+
+`scripts/safety.sh` drives `founder` against fixtures on sparse disk images (APFS, HFS+, ExFAT, FAT32) and proves the engine's safety properties: kill -9 mid-move, cancels, full, read-only and vanishing volumes, locks, permissions, links, odd names, conflicts, undo, concurrency and big trees. It cleans up everything it makes.
