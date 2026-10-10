@@ -534,7 +534,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &crate::ops::undo::RedoOp, cx| crate::icon_well::redo_in_key_window(cx));
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
-    cx.on_action(|_: &ToggleDefaultBrowser, _| crate::file_viewer::toggle_default());
+    cx.on_action(|_: &ToggleDefaultBrowser, cx| crate::file_viewer::toggle_default(cx));
     cx.on_action(|_: &NewWindow, cx| {
         open_first_window(cx);
     });

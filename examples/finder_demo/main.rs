@@ -119,6 +119,7 @@ fn main() {
         .detach();
         warm.spawn(async { icons::ask_app_management(icons::installed_apps()) })
             .detach();
+        warm.spawn(async { file_viewer::keep_guard() }).detach();
         warm.spawn(async {
             tags::all();
             tags::tags();
