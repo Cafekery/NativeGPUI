@@ -1,18 +1,20 @@
 use std::ffi::{OsStr, c_int};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2_foundation::NSFileManager;
 
-use super::{Restore, deep, dir_of, past_the_lock, trash_one};
+use super::{NAME_MAX, Restore, deep, dir_of, past_the_lock, trash_one};
 
 const PREFIX: &str = ".finder-fs-";
 const STAGING: &str = "staging";
 const REPLACE: &str = "replace";
 const TRASHES: [&str; 2] = [".Trashes", ".Trash"];
+/// Two separators, a slot's name, which stays under 80 bytes, and its item's name.
+const SLOT_ROOM: usize = 2 + 80 + NAME_MAX;
 
 /// A process later given the same pid starts at another time.
 static STARTED: LazyLock<u64> = LazyLock::new(|| start_of(std::process::id()).unwrap_or(0));
@@ -51,20 +53,34 @@ pub(super) fn staging_path(dest: &Path) -> PathBuf {
 /// A folder of its own holds the item a Replace swaps in, and after the swap the item it replaced,
 /// so a temp left by a kill says whether it may be deleted.
 pub(super) fn replace_slot(dest: &Path) -> io::Result<PathBuf> {
-    let holder = dir_of(dest).join(name(REPLACE));
-    std::fs::DirBuilder::new().mode(0o700).create(&holder)?;
+    let holder = room_near(dest).join(name(REPLACE));
+    deep::create_dir(&holder, 0o700)?;
     Ok(holder.join(dest.file_name().unwrap_or_default()))
+}
+
+/// The Trash takes an item only by a path within `PATH_MAX`, so past it a slot sits higher up.
+fn room_near(dest: &Path) -> &Path {
+    let dir = dir_of(dest);
+    let fits = |at: &&Path| at.as_os_str().len() + SLOT_ROOM < libc::PATH_MAX as usize;
+    let Some(near) = dir.ancestors().find(fits).filter(|near| *near != dir) else {
+        return dir;
+    };
+    let volume = |at: &Path| deep::lstat(at).map(|meta| meta.dev()).ok();
+    match volume(near).is_some() && volume(near) == volume(dir) {
+        true => near,
+        false => dir,
+    }
 }
 
 pub(super) fn trash_slot(fm: &NSFileManager, slot: &Path) -> io::Result<PathBuf> {
     let trashed = trash_one(fm, slot)?;
-    let _ = std::fs::remove_dir(dir_of(slot));
+    let _ = deep::remove_dir(dir_of(slot));
     Ok(trashed)
 }
 
 pub(super) fn drop_slot(slot: &Path) {
     let _ = deep::remove(slot);
-    let _ = std::fs::remove_dir(dir_of(slot));
+    let _ = deep::remove_dir(dir_of(slot));
 }
 
 fn name(kind: &str) -> String {
@@ -120,21 +136,18 @@ fn parse(name: &OsStr) -> Option<(&str, u32, u64)> {
 
 /// With `dev`, every folder below on that volume too.
 fn sweep(folder: &Path, dev: Option<u64>, cleaned: &mut Cleaned) {
-    let Ok(entries) = std::fs::read_dir(folder) else {
+    let Ok(entries) = deep::list(folder) else {
         return;
     };
     let mut below = Vec::new();
-    for entry in entries.flatten() {
-        let (name, path) = (entry.file_name(), entry.path());
+    for (name, meta) in entries {
+        let path = folder.join(&name);
         match parse(&name) {
             Some((kind, pid, start)) if !running(pid, start) => drop_stale(kind, &path, cleaned),
             Some(_) => {}
             None => {
-                let inside = dev.is_some_and(|dev| {
-                    entry
-                        .metadata()
-                        .is_ok_and(|meta| meta.is_dir() && meta.dev() == dev)
-                });
+                let inside = dev
+                    .is_some_and(|dev| meta.is_ok_and(|meta| meta.is_dir() && meta.dev() == dev));
                 if inside && !TRASHES.iter().any(|trash| name == *trash) {
                     below.push(path);
                 }
@@ -158,19 +171,18 @@ fn drop_stale(kind: &str, path: &Path, cleaned: &mut Cleaned) {
 }
 
 fn trash_held(holder: &Path, cleaned: &mut Cleaned) -> io::Result<()> {
-    if !std::fs::symlink_metadata(holder)?.is_dir() {
+    if !deep::lstat(holder)?.is_dir() {
         return Ok(());
     }
     let fm = NSFileManager::defaultManager();
-    for entry in std::fs::read_dir(holder)? {
-        let entry = entry?;
-        let item = trash_one(&fm, &entry.path())?;
+    for (name, _) in deep::list(holder)? {
+        let item = trash_one(&fm, &holder.join(&name))?;
         cleaned.trashed.push(Restore {
             item,
-            to: dir_of(holder).join(entry.file_name()),
+            to: dir_of(holder).join(name),
         });
     }
-    std::fs::remove_dir(holder)
+    deep::remove_dir(holder)
 }
 
 #[cfg(test)]

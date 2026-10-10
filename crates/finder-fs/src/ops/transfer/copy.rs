@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io;
 use std::os::fd::AsRawFd as _;
 use std::os::macos::fs::MetadataExt as _;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, lchown};
+use std::os::unix::fs::{MetadataExt as _, lchown};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -52,8 +52,6 @@ fn run(job: &Job, task: Task, slot: &Slot) {
         What::Dir(gate) => make_dir(job, &task, gate),
         What::File => copy_file(job, &task, slot),
         What::Link => copy_link(job, &task),
-        What::Deep => deep::transfer(&task.source, &task.dest, job.is_move())
-            .map(|()| job.landed(&task, &task.dest)),
     };
     let partial = slot.done.swap(0, Ordering::Relaxed);
     match done {
@@ -68,7 +66,7 @@ fn run(job: &Job, task: Task, slot: &Slot) {
 }
 
 fn make_dir(job: &Job, task: &Task, gate: &Gate) -> io::Result<()> {
-    if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&task.dest) {
+    if let Err(error) = deep::create_dir(&task.dest, 0o700) {
         gate.settle(false, u32::MAX);
         return Err(error);
     }
@@ -105,7 +103,7 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
             match task.over {
                 true => drop_slot(&temp),
                 false => {
-                    let _ = fs::remove_file(&temp);
+                    let _ = deep::remove_file(&temp);
                 }
             }
             job.unclaim(task);
@@ -138,8 +136,17 @@ impl Stamp {
         }
     }
 
+    fn at(meta: &deep::Stat) -> Stamp {
+        Stamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: meta.mtime(),
+        }
+    }
+
     pub(super) fn holds(self, path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok_and(|meta| Stamp::of(&meta) == self)
+        deep::lstat(path).is_ok_and(|meta| Stamp::at(&meta) == self)
     }
 
     pub(super) fn len(self) -> u64 {
@@ -163,7 +170,11 @@ impl Copied {
             unsafe { libc::fcopyfile(from, into, std::ptr::null_mut(), libc::COPYFILE_ACL) };
         }
         if let Some(flags) = self.relock {
-            let _ = set_flags(at, flags);
+            let out = self.out.as_raw_fd();
+            let _ = deep::either(
+                || set_flags(at, flags),
+                || crate::check(unsafe { libc::fchflags(out, flags) }),
+            );
         }
     }
 }
@@ -177,7 +188,7 @@ fn clone(source: &Path, dest: &Path) -> io::Result<bool> {
     }
     let error = io::Error::last_os_error();
     match error.raw_os_error() {
-        Some(libc::ENOTSUP | libc::EXDEV | libc::EPERM) => Ok(false),
+        Some(libc::ENOTSUP | libc::EXDEV | libc::EPERM | libc::ENAMETOOLONG) => Ok(false),
         _ => Err(error),
     }
 }
@@ -208,16 +219,9 @@ fn has_kept(source: &File) -> bool {
 }
 
 fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Copied> {
-    let source = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&task.source)?;
+    let source = deep::open(&task.source, libc::O_RDONLY | libc::O_NOFOLLOW, 0)?;
     let before = source.metadata()?;
-    let out = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(temp)?;
+    let out = deep::open(temp, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)?;
     let kept = attributes(job, &source);
     let carry = libc::COPYFILE_DATA | (kept & !libc::COPYFILE_ACL);
     let bytes = State::new()?
@@ -287,22 +291,18 @@ fn replace(job: &Job, slot: &Path, dest: &Path) -> io::Result<()> {
 }
 
 fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    let (a, b) = (crate::c_path(from)?, crate::c_path(to)?);
-    if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_EXCL) } == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if !matches!(error.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) {
-        return Err(error);
+    match deep::rename(from, to, libc::RENAME_EXCL) {
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {}
+        renamed => return renamed,
     }
     if taken(to) {
         return Err(io::Error::from_raw_os_error(libc::EEXIST));
     }
-    fs::rename(from, to)
+    deep::rename(from, to, 0)
 }
 
 fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
-    let stamp = Stamp::of(&fs::symlink_metadata(&task.source)?);
+    let stamp = Stamp::at(&deep::lstat(&task.source)?);
     let at = match task.over {
         false => {
             let next = || job.next_free(task);
@@ -329,10 +329,11 @@ fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
 
 pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()> {
     let open = |path: &Path| {
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(path)
+        deep::open(
+            path,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            0,
+        )
     };
     let (from, into) = (open(source)?, open(dest)?);
     let carry = attributes(job, &from);
@@ -347,7 +348,7 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
     }
     keep_birth(&into, &from.metadata()?);
     if job.kind == Kind::Copy {
-        let parent = dest.parent().and_then(|parent| fs::metadata(parent).ok());
+        let parent = dest.parent().and_then(|parent| deep::lstat(parent).ok());
         regroup(&into, parent.map_or(u32::MAX, |meta| meta.gid()));
     }
     Ok(())
@@ -356,10 +357,15 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
 fn make_link(job: &Job, source: &Path, dest: &Path) -> io::Result<()> {
     let (from, to) = (crate::c_path(source)?, crate::c_path(dest)?);
     let flags = ALL | libc::COPYFILE_NOFOLLOW | libc::COPYFILE_EXCL;
-    State::new()?.call(job, &Slot::default(), |state| unsafe {
+    let copied = State::new()?.call(job, &Slot::default(), |state| unsafe {
         libc::copyfile(from.as_ptr(), to.as_ptr(), state, flags)
-    })?;
-    Ok(())
+    });
+    match copied {
+        Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG) => {
+            deep::copy_link(source, dest)
+        }
+        copied => copied.map(|_| ()),
+    }
 }
 
 fn regroup(file: &File, gid: u32) {

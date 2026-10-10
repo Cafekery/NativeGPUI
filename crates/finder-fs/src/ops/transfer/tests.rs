@@ -1198,3 +1198,68 @@ fn a_temp_says_whether_it_holds_a_copy_or_what_a_replace_swaps() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Runs `script` in the folder `levels` deep below `root`, a path no path-based call can reach.
+fn deep_sh(root: &Path, levels: usize, script: &str) -> String {
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(format!("cd \"$1\" && for i in $(seq 1 $2); do mkdir -p d$i && cd d$i || exit 1; done && {script}"))
+        .args(["sh".as_ref(), root.as_os_str(), levels.to_string().as_ref()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{script}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn a_move_past_path_max_writes_through_temps_and_a_merge_finishes_it() {
+    let Some(disk) = RamDisk::new(160, "HFS+", &volume_name("D")) else {
+        return;
+    };
+    let dir = temp_dir("past-path-max");
+    let tree = dir.join("Deep");
+    fs::create_dir_all(&tree).unwrap();
+    deep_sh(
+        &tree,
+        300,
+        "echo leaf > leaf.txt && dd if=/dev/zero of=big.bin bs=1048576 count=64 2>/dev/null",
+    );
+
+    let transfer = Transfer::default();
+    let running = transfer.clone();
+    let moving = request(Kind::Move, vec![tree.clone()], &disk.mount);
+    let handle = thread::spawn(move || running.run(moving));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while transfer.progress().bytes_done < 4 << 20 {
+        assert!(Instant::now() < deadline, "no file started");
+        thread::sleep(Duration::from_millis(1));
+    }
+    transfer.pause();
+    thread::sleep(Duration::from_millis(50));
+    let landed = disk.mount.join("Deep");
+    let mid = deep_sh(&landed, 300, "ls -A");
+    transfer.cancel();
+    let cancelled = handle.join().unwrap();
+    let resumed = Transfer::default().run(Request::new(
+        Kind::Move,
+        vec![tree.clone()],
+        &disk.mount,
+        Conflict::Merge,
+        OnError::Continue,
+    ));
+    let after = deep_sh(&landed, 300, "ls -A; wc -c < big.bin");
+    let _ = Command::new("rm").arg("-rf").arg(&dir).status();
+
+    assert!(
+        mid.lines()
+            .all(|name| name == "leaf.txt" || name.starts_with(".finder-fs-staging-")),
+        "a file in flight is written under a temp, not its name: {mid}"
+    );
+    assert_eq!(cancelled.end, End::Cancelled);
+    assert_eq!(resumed.end, End::Finished, "{:?}", resumed.failures);
+    assert_eq!(
+        after.split_whitespace().collect::<Vec<_>>(),
+        ["big.bin", "leaf.txt", &(64 << 20).to_string()]
+    );
+    assert!(!tree.exists(), "the merged move left its source");
+}

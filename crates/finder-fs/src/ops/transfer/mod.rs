@@ -1,5 +1,4 @@
 use std::io;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -11,8 +10,8 @@ use objc2_foundation::NSFileManager;
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    Conflict, Done, Placed, Refusal, Restore, drop_slot, exchange, free_path, name_of, next_free,
-    refusal_message, refuse_into_itself, taken, trash_slot, undo_of_transfer,
+    Conflict, Done, Placed, Refusal, Restore, deep, drop_slot, exchange, free_path, name_of,
+    next_free, refusal_message, refuse_into_itself, taken, trash_slot, undo_of_transfer,
 };
 use meter::{Left, Meter};
 use volume::Volume;
@@ -463,7 +462,6 @@ enum What {
     Dir(Arc<Gate>),
     File,
     Link,
-    Deep,
 }
 
 struct Task {
@@ -576,7 +574,7 @@ impl<'a> Job<'a> {
     fn allocation(&self, task: &Task) -> u64 {
         match task.what {
             What::File if !task.clone || task.over => self.volume.allocated(task.size),
-            What::Dir(_) | What::File | What::Link | What::Deep => 0,
+            What::Dir(_) | What::File | What::Link => 0,
         }
     }
 
@@ -854,7 +852,7 @@ impl<'a> Job<'a> {
         }
         for freed in batch.pairs {
             // The flush names the mount point, which a vanished volume leaves behind as a plain folder.
-            let landed = std::fs::symlink_metadata(&freed.dest)
+            let landed = deep::lstat(&freed.dest)
                 .is_ok_and(|meta| meta.dev() == self.volume.dev && meta.len() == freed.stamp.len());
             let kept = match (landed, freed.stamp.holds(&freed.source)) {
                 (false, _) => Some("its copy can't be found"),
@@ -865,7 +863,7 @@ impl<'a> Job<'a> {
                 self.fail(&freed.source, &freed.dest, copy::kept(&freed.source, why));
                 continue;
             }
-            if let Err(error) = std::fs::remove_file(&freed.source) {
+            if let Err(error) = deep::remove_file(&freed.source) {
                 let error = copy::not_removed(error, &freed.source);
                 self.fail(&freed.source, &freed.dest, error);
             }
@@ -897,9 +895,9 @@ impl<'a> Job<'a> {
                 .filter(|emptied| only_junk_in(emptied))
             {
                 for junk in &emptied.junk {
-                    let _ = std::fs::remove_file(junk);
+                    let _ = deep::remove_file(junk);
                 }
-                let _ = std::fs::remove_dir(&emptied.dir);
+                let _ = deep::remove_dir(&emptied.dir);
             }
         }
         self.shared.enter(Phase::Done);
@@ -1001,9 +999,7 @@ impl<'a> Job<'a> {
 }
 
 fn only_junk_in(emptied: &Emptied) -> bool {
-    std::fs::read_dir(&emptied.dir).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .all(|entry| emptied.junk.contains(&entry.path()))
+    deep::list(&emptied.dir).is_ok_and(|entries| {
+        (entries.iter()).all(|(name, _)| emptied.junk.contains(&emptied.dir.join(name)))
     })
 }

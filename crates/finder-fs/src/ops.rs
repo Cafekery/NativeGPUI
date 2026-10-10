@@ -414,10 +414,18 @@ fn transfer(fm: &NSFileManager, src: &Path, dst: &Path, is_move: bool) -> io::Re
     match landed {
         Ok(()) => Ok(()),
         Err(err) if past_path_max(&err) => {
-            if !same_item(src, dst) {
-                let _ = deep::remove(dst);
-            }
-            deep::transfer(src, dst, is_move).map_err(|err| deep_error(err, src, dst, is_move))
+            let done = match is_move {
+                // Only a change of case may land on a name already held, by the item itself.
+                true => match same_item(src, dst) {
+                    true => deep::rename(src, dst, 0),
+                    false => deep::rename(src, dst, libc::RENAME_EXCL),
+                },
+                false => {
+                    let _ = deep::remove(dst);
+                    deep::copy(src, dst)
+                }
+            };
+            done.map_err(|err| deep_error(err, src, dst, is_move))
         }
         Err(err) => Err(volume_refusal(&err, src, dst, is_move).unwrap_or_else(|| io_error(err))),
     }
@@ -614,19 +622,18 @@ fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
-    let (from, to) = (crate::c_path(staged)?, crate::c_path(dest)?);
-    match crate::check(unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) }) {
+    match deep::rename(staged, dest, libc::RENAME_SWAP) {
         Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {}
         swapped => return swapped,
     }
     let aside = replace_slot(dest)?;
-    let swapped = std::fs::rename(dest, &aside).and_then(|()| {
-        std::fs::rename(staged, dest).inspect_err(|_| {
-            let _ = std::fs::rename(&aside, dest);
+    let swapped = deep::rename(dest, &aside, 0).and_then(|()| {
+        deep::rename(staged, dest, 0).inspect_err(|_| {
+            let _ = deep::rename(&aside, dest, 0);
         })
     });
-    let swapped = swapped.and_then(|()| std::fs::rename(&aside, staged));
-    let _ = std::fs::remove_dir(dir_of(&aside));
+    let swapped = swapped.and_then(|()| deep::rename(&aside, staged, 0));
+    let _ = deep::remove_dir(dir_of(&aside));
     swapped
 }
 
@@ -675,7 +682,7 @@ impl Placed {
 }
 
 fn real_dir(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+    deep::lstat(path).is_ok_and(|meta| meta.is_dir())
 }
 
 fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf) -> io::Result<Placed> {

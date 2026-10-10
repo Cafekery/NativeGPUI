@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
-use std::fs::{self, Metadata};
+use std::fs;
 use std::io::{self, Read as _};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -12,12 +12,11 @@ use std::time::Instant;
 use objc2_foundation::NSFileManager;
 
 use super::{Gate, Item, Job, PLAN_FOR, Swap, Task, What, copy, volume};
+use crate::ops::deep::{self, Stat};
 use crate::ops::{
-    Conflict, NAME_MAX, clean_in, deep, duplicate_path, free_path, land, next_free, place_one,
-    real_dir, replace_slot, same_item, taken,
+    Conflict, clean_in, duplicate_path, free_path, land, next_free, place_one, real_dir,
+    replace_slot, same_item, taken,
 };
-
-const PATH_ROOM: usize = libc::PATH_MAX as usize - NAME_MAX - 2;
 
 const VOLUME_LITTER: [&[u8]; 5] = [
     b".Spotlight-V100",
@@ -123,7 +122,7 @@ fn plan(
     item: &Item,
     outbox: &Outbox,
 ) -> io::Result<()> {
-    let meta = fs::symlink_metadata(&item.source)?;
+    let meta = deep::lstat(&item.source)?;
     let into = item.dest.parent().unwrap_or(Path::new("/"));
     let (into_dev, into_gid) = folder(into)?;
     if job.is_move() && meta.dev() == into_dev {
@@ -143,9 +142,9 @@ fn plan(
         return Ok(());
     };
     let landing = match landing {
-        Landing::Fresh(at) if meta.is_dir() && !long(&item.source) && !long(&at) => {
+        Landing::Fresh(at) if meta.is_dir() => {
             let next = || next_free(&item.source, &item.dest);
-            let make = |at: &Path| fs::DirBuilder::new().mode(0o700).create(at);
+            let make = |at: &Path| deep::create_dir(at, 0o700);
             let (at, ()) = land(at, next, make)?;
             job.premade(root, &at);
             Landing::Made(at)
@@ -180,7 +179,7 @@ fn folder(path: &Path) -> io::Result<(u64, u32)> {
     }
 }
 
-fn resolve(job: &Job, source: &Path, dest: &Path, meta: &Metadata) -> Option<Landing> {
+fn resolve(job: &Job, source: &Path, dest: &Path, meta: &Stat) -> Option<Landing> {
     if !taken(dest) {
         return Some(Landing::Fresh(dest.to_path_buf()));
     }
@@ -200,7 +199,7 @@ fn resolve(job: &Job, source: &Path, dest: &Path, meta: &Metadata) -> Option<Lan
 fn place(
     walk: &Walk,
     source: &Path,
-    meta: &Metadata,
+    meta: &Stat,
     landing: Landing,
     parent: &Arc<Gate>,
     top: bool,
@@ -232,7 +231,7 @@ fn place(
                 if is_root {
                     job.result(walk.root, &dest);
                 }
-                let gid = fs::metadata(&dest).map_or(u32::MAX, |meta| meta.gid());
+                let gid = deep::lstat(&dest).map_or(u32::MAX, |meta| meta.gid());
                 return children(walk, source, &dest, &Gate::open(gid), true);
             }
             Landing::Over(dest) => {
@@ -253,9 +252,6 @@ fn place(
                 return children(walk, source, &staged, &gate, false);
             }
         };
-        if long(source) || long(&dest) {
-            return walk.queue(task(What::Deep, dest, 0, false));
-        }
         let gate = Gate::pending();
         walk.queue(task(What::Dir(gate.clone()), dest.clone(), 0, false));
         return children(walk, source, &dest, &gate, false);
@@ -264,9 +260,6 @@ fn place(
         Landing::Fresh(dest) | Landing::Made(dest) => (dest, false),
         Landing::Over(dest) | Landing::Into(dest) => (dest, true),
     };
-    if long(source) || long(&dest) {
-        return walk.queue(task(What::Deep, dest, 0, over));
-    }
     if meta.is_symlink() {
         return walk.queue(task(What::Link, dest, 0, over));
     }
@@ -290,15 +283,18 @@ fn place(
 }
 
 /// Size and date alone match another file written in the same second or unpacked from one archive.
-fn identical(source: &Path, meta: &Metadata, dest: &Path) -> bool {
-    let alike = fs::symlink_metadata(dest).is_ok_and(|there| {
-        there.is_file() && there.len() == meta.len() && there.mtime().abs_diff(meta.mtime()) <= 2
+fn identical(source: &Path, meta: &Stat, dest: &Path) -> bool {
+    let alike = deep::lstat(dest).is_ok_and(|there| {
+        there.is_file()
+            && there.len() == meta.len()
+            && there.mtime().0.abs_diff(meta.mtime().0) <= 2
     });
     alike && same_bytes(source, dest).unwrap_or(false)
 }
 
 fn same_bytes(one: &Path, other: &Path) -> io::Result<bool> {
-    let (mut one, mut other) = (fs::File::open(one)?, fs::File::open(other)?);
+    let open = |path: &Path| deep::open(path, libc::O_RDONLY, 0);
+    let (mut one, mut other) = (open(one)?, open(other)?);
     let (mut here, mut there) = (vec![0; 1 << 20], vec![0; 1 << 20]);
     loop {
         let read = one.read(&mut here)?;
@@ -310,10 +306,6 @@ fn same_bytes(one: &Path, other: &Path) -> io::Result<bool> {
             return Ok(false);
         }
     }
-}
-
-fn long(path: &Path) -> bool {
-    path.as_os_str().len() > PATH_ROOM
 }
 
 fn children(walk: &Walk, source: &Path, dest: &Path, gate: &Arc<Gate>, merging: bool) {
@@ -370,18 +362,14 @@ fn left_behind(walk: &Walk, name: &[u8], volume_root: bool) -> bool {
 }
 
 /// An entry whose attributes cannot be read keeps its name, so its failure names it.
-type Listed = Result<(OsString, Metadata), (Option<OsString>, io::Error)>;
+type Listed = Result<(OsString, Stat), (Option<OsString>, io::Error)>;
 
-/// Read whole before descending, so a deep tree holds one directory descriptor at a time.
 fn list(dir: &Path) -> io::Result<Vec<Listed>> {
-    Ok(fs::read_dir(dir)?
-        .map(|entry| {
-            let entry = entry.map_err(|error| (None, error))?;
-            let name = entry.file_name();
-            match entry.metadata() {
-                Ok(meta) => Ok((name, meta)),
-                Err(error) => Err((Some(name), error)),
-            }
+    Ok(deep::list(dir)?
+        .into_iter()
+        .map(|(name, meta)| match meta {
+            Ok(meta) => Ok((name, meta)),
+            Err(error) => Err((Some(name), error)),
         })
         .collect())
 }
