@@ -202,12 +202,12 @@ t_kill_cleanup() {
   before_mine=$(cd "$dst" && shasum -a 256 "${mine[@]}" 2>&1)
   before_decoys=$(cd "$dst" && shasum -a 256 "${decoys[@]}" 2>&1)
   launch copy --pause-after 20M "$src/A" "$dst"
-  wait_for paused || note "the copy never paused"
+  want "the copy paused mid-file before its kill" wait_for paused
   apid=$PID
   kill -9 "$PID" 2>/dev/null
   wait "$PID" 2>/dev/null
   launch copy --conflict replace --pause-after 20M "$src/B/big.bin" "$dst"
-  wait_for paused || note "the Replace never paused"
+  want "the Replace paused mid-file before its kill" wait_for paused
   bpid=$PID
   kill -9 "$PID" 2>/dev/null
   wait "$PID" 2>/dev/null
@@ -215,7 +215,7 @@ t_kill_cleanup() {
   mkdir "$dst/Docs/.finder-fs-replace-$dead-1-0" && echo "$unique" >"$dst/Docs/.finder-fs-replace-$dead-1-0/old.txt"
   echo reused >"$dst/.finder-fs-staging-$$-1-7"
   launch copy --pause-after 20M "$src/E" "$dst/Work"
-  wait_for paused || note "the live copy never paused"
+  want "the live copy paused mid-file" wait_for paused
   temps --exact "$dst" >"$WORK/cleanup.before"
   grep -E "^Work/.*\.finder-fs-(staging|replace)-$PID-" "$WORK/cleanup.before" >"$WORK/cleanup.live"
   rdir=$(grep -m1 "^\.finder-fs-replace-$bpid-[0-9]*-[0-9]*$" "$WORK/cleanup.before")

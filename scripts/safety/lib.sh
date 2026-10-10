@@ -99,6 +99,7 @@ wait_for() {
     tries=$((tries + 1))
     ((tries > 3000)) && return 1
   done
+  return 0
 }
 
 # field NAME [FILE]: a field of the last JSON line in FILE (default the last CLI run)
