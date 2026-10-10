@@ -11,8 +11,8 @@ use objc2_foundation::NSFileManager;
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    Conflict, Done, Placed, Refusal, Restore, deep, exchange, name_of, refusal_message,
-    refuse_into_itself, taken, trash_as, undo_of_transfer,
+    Conflict, Done, Placed, Refusal, Restore, deep, exchange, free_path, name_of, next_free,
+    refusal_message, refuse_into_itself, taken, trash_as, undo_of_transfer,
 };
 use meter::{Left, Meter};
 use volume::Volume;
@@ -499,6 +499,7 @@ struct Record {
     landed: Vec<Restore>,
     displaced: Vec<Restore>,
     made: Vec<(PathBuf, PathBuf)>,
+    premade: Vec<(usize, PathBuf)>,
     swaps: Vec<Swap>,
     emptied: Vec<Emptied>,
     held: Vec<Freed>,
@@ -706,6 +707,7 @@ impl<'a> Job<'a> {
         }
         if task.is_root {
             record.results[task.root] = Some(at.to_path_buf());
+            record.resolved[task.root] = Some(at.to_path_buf());
         }
     }
 
@@ -713,6 +715,33 @@ impl<'a> Job<'a> {
         self.landed(task, &task.dest);
         let made = (task.source.clone(), task.dest.clone());
         self.record.lock().made.push(made);
+    }
+
+    fn premade(&self, root: usize, dest: &Path) {
+        self.record.lock().premade.push((root, dest.to_path_buf()));
+    }
+
+    /// Nothing has run yet, so each folder the plan made is still empty.
+    fn unmake(&self) {
+        let mut record = self.record.lock();
+        for (root, dest) in std::mem::take(&mut record.premade) {
+            if std::fs::remove_dir(&dest).is_err() {
+                continue;
+            }
+            record.made.retain(|(_, made)| *made != dest);
+            record.landed.retain(|landed| landed.item != dest);
+            record.results[root] = None;
+        }
+    }
+
+    fn next_free(&self, task: &Task) -> PathBuf {
+        match task.is_root {
+            true => {
+                let item = &self.items[task.root];
+                next_free(&item.source, &item.dest)
+            }
+            false => free_path(&task.dest),
+        }
     }
 
     fn displaced(&self, item: PathBuf, to: &Path) {

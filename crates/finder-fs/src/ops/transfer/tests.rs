@@ -984,3 +984,95 @@ fn a_merge_replaces_a_different_file_of_the_same_size_and_date() {
     assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
     assert_eq!(merged, b"new!", "same size and date, different bytes");
 }
+
+#[test]
+fn jobs_started_together_into_one_folder_each_land_under_their_own_name() {
+    let dir = temp_dir("together");
+    let dst = dir.join("dst");
+    fs::create_dir_all(&dst).unwrap();
+    let jobs = 8;
+    let sources: Vec<PathBuf> = (0..jobs).map(|i| dir.join(format!("src{i}"))).collect();
+    for (i, src) in sources.iter().enumerate() {
+        for n in 0..20 {
+            write(
+                &src.join("Set").join(format!("{n}.txt")),
+                format!("{i}").as_bytes(),
+            );
+        }
+        write(&src.join("same.txt"), format!("{i}").as_bytes());
+    }
+
+    let start = std::sync::Barrier::new(jobs);
+    let outcomes: Vec<Outcome> = thread::scope(|scope| {
+        let handles: Vec<_> = sources
+            .iter()
+            .map(|src| {
+                let (start, dst) = (&start, &dst);
+                scope.spawn(move || {
+                    let items = vec![src.join("Set"), src.join("same.txt")];
+                    start.wait();
+                    run(Kind::Copy, items, dst)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|job| job.join().unwrap()).collect()
+    });
+    let mut sets = Vec::new();
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&dst).unwrap().flatten() {
+        let path = entry.path();
+        match path.is_dir() {
+            true => sets.push(fs::read(path.join("0.txt")).unwrap()),
+            false => files.push(fs::read(&path).unwrap()),
+        }
+    }
+    sets.sort();
+    files.sort();
+    let _ = fs::remove_dir_all(&dir);
+
+    for outcome in &outcomes {
+        assert_eq!(outcome.end, End::Finished, "{:?}", outcome.failures);
+    }
+    let each: Vec<Vec<u8>> = (0..jobs).map(|i| format!("{i}").into_bytes()).collect();
+    assert_eq!(
+        sets, each,
+        "every job's folder landed under a name of its own"
+    );
+    assert_eq!(
+        files, each,
+        "every job's file landed under a name of its own"
+    );
+}
+
+#[test]
+fn a_name_taken_after_the_plan_is_kept_whatever_the_conflict_choice() {
+    let Some(disk) = RamDisk::new(160, "HFS+", &volume_name("T")) else {
+        return;
+    };
+    let dir = temp_dir("taken-later");
+    let big = dir.join("big.bin");
+    sparse(&big, 64 << 20);
+
+    let transfer = Transfer::default();
+    let replace = Request::new(
+        Kind::Copy,
+        vec![big],
+        &disk.mount,
+        Conflict::Replace,
+        OnError::Continue,
+    );
+    let handle = held_mid_file(&transfer, replace);
+    write(&disk.mount.join("big.bin"), b"theirs");
+    transfer.resume();
+    let outcome = handle.join().unwrap();
+
+    assert_eq!(outcome.end, End::Finished, "{:?}", outcome.failures);
+    assert_eq!(fs::read(disk.mount.join("big.bin")).unwrap(), b"theirs");
+    assert_eq!(outcome.done.results, vec![disk.mount.join("big 2.bin")]);
+    assert_eq!(
+        fs::metadata(disk.mount.join("big 2.bin")).unwrap().len(),
+        64 << 20
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

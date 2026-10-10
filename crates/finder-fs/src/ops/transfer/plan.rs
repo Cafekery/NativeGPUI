@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fs::{self, Metadata};
 use std::io::{self, Read as _};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -13,8 +13,8 @@ use objc2_foundation::NSFileManager;
 
 use super::{Gate, Item, Job, PLAN_FOR, Swap, Task, What, copy, volume};
 use crate::ops::{
-    Conflict, NAME_MAX, deep, duplicate_path, free_path, place_one, real_dir, same_item,
-    staging_path, taken,
+    Conflict, NAME_MAX, deep, duplicate_path, free_path, land, next_free, place_one, real_dir,
+    same_item, staging_path, taken,
 };
 
 const PATH_ROOM: usize = libc::PATH_MAX as usize - NAME_MAX - 2;
@@ -29,6 +29,8 @@ const VOLUME_LITTER: [&[u8]; 5] = [
 
 enum Landing {
     Fresh(PathBuf),
+    /// Made while planning, so a job planned at the same moment cannot pick the same name.
+    Made(PathBuf),
     Over(PathBuf),
     Into(PathBuf),
 }
@@ -72,10 +74,11 @@ impl Outbox {
         let Some(held) = self.held.borrow_mut().take() else {
             return;
         };
-        if job.fits() {
-            for task in held {
-                let _ = self.tasks.send(task);
-            }
+        if !job.fits() {
+            return job.unmake();
+        }
+        for task in held {
+            let _ = self.tasks.send(task);
         }
     }
 
@@ -99,7 +102,7 @@ pub(super) fn walk(job: &Job, items: &[Item], tasks: Sender<Task>) {
             outbox.wait_while_paused(job);
         }
         if job.halted() {
-            return;
+            break;
         }
         if let Err(error) = plan(job, &fm, root, item, &outbox) {
             job.fail(&item.source, &item.dest, error);
@@ -134,6 +137,16 @@ fn plan(
     let Some(landing) = resolve(job, &item.source, &item.dest, &meta) else {
         return Ok(());
     };
+    let landing = match landing {
+        Landing::Fresh(at) if meta.is_dir() && !long(&item.source) && !long(&at) => {
+            let next = || next_free(&item.source, &item.dest);
+            let make = |at: &Path| fs::DirBuilder::new().mode(0o700).create(at);
+            let (at, ()) = land(at, next, make)?;
+            job.premade(root, &at);
+            Landing::Made(at)
+        }
+        landing => landing,
+    };
     let parent = item.source.parent().unwrap_or(Path::new("/"));
     let walk = Walk {
         job,
@@ -143,7 +156,7 @@ fn plan(
         clone: job.volume.clones && meta.dev() == job.volume.dev,
     };
     let at = match &landing {
-        Landing::Fresh(at) | Landing::Over(at) | Landing::Into(at) => at,
+        Landing::Fresh(at) | Landing::Made(at) | Landing::Over(at) | Landing::Into(at) => at,
     };
     job.resolved(root, at);
     let gate = Gate::open(into_gid);
@@ -204,6 +217,12 @@ fn place(
     if meta.is_dir() {
         let dest = match landing {
             Landing::Fresh(dest) => dest,
+            Landing::Made(dest) => {
+                let gate = Gate::open(parent.gid());
+                job.made(&task(What::Dir(gate.clone()), dest.clone(), 0, false));
+                job.count_done(0);
+                return children(walk, source, &dest, &gate, false);
+            }
             Landing::Into(dest) => {
                 if is_root {
                     job.result(walk.root, &dest);
@@ -234,7 +253,7 @@ fn place(
         return children(walk, source, &dest, &gate, false);
     }
     let (dest, over) = match landing {
-        Landing::Fresh(dest) => (dest, false),
+        Landing::Fresh(dest) | Landing::Made(dest) => (dest, false),
         Landing::Over(dest) | Landing::Into(dest) => (dest, true),
     };
     if long(source) || long(&dest) {

@@ -13,9 +13,7 @@ use objc2_foundation::NSFileManager;
 use parking_lot::Mutex;
 
 use super::{Gate, Job, Kind, Slot, Task, What};
-use crate::ops::{
-    Conflict, Refusal, deep, exchange, free_path, name_of, staging_path, taken, trash_as,
-};
+use crate::ops::{Refusal, deep, exchange, land, name_of, staging_path, taken, trash_as};
 
 const LOCKS: u32 = libc::UF_IMMUTABLE | libc::UF_APPEND;
 const ALL: u32 = libc::COPYFILE_METADATA | libc::COPYFILE_DATA;
@@ -77,13 +75,17 @@ fn make_dir(job: &Job, task: &Task, gate: &Gate) -> io::Result<()> {
 }
 
 fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
-    if task.clone && !task.over && clone(&task.source, &task.dest)? {
-        if job.kind == Kind::CopyExactly {
-            keep_owner(&task.source, &task.dest);
+    if task.clone && !task.over {
+        let next = || job.next_free(task);
+        let (at, cloned) = land(task.dest.clone(), next, |at| clone(&task.source, at))?;
+        if cloned {
+            if job.kind == Kind::CopyExactly {
+                keep_owner(&task.source, &at);
+            }
+            job.bytes_done(task.size);
+            job.landed(task, &at);
+            return Ok(());
         }
-        job.bytes_done(task.size);
-        job.landed(task, &task.dest);
-        return Ok(());
     }
     let temp = staging_path(&task.dest);
     *slot.file.lock() = Some((task.source.clone(), task.size));
@@ -98,9 +100,6 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
             job.unclaim(task);
             return Err(error);
         }
-    };
-    let Some(at) = at else {
-        return Ok(());
     };
     let stamp = copied.stamp;
     copied.settle(&at);
@@ -259,27 +258,12 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Cop
     Ok(copied)
 }
 
-fn commit(job: &Job, task: &Task, temp: &Path) -> io::Result<Option<PathBuf>> {
+fn commit(job: &Job, task: &Task, temp: &Path) -> io::Result<PathBuf> {
     if task.over {
-        return replace(job, temp, &task.dest).map(|()| Some(task.dest.clone()));
+        return replace(job, temp, &task.dest).map(|()| task.dest.clone());
     }
-    match rename_new(temp, &task.dest) {
-        Ok(()) => Ok(Some(task.dest.clone())),
-        Err(error) if error.raw_os_error() != Some(libc::EEXIST) => Err(error),
-        Err(_) => match job.conflict {
-            Conflict::Skip => {
-                let _ = deep::remove(temp);
-                Ok(None)
-            }
-            Conflict::KeepBoth => {
-                let free = free_path(&task.dest);
-                rename_new(temp, &free).map(|()| Some(free))
-            }
-            Conflict::Replace | Conflict::Merge => {
-                replace(job, temp, &task.dest).map(|()| Some(task.dest.clone()))
-            }
-        },
-    }
+    let next = || job.next_free(task);
+    land(task.dest.clone(), next, |at| rename_new(temp, at)).map(|(at, ())| at)
 }
 
 fn replace(job: &Job, temp: &Path, dest: &Path) -> io::Result<()> {
@@ -310,8 +294,14 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
 
 fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
     let stamp = Stamp::of(&fs::symlink_metadata(&task.source)?);
-    match task.over {
-        false => make_link(job, &task.source, &task.dest)?,
+    let at = match task.over {
+        false => {
+            let next = || job.next_free(task);
+            land(task.dest.clone(), next, |at| {
+                make_link(job, &task.source, at)
+            })?
+            .0
+        }
         true => {
             let temp = staging_path(&task.dest);
             let placed =
@@ -320,10 +310,11 @@ fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
                 let _ = fs::remove_file(&temp);
                 return Err(error);
             }
+            task.dest.clone()
         }
-    }
-    job.landed(task, &task.dest);
-    job.release(task, &task.dest, stamp);
+    };
+    job.landed(task, &at);
+    job.release(task, &at, stamp);
     Ok(())
 }
 

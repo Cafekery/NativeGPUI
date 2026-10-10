@@ -571,6 +571,33 @@ fn duplicate_path(path: &Path) -> PathBuf {
     first_free(dir_of(path), stem, " copy", ext)
 }
 
+fn next_free(source: &Path, wanted: &Path) -> PathBuf {
+    match same_item(source, wanted) {
+        true => duplicate_path(wanted),
+        false => free_path(wanted),
+    }
+}
+
+/// A name taken after it was picked had no conflict choice made for it, so the next free one is used.
+fn land<T>(
+    mut at: PathBuf,
+    next: impl Fn() -> PathBuf,
+    mut place: impl FnMut(&Path) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
+    loop {
+        match place(&at) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let free = next();
+                if free == at {
+                    return Err(err);
+                }
+                at = free;
+            }
+            placed => return placed.map(|placed| (at, placed)),
+        }
+    }
+}
+
 fn alias_path(path: &Path) -> PathBuf {
     first_free(dir_of(path), &name_of(path), " alias", None)
 }
@@ -704,20 +731,19 @@ fn place_one(
     dest: PathBuf,
     conflict: Conflict,
 ) -> io::Result<Placed> {
+    let fresh = |at: PathBuf| {
+        land(at, || free_path(&dest), |at| transfer(fm, src, at, true))
+            .map(|(at, ())| Placed::at(src, at))
+    };
     if !taken(&dest) {
-        transfer(fm, src, &dest, true)?;
-        return Ok(Placed::at(src, dest));
+        return fresh(dest.clone());
     }
     if same_item(src, &dest) {
         return Ok(Placed::at(src, dest));
     }
     match conflict {
         Conflict::Skip => Ok(Placed::default()),
-        Conflict::KeepBoth => {
-            let dest = free_path(&dest);
-            transfer(fm, src, &dest, true)?;
-            Ok(Placed::at(src, dest))
-        }
+        Conflict::KeepBoth => fresh(free_path(&dest)),
         Conflict::Merge if real_dir(src) && real_dir(&dest) => {
             let (mut landed, mut displaced) = (Vec::new(), Vec::new());
             for entry in std::fs::read_dir(src)? {
