@@ -90,8 +90,8 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     job.claim(task);
     let copied = copy_into(job, task, &temp, slot);
     *slot.file.lock() = None;
-    let landed = copied.and_then(|relock| Ok((relock, commit(job, task, &temp)?)));
-    let (relock, at) = match landed {
+    let landed = copied.and_then(|copied| Ok((copied, commit(job, task, &temp)?)));
+    let (copied, at) = match landed {
         Ok(landed) => landed,
         Err(error) => {
             let _ = fs::remove_file(&temp);
@@ -102,12 +102,60 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     let Some(at) = at else {
         return Ok(());
     };
-    if let Some(flags) = relock {
-        let _ = set_flags(&at, flags);
-    }
+    let stamp = copied.stamp;
+    copied.settle(&at);
     job.landed(task, &at);
-    job.release(task, &at);
+    job.release(task, &at, stamp);
     Ok(())
+}
+
+/// What the source was when its copy was made; a move deletes only a source that still is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Stamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+}
+
+impl Stamp {
+    fn of(meta: &fs::Metadata) -> Stamp {
+        Stamp {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+        }
+    }
+
+    pub(super) fn holds(self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|meta| Stamp::of(&meta) == self)
+    }
+
+    pub(super) fn len(self) -> u64 {
+        self.len
+    }
+}
+
+struct Copied {
+    source: File,
+    out: File,
+    relock: Option<u32>,
+    acl: bool,
+    stamp: Stamp,
+}
+
+impl Copied {
+    /// After the rename: a locked file cannot be renamed, nor one whose access list denies deleting it.
+    fn settle(self, at: &Path) {
+        if self.acl {
+            let (from, into) = (self.source.as_raw_fd(), self.out.as_raw_fd());
+            unsafe { libc::fcopyfile(from, into, std::ptr::null_mut(), libc::COPYFILE_ACL) };
+        }
+        if let Some(flags) = self.relock {
+            let _ = set_flags(at, flags);
+        }
+    }
 }
 
 /// Atomic in the kernel, so a clone goes straight to its name.
@@ -149,8 +197,7 @@ fn has_kept(source: &File) -> bool {
         .any(|name| KEPT.contains(&name))
 }
 
-/// Returns the lock flags to set once the copy has its name: a locked file cannot be renamed.
-fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Option<u32>> {
+fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Copied> {
     let source = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -161,8 +208,9 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
         .create_new(true)
         .mode(0o600)
         .open(temp)?;
-    let carry = libc::COPYFILE_DATA | attributes(job, &source);
-    let copied = State::new()?
+    let kept = attributes(job, &source);
+    let carry = libc::COPYFILE_DATA | (kept & !libc::COPYFILE_ACL);
+    let bytes = State::new()?
         .call(job, slot, |state| unsafe {
             libc::fcopyfile(source.as_raw_fd(), out.as_raw_fd(), state, carry)
         })
@@ -178,28 +226,37 @@ fn copy_into(job: &Job, task: &Task, temp: &Path, slot: &Slot) -> io::Result<Opt
         return Err(because(job, &task.source, io::ErrorKind::InvalidData, why));
     }
     let written = out.metadata()?;
-    if written.len() != before.len() || copied != before.len() {
+    if written.len() != before.len() || bytes != before.len() {
         let why = "not all of it could be written";
         return Err(because(job, &task.source, io::ErrorKind::InvalidData, why));
     }
+    let mut copied = Copied {
+        stamp: Stamp::of(&before),
+        acl: kept & libc::COPYFILE_ACL != 0,
+        relock: None,
+        source,
+        out,
+    };
     if lean(job) {
-        set_times(&out, &before);
+        set_times(&copied.out, &before);
         // Not the staging file's flags: FAT and ExFAT hide any dot-named file.
         let locks = before.st_flags() & LOCKS;
-        return Ok((locks != 0).then_some(locks));
+        copied.relock = (locks != 0).then_some(locks);
+        return Ok(copied);
     }
+    keep_birth(&copied.out, &before);
     if job.kind == Kind::Copy {
-        regroup(&out, task.parent.gid());
+        regroup(&copied.out, task.parent.gid());
     }
     if job.is_move() && job.volume.network {
-        out.sync_all()?;
+        copied.out.sync_all()?;
     }
     let flags = written.st_flags();
-    if flags & LOCKS == 0 {
-        return Ok(None);
+    if flags & LOCKS != 0 {
+        crate::check(unsafe { libc::fchflags(copied.out.as_raw_fd(), flags & !LOCKS) })?;
+        copied.relock = Some(flags);
     }
-    crate::check(unsafe { libc::fchflags(out.as_raw_fd(), flags & !LOCKS) })?;
-    Ok(Some(flags))
+    Ok(copied)
 }
 
 fn commit(job: &Job, task: &Task, temp: &Path) -> io::Result<Option<PathBuf>> {
@@ -252,6 +309,7 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
+    let stamp = Stamp::of(&fs::symlink_metadata(&task.source)?);
     match task.over {
         false => make_link(job, &task.source, &task.dest)?,
         true => {
@@ -265,7 +323,7 @@ fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
         }
     }
     job.landed(task, &task.dest);
-    job.release(task, &task.dest);
+    job.release(task, &task.dest, stamp);
     Ok(())
 }
 
@@ -285,7 +343,10 @@ pub(super) fn settle_dir(job: &Job, source: &Path, dest: &Path) -> io::Result<()
     }
     if lean(job) {
         set_times(&into, &from.metadata()?);
-    } else if job.kind == Kind::Copy {
+        return Ok(());
+    }
+    keep_birth(&into, &from.metadata()?);
+    if job.kind == Kind::Copy {
         let parent = dest.parent().and_then(|parent| fs::metadata(parent).ok());
         regroup(&into, parent.map_or(u32::MAX, |meta| meta.gid()));
     }
@@ -322,27 +383,41 @@ fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
 }
 
 fn set_times(file: &File, times: &fs::Metadata) {
-    let mut wanted = libc::attrlist {
-        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
-        reserved: 0,
-        commonattr: libc::ATTR_CMN_CRTIME | libc::ATTR_CMN_MODTIME | libc::ATTR_CMN_ACCTIME,
-        volattr: 0,
-        dirattr: 0,
-        fileattr: 0,
-        forkattr: 0,
-    };
     let at = |tv_sec, tv_nsec| libc::timespec { tv_sec, tv_nsec };
+    let attrs = libc::ATTR_CMN_CRTIME | libc::ATTR_CMN_MODTIME | libc::ATTR_CMN_ACCTIME;
     let mut values = [
         at(times.st_birthtime(), times.st_birthtime_nsec()),
         at(times.mtime(), times.mtime_nsec()),
         at(times.atime(), times.atime_nsec()),
     ];
+    apply_times(file, attrs, &mut values);
+}
+
+/// `copyfile` carries the modification date but leaves the creation date at the copy's own.
+fn keep_birth(file: &File, times: &fs::Metadata) {
+    let mut values = [libc::timespec {
+        tv_sec: times.st_birthtime(),
+        tv_nsec: times.st_birthtime_nsec(),
+    }];
+    apply_times(file, libc::ATTR_CMN_CRTIME, &mut values);
+}
+
+fn apply_times(file: &File, attrs: libc::attrgroup_t, values: &mut [libc::timespec]) {
+    let mut wanted = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: attrs,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
     unsafe {
         libc::fsetattrlist(
             file.as_raw_fd(),
             (&raw mut wanted).cast(),
             values.as_mut_ptr().cast(),
-            std::mem::size_of_val(&values),
+            std::mem::size_of_val(values),
             0,
         )
     };
@@ -476,6 +551,13 @@ pub(super) fn because(job: &Job, source: &Path, kind: io::ErrorKind, why: &str) 
         kind,
         format!("The item \u{201c}{item}\u{201d} can't be {verb} because {why}."),
     )
+}
+
+pub(super) fn kept(source: &Path, why: &str) -> io::Error {
+    let item = name_of(source);
+    io::Error::other(format!(
+        "\u{201c}{item}\u{201d} was copied, but the original was kept because {why}."
+    ))
 }
 
 pub(super) fn not_removed(error: io::Error, source: &Path) -> io::Error {

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, Metadata};
-use std::io;
+use std::io::{self, Read as _};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -256,16 +256,33 @@ fn place(
     if size > job.volume.max_file {
         return job.fail(source, &dest, io::Error::from_raw_os_error(libc::EFBIG));
     }
-    if over && !is_root && !job.is_move() && identical(meta, &dest) {
+    if over && !is_root && !job.is_move() && identical(source, meta, &dest) {
         return job.count_done(size);
     }
     walk.queue(task(What::File, dest, size, over));
 }
 
-fn identical(source: &Metadata, dest: &Path) -> bool {
-    fs::symlink_metadata(dest).is_ok_and(|dest| {
-        dest.is_file() && dest.len() == source.len() && dest.mtime().abs_diff(source.mtime()) <= 1
-    })
+/// Size and date alone match another file written in the same second or unpacked from one archive.
+fn identical(source: &Path, meta: &Metadata, dest: &Path) -> bool {
+    let alike = fs::symlink_metadata(dest).is_ok_and(|there| {
+        there.is_file() && there.len() == meta.len() && there.mtime().abs_diff(meta.mtime()) <= 2
+    });
+    alike && same_bytes(source, dest).unwrap_or(false)
+}
+
+fn same_bytes(one: &Path, other: &Path) -> io::Result<bool> {
+    let (mut one, mut other) = (fs::File::open(one)?, fs::File::open(other)?);
+    let (mut here, mut there) = (vec![0; 1 << 20], vec![0; 1 << 20]);
+    loop {
+        let read = one.read(&mut here)?;
+        if read == 0 {
+            return Ok(other.read(&mut there)? == 0);
+        }
+        other.read_exact(&mut there[..read])?;
+        if here[..read] != there[..read] {
+            return Ok(false);
+        }
+    }
 }
 
 fn long(path: &Path) -> bool {
@@ -289,8 +306,11 @@ fn children(walk: &Walk, source: &Path, dest: &Path, gate: &Arc<Gate>, merging: 
         }
         let (name, meta) = match entry {
             Ok(entry) => entry,
-            Err(error) => {
-                job.fail(source, dest, error);
+            Err((name, error)) => {
+                match name {
+                    Some(name) => job.fail(&source.join(&name), &dest.join(&name), error),
+                    None => job.fail(source, dest, error),
+                }
                 continue;
             }
         };
@@ -319,12 +339,19 @@ fn left_behind(walk: &Walk, name: &[u8], volume_root: bool) -> bool {
         || (volume_root && VOLUME_LITTER.contains(&name))
 }
 
+/// An entry whose attributes cannot be read keeps its name, so its failure names it.
+type Listed = Result<(OsString, Metadata), (Option<OsString>, io::Error)>;
+
 /// Read whole before descending, so a deep tree holds one directory descriptor at a time.
-fn list(dir: &Path) -> io::Result<Vec<io::Result<(OsString, Metadata)>>> {
+fn list(dir: &Path) -> io::Result<Vec<Listed>> {
     Ok(fs::read_dir(dir)?
         .map(|entry| {
-            let entry = entry?;
-            Ok((entry.file_name(), entry.metadata()?))
+            let entry = entry.map_err(|error| (None, error))?;
+            let name = entry.file_name();
+            match entry.metadata() {
+                Ok(meta) => Ok((name, meta)),
+                Err(error) => Err((Some(name), error)),
+            }
         })
         .collect())
 }

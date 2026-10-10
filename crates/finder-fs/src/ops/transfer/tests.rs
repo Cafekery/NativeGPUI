@@ -881,3 +881,106 @@ fn many_small_files_are_timed_by_the_item() {
         "5,000 items at 100 a second, not 1 KB at 1 MB/s: {eta}"
     );
 }
+
+#[test]
+fn a_file_whose_access_list_denies_its_deletion_still_copies() {
+    let Some(disk) = RamDisk::new(40, "HFS+", &volume_name("A")) else {
+        return;
+    };
+    let dir = temp_dir("acl");
+    let file = dir.join("keep.txt");
+    write(&file, b"keep");
+    let denied = Command::new("chmod")
+        .args(["+a", "everyone deny delete"])
+        .arg(&file)
+        .status()
+        .is_ok_and(|status| status.success());
+    assert!(denied, "chmod +a");
+
+    let outcome = run(Kind::Copy, vec![file.clone()], &disk.mount);
+    let litter = staged_in(&disk.mount);
+    let landed = fs::read(disk.mount.join("keep.txt"));
+    let _ = Command::new("chmod").args(["-N"]).arg(&file).status();
+    let _ = Command::new("chmod")
+        .args(["-N"])
+        .arg(disk.mount.join("keep.txt"))
+        .status();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(landed.unwrap(), b"keep");
+    assert_eq!(litter, Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_copy_keeps_the_creation_date() {
+    use std::os::macos::fs::MetadataExt as _;
+    let Some(disk) = RamDisk::new(40, "HFS+", &volume_name("B")) else {
+        return;
+    };
+    let dir = temp_dir("birth");
+    write(&dir.join("Folder").join("old.txt"), b"old");
+    thread::sleep(Duration::from_millis(2100));
+
+    let outcome = run(Kind::Copy, vec![dir.join("Folder")], &disk.mount);
+    let born = |path: &Path| fs::metadata(path).unwrap().st_birthtime();
+    let (file, folder) = (dir.join("Folder").join("old.txt"), dir.join("Folder"));
+    let kept = (
+        born(&disk.mount.join("Folder").join("old.txt")) == born(&file),
+        born(&disk.mount.join("Folder")) == born(&folder),
+    );
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(
+        kept,
+        (true, true),
+        "file and folder keep their creation dates"
+    );
+}
+
+#[test]
+fn a_merge_replaces_a_different_file_of_the_same_size_and_date() {
+    if !crate::trash_reachable() {
+        return;
+    }
+    let dir = temp_dir("merge-alike");
+    let (src, dst) = (dir.join("src").join("Folder"), dir.join("dst"));
+    write(&src.join("x.txt"), b"new!");
+    write(&dst.join("Folder").join("x.txt"), b"old!");
+    let when = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    for path in [src.join("x.txt"), dst.join("Folder").join("x.txt")] {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    let outcome = Transfer::default().run(Request::new(
+        Kind::Copy,
+        vec![src],
+        &dst,
+        Conflict::Merge,
+        OnError::Continue,
+    ));
+    let merged = fs::read(dst.join("Folder").join("x.txt")).unwrap();
+    let displaced: Vec<PathBuf> = match &outcome.done.undo {
+        Some(Op::PutBack(back)) => back.iter().map(|restore| restore.item.clone()).collect(),
+        Some(Op::Batch(steps)) => steps
+            .iter()
+            .filter_map(|step| match step {
+                Op::PutBack(back) => Some(back.iter().map(|restore| restore.item.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect(),
+        _ => Vec::new(),
+    };
+    purge(&displaced);
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(merged, b"new!", "same size and date, different bytes");
+}

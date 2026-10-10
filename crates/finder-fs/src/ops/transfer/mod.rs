@@ -1,4 +1,5 @@
 use std::io;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -94,6 +95,14 @@ impl Request {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    pub fn conflict(&self) -> Conflict {
+        self.conflict
+    }
+
+    pub fn on_error(&self) -> OnError {
+        self.on_error
     }
 
     pub fn items(&self) -> impl ExactSizeIterator<Item = (&Path, &Path)> {
@@ -492,14 +501,21 @@ struct Record {
     made: Vec<(PathBuf, PathBuf)>,
     swaps: Vec<Swap>,
     emptied: Vec<Emptied>,
-    held: Vec<(PathBuf, PathBuf)>,
+    held: Vec<Freed>,
     /// Folders whose source could not be read, left writable for a retry.
     unsettled: Vec<PathBuf>,
 }
 
+/// A source whose copy landed, deleted once the copy's volume is flushed.
+struct Freed {
+    source: PathBuf,
+    dest: PathBuf,
+    stamp: copy::Stamp,
+}
+
 #[derive(Default)]
 struct Release {
-    pairs: Vec<(PathBuf, PathBuf)>,
+    pairs: Vec<Freed>,
     bytes: u64,
     since: Option<Instant>,
 }
@@ -728,11 +744,15 @@ impl<'a> Job<'a> {
         });
     }
 
-    fn release(&self, task: &Task, at: &Path) {
+    fn release(&self, task: &Task, at: &Path, stamp: copy::Stamp) {
         if !self.is_move() {
             return;
         }
-        let pair = (task.source.clone(), at.to_path_buf());
+        let pair = Freed {
+            source: task.source.clone(),
+            dest: at.to_path_buf(),
+            stamp,
+        };
         {
             let mut record = self.record.lock();
             let staged = record
@@ -796,15 +816,29 @@ impl<'a> Job<'a> {
             std::mem::take(&mut *release)
         };
         if let Err(error) = self.volume.flush() {
-            for (source, dest) in &batch.pairs {
+            for freed in &batch.pairs {
                 let error = io::Error::new(error.kind(), error.to_string());
-                self.fail(source, dest, copy::not_removed(error, source));
+                let error = copy::not_removed(error, &freed.source);
+                self.fail(&freed.source, &freed.dest, error);
             }
             return;
         }
-        for (source, dest) in batch.pairs {
-            if let Err(error) = std::fs::remove_file(&source) {
-                self.fail(&source, &dest, copy::not_removed(error, &source));
+        for freed in batch.pairs {
+            // The flush names the mount point, which a vanished volume leaves behind as a plain folder.
+            let landed = std::fs::symlink_metadata(&freed.dest)
+                .is_ok_and(|meta| meta.dev() == self.volume.dev && meta.len() == freed.stamp.len());
+            let kept = match (landed, freed.stamp.holds(&freed.source)) {
+                (false, _) => Some("its copy can't be found"),
+                (true, false) => Some("it changed after it was copied"),
+                (true, true) => None,
+            };
+            if let Some(why) = kept {
+                self.fail(&freed.source, &freed.dest, copy::kept(&freed.source, why));
+                continue;
+            }
+            if let Err(error) = std::fs::remove_file(&freed.source) {
+                let error = copy::not_removed(error, &freed.source);
+                self.fail(&freed.source, &freed.dest, error);
             }
         }
     }
@@ -859,7 +893,7 @@ impl<'a> Job<'a> {
             };
             if let Err(error) = swapped {
                 let _ = deep::remove(&swap.staged);
-                held.retain(|(source, _)| !source.starts_with(&swap.source));
+                held.retain(|freed| !freed.source.starts_with(&swap.source));
                 if let Some(error) = error {
                     self.fail(&swap.source, &swap.dest, error);
                 }
@@ -879,9 +913,9 @@ impl<'a> Job<'a> {
                 to: swap.source.clone(),
             });
             record.results[swap.root] = Some(swap.dest.clone());
-            for (_, at) in &mut held {
-                if let Ok(inside) = at.strip_prefix(&swap.staged) {
-                    *at = swap.dest.join(inside);
+            for freed in &mut held {
+                if let Ok(inside) = freed.dest.strip_prefix(&swap.staged) {
+                    freed.dest = swap.dest.join(inside);
                 }
             }
         }
