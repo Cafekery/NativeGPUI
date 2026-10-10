@@ -1,6 +1,6 @@
 # Rules for working in this repo
 
-`native-gpui` hosts real AppKit views inside a GPUI window on macOS 26. GPUI owns layout; macOS owns the pixels of anything whose design Apple changes between releases. [README.md](README.md) is the map; this file is the invariants.
+`native-gpui` hosts real AppKit views inside a GPUI window on macOS 26. GPUI owns layout; macOS owns the pixels of anything whose design Apple changes between releases. [docs/native-gpui.md](docs/native-gpui.md) is the map; this file is the invariants.
 
 ## Code
 
