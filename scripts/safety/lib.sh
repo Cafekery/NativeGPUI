@@ -136,7 +136,7 @@ PY
 }
 
 manifest() { $TREE manifest "$@"; }
-temps() { $TREE temps "$1"; }
+temps() { $TREE temps "$@"; }
 count_temps() { temps "$1" | wc -l | tr -d ' '; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 

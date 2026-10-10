@@ -142,4 +142,4 @@ target/release/founder undo undo.json
 
 A copy or move that is killed leaves hidden `.finder-fs-` temps beside what it was writing. The next copy or move into that folder clears them, and `founder clean folder` clears every one below a folder: a copy still being written is deleted, and an item a Replace had swapped out goes to the Trash. Temps of a job that is still running are left alone.
 
-`scripts/safety.sh` drives `founder` against fixtures on sparse disk images (APFS, HFS+, ExFAT, FAT32) and proves the engine's safety properties: kill -9 mid-move, cancels, full, read-only and vanishing volumes, locks, permissions, links, odd names, conflicts, undo, concurrency and big trees. It cleans up everything it makes.
+`scripts/safety.sh` drives `founder` against fixtures on sparse disk images (APFS, HFS+, ExFAT, FAT32) and proves the engine's safety properties: kill -9 mid-move, also past `PATH_MAX`, and the clean-up of what a killed copy or Replace left, cancels, full, read-only and vanishing volumes, locks, permissions, links, odd names, conflicts, undo, concurrent jobs into one folder and big trees. It cleans up everything it makes.

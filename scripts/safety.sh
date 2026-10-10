@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # usage: safety.sh [--work DIR] [--founder PATH] [--keep] [test...]
-#   Proves the file engine's safety properties through the `founder` CLI: kill -9 mid-move,
-#   cancels, full, read-only and vanishing volumes, locks, permissions, links, odd names, FAT,
-#   conflicts, undo, concurrency and big trees. Fixtures live on sparse disk images mounted under
-#   DIR (default a temp folder), never in /Volumes; all of it goes when the run ends.
+#   Proves the file engine's safety properties through the `founder` CLI: kill -9 mid-move and
+#   `founder clean` after it, cancels, full, read-only and vanishing volumes, locks, permissions,
+#   links, odd names, FAT, conflicts, undo, concurrency and big trees. Fixtures live on sparse disk
+#   images mounted under DIR (default a temp folder), never in /Volumes, and go when the run ends.
 set -uo pipefail
 SAFETY=$(cd "$(dirname "$0")/safety" && pwd)
 ROOT=$(cd "$SAFETY/../.." && pwd)
@@ -82,7 +82,7 @@ t_poll_move() {
 kill_rounds() {
   local kind=$1 rounds=$2 name=kill_$1
   begin
-  local dst src round code split merged mid=0 lost=0 litter=0 again=0
+  local dst src round code split merged left mid=0 lost=0 litter=0 again=0 dirty=0
   dst=$(image "$name" APFS 2048) || return
   for ((round = 1; round <= rounds; round++)); do
     src=$(fresh "$name-src")
@@ -120,11 +120,17 @@ kill_rounds() {
       again=$((again + 1))
       note "round $round: the merged move left its source"
     fi
+    left=$(count_temps "$dst")
+    if ((left != 0)); then
+      dirty=$((dirty + 1))
+      note "round $round: $left temps after the merge: $(temps "$dst" | head -2 | tr '\n' ' ')"
+    fi
   done
   note "$rounds rounds, $mid killed mid-run" "last split $(cat "$WORK/$name.split")" \
     "temp files the killed runs left: $litter"
   want "every file whole at its source or its destination after each kill" is "$lost" 0
   want "a merge re-run finishing every round" is "$again" 0
+  want "no temp left after each merge" is "$dirty" 0
   done_test "$name"
 }
 t_kill_move() { kill_rounds move 8; }
@@ -133,31 +139,132 @@ t_kill_copy() { kill_rounds copy 6; }
 # A tree past PATH_MAX goes through the descriptor-relative path; kill it mid-file too.
 t_kill_deep() {
   begin
-  local dst src round lost=0 again=0
+  local dst src round code left mid=0 lost=0 litter=0 again=0 dirty=0 seen=''
   dst=$(image killdeep APFS 1024) || return
-  for round in 1 2 3 4; do
+  for ((round = 1; round <= 8; round++)); do
     src=$(fresh killdeep-src)
     mkdir "$src/Deep"
     $TREE deep "$src/Deep" --length 1300 --file-size 30000000 >/dev/null
     manifest "$src/Deep" >"$WORK/killdeep.json"
-    rm -rf "$dst/Deep"
+    rm -rf "$dst/Deep" "$dst/.Trashes/$(id -u)"
     launch move "$src/Deep" "$dst"
     sleep "0.$((RANDOM % 6))$((RANDOM % 10))"
     kill -9 "$PID" 2>/dev/null
     wait "$PID" 2>/dev/null
+    grep -q '"event":"result"' "$WORK/bg.jsonl" || mid=$((mid + 1))
     if ! $TREE split "$src/Deep" "$dst/Deep" "$WORK/killdeep.json" >"$WORK/killdeep.split"; then
       lost=$((lost + 1))
       note "round $round: $(cat "$WORK/killdeep.split")"
     fi
+    seen+="$(field temps "$WORK/killdeep.split" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))') "
+    litter=$((litter + $(count_temps "$dst")))
     if [[ -e $src/Deep ]]; then
-      founder move --conflict merge "$src/Deep" "$dst" ||
-        { again=$((again + 1)); note "round $round: merge: $(errors | head -1)"; }
+      founder move --conflict merge "$src/Deep" "$dst"
+      code=$?
+      ((code == 0)) || { again=$((again + 1)); note "round $round: merge exit $code: $(errors | head -1)"; }
     fi
     same "$dst/Deep" "$WORK/killdeep.json" >/dev/null || { again=$((again + 1)); note "round $round: tree differs"; }
+    [[ -e $src/Deep ]] && { again=$((again + 1)); note "round $round: the merged move left its source"; }
+    left=$(count_temps "$dst")
+    ((left == 0)) || { dirty=$((dirty + 1)); note "round $round: $left temps after the merge"; }
   done
+  note "8 rounds, $mid killed mid-run" "temps the split saw per round: $seen" \
+    "temp files the killed runs left: $litter"
   want "nothing partial under a real name past PATH_MAX" is "$lost" 0
-  want "a merge re-run finishing" is "$again" 0
+  want "a merge re-run finishing every round, its source gone" is "$again" 0
+  want "no temp left after each merge" is "$dirty" 0
   done_test kill_deep
+}
+
+# clean deletes stale temps, trashes a stale Replace's item, keeps live temps and other names.
+t_kill_cleanup() {
+  begin
+  local src dst trash dead apid bpid rdir code unique f ahead bhead atrash='' btrash='' mine decoys before_mine before_decoys
+  src=$(fresh cleanup) && dst=$(image cleanup APFS 1024) || return
+  trash=$dst/.Trashes/$(id -u)
+  sleep 0 &
+  dead=$!
+  wait "$dead"
+  $TREE tree "$src/A" --count 4 --max 20000 --seed 61 --big big.bin:150000000
+  $TREE tree "$src/B" --count 0 --seed 62 --big big.bin:150000000
+  $TREE tree "$src/E" --count 4 --max 20000 --seed 63 --big big.bin:150000000
+  manifest "$src/E" >"$WORK/cleanup.json"
+  ahead=$(head -c 1048576 "$src/A/big.bin" | shasum -a 256)
+  bhead=$(head -c 1048576 "$src/B/big.bin" | shasum -a 256)
+  mkdir -p "$dst/Docs/inner" "$dst/Work" "$dst/.finder-fs-123-4"
+  head -c 5000000 /dev/urandom >"$dst/big.bin"
+  echo kept >"$dst/keep.txt" && echo inner >"$dst/Docs/inner/note.txt"
+  echo old-format >"$dst/.finder-fs-123-4/inside.txt"
+  mine=(big.bin keep.txt Docs/inner/note.txt)
+  decoys=(.finder-fs-123-4/inside.txt .finder-fs-staging-12-x-3 .finder-fs-staging-12-3 .finder-fs-notes.txt
+    finder-fs-staging-1-2-3 ".finder-fs-replace-$dead-1-0.txt" Docs/.finder-fs-99-1)
+  for f in "${decoys[@]:1}"; do echo "decoy $f" >"$dst/$f"; done
+  before_mine=$(cd "$dst" && shasum -a 256 "${mine[@]}" 2>&1)
+  before_decoys=$(cd "$dst" && shasum -a 256 "${decoys[@]}" 2>&1)
+  launch copy --pause-after 20M "$src/A" "$dst"
+  wait_for paused || note "the copy never paused"
+  apid=$PID
+  kill -9 "$PID" 2>/dev/null
+  wait "$PID" 2>/dev/null
+  launch copy --conflict replace --pause-after 20M "$src/B/big.bin" "$dst"
+  wait_for paused || note "the Replace never paused"
+  bpid=$PID
+  kill -9 "$PID" 2>/dev/null
+  wait "$PID" 2>/dev/null
+  unique="swapped out by job $dead, run $$ $RANDOM $(date +%s)"
+  mkdir "$dst/Docs/.finder-fs-replace-$dead-1-0" && echo "$unique" >"$dst/Docs/.finder-fs-replace-$dead-1-0/old.txt"
+  echo reused >"$dst/.finder-fs-staging-$$-1-7"
+  launch copy --pause-after 20M "$src/E" "$dst/Work"
+  wait_for paused || note "the live copy never paused"
+  temps --exact "$dst" >"$WORK/cleanup.before"
+  grep -E "^Work/.*\.finder-fs-(staging|replace)-$PID-" "$WORK/cleanup.before" >"$WORK/cleanup.live"
+  rdir=$(grep -m1 "^\.finder-fs-replace-$bpid-[0-9]*-[0-9]*$" "$WORK/cleanup.before")
+  note "before clean: $(tr '\n' ' ' <"$WORK/cleanup.before")"
+  want "the killed copy left a staging temp" grep -q "^A/\.finder-fs-staging-$apid-[0-9]*-[0-9]*$" "$WORK/cleanup.before"
+  want "the killed Replace left its folder holding big.bin" test -n "$rdir" -a -f "$dst/$rdir/big.bin"
+  want "the live copy has temps" test -s "$WORK/cleanup.live"
+  founder clean "$dst"
+  code=$?
+  temps --exact "$dst" >"$WORK/cleanup.after"
+  while IFS= read -r f; do
+    case $(head -c 1048576 "$f" | shasum -a 256) in
+      "$ahead") atrash=$f ;;
+      "$bhead") btrash=$f ;;
+    esac
+  done < <(find "$trash" -type f 2>/dev/null)
+  note "clean: exit $code, left $(tr '\n' ' ' <"$WORK/cleanup.after")" \
+    "Trash: $(cd "$trash" 2>/dev/null && ls -A | tr '\n' ' ')" \
+    "the Replace's big.bin in the Trash: $(basename "${btrash:-none}") $([[ -n $btrash ]] && stat -f %z "$btrash") bytes"
+  want "clean exits 0" is "$code" 0
+  want "no stale temp left" is "$(grep -vE "^Work/.*\.finder-fs-(staging|replace)-$PID-" "$WORK/cleanup.after")" ""
+  want "the Replace's partial big.bin in the Trash" test -n "$btrash"
+  want "the swapped-out old.txt in the Trash" grep -rqxF "$unique" "$trash"
+  want "the stale staging copy deleted, not trashed" test -z "$atrash"
+  want "the destination's own files unchanged" is "$(cd "$dst" && shasum -a 256 "${mine[@]}" 2>&1)" "$before_mine"
+  want "every name outside the temp format unchanged" is "$(cd "$dst" && shasum -a 256 "${decoys[@]}" 2>&1)" "$before_decoys"
+  want "the live copy's temps kept" is "$(grep -E "^Work/.*\.finder-fs-(staging|replace)-$PID-" "$WORK/cleanup.after")" \
+    "$(cat "$WORK/cleanup.live")"
+  kill -USR1 "$PID"
+  bounded 120 "$PID"
+  code=$?
+  note "the live copy resumed: exit $code, $(count_temps "$dst/Work") temps"
+  want "the live copy exits 0" is "$code" 0
+  want "its tree whole" same "$dst/Work/E" "$WORK/cleanup.json" >/dev/null
+  want "no temp left where it landed" none "$(count_temps "$dst/Work")"
+  mkdir -p "$dst/G/.finder-fs-replace-$dead-1-8"
+  echo stale >"$dst/G/.finder-fs-staging-$dead-1-9"
+  echo "$unique again" >"$dst/G/.finder-fs-replace-$dead-1-8/swapped.txt"
+  echo decoy >"$dst/G/.finder-fs-$dead-9"
+  echo small >"$src/small.txt"
+  founder copy "$src/small.txt" "$dst/G"
+  code=$?
+  note "copy into a folder holding stale temps: exit $code, left $(ls -A "$dst/G" | tr '\n' ' ')"
+  want "the copy exits 0" is "$code" 0
+  want "the copy landed" is "$(cat "$dst/G/small.txt" 2>/dev/null)" small
+  want "the copy cleaned the stale temps where it landed" is "$(temps --exact "$dst/G")" ""
+  want "the stale Replace's item trashed by the copy" grep -rqxF "$unique again" "$trash"
+  want "an old-format name kept by the copy" is "$(cat "$dst/G/.finder-fs-$dead-9" 2>/dev/null)" decoy
+  done_test kill_cleanup
 }
 
 # A cancel ends cleanly: no temp file, nothing partial, every file in one place.
@@ -757,35 +864,59 @@ t_compress_staging() {
   done_test compress_staging
 }
 
-t_concurrent() {
-  begin
-  local vol i pids=() codes=()
-  vol=$(image conc APFS 512) || return
-  mkdir "$vol/D"
-  for i in 1 2 3 4; do
-    mkdir -p "$WORK/conc$i"
-    $TREE tree "$WORK/conc$i/Set" --count 60 --max 200000 --seed $((i + 40))
-    echo "copy $i" >"$WORK/conc$i/same.txt"
+# conc_round VOL ROUND JOBS KIND: JOBS runs started together, each bringing its own Set and same.txt.
+conc_round() {
+  local vol=$1 round=$2 jobs=$3 kind=$4
+  local dst=$vol/R$round go=$WORK/conc.go i set text used='|' found=0 gone=0 pids=() codes=() zeros='' kept=''
+  mkdir "$dst" && rm -f "$go"
+  for ((i = 1; i <= jobs; i++)); do
+    fresh "conc$i" >/dev/null
+    $TREE tree "$WORK/conc$i/Set" --count 60 --max 200000 --seed $((round * 100 + i))
+    text=$(printf '%s %d.%02d' "$kind" "$round" "$i")
+    echo "$text" >"$WORK/conc$i/same.txt"
     manifest "$WORK/conc$i/Set" >"$WORK/conc$i.json"
+    zeros+="0 " kept+="$text,"
   done
-  for i in 1 2 3 4; do
-    "$FOUNDER" --json copy "$WORK/conc$i/Set" "$WORK/conc$i/same.txt" "$vol/D" >"$WORK/conc$i.jsonl" 2>&1 &
+  for ((i = 1; i <= jobs; i++)); do
+    (
+      until [[ -e $go ]]; do sleep 0.01; done
+      exec "$FOUNDER" --json "$kind" "$WORK/conc$i/Set" "$WORK/conc$i/same.txt" "$dst" >"$WORK/conc$i.jsonl" 2>&1
+    ) &
     pids+=($!)
   done
-  for i in 0 1 2 3; do
+  touch "$go"
+  for ((i = 0; i < jobs; i++)); do
     wait "${pids[$i]}"
     codes+=($?)
+    ((codes[i] == 0)) || note "round $round job $((i + 1)): $(errors "$WORK/conc$((i + 1)).jsonl" | head -1)"
   done
-  note "exits ${codes[*]}; landed $(ls "$vol/D" | tr '\n' ',')"
-  want "every job exits 0" is "${codes[*]}" "0 0 0 0"
-  local found=0 set
-  for i in 1 2 3 4; do
-    for set in "$vol/D"/Set*; do
-      same "$set" "$WORK/conc$i.json" >/dev/null && { found=$((found + 1)); break; }
+  note "round $round, $jobs ${kind}s: exits ${codes[*]}; landed $(ls "$dst" | tr '\n' ,)"
+  want "round $round: every job exits 0" is "${codes[*]} " "$zeros"
+  for ((i = 1; i <= jobs; i++)); do
+    for set in "$dst"/Set*; do
+      [[ $used == *"|$set|"* ]] && continue
+      same "$set" "$WORK/conc$i.json" >/dev/null && { found=$((found + 1)) used+="$set|"; break; }
     done
   done
-  want "all four folders landed whole under their own names" is "$found" 4
-  want "all four files kept" is "$(cat "$vol/D"/same*.txt | sort | tr '\n' ,)" "copy 1,copy 2,copy 3,copy 4,"
+  want "round $round: every Set landed whole under its own name" \
+    is "$found:$(ls -d "$dst"/Set* 2>/dev/null | wc -l | tr -d ' ')" "$jobs:$jobs"
+  want "round $round: every same.txt kept" is "$(cat "$dst"/same*.txt 2>/dev/null | sort | tr '\n' ,)" "$kept"
+  want "round $round: no temp left" none "$(count_temps "$dst")"
+  if [[ $kind == move ]]; then
+    for ((i = 1; i <= jobs; i++)); do
+      absent "$WORK/conc$i/Set" && absent "$WORK/conc$i/same.txt" && gone=$((gone + 1))
+    done
+    want "round $round: every source gone" is "$gone" "$jobs"
+  fi
+}
+
+t_concurrent() {
+  begin
+  local vol
+  vol=$(image conc APFS 512) || return
+  conc_round "$vol" 1 4 copy
+  conc_round "$vol" 2 8 copy
+  conc_round "$vol" 3 4 move
   done_test concurrent
 }
 
@@ -908,8 +1039,8 @@ t_search() {
   done_test search
 }
 
-TESTS=(poll_move kill_move kill_copy kill_deep cancel full_upfront full_midway read_only locked
-  unreadable acl_denied into_itself same_file symlinks case_names unicode odd_names path_max
+TESTS=(poll_move kill_move kill_copy kill_deep kill_cleanup cancel full_upfront full_midway read_only
+  locked unreadable acl_denied into_itself same_file symlinks case_names unicode odd_names path_max
   metadata fat_litter fat32_4gb conflicts undo_redo trash_put_back compress_staging concurrent
   changed_after_copy unmount big_tree finder search)
 ((${#ONLY[@]})) && TESTS=("${ONLY[@]}")

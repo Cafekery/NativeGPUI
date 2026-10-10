@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import stat
 import sys
 import time
@@ -35,6 +36,7 @@ LITTER = {".Trashes", ".fseventsd", ".Spotlight-V100", ".TemporaryItems",
           ".DocumentRevisions-V100", ".HFS+ Private Directory Data\r", ".journal",
           ".journal_info_block", "\u2400\u2400\u2400\u2400HFS+ Private Data"}
 TEMP = ".finder-fs-"
+EXACT = re.compile(r"\.finder-fs-(staging|replace)-[0-9]+-[0-9]+-[0-9]+")
 
 
 def sha(fd):
@@ -174,14 +176,14 @@ def files_of(listed):
     return {rel: entry for rel, entry in listed.items() if entry["type"] == "file"}
 
 
-def temps(root):
+def temps(root, exact=False):
     found = []
     for dirpath, dirnames, filenames, _ in os.fwalk(root, follow_symlinks=False):
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
             dirnames[:] = [name for name in dirnames if name not in LITTER]
         for name in dirnames + filenames:
-            if name.startswith(TEMP):
+            if (EXACT.fullmatch(name) if exact else name.startswith(TEMP)):
                 found.append(os.path.normpath(os.path.join(rel_dir, name)))
     return found
 
@@ -277,7 +279,7 @@ def cmd_watch(args):
 
 
 def cmd_temps(args):
-    for rel in temps(args.dir):
+    for rel in temps(args.dir, args.exact):
         print(rel)
 
 
@@ -367,6 +369,7 @@ def main():
     sub.set_defaults(run=cmd_watch)
     sub = commands.add_parser("temps")
     sub.add_argument("dir")
+    sub.add_argument("--exact", action="store_true")
     sub.set_defaults(run=cmd_temps)
     sub = commands.add_parser("count")
     sub.add_argument("dir")
