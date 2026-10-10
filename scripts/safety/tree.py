@@ -178,6 +178,8 @@ def files_of(listed):
 
 def temps(root, exact=False):
     found = []
+    if not os.path.lexists(root):
+        return found
     for dirpath, dirnames, filenames, _ in os.fwalk(root, follow_symlinks=False):
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
