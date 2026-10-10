@@ -1891,9 +1891,18 @@ mod tests {
         )
         .expect_err("a directory that cannot be read cannot be copied");
         let unfinished = Unfinished::from_error(error).expect("the error says what landed");
-        assert_eq!(unfinished.done.results, vec![dst.join("Deep")]);
+        // The walk can reach the unreadable folder before anything is copied, and then stops first.
+        let landed: Vec<PathBuf> = [dst.join("Deep")]
+            .into_iter()
+            .filter(|at| at.exists())
+            .collect();
+        assert_eq!(unfinished.done.results, landed);
         assert!(
-            matches!(&unfinished.done.undo, Some(Op::Trash(items)) if items == &[dst.join("Deep")]),
+            match &unfinished.done.undo {
+                Some(Op::Trash(items)) => !landed.is_empty() && items == &landed,
+                None => landed.is_empty(),
+                _ => false,
+            },
             "what landed is undone whole: {:?}",
             unfinished.done.undo
         );
