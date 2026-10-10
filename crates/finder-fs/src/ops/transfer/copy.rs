@@ -13,7 +13,10 @@ use objc2_foundation::NSFileManager;
 use parking_lot::Mutex;
 
 use super::{Gate, Job, Kind, Slot, Task, What};
-use crate::ops::{Refusal, deep, exchange, land, name_of, staging_path, taken, trash_as};
+use crate::ops::{
+    Refusal, deep, drop_slot, exchange, land, name_of, replace_slot, staging_path, taken,
+    trash_slot,
+};
 
 const LOCKS: u32 = libc::UF_IMMUTABLE | libc::UF_APPEND;
 const ALL: u32 = libc::COPYFILE_METADATA | libc::COPYFILE_DATA;
@@ -87,7 +90,10 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
             return Ok(());
         }
     }
-    let temp = staging_path(&task.dest);
+    let temp = match task.over {
+        true => replace_slot(&task.dest)?,
+        false => staging_path(&task.dest),
+    };
     *slot.file.lock() = Some((task.source.clone(), task.size));
     job.claim(task);
     let copied = copy_into(job, task, &temp, slot);
@@ -96,7 +102,12 @@ fn copy_file(job: &Job, task: &Task, slot: &Slot) -> io::Result<()> {
     let (copied, at) = match landed {
         Ok(landed) => landed,
         Err(error) => {
-            let _ = fs::remove_file(&temp);
+            match task.over {
+                true => drop_slot(&temp),
+                false => {
+                    let _ = fs::remove_file(&temp);
+                }
+            }
             job.unclaim(task);
             return Err(error);
         }
@@ -266,13 +277,11 @@ fn commit(job: &Job, task: &Task, temp: &Path) -> io::Result<PathBuf> {
     land(task.dest.clone(), next, |at| rename_new(temp, at)).map(|(at, ())| at)
 }
 
-fn replace(job: &Job, temp: &Path, dest: &Path) -> io::Result<()> {
-    exchange(temp, dest)?;
-    match trash_as(&NSFileManager::defaultManager(), temp, dest) {
+fn replace(job: &Job, slot: &Path, dest: &Path) -> io::Result<()> {
+    exchange(slot, dest)?;
+    match trash_slot(&NSFileManager::defaultManager(), slot) {
         Ok(item) => job.displaced(item, dest),
-        Err(_) => {
-            let _ = deep::remove(temp);
-        }
+        Err(_) => drop_slot(slot),
     }
     Ok(())
 }
@@ -303,11 +312,11 @@ fn copy_link(job: &Job, task: &Task) -> io::Result<()> {
             .0
         }
         true => {
-            let temp = staging_path(&task.dest);
+            let slot = replace_slot(&task.dest)?;
             let placed =
-                make_link(job, &task.source, &temp).and_then(|()| replace(job, &temp, &task.dest));
+                make_link(job, &task.source, &slot).and_then(|()| replace(job, &slot, &task.dest));
             if let Err(error) = placed {
-                let _ = fs::remove_file(&temp);
+                drop_slot(&slot);
                 return Err(error);
             }
             task.dest.clone()

@@ -13,8 +13,8 @@ use objc2_foundation::NSFileManager;
 
 use super::{Gate, Item, Job, PLAN_FOR, Swap, Task, What, copy, volume};
 use crate::ops::{
-    Conflict, NAME_MAX, deep, duplicate_path, free_path, land, next_free, place_one, real_dir,
-    same_item, staging_path, taken,
+    Conflict, NAME_MAX, clean_in, deep, duplicate_path, free_path, land, next_free, place_one,
+    real_dir, replace_slot, same_item, taken,
 };
 
 const PATH_ROOM: usize = libc::PATH_MAX as usize - NAME_MAX - 2;
@@ -97,12 +97,17 @@ pub(super) fn walk(job: &Job, items: &[Item], tasks: Sender<Task>) {
         held: RefCell::new(Some(Vec::new())),
         until: Instant::now() + PLAN_FOR,
     };
+    let mut cleaned = None;
     for (root, item) in items.iter().enumerate() {
         if root > 0 {
             outbox.wait_while_paused(job);
         }
         if job.halted() {
             break;
+        }
+        if let Some(into) = item.dest.parent().filter(|into| Some(*into) != cleaned) {
+            clean_in(into);
+            cleaned = Some(into);
         }
         if let Err(error) = plan(job, &fm, root, item, &outbox) {
             job.fail(&item.source, &item.dest, error);
@@ -231,7 +236,10 @@ fn place(
                 return children(walk, source, &dest, &Gate::open(gid), true);
             }
             Landing::Over(dest) => {
-                let staged = staging_path(&dest);
+                let staged = match replace_slot(&dest) {
+                    Ok(staged) => staged,
+                    Err(error) => return job.fail(source, &dest, error),
+                };
                 job.stage(Swap {
                     root: walk.root,
                     source: source.to_path_buf(),
@@ -310,6 +318,9 @@ fn long(path: &Path) -> bool {
 
 fn children(walk: &Walk, source: &Path, dest: &Path, gate: &Arc<Gate>, merging: bool) {
     let job = walk.job;
+    if merging {
+        clean_in(dest);
+    }
     let entries = match list(source) {
         Ok(entries) => entries,
         Err(error) => {

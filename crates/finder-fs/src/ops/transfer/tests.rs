@@ -1076,3 +1076,125 @@ fn a_name_taken_after_the_plan_is_kept_whatever_the_conflict_choice() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+fn dead_pid() -> u32 {
+    let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+    child.wait().unwrap();
+    child.id()
+}
+
+fn files_below(dir: &Path) -> Vec<Vec<u8>> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    (entries.flatten())
+        .filter(|entry| entry.file_name() != ".DS_Store")
+        .flat_map(|entry| match entry.path().is_dir() {
+            true => files_below(&entry.path()),
+            false => fs::read(entry.path()).into_iter().collect(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_transfer_clears_what_a_killed_one_left_where_it_lands_or_merges() {
+    let Some(disk) = RamDisk::new(32, "HFS+", &volume_name("K")) else {
+        return;
+    };
+    let dir = temp_dir("killed-left");
+    write(&dir.join("Folder").join("a.txt"), b"new");
+    let dead = dead_pid();
+    let stale = |at: &Path, kind: &str, n: u32| at.join(format!(".finder-fs-{kind}-{dead}-1-{n}"));
+    let (landed_in, merged) = (disk.mount.clone(), disk.mount.join("Folder"));
+    let elsewhere = disk.mount.join("Other");
+    let copies = [
+        stale(&landed_in, "staging", 0),
+        stale(&merged, "staging", 1),
+        stale(&elsewhere, "staging", 2),
+    ];
+    for copy in &copies {
+        write(copy, b"part of a copy");
+    }
+    let holder = stale(&merged, "replace", 3);
+    write(&holder.join("a.txt"), b"swapped out");
+
+    let outcome = Transfer::default().run(Request::new(
+        Kind::Copy,
+        vec![dir.join("Folder")],
+        &disk.mount,
+        Conflict::Merge,
+        OnError::Continue,
+    ));
+    let trash = disk
+        .mount
+        .join(".Trashes")
+        .join(unsafe { libc::getuid() }.to_string());
+
+    assert_eq!(outcome.end, End::Finished, "{:?}", outcome.failures);
+    assert_eq!(
+        copies.each_ref().map(|copy| copy.exists()),
+        [false, false, true],
+        "only the folders it landed in and merged into are cleared"
+    );
+    assert!(!holder.exists());
+    assert_eq!(files_below(&trash), [b"swapped out".to_vec()]);
+    assert_eq!(fs::read(merged.join("a.txt")).unwrap(), b"new");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_temp_says_whether_it_holds_a_copy_or_what_a_replace_swaps() {
+    let Some(disk) = RamDisk::new(160, "HFS+", &volume_name("N")) else {
+        return;
+    };
+    let dir = temp_dir("temp-kinds");
+    let big = dir.join("big.bin");
+    sparse(&big, 64 << 20);
+    let mut seen = Vec::new();
+    for (conflict, into) in [
+        (Conflict::KeepBoth, disk.mount.join("copy")),
+        (Conflict::Replace, disk.mount.join("replace")),
+    ] {
+        write(&into.join("big.bin"), b"old");
+        if conflict == Conflict::KeepBoth {
+            fs::remove_file(into.join("big.bin")).unwrap();
+        }
+        let transfer = Transfer::default();
+        let request = Request::new(
+            Kind::Copy,
+            vec![big.clone()],
+            &into,
+            conflict,
+            OnError::Continue,
+        );
+        let handle = held_mid_file(&transfer, request);
+        seen.push(
+            staged_in(&into)
+                .iter()
+                .map(|temp| {
+                    (
+                        name_of(temp).split('-').nth(2).unwrap_or("").to_string(),
+                        temp.is_dir(),
+                        temp.join("big.bin").is_file(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        transfer.resume();
+        let outcome = handle.join().unwrap();
+        assert_eq!(outcome.end, End::Finished, "{:?}", outcome.failures);
+        assert!(staged_in(&into).is_empty());
+    }
+
+    assert_eq!(
+        seen,
+        [
+            vec![("staging".to_string(), false, false)],
+            vec![("replace".to_string(), true, true)]
+        ],
+        "a plain copy writes a file named for staging, a Replace a folder holding the file under its own name"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -3,7 +3,6 @@ use std::io;
 use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -20,10 +19,13 @@ use crate::volumes;
 
 mod deep;
 mod quick;
+mod temp;
 pub mod transfer;
 
 pub use quick::{ImageFormat, ImageSize, Quick};
+pub use temp::{Cleaned, clean_temps};
 
+use temp::{clean_in, drop_slot, replace_slot, staging_path, trash_slot};
 use transfer::{End, Failure, Kind, OnError, Request, Transfer};
 
 const NAME_MAX: usize = 255;
@@ -611,29 +613,21 @@ fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
     Some(first_free(dir_of(&items[0]), &stem, "", Some("zip")))
 }
 
-fn staging_path(dest: &Path) -> PathBuf {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = dest.parent().unwrap_or_else(|| Path::new("."));
-    dir.join(format!(
-        ".finder-fs-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
 fn exchange(staged: &Path, dest: &Path) -> io::Result<()> {
     let (from, to) = (crate::c_path(staged)?, crate::c_path(dest)?);
     match crate::check(unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) }) {
         Err(err) if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL)) => {}
         swapped => return swapped,
     }
-    let aside = staging_path(dest);
-    std::fs::rename(dest, &aside)?;
-    if let Err(err) = std::fs::rename(staged, dest) {
-        let _ = std::fs::rename(&aside, dest);
-        return Err(err);
-    }
-    std::fs::rename(&aside, staged)
+    let aside = replace_slot(dest)?;
+    let swapped = std::fs::rename(dest, &aside).and_then(|()| {
+        std::fs::rename(staged, dest).inspect_err(|_| {
+            let _ = std::fs::rename(&aside, dest);
+        })
+    });
+    let swapped = swapped.and_then(|()| std::fs::rename(&aside, staged));
+    let _ = std::fs::remove_dir(dir_of(&aside));
+    swapped
 }
 
 fn trash_at(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
@@ -658,20 +652,6 @@ fn trash_one(fm: &NSFileManager, path: &Path) -> io::Result<PathBuf> {
 
 fn delete_one(fm: &NSFileManager, path: &Path) -> io::Result<()> {
     past_the_lock(path, true, || remove_path(fm, path))
-}
-
-/// A Replace swaps the old item out to a staging name, so it goes to the Trash under its own.
-fn trash_as(fm: &NSFileManager, staged: &Path, dest: &Path) -> io::Result<PathBuf> {
-    let holder = staging_path(dest);
-    std::fs::create_dir(&holder)?;
-    let named = holder.join(dest.file_name().unwrap_or_default());
-    let trashed = std::fs::rename(staged, &named).and_then(|()| {
-        trash_one(fm, &named).inspect_err(|_| {
-            let _ = std::fs::rename(&named, staged);
-        })
-    });
-    let _ = std::fs::remove_dir(&holder);
-    trashed
 }
 
 #[derive(Default)]
@@ -699,23 +679,24 @@ fn real_dir(path: &Path) -> bool {
 }
 
 fn replace_at(fm: &NSFileManager, src: &Path, dest: PathBuf) -> io::Result<Placed> {
-    let staged = staging_path(&dest);
+    let staged = replace_slot(&dest)?;
     if let Err(err) = transfer(fm, src, &staged, true) {
-        let _ = remove_path(fm, &staged);
+        let _ = std::fs::remove_dir(dir_of(&staged));
         return Err(err);
     }
     if let Err(err) = exchange(&staged, &dest) {
         // A moved item's only copy is the staged one; it goes back where it came from.
         let _ = transfer(fm, &staged, src, true);
+        let _ = std::fs::remove_dir(dir_of(&staged));
         return Err(err);
     }
-    let displaced = match trash_as(fm, &staged, &dest) {
+    let displaced = match trash_slot(fm, &staged) {
         Ok(item) => vec![Restore {
             item,
             to: dest.clone(),
         }],
         Err(_) => {
-            let _ = remove_path(fm, &staged);
+            drop_slot(&staged);
             Vec::new()
         }
     };
@@ -745,6 +726,7 @@ fn place_one(
         Conflict::Skip => Ok(Placed::default()),
         Conflict::KeepBoth => fresh(free_path(&dest)),
         Conflict::Merge if real_dir(src) && real_dir(&dest) => {
+            clean_in(&dest);
             let (mut landed, mut displaced) = (Vec::new(), Vec::new());
             for entry in std::fs::read_dir(src)? {
                 let entry = entry?;

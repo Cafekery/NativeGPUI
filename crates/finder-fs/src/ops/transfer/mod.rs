@@ -11,8 +11,8 @@ use objc2_foundation::NSFileManager;
 use parking_lot::{Condvar, Mutex};
 
 use super::{
-    Conflict, Done, Placed, Refusal, Restore, deep, exchange, free_path, name_of, next_free,
-    refusal_message, refuse_into_itself, taken, trash_as, undo_of_transfer,
+    Conflict, Done, Placed, Refusal, Restore, drop_slot, exchange, free_path, name_of, next_free,
+    refusal_message, refuse_into_itself, taken, trash_slot, undo_of_transfer,
 };
 use meter::{Left, Meter};
 use volume::Volume;
@@ -921,21 +921,19 @@ impl<'a> Job<'a> {
                 false => exchange(&swap.staged, &swap.dest).map_err(Some),
             };
             if let Err(error) = swapped {
-                let _ = deep::remove(&swap.staged);
+                drop_slot(&swap.staged);
                 held.retain(|freed| !freed.source.starts_with(&swap.source));
                 if let Some(error) = error {
                     self.fail(&swap.source, &swap.dest, error);
                 }
                 continue;
             }
-            match trash_as(&fm, &swap.staged, &swap.dest) {
+            match trash_slot(&fm, &swap.staged) {
                 Ok(item) => record.displaced.push(Restore {
                     item,
                     to: swap.dest.clone(),
                 }),
-                Err(_) => {
-                    let _ = deep::remove(&swap.staged);
-                }
+                Err(_) => drop_slot(&swap.staged),
             }
             record.landed.push(Restore {
                 item: swap.dest.clone(),
