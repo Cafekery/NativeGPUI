@@ -62,6 +62,8 @@ usage: founder [--json] [--quiet] <command> [options] [arguments]
   totals [--index dir] [--home dir] folder...
   undo journal    redo journal    retry journal    journal journal
   viewer status|on|off [--id bundle-id] [--app path]
+  clean folder...                      clears what a killed copy or move left: copies in progress
+                                       are deleted, items a Replace swapped out go to the Trash
 
 operations (copy through quick, undo, redo, retry):
   --conflict keep-both|replace|merge|skip   when a name is taken (default keep-both)
@@ -135,6 +137,7 @@ fn dispatch(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
         "undo" | "redo" | "retry" => replay(&command, args, out),
         "journal" => show_journal(args, out),
         "viewer" => viewer::viewer(args, out),
+        "clean" => clean(args, out),
         other => Err(Stop::Usage(format!("there is no command `{other}`"))),
     }
 }
@@ -521,4 +524,60 @@ fn show_journal(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
         out.say(&format!("redo  {}", entry.label));
     }
     Ok(OK)
+}
+
+fn clean(mut args: Args, out: &mut Out) -> Result<u8, Stop> {
+    let folders = args.paths();
+    args.done("clean")?;
+    if folders.is_empty() {
+        return Err(Stop::Usage("clean needs a folder".into()));
+    }
+    if let Some(other) = folders.iter().find(|folder| !list::is_dir(folder)) {
+        return Err(Stop::Refused(format!(
+            "{} is not a folder",
+            other.display()
+        )));
+    }
+    let mut cleaned = ops::Cleaned::default();
+    for folder in &folders {
+        let one = ops::clean_temps(folder);
+        cleaned.removed.extend(one.removed);
+        cleaned.trashed.extend(one.trashed);
+        cleaned.failures.extend(one.failures);
+    }
+    let code = match cleaned.failures.is_empty() {
+        true => OK,
+        false => PARTIAL,
+    };
+    if out.json {
+        out.emit(json!({
+            "event": "result",
+            "command": "clean",
+            "exit": code,
+            "removed": cleaned.removed.iter().map(|path| out::path(path)).collect::<Vec<_>>(),
+            "trashed": cleaned.trashed.iter().map(|restore| json!({
+                "item": out::path(&restore.item),
+                "from": out::path(&restore.to),
+            })).collect::<Vec<_>>(),
+            "failures": cleaned.failures.iter().map(|(path, error)| json!({
+                "source": out::path(path),
+                "error": error.to_string(),
+            })).collect::<Vec<_>>(),
+        }));
+        return Ok(code);
+    }
+    for path in &cleaned.removed {
+        out.say(&format!("removed {}", path.display()));
+    }
+    for restore in &cleaned.trashed {
+        out.say(&format!(
+            "trashed {} to {}",
+            restore.to.display(),
+            restore.item.display()
+        ));
+    }
+    for (path, error) in &cleaned.failures {
+        out.warn(&format!("{}: {error}", path.display()));
+    }
+    Ok(code)
 }

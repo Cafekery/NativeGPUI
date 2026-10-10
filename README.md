@@ -140,4 +140,6 @@ target/release/founder undo undo.json
 
 `--json` prints progress and the result as JSON lines. Control-C cancels through the engine. Exit codes: 0 done, 1 partly failed, 2 refused, 3 cancelled, 64 usage. It is a developer tool and is not part of the app bundle.
 
+A copy or move that is killed leaves hidden `.finder-fs-` temps beside what it was writing. The next copy or move into that folder clears them, and `founder clean folder` clears every one below a folder: a copy still being written is deleted, and an item a Replace had swapped out goes to the Trash. Temps of a job that is still running are left alone.
+
 `scripts/safety.sh` drives `founder` against fixtures on sparse disk images (APFS, HFS+, ExFAT, FAT32) and proves the engine's safety properties: kill -9 mid-move, cancels, full, read-only and vanishing volumes, locks, permissions, links, odd names, conflicts, undo, concurrency and big trees. It cleans up everything it makes.
