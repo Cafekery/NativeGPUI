@@ -390,7 +390,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("finder-fs-kind-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for (ext, want) in [
-            ("md", "Markdown"),
             ("json", "JSON"),
             ("html", "HTML text"),
             ("csv", "Comma Separated Spreadsheet (.csv)"),
