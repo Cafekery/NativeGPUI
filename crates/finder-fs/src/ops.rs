@@ -508,9 +508,20 @@ fn taken(path: &Path) -> bool {
     identity(path).is_some()
 }
 
-/// A case-only rename on a case-insensitive volume finds the item itself at the destination.
+/// One entry under another case or composition; a hard link elsewhere is an entry of its own.
 fn same_item(one: &Path, other: &Path) -> bool {
-    identity(one).is_some_and(|one| identity(other) == Some(one))
+    identity(one).is_some_and(|id| identity(other) == Some(id))
+        && folder_identity(one).is_some_and(|dir| folder_identity(other) == Some(dir))
+        && crate::sort::same_name(&name_of(one), &name_of(other))
+}
+
+fn folder_identity(path: &Path) -> Option<(u64, u64)> {
+    let dir = dir_of(path);
+    match std::fs::metadata(dir) {
+        Ok(meta) => Some((meta.dev(), meta.ino())),
+        Err(err) if err.raw_os_error() == Some(libc::ENAMETOOLONG) => deep::identity(dir).ok(),
+        Err(_) => None,
+    }
 }
 
 fn split_name(name: &str) -> (&str, Option<&str>) {
@@ -520,18 +531,25 @@ fn split_name(name: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn with_ext(stem: &str, ext: Option<&str>) -> String {
+/// Shortens the stem, never the tag or the extension, so the name stays within `NAME_MAX`.
+fn fitted(stem: &str, tag: &str, ext: Option<&str>) -> String {
+    let room = NAME_MAX.saturating_sub(tag.len() + ext.map_or(0, |ext| ext.len() + 1));
+    let mut end = stem.len().min(room);
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    let stem = &stem[..end];
     match ext {
-        Some(ext) => format!("{stem}.{ext}"),
-        None => stem.to_string(),
+        Some(ext) => format!("{stem}{tag}.{ext}"),
+        None => format!("{stem}{tag}"),
     }
 }
 
-fn first_free(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
+fn first_free(dir: &Path, stem: &str, tag: &str, ext: Option<&str>) -> PathBuf {
     (1..)
         .map(|n| match n {
-            1 => dir.join(with_ext(stem, ext)),
-            n => dir.join(with_ext(&format!("{stem} {n}"), ext)),
+            1 => dir.join(fitted(stem, tag, ext)),
+            n => dir.join(fitted(stem, &format!("{tag} {n}"), ext)),
         })
         .find(|path| !taken(path))
         .expect("an endless range")
@@ -544,17 +562,17 @@ fn dir_of(path: &Path) -> &Path {
 fn free_path(path: &Path) -> PathBuf {
     let name = name_of(path);
     let (stem, ext) = split_name(&name);
-    first_free(dir_of(path), stem, ext)
+    first_free(dir_of(path), stem, "", ext)
 }
 
 fn duplicate_path(path: &Path) -> PathBuf {
     let name = name_of(path);
     let (stem, ext) = split_name(&name);
-    first_free(dir_of(path), &format!("{stem} copy"), ext)
+    first_free(dir_of(path), stem, " copy", ext)
 }
 
 fn alias_path(path: &Path) -> PathBuf {
-    first_free(dir_of(path), &format!("{} alias", name_of(path)), None)
+    first_free(dir_of(path), &name_of(path), " alias", None)
 }
 
 fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
@@ -563,7 +581,7 @@ fn archive_path(items: &[PathBuf]) -> Option<PathBuf> {
         [only] => name_of(only),
         _ => Cow::Borrowed("Archive"),
     };
-    Some(first_free(dir_of(&items[0]), &stem, Some("zip")))
+    Some(first_free(dir_of(&items[0]), &stem, "", Some("zip")))
 }
 
 fn staging_path(dest: &Path) -> PathBuf {
@@ -915,16 +933,21 @@ fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
         Some(staging) => {
             std::fs::create_dir(staging)?;
             let fm = NSFileManager::defaultManager();
-            for item in &items {
+            let staged = items.iter().try_for_each(|item| {
                 let name = item.file_name().unwrap_or_default();
-                transfer(&fm, item, &staging.join(name), false)?;
+                transfer(&fm, item, &staging.join(name), false)
+            });
+            if let Err(error) = staged {
+                let _ = delete_one(&fm, staging);
+                return Err(error);
             }
             staging
         }
     };
     let out = ditto.arg(source).arg(&dest).output();
     if let Some(staging) = &staging {
-        let _ = std::fs::remove_dir_all(staging);
+        // A locked item's staged copy is locked too.
+        let _ = delete_one(&NSFileManager::defaultManager(), staging);
     }
     let out = out?;
     if !out.status.success() {
@@ -2404,5 +2427,102 @@ mod tests {
         let kept = fs::read_to_string(dir.join("Folder 2").join("same.txt")).unwrap();
         assert_eq!(kept, "back");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn litter_in(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".finder-fs-"))
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_compress_of_a_selection_leaves_no_staging_folder() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("compress-staging");
+        let (ok, secret) = (dir.join("ok.txt"), dir.join("secret.txt"));
+        touch(&ok, "ok");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(
+            Op::Compress(vec![ok.clone(), secret.clone()]),
+            Conflict::KeepBoth,
+        );
+        let left = litter_in(&dir);
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        lock(&ok);
+        let locked = perform(Op::Compress(vec![ok.clone(), secret]), Conflict::KeepBoth);
+        let left_locked = litter_in(&dir);
+        unlock(&ok, false).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(done.is_err(), "an unreadable item fails the archive");
+        assert_eq!(left, Vec::<String>::new(), "the staging folder goes");
+        assert!(locked.is_ok(), "{locked:?}");
+        assert_eq!(
+            left_locked,
+            Vec::<String>::new(),
+            "a locked item's staged copy goes too"
+        );
+    }
+
+    #[test]
+    fn names_made_from_a_name_at_the_limit_still_fit() {
+        let dir = temp_dir("long-names");
+        let long = dir.join(format!("{}.txt", "x".repeat(NAME_MAX - 4)));
+        touch(&long, "long");
+        let wide = dir.join(format!("{}.txt", "\u{e9}".repeat(125)));
+        touch(&wide, "wide");
+
+        let both = free_path(&long);
+        let copy = perform(Op::Duplicate(vec![long.clone()]), Conflict::KeepBoth);
+        let alias = perform(Op::MakeAlias(vec![long.clone()]), Conflict::KeepBoth);
+        let wide_both = free_path(&wide);
+        let _ = fs::remove_dir_all(&dir);
+
+        let name = |path: &Path| path.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name(&both).ends_with(" 2.txt") && name(&both).len() <= NAME_MAX);
+        let copy = copy.expect("a duplicate of a 255-byte name lands");
+        assert!(
+            name(&copy.results[0]).ends_with(" copy.txt"),
+            "{:?}",
+            copy.results
+        );
+        assert!(name(&copy.results[0]).len() <= NAME_MAX);
+        let alias = alias.expect("an alias of a 255-byte name lands");
+        assert!(name(&alias.results[0]).ends_with(" alias"));
+        assert!(name(&wide_both).ends_with(" 2.txt") && name(&wide_both).len() <= NAME_MAX);
+    }
+
+    #[test]
+    fn a_move_onto_its_own_hard_link_elsewhere_still_moves() {
+        let dir = temp_dir("hard-link-move");
+        let (one, two) = (dir.join("one"), dir.join("two"));
+        fs::create_dir_all(&one).unwrap();
+        fs::create_dir_all(&two).unwrap();
+        touch(&one.join("a.txt"), "linked");
+        fs::hard_link(one.join("a.txt"), two.join("a.txt")).unwrap();
+
+        let done = perform(
+            Op::Move {
+                items: vec![one.join("a.txt")],
+                into: two.clone(),
+            },
+            Conflict::KeepBoth,
+        )
+        .unwrap();
+        let left = one.join("a.txt").exists();
+        let landed = fs::read_to_string(two.join("a 2.txt"));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(!left, "the moved link left its folder");
+        assert_eq!(done.results, vec![two.join("a 2.txt")]);
+        assert_eq!(landed.unwrap(), "linked");
     }
 }

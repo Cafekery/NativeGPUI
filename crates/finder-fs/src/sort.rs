@@ -25,6 +25,9 @@ const PREFIX_OPTIONS: CFStringCompareFlags = CFStringCompareFlags::CompareCaseIn
     .union(CFStringCompareFlags::CompareDiacriticInsensitive)
     .union(CFStringCompareFlags::CompareAnchored);
 
+const ENTRY_OPTIONS: CFStringCompareFlags =
+    CFStringCompareFlags::CompareCaseInsensitive.union(CFStringCompareFlags::CompareNonliteral);
+
 // SAFETY: the returned CFString borrows `s`'s bytes and never escapes the caller's stack frame.
 unsafe fn borrow_cf_str(s: &str) -> CFRetained<CFString> {
     CFString::with_bytes_no_copy(
@@ -56,6 +59,15 @@ pub fn starts_with(name: &str, prefix: &str) -> bool {
     let range = CFRange::new(0, name.length());
     let mut found = CFRange::new(0, 0);
     unsafe { name.find_with_options(Some(&prefix), range, PREFIX_OPTIONS, &mut found) }
+}
+
+/// Two spellings a case-insensitive volume finds one entry under.
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
+    let (a, b) = unsafe { (borrow_cf_str(a), borrow_cf_str(b)) };
+    let range = CFRange::new(0, a.length());
+    let order: Ordering =
+        unsafe { a.compare_with_options_and_locale(Some(&b), range, ENTRY_OPTIONS, None) }.into();
+    order == Ordering::Equal
 }
 
 pub fn fold(s: &str) -> String {
