@@ -197,6 +197,8 @@ pub struct Undoable {
     pub label: String,
     pub undo: Op,
     pub redo: Op,
+    /// What a name already taken meant when the op first ran; a redo means it again.
+    pub conflict: Conflict,
     serial: u64,
 }
 
@@ -213,13 +215,14 @@ impl Journal {
     }
 
     /// Names the entry, for a retry of the same job to fold into.
-    pub fn record(&mut self, done: &Done, original: &Op) -> Option<u64> {
+    pub fn record(&mut self, done: &Done, original: &Op, conflict: Conflict) -> Option<u64> {
         let undo = done.undo.clone()?;
         self.recorded += 1;
         self.undo_stack.push(Undoable {
             label: label_for(original),
             undo,
             redo: original.clone(),
+            conflict,
             serial: self.recorded,
         });
         self.redo_stack.clear();
@@ -296,7 +299,8 @@ impl Journal {
     }
 }
 
-fn label_for(op: &Op) -> String {
+/// The name an undo menu item gives `op`, "Copy of “a”" or "Move of 3 Items".
+pub fn label_for(op: &Op) -> String {
     match op {
         Op::Move { items, .. } => describe("Move", items.iter()),
         Op::Copy { items, .. } | Op::CopyExactly { items, .. } => describe("Copy", items.iter()),
@@ -581,7 +585,11 @@ mod tests {
             results: vec![PathBuf::from("/Trash/x.pdf")],
             undo: Some(back_from("/Trash/x.pdf")),
         };
-        journal.record(&first, &Op::Trash(vec![PathBuf::from("/A/x.pdf")]));
+        journal.record(
+            &first,
+            &Op::Trash(vec![PathBuf::from("/A/x.pdf")]),
+            Conflict::KeepBoth,
+        );
         journal.pop_undo().unwrap();
         journal.pop_redo().unwrap();
         let again = Done {
@@ -636,7 +644,7 @@ mod tests {
         let first = run(original.clone(), Conflict::KeepBoth);
         assert_eq!(first.failures.len(), 2, "{:?}", first.failures);
         let entry = journal
-            .record(&first.done, &original)
+            .record(&first.done, &original, Conflict::KeepBoth)
             .expect("what moved can be undone");
         lock(0o644);
         let retried = run(first.left.expect("the locked files wait"), Conflict::Merge);
@@ -689,7 +697,7 @@ mod tests {
         };
         let done = ops::perform(op.clone(), Conflict::Replace).unwrap();
         let mut journal = Journal::new();
-        journal.record(&done, &op);
+        journal.record(&done, &op, Conflict::KeepBoth);
         let undoable = journal.pop_undo().unwrap();
         let back = ops::perform(undoable.undo, Conflict::Replace).unwrap();
         assert_eq!(back.results, vec![file.clone()]);
@@ -728,7 +736,7 @@ mod tests {
             results: Vec::new(),
             undo: Some(Op::PutBack(Vec::new())),
         };
-        journal.record(&done, &original);
+        journal.record(&done, &original, Conflict::KeepBoth);
         journal.pop_undo();
         journal.undo_left(journal.redo_len() - 1, Op::PutBack(Vec::new()));
         assert!(
@@ -739,5 +747,22 @@ mod tests {
             journal.redo_label().is_none(),
             "a half-undone entry is not redone"
         );
+    }
+
+    #[test]
+    fn a_redo_means_what_a_taken_name_meant_the_first_time() {
+        let mut journal = Journal::new();
+        let copy = Op::Copy {
+            items: vec![PathBuf::from("/tmp/finder-fs-journal-a")],
+            into: PathBuf::from("/tmp/finder-fs-journal-b"),
+        };
+        let done = Done {
+            results: Vec::new(),
+            undo: Some(Op::Trash(Vec::new())),
+        };
+        journal.record(&done, &copy, Conflict::Replace);
+        journal.pop_undo();
+        let redo = journal.pop_redo().expect("the undone copy can be redone");
+        assert_eq!(redo.conflict, Conflict::Replace);
     }
 }

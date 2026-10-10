@@ -52,6 +52,7 @@ pub(crate) enum Record {
 pub(crate) struct JobRow {
     id: JobId,
     op: Op,
+    conflict: Conflict,
     after: After,
     record: Record,
     sound: Option<Sound>,
@@ -316,6 +317,7 @@ impl FinderDemo {
         self.jobs.push(JobRow {
             id,
             op,
+            conflict,
             after,
             record,
             sound,
@@ -350,10 +352,10 @@ impl FinderDemo {
 
     fn note(&mut self, row: &JobRow, done: &Done) -> Option<u64> {
         match row.record {
-            Record::New => self.journal.record(done, &row.op),
+            Record::New => self.journal.record(done, &row.op, row.conflict),
             Record::Redo(at) => self.journal.redone(at, done),
             Record::Retry(entry) if self.journal.retried(entry, done) => Some(entry),
-            Record::Retry(_) => self.journal.record(done, &row.op),
+            Record::Retry(_) => self.journal.record(done, &row.op, row.conflict),
             Record::Undo(_) => None,
         }
     }

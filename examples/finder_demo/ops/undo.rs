@@ -34,7 +34,7 @@ impl FinderDemo {
         let sound = Sound::of(&undoable.redo, false);
         self.submit(
             undoable.redo,
-            Conflict::KeepBoth,
+            undoable.conflict,
             After::Select,
             Record::Redo(at),
             sound,
