@@ -936,6 +936,7 @@ fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
             let staged = items.iter().try_for_each(|item| {
                 let name = item.file_name().unwrap_or_default();
                 transfer(&fm, item, &staging.join(name), false)
+                    .map_err(|error| not_staged(item, staging, error))
             });
             if let Err(error) = staged {
                 let _ = delete_one(&fm, staging);
@@ -952,11 +953,38 @@ fn compress(items: Vec<PathBuf>) -> io::Result<Done> {
     let out = out?;
     if !out.status.success() {
         let _ = std::fs::remove_file(&dest);
-        return Err(io::Error::other(
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ));
+        let mut message = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if let Some(staging) = &staging {
+            message = message.replace(
+                &*staging.to_string_lossy(),
+                &dir_of(&dest).to_string_lossy(),
+            );
+        }
+        return Err(io::Error::other(message));
     }
     Ok(created(vec![dest]))
+}
+
+/// `NSFileManager`'s message names the folder copied into, here the hidden staging one.
+fn not_staged(item: &Path, staging: &Path, error: io::Error) -> io::Error {
+    let why = match error.kind() {
+        io::ErrorKind::PermissionDenied => "you don't have permission",
+        io::ErrorKind::NotFound => "it can't be found",
+        kind => {
+            let message = error.to_string();
+            return io::Error::new(
+                kind,
+                message.replace(&*name_of(staging), &name_of(dir_of(staging))),
+            );
+        }
+    };
+    io::Error::new(
+        error.kind(),
+        format!(
+            "The item \u{201c}{}\u{201d} can't be compressed because {why}.",
+            name_of(item)
+        ),
+    )
 }
 
 fn make_alias(items: Vec<PathBuf>) -> io::Result<Done> {
@@ -2470,6 +2498,29 @@ mod tests {
             Vec::<String>::new(),
             "a locked item's staged copy goes too"
         );
+    }
+
+    #[test]
+    fn a_compress_that_cannot_stage_an_item_names_the_item() {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: root reads a file whatever its mode says");
+            return;
+        }
+        let dir = temp_dir("compress-names");
+        let (ok, secret) = (dir.join("ok.txt"), dir.join("secret.txt"));
+        touch(&ok, "ok");
+        touch(&secret, "secret");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let done = perform(Op::Compress(vec![ok, secret.clone()]), Conflict::KeepBoth);
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        let message = done
+            .expect_err("an unreadable item fails the archive")
+            .to_string();
+        assert!(message.contains("\u{201c}secret.txt\u{201d}"), "{message}");
+        assert!(!message.contains(".finder-fs-"), "{message}");
     }
 
     #[test]
