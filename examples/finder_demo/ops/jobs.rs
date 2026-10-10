@@ -753,12 +753,12 @@ mod tests {
     fn a_full_volume_names_what_is_left_rather_than_the_first_item() {
         use finder_fs::ops::transfer::{OnError, Request};
         let items = vec![PathBuf::from("/a/big4.bin"), PathBuf::from("/a/big.bin")];
-        let into = PathBuf::from("/Volumes/Storage");
+        let into = PathBuf::from("/Volumes/Archive");
         let op = Op::Copy {
             items: items.clone(),
             into: into.clone(),
         };
-        let why = "There isn't enough space on \u{201c}Storage\u{201d} to copy these items.";
+        let why = "There isn't enough space on \u{201c}Archive\u{201d} to copy these items.";
         let left = items
             .iter()
             .map(|item| (item.clone(), into.join(name_of(item))));
@@ -804,15 +804,15 @@ mod tests {
     #[test]
     fn a_count_names_what_is_left() {
         let items = vec![PathBuf::from("/a/one"), PathBuf::from("/a/two")];
-        let into = PathBuf::from("/Volumes/Storage");
+        let into = PathBuf::from("/Volumes/Archive");
         let op = Op::Copy { items, into };
         assert_eq!(
             describe(&op, None),
-            "Copying 2 items to \u{201c}Storage\u{201d}"
+            "Copying 2 items to \u{201c}Archive\u{201d}"
         );
         assert_eq!(
             describe(&op, Some(3_035)),
-            "Copying 3,035 items to \u{201c}Storage\u{201d}"
+            "Copying 3,035 items to \u{201c}Archive\u{201d}"
         );
         let one = Op::Move {
             items: vec![PathBuf::from("/a/big.bin")],

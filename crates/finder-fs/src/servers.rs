@@ -488,9 +488,9 @@ mod tests {
 
     #[test]
     fn a_bonjour_mount_source_is_asked_by_its_decoded_name() {
-        let name = named("NG%20Jace%E2%80%99s%20Mini._smb._tcp.local");
-        assert_eq!(name, "NG Jace’s Mini._smb._tcp.local");
-        assert_eq!(instance(&name), Some("NG Jace’s Mini"));
+        let name = named("NG%20Alex%E2%80%99s%20Mini._smb._tcp.local");
+        assert_eq!(name, "NG Alex’s Mini._smb._tcp.local");
+        assert_eq!(instance(&name), Some("NG Alex’s Mini"));
         assert_eq!(instance(&named("ng-mini.local")), None);
         assert_eq!(named("100%"), "100%");
     }
@@ -499,7 +499,7 @@ mod tests {
     fn a_computer_opens_its_files_before_its_screen_and_mounts_under_its_own_name() {
         let url = |protocols: &[&str]| {
             let protocols = protocols.iter().map(|it| it.to_string()).collect();
-            let name = "Jace’s MacBook Air".into();
+            let name = "Alex’s MacBook Air".into();
             Computer {
                 name,
                 model: None,
@@ -508,10 +508,10 @@ mod tests {
             .url()
         };
         let smb = url(&["vnc", "afp", "smb"]).unwrap();
-        assert_eq!(smb, "smb://Jace%E2%80%99s%20MacBook%20Air._smb._tcp.local");
+        assert_eq!(smb, "smb://Alex%E2%80%99s%20MacBook%20Air._smb._tcp.local");
         assert_eq!(
             title(smb.strip_prefix("smb://").unwrap()),
-            "Jace’s MacBook Air"
+            "Alex’s MacBook Air"
         );
         assert!(url(&["vnc", "afp"]).unwrap().starts_with("afp://"));
         assert!(url(&["afp"]).unwrap().ends_with("._afpovertcp._tcp.local"));

@@ -543,25 +543,25 @@ mod tests {
             item(Some(ICloudDrive), None, Some("/"), false),
             item(
                 Some(FileProvider),
-                Some("Noah Bucket"),
-                Some("/cloud/S3Mount-NoahBucket"),
+                Some("Team Bucket"),
+                Some("/cloud/S3Mount-TeamBucket"),
                 true,
             ),
             item(Some(RemoteDisc), None, Some("/"), true),
             item(Some(ICloudDrive), Some("iCloud"), Some("/"), true),
-            item(Some(Home), None, Some("/Users/jace"), true),
+            item(Some(Home), None, Some("/Users/me"), true),
             item(Some(AirDrop), None, Some("/"), true),
             item(Some(Trash), Some("Trash"), Some("/"), true),
             item(None, Some("Gone"), Some("/Volumes/Gone"), false),
         ];
-        let bonjour = "NG%20Jace%E2%80%99s%20Mini._smb._tcp.local";
+        let bonjour = "NG%20Alex%E2%80%99s%20Mini._smb._tcp.local";
         let mounted = [
             volume("Macintosh HD", "/", false, None),
             volume("share", "/Volumes/share", false, Some(bonjour)),
-            volume("Storage", "/Volumes/Storage", false, Some("100.109.9.62")),
+            volume("Archive", "/Volumes/Archive", false, Some("192.0.2.62")),
             volume("Queue", "/Volumes/Queue", true, None),
             volume("Photos", "/Volumes/Photos", false, Some("nas.local")),
-            volume("Media", "/Volumes/Media", false, Some("100.109.9.62")),
+            volume("Media", "/Volumes/Media", false, Some("192.0.2.62")),
             volume("Backup", "/Volumes/Backup", false, Some("10.0.0.9")),
             volume("Gone", "/Volumes/Gone", true, None),
         ];
@@ -573,15 +573,15 @@ mod tests {
             titles,
             [
                 "iCloud Drive",
-                "Noah Bucket",
+                "Team Bucket",
                 home,
                 "Macintosh HD",
                 "Queue",
                 "AirDrop",
                 "10.0.0.9",
-                "100.109.9.62",
+                "192.0.2.62",
                 "nas.local",
-                "NG Jace’s Mini",
+                "NG Alex’s Mini",
                 "Network",
                 "Trash"
             ]
@@ -596,14 +596,14 @@ mod tests {
             [
                 "Queue",
                 "10.0.0.9",
-                "100.109.9.62",
+                "192.0.2.62",
                 "nas.local",
-                "NG Jace’s Mini"
+                "NG Alex’s Mini"
             ]
         );
         assert_eq!(
             rows[7].path.as_deref(),
-            Some(PathBuf::from("/Volumes/Storage").as_path())
+            Some(PathBuf::from("/Volumes/Archive").as_path())
         );
         assert_eq!(rows[9].server.as_deref(), Some(bonjour));
 
@@ -614,7 +614,7 @@ mod tests {
         assert!(
             !titles
                 .iter()
-                .any(|title| title == "Macintosh HD" || title == "100.109.9.62")
+                .any(|title| title == "Macintosh HD" || title == "192.0.2.62")
         );
     }
 }

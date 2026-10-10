@@ -287,7 +287,7 @@ Read off Finder 27 on the test Mac beside the demo, same window, folder, view an
 - [x] ⌘I with nothing chosen shows Info for the folder shown, and a selection opens one Info window
   per item however many there are, as in Finder. Get Summary Info (⌃⌘I) opens an item's own Info
   window for one item and one “Multiple Item Info” window, headed “N items”, for several.
-- [x] ⌘I with nothing chosen at Computer, Network and AirDrop opens “Jace’s MacBook Pro Info”,
+- [x] ⌘I with nothing chosen at Computer, Network and AirDrop opens “Alex’s MacBook Pro Info”,
   “Network Info” and “AirDrop Info”, as Finder's: the computer's processor and memory, the others'
   kind (Neighborhood, AirDrop). In Recents and Shared Finder turns Get Info and Get Summary Info off
   until something is chosen, and so does the demo.
@@ -399,7 +399,7 @@ chevron (Δ 0.0) match; what is left:
   with a selected row under the bar the fill reads 40,42,43 in dark and 252,253,255 in light (255).
   The demo's list stops at the bar, so its bar stays 41,41,41 / 255.
 - [ ] A crumb name cut to the shared width fades out over its last ~9 pt in Finder (140 → 32 across
-  x 564–573 for "nativegpui-wave" capped at 66 pt); the demo's label clips it at the same x, so
+  x 564–573 for a long folder name capped at 66 pt); the demo's label clips it at the same x, so
   three capped names end 0.5 pt later.
 - [x] Every crumb icon sits in the 14 pt square a small NSPathControl draws its component images in
   (Finder's crumb widths are that control's, to the point), so each kind's ink is Finder's: the
@@ -477,14 +477,14 @@ folder), Display P3 at 8 bits, mean R G B of strips with no glyphs in either app
 - A row shows a dot for each of its last three coloured tags, in Finder's colour for a tag its
   list holds, else the colour the file stored; an uncoloured tag leaves no mark, as in Finder.
 - A mounted server is one row named by its host, as in Finder, with its model's symbol, `display`
-  while sharingd has none. For 100.109.9.62, which sharingd never listed, Finder drew
+  while sharingd has none. For a server reached by IP, which sharingd never listed, Finder drew
   `airport.extreme` (its model family's symbol): Finder learns a model the demo does not. The row opens
   the first share mounted from that host, where Finder shows the host's shares, and its eject unmounts
   that share only.
 - A cloud storage row (a File Provider domain) shows the symbol its extension names
   (`CFBundleSymbolName`, `leaf.fill` for S3Mount), as Finder does, or `externaldrive.badge.icloud`
-  when it names none the system catalogs hold. The row is named by its folder (S3Mount-NoahBucket)
-  where Finder's is named by the domain (Noah Bucket), which no public API gives.
+  when it names none the system catalogs hold. The row is named by its folder (S3Mount-TeamBucket)
+  where Finder's is named by the domain (Team Bucket), which no public API gives.
 - Finder's Computer and Remote Disc rows are not shown; Network is, unless Settings turns off
   Bonjour computers.
 - Remove from Sidebar and reordering of a Favorites or Locations row last across launches in the

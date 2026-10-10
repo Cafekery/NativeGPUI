@@ -237,7 +237,7 @@ mod tests {
     fn the_owner_role_is_me_whatever_name_the_item_carries() {
         let owner = Some("NSURLUbiquitousSharedItemRoleOwner");
         let participant = Some("NSURLUbiquitousSharedItemRoleParticipant");
-        assert_eq!(sharer_of(owner, Some("Jace".into())), Some(Sharer::Me));
+        assert_eq!(sharer_of(owner, Some("Alex".into())), Some(Sharer::Me));
         assert_eq!(sharer_of(owner, None), Some(Sharer::Me));
         assert_eq!(
             sharer_of(participant, Some("William Jones".into())),

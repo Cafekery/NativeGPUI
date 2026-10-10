@@ -305,18 +305,18 @@ mod tests {
     fn a_network_share_is_named_by_its_mount_point_listed_by_its_host_and_never_asked() {
         // SAFETY: statfs is plain data; all-zero is a valid, if empty, record.
         let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
-        for (at, byte) in b"/Volumes/Storage".iter().enumerate() {
+        for (at, byte) in b"/Volumes/Archive".iter().enumerate() {
             stats.f_mntonname[at] = *byte as libc::c_char;
         }
-        for (at, byte) in b"//jace@100.109.9.62/Storage".iter().enumerate() {
+        for (at, byte) in b"//me@192.0.2.62/Archive".iter().enumerate() {
             stats.f_mntfromname[at] = *byte as libc::c_char;
         }
         stats.f_bsize = 4096;
         stats.f_blocks = 10;
         stats.f_bavail = 4;
         let volume = volume_from(&stats);
-        assert_eq!(volume.name, "Storage");
-        assert_eq!(volume.server.as_deref(), Some("100.109.9.62"));
+        assert_eq!(volume.name, "Archive");
+        assert_eq!(volume.server.as_deref(), Some("192.0.2.62"));
         assert!(volume.network && volume.ejectable);
         assert_eq!((volume.capacity, volume.available), (40960, 16384));
     }
@@ -324,12 +324,12 @@ mod tests {
     #[test]
     fn a_mount_source_names_its_host_without_user_share_or_port() {
         for source in [
-            "//100.109.9.62/Storage",
-            "//jace@100.109.9.62/Storage",
-            "smb://jace@100.109.9.62:445/Storage",
-            "100.109.9.62:/export",
+            "//192.0.2.62/Archive",
+            "//me@192.0.2.62/Archive",
+            "smb://me@192.0.2.62:445/Archive",
+            "192.0.2.62:/export",
         ] {
-            assert_eq!(host_of(source).as_deref(), Some("100.109.9.62"), "{source}");
+            assert_eq!(host_of(source).as_deref(), Some("192.0.2.62"), "{source}");
         }
         assert_eq!(host_of("//"), None);
     }
