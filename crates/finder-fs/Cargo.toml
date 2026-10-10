@@ -17,7 +17,7 @@ parking_lot = "0.12"
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFArray", "CFLocale", "CFNumber", "CFRunLoop", "CFString", "CFURL"] }
-objc2-core-services = { version = "0.3.2", default-features = false, features = ["FSEvents", "LSSharedFileList", "SharedFileList"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFArray", "CFLocale", "CFNumber", "CFPreferences", "CFRunLoop", "CFString", "CFURL"] }
+objc2-core-services = { version = "0.3.2", default-features = false, features = ["FSEvents", "LaunchServices", "LSInfo", "LSSharedFileList", "SharedFileList"] }
 objc2-foundation = "0.3.2"
 objc2-uniform-type-identifiers = "0.3.2"

@@ -1,110 +1,128 @@
-# native-gpui
+# Found'er
 
-Real AppKit controls, materials and macOS 26 liquid glass hosted inside a **GPUI** window.
+Found'er is a recreation of the macOS Finder. It is built on native-gpui, which puts real AppKit controls inside a GPUI window, so its sidebar, toolbar, menus and materials are the ones macOS draws.
 
-GPUI owns layout; macOS owns the pixels of anything whose design Apple changes between releases. A hosted `NSSwitch` becomes the macOS 27 toggle without this crate being touched.
+Found'er is free and open source under the MIT license.
 
-No Swift, no build script, no C shim: GPUI's window vends its `NSView` through `raw-window-handle`, and `objc2-app-kit` binds all of AppKit including `NSGlassEffectView`.
+## Requirements
 
-> Working in here? Read [AGENTS.md](AGENTS.md) first, then [docs/how-it-works.md](docs/how-it-works.md).
+* macOS 26 or later.
+* A Mac with Apple silicon. The app is built for arm64 only.
 
-## Docs
+## Install
 
-| doc | for |
-|---|---|
-| [docs/how-it-works.md](docs/how-it-works.md) | the view tree, one frame start to finish, identity, events, focus, layers, and the gpui pin |
-| [docs/adding-a-component.md](docs/adding-a-component.md) | hosting a new AppKit control, walked through with the switch |
-| [docs/testing-and-tools.md](docs/testing-and-tools.md) | the gate, the scripts, capture rules, environment knobs, frame-rate measurement |
-| [AGENTS.md](AGENTS.md) | the invariants and house rules |
+### Build from source
 
-## How it fits together
-
-`native_root` wraps your root element once per window, creates that window's `NativeHost`, and commits every native view's geometry in one pass after your tree paints. Components (`native_switch`, `glass`, `material`, …) are ordinary GPUI elements that reserve layout space and place a pooled AppKit view into it, keyed by GPUI element identity.
-
-`Layer::Above` is a subview of GPUI's Metal view and takes input; `Layer::Below` is a sibling beneath it, so GPUI composites over it and nothing there can receive input.
-
-GPUI is a git dependency on its upstream repository at one pinned revision, and `[patch]` in `Cargo.toml` replaces the macOS platform crate `gpui_macos` with a fork built from that same revision. An app builds its `Application` through `gpui_platform::application()`, with `gpui_platform`'s `font-kit` feature on.
-
-```rust
-use gpui::{App, Context, Render, Window, div, prelude::*};
-use native_gpui::{install_menus, native_root, native_switch, window_options};
-
-struct Root {
-    on: bool,
-}
-
-impl Render for Root {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        native_root(div().size_full().child(
-            native_switch("wifi", self.on).on_change(cx.listener(|this, on: &bool, _, cx| {
-                this.on = *on;
-                cx.notify();
-            })),
-        ))
-    }
-}
-
-fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
-        install_menus(cx);
-        cx.open_window(window_options(), |_, cx| cx.new(|_| Root { on: false }))
-            .unwrap();
-        cx.activate(true);
-    });
-}
-```
-
-The value you pass a component must be the state its `on_change` writes.
-
-## `src/` map
-
-| path | owns |
-|---|---|
-| `lib.rs` | the crate's rules in doc form and the public surface |
-| `bridge/host.rs` | the per-window view pool (`NativeHost`), `place`/`commit`, event delivery, the `hosted_element!` boilerplate |
-| `bridge/root.rs` | `native_root`, `native_opacity` (fades a subtree with the AppKit views it hosts) and `window_options` |
-| `bridge/appkit.rs` | reaching GPUI's view, the flipped container class, the key path adoption |
-| `bridge/menus.rs` | the standard menu bar: `install_menus`, `add_menu`, `extend_menu` |
-| `chrome/window_chrome.rs` | corners, toolbar, flags, cursor, and the `native_rect` → `native_window_rect` → `native_screen_rect` recipe |
-| `chrome/sidebar.rs` | a system-drawn `NSSplitViewItem.sidebar`: install once, update per frame |
-| `controls/` | hosted controls: `button`, `menu`, `progress`, `slider`, `small`, `switch`, `text_field`, `label`, `rule` |
-| `materials/` | vibrancy and liquid glass; `glass_private`, `custom_glass`, `private_api` are `private-api`-only |
-| `surfaces.rs` | popovers, sheets and the share picker, each in its own `NSWindow` |
-| `system/tokens.rs` | system colours, fonts, file icons, `WINDOW_BACKGROUND` |
-| `system/color.rs` | sRGB conversion |
-
-## Examples
-
-* `examples/storybook/` — the component browser: native sidebar, GPUI content, one page per module in `pages/`. `PAGES` in `main.rs` is the only place a page is registered.
-* `examples/finder_demo/` — a Finder recreation and the proving ground for the chrome: real sidebar and toolbar, a list that scrolls sideways under the sidebar, and a preview pane that is the split view's own inspector (AppKit's glass, with a child window for the card, see `preview/`).
-
-Single-component demos: `button`, `glass`, `keys`, `material`, `menu`, `menu_bar`, `progress`, `sidebar`, `slider`, `small`, `smoke`, `surfaces`, `text_field`, `tokens`, `window_chrome`, `gallery`, plus `custom_glass` and `glass_variants` behind `private-api`. Probes and gates: `glass_hit`, `decoration_hit`, `z_order`, `tabular_figures`, `ngdispatch`, `menu_probe`, `sidebar_probe`.
-
-## `scripts/`
-
-| script | what it does |
-|---|---|
-| `check.sh` | the gate: both feature configs, formatting, unit tests, the probes, rustdoc under `-D warnings`, the public surface, zero warnings. Must print `== VERDICT: PASS` |
-| `bundle.sh <example> [features]` | assembles a signed `.app` in `dist/`; required before key-window work |
-| `keys.sh` | keyboard suite driven by real System Events keystrokes |
-| `perf.sh` | on-screen frame cadence of the Finder demo under a scroll train and a resize drag, read from the window server |
-| `menubar.sh` | reads the menu bar back out of a second process via Accessibility |
-| `surface.sh` | the public surface, four type-check arms |
-| `winlist.sh [pid]` | window-server census, six tab-separated fields |
-| `lockguard.sh` | exits 90 if the display is locked or asleep |
-| `uidiff.py <a.png> [b.png]` | structure out of window captures |
-
-## Build and run
+You need Rust (rustc 1.98 or later), Xcode for the app icon, and cargo-about for the third-party notices.
 
 ```sh
-cargo build --release --examples
-cargo build --release --examples --features private-api
-
-cargo run --release --example storybook --features private-api
-cargo run --release --example finder_demo
-
-./scripts/bundle.sh storybook && open -n dist/Storybook.app
-./scripts/check.sh
+git clone https://github.com/Cafekery/NativeGPUI.git
+cd NativeGPUI
+cargo install cargo-about --locked --features cli
+./scripts/bundle.sh finder_demo
 ```
 
-Requires macOS 26 or later and rustc 1.98 or later.
+This builds `dist/Found'er.app`. Drag it into your Applications folder, then open it from there.
+
+`bundle.sh` signs the app with your Developer ID or Apple Development certificate if you have one. If not, it creates a self-signed "NativeGPUI Dev" certificate in `~/Library/Keychains/nativegpui-dev.keychain-db` and signs with that, so the permissions you grant survive a rebuild.
+
+### A copy someone else built
+
+Found'er is not notarized by Apple, so macOS will not open a downloaded copy the first time.
+
+1. Move Found'er.app to your Applications folder before you open it. Opened straight from Downloads, macOS runs it from a hidden read-only location, and the default file browser item stays disabled.
+2. Open it. macOS says Apple could not verify it. Click Done.
+3. Open System Settings → Privacy & Security. Under Security, click Open Anyway next to the message about Found'er, and confirm.
+
+Only do this for a copy from someone you trust.
+
+## First launch
+
+Found'er has no permission screen of its own. macOS asks on its behalf when Found'er first touches something protected:
+
+* Opening your Desktop, Documents or Downloads folder.
+* Opening an external disk or a network share.
+* Opening iCloud Drive or another cloud folder.
+* Opening other apps' data folders while you browse a Library folder.
+* Drawing the icons of the apps in /Applications, which can raise an App Management prompt.
+
+Allow the ones you want Found'er to show. Found'er works without the rest.
+
+### The search index
+
+On launch Found'er indexes the names of the files on your startup disk, so searches and folder sizes come back at once. The index lives in `~/Library/Application Support/FinderDemo/fsearch` and takes several hundred MB: about 700–800 MB on a full disk. The first launch builds it in the background, and search answers once it's done. Later launches load it and catch up on what changed while Found'er was closed.
+
+The index skips the folders that would raise a privacy prompt: Desktop, Documents, Downloads, iCloud Drive and other cloud folders, other apps' containers, the Photos library, and other disks. Search results also leave out anything inside your Desktop, Documents, Downloads, Pictures, Music, Movies and Library folders.
+
+### Full Disk Access
+
+Full Disk Access is optional, and Found'er never asks for it. With it, macOS stops asking folder by folder, and folders macOS otherwise keeps from apps (such as `~/Library/Mail`) are indexed on the next launch, so folder sizes include them. It does not widen what search shows.
+
+To grant it, open System Settings → Privacy & Security → Full Disk Access, turn on Found'er (or click + and choose Found'er.app), then quit and reopen Found'er.
+
+## Default file browser
+
+Found'er menu → Use Found'er as Default File Browser sets the system's `NSFileViewer` default to Found'er's bundle id, `dev.cafekery.nativegpui.finder_demo`. Other apps' Show in Finder then opens Found'er. macOS keeps Finder as the app that opens folders; `NSFileViewer` is the only setting another app can take over.
+
+Turning it on also installs a small guard, `~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist`. macOS shows a "Background Items Added" notice and lists the guard as "sh", the shell it runs in, under System Settings → General → Login Items & Extensions; leave it allowed. The guard runs at login and once an hour, and within a few seconds of Found'er.app being deleted or moved to the Trash. If Found'er is gone, it puts back the file viewer you had before (or Finder, if that app is gone too) and removes itself. It never touches `NSFileViewer` if it names another app. If you move Found'er, it points the guard at the new place on its next launch.
+
+The item is disabled while Found'er runs from a hidden read-only location (opened from Downloads without being moved). Move it to Applications first.
+
+To undo it, uncheck the item. That restores the file viewer you had before and removes the guard.
+
+To undo it by hand, first check that the setting is Found'er's:
+
+```sh
+defaults read -g NSFileViewer
+```
+
+Only if that prints `dev.cafekery.nativegpui.finder_demo`, run:
+
+```sh
+defaults delete -g NSFileViewer
+launchctl bootout gui/$(id -u)/dev.cafekery.nativegpui.finder_demo.viewer-guard
+rm ~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist
+```
+
+## Uninstall
+
+1. If Found'er is your default file browser, uncheck Found'er menu → Use Found'er as Default File Browser.
+2. Quit Found'er from the Found'er menu. Closing its windows leaves it running.
+3. Move `/Applications/Found'er.app` to the Trash.
+4. Remove what it left behind:
+
+```sh
+rm -rf ~/Library/Application\ Support/FinderDemo
+defaults delete dev.cafekery.nativegpui.finder_demo
+tccutil reset All dev.cafekery.nativegpui.finder_demo
+```
+
+These are every file and setting Found'er keeps:
+
+| what | where |
+|---|---|
+| search index, file kinds, network servers it has seen, sidebar items | `~/Library/Application Support/FinderDemo` |
+| settings, view options, windows kept across quits | `~/Library/Preferences/dev.cafekery.nativegpui.finder_demo.plist` (remove it with `defaults delete`, not `rm`, so macOS doesn't write it back) |
+| the default file browser guard, if you turned that on | `~/Library/LaunchAgents/dev.cafekery.nativegpui.finder_demo.viewer-guard.plist` |
+| Full Disk Access and the folder permissions you granted | System Settings → Privacy & Security (`tccutil reset` clears them) |
+| saved searches, only the ones you saved | `~/Library/Saved Searches/*.savedSearch`. Finder reads these too; delete only the ones you don't want |
+
+Found'er turns off AppKit's saved window state and keeps nothing in `~/Library/Caches`. Its temporary files go to the per-user temporary folder, which macOS clears.
+
+If you built it from source, also remove the checkout (with its `target/` and `dist/` folders). If `bundle.sh` made its own signing certificate, delete that keychain with `security delete-keychain ~/Library/Keychains/nativegpui-dev.keychain-db`. Running it with `cargo run` instead of the app stores settings under `finder_demo`; remove them with `defaults delete finder_demo`.
+
+## Known limitations
+
+Found'er does not do everything Finder does yet. [docs/finder-gaps.md](docs/finder-gaps.md) lists the gaps.
+
+## Acknowledgements and license
+
+Help → Acknowledgements lists the open-source software Found'er is built with, and their licenses.
+
+Found'er and native-gpui are released under the MIT license; see [LICENSE](LICENSE). Its search engine, fsearch, is by Noah Dunnagan and is also under the MIT license; see [crates/fsearch/LICENSE](crates/fsearch/LICENSE).
+
+Found'er is not affiliated with or endorsed by Apple. Finder and macOS are trademarks of Apple Inc.
+
+## For developers
+
+The native-gpui crate, the examples and the scripts are described in [docs/native-gpui.md](docs/native-gpui.md). To build, test and send changes, read [CONTRIBUTING.md](CONTRIBUTING.md). To report a security problem, read [SECURITY.md](SECURITY.md).

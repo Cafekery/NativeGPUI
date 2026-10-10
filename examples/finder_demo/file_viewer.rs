@@ -4,16 +4,13 @@ use std::ptr::NonNull;
 
 use block2::StackBlock;
 use finder_fs::kind::is_package_name;
+use finder_fs::viewer;
 use gpui::{App, AsyncApp};
 use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplicationDidFinishLaunchingNotification, NSApplicationWillFinishLaunchingNotification,
-    NSRunningApplication,
-};
-use objc2_core_foundation::{
-    CFPreferencesCopyValue, CFPreferencesSetValue, CFPreferencesSynchronize, CFString,
-    kCFPreferencesAnyApplication, kCFPreferencesAnyHost, kCFPreferencesCurrentUser,
+    NSBeep, NSRunningApplication,
 };
 use objc2_foundation::{
     NSAppleEventDescriptor, NSAppleEventManager, NSArray, NSBundle, NSData, NSNotification,
@@ -24,7 +21,6 @@ use crate::data::intern_path;
 use crate::navigate::{browser_windows, folder_at_path, reveal, showing};
 use crate::{home, open_finder_window};
 
-const FILE_VIEWER: &str = "NSFileViewer";
 const CORE_EVENTS: u32 = u32::from_be_bytes(*b"aevt");
 const OPEN_DOCUMENTS: u32 = u32::from_be_bytes(*b"odoc");
 const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
@@ -267,51 +263,43 @@ fn show_folder(folder: &'static str, cx: &mut App) {
 }
 
 pub(crate) fn is_default() -> bool {
-    own_id().is_some_and(|id| file_viewer().as_ref() == Some(&id))
+    own_id().is_some_and(|id| viewer::current() == Some(id))
 }
 
 pub(crate) fn can_be_default() -> bool {
-    own_id().is_some()
+    own_id().is_some() && !viewer::is_translocated(&own_bundle())
 }
 
 /// LaunchServices refuses `public.folder` to any handler but Finder, so only `NSFileViewer` is ours to set.
-pub(crate) fn toggle_default() {
-    let id = own_id().filter(|_| !is_default());
-    set_file_viewer(id.as_deref());
+pub(crate) fn toggle_default(cx: &mut App) {
+    let Some(id) = own_id() else {
+        return;
+    };
+    let (bundle, turn_on) = (own_bundle(), !is_default());
+    let toggled = cx.background_executor().spawn(async move {
+        match turn_on {
+            true => viewer::on(&id, &bundle),
+            false => viewer::off(&id),
+        }
+    });
+    cx.spawn(async move |_| {
+        if toggled.await.is_err() {
+            NSBeep();
+        }
+    })
+    .detach();
+}
+
+pub(crate) fn keep_guard() {
+    if let Some(id) = own_id() {
+        _ = viewer::follow(&id, &own_bundle());
+    }
 }
 
 fn own_id() -> Option<String> {
     Some(NSBundle::mainBundle().bundleIdentifier()?.to_string())
 }
 
-fn file_viewer() -> Option<String> {
-    let key = CFString::from_static_str(FILE_VIEWER);
-    let value = unsafe {
-        CFPreferencesCopyValue(
-            &key,
-            kCFPreferencesAnyApplication,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesAnyHost,
-        )
-    }?;
-    Some(value.downcast::<CFString>().ok()?.to_string())
-}
-
-fn set_file_viewer(id: Option<&str>) {
-    let key = CFString::from_static_str(FILE_VIEWER);
-    let value = id.map(CFString::from_str);
-    unsafe {
-        CFPreferencesSetValue(
-            &key,
-            value.as_deref().map(|value| value.as_ref()),
-            kCFPreferencesAnyApplication,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesAnyHost,
-        );
-        CFPreferencesSynchronize(
-            kCFPreferencesAnyApplication,
-            kCFPreferencesCurrentUser,
-            kCFPreferencesAnyHost,
-        );
-    }
+fn own_bundle() -> PathBuf {
+    PathBuf::from(NSBundle::mainBundle().bundlePath().to_string())
 }

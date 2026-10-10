@@ -30,6 +30,15 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$product"
 
+if [ "$name" = finder_demo ]; then
+  if cargo about --version >/dev/null 2>&1; then
+    cargo about generate --fail -o "$app/Contents/Resources/THIRD_PARTY_NOTICES.html" about.hbs ||
+      exit 1
+  else
+    echo "warning: no third-party notices; install cargo-about with: cargo install cargo-about --locked --features cli" >&2
+  fi
+fi
+
 icon="assets/$title.icon"
 icon_keys=
 if [ -d "$icon" ]; then

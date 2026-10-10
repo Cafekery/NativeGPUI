@@ -19,6 +19,7 @@ pub mod servers;
 pub mod sidebar;
 pub mod sort;
 pub mod tags;
+pub mod viewer;
 pub mod volumes;
 pub mod watch;
 pub mod words;

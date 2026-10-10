@@ -14,9 +14,11 @@ use native_gpui::{
     replace_about_row, replace_edit_rows, set_menu, set_toolbar_search_active,
 };
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSAlert, NSHelpManager};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSAlert, NSHelpManager, NSWorkspace};
 use objc2_foundation::{
-    NSError, NSFileManager, NSFileManagerUnmountOptions, NSRunLoop, NSString, NSURL,
+    NSBundle, NSError, NSFileManager, NSFileManagerUnmountOptions, NSRunLoop, NSString, NSURL,
+    ns_string,
 };
 
 use super::actions::{open_first_window, open_windows};
@@ -142,6 +144,7 @@ actions!(
         ZoomOut,
         MacUserGuide,
         TipsForYourMac,
+        Acknowledgements,
     ]
 );
 
@@ -329,6 +332,9 @@ fn one_of(action: &dyn Action, rows: &[&dyn Action]) -> bool {
 fn enabled(action: &dyn Action) -> bool {
     if action.partial_eq(&ToggleDefaultBrowser) {
         return crate::file_viewer::can_be_default();
+    }
+    if action.partial_eq(&Acknowledgements) {
+        return notices().is_some();
     }
     let mirror = MIRROR.get();
     if mirror.location && one_of(action, &[&NewFolder, &Paste, &MoveHere, &PasteExactly]) {
@@ -528,7 +534,7 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &crate::ops::undo::RedoOp, cx| crate::icon_well::redo_in_key_window(cx));
     cx.on_action(|_: &ShowSettings, cx| crate::settings::open(cx));
     cx.on_action(|_: &ShowAbout, cx| crate::about::show(cx));
-    cx.on_action(|_: &ToggleDefaultBrowser, _| crate::file_viewer::toggle_default());
+    cx.on_action(|_: &ToggleDefaultBrowser, cx| crate::file_viewer::toggle_default(cx));
     cx.on_action(|_: &NewWindow, cx| {
         open_first_window(cx);
     });
@@ -542,6 +548,11 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &ShowPreviewOptions, cx| crate::preview::options::close(cx));
     cx.on_action(|_: &MacUserGuide, _| open_mac_help("mh43558"));
     cx.on_action(|_: &TipsForYourMac, cx| cx.open_url(TIPS));
+    cx.on_action(|_: &Acknowledgements, _| {
+        if let Some(url) = notices() {
+            NSWorkspace::sharedWorkspace().openURL(&url);
+        }
+    });
     cx.bind_keys([KeyBinding::new("cmd-shift-.", ToggleHidden, None)]);
     on_menu_state(checked);
     on_menu_enabled(enabled);
@@ -567,6 +578,8 @@ pub(crate) fn install(cx: &mut App) {
         [
             MenuCommand::new("Mac User Guide", MacUserGuide),
             MenuCommand::new("Tips for Your Mac", TipsForYourMac),
+            MenuCommand::separator(),
+            MenuCommand::new("Acknowledgements", Acknowledgements),
         ],
     );
     replace_edit_rows(super::edit::rows());
@@ -584,6 +597,13 @@ pub(crate) fn open_mac_help(anchor: &str) {
         &NSString::from_str(anchor),
         Some(&NSString::from_str("com.apple.machelp")),
     );
+}
+
+fn notices() -> Option<Retained<NSURL>> {
+    NSBundle::mainBundle().URLForResource_withExtension(
+        Some(ns_string!("THIRD_PARTY_NOTICES")),
+        Some(ns_string!("html")),
+    )
 }
 
 fn file_rows() -> Vec<MenuCommand> {

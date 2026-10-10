@@ -108,7 +108,7 @@ fn items() -> Vec<SidebarItem> {
         sidebar_group("locations", "Locations").children([
             sidebar_item("icloud", "iCloud Drive").symbol("icloud"),
             sidebar_item("network", "Network").symbol("globe"),
-            sidebar_item("volume", "Bakery")
+            sidebar_item("volume", "Archive")
                 .symbol("externaldrive")
                 .ejectable(true),
             sidebar_item("trash", "Trash").symbol("trash"),
@@ -629,7 +629,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             vec![
                 caption(
                     "Turn reorderable on above, then drag a row within its own group in the \
-                     window. Cross-group drops are refused, which is what Finder does. Bakery in \
+                     window. Cross-group drops are refused, which is what Finder does. Archive in \
                      Locations is ejectable(true) — click its eject affordance.",
                 ),
                 caption(match &moved {
@@ -703,7 +703,7 @@ pub fn render(d: &mut Demo, _window: &mut Window, cx: &mut Context<Demo>) -> Any
             ),
             (
                 "SidebarItem::ejectable(bool)",
-                "one row — Bakery, in Locations".into(),
+                "one row — Archive, in Locations".into(),
             ),
             (
                 "sidebar::CORE_TYPES_BUNDLE",
