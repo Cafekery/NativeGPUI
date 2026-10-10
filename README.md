@@ -18,7 +18,7 @@ You need Rust (rustc 1.98 or later), Xcode for the app icon, and cargo-about for
 ```sh
 git clone https://github.com/Cafekery/NativeGPUI.git
 cd NativeGPUI
-cargo install cargo-about
+cargo install cargo-about --locked --features cli
 ./scripts/bundle.sh finder_demo
 ```
 
