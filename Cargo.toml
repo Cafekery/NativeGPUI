@@ -20,7 +20,7 @@ default = []
 private-api = []
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "2117a376b97104049f60e843afa92f18fa7f5748" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232" }
 image = "0.25"
 raw-window-handle = "0.6"
 
@@ -46,12 +46,17 @@ objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, f
     "QLThumbnailGenerator",
     "QLThumbnailRepresentation",
 ] }
+# `font-kit` and `screen-capture` are optional upstream; this crate needs both.
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "80acec4df984c8f2461e1d2a5f779bb0cff18d8e", features = [
+    "font-kit",
+    "screen-capture",
+] }
 
 [dev-dependencies]
 convert = { path = "crates/convert" }
 finder-fs = { path = "crates/finder-fs" }
 fsearch = { path = "crates/fsearch" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "2117a376b97104049f60e843afa92f18fa7f5748", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "90d8514059561f0e44af0a32e84e1c329cef3232", features = ["font-kit"] }
 parking_lot = "0.12"
 
 [[example]]
@@ -71,4 +76,4 @@ lto = false
 incremental = true
 
 [patch."https://github.com/zed-industries/zed"]
-gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "a9ed59c807e3d484d84f42a911557bf963766510" }
+gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "80acec4df984c8f2461e1d2a5f779bb0cff18d8e" }
