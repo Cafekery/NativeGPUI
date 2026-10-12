@@ -46,10 +46,9 @@ objc2-quick-look-thumbnailing = { version = "0.3.2", default-features = false, f
     "QLThumbnailGenerator",
     "QLThumbnailRepresentation",
 ] }
-# `font-kit` and `screen-capture` are optional upstream; this crate needs both.
+# `font-kit` is optional upstream; this crate needs it.
 gpui_macos = { git = "https://github.com/Cafekery/gpui-macos", rev = "80acec4df984c8f2461e1d2a5f779bb0cff18d8e", features = [
     "font-kit",
-    "screen-capture",
 ] }
 
 [dev-dependencies]
