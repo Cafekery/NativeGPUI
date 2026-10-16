@@ -503,7 +503,24 @@ pub(crate) fn groups() -> Vec<Group> {
             ),
         );
     }
-    let locations = listed_rows(locations, true);
+    let mut locations = listed_rows(locations, true);
+    if shows(Shown::Servers) {
+        let places = [crate::locations::AIRDROP, crate::locations::NETWORK];
+        let at = locations
+            .iter()
+            .position(|row| places.contains(&row.id) || crate::data::is_trash(row.id))
+            .unwrap_or(locations.len());
+        let servers = crate::remote::servers().into_iter().map(|server| Row {
+            eject: true,
+            muted: true,
+            ..row(
+                server.path,
+                server.host,
+                Glyph::Symbol(server_symbol(server.host)),
+            )
+        });
+        locations.splice(at..at, servers);
+    }
 
     let recent = if shows(Shown::RecentTags) {
         Vec::new()
@@ -739,7 +756,11 @@ impl FinderDemo {
         );
         sidebar.on_select(cx.listener(|this, id: &Option<SharedString>, window, cx| {
             match id.as_deref() {
-                Some(path) if path.starts_with('/') || crate::locations::is_location(path) => {
+                Some(path)
+                    if path.starts_with('/')
+                        || crate::locations::is_location(path)
+                        || crate::remote::is_remote(path) =>
+                {
                     this.go(intern(path), window, cx)
                 }
                 Some(tag) if tag.starts_with("tag:") => this.show_tag(intern(tag), window, cx),
@@ -942,6 +963,10 @@ impl FinderDemo {
     }
 
     pub(crate) fn eject(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::remote::is_remote(id) {
+            self.eject_remote(id, cx);
+            return;
+        }
         let url = NSURL::fileURLWithPath(&NSString::from_str(id));
         if let Err(error) = NSWorkspace::sharedWorkspace().unmountAndEjectDeviceAtURL_error(&url) {
             self.complain(&error.localizedDescription().to_string());

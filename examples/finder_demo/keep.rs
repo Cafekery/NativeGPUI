@@ -97,10 +97,13 @@ pub(crate) fn reopen(cx: &mut App) -> bool {
         .unwrap_or_default();
     clear();
     let mut groups: Vec<Vec<Kept>> = Vec::new();
-    for kept in kept
+    for mut kept in kept
         .into_iter()
         .filter(|kept| !kept.folder.starts_with('/') || Path::new(kept.folder).exists())
     {
+        if crate::remote::is_remote(kept.folder) {
+            kept.folder = crate::locations::COMPUTER;
+        }
         match groups.last_mut() {
             Some(group) if group[0].group == kept.group => group.push(kept),
             _ => groups.push(vec![kept]),

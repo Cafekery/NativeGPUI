@@ -26,6 +26,7 @@ pub(crate) struct Folder {
 pub(crate) fn folder_of(id: &'static str) -> Folder {
     let crumbs = match crate::locations::place(id) {
         Some((title, _)) => vec![(title, id)],
+        None if crate::remote::is_remote(id) => crate::remote::crumbs(id),
         None => crumbs_of(id),
     };
     Folder {
@@ -44,6 +45,7 @@ pub(crate) fn parent_of(id: &str) -> Option<&'static str> {
     match crate::locations::place(id) {
         Some((_, parent)) => parent,
         None if is_volume_root(id) => Some(crate::locations::COMPUTER),
+        None if crate::remote::is_remote(id) => Some(crate::remote::parent(id)),
         None => Path::new(id).parent().map(intern_path),
     }
 }
@@ -106,7 +108,9 @@ impl Folders {
         let read = match folder {
             Some(folder) => folder.stale,
             None => {
-                (id.starts_with('/') || crate::locations::is_location(id))
+                (id.starts_with('/')
+                    || crate::locations::is_location(id)
+                    || crate::remote::is_remote(id))
                     && !self.reading.contains(id)
             }
         };

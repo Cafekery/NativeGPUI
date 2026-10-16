@@ -21,13 +21,12 @@ pub(crate) fn intern_path(path: &Path) -> &'static str {
 }
 
 pub(crate) fn join(dir: &str, name: &str) -> String {
-    match dir {
-        "/" => format!("/{name}"),
-        _ => format!("{dir}/{name}"),
-    }
+    let dir = dir.strip_suffix('/').unwrap_or(dir);
+    format!("{dir}/{name}")
 }
 
 pub(crate) fn split_key(key: &str) -> Option<(&'static str, &str)> {
     let (dir, name) = key.rsplit_once('/')?;
-    Some((intern(if dir.is_empty() { "/" } else { dir }), name))
+    let root = dir.is_empty() || crate::remote::is_prefix(dir);
+    Some((intern(if root { &key[..=dir.len()] } else { dir }), name))
 }

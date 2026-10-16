@@ -103,7 +103,10 @@ impl FinderDemo {
                 self.reveal(&lines[next].key);
             }
             "right" | "left" if tree => self.disclose_selected(key == "right", modifiers.alt),
-            "enter" => self.renaming = current.map(|at| lines[at].key.clone()),
+            "enter" => {
+                let key = current.map(|at| lines[at].key.clone());
+                self.renaming = key.filter(|key| !crate::remote::is_root(key));
+            }
             "tab" if self.view != COLUMN_VIEW => self.tab(modifiers.shift),
             "home" | "end" | "pageup" | "pagedown" if tree => {
                 let (pads, _) = self.list_inset();

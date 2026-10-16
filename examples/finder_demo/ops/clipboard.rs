@@ -5,7 +5,9 @@ use finder_fs::ops::Op;
 use gpui::{Context, Window};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting};
+use objc2_app_kit::{
+    NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardWriting,
+};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::app::FinderDemo;
@@ -27,6 +29,7 @@ pub(crate) struct Held {
 }
 
 const FINDER_NODES: &str = "com.apple.finder.noderef";
+const SERVER_ITEMS: &str = "dev.cafekery.founder.sftp";
 
 thread_local! {
     static OWN_CHANGE: Cell<isize> = const { Cell::new(-1) };
@@ -56,6 +59,19 @@ impl FinderDemo {
             .filter_map(|key| split_key(key).map(|(_, name)| name))
             .collect();
         let text = NSString::from_str(&names.join("\n"));
+        if keys.iter().any(|key| crate::remote::is_remote(key)) {
+            let ids: Vec<&str> = keys.iter().map(|key| key.as_ref()).collect();
+            let (server, plain) = (NSString::from_str(SERVER_ITEMS), unsafe {
+                NSPasteboardTypeString
+            });
+            let board = NSPasteboard::generalPasteboard();
+            let types = NSArray::from_slice(&[&*server, plain]);
+            unsafe { board.declareTypes_owner(&types, None) };
+            board.setString_forType(&NSString::from_str(&ids.join("\n")), &server);
+            board.setString_forType(&text, plain);
+            OWN_CHANGE.set(board.changeCount());
+            return;
+        }
         let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> =
             std::iter::once(ProtocolObject::from_retained(text))
                 .chain(keys.iter().map(|key| {
@@ -73,9 +89,9 @@ impl FinderDemo {
 
     pub(crate) fn copy_pathnames(&mut self, cx: &mut Context<Self>) {
         let paths: Vec<String> = self
-            .paths()
+            .chosen_keys()
             .iter()
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|key| key.to_string())
             .collect();
         let text = if paths.is_empty() {
             self.target().to_owned()
@@ -90,7 +106,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn paste_into(&mut self, into: PathBuf, how: Pasting, cx: &mut Context<Self>) {
-        if !into.is_absolute() {
+        if !into.is_absolute() && !crate::remote::is_remote(&into.to_string_lossy()) {
             return;
         }
         let items = read_pasteboard();
@@ -108,6 +124,9 @@ impl FinderDemo {
 
 pub(crate) fn read_pasteboard() -> Vec<PathBuf> {
     let board = NSPasteboard::generalPasteboard();
+    if let Some(ids) = board.stringForType(&NSString::from_str(SERVER_ITEMS)) {
+        return ids.to_string().lines().map(PathBuf::from).collect();
+    }
     let Some(items) = board.pasteboardItems() else {
         return Vec::new();
     };
@@ -131,6 +150,7 @@ pub(crate) fn held() -> Held {
     // Types only: fetching the data waits on whichever app promised it, for as long as it takes.
     let file_url = unsafe { NSPasteboardTypeFileURL };
     let finder = NSString::from_str(FINDER_NODES);
+    let server = NSString::from_str(SERVER_ITEMS);
     let (mut files, mut from_finder) = (0, false);
     for item in board
         .pasteboardItems()
@@ -141,6 +161,10 @@ pub(crate) fn held() -> Held {
         if types.containsObject(file_url) {
             files += 1;
             from_finder |= types.containsObject(&finder);
+        } else if types.containsObject(&server) {
+            files += item
+                .stringForType(&server)
+                .map_or(0, |ids| ids.to_string().lines().count());
         }
     }
     let held = Held {

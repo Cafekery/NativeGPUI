@@ -96,7 +96,7 @@ const FACES: &[(&str, Face)] = &[
 
 // A LaunchServices lookup, not AppKit state: safe off the main thread.
 #[allow(deprecated)]
-pub(super) fn face_of(uti: &str) -> Face {
+pub(crate) fn face_of(uti: &str) -> Face {
     static SEEN: LazyLock<RwLock<HashMap<String, Face>>> = LazyLock::new(Default::default);
     if let Some(face) = SEEN.read().unwrap().get(uti) {
         return *face;

@@ -54,7 +54,7 @@ fn fact(row: &Row) -> Option<Fact> {
 }
 
 pub(crate) fn item_info(row: &Row) -> Option<SharedString> {
-    let fact = fact(row)?;
+    let fact = fact(row).filter(|_| !crate::remote::is_remote(&row.path))?;
     let key = (row.path.clone(), row.modified_at.to_bits());
     if let Some(known) = INFO.with_borrow(|info| info.get(&key).cloned()) {
         return known;

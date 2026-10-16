@@ -87,6 +87,9 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     let chosen = selected.len();
     let in_selection = selected.contains(&line.key);
     let many = chosen > 1 && in_selection;
+    if crate::remote::is_remote(&line.key) {
+        return remote_item(line, many, chosen);
+    }
     let symlink = line.row.uti == "public.symlink";
     let original = symlink || line.row.uti == "com.apple.alias-file";
     let folder = folder_behind(line);
@@ -243,6 +246,58 @@ pub(crate) fn item(selected: &HashSet<SharedString>, line: &Line) -> Menu {
     menu
 }
 
+fn remote_item(line: &Line, many: bool, chosen: usize) -> Menu {
+    let mut menu = Menu::default();
+    let root = crate::remote::is_root(&line.key);
+    if many && !root {
+        menu.item(
+            MenuEntry::item(format!("New Folder with Selection ({chosen} Items)")),
+            Act::NewFolderWith,
+        );
+    }
+    match line.row.opens {
+        Some(folder) => {
+            let (tab, window) = if many {
+                (Act::OpenTabs, Act::OpenWindow)
+            } else {
+                (Act::OpenTab(folder), Act::OpenWindowAt(folder))
+            };
+            menu.item(MenuEntry::item(plural("Open in New Tab", many)), tab);
+            menu.item(
+                MenuEntry::item(plural("Open in New Window", many)).option_alternate(),
+                window,
+            );
+        }
+        None => menu.item(MenuEntry::item("Open"), Act::Open),
+    }
+    if let Some(folder) = line.row.opens.filter(|_| can_paste()) {
+        paste_rows(&mut menu, folder);
+    }
+    menu.separator();
+    if !root {
+        menu.item(MenuEntry::item("Move to Trash"), Act::Trash);
+        menu.separator();
+    }
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfo);
+    menu.item(
+        MenuEntry::item("Show Inspector").option_alternate(),
+        Act::Inspector,
+    );
+    if root {
+        return menu;
+    }
+    menu.item(
+        MenuEntry::item(if many { "Rename…" } else { "Rename" }),
+        Act::Rename,
+    );
+    menu.item(MenuEntry::item("Duplicate"), Act::Duplicate);
+    if many || line.row.opens.is_none() {
+        menu.item(MenuEntry::item("Quick Look"), Act::QuickLook);
+    }
+    menu.item(MenuEntry::item("Copy"), Act::Copy);
+    menu
+}
+
 pub(super) fn swatch_row(carried: &[Vec<RowTag>], lone_folder: bool) -> MenuView {
     let picked = !carried.is_empty();
     let button = if lone_folder {
@@ -355,7 +410,9 @@ pub(crate) fn crumb(id: &'static str, name: &str) -> Menu {
         MenuEntry::item(format!("Copy “{name}” as Pathname")),
         Act::CopyPathname(id),
     );
-    menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(id));
+    if !crate::remote::is_remote(id) {
+        menu.item(MenuEntry::item("Open in Terminal"), Act::OpenTerminal(id));
+    }
     menu
 }
 
@@ -363,8 +420,27 @@ pub(crate) fn sidebar(id: &SharedString) -> Menu {
     match id.strip_prefix("tag:") {
         Some(name) => tag_row(id, name),
         None if id.starts_with('/') => place_row(id),
+        None if crate::remote::is_remote(id) => server_row(intern(id)),
         None => Menu::default(),
     }
+}
+
+fn server_row(at: &'static str) -> Menu {
+    let mut menu = Menu::default();
+    menu.item(MenuEntry::item("Open in New Tab"), Act::OpenTab(at));
+    menu.item(
+        MenuEntry::item("Open in New Window").option_alternate(),
+        Act::OpenWindowAt(at),
+    );
+    menu.separator();
+    let host = crate::remote::host(at);
+    menu.item(
+        MenuEntry::item(format!("Eject \u{201c}{host}\u{201d}")),
+        Act::Eject(at),
+    );
+    menu.separator();
+    menu.item(MenuEntry::item("Get Info"), Act::GetInfoAt(at));
+    menu
 }
 
 fn tag_row(id: &SharedString, name: &str) -> Menu {

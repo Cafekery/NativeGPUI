@@ -39,6 +39,7 @@ mod progress_window;
 mod quick_actions;
 mod quicklook;
 mod read;
+mod remote;
 mod search;
 mod search_field;
 mod select;
@@ -74,6 +75,11 @@ pub(crate) const WINDOW_W: f32 = 1200.;
 const FRAME: &str = "ng.finder.window";
 
 fn main() {
+    if std::env::var_os(finder_sftp::askpass::ATTEMPT).is_some() {
+        std::process::exit(remote::askpass(
+            &std::env::args().nth(1).unwrap_or_default(),
+        ));
+    }
     prefs::share_folder_looks();
     settings::apply_names();
     app::EARLY_SIDEBAR.set(Some(app::ask_sidebar()));
@@ -218,8 +224,9 @@ fn finder_window(
                 cx.observe_global::<SystemTheme>(|_, cx| cx.notify())
                     .detach();
                 // The app-wide Edit menu names the undo of whichever window is in front.
-                cx.observe_window_activation(window, |_: &mut FinderDemo, window, cx| {
+                cx.observe_window_activation(window, |this: &mut FinderDemo, window, cx| {
                     if window.is_window_active() {
+                        this.reread_remote(cx);
                         cx.notify();
                         cx.background_executor()
                             .spawn(async { icons::ask_app_management(icons::installed_apps()) })

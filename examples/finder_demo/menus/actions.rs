@@ -212,7 +212,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn new_folder_with_selection(&mut self, cx: &mut Context<Self>) {
-        let chosen = self.paths();
+        let chosen = self.items();
         if chosen.is_empty() {
             return;
         }
@@ -221,7 +221,8 @@ impl FinderDemo {
 
     fn make_folder(&mut self, stem: &str, with: Vec<PathBuf>, cx: &mut Context<Self>) {
         let into = PathBuf::from(self.target());
-        if !into.is_absolute() {
+        let remote = crate::remote::is_remote(self.target());
+        if !into.is_absolute() && !remote {
             return;
         }
         let op = Op::NewFolder {
@@ -231,6 +232,10 @@ impl FinderDemo {
         if with.is_empty() {
             self.run_op(op, After::Rename, cx);
             return;
+        }
+        if remote {
+            let then = Some(crate::remote::Then::MoveIn(with));
+            return self.submit_remote(op, Vec::new(), then, After::Rename, cx);
         }
         cx.spawn(async move |this, cx| {
             let made = cx
@@ -259,12 +264,22 @@ impl FinderDemo {
     pub(crate) fn paths(&self) -> Vec<PathBuf> {
         self.chosen_keys()
             .iter()
+            .filter(|key| !crate::remote::is_remote(key))
+            .map(|key| PathBuf::from(key.as_ref()))
+            .collect()
+    }
+
+    /// The chosen items an operation can take, server roots aside.
+    fn items(&self) -> Vec<PathBuf> {
+        self.chosen_keys()
+            .iter()
+            .filter(|key| !crate::remote::is_root(key))
             .map(|key| PathBuf::from(key.as_ref()))
             .collect()
     }
 
     fn with_selection(&mut self, op: fn(Vec<PathBuf>) -> Op, after: After, cx: &mut Context<Self>) {
-        let items = self.paths();
+        let items = self.items();
         if !items.is_empty() {
             self.run_op(op(items), after, cx);
         }
@@ -326,7 +341,7 @@ impl FinderDemo {
         self.chosen_folders()
             .into_iter()
             .chain([self.here()])
-            .filter(move |id| roots.contains(id))
+            .filter(move |id| roots.contains(id) || crate::remote::is_root(id))
     }
 
     pub(crate) fn empty_trash(&mut self, cx: &mut Context<Self>) {
@@ -360,7 +375,7 @@ impl FinderDemo {
     }
 
     pub(crate) fn trash_selection(&mut self, cx: &mut Context<Self>) {
-        let items = self.paths();
+        let items = self.items();
         if items.is_empty() {
             return;
         }

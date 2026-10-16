@@ -443,6 +443,9 @@ fn land() {
 
 /// Never reads the disk, which a stalled share would hang.
 pub(crate) fn row_tags(path: &str) -> Vec<RowTag> {
+    if crate::remote::is_remote(path) {
+        return Vec::new();
+    }
     let mut known = KNOWN.lock();
     let tags = match known.get_mut(path) {
         Some(held) if !held.stale => return held.tags.clone(),

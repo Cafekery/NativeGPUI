@@ -232,6 +232,9 @@ impl FinderDemo {
         let searching = self.in_search();
         if !searching && !search.is_empty() {
             self.scope = prefs::search_scope();
+            if crate::remote::is_remote(self.here()) {
+                self.scope = scope_bar::THIS_FOLDER;
+            }
         }
         self.query = search;
         if self.in_search() != searching {
@@ -257,16 +260,29 @@ impl FinderDemo {
             scope_bar::THIS_MAC => Vec::new(),
             _ => vec![PathBuf::from(self.here())],
         };
-        let spotlit = !wanted.contents().is_empty() || wanted.tagged().is_some();
+        let cached = crate::remote::is_remote(self.here()).then(|| {
+            self.folder()
+                .map_or_else(Arc::default, |folder| folder.rows.clone())
+        });
+        let spotlit =
+            cached.is_none() && (!wanted.contents().is_empty() || wanted.tagged().is_some());
         cx.spawn(async move |this, cx| {
             for (limit, last) in [(HITS, false), (ALL_HITS, true)] {
                 let search = wanted.clone();
                 let (under, criteria, pass) = (under.clone(), criteria.clone(), live.clone());
+                let cached = cached.clone();
                 let found = cx
                     .background_executor()
                     .spawn(async move {
                         if search.is_empty() || !indexed {
                             return Some((Vec::new(), true));
+                        }
+                        if let Some(rows) = cached {
+                            let matcher = search.matcher();
+                            let admits = |row: &&Arc<Row>| {
+                                matcher.admits(row) && criteria.iter().all(|it| it.holds(row))
+                            };
+                            return Some((rows.iter().filter(admits).cloned().collect(), true));
                         }
                         let stale = || pass.load(Ordering::Relaxed) != generation;
                         let gathered =

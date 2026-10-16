@@ -139,7 +139,7 @@ fn sweep_thumbnails() {
 }
 
 fn renderable(row: &Row) -> bool {
-    row.opens.is_none() && row.face != Face::Program
+    row.opens.is_none() && row.face != Face::Program && !crate::remote::is_remote(&row.path)
 }
 
 fn key_of(row: &Row, size: f32, scale: f32, icon: bool) -> Thumb {

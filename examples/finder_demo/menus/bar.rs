@@ -198,6 +198,8 @@ pub(super) struct Chosen {
     cloud: bool,
     original: bool,
     ejectable: bool,
+    remote: bool,
+    root: bool,
     pub(super) name: SharedString,
     here: SharedString,
     pub(super) folder: SharedString,
@@ -256,8 +258,10 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
     }
     let lines = demo.chosen_lines();
     let refused = !lines.is_empty() && lines.iter().all(unlistable_folder);
+    let remote = crate::remote::is_remote(here)
+        || lines.iter().any(|line| crate::remote::is_remote(&line.key));
     // Finder won't share a folder the user can't list, even beside readable items.
-    let shareable = !lines.iter().any(unlistable_folder);
+    let shareable = !remote && !lines.iter().any(unlistable_folder);
     let cloud = finder_fs::icloud::drive().is_some_and(|drive| {
         shareable
             && !lines.is_empty()
@@ -270,7 +274,7 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
         .iter()
         .filter_map(|line| line.row.opens)
         .chain([here])
-        .any(|id| id != "/" && roots.contains(&id));
+        .any(|id| id != "/" && roots.contains(&id) || crate::remote::is_root(id));
     let worked = Rc::new(Chosen {
         seen,
         count: lines.len(),
@@ -285,17 +289,23 @@ fn chosen(demo: &FinderDemo) -> Rc<Chosen> {
             )
         }),
         ejectable,
+        remote,
+        root: lines.iter().any(|line| crate::remote::is_root(&line.key)),
         name: lines
             .first()
             .map(|line| line.row.display.clone())
             .unwrap_or_default(),
-        here: finder_fs::name::of_path(Path::new(here)).into(),
+        here: if crate::remote::is_remote(here) {
+            crate::remote::title(here).into()
+        } else {
+            finder_fs::name::of_path(Path::new(here)).into()
+        },
         folder: demo
             .folder()
             .map(|folder| folder.title)
             .unwrap_or_default()
             .into(),
-        on_disk: Path::new(demo.target()).is_absolute(),
+        on_disk: Path::new(demo.target()).is_absolute() || crate::remote::is_remote(demo.target()),
         files: file_paths(&lines),
         keys: lines.into_iter().map(|line| line.key).collect(),
     });
@@ -325,6 +335,27 @@ pub(crate) fn remember(demo: &FinderDemo, cx: &App) {
     });
 }
 
+const LOCAL: &[&dyn Action] = &[
+    &DeleteImmediately,
+    &DuplicateExactly,
+    &MakeAlias,
+    &Compress,
+    &CompressNamed,
+    &Share,
+    &EditTags,
+    &OpenWithRow,
+    &AlwaysOpenWithRow,
+    &OpenWithStore,
+    &Slideshow,
+    &Print,
+    &ShowOriginal,
+    &AddToDock,
+    &AddToSidebar,
+    &EmptyTrash,
+    &EmptyTrashNow,
+    &PasteExactly,
+];
+
 fn one_of(action: &dyn Action, rows: &[&dyn Action]) -> bool {
     rows.iter().any(|row| action.partial_eq(*row))
 }
@@ -341,6 +372,23 @@ fn enabled(action: &dyn Action) -> bool {
         return false;
     }
     CHOSEN.with_borrow(|chosen| {
+        let looks_here = chosen.count == 0 && !native_gpui::quick_look_visible();
+        if chosen.remote && (one_of(action, LOCAL) || looks_here && action.partial_eq(&QuickLook)) {
+            return false;
+        }
+        if chosen.root
+            && one_of(
+                action,
+                &[
+                    &NewFolderWithSelection,
+                    &RenameSelection,
+                    &Duplicate,
+                    &Trash,
+                ],
+            )
+        {
+            return false;
+        }
         if let Some(on) = super::edit::enabled(action, chosen) {
             return on;
         }
@@ -892,7 +940,7 @@ fn run_act<A: Action>(
 fn file_paths(lines: &[Line]) -> Vec<PathBuf> {
     lines
         .iter()
-        .filter(|line| line.row.opens.is_none())
+        .filter(|line| line.row.opens.is_none() && !crate::remote::is_remote(&line.key))
         .map(|line| PathBuf::from(line.key.as_ref()))
         .collect()
 }
@@ -915,10 +963,14 @@ impl FinderDemo {
     }
 
     /// This volume only, not the others on its disk.
-    fn eject_only(&mut self) {
+    fn eject_only(&mut self, cx: &mut Context<Self>) {
         let Some(volume) = self.volumes_in_view().find(|id| *id != "/") else {
             return;
         };
+        if crate::remote::is_remote(volume) {
+            self.eject_remote(volume, cx);
+            return;
+        }
         let url = NSURL::fileURLWithPath(&NSString::from_str(volume));
         let refused = RcBlock::new(|error: *mut NSError| {
             let Some(error) = (unsafe { error.as_ref() }) else {
@@ -1002,7 +1054,7 @@ impl FinderDemo {
             }))
             .on_action(cx.listener(|this, _: &AddToDock, _, _| {
                 let mut paths = this.paths();
-                if paths.is_empty() {
+                if paths.is_empty() && !crate::remote::is_remote(this.here()) {
                     paths.push(PathBuf::from(this.here()));
                 }
                 if let Err(error) = crate::dock::add(&paths) {
@@ -1012,7 +1064,7 @@ impl FinderDemo {
             .on_action(cx.listener(|this, _: &EjectSelection, window, cx| {
                 this.eject_selection(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &EjectOne, _, _| this.eject_only()))
+            .on_action(cx.listener(|this, _: &EjectOne, _, cx| this.eject_only(cx)))
             .on_action(cx.listener(|this, _: &EjectAll, window, cx| {
                 this.eject_selection(window, cx);
             }))

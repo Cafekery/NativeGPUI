@@ -79,6 +79,9 @@ pub(crate) fn sized_by_index(row: &Row) -> Option<&'static str> {
 }
 
 fn total_bytes(row: &Row, weighed: &mut Weighed, stale: &AtomicBool) -> Option<u64> {
+    if crate::remote::is_remote(&row.path) {
+        return row.opens.is_none().then_some(row.bytes);
+    }
     let Some(id) = sized_by_index(row) else {
         return Some(row.bytes);
     };

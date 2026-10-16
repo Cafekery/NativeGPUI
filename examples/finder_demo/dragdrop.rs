@@ -12,6 +12,7 @@ use gpui::{
 use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
 use crate::app::FinderDemo;
+use crate::data::split_key;
 use crate::ops::After;
 use crate::view::{COLUMN_VIEW, ICON_VIEW};
 use crate::views::list::TWIST_W;
@@ -360,14 +361,14 @@ impl FinderDemo {
         if at.x >= self.metrics().left && !outside {
             return;
         }
-        let selected = self.selected.snapshot();
-        let paths: Vec<PathBuf> = event
-            .drag(cx)
-            .keys(&selected)
-            .iter()
-            .map(|key| PathBuf::from(key.as_ref()))
-            .collect();
-        if native_gpui::sidebar::drag_files(window, &paths) {
+        let keys = event.drag(cx).keys(&self.selected.snapshot());
+        let handed = if keys.iter().any(|key| crate::remote::is_remote(key)) {
+            self.drag_out(&keys, window, cx)
+        } else {
+            let paths: Vec<PathBuf> = keys.iter().map(|key| PathBuf::from(key.as_ref())).collect();
+            native_gpui::sidebar::drag_files(window, &paths)
+        };
+        if handed {
             cx.stop_active_drag(window);
         }
     }
@@ -408,6 +409,28 @@ impl FinderDemo {
         cx: &mut Context<Self>,
     ) {
         let held = window.modifiers();
+        if crate::remote::is_remote(into) || keys.iter().any(|key| crate::remote::is_remote(key)) {
+            let items: Vec<PathBuf> = keys
+                .iter()
+                .filter(|key| {
+                    crate::remote::is_remote(key) || Path::new(key.as_ref()).is_absolute()
+                })
+                .filter(|key| split_key(key).is_some_and(|(dir, _)| dir != into))
+                .map(|key| PathBuf::from(key.as_ref()))
+                .collect();
+            if items.is_empty() {
+                return;
+            }
+            let into = PathBuf::from(into);
+            let same = items
+                .iter()
+                .all(|item| crate::remote::same_server(item, &into));
+            let op = match same && !held.alt {
+                true => Op::Move { items, into },
+                false => Op::Copy { items, into },
+            };
+            return self.run_op(op, After::Select, cx);
+        }
         let into = PathBuf::from(into);
         // A web link dragged from a browser arrives as its URL, not as a file.
         let items: Vec<PathBuf> = keys

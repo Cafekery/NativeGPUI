@@ -15,7 +15,7 @@ const THIS_MAC: u32 = 1396925814;
 const FOLDERS: u32 = 1396925286;
 
 pub(crate) fn is_saved(path: &str) -> bool {
-    path.ends_with(".savedSearch")
+    path.ends_with(".savedSearch") && !crate::remote::is_remote(path)
 }
 
 pub(crate) fn listing(id: &str) -> Option<&'static str> {

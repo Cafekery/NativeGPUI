@@ -160,7 +160,7 @@ pub(crate) fn server(key: &str) -> Option<Computer> {
     })
 }
 
-fn location_row(
+pub(crate) fn location_row(
     path: &'static str,
     name: SharedString,
     kind: SharedString,
@@ -210,6 +210,7 @@ fn computer_rows() -> Vec<Arc<Row>> {
         .into_iter()
         .filter_map(data::path_line)
         .map(|line| line.row)
+        .chain(crate::remote::computer_rows())
         .chain(place_row(NETWORK, "Network"))
         .collect()
 }

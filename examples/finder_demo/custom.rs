@@ -19,6 +19,9 @@ fn has_custom_icon(path: &SharedString) -> bool {
 }
 
 pub(crate) fn custom_icon(path: &SharedString) -> bool {
+    if crate::remote::is_remote(path) {
+        return false;
+    }
     if let Some(found) = SEEN.lock().get(path).copied() {
         return found;
     }
@@ -27,6 +30,9 @@ pub(crate) fn custom_icon(path: &SharedString) -> bool {
 }
 
 pub(crate) fn custom_icon_now(path: &SharedString) -> bool {
+    if crate::remote::is_remote(path) {
+        return false;
+    }
     if let Some(found) = SEEN.lock().get(path).copied() {
         return found;
     }

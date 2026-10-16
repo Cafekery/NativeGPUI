@@ -11,7 +11,7 @@ use objc2_app_kit::{NSWindowStyleMask, NSWindowTitleVisibility};
 use crate::app::FinderDemo;
 use crate::data::{Line, path_line};
 use crate::frame::ns_window;
-use crate::info::{Combined, HEIGHT, Info, WIDTH, where_of};
+use crate::info::{Combined, HEIGHT, Info, Remote, WIDTH, where_of};
 
 thread_local! {
     static OPEN: Cell<Option<WindowHandle<Inspector>>> = const { Cell::new(None) };
@@ -82,15 +82,20 @@ fn show(lines: Vec<Line>, demo: WeakEntity<FinderDemo>, cx: &mut App) {
         return;
     };
     let where_ = where_of(&first.key).unwrap_or_default().into();
-    let (title, shown): (String, AnyView) = match <[Line; 1]>::try_from(lines) {
-        Ok([line]) => (
-            format!("{} Info", line.row.display),
-            cx.new(|_| Info::new(line, where_, demo).in_panel()).into(),
-        ),
-        Err(lines) => (
-            "Multiple Item Info".to_owned(),
-            cx.new(|_| Combined::new(lines, where_)).into(),
-        ),
+    let (title, shown): (String, AnyView) = if crate::remote::is_remote(&first.key) {
+        let remote = Remote::new(lines, where_);
+        (remote.title(), cx.new(|_| remote).into())
+    } else {
+        match <[Line; 1]>::try_from(lines) {
+            Ok([line]) => (
+                format!("{} Info", line.row.display),
+                cx.new(|_| Info::new(line, where_, demo).in_panel()).into(),
+            ),
+            Err(lines) => (
+                "Multiple Item Info".to_owned(),
+                cx.new(|_| Combined::new(lines, where_)).into(),
+            ),
+        }
     };
     if let Some(open) = OPEN.get() {
         let retitled = open.update(cx, |inspector, window, cx| {

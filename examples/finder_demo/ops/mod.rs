@@ -26,9 +26,17 @@ pub(crate) enum After {
     Reveal,
 }
 
+/// A server id's parent is not where `Path::parent` puts it at the server root.
+fn parent(path: &Path) -> Option<&Path> {
+    match path.to_str() {
+        Some(id) if crate::remote::is_remote(id) => Some(Path::new(crate::remote::parent(id))),
+        _ => path.parent(),
+    }
+}
+
 fn parents<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Vec<PathBuf> {
     (paths.into_iter())
-        .filter_map(|path| path.as_ref().parent().map(PathBuf::from))
+        .filter_map(|path| parent(path.as_ref()).map(PathBuf::from))
         .collect()
 }
 
@@ -59,6 +67,13 @@ pub(crate) fn touched(op: &Op) -> Vec<PathBuf> {
 
 impl FinderDemo {
     pub(crate) fn run_op(&mut self, op: Op, after: After, cx: &mut Context<Self>) {
+        if touched(&op)
+            .iter()
+            .any(|dir| crate::remote::is_remote(&dir.to_string_lossy()))
+        {
+            self.submit_remote(op, Vec::new(), None, after, cx);
+            return;
+        }
         let checked = cx
             .background_executor()
             .spawn(async move { conflicts::split(op, after) });
@@ -96,7 +111,7 @@ impl FinderDemo {
         after: After,
         cx: &mut Context<Self>,
     ) {
-        let landed = results.iter().filter_map(|path| path.parent());
+        let landed = results.iter().filter_map(|path| parent(path));
         for dir in touched.iter().map(PathBuf::as_path).chain(landed) {
             self.read_folder(intern_path(dir), cx);
         }
@@ -108,7 +123,7 @@ impl FinderDemo {
             let id = intern_path(dir);
             id == self.here() || id == self.target() || self.expanded.contains(id)
         };
-        let visible = results.iter().any(|path| path.parent().is_some_and(shown));
+        let visible = results.iter().any(|path| parent(path).is_some_and(shown));
         if after == After::Nothing || !visible {
             return;
         }
@@ -231,7 +246,7 @@ impl FinderDemo {
 
     /// A typed `/` is stored as `:`, the byte Finder draws as a slash.
     pub(crate) fn rename(&mut self, key: &SharedString, name: &str, cx: &mut Context<Self>) {
-        let Some((_, old)) = split_key(key) else {
+        let Some((dir, old)) = split_key(key) else {
             return;
         };
         let name = name.trim().replace('/', ":");
@@ -243,10 +258,14 @@ impl FinderDemo {
             (!stem.is_empty() && !extension.is_empty()).then(|| extension.to_owned())
         };
         let (was, now) = (extension(old), extension(&name));
+        let folder = || match crate::remote::is_remote(key) {
+            true => self.remote_row(dir, key).is_some_and(|row| row.is_folder()),
+            false => Path::new(key.as_ref()).is_dir(),
+        };
         match was {
             Some(was)
                 if now.as_ref() != Some(&was)
-                    && !Path::new(key.as_ref()).is_dir()
+                    && !folder()
                     && crate::prefs::setting_on("FXEnableExtensionChangeWarning", true) =>
             {
                 self.ask_extension(key.clone(), name, was, now, cx)

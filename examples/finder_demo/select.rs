@@ -195,7 +195,9 @@ impl FinderDemo {
             }
             for row in folder.rows.iter().filter(|row| row.discloses) {
                 let Some(deeper) = row.opens else { continue };
-                if !privacy::off_limits(Path::new(deeper), &home) {
+                if crate::remote::is_remote(deeper)
+                    || !privacy::off_limits(Path::new(deeper), &home)
+                {
                     opened.push(row.path.clone());
                     walk.push((deeper, depth + 1));
                 }

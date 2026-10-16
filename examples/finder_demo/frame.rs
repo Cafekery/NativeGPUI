@@ -28,11 +28,15 @@ use crate::views::icon::TileDrag;
 use crate::views::list::LIST_FOOT_GAP;
 
 pub(crate) fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    ns_view(window)?.window()
+}
+
+pub(crate) fn ns_view(window: &Window) -> Option<Retained<NSView>> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return None;
     };
-    unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }?.window()
+    unsafe { Retained::retain(appkit.ns_view.as_ptr().cast::<NSView>()) }
 }
 
 impl Render for FinderDemo {
@@ -120,7 +124,7 @@ impl Render for FinderDemo {
             .is_some()
             .then(|| self.conflict_sheet(&palette, cx));
         self.pump(window, cx);
-        self.sync_quick_look(window);
+        self.sync_quick_look(window, cx);
         let root =
             native_root(
                 div()

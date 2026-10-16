@@ -52,7 +52,9 @@ impl FinderDemo {
             (THIS_MAC, finder_fs::words::say("This Mac").into_owned()),
             (THIS_FOLDER, folder_name),
         ];
-        if !data::network_roots().is_empty() {
+        if crate::remote::is_remote(self.here()) {
+            scopes.remove(THIS_MAC);
+        } else if !data::network_roots().is_empty() {
             scopes.push((NETWORK, finder_fs::words::say("Network").into_owned()));
         }
         let (toggle, symbol) = if self.criteria.is_empty() {

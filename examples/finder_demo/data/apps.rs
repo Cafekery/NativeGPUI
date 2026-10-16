@@ -44,7 +44,10 @@ fn app_of(path: &SharedString, modified: f64) -> Option<SharedString> {
 }
 
 pub(crate) fn read_apps(rows: &mut [Arc<Row>]) {
-    for row in rows {
+    for row in rows
+        .iter_mut()
+        .filter(|row| !crate::remote::is_remote(&row.path))
+    {
         let app = app_of(&row.path, row.modified_at);
         if row.app != app {
             Arc::make_mut(row).app = app;

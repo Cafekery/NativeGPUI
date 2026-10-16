@@ -133,11 +133,11 @@ pub(crate) fn show(demo: WeakEntity<FinderDemo>, host: AnyWindowHandle, cx: &mut
     .detach();
 }
 
-fn open() -> Option<WindowHandle<Connect>> {
+pub(crate) fn open() -> Option<WindowHandle<Connect>> {
     OPEN.with_borrow(|open| *open)
 }
 
-fn set_connecting(connecting: bool, cx: &mut AsyncApp) {
+pub(crate) fn set_connecting(connecting: bool, cx: &mut AsyncApp) {
     if let Some(open) = open() {
         open.update(cx, |connect, _, cx| {
             connect.connecting = connecting;
@@ -147,23 +147,19 @@ fn set_connecting(connecting: bool, cx: &mut AsyncApp) {
     }
 }
 
-fn close(cx: &mut AsyncApp) {
+pub(crate) fn close(cx: &mut AsyncApp) {
     if let Some(open) = OPEN.with_borrow_mut(Option::take) {
         open.update(cx, |_, window, _| window.remove_window()).ok();
     }
 }
 
-fn complain(address: &str, code: i32, cx: &mut AsyncApp) {
+pub(crate) fn complain(message: &str, detail: &str, cx: &mut AsyncApp) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str(&format!(
-        "Unable to connect to the server at the address you specified ({address})."
-    )));
-    alert.setInformativeText(&NSString::from_str(&format!(
-        "Try again later, or try connecting to a different server (error code {code})."
-    )));
+    alert.setMessageText(&NSString::from_str(message));
+    alert.setInformativeText(&NSString::from_str(detail));
     let sheet = open().and_then(|open| open.update(cx, |_, window, _| ns_window(window)).ok());
     match sheet.flatten() {
         Some(window) => alert.beginSheetModalForWindow_completionHandler(&window, None),
@@ -173,7 +169,7 @@ fn complain(address: &str, code: i32, cx: &mut AsyncApp) {
     }
 }
 
-fn remember(address: &str) {
+pub(crate) fn remember(address: &str) {
     prefs::set_connect_last(address);
     let mut recents = prefs::recent_servers();
     recents.retain(|seen| seen != address);
@@ -185,6 +181,10 @@ fn remember(address: &str) {
 impl FinderDemo {
     pub(crate) fn connect(&mut self, address: String, window: &mut Window, cx: &mut Context<Self>) {
         if address.is_empty() {
+            return;
+        }
+        if let Some(sftp) = crate::remote::address(&address) {
+            self.connect_sftp(sftp, address, window, cx);
             return;
         }
         let handle = window.window_handle();
@@ -206,7 +206,15 @@ impl FinderDemo {
                     .ok();
                 }
                 // NetFS refuses a malformed address without a word; NetAuth reports every other failure.
-                Err(code @ (EINVAL | PARAM_ERR)) => complain(&address, code, cx),
+                Err(code @ (EINVAL | PARAM_ERR)) => complain(
+                    &format!(
+                        "Unable to connect to the server at the address you specified ({address})."
+                    ),
+                    &format!(
+                        "Try again later, or try connecting to a different server (error code {code})."
+                    ),
+                    cx,
+                ),
                 Err(_) => {}
             }
         })

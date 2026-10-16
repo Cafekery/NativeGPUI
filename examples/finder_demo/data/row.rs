@@ -415,7 +415,8 @@ pub(crate) fn rows_of<'a>(
 
 pub(crate) fn read_extras(rows: &mut [Arc<Row>]) {
     let mut comments: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
-    for row in rows.iter_mut().filter(|row| row.extra.is_none()) {
+    let local = |row: &Arc<Row>| row.extra.is_none() && !crate::remote::is_remote(&row.path);
+    for row in rows.iter_mut().filter(|row| local(row)) {
         let path = Path::new(&*row.path);
         let comment = path.parent().zip(path.file_name()).and_then(|(dir, name)| {
             if !comments.contains_key(dir) {
@@ -550,6 +551,9 @@ pub(crate) fn icloud_rows() -> Vec<Arc<Row>> {
 }
 
 pub(crate) fn path_line(id: &'static str) -> Option<Line> {
+    if crate::remote::is_remote(id) {
+        return Some(crate::remote::line(id));
+    }
     let row = match volume_row(id) {
         Some(row) => Arc::new(row),
         None => {

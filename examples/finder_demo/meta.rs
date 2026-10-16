@@ -14,6 +14,9 @@ thread_local! {
 }
 
 pub(crate) fn meta(path: &SharedString) -> Option<Arc<Meta>> {
+    if crate::remote::is_remote(path) {
+        return None;
+    }
     if let Some(found) = META.with_borrow(|map| map.get(path).cloned()) {
         return found;
     }

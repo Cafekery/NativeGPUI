@@ -27,7 +27,7 @@ const REREAD: usize = 256;
 /// Below this, the disk lists a folder before fseventsd can vouch for the index.
 const BIG: usize = 20_000;
 
-enum Trouble {
+pub(crate) enum Trouble {
     Renamed(&'static str),
     Gone(&'static str),
     Refused(io::Error),
@@ -569,6 +569,7 @@ pub(crate) fn follow_events(changes: Arc<Mutex<Vec<PathBuf>>>, cx: &mut Context<
                     this.changed(changed, cx);
                     let events = std::mem::take(&mut *this.queue_events.lock());
                     this.handle_queue_events(events, cx);
+                    this.handle_remote_events(cx);
                     if tagged {
                         cx.notify();
                     }
@@ -673,6 +674,10 @@ impl FinderDemo {
             self.read_location(id, cx);
             return;
         }
+        if crate::remote::is_remote(id) {
+            self.read_remote(id, cx);
+            return;
+        }
         if !id.starts_with('/') || !self.folders.start(id) {
             return;
         }
@@ -739,7 +744,7 @@ impl FinderDemo {
         .detach();
     }
 
-    fn troubled(
+    pub(crate) fn troubled(
         &mut self,
         id: &'static str,
         trouble: Trouble,
@@ -803,7 +808,10 @@ impl FinderDemo {
     }
 
     fn weighs(&self, id: &'static str) -> bool {
-        self.view == LIST_VIEW && self.list_look.sizes && self.folders.shown(id)
+        self.view == LIST_VIEW
+            && self.list_look.sizes
+            && self.folders.shown(id)
+            && !crate::remote::is_remote(id)
     }
 
     pub(crate) fn weigh_folders(&mut self, id: &'static str, cx: &mut Context<Self>) {

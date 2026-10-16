@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use gpui::{Bounds, KeyDownEvent, Keystroke, Modifiers, Pixels, SharedString, Window, prelude::*};
+use gpui::{
+    AnyWindowHandle, Bounds, KeyDownEvent, Keystroke, Modifiers, Pixels, SharedString, Window,
+    prelude::*,
+};
 use native_gpui::{
     QuickLookKey, quick_look, quick_look_close, quick_look_full_screen, quick_look_update,
     quick_look_visible,
@@ -8,7 +11,20 @@ use native_gpui::{
 
 use crate::app::FinderDemo;
 use crate::data::Line;
+use crate::remote::Then;
 use crate::view::LIST_VIEW;
+
+type Shown = (SharedString, Option<Bounds<Pixels>>);
+
+/// Quick Look of cached copies of server files, once they download.
+pub(crate) struct Look {
+    pub(crate) window: AnyWindowHandle,
+    items: Vec<PathBuf>,
+    current: usize,
+    shown: Shown,
+    /// The panel is up and follows the selection.
+    update: bool,
+}
 
 fn key_forwarder(window: &Window, cx: &mut Context<FinderDemo>) -> impl Fn(QuickLookKey) + 'static {
     let entity = cx.entity().downgrade();
@@ -36,13 +52,54 @@ impl FinderDemo {
         let Some((items, current)) = self.quick_look_items(&shown) else {
             return;
         };
+        if crate::remote::is_remote(&shown) {
+            return self.look_remote(items, current, (shown, source), false, window, cx);
+        }
         self.ql_shown = Some((shown, source));
         quick_look(window, items, current, source, key_forwarder(window, cx));
+    }
+
+    fn look_remote(
+        &mut self,
+        items: Vec<PathBuf>,
+        current: usize,
+        shown: Shown,
+        update: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let window = window.window_handle();
+        let look = |items| Look {
+            window,
+            items,
+            current,
+            shown,
+            update,
+        };
+        self.fetch(items, |items| Then::QuickLook(look(items)), cx);
+    }
+
+    pub(crate) fn looked(&mut self, look: Look, window: &mut Window, cx: &mut Context<Self>) {
+        let Look {
+            items,
+            current,
+            shown,
+            update,
+            ..
+        } = look;
+        let source = shown.1;
+        if !update && !quick_look_visible() {
+            self.ql_shown = Some(shown);
+            quick_look(window, items, current, source, key_forwarder(window, cx));
+        } else if update && quick_look_visible() && self.ql_shown.as_ref() == Some(&shown) {
+            quick_look_update(window, items, current, source);
+        }
     }
 
     pub(crate) fn slideshow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((items, current)) = self
             .quick_look_subject()
+            .filter(|(shown, _)| !crate::remote::is_remote(shown))
             .and_then(|(shown, _)| self.quick_look_items(&shown))
         else {
             return;
@@ -59,8 +116,9 @@ impl FinderDemo {
     }
 
     fn quick_look_items(&self, shown: &SharedString) -> Option<(Vec<PathBuf>, usize)> {
+        let remote = crate::remote::is_remote(shown);
         if self.selected.is_empty() {
-            return Some((vec![PathBuf::from(shown.as_ref())], 0));
+            return (!remote).then(|| (vec![PathBuf::from(shown.as_ref())], 0));
         }
         let lines = self.lines(self.view == LIST_VIEW);
         let mut items: Vec<&Line> = lines
@@ -70,6 +128,7 @@ impl FinderDemo {
         if !items.iter().any(|line| line.key == *shown) {
             items = lines.iter().filter(|line| line.key == *shown).collect();
         }
+        items.retain(|line| !remote || !line.row.is_folder());
         let current = items.iter().position(|line| line.key == *shown)?;
         let paths = items
             .iter()
@@ -78,7 +137,7 @@ impl FinderDemo {
         Some((paths, current))
     }
 
-    pub(crate) fn sync_quick_look(&mut self, window: &Window) {
+    pub(crate) fn sync_quick_look(&mut self, window: &Window, cx: &mut Context<Self>) {
         if !quick_look_visible() {
             self.ql_shown = None;
             return;
@@ -97,8 +156,14 @@ impl FinderDemo {
         let Some((items, current)) = self.quick_look_items(&subject.0) else {
             return;
         };
+        self.ql_shown = Some(subject.clone());
+        if crate::remote::is_remote(&subject.0) {
+            cx.defer_in(window, move |this, window, cx| {
+                this.look_remote(items, current, subject, true, window, cx)
+            });
+            return;
+        }
         quick_look_update(window, items, current, subject.1);
-        self.ql_shown = Some(subject);
     }
 
     fn quick_look_key(&mut self, key: QuickLookKey, window: &mut Window, cx: &mut Context<Self>) {

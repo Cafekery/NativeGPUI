@@ -101,7 +101,9 @@ pub(crate) fn icloud_art() -> FileType<'static> {
 }
 
 fn crumb_kind(index: usize, path: &'static str, holds: bool, landed: u64) -> FileType<'static> {
-    if index > 0 || crate::data::is_trash(path) {
+    if crate::remote::is_remote(path) {
+        crate::remote::artwork(path)
+    } else if index > 0 || crate::data::is_trash(path) {
         crumb_artwork(path, holds, landed)
     } else if icloud_drive() == Some(path) {
         icloud_art()

@@ -47,7 +47,7 @@ use objc2_foundation::{
 use crate::app::FinderDemo;
 use crate::art::{row_art, small_glyph};
 use crate::data::{
-    Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern_path, volume_at,
+    Face, Line, Row, byte_string, count, folder_of, icloud_drive, intern, intern_path, volume_at,
 };
 use crate::fold::{self, Fold, Part};
 use crate::form::{
@@ -762,6 +762,13 @@ fn crumbs_at(path: &str) -> Crumbs {
 }
 
 fn crumb_icon(id: &str) -> Retained<NSImage> {
+    if crate::remote::is_remote(id) {
+        let name = match crate::remote::artwork(id) {
+            FileType::Named(name) => name,
+            _ => "NSFolder",
+        };
+        return NSImage::imageNamed(&NSString::from_str(name)).unwrap_or_default();
+    }
     if icloud_drive() == Some(id) {
         if let FileType::Named(name) = crate::chrome::path_bar::icloud_art() {
             if let Some(art) = NSImage::imageNamed(&NSString::from_str(name)) {
@@ -2142,6 +2149,11 @@ fn comment_box(path: SharedString, editable: bool) -> impl IntoElement {
 }
 
 pub(crate) fn where_of(id: &str) -> Option<String> {
+    if crate::remote::is_remote(id) {
+        return Some(crate::remote::parent(id))
+            .filter(|parent| crate::remote::is_remote(parent))
+            .map(Into::into);
+    }
     let parent = Path::new(id)
         .parent()
         .filter(|parent| parent.is_absolute())?;
@@ -2176,6 +2188,23 @@ pub(crate) fn open(
             .unwrap_or_default(),
     );
     let width = info_width();
+    if lines
+        .first()
+        .is_some_and(|line| crate::remote::is_remote(&line.key))
+    {
+        let groups = if summary {
+            vec![lines]
+        } else {
+            lines.into_iter().map(|line| vec![line]).collect()
+        };
+        for (step, lines) in groups.into_iter().enumerate() {
+            let remote = Remote::new(lines, where_.clone());
+            let shape = (width, remote.default_height(width));
+            let title = intern(&remote.title());
+            open_window(remote, step as f32 * 24., shape, Some(title), cx);
+        }
+        return;
+    }
     if summary && lines.len() > 1 {
         let combined = Combined::new(lines, where_);
         let shape = (width, combined.default_height(width));
@@ -2368,5 +2397,182 @@ impl Render for Combined {
             BOTTOM,
             bound,
         )
+    }
+}
+
+pub(crate) struct Remote {
+    lines: Vec<Line>,
+    where_: SharedString,
+    stat: Option<crate::remote::Stat>,
+    asked: bool,
+    folds: [Fold; 6],
+}
+
+impl Remote {
+    pub(crate) fn new(lines: Vec<Line>, where_: SharedString) -> Self {
+        Remote {
+            lines,
+            where_,
+            stat: None,
+            asked: false,
+            folds: panes_open().map(Fold::new),
+        }
+    }
+
+    pub(crate) fn title(&self) -> String {
+        match self.lines.as_slice() {
+            [line] => format!("{} Info", line.row.display),
+            _ => "Multiple Item Info".to_owned(),
+        }
+    }
+
+    fn ask(&mut self, cx: &mut Context<Self>) {
+        let [line] = self.lines.as_slice() else {
+            return;
+        };
+        if self.asked {
+            return;
+        }
+        self.asked = true;
+        let id = line.key.clone();
+        in_background(
+            cx,
+            move || crate::remote::stat(&id),
+            |remote, stat| remote.stat = stat,
+        );
+    }
+
+    fn name(&self) -> String {
+        match self.lines.as_slice() {
+            [line] => line.row.display.to_string(),
+            lines => items_text(lines.len() as u64),
+        }
+    }
+
+    fn bytes(&self) -> Option<u64> {
+        self.lines
+            .iter()
+            .map(|line| line.row.opens.is_none().then_some(line.row.bytes))
+            .sum()
+    }
+
+    fn rows(&self, form: &Form) -> Vec<(&'static str, SharedString)> {
+        let mut kinds: Vec<&str> = self
+            .lines
+            .iter()
+            .map(|line| line.row.kind.as_ref())
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let mut rows = vec![("Kind", kinds.join(", ").into())];
+        rows.extend(self.bytes().map(|bytes| ("Size", size_text(bytes).into())));
+        if !self.where_.is_empty() {
+            rows.push((WHERE, self.where_.clone()));
+        }
+        let modified = match (&self.stat, self.lines.as_slice()) {
+            (Some(stat), _) => stat.modified,
+            (None, [line]) => line.row.modified_at,
+            _ => f64::NAN,
+        };
+        if !modified.is_nan() {
+            let room = form.room("Modified");
+            rows.push(("Modified", long_date(modified, room).into()));
+        }
+        rows
+    }
+
+    fn access(&self, form: &Form) -> Option<Vec<(f32, Part)>> {
+        let stat = self.stat.as_ref()?;
+        let mode = stat.mode?;
+        let rwx: String = (0..9)
+            .rev()
+            .map(|bit| {
+                if mode >> bit & 1 == 1 {
+                    char::from(b"xwr"[bit % 3])
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let mut parts = Vec::new();
+        if stat.mine == Some(true) {
+            let (read, write) = (mode & 0o400 != 0, mode & 0o200 != 0);
+            let yours = if read && write {
+                Privilege::ReadWrite
+            } else if read {
+                Privilege::ReadOnly
+            } else if write {
+                Privilege::WriteOnly
+            } else {
+                Privilege::NoAccess
+            };
+            let yours = div()
+                .px(px(MARGIN + INSET))
+                .child(native_label("yours", yours_text(yours)).color(SystemColor::SecondaryLabel));
+            parts.push((4., Part::Plain(yours.into_any_element())));
+        }
+        let rows = [("Permissions", format!("{rwx} ({mode:03o})").into())];
+        parts.push(card("values", values(form, &rows)));
+        Some(parts)
+    }
+
+    fn default_height(&self, width: f32) -> f32 {
+        let form = Form::new(width, 1.);
+        let summary = self.bytes().is_some();
+        let head = header_height(&form, &self.name(), summary, false);
+        TITLEBAR + head + SECTION + TITLE + values_height(&form, &self.rows(&form)) + BOTTOM
+    }
+
+    fn pane(
+        &self,
+        form: &Form,
+        this: &WeakEntity<Self>,
+        pane: Pane,
+        parts: Vec<(f32, Part)>,
+    ) -> AnyElement {
+        let this = this.clone();
+        let toggle = move |_: &mut Window, cx: &mut App| {
+            this.update(cx, |remote, cx| {
+                let fold = &mut remote.folds[pane as usize];
+                fold.toggle();
+                remember(pane, fold.is_open());
+                cx.notify();
+            })
+            .ok();
+        };
+        let (id, title) = pane.section();
+        fold::section(form, id, title, &self.folds[pane as usize], toggle, parts).into_any_element()
+    }
+}
+
+impl Render for Remote {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ask(cx);
+        let scale = window.scale_factor();
+        let form = Form::new(f32::from(window.viewport_size().width), 1. / scale);
+        let this = cx.weak_entity();
+        let preview = match self.lines.as_slice() {
+            [line] => icon_view(&line.row, scale),
+            _ => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(PREVIEW)).child(icon_file(MANY_ICON)))
+                .into_any_element(),
+        };
+        let summary = self.bytes().map(byte_string).unwrap_or_default();
+        let general = vec![card("values", values(&form, &self.rows(&form)))];
+        let mut content = vec![
+            header(&form, preview, &self.name(), &summary, None),
+            self.pane(&form, &this, Pane::General, general),
+        ];
+        if let Some(parts) = self.access(&form) {
+            content.push(self.pane(&form, &this, Pane::Privileges, parts));
+        }
+        if self.folds.iter().any(Fold::moving) {
+            window.request_animation_frame();
+        }
+        page(window, content, BOTTOM, bound)
     }
 }

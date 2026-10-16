@@ -29,7 +29,7 @@ use crate::view::{GALLERY_VIEW, ICON_VIEW};
 use crate::views::header::column_title;
 use crate::views::icon::Arrangement;
 
-pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, bool);
+pub(crate) type ToolbarState = (usize, usize, bool, bool, bool, bool, usize, bool, bool);
 
 const AIRDROP_ART: f32 = 18.;
 const AIRDROP_BOX: f64 = 21.;
@@ -317,7 +317,7 @@ impl FinderDemo {
             return;
         }
         let state = self.toolbar_state();
-        let (_, _, picked, shareable, cloud, progress, _, airdrop) = state;
+        let (_, _, picked, shareable, cloud, progress, _, airdrop, local) = state;
         let this = cx.entity().downgrade();
         let tool = |(id, symbol, label, tip, run): Tool, enabled: bool| {
             ToolbarItem::symbol(id, symbol, label)
@@ -418,7 +418,7 @@ impl FinderDemo {
                 .enabled(shareable),
             ToolbarItem::symbol(TAG_ID, "tag", if picked { "Add Tags" } else { "Edit Tags" })
                 .tool_tip("Edit Tags")
-                .enabled(picked)
+                .enabled(picked && local)
                 .on_click(click(&this, Self::edit_tags)),
             tool(PREVIEW, true),
             ToolbarItem::symbol(AIRDROP_ID, "", "AirDrop")
@@ -461,6 +461,7 @@ impl FinderDemo {
             self.progress_shown(),
             self.view,
             self.airdrop_shown(),
+            !crate::remote::is_remote(self.here()),
         )
     }
 

@@ -75,6 +75,9 @@ fn stored(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn folder_at_path(text: &str) -> Option<&'static str> {
+    if crate::remote::is_remote(text.trim()) {
+        return crate::remote::folder_at(text);
+    }
     let path = typed_path(text);
     finder_fs::list::is_dir(&path).then(|| intern_path(&stored(&path)))
 }
@@ -177,6 +180,11 @@ fn enclosing(id: &'static str) -> Option<(&'static str, SharedString)> {
 }
 
 fn refusal(id: &str, error: &std::io::Error) -> String {
+    let id = if crate::remote::is_remote(id) {
+        crate::remote::title(id)
+    } else {
+        id
+    };
     let name = Path::new(id)
         .file_name()
         .map_or_else(|| id.into(), |name| name.to_string_lossy());
@@ -233,6 +241,9 @@ impl FinderDemo {
             return tag_title(tag).into();
         }
         let target = self.target();
+        if crate::remote::is_remote(target) {
+            return crate::remote::title(target).into();
+        }
         if crate::prefs::finder().posix_title && target.starts_with('/') {
             return finder_fs::name::display(target);
         }
@@ -333,7 +344,7 @@ impl FinderDemo {
     }
 
     fn holds_for(&self, id: &'static str) -> bool {
-        id.starts_with('/')
+        (id.starts_with('/') || crate::remote::is_remote(id))
             && (!self.folders.has(id)
                 || self
                     .folders
@@ -486,6 +497,9 @@ impl FinderDemo {
         self.history.remove(self.at);
         match self.at.checked_sub(1) {
             Some(back) => self.at = back,
+            None if crate::remote::is_remote(id) => {
+                self.history.insert(0, crate::remote::parent(id))
+            }
             None => self
                 .history
                 .insert(0, Path::new(id).parent().map_or("/", intern_path)),
@@ -572,13 +586,16 @@ impl FinderDemo {
             self.go(intern(&line.key), window, cx);
         } else if crate::locations::server(&line.key).is_some() {
             self.connect_server(&line.key, window, cx);
+        } else if crate::remote::is_remote(&line.key) {
+            let file = PathBuf::from(line.key.as_ref());
+            self.fetch(vec![file], crate::remote::Then::Open, cx);
         } else {
             self.open_files(vec![PathBuf::from(line.key.as_ref())], cx);
         }
     }
 
     // Off the main thread: a file on a share that stopped answering would stall it.
-    fn open_files(&self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn open_files(&self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         if files.is_empty() {
             return;
         }
@@ -653,11 +670,12 @@ impl FinderDemo {
         for line in chosen.iter().filter(|line| line.row.dataless) {
             let _ = finder_fs::icloud::download(Path::new(line.key.as_ref()));
         }
-        let files = chosen
+        let (remote, files) = chosen
             .iter()
             .filter(|line| line.row.opens.is_none() && !crate::smart::is_saved(&line.key))
             .map(|line| PathBuf::from(line.key.as_ref()))
-            .collect();
+            .partition(|file| crate::remote::is_remote(&file.to_string_lossy()));
+        self.fetch(remote, crate::remote::Then::Open, cx);
         self.open_files(files, cx);
         let folders: Vec<&'static str> = chosen
             .iter()

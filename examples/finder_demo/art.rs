@@ -145,7 +145,7 @@ pub(crate) fn picture_art(
 
 /// Only an alias's icon wears the badge: its poster draws what it points at.
 fn poster_kind(row: &Row) -> Option<FileType<'static>> {
-    (row.uti == "public.symlink")
+    (row.uti == "public.symlink" && !crate::remote::is_remote(&row.path))
         .then(|| std::fs::canonicalize(row.path.as_ref()).ok())
         .flatten()
         .map(|target| FileType::Path(crate::data::intern_path(&target)))

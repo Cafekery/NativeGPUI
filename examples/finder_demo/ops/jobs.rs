@@ -16,6 +16,7 @@ use super::After;
 use crate::app::FinderDemo;
 use crate::data::{byte_string, count};
 use crate::form::{text_height, text_width_at};
+use crate::remote::{Ended, Jobs, Then};
 use crate::sound::Sound;
 
 const SHOW_AFTER: Duration = Duration::from_millis(500);
@@ -41,6 +42,21 @@ const GLYPH_GAP: f32 = 9.;
 const EDGE: f32 = 13.;
 const DASH: &str = " \u{2013} ";
 
+#[derive(Clone, Copy, PartialEq)]
+enum Id {
+    Local(JobId),
+    Remote(u64),
+}
+
+impl Id {
+    fn raw(self) -> u64 {
+        match self {
+            Id::Local(job) => job.raw(),
+            Id::Remote(job) => job,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Record {
     New,
@@ -50,7 +66,7 @@ pub(crate) enum Record {
 }
 
 pub(crate) struct JobRow {
-    id: JobId,
+    id: Id,
     op: Op,
     conflict: Conflict,
     after: After,
@@ -59,6 +75,7 @@ pub(crate) struct JobRow {
     began: Instant,
     progress: Option<Progress>,
     failed: Option<Failed>,
+    artwork: Option<FileType<'static>>,
 }
 
 struct Failed {
@@ -85,6 +102,28 @@ impl Failed {
 }
 
 impl JobRow {
+    fn new(
+        id: Id,
+        op: Op,
+        conflict: Conflict,
+        after: After,
+        record: Record,
+        sound: Option<Sound>,
+    ) -> Self {
+        Self {
+            id,
+            op,
+            conflict,
+            after,
+            record,
+            sound,
+            began: Instant::now(),
+            progress: None,
+            failed: None,
+            artwork: None,
+        }
+    }
+
     pub(crate) fn shown(&self) -> bool {
         self.failed.is_some() || self.began.elapsed() >= SHOW_AFTER
     }
@@ -115,6 +154,9 @@ impl JobRow {
 }
 
 fn name_of(path: &Path) -> String {
+    if let Some(id) = path.to_str().filter(|id| crate::remote::is_remote(id)) {
+        return crate::remote::title(id).to_owned();
+    }
     path.file_name()
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
@@ -313,18 +355,30 @@ impl FinderDemo {
         sound: Option<Sound>,
         cx: &mut Context<Self>,
     ) {
-        let id = self.queue.submit(op.clone(), conflict);
-        self.jobs.push(JobRow {
-            id,
-            op,
-            conflict,
-            after,
-            record,
-            sound,
-            began: Instant::now(),
-            progress: None,
-            failed: None,
-        });
+        let id = Id::Local(self.queue.submit(op.clone(), conflict));
+        self.push_job(JobRow::new(id, op, conflict, after, record, sound), cx);
+    }
+
+    /// `fetch` pairs remote files with the cache paths they download to.
+    pub(crate) fn submit_remote(
+        &mut self,
+        op: Op,
+        fetch: Vec<(PathBuf, PathBuf)>,
+        then: Option<Then>,
+        after: After,
+        cx: &mut Context<Self>,
+    ) {
+        let artwork = subject(&op).and_then(|path| self.remote_artwork(path));
+        let sound = Sound::of(&op, false).filter(|_| fetch.is_empty());
+        let id = Id::Remote(self.remote_jobs.start(op.clone(), fetch, then));
+        let mut row = JobRow::new(id, op, Conflict::KeepBoth, after, Record::New, sound);
+        row.artwork = artwork;
+        self.push_job(row, cx);
+    }
+
+    fn push_job(&mut self, row: JobRow, cx: &mut Context<Self>) {
+        let id = row.id;
+        self.jobs.push(row);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SHOW_AFTER).await;
             this.update(cx, |this, cx| {
@@ -342,7 +396,11 @@ impl FinderDemo {
     pub(crate) fn poll_jobs(&mut self) -> bool {
         let mut running = false;
         for row in self.jobs.iter_mut().filter(|row| row.running()) {
-            if let Some(progress) = self.queue.progress(row.id) {
+            let progress = match row.id {
+                Id::Local(job) => self.queue.progress(job),
+                Id::Remote(job) => self.remote_jobs.progress(job),
+            };
+            if let Some(progress) = progress {
                 row.progress = Some(progress);
             }
             running = true;
@@ -374,7 +432,7 @@ impl FinderDemo {
             match event {
                 Event::Carried(job, carried) => self.carried(job, carried, cx),
                 Event::Finished(job, result) => {
-                    let Some(row) = self.take_job(job) else {
+                    let Some(row) = self.take_job(Id::Local(job)) else {
                         continue;
                     };
                     match result {
@@ -396,7 +454,7 @@ impl FinderDemo {
                     error,
                     left,
                 } => {
-                    let Some(row) = self.take_job(job) else {
+                    let Some(row) = self.take_job(Id::Local(job)) else {
                         continue;
                     };
                     if let Some(left) = left {
@@ -406,7 +464,7 @@ impl FinderDemo {
                     self.complain(&error.to_string());
                 }
                 Event::Cancelled { job, done } => {
-                    if let Some(row) = self.take_job(job) {
+                    if let Some(row) = self.take_job(Id::Local(job)) {
                         self.finish(&row, done, cx);
                     }
                 }
@@ -416,7 +474,7 @@ impl FinderDemo {
     }
 
     fn carried(&mut self, job: JobId, carried: Carried, cx: &mut Context<Self>) {
-        let Some(mut row) = self.take_job(job) else {
+        let Some(mut row) = self.take_job(Id::Local(job)) else {
             return;
         };
         let Carried {
@@ -445,7 +503,67 @@ impl FinderDemo {
         cx.defer(crate::progress_window::reveal);
     }
 
-    fn take_job(&mut self, job: JobId) -> Option<JobRow> {
+    /// No journal entry: a server change is not undone.
+    pub(crate) fn handle_remote_events(&mut self, cx: &mut Context<Self>) {
+        let ended = self.remote_jobs.ended();
+        if ended.is_empty() {
+            return;
+        }
+        for (job, ended, then) in ended {
+            let Ended {
+                results,
+                failures,
+                end,
+                taken,
+                dropped,
+            } = ended;
+            let clean = failures.is_empty() && end == End::Finished;
+            let row = self.take_job(Id::Remote(job));
+            match (then, &row) {
+                (Some(Then::MoveIn(items)), Some(row)) => {
+                    self.settled(super::touched(&row.op), results.clone(), row.after, cx);
+                    if let Some(folder) = results.into_iter().next() {
+                        self.run_op(
+                            Op::Move {
+                                items,
+                                into: folder,
+                            },
+                            After::Nothing,
+                            cx,
+                        );
+                    }
+                }
+                (Some(then), _) => self.then(then, clean, cx),
+                (None, Some(row)) => {
+                    if let Some(sound) = row.sound.filter(|_| clean && !results.is_empty()) {
+                        sound.play();
+                    }
+                    self.settled(super::touched(&row.op), results, row.after, cx);
+                }
+                (None, None) => {}
+            }
+            if let Some(name) = taken {
+                self.complain(&super::conflicts::name_taken(&name));
+            }
+            if let Some(server) = dropped {
+                self.eject_remote(server, cx);
+            }
+            let Some(mut row) = row.filter(|_| !failures.is_empty() && end != End::Cancelled)
+            else {
+                continue;
+            };
+            row.failed = Some(Failed {
+                failures,
+                retry: None,
+                entry: None,
+            });
+            self.jobs.push(row);
+            cx.defer(crate::progress_window::reveal);
+        }
+        cx.notify();
+    }
+
+    fn take_job(&mut self, job: Id) -> Option<JobRow> {
         let at = self.jobs.iter().position(|row| row.id == job)?;
         Some(self.jobs.remove(at))
     }
@@ -456,7 +574,7 @@ impl FinderDemo {
         entry
     }
 
-    fn retry_job(&mut self, job: JobId, cx: &mut Context<Self>) {
+    fn retry_job(&mut self, job: Id, cx: &mut Context<Self>) {
         let Some(row) = self.take_job(job) else {
             return;
         };
@@ -473,7 +591,7 @@ impl FinderDemo {
         self.submit(retry, Conflict::Merge, row.after, record, row.sound, cx);
     }
 
-    fn show_failures(&self, job: JobId, cx: &mut Context<Self>) {
+    fn show_failures(&self, job: Id, cx: &mut Context<Self>) {
         let Some((op, failed)) = (self.jobs.iter())
             .find(|row| row.id == job)
             .and_then(|row| Some((&row.op, row.failed.as_ref()?)))
@@ -501,8 +619,8 @@ impl FinderDemo {
 
 fn act<E: 'static>(
     demo: &Entity<FinderDemo>,
-    job: JobId,
-    act: impl Fn(&mut FinderDemo, JobId, &mut Context<FinderDemo>) + 'static,
+    job: Id,
+    act: impl Fn(&mut FinderDemo, Id, &mut Context<FinderDemo>) + 'static,
 ) -> impl Fn(&E, &mut Window, &mut App) + 'static {
     let demo = demo.clone();
     move |_, _, cx| demo.update(cx, |this, cx| act(this, job, cx))
@@ -510,11 +628,14 @@ fn act<E: 'static>(
 
 fn on_queue(
     demo: &Entity<FinderDemo>,
-    job: JobId,
-    run: fn(&Queue, JobId),
+    job: Id,
+    (run, remote): (fn(&Queue, JobId), fn(&Jobs, u64)),
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     act(demo, job, move |this, job, cx| {
-        run(&this.queue, job);
+        match job {
+            Id::Local(job) => run(&this.queue, job),
+            Id::Remote(job) => remote(&this.remote_jobs, job),
+        }
         this.poll_jobs();
         cx.notify();
     })
@@ -585,8 +706,12 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
     let small = tokens::small_system_font_size();
     let icon = match sources(&job.op).as_slice() {
         [_, _, ..] => tokens::file_icon(FileType::Named("NSMultipleDocuments"), px(ICON)),
-        _ => subject(&job.op)
-            .and_then(|path| tokens::file_icon(FileType::Path(&path.to_string_lossy()), px(ICON))),
+        _ => match job.artwork {
+            Some(artwork) => tokens::file_icon(artwork, px(ICON)),
+            None => subject(&job.op).and_then(|path| {
+                tokens::file_icon(FileType::Path(&path.to_string_lossy()), px(ICON))
+            }),
+        },
     };
     let stop = symbol(("ng.finder.progress.stop.glyph", id), "xmark.circle.fill");
     let row = div()
@@ -699,10 +824,10 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
             .child(bar),
     )
     .when(pausable, |row| {
-        let (name, run): (_, fn(&Queue, JobId)) = if paused {
-            ("play.circle.fill", Queue::resume)
+        let (name, run): (_, (fn(&Queue, JobId), fn(&Jobs, u64))) = if paused {
+            ("play.circle.fill", (Queue::resume, Jobs::resume))
         } else {
-            ("pause.circle.fill", Queue::pause)
+            ("pause.circle.fill", (Queue::pause, Jobs::pause))
         };
         row.child(glyph(
             ("ng.finder.progress.pause", id),
@@ -715,7 +840,7 @@ pub(crate) fn progress_row(job: &JobRow, demo: &Entity<FinderDemo>) -> AnyElemen
         ("ng.finder.progress.stop", id),
         EDGE,
         stop,
-        on_queue(demo, job.id, Queue::cancel),
+        on_queue(demo, job.id, (Queue::cancel, Jobs::cancel)),
     ))
     .child(text(
         ("ng.finder.progress.caption", id),

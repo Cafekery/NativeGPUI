@@ -89,6 +89,9 @@ fn expanded(typed: &str) -> String {
 }
 
 fn go_rows(typed: &str) -> Vec<String> {
+    if crate::remote::is_remote(typed.trim()) {
+        return Vec::new();
+    }
     let folder = typed
         .ends_with('/')
         .then(|| typed_path(typed))
@@ -450,11 +453,13 @@ impl GoPanel {
                 .background_executor()
                 .spawn(async move {
                     let folder = folder_at_path(&typed);
+                    let local = !crate::remote::is_remote(typed.trim());
                     let path = typed_path(&typed);
                     // Finder leaves the sheet up, and says nothing, on a folder it can't list.
-                    let refused = folder.is_none() && path.is_dir();
-                    let item = (folder.is_none() && !refused && path.symlink_metadata().is_ok())
-                        .then(|| intern_path(&path));
+                    let refused = local && folder.is_none() && path.is_dir();
+                    let item = local && folder.is_none() && !refused;
+                    let item =
+                        (item && path.symlink_metadata().is_ok()).then(|| intern_path(&path));
                     if folder.is_some() || item.is_some() {
                         remember_go(&path.to_string_lossy());
                     }

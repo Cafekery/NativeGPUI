@@ -150,15 +150,17 @@ fn rename_split(path: PathBuf, name: String) -> Split {
     if !taken(&dest) || same_item(&dest, &path) {
         return Split::Clean(Op::Rename { path, name });
     }
+    Split::Refused(name_taken(&name))
+}
+
+pub(crate) fn name_taken(name: &str) -> String {
     let named = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
             format!("\u{201c}{stem}\u{201d} with extension \u{201c}.{ext}\u{201d}")
         }
         _ => format!("\u{201c}{name}\u{201d}"),
     };
-    Split::Refused(format!(
-        "The name {named} is already taken. Please choose a different name."
-    ))
+    format!("The name {named} is already taken. Please choose a different name.")
 }
 
 fn item_icon(path: &Path, size: f32) -> AnyElement {
